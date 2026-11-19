@@ -66,9 +66,9 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 pub fn builtin(operation: &str) -> Option<&'static str> {
 	match operation {
 		"human_request" | "human_read" => Some("human_request"),
-		"workspace_record" | "workspace_record_chunk" => Some("workspace_read"),
+		"thread_record" | "thread_record_chunk" => Some("thread_read"),
 		"artifact" => Some("artifact_publish"),
-		"message" => Some("workspace_message"),
+		"message" => Some("thread_message"),
 		"create_task" => Some("task_create"),
 		"delegate" => Some("task_delegate"),
 		"discover" => Some("agent_discover"),
@@ -77,7 +77,7 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		// Binding and the Home's own Request ([`requested`]) are checked for the
 		// tool the Run called.
 		"task_assign" => Some("task_assign"),
-		"workspace_search" => Some("workspace_search"),
+		"thread_search" => Some("thread_search"),
 		"connection_request" => Some("connection_request"),
 		// A remote Run's outbound GET is approved by the Home's root person first (ADR 0139,
 		// decision 22): the Home asks and answers under the tool the Run called.
@@ -102,7 +102,7 @@ pub fn requested(operation: &str) -> bool {
 		"delegate"
 			| "discover"
 			| "task_assign"
-			| "workspace_search"
+			| "thread_search"
 			| "connection_request"
 			| "outbound_request"
 			| "outbound_read"

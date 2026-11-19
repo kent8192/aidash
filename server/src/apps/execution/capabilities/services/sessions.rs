@@ -11,15 +11,6 @@ use crate::{
 use aidash_application::capabilities::sessions as application;
 use serde_json::Value;
 use uuid::Uuid;
-pub(crate) async fn bind_task(access: &mut Access, task: Uuid, thread: Uuid) -> Result<()> {
-	application::bind_task(
-		&mut crate::bootstrap::session_scope(None, access),
-		task,
-		thread,
-	)
-	.await
-	.map_err(Into::into)
-}
 pub(crate) async fn load(access: &mut Access, id: Uuid) -> Result<Area> {
 	application::load(&mut crate::bootstrap::session_scope(None, access), id)
 		.await
@@ -73,7 +64,7 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 			.flatten()
 			.filter(|source| source["kind"] == "message")
 			.filter_map(|source| serde_json::from_value(source["id"].clone()).ok())
-			.map(|id| (area.workspace_id, "message".to_owned(), id))
+			.map(|id| (area.thread_id, "message".to_owned(), id))
 			.collect();
 		access.prepare_read_sources(&messages).await?;
 	}
@@ -85,12 +76,12 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 }
 pub(crate) async fn authorize_sources(
 	access: &mut Access,
-	workspace: Uuid,
+	thread: Uuid,
 	constraints: &Value,
 ) -> Result<()> {
 	application::authorize_sources(
 		&mut crate::bootstrap::session_scope(None, access),
-		workspace,
+		thread,
 		constraints,
 	)
 	.await
@@ -191,9 +182,9 @@ pub(crate) async fn initialize(
 }
 /// Bind the receiving Working Area of a Run executing here for another Home, and pin its Agent
 /// version's Reference set into it (ADR 0139). The Home person owning it is the one the Run's
-/// Delegated Run Scratch Space belongs to. The Area's thread is the Home Task's: the receiver
-/// is told the Task, not the Home's thread (the description carries none), so a Task is a
-/// thread here and follow-up Runs of the same Task, Agent and person reuse the Area.
+/// Delegated Run Scratch Space belongs to. The Area is keyed on the Home Thread, as a local Area
+/// is on its Thread (#1008), so follow-up Runs in the same Home Thread for the same Agent and
+/// person reuse it.
 pub(crate) async fn initialize_remote(
 	store: &Store,
 	access: &mut Access,
@@ -206,7 +197,6 @@ pub(crate) async fn initialize_remote(
 	application::initialize_remote(
 		&mut crate::bootstrap::session_scope(Some(store), access),
 		&metadata,
-		run.task_id,
 		&owner,
 		config,
 	)

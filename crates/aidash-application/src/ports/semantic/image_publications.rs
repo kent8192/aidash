@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct ImagePublication {
-	pub workspace: Uuid,
+	pub thread: Uuid,
 	pub area: Uuid,
 	pub generation: i64,
 	pub sequence: i64,
@@ -21,7 +21,7 @@ pub struct ImagePublication {
 
 #[async_trait]
 pub trait ImagePublicationSession: Send {
-	/// Load the earliest publication after locking its Workspace and index.
+	/// Load the earliest publication after locking its Thread and index.
 	async fn load(&mut self) -> Result<Option<ImagePublication>>;
 	/// Persist entry transitions and ledger state, then acknowledge the event.
 	async fn store(

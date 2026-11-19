@@ -81,7 +81,7 @@ async fn source_target(
 	let (grant_id, task_id) = binding.ok_or(Error::Forbidden)?;
 	let mut grant_query = Query::select();
 	grant_query
-		.columns(["node_id", "root_subject", "workspace_id"].map(Alias::new))
+		.columns(["node_id", "root_subject", "thread_id"].map(Alias::new))
 		.from(Alias::new("authorization_remote_grants"))
 		.and_where(Expr::col("id").eq(Expr::value(grant_id)))
 		.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
@@ -97,24 +97,24 @@ async fn source_target(
 	}
 	let grant: Option<(String, String, uuid::Uuid)> =
 		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))
-			.columns(&["node_id", "root_subject", "workspace_id"])
+			.columns(&["node_id", "root_subject", "thread_id"])
 			.fetch_optional(&mut **access.tx)
 			.await?;
-	let (target, requester, workspace_id) = grant.ok_or(Error::Forbidden)?;
+	let (target, requester, thread_id) = grant.ok_or(Error::Forbidden)?;
 	match audience {
 		SourceAudience::Viewer => {
 			let task = access.task_read(task_id).await?;
-			if requester != access.identity.subject || task.workspace_id != workspace_id {
+			if requester != access.identity.subject || task.thread_id != thread_id {
 				return Err(Error::Forbidden);
 			}
 		}
-		SourceAudience::ThreadCleanup(workspace) if workspace == workspace_id => {}
+		SourceAudience::ThreadCleanup(thread) if thread == thread_id => {}
 		SourceAudience::ThreadCleanup(_) => return Err(Error::Forbidden),
 	}
 	let source = f
 		.config
 		.deployment
-		.node(access.workspace_node(workspace_id).await?);
+		.node(access.thread_node(thread_id).await?);
 	NodeAddress::parse(&target)?;
 	Ok((
 		Sender {
@@ -138,21 +138,18 @@ pub(crate) async fn source_viewer(
 		.map(|_| ())
 }
 
-/// Gather routing before thread deletion hides its Runs from normal reads.
+/// Gather routing before Thread deletion hides its Runs from normal reads.
 pub(crate) async fn releases_for_thread(
 	f: &Federation,
 	access: &mut crate::authorization::access::Access,
-	workspace: uuid::Uuid,
 	thread: uuid::Uuid,
 ) -> Result<Vec<ReleaseDelivery>> {
-	let refs = crate::apps::workspaces::repositories::citations::remote_for_thread(
-		access, workspace, thread,
-	)
-	.await?;
+	let refs =
+		crate::apps::workspaces::repositories::citations::remote_for_thread(access, thread).await?;
 	let mut deliveries = Vec::new();
 	for (message_id, run_id, file_id) in refs {
 		let Ok((sender, node)) =
-			source_target(f, access, run_id, SourceAudience::ThreadCleanup(workspace)).await
+			source_target(f, access, run_id, SourceAudience::ThreadCleanup(thread)).await
 		else {
 			continue;
 		};
@@ -242,7 +239,7 @@ pub(crate) async fn retain(
 		if run.node != admitted.receiver.node
 			|| run.home_node != description.source_node
 			|| run.task_id != record.task_id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 		{
 			return Err(Error::Forbidden);
 		}
@@ -395,7 +392,7 @@ pub(crate) async fn inspect(
 		if run.node != admitted.receiver.node
 			|| run.home_node != description.source_node
 			|| run.task_id != record.task_id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 		{
 			return Err(Error::Forbidden);
 		}
@@ -505,7 +502,7 @@ pub(crate) async fn issue(
 		if run.node != admitted.receiver.node
 			|| run.home_node != description.source_node
 			|| run.task_id != record.task_id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 		{
 			return Err(Error::Forbidden);
 		}

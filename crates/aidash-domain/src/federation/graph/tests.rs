@@ -2,10 +2,10 @@ use super::*;
 use rstest::rstest;
 fn options() -> GraphOptions {
 	GraphOptions {
-		scope_workspace: None,
+		scope_thread: None,
 		depth: 1,
 		mode: "mesh".into(),
-		kinds: vec!["workspace".into(), "goal".into(), "task".into()],
+		kinds: vec!["thread".into(), "goal".into(), "task".into()],
 		relations: vec!["contains".into(), "goal".into()],
 		hours: 24,
 		limit: 20,
@@ -41,7 +41,7 @@ fn projection_bounds_reject_invalid_input(#[case] field: &str) {
 	assert!(o.validate().is_err());
 }
 #[rstest]
-#[case("topology", "workspace", false)]
+#[case("topology", "thread", false)]
 #[case("topology", "agent", true)]
 #[case("execution", "run", true)]
 #[case("collaboration", "run", false)]
@@ -60,13 +60,13 @@ fn page() -> GraphPage {
 		generation: format!("sha256:{}", "a".repeat(64)),
 		checked_at: Utc::now(),
 		nodes: vec![GraphNode {
-			id: resource_key(node, "workspace", Uuid::from_u128(1)),
+			id: resource_key(node, "thread", Uuid::from_u128(1)),
 			node_id: node.into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			name: BTreeMap::new(),
 			resource_id: Some(Uuid::from_u128(1).to_string()),
 			version: None,
-			workspace_id: Some(Uuid::from_u128(1)),
+			thread_id: Some(Uuid::from_u128(1)),
 			status: None,
 			goal_body: None,
 			at: None,
@@ -104,7 +104,7 @@ fn remote_projection_cannot_forge_scope_or_references(#[case] field: &str) {
 		"generation" => p.generation = "sha256:bad".into(),
 		"cursor" => p.next_cursor = Some("x".repeat(4097)),
 		"dangling_activity" => p.activity.push(GraphActivity {
-			kind: "workspace.updated".into(),
+			kind: "thread.updated".into(),
 			at: p.checked_at,
 			reference: "missing".into(),
 		}),
@@ -148,7 +148,7 @@ fn unconfirmed_graph_entries_must_name_the_answering_node() {
 	p.unconfirmed.push(crate::unconfirmed::Unconfirmed {
 		node: "aidash://b".into(),
 		kind: crate::unconfirmed::Kind::Task,
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		count: 1,
 	});
 	assert!(valid_remote_page(&p, "aidash://b", &options()));

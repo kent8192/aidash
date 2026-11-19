@@ -83,7 +83,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         body,
       });
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page.getByRole("button", { name: copy.history, exact: true }).click();
     await page
       .getByRole("dialog")
@@ -166,7 +166,7 @@ test("a pending attempt keeps streaming until its outcome after the Run ends", a
       body: [": keepalive\n\n", ...rows].join(""),
     });
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -217,7 +217,7 @@ test("subjects never subscribe to a foreign-home run's inference stream", async 
       json: { id: "run-0", phase: "THINKING", control: "RUNNING" },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -273,7 +273,7 @@ for (const { label, home } of [
       streams += 1;
       return route.abort();
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", { name: "Execution history", exact: true })
       .click();

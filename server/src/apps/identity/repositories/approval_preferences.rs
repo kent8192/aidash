@@ -499,11 +499,6 @@ pub(crate) async fn covering(
 		.from_as(Alias::new("authorization_execution"), Alias::new("e"))
 		.join(
 			JoinType::LeftJoin,
-			TableRef::table_alias(Alias::new("core_task_sessions"), Alias::new("t")),
-			Expr::cust("t.task_id = e.task_id"),
-		)
-		.join(
-			JoinType::LeftJoin,
 			TableRef::table_alias(
 				Alias::new(ApprovalPreference::table_name()),
 				Alias::new("p"),
@@ -517,7 +512,7 @@ pub(crate) async fn covering(
 				Alias::new("m"),
 			),
 			Expr::cust(
-				"m.tenant = e.tenant AND m.subject = e.root_subject AND m.thread_id = t.thread_id",
+				"m.tenant = e.tenant AND m.subject = e.root_subject AND m.thread_id = e.thread_id",
 			),
 		)
 		.and_where(Expr::col(column("e", "run_id")).eq(Expr::value(run.id)))

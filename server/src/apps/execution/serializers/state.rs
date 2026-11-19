@@ -14,7 +14,7 @@ pub struct StateResponse {
 	/// `GET /api/tenants/{tenant}/nodes` lists.
 	pub deployment: DeploymentIdentity,
 	pub registry: Vec<Entry>,
-	pub workspaces: Vec<Workspace>,
+	pub threads: Vec<Thread>,
 	pub tasks: Vec<Task>,
 	pub runs: Vec<crate::domain::RunSummary>,
 	pub human_requests: Vec<HumanRequest>,
@@ -22,7 +22,7 @@ pub struct StateResponse {
 	pub events: Vec<Event>,
 	pub artifacts: Vec<Artifact>,
 	/// Rows this read scanned and could not confirm because a Node did not
-	/// answer, for each Node, kind and Workspace. `[]` when none.
+	/// answer, for each Node, kind and Thread. `[]` when none.
 	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
 	pub next_cursors: aidash_application::authorization::state::NextCursors,
 }
@@ -32,12 +32,12 @@ pub struct StateQuery {
 	pub node: Option<String>,
 }
 #[derive(Default, serde::Deserialize, JsonSchema)]
-pub struct WorkspacePageQuery {
+pub struct ThreadPageQuery {
 	pub node: Option<String>,
 	pub cursor: Option<String>,
 }
 #[derive(Serialize, JsonSchema)]
-pub struct WorkspacePage {
-	pub items: Vec<Workspace>,
+pub struct ThreadPage {
+	pub items: Vec<Thread>,
 	pub next_cursor: Option<String>,
 }

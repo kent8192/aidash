@@ -91,7 +91,7 @@ async fn outbound_graph_requires_use_of_its_sending_node(
 	)
 	.await;
 	let path = format!("/api/federation/graph/peers?node={}", source.node);
-	let input = json!({"node_id":target,"sending_node":source.node,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null});
+	let input = json!({"node_id":target,"sending_node":source.node,"scope_thread":null,"mode":"mesh","kinds":["thread"],"relations":[],"hours":0,"limit":80,"cursor":null});
 	for denied in [false, true] {
 		if denied {
 			let mut policy = pair.source.policy.clone();

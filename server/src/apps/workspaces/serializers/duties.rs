@@ -17,7 +17,10 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(crate) struct DutyView {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	/// The Duty's own Thread, where its Tasks belong (#1008).
+	pub thread_id: Uuid,
+	/// The Thread it was registered from; None for a Duty from before #1008.
+	pub origin_thread_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
 	pub requester: String,
 	/// The viewer is its Requester.
@@ -30,8 +33,6 @@ pub(crate) struct DutyView {
 	pub agent: EntityRef,
 	/// When it wakes by the clock, if it does.
 	pub trigger: Option<Trigger>,
-	/// The Duty's own Thread, once its first Task opened it.
-	pub thread_id: Option<Uuid>,
 	/// None follows the Requester's own default mode.
 	pub approval_mode: Option<ApprovalMode>,
 	pub max_lateness_seconds: i64,
@@ -80,7 +81,8 @@ impl DutyView {
 		let definition = duty.definition;
 		Self {
 			id: duty.id,
-			workspace_id: duty.workspace_id,
+			thread_id: duty.thread_id,
+			origin_thread_id: duty.origin_thread_id,
 			mine: duty.requester == viewer,
 			requester: duty.requester,
 			title: definition.title,
@@ -88,7 +90,6 @@ impl DutyView {
 			procedure: definition.procedure,
 			agent: definition.agent,
 			trigger: definition.trigger,
-			thread_id: duty.thread_id,
 			approval_mode: definition.approval_mode,
 			max_lateness_seconds: definition.max_lateness_seconds,
 			pause_after_failures: definition.pause_after_failures,
@@ -145,7 +146,7 @@ impl DetailView {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(crate) struct DutyNotice {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub title: String,
 	pub requester: String,
 	pub halt: Halt,
@@ -158,7 +159,7 @@ impl DutyNotice {
 	pub fn of(duty: &Duty) -> Self {
 		Self {
 			id: duty.id,
-			workspace_id: duty.workspace_id,
+			thread_id: duty.thread_id,
 			title: duty.definition.title.clone(),
 			requester: duty.requester.clone(),
 			halt: duty.halt.unwrap_or(Halt::Paused),

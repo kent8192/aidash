@@ -56,8 +56,8 @@ impl GraphProjectionScope for Projection<'_, '_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn linked_workspace(&mut self, id: Uuid) -> Result<Option<Candidate>> {
-		graph::linked_workspace(self.authority, id)
+	async fn linked_thread(&mut self, id: Uuid) -> Result<Option<Candidate>> {
+		graph::linked_thread(self.authority, id)
 			.await
 			.map_err(Into::into)
 	}
@@ -108,11 +108,8 @@ impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
 		let resource = crate::authorization::catalog::resource(access, entry);
 		access.decide(&resource, action).await.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid, action: &str) -> Result<bool> {
-		self.0
-			.workspace_allowed(id, action)
-			.await
-			.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid, action: &str) -> Result<bool> {
+		self.0.thread_allowed(id, action).await.map_err(Into::into)
 	}
 	async fn record(&mut self, candidate: &Candidate) -> Result<bool> {
 		let GraphAuthority(access) = &mut *self.0;

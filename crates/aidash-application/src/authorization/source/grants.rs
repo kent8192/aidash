@@ -101,9 +101,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 	let result = async {
 		scope.inherit_task_origin(task_id).await?;
 		let task = scope.task_read(task_id).await?;
-		scope
-			.require_non_subnode_workspace(task.workspace_id)
-			.await?;
+		scope.require_non_subnode_thread(task.thread_id).await?;
 		if task.status != TaskStatus::Open {
 			return Err(Error::Conflict("task is already assigned".into()));
 		}
@@ -124,8 +122,8 @@ pub async fn agent_inspection<R: GrantRepository>(
 				aidash_domain::federation::execution::Refusal::InvalidExecutor,
 			));
 		}
-		let workspace = scope.workspace(task.workspace_id).await?;
-		scope.source_context(workspace.attributes.clone());
+		let thread = scope.thread(task.thread_id).await?;
+		scope.source_context(thread.attributes.clone());
 		let resource = scope.task_resource(&task).await?;
 		scope.require(&resource, "task.delegate").await?;
 		scope.require(&resource, "task.execute").await?;
@@ -157,12 +155,12 @@ pub async fn prepare<R: GrantRepository>(
 	let result=async {
   scope.inherit_task_origin(task_id).await?;
   let task=scope.task_read(task_id).await?;
-  scope.require_non_subnode_workspace(task.workspace_id).await?;
+  scope.require_non_subnode_thread(task.thread_id).await?;
   if task.status!=TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
   let executor=aidash_domain::agent_subject(&input.node_id,&input.agent.id,&input.agent.version);
   if scope.source_bundle().subjects.get(&executor).is_some_and(|subject|subject.kind!=SubjectKind::Agent) {let resource=scope.source_resource("node",&input.node_id,json!({"remote_node":input.node_id}));scope.record_refusal(&resource,"invalid_executor_subject").await?;return Err(Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::InvalidExecutor));}
-  let workspace=scope.workspace(task.workspace_id).await?;
-  scope.source_context(workspace.attributes.clone());
+  let thread=scope.thread(task.thread_id).await?;
+  scope.source_context(thread.attributes.clone());
   let resource=scope.task_resource(&task).await?;
   scope.require(&resource,"task.delegate").await?;
   scope.require(&resource,"task.execute").await?;
@@ -182,7 +180,7 @@ pub async fn prepare<R: GrantRepository>(
   let grant=scope.current_grant(input.id).await?;
   let expected=PreparationAuthority {task_id,task:&task,input:&input,identity:&identity,subjects:scope.source_subjects(),inspection:&metadata,semantic:&semantic};
   if !grant.matches_authority(&expected) || !scope.live(grant.id).await? {return Err(Error::Conflict("grant id already binds different or expired authority".into()));}
-  if inserted==1 {scope.event(task.workspace_id,"task.remote_grant_prepared",json!({"grant_id":grant.id,"task_id":task_id,"node_id":grant.node_id,"expires_at":grant.expires_at})).await?;}
+  if inserted==1 {scope.event(task.thread_id,"task.remote_grant_prepared",json!({"grant_id":grant.id,"task_id":task_id,"node_id":grant.node_id,"expires_at":grant.expires_at})).await?;}
   Ok(grant.prepared()?)
  }.await;
 	finish(scope, result).await
@@ -206,7 +204,7 @@ pub async fn revoke<R: GrantRepository>(
 			scope.revoke_locked(id).await?;
 			scope
 				.event(
-					task.workspace_id,
+					task.thread_id,
 					"task.remote_grant_revoked",
 					json!({"grant_id":id,"task_id":task_id}),
 				)
@@ -279,7 +277,7 @@ pub async fn description_mode<R: GrantRepository>(
 		};
 		scope.replace_subjects(sending.clone());
 		let task = scope.task_read(current.task_id).await?;
-		scope.workspace(task.workspace_id).await?;
+		scope.thread(task.thread_id).await?;
 		let locked = scope.locked_task(task.id).await?;
 		if locked.revision != task.revision {
 			*revision_race = true;

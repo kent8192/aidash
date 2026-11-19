@@ -114,7 +114,7 @@ fn failed(failures: i32, error: Option<&str>) -> Record {
 	r
 }
 /// The first wait on a live attempt is a second; a repeated one backs off,
-/// because each fresh claim repeats the charged workspace embedding.
+/// because each fresh claim repeats the charged thread embedding.
 #[rstest::rstest]
 #[case(None, 1)]
 #[case(Some("unavailable"), 1)]

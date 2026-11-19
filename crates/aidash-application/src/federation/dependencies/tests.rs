@@ -718,7 +718,7 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			task_id: Uuid::from_u128(10),
-			workspace_id: Uuid::from_u128(11),
+			thread_id: Uuid::from_u128(11),
 			home_node: "aidash://home".into(),
 			agent_id: "agent".into(),
 			agent_version: "1.0.0".into(),

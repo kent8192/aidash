@@ -29,6 +29,9 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain(JOURNAL_TOOLS.iter().copied())
 		.chain(NODE_TOOLS.iter().copied())
 		.chain(NOTIFY_TOOLS.iter().copied())
+		// The Workspace tools the Thread tools replace (#1008): saved Agent
+		// versions pin them, so they stay declared with their original bytes.
+		.chain(aidash_domain::tool::thread_tools::WORKSPACE_TOOLS)
 }
 
 /// Sending an event to another Node's Duty (#1013). An Agent definition binds

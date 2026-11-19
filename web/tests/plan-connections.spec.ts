@@ -125,14 +125,14 @@ async function setup(
             key: null,
           },
           registry: [],
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -252,7 +252,7 @@ test("reconnection and ineligibility have distinct persistent guidance", async (
   await expect(
     page
       .getByText(
-        "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
+        "Your ChatGPT plan, thread, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
       )
       .first(),
   ).toBeVisible();
@@ -265,7 +265,7 @@ test("reconnection and ineligibility have distinct persistent guidance", async (
   await page.goto("/collaboration");
   await expect(
     page.getByText(
-      "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
+      "Your ChatGPT plan, thread, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
     ),
   ).toBeVisible();
   await expect(
@@ -489,7 +489,7 @@ test("a Plan Run explains its source and links to personal usage management", as
     subject: true,
     planModel: true,
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();

@@ -66,7 +66,7 @@ fn repository() -> Repository {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
-		workspace_id: id(3),
+		thread_id: id(3),
 		home_node: "aidash://home/brave-otter-k3m9q2xa".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
@@ -92,7 +92,7 @@ fn repository() -> Repository {
 		grant: Some(ExecutionGrant {
 			run_id: id(1),
 			task_id: id(2),
-			workspace_id: id(3),
+			thread_id: id(3),
 			tenant: "tenant".into(),
 			credential_id: id(8),
 			root_subject: "deployment_administrator".into(),
@@ -160,21 +160,18 @@ impl RunControlScope for Scope {
 		state.record("run")?;
 		Ok(state.raw.clone())
 	}
-	async fn workspace(&mut self, key: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, key: Uuid) -> Result<Resource> {
 		assert_eq!(key, id(3));
-		self.state.lock().unwrap().record("workspace")?;
+		self.state.lock().unwrap().record("thread")?;
 		Ok(self.resource(
-			"workspace",
+			"thread",
 			&key.to_string(),
-			json!({"current":"workspace attributes"}),
+			json!({"current":"thread attributes"}),
 		))
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		let mut state = self.state.lock().unwrap();
-		assert_eq!(
-			state.context,
-			Some(json!({"current":"workspace attributes"}))
-		);
+		assert_eq!(state.context, Some(json!({"current":"thread attributes"})));
 		assert_eq!(resource.tenant, state.principal.tenant);
 		if action == "run.control" {
 			assert_eq!(resource.kind, "run");
@@ -271,8 +268,8 @@ fn expected() -> Vec<&'static str> {
 	vec![
 		"begin",
 		"run",
-		"workspace",
-		"workspace.read",
+		"thread",
+		"thread.read",
 		"visible",
 		"run.control",
 		"grant_lock",
@@ -474,7 +471,7 @@ async fn undisclosable_or_unowned_runs_do_not_refresh_credentials_or_mutate(
 	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
 }
 #[rstest]
-#[case::workspace("workspace.read")]
+#[case::thread("thread.read")]
 #[case::run("run.control")]
 #[tokio::test]
 async fn revocation_prevents_control_before_the_resume_grant_lock(
@@ -494,8 +491,8 @@ async fn revocation_prevents_control_before_the_resume_grant_lock(
 #[rstest]
 #[case::begin("begin")]
 #[case::run("run")]
-#[case::workspace("workspace")]
-#[case::workspace_authority("workspace.read")]
+#[case::thread("thread")]
+#[case::thread_authority("thread.read")]
 #[case::visibility("visible")]
 #[case::control_authority("run.control")]
 #[case::grant_lock("grant_lock")]
@@ -569,8 +566,8 @@ fn expected_decline() -> Vec<&'static str> {
 	vec![
 		"begin",
 		"run",
-		"workspace",
-		"workspace.read",
+		"thread",
+		"thread.read",
 		"grant_lock",
 		"run.control",
 		"visible",

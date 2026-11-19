@@ -41,7 +41,7 @@ const STORAGE_MARGIN: usize = 64;
 pub(crate) struct RunTarget {
 	pub id: Uuid,
 	pub task_id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub node: String,
 	pub home_node: String,
 	pub control: String,
@@ -49,7 +49,7 @@ pub(crate) struct RunTarget {
 crate::native_record!(RunTarget {
 	id,
 	task_id,
-	workspace_id,
+	thread_id,
 	node,
 	home_node,
 	control
@@ -141,17 +141,7 @@ pub(crate) async fn target(executor: impl Executor, run: Uuid) -> Result<RunTarg
 	rows::<RunTarget>(
 		executor,
 		Query::select()
-			.columns(
-				[
-					"id",
-					"task_id",
-					"workspace_id",
-					"node",
-					"home_node",
-					"control",
-				]
-				.map(Alias::new),
-			)
+			.columns(["id", "task_id", "thread_id", "node", "home_node", "control"].map(Alias::new))
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("id").eq(Expr::value(run))),
 	)
@@ -230,17 +220,17 @@ async fn marker(
 	let mut data = json!({
 		"run_id": run.id,
 		"task_id": run.task_id,
-		"workspace_id": run.workspace_id,
+		"thread_id": run.thread_id,
 		"attempt_id": attempt,
 	});
 	if let Some(reason) = reason {
 		data["reason"] = json!(reason);
 	}
-	// The same workspace rule as the Run's own events keeps run-scoped visibility.
+	// The same thread rule as the Run's own events keeps run-scoped visibility.
 	event_records::append_run(
 		tx,
 		run.id,
-		run.is_local(node).then_some(run.workspace_id),
+		run.is_local(node).then_some(run.thread_id),
 		kind,
 		data,
 	)

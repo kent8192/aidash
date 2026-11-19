@@ -34,7 +34,7 @@ pub trait GenerationProtocolLease: GenerationProtocolReservation {
 	/// This node's journal record of one semantic operation, if it has one,
 	/// read through this lease's own connection.
 	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>>;
-	/// The current corpus digest of this lease's Description Workspace,
+	/// The current corpus digest of this lease's Description Thread,
 	/// computed as for the Home's remote semantic retrievals and read through
 	/// this lease's own connection.
 	async fn corpus_digest(&mut self) -> Result<String>;

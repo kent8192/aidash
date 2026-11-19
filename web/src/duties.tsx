@@ -1,4 +1,4 @@
-/** Duties (#557): a Workspace's Duties, "my Duties", and for holders
+/** Duties (#557): a Thread's Duties, "my Duties", and for holders
  *  of `duty.administer` every Duty of the Tenant. A Duty always
  *  acts as its Requester (ADR 0134), so only they edit or resume it. */
 import { useMemo, useState, type ReactNode } from "react";
@@ -168,7 +168,7 @@ const copy = {
 };
 
 type Scope =
-  | { kind: "workspace"; workspace: string }
+  | { kind: "thread"; thread: string }
   | { kind: "mine" }
   | { kind: "tenant" };
 
@@ -182,8 +182,8 @@ const json = (body: unknown): RequestInit => ({
 const DUTY_REFRESH_MS = 15_000;
 
 function listUrl(scope: Scope): string {
-  if (scope.kind === "workspace")
-    return `/api/workspaces/${encodeURIComponent(scope.workspace)}/duties`;
+  if (scope.kind === "thread")
+    return `/api/threads/${encodeURIComponent(scope.thread)}/duties`;
   return `/api/duties?scope=${scope.kind}`;
 }
 
@@ -235,7 +235,7 @@ export function DutiesPanel({
     }
   }
   return (
-    <Panel title={scope.kind === "workspace" ? words.title : words.mine}>
+    <Panel title={scope.kind === "thread" ? words.title : words.mine}>
       <Hint>{words.hint}</Hint>
       {scope.kind === "mine" && administrator && (
         <label className="flex items-center gap-2 text-sm">
@@ -379,7 +379,7 @@ export function DutiesPanel({
           onSave={(form) =>
             void act(async () => {
               if (editing === "new") {
-                if (scope.kind !== "workspace") return;
+                if (scope.kind !== "thread") return;
                 await apiFetch(listUrl(scope), json(definitionOf(form)));
               } else {
                 await apiFetch(`/api/duties/${editing.id}`, {
@@ -393,7 +393,7 @@ export function DutiesPanel({
           }
         />
       ) : (
-        scope.kind === "workspace" && (
+        scope.kind === "thread" && (
           <Button
             className="justify-self-start"
             disabled={busy}
@@ -437,11 +437,9 @@ function DutyHistory({
           {duty.procedure}
         </p>
       )}
-      {duty.thread_id && (
-        <Hint>
-          {words.thread}: <span className="font-mono">{duty.thread_id}</span>
-        </Hint>
-      )}
+      <Hint>
+        {words.thread}: <span className="font-mono">{duty.thread_id}</span>
+      </Hint>
       {newer_agent_version && duty.mine && (
         <Hint>{words.newer(newer_agent_version)}</Hint>
       )}

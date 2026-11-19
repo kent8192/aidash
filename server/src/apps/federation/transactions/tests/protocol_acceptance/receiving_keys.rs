@@ -429,7 +429,7 @@ async fn recovery_successor_persists_for_a_closed_disabled_participant(
 			assert_eq!(
 				node.f
 					.store
-					.workspace(&TEST_FIXTURE, id)
+					.thread(&TEST_FIXTURE, id)
 					.await
 					.unwrap()
 					.revision,
@@ -462,11 +462,7 @@ async fn recovery_successor_persists_for_a_closed_disabled_participant(
 		)
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		1,
 		"terminal retry has exactly one effect"
 	);

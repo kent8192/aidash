@@ -172,7 +172,7 @@ async fn waiting_requests_enforce_identity_ownership_and_reverse_references(
 		let request = HumanRequest::build()
 			.tenant("acme")
 			.id(Uuid::new_v4())
-			.workspace_id(owner.workspace_id)
+			.thread_id(owner.thread_id)
 			.run(owner.id)
 			.kind(HumanRequestKind::Question)
 			.prompt("Continue?")

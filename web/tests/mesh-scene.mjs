@@ -61,7 +61,7 @@ export function meshScene(now = Date.now()) {
     "Context Synthesis",
     "Risk Analysis",
   ];
-  const workspaces = [
+  const threads = [
     {
       id: "product-lab",
       title: "Product Lab",
@@ -101,7 +101,7 @@ export function meshScene(now = Date.now()) {
     },
   ].map((t, i) => ({
     ...t,
-    workspace_id: "product-lab",
+    thread_id: "product-lab",
     description: `${t.title} for the first Aidash release.`,
     requirements: {},
     revision: 1,
@@ -111,7 +111,7 @@ export function meshScene(now = Date.now()) {
     (id, i) => ({
       id: `run-${id}`,
       task_id: tasks[[0, 0, 1, 1, 2][i]].id,
-      workspace_id: "product-lab",
+      thread_id: "product-lab",
       home_node: home,
       agent_id: id,
       agent_version: "1.0.0",
@@ -135,7 +135,7 @@ export function meshScene(now = Date.now()) {
       name,
       kind: i === 1 ? "code" : "text",
       content: `Sample ${name} content for local visual verification.`,
-      workspace_id: "product-lab",
+      thread_id: "product-lab",
       task_id: tasks[i].id,
       created_by: principal(["researcher", "builder", "reviewer"][i]),
       idempotency_key: `artifact-${i}`,
@@ -146,7 +146,7 @@ export function meshScene(now = Date.now()) {
     id: `event-${i}`,
     sequence: i,
     node: null,
-    workspace_id: "product-lab",
+    thread_id: "product-lab",
     kind: [
       "task.created",
       "task.claimed",
@@ -161,7 +161,7 @@ export function meshScene(now = Date.now()) {
   const conversations = [
     {
       id: "conversation-strategy",
-      workspace_id: "product-lab",
+      thread_id: "product-lab",
       target: "planner@1.0.0",
       target_kind: "agent",
       created_by: "Ryota",
@@ -185,14 +185,14 @@ export function meshScene(now = Date.now()) {
         key: null,
       },
       registry,
-      workspaces,
+      threads,
       tasks,
       runs,
       artifacts,
       events,
       conversations,
       next_cursors: {
-        workspaces: null,
+        threads: null,
         tasks: null,
         runs: null,
         artifacts: null,

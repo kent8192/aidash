@@ -14,7 +14,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			bank.workspace,
+			bank.thread,
 			&aidash_domain::NewTask {
 				title: "Local Delivery".into(),
 				description: "Native Usage".into(),
@@ -40,7 +40,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 			vec![
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -53,7 +53,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 			vec![
 				Expr::value(id),
 				Expr::value(task.id),
-				Expr::value(bank.workspace),
+				Expr::value(bank.thread),
 				Expr::value(
 					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 						.to_string(),
@@ -177,20 +177,18 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	use reinhardt::query::SimpleExpr;
 	use reinhardt::query::prelude::IntoIden;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds.clone()).await;
+	let (store, _, thread) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"deployment_administrator",
 			"Other",
-			"Independent workspace lock",
 		)
 		.await
 		.unwrap();
-	let index =
-		crate::semantic::service::get_index(&store, &administrator(&store).await, workspace)
-			.await
-			.unwrap();
+	let index = crate::semantic::service::get_index(&store, &administrator(&store).await, thread)
+		.await
+		.unwrap();
 	crate::semantic::service::configure(
 		&store,
 		&administrator(&store).await,
@@ -204,11 +202,11 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	.unwrap();
 	let operation_id = Uuid::now_v7();
 	let mut requests = Vec::new();
-	for workspace in [workspace, other.id] {
+	for thread in [thread, other.id] {
 		let bank = memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -435,11 +433,11 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -558,11 +556,11 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -589,8 +587,8 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	};
 	let bundle = serde_json::from_value(json!({"tenant":"acme","subjects":{"agent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"reader":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"person":{"kind":"user"},"admin":{"kind":"user"}},"policies":[
         {"id":"explicit-agent","effect":"allow","subjects":{"ids":["agent"]},"actions":["*"],"resources":{"kinds":["*"]}},
-        {"id":"workspace-admin","effect":"allow","subjects":{"ids":["admin"]},"actions":["workspace.read","workspace.update","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}},
-        {"id":"default-read","effect":"allow","subjects":{"ids":["reader","person"]},"actions":["workspace.read","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}}
+        {"id":"thread-admin","effect":"allow","subjects":{"ids":["admin"]},"actions":["thread.read","thread.update","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}},
+        {"id":"default-read","effect":"allow","subjects":{"ids":["reader","person"]},"actions":["thread.read","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}}
     ]})).unwrap();
 	authorization
 		.replace("acme", 1, bundle, "deployment_administrator")
@@ -735,7 +733,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 			include_procedures: false,
 		}),
 	};
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds.clone(),
 		"http://127.0.0.1:9/v1",
@@ -747,7 +745,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -790,7 +788,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	.unwrap();
 	units::current(
 		&mut lease,
-		workspace,
+		thread,
 		&[admitted[0].evidence()],
 		bounds.max_graph_visits,
 	)
@@ -860,7 +858,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 			include_procedures: false,
 		}),
 	};
-	let (store, registry, workspace) = setup_endpoint_decay(
+	let (store, registry, thread) = setup_endpoint_decay(
 		&database,
 		bounds.clone(),
 		"http://127.0.0.1:9/v1",
@@ -873,7 +871,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let mut ids = vec![];
@@ -1044,7 +1042,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 			include_procedures: false,
 		}),
 	};
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -1056,7 +1054,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1182,7 +1180,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 			include_procedures: false,
 		}),
 	};
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -1194,7 +1192,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1306,7 +1304,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 			include_procedures: true,
 		}),
 	};
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds.clone(),
 		"http://127.0.0.1:9/v1",
@@ -1318,7 +1316,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1491,7 +1489,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 			include_procedures: true,
 		}),
 	};
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds.clone(),
 		"http://127.0.0.1:9/v1",
@@ -1503,7 +1501,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1677,7 +1675,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 			include_procedures: true,
 		}),
 	};
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds.clone(),
 		&format!("{}/v1", model.url),
@@ -1689,7 +1687,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1821,7 +1819,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 	use reinhardt::test::fixtures::server::test_server_guard;
 	let model = test_server_guard(ServerRouter::new().endpoint(graph_embedding)).await;
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		&format!("{}/v1", model.url),
@@ -1836,7 +1834,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 		let bank = memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},

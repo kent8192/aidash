@@ -12,7 +12,7 @@ pub struct SemanticHistory {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[field(null = true)]
 	pub entry_id: Option<uuid::Uuid>,
 	#[field]

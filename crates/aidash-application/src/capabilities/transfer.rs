@@ -34,10 +34,10 @@ pub async fn view(scope: &mut dyn TransferScope, id: Uuid) -> Result<Value> {
 	if record.owner != scope.principal() {
 		return Err(Error::NotFound("transfer unavailable".into()));
 	}
-	let workspace = scope
-		.workspace(serde_json::from_value(record.data["workspace_id"].clone())?)
+	let thread = scope
+		.thread(serde_json::from_value(record.data["thread_id"].clone())?)
 		.await?;
-	scope.require(&workspace, "workspace.read").await?;
+	scope.require(&thread, "thread.read").await?;
 	scope
 		.require(
 			&scope.resource(
@@ -98,7 +98,7 @@ pub async fn prepare(
 	scope.set_subjects(delegated);
 	let recipient_permission = async {
 		scope.authorize(area, "file.share").await?;
-		scope.sources(area.workspace_id, &area.constraints).await
+		scope.sources(area.thread_id, &area.constraints).await
 	}
 	.await;
 	scope.set_subjects(original_subjects);
@@ -142,7 +142,7 @@ pub async fn prepare(
 		files: chosen,
 		expires_at,
 	};
-	scope.insert(id,Some(area.id),"transfer_out","pending",json!({"description":description,"credential_id":scope.credential(),"subjects":scope.subjects(),"workspace_id":area.workspace_id,"thread_id":area.thread_id,"constraints":area.constraints,"run_id":run.id,"offsets":{}}),Some(expires_at)).await?;
+	scope.insert(id,Some(area.id),"transfer_out","pending",json!({"description":description,"credential_id":scope.credential(),"subjects":scope.subjects(),"thread_id":area.thread_id,"constraints":area.constraints,"run_id":run.id,"offsets":{}}),Some(expires_at)).await?;
 	scope
 		.cache(
 			input.idempotency_key,
@@ -174,11 +174,11 @@ pub async fn authority<'a>(
 		if run.control == aidash_domain::RunControl::Cancelled {
 			return Err(Error::Forbidden);
 		}
-		let workspace = scope
-			.workspace(serde_json::from_value(record.data["workspace_id"].clone())?)
+		let thread = scope
+			.thread(serde_json::from_value(record.data["thread_id"].clone())?)
 			.await?;
-		scope.set_context(workspace.attributes.clone());
-		scope.require(&workspace, "workspace.read").await?;
+		scope.set_context(thread.attributes.clone());
+		scope.require(&thread, "thread.read").await?;
 		let area = record.area_id.ok_or(Error::Forbidden)?;
 		scope
 			.require(
@@ -214,7 +214,7 @@ pub async fn authority<'a>(
 				"file.share",
 			)
 			.await?;
-		scope.sources( run.workspace_id, &record.data["constraints"])
+		scope.sources( run.thread_id, &record.data["constraints"])
 			.await?;
 		Ok(())
 	}

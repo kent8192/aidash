@@ -187,7 +187,7 @@ class RemoteMemory(Cluster):
         self.register(0, "embedding", "home-embedding", self.embedding)
 
     def workspace(self):
-        workspace = self.ok(self.user(0, "/api/workspaces", {"title": "Remote memory acceptance", "goal": "Search the approved archive"}))["id"]
+        workspace = self.ok(self.user(0, "/api/workspaces", {"title": "Remote memory acceptance", "request": "Search the approved archive"}))["id"]
         self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None},
             "enabled": True, "auto_context": True, "max_sources": 100, "max_results": 10, "max_result_tokens": 4096, "max_input_bytes": 32768}}))

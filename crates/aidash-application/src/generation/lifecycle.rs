@@ -126,7 +126,7 @@ pub async fn transition(
 	if job.is_local() {
 		scope
 			.event(
-				job.workspace_id,
+				job.thread_id,
 				"generation.changed",
 				json!({"id":job.id,"task_id":job.task_id,"policy_id":job.policy_id,"status":status}),
 			)

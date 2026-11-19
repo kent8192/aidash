@@ -12,17 +12,17 @@ use reinhardt::query::{
 use serde_json::json;
 use uuid::Uuid;
 
-/// Fence a Workspace effect against concurrent dissolution in the same
-/// transaction as the effect. Non-Subnode Workspaces are unaffected.
+/// Fence a Thread effect against concurrent dissolution in the same
+/// transaction as the effect. Non-Subnode Threads are unaffected.
 pub(crate) async fn require_writable(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> NativeResult<()> {
 	use reinhardt::db::orm::{QueryRow, execution::convert_values};
 	let (sql, values) = Query::select()
 		.column(Alias::new("state"))
 		.from(Alias::new("subnodes"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 		.lock(LockType::Share)
 		.build(PostgresQueryBuilder);
 	if let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? {
@@ -66,7 +66,7 @@ impl EndScope for Cascade<'_> {
 		let result: NativeResult<Vec<(Uuid, Uuid)>> = async {
 			crate::database::native::query_as(
 				&Query::select()
-					.columns([Alias::new("id"), Alias::new("workspace_id")])
+					.columns([Alias::new("id"), Alias::new("thread_id")])
 					.from(Alias::new("subnodes"))
 					.and_where(Expr::col("creator_run_id").eq(Expr::value(creator)))
 					.and_where(Expr::col("state").eq("active"))
@@ -74,22 +74,17 @@ impl EndScope for Cascade<'_> {
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder),
 			)
-			.columns(&["id", "workspace_id"])
+			.columns(&["id", "thread_id"])
 			.fetch_all(&mut *self.tx)
 			.await
 		}
 		.await;
 		Ok(result?
 			.into_iter()
-			.map(|(id, workspace)| (SubnodeId(id), workspace))
+			.map(|(id, thread)| (SubnodeId(id), thread))
 			.collect())
 	}
-	async fn mark_ended(
-		&mut self,
-		id: SubnodeId,
-		workspace: Uuid,
-		reason: EndReason,
-	) -> Result<()> {
+	async fn mark_ended(&mut self, id: SubnodeId, thread: Uuid, reason: EndReason) -> Result<()> {
 		let reason = serde_json::to_value(reason)?;
 		let reason = reason.as_str().ok_or_else(|| {
 			aidash_application::Error::Invalid("invalid Subnode end reason".into())
@@ -108,20 +103,20 @@ impl EndScope for Cascade<'_> {
 		self.store
 			.event_in_executor(
 				self.tx,
-				Some(workspace),
+				Some(thread),
 				"subnode.dissolved",
 				json!({"subnode_id":id.0,"reason":reason}),
 			)
 			.await?;
 		Ok(())
 	}
-	async fn active_runs(&mut self, workspace: Uuid) -> Result<Vec<Uuid>> {
+	async fn active_runs(&mut self, thread: Uuid) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
 			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("runs"))
-					.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 					.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 					.and_where(Expr::col("control").ne("CANCELLED"))
 					.order_by(Alias::new("id"), Order::Asc)
@@ -157,7 +152,7 @@ impl EndScope for NativeCascade<'_> {
 	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		let (sql, values) = Query::select()
-			.columns(["id", "workspace_id"].map(Alias::new))
+			.columns(["id", "thread_id"].map(Alias::new))
 			.from(Alias::new("subnodes"))
 			.and_where(Expr::col("creator_run_id").eq(Expr::value(creator)))
 			.and_where(Expr::col("state").eq("active"))
@@ -173,17 +168,12 @@ impl EndScope for NativeCascade<'_> {
 			.map(|row| {
 				let row = QueryRow::from_backend_row(row);
 				let id = row.get("id").ok_or(crate::Error::Forbidden)?;
-				let workspace = row.get("workspace_id").ok_or(crate::Error::Forbidden)?;
-				Ok((SubnodeId(id), workspace))
+				let thread = row.get("thread_id").ok_or(crate::Error::Forbidden)?;
+				Ok((SubnodeId(id), thread))
 			})
 			.collect()
 	}
-	async fn mark_ended(
-		&mut self,
-		id: SubnodeId,
-		workspace: Uuid,
-		reason: EndReason,
-	) -> Result<()> {
+	async fn mark_ended(&mut self, id: SubnodeId, thread: Uuid, reason: EndReason) -> Result<()> {
 		use reinhardt::db::orm::execution::convert_values;
 		let value = serde_json::to_value(reason)?;
 		let reason = value.as_str().ok_or_else(|| {
@@ -202,19 +192,19 @@ impl EndScope for NativeCascade<'_> {
 			.map_err(crate::Error::from)?;
 		crate::apps::execution::models::event_records::append(
 			self.tx,
-			Some(workspace),
+			Some(thread),
 			"subnode.dissolved",
 			json!({"subnode_id":id.0,"reason":reason}),
 		)
 		.await?;
 		Ok(())
 	}
-	async fn active_runs(&mut self, workspace: Uuid) -> Result<Vec<Uuid>> {
+	async fn active_runs(&mut self, thread: Uuid) -> Result<Vec<Uuid>> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.and_where(Expr::col("control").ne("CANCELLED"))
 			.order_by(Alias::new("id"), Order::Asc)
@@ -267,7 +257,7 @@ impl EndScope for NativeCascade<'_> {
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.and_where(Expr::col("control").ne("CANCELLED"))
-			.returning([Alias::new("workspace_id")])
+			.returning([Alias::new("thread_id")])
 			.build(PostgresQueryBuilder);
 		let row = self
 			.tx
@@ -277,8 +267,8 @@ impl EndScope for NativeCascade<'_> {
 			.ok_or_else(|| {
 				aidash_application::Error::Conflict("member Run is already terminal".into())
 			})?;
-		let workspace: Uuid = QueryRow::from_backend_row(row)
-			.get("workspace_id")
+		let thread: Uuid = QueryRow::from_backend_row(row)
+			.get("thread_id")
 			.ok_or(crate::Error::Forbidden)?;
 		crate::apps::execution::models::HumanRequest::close_for_run(self.tx, run).await?;
 		crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
@@ -290,7 +280,7 @@ impl EndScope for NativeCascade<'_> {
 		crate::apps::execution::models::event_records::append_run(
 			self.tx,
 			run,
-			Some(workspace),
+			Some(thread),
 			"run.control",
 			json!({"run_id":run,"action":action,"source":source}),
 		)

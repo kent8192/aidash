@@ -114,10 +114,10 @@ impl RunGuardScope for RunGuard<'_> {
 		.await?;
 		self.access.run_visible(run).await.map_err(Into::into)
 	}
-	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>> {
+	async fn cluster_targets(&mut self, thread: Uuid) -> Result<Vec<String>> {
 		let result: NativeResult<Vec<String>> = async {
 			Ok({
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("target"))
@@ -126,7 +126,7 @@ impl RunGuardScope for RunGuard<'_> {
 							Condition::all()
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),

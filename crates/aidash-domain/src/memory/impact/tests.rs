@@ -21,7 +21,7 @@ fn query(units: Vec<Uuid>) -> ImpactQuery {
 		bank: Bank {
 			home: "home".into(),
 			tenant: "tenant".into(),
-			workspace: Uuid::from_u128(9),
+			thread: Uuid::from_u128(9),
 			participant: None,
 		},
 		units,

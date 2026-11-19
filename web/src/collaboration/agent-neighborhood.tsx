@@ -67,7 +67,7 @@ export function Graph({
   const channelAgents = new Set(
     data.runs
       .filter(
-        (run) => run.workspace_id === channel && run.home_node === data.node.id,
+        (run) => run.thread_id === channel && run.home_node === data.node.id,
       )
       .map((run) =>
         entityKey(data.node.id, "agent", {
@@ -100,7 +100,7 @@ export function Graph({
         selected,
         {
           nodeId: data.node.id,
-          workspaces: data.workspaces,
+          threads: data.threads,
           tasks: data.tasks,
           runs: data.runs,
           registry: data.registry,
@@ -446,16 +446,16 @@ export function Graph({
                   </p>
                 ) : (
                   <div className="flex flex-col gap-0.5">
-                    {related.map((workspace) => (
+                    {related.map((thread) => (
                       <Button
                         variant="ghost"
                         size="sm"
                         type="button"
                         className="collab-channel-link w-full justify-start"
-                        key={workspace.id}
-                        onClick={() => visitChannel(workspace.id)}
+                        key={thread.id}
+                        onClick={() => visitChannel(thread.id)}
                       >
-                        # {workspace.title}
+                        # {thread.title}
                       </Button>
                     ))}
                   </div>

@@ -552,7 +552,7 @@ impl Gateway {
 		if persisted.node != receiver.node
 			|| persisted.home_node != sender
 			|| persisted.task_id != record.task_id
-			|| persisted.workspace_id != description.task.workspace_id
+			|| persisted.thread_id != description.task.thread_id
 		{
 			return Err(NativeError::Forbidden);
 		}

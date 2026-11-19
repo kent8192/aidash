@@ -37,7 +37,6 @@ fn area(revision: i64) -> Area {
 		id: Uuid::nil(),
 		tenant: "acme".into(),
 		home_node: "node".into(),
-		workspace_id: Uuid::now_v7(),
 		thread_id: Uuid::now_v7(),
 		agent_id: "agent".into(),
 		owner: "owner".into(),

@@ -191,6 +191,8 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			+ JOURNAL_TOOLS.len()
 			+ NODE_TOOLS.len()
 			+ NOTIFY_TOOLS.len()
+			// The Workspace tools the Thread tools replace stay declared (#1008).
+			+ aidash_domain::tool::thread_tools::WORKSPACE_TOOLS.len()
 			+ 2
 	);
 	let specifications = validation.node_specifications();

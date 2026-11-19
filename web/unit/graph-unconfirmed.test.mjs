@@ -9,7 +9,7 @@ test("graph warning counts the current pages under their answering Nodes", () =>
   const row = (count) => ({
     node: "aidash://b",
     kind: "task",
-    workspace_id: "w",
+    thread_id: "w",
     count,
   });
   const pages = {
@@ -28,7 +28,7 @@ test("an empty page whose rows another Node could not confirm shows no empty tex
     nodes: [],
     next_cursor: null,
     unconfirmed: [
-      { node: "aidash://b", kind: "task", workspace_id: "w", count: 4 },
+      { node: "aidash://b", kind: "task", thread_id: "w", count: 4 },
     ],
   };
   assert.equal(graphEmptyText(counted), null);

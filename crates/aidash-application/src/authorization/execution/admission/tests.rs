@@ -32,7 +32,7 @@ struct Scope {
 impl Scope {
 	fn new() -> Self {
 		let subject = qualified_agent(&node(), "agent", "1.0.0");
-		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
+		Self{task:Some(Task{id:Uuid::from_u128(1),thread_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());
@@ -82,13 +82,13 @@ impl ExecutionGrantSession for Scope {
 		self.call("federated_origin")?;
 		Ok(self.federated)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.call("workspace")?;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.call("thread")?;
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			id: id.to_string(),
-			attributes: json!({"workspace":"context"}),
+			attributes: json!({"thread":"context"}),
 		})
 	}
 	fn set_context(&mut self, c: Value) {
@@ -119,7 +119,7 @@ impl ExecutionAdmissionSession for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://node"
 	}
-	async fn workspace_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
+	async fn thread_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
 		Ok(node())
 	}
 	fn bundle(&self) -> &PolicyBundle {
@@ -237,8 +237,8 @@ impl ExecutionAdmissionSession for Scope {
 			agent_version: agent.version.clone(),
 		})
 	}
-	async fn delegation_event(&mut self, workspace: Uuid, _: &Delegation) -> Result<()> {
-		assert_eq!(workspace, Uuid::from_u128(2));
+	async fn delegation_event(&mut self, thread: Uuid, _: &Delegation) -> Result<()> {
+		assert_eq!(thread, Uuid::from_u128(2));
 		self.call("event")
 	}
 }
@@ -277,14 +277,14 @@ async fn admitted_task_retains_credential_chain_revision_and_browser_origin(
 		vec![ExecutionGrant {
 			run_id: Uuid::from_u128(3),
 			task_id: Uuid::from_u128(1),
-			workspace_id: Uuid::from_u128(2),
+			thread_id: Uuid::from_u128(2),
 			tenant: "tenant".into(),
 			credential_id: Uuid::from_u128(4),
 			root_subject: "root".into(),
 			subject_chain: vec!["root".into(), "delegator".into(), qualified]
 		}]
 	);
-	assert_eq!(s.context, json!({"workspace":"context"}));
+	assert_eq!(s.context, json!({"thread":"context"}));
 	assert_eq!(
 		s.bound_origin,
 		browser.then_some((Uuid::from_u128(3), Uuid::from_u128(5), Uuid::from_u128(6)))
@@ -297,7 +297,7 @@ async fn admitted_task_retains_credential_chain_revision_and_browser_origin(
 	assert_eq!(
 		s.calls
 			.iter()
-			.filter(|c| c.as_str() == "workspace.read")
+			.filter(|c| c.as_str() == "thread.read")
 			.count(),
 		2
 	);
@@ -319,12 +319,12 @@ async fn assignment_conflict_is_checked_after_content_authorization(#[case] stat
 		.unwrap_err();
 	assert!(matches!(e,Error::Conflict(ref m) if m=="task is already assigned"));
 	assert!(s.calls.contains(&"task.read".into()));
-	assert!(s.calls.contains(&"workspace.read".into()));
+	assert!(s.calls.contains(&"thread.read".into()));
 	assert!(!s.calls.contains(&"claim".into()));
 }
 #[rstest]
 #[case("task.read")]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("task.delegate")]
 #[case("task.execute")]
 #[case("prepare_thread")]
@@ -344,7 +344,7 @@ async fn denied_admission_never_claims_or_binds_a_run(#[case] denial: &'static s
 #[case("task")]
 #[case("local_origin")]
 #[case("remote_origin")]
-#[case("workspace")]
+#[case("thread")]
 #[case("task_resource")]
 #[case("live_agent")]
 #[case("entry")]

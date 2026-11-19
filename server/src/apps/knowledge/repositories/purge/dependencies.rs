@@ -120,7 +120,7 @@ pub(super) async fn erase(
 						.from(Alias::new("authorization_run_reads"))
 						.and_where(Expr::col("resource_kind").eq("run"))
 						.and_where(Expr::col("resource_id").eq(Expr::value(run)))
-						.and_where(Expr::col("workspace_id").eq(Expr::value(root.bank.workspace)))
+						.and_where(Expr::col("thread_id").eq(Expr::value(root.bank.thread)))
 						.order_by(Alias::new("run_id"), Order::Asc)
 						.limit(bounds.max_graph_visits as u64);
 					if let Some(cursor) = child_cursor {
@@ -149,7 +149,7 @@ pub(super) async fn erase(
 			|| unit.stale
 			|| match units::current(
 				lease,
-				unit.bank.workspace,
+				unit.bank.thread,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
 			)
@@ -241,13 +241,13 @@ async fn discover(
 	cohort: Option<Uuid>,
 	impact: &mut Impact,
 ) -> Result<()> {
-	let workspace_banks = || {
+	let thread_banks = || {
 		Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("memory_banks"))
 			.and_where(Expr::col("home").eq(root.bank.home.as_str()))
 			.and_where(Expr::col("tenant").eq(root.bank.tenant.as_str()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(root.bank.workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(root.bank.thread)))
 			.to_owned()
 	};
 	// Current lineage survives history expiry. Historical revisions also track
@@ -261,7 +261,7 @@ async fn discover(
 				.expr_as(Expr::col(Alias::new(identity)), Alias::new("unit_id"))
 				.column(Alias::new("bank_id"))
 				.from(Alias::new(table))
-				.and_where(Expr::col("bank_id").in_subquery(workspace_banks()))
+				.and_where(Expr::col("bank_id").in_subquery(thread_banks()))
 				.cond_where(support.clone())
 				.order_by(Alias::new(identity), Order::Asc)
 				.limit(bounds.max_graph_visits as u64);
@@ -291,7 +291,7 @@ async fn discover(
 		query
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("memory_candidates"))
-			.and_where(Expr::col("bank_id").in_subquery(workspace_banks()))
+			.and_where(Expr::col("bank_id").in_subquery(thread_banks()))
 			.cond_where(support.clone())
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(bounds.max_graph_visits as u64);
@@ -308,7 +308,7 @@ async fn discover(
 		for row in rows {
 			match units::current(
 				lease,
-				root.bank.workspace,
+				root.bank.thread,
 				&units::content(&row)?.evidence,
 				bounds.max_graph_visits,
 			)

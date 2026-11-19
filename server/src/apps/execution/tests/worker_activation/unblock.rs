@@ -10,7 +10,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str, tenant: &str) -> U
 				[
 					"id",
 					"task_id",
-					"workspace_id",
+					"thread_id",
 					"home_node",
 					"node",
 					"agent_id",
@@ -62,7 +62,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 					"home_node",
 					"agent_id",
 					"owner",
-					"workspace_id",
+					"thread_id",
 					"thread_id",
 				]
 				.map(a),

@@ -16,11 +16,11 @@ impl Run {
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 	) -> Result<Option<domain::Run>> {
 		let mut query = Self::objects().filter(Self::field_id().eq(id));
-		if let Some(workspace) = workspace {
-			query = query.filter(Self::field_workspace_id().eq(workspace));
+		if let Some(thread) = thread {
+			query = query.filter(Self::field_thread_id().eq(thread));
 		}
 		query
 			.all_with_executor(tx)
@@ -90,13 +90,13 @@ impl HumanRequest {
 	pub(crate) async fn for_run(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Vec<domain::HumanRequest>> {
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.order_by(Alias::new("id"), Order::Asc)
 			.build(PostgresQueryBuilder);
 		Ok(tx

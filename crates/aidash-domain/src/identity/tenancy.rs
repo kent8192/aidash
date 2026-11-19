@@ -128,11 +128,11 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"task.read",
 	"thread.delete",
 	"tool.invoke",
-	"workspace.create",
-	"workspace.events",
-	"workspace.read",
-	"workspace.share",
-	"workspace.update",
+	"thread.create",
+	"thread.events",
+	"thread.read",
+	"thread.share",
+	"thread.update",
 ];
 
 pub(crate) const RANDOM_LENGTH: usize = 8;

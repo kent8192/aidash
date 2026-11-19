@@ -3,7 +3,7 @@ use super::*;
 
 fn options(mode: &str, kinds: &[&str]) -> GraphOptions {
 	GraphOptions {
-		scope_workspace: None,
+		scope_thread: None,
 		depth: 1,
 		mode: mode.into(),
 		kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
@@ -38,7 +38,7 @@ fn perspective_filters_catalog_kinds() {
 
 #[rstest::rstest]
 fn irrelevant_kinds_skip_the_catalog_query() {
-	assert!(query("acme", &options("mesh", &["workspace", "goal", "run"]), 0).is_none());
+	assert!(query("acme", &options("mesh", &["thread", "goal", "run"]), 0).is_none());
 	assert!(query("acme", &options("execution", &["tool", "model"]), 0).is_none());
 	assert!(query("acme", &options("mesh", &[]), 0).is_none());
 }

@@ -306,10 +306,10 @@ impl GenerationLifecycleScope for Scope {
 			.push(format!("history:{status}:{actor}:{reason}"));
 		Ok(())
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.point("event").await?;
 		assert_eq!(kind, "generation.changed");
-		assert_eq!(workspace, self.state.lock().unwrap().job.workspace_id);
+		assert_eq!(thread, self.state.lock().unwrap().job.thread_id);
 		assert_eq!(data["id"], json!(Uuid::from_u128(1)));
 		self.effects.push("event".into());
 		Ok(())
@@ -612,7 +612,7 @@ async fn cancellation_discards_all_staged_lifecycle_effects(#[case] pause: &'sta
 }
 #[rstest]
 #[tokio::test]
-async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_workspace_event() {
+async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_thread_event() {
 	let repo = Repository::new(true);
 	{
 		let mut state = repo.state.lock().unwrap();

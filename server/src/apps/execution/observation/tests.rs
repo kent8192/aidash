@@ -109,7 +109,7 @@ async fn insert(store: &crate::store::Store, frame: &ObservationFrame, lease: &O
 					"tenant",
 					"approval",
 					"approval_type",
-					"workspace_id",
+					"thread_id",
 					"credential_id",
 					"subject",
 					"frame",
@@ -367,7 +367,7 @@ async fn native_observation_recovery_labels_and_tenant_isolation(
 	// must neither multiply this denominator nor replace its observation.
 	let columns = [
 		"run_id",
-		"workspace_id",
+		"thread_id",
 		"credential_id",
 		"subject",
 		"frame",

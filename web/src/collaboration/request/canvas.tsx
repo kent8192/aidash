@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { ArrowRight, Hourglass, Plus } from "lucide-react";
 import type { Discovery, HumanRequest, State, Task } from "../../types";
 import type { Selection } from "../details";
-import type { LocatedRun } from "../workspace-model";
+import type { LocatedRun } from "../thread-model";
 import { useAgentLabel, useEntryLabel, useI18n } from "../../ui";
 import { cn } from "../../lib/utils";
 import { Avatar } from "../avatar";

@@ -231,10 +231,10 @@ pub async fn execute(
 			}
 			json!(request)
 		}
-		"workspace_search" => {
+		"thread_search" => {
 			only_fields(data, &["run_id", "input"])?;
-			let resource = scope.workspace(task.workspace_id).await?;
-			scope.require(&resource, "workspace.read").await?;
+			let resource = scope.thread(task.thread_id).await?;
+			scope.require(&resource, "thread.read").await?;
 			// An image query names a File or a Thread Attachment selection of the
 			// receiving Node's Run, which the Home cannot read.
 			if data["input"]
@@ -242,12 +242,10 @@ pub async fn execute(
 				.is_some_and(|image| !image.is_null())
 			{
 				return Err(Error::Invalid(
-					"a Run executing for another Home searches this Workspace by text only".into(),
+					"a Run executing for another Home searches this Thread by text only".into(),
 				));
 			}
-			scope
-				.workspace_search(task.workspace_id, &data["input"])
-				.await?
+			scope.thread_search(task.thread_id, &data["input"]).await?
 		}
 		"task_assign" => {
 			only_fields(data, &["run_id", "key", "task_id", "policy", "reason"])?;
@@ -309,12 +307,12 @@ pub async fn execute(
 				.await?
 		),
 		"task" => json!(task),
-		"snapshot" => scope.snapshot(task.workspace_id).await?,
+		"snapshot" => scope.snapshot(task.thread_id).await?,
 		"workspace_observation" => {
 			let offset = serde_json::from_value(data["offset"].clone())?;
 			let limit: usize = serde_json::from_value(data["limit"].clone())?;
 			if !(1..=aidash_domain::context::observation::MAX_LIMIT).contains(&limit) {
-				return Err(Error::Invalid("invalid workspace observation limit".into()));
+				return Err(Error::Invalid("invalid thread observation limit".into()));
 			}
 			// A per-step view names its own Run to leave out (#942); older
 			// callers send no key and get every event.
@@ -323,19 +321,19 @@ pub async fn execute(
 				Some(value) => Some(serde_json::from_value(value.clone())?),
 			};
 			scope
-				.observation(task.workspace_id, offset, limit, exclude_run)
+				.observation(task.thread_id, offset, limit, exclude_run)
 				.await?
 		}
-		"workspace_record" | "workspace_record_chunk" => {
+		"thread_record" | "thread_record_chunk" => {
 			let id: Uuid = serde_json::from_value(data["id"].clone())?;
 			let kind = field(data, "kind")?;
-			let record = scope.record(task.workspace_id, kind, id).await?;
-			if input.operation == "workspace_record_chunk" {
+			let record = scope.record(task.thread_id, kind, id).await?;
+			if input.operation == "thread_record_chunk" {
 				let offset = serde_json::from_value(data["offset"].clone())?;
 				let max_chars: usize = serde_json::from_value(data["max_chars"].clone())?;
 				if max_chars > 16000 {
 					return Err(Error::Invalid(
-						"workspace chunk exceeds 16000 characters".into(),
+						"thread chunk exceeds 16000 characters".into(),
 					));
 				}
 				aidash_domain::context::observation::chunk_record(
@@ -360,14 +358,14 @@ pub async fn execute(
 				None | Some(Value::Null) => Search::default(),
 				Some(search) => serde_json::from_value(search.clone())?,
 			};
-			serde_json::to_value(scope.discover(task.workspace_id, &search).await?)?
+			serde_json::to_value(scope.discover(task.thread_id, &search).await?)?
 		}
-		"workspace_children" => {
+		"thread_children" => {
 			let parent: Uuid = serde_json::from_value(data["parent_id"].clone())?;
 			if parent != task.id {
 				return Err(Error::Forbidden);
 			}
-			scope.children(task.workspace_id, parent).await?
+			scope.children(task.thread_id, parent).await?
 		}
 		"claim" => {
 			scope.require(&task_resource, "task.execute").await?;
@@ -439,14 +437,7 @@ pub async fn execute(
 					},
 				)
 				.await?;
-			track(
-				scope,
-				&result,
-				input.grant_id,
-				task.workspace_id,
-				"artifact",
-			)
-			.await?;
+			track(scope, &result, input.grant_id, task.thread_id, "artifact").await?;
 			result.value
 		}
 		"run_abandon_unassigned" => {
@@ -461,7 +452,7 @@ pub async fn execute(
 				.value
 		}
 		"create_task" => {
-			let resource = scope.workspace(task.workspace_id).await?;
+			let resource = scope.thread(task.thread_id).await?;
 			scope.require(&resource, "task.create").await?;
 			let new: NewTask = serde_json::from_value(data["task"].clone())?;
 			if new.parent_id != Some(task.id) {
@@ -469,14 +460,14 @@ pub async fn execute(
 			}
 			for id in &new.dependencies {
 				let dependency = scope.task(*id).await?;
-				if dependency.workspace_id != task.workspace_id {
+				if dependency.thread_id != task.thread_id {
 					return Err(Error::Forbidden);
 				}
 			}
 			let result = scope
 				.apply(context(), Effect::CreateTask { task: &new })
 				.await?;
-			track(scope, &result, input.grant_id, task.workspace_id, "task").await?;
+			track(scope, &result, input.grant_id, task.thread_id, "task").await?;
 			result.value
 		}
 		"delegate" => {
@@ -504,7 +495,7 @@ pub async fn execute(
 				.value
 		}
 		"message" | "run_message_output" => {
-			let resource = scope.workspace(task.workspace_id).await?;
+			let resource = scope.thread(task.thread_id).await?;
 			scope.require(&resource, "message.create").await?;
 			let content = field(data, "content")?;
 			let through = if input.operation == "run_message_output" {
@@ -515,7 +506,7 @@ pub async fn execute(
 			let result = scope
 				.apply(context(), Effect::Message { content, through })
 				.await?;
-			track(scope, &result, input.grant_id, task.workspace_id, "message").await?;
+			track(scope, &result, input.grant_id, task.thread_id, "message").await?;
 			json!({"sent":true})
 		}
 		"run_message_delivery_capability" => json!({"protocol":2}),
@@ -526,7 +517,7 @@ pub async fn execute(
 				task_resource.attributes.clone(),
 			);
 			scope.require(&run, "run.message").await?;
-			let resource = scope.workspace(task.workspace_id).await?;
+			let resource = scope.thread(task.thread_id).await?;
 			scope.require(&resource, "message.create").await?;
 			let key = field(data, "key")?;
 			commands::require_input_key(key, input.admission_id)?;
@@ -584,15 +575,11 @@ pub async fn execute(
 		"run_message_history" => {
 			let offset: usize = serde_json::from_value(data["offset"].clone())?;
 			let rows = scope
-				.history(task.workspace_id, task.id, input.node, offset)
+				.history(task.thread_id, task.id, input.node, offset)
 				.await?;
 			let mut visible = Vec::new();
 			for message in rows {
-				visible.push(
-					scope
-						.record(task.workspace_id, "message", message.id)
-						.await?,
-				);
+				visible.push(scope.record(task.thread_id, "message", message.id).await?);
 			}
 			json!(visible)
 		}
@@ -675,13 +662,13 @@ async fn track(
 	scope: &mut dyn RemoteCommandEffects,
 	result: &Applied,
 	grant: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 ) -> Result<()> {
 	let id = result
 		.output_id
 		.ok_or_else(|| Error::External("remote output identifier missing".into()))?;
-	scope.record_output(grant, workspace, kind, id).await
+	scope.record_output(grant, thread, kind, id).await
 }
 #[cfg(test)]
 mod tests;
@@ -726,7 +713,7 @@ fn require_connection_prompt(prompt: &str) -> Result<()> {
 }
 
 /// Abandoning needs `task.abandon` on each Task for the caller's chain, and a
-/// child of the Run's own Task in its Workspace. Who created it is not asked
+/// child of the Run's own Task in its Thread. Who created it is not asked
 /// here: an earlier Run of the same parent, under another grant, may have, and
 /// the Home re-checks that and everything else inside the row lock.
 async fn require_abandonment(
@@ -736,7 +723,7 @@ async fn require_abandonment(
 ) -> Result<()> {
 	for id in ids {
 		let child = scope.task(*id).await?;
-		if child.workspace_id != parent.workspace_id || child.parent_id != Some(parent.id) {
+		if child.thread_id != parent.thread_id || child.parent_id != Some(parent.id) {
 			return Err(Error::Forbidden);
 		}
 		let resource = scope.task_resource(&child).await?;

@@ -114,7 +114,7 @@ pub async fn dispatched(
 	};
 	scope.commit().await
 }
-/// `corpus_digest` is the Home Workspace corpus read before the retrieval; a
+/// `corpus_digest` is the Home Thread corpus read before the retrieval; a
 /// later reuse step is admitted only while the corpus still has it.
 pub async fn complete(
 	repository: &dyn JournalRepository,
@@ -160,7 +160,7 @@ pub async fn resume(
 	scope: &mut dyn JournalScope,
 	grant: Uuid,
 	admission: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	actor: &str,
 ) -> Result<()> {
 	for record in scope.resume_records(grant, admission).await? {
@@ -174,7 +174,7 @@ pub async fn resume(
 			continue;
 		};
 		scope.resume_record(&record).await?;
-		scope.event(workspace,"semantic.manual_retry",json!({"operation_id":record.id,"grant_id":grant,"admission_id":admission,"cycle":record.cycle+1,"actor":actor,"reason":"authorized_resume"})).await?;
+		scope.event(thread,"semantic.manual_retry",json!({"operation_id":record.id,"grant_id":grant,"admission_id":admission,"cycle":record.cycle+1,"actor":actor,"reason":"authorized_resume"})).await?;
 	}
 	Ok(())
 }

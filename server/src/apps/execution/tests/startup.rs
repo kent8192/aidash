@@ -1,5 +1,5 @@
 use crate::manage::{ManageFixture, native_server, native_worker};
-use aidash_server::apps::workspaces::models::Workspace;
+use aidash_server::apps::workspaces::models::Thread;
 use reinhardt::db::orm::Model;
 use rstest::rstest;
 use serde_json::json;
@@ -26,13 +26,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 	// Act
 	let response = app
 		.client
-		.post(
-			"/api/workspaces",
-			&json!({
-				"title":"Native startup", "goal":"Exercise the real management binary"
-			}),
-			"json",
-		)
+		.post("/api/threads", &json!({"title":"Native startup"}), "json")
 		.await
 		.unwrap();
 	assert_eq!(response.status_code(), 200, "{}", response.text());
@@ -45,17 +39,17 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 		.unwrap();
 	let body = response.json_value().unwrap();
 	let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
-	let workspace = Workspace::objects()
-		.filter(Workspace::field_id().eq(id))
+	let thread = Thread::objects()
+		.filter(Thread::field_id().eq(id))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
 	// Assert
-	assert_eq!(workspace.title, "Native startup");
+	assert_eq!(thread.title, "Native startup");
 	assert_eq!(identity["id"], "aidash://manage-fixture");
 	assert_eq!(
 		app.client
-			.get(&format!("/api/workspaces/{id}?token=fixture-private-query"))
+			.get(&format!("/api/threads/{id}?token=fixture-private-query"))
 			.await
 			.unwrap()
 			.status_code(),
@@ -75,7 +69,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 			"axum_http_requests_total",
 			[
 				"method=\"POST\"",
-				"endpoint=\"/api/workspaces\"",
+				"endpoint=\"/api/threads\"",
 				"status=\"200\"",
 			]
 			.as_slice(),
@@ -85,7 +79,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 			"axum_http_requests_total",
 			[
 				"method=\"GET\"",
-				"endpoint=\"/api/workspaces/{id}\"",
+				"endpoint=\"/api/threads/{id}\"",
 				"status=\"200\"",
 			]
 			.as_slice(),
@@ -93,7 +87,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 		),
 		(
 			"axum_http_requests_pending",
-			["method=\"GET\"", "endpoint=\"/api/workspaces/{id}\""].as_slice(),
+			["method=\"GET\"", "endpoint=\"/api/threads/{id}\""].as_slice(),
 			" 0",
 		),
 	] {
@@ -115,7 +109,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 		response_logs
 			.iter()
 			.any(|line| line.contains("method=\"GET\"")
-				&& line.contains("route=\"/api/workspaces/{id}\"")),
+				&& line.contains("route=\"/api/threads/{id}\"")),
 		"{log}"
 	);
 	assert!(
@@ -152,7 +146,7 @@ async fn manage_runworker_recovers_durable_work_and_exposes_only_probes(
 		aidash_domain::nodes::NodeAddress::derived("aidash://manage-fixture", "manage").to_string();
 	let manifest = json!({"id":id,"coordinator":node,"isolation":"serializable",
 		"deadline":Utc::now()-Duration::seconds(1),"participants":[{"node_id":node,
-		"mutations":[{"kind":"workspace_state","workspace_id":Uuid::new_v4(),"expected_revision":0,"state":{}}]}]});
+		"mutations":[{"kind":"thread_title","thread_id":Uuid::new_v4(),"expected_revision":0,"title":"Committed"}]}]});
 	let typed: aidash_server::transactions::Manifest =
 		serde_json::from_value(manifest.clone()).unwrap();
 	let transaction = AtomicCoordinator::build()

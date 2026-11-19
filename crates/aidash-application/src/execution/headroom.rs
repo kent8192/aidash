@@ -54,7 +54,7 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 }
 
 pub async fn message_limit(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize> {
-	// Retain most of the window for task, workspace observation and tool history.
+	// Retain most of the window for task, thread observation and tool history.
 	Ok((request(scope, run).await? / 4).min(16_384))
 }
 

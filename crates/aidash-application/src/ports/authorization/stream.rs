@@ -26,24 +26,24 @@ pub trait StreamAuthorityStore: Send + Sync {
 	fn reports_status(&self, issuer: &str) -> bool;
 	fn now(&self) -> DateTime<Utc>;
 	/// One unlocked MVCC snapshot; credential expiry remains evaluated by PostgreSQL.
-	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>>;
+	async fn current(&self, thread: Option<Uuid>) -> Result<Option<AuthorityRecord>>;
 }
 #[async_trait]
 pub trait StreamSession: Send + super::visibility::RowOutcome {
-	async fn event_workspaces(&mut self, workspace: Option<Uuid>) -> Result<Vec<Uuid>>;
-	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
+	async fn event_threads(&mut self, thread: Option<Uuid>) -> Result<Vec<Uuid>>;
+	async fn require_thread(&mut self, thread: Uuid, action: &str) -> Result<()>;
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>>;
-	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
+	async fn allowed(&mut self, thread: Uuid, action: &str) -> Result<bool>;
 	async fn stream_rows(
 		&mut self,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 	) -> Result<Vec<Event>>;
 	async fn read_rows(
 		&mut self,
 		cursor: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 		page_size: usize,
 	) -> Result<Vec<Event>>;

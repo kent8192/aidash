@@ -145,7 +145,7 @@ pub async fn authorize(
 		return Err(Error::Forbidden);
 	}
 	// A conversation keeps its approved cluster even when its coordinator omits that cluster.
-	for cluster in scope.cluster_targets(run.workspace_id).await? {
+	for cluster in scope.cluster_targets(run.thread_id).await? {
 		let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
 		scope
 			.catalog(

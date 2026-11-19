@@ -27,12 +27,12 @@ export function nativeMemoryRequest(
 }
 
 export function HomeNativeMemoryFields({
-  workspace,
+  thread,
   entries,
   required = false,
   generated = false,
 }: {
-  workspace: string;
+  thread: string;
   entries: Entry[];
   required?: boolean;
   generated?: boolean;
@@ -43,11 +43,11 @@ export function HomeNativeMemoryFields({
   const [selected, setSelected] = useState("");
   const enabled = required || optional;
   const query = useInfiniteQuery({
-    queryKey: ["memory", workspace, "participants"],
+    queryKey: ["memory", thread, "participants"],
     initialPageParam: "",
     queryFn: ({ pageParam }) =>
       apiFetch<{ items: Participant[]; next: string | null }>(
-        `/api/workspaces/${workspace}/memory/participants${pageParam ? `?after=${encodeURIComponent(pageParam)}` : ""}`,
+        `/api/threads/${thread}/memory/participants${pageParam ? `?after=${encodeURIComponent(pageParam)}` : ""}`,
       ),
     getNextPageParam: (page) => page.next || undefined,
     enabled,
@@ -140,8 +140,8 @@ export function HomeNativeMemoryFields({
           {!query.isPending && !choices.length && (
             <Notice tone="warning" role="status">
               {ja
-                ? "記憶を有効にした論理Agentを、このWorkspaceの記憶画面で作成してください。"
-                : "Create a logical Agent with memory enabled in this Workspace's memory view."}
+                ? "記憶を有効にした論理Agentを、このThreadの記憶画面で作成してください。"
+                : "Create a logical Agent with memory enabled in this Thread's memory view."}
             </Notice>
           )}
           {query.hasNextPage && (

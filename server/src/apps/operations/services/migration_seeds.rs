@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 25] {
+fn assets() -> [(&'static str, String); 29] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -119,6 +119,22 @@ fn assets() -> [(&'static str, String); 25] {
 		(
 			"identity/sql/backward/0098_duty_member_policy.sql",
 			crate::apps::identity::services::duty_actions_backfill::backward(),
+		),
+		(
+			"identity/sql/forward/0110_reply_thread_modes.sql",
+			crate::apps::workspaces::services::thread_backfill::reply_thread_modes(),
+		),
+		(
+			"identity/sql/forward/0111_thread_member_policy.sql",
+			crate::apps::identity::services::thread_policy_backfill::forward(),
+		),
+		(
+			"identity/sql/backward/0111_thread_member_policy.sql",
+			crate::apps::identity::services::thread_policy_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0148_duplicate_areas.sql",
+			crate::apps::workspaces::services::thread_backfill::duplicate_areas(),
 		),
 		(
 			"workspaces/sql/forward/0033_duty_halts.sql",

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 fn entry() -> Entry {
 	Entry {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		key: "stored-key".into(),
 		source: json!({"kind":"memory","text":"saved text"}),
 		agent: Some("stored-agent".into()),
@@ -30,7 +30,7 @@ fn entry() -> Entry {
 fn artifact() -> Artifact {
 	Artifact {
 		id: Uuid::from_u128(6),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		task_id: Uuid::from_u128(7),
 		kind: "data".into(),
 		name: "Saved".into(),
@@ -45,7 +45,7 @@ fn artifact() -> Artifact {
 fn message() -> Message {
 	Message {
 		id: Uuid::from_u128(8),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		sender: "stored-sender".into(),
 		content: "original message bytes\n".into(),
 		idempotency_key: None,
@@ -97,19 +97,19 @@ impl SemanticDisclosureScope for Scope {
 	fn scoped(&self) -> bool {
 		self.scoped
 	}
-	async fn deployment_administrator_visible(&mut self, workspace: Uuid) -> Result<bool> {
-		assert_eq!(workspace, Uuid::from_u128(2));
+	async fn deployment_administrator_visible(&mut self, thread: Uuid) -> Result<bool> {
+		assert_eq!(thread, Uuid::from_u128(2));
 		self.touch("deployment_administrator")?;
 		Ok(self.deployment_administrator)
 	}
-	async fn workspace_resource(&mut self, workspace: Uuid) -> Result<Resource> {
-		assert_eq!(workspace, Uuid::from_u128(2));
-		self.touch("workspace")?;
+	async fn thread_resource(&mut self, thread: Uuid) -> Result<Resource> {
+		assert_eq!(thread, Uuid::from_u128(2));
+		self.touch("thread")?;
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
-			id: workspace.to_string(),
-			attributes: json!({"owner":"saved-owner","workspace_id":workspace}),
+			kind: "thread".into(),
+			id: thread.to_string(),
+			attributes: json!({"owner":"saved-owner","thread_id":thread}),
 		})
 	}
 	fn resource(&mut self, kind: &str, id: &str, attributes: Value) -> Resource {
@@ -130,14 +130,14 @@ impl SemanticDisclosureScope for Scope {
 		self.resources.push((resource.clone(), action.into()));
 		Ok(!self.denied.contains(action))
 	}
-	async fn artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+	async fn artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
 		self.touch("artifact")?;
-		self.lookups.push((id, workspace));
+		self.lookups.push((id, thread));
 		Ok(self.artifact.clone())
 	}
-	async fn message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+	async fn message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		self.touch("message")?;
-		self.lookups.push((id, workspace));
+		self.lookups.push((id, thread));
 		Ok(self.message.clone())
 	}
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
@@ -156,17 +156,17 @@ impl SemanticDisclosureScope for Scope {
 async fn saved_authorship_metadata_selects_current_semantic_policy(mut scope: Scope, entry: Entry) {
 	scope.managed = Some(("original-agent".into(), "2.0.0".into()));
 	assert!(permits(&mut scope, &entry, "semantic.read").await.unwrap());
-	assert_eq!(scope.calls, vec!["workspace", "semantic_policy"]);
+	assert_eq!(scope.calls, vec!["thread", "semantic_policy"]);
 	let (resource, action) = &scope.resources[0];
 	assert_eq!(resource.id, entry.id.to_string());
 	assert_eq!(action, "semantic.read");
 	assert_eq!(
 		resource.attributes,
-		json!({"owner":"saved-owner","workspace_id":entry.workspace_id,"created_by":"saved-author","agent":"stored-agent","metadata":{"stored":true}})
+		json!({"owner":"saved-owner","thread_id":entry.thread_id,"created_by":"saved-author","agent":"stored-agent","metadata":{"stored":true}})
 	);
 }
 #[rstest]
-#[case::semantic("semantic.read",vec!["workspace","semantic_policy"])]
+#[case::semantic("semantic.read",vec!["thread","semantic_policy"])]
 #[tokio::test]
 async fn denied_policy_stops_before_reading_any_source(
 	mut scope: Scope,
@@ -190,13 +190,13 @@ async fn deleted_history_retains_policy_and_skips_revoked_source_decode(
 	entry.deleted = true;
 	entry.source = json!({"removed":true});
 	assert!(permits(&mut scope, &entry, "semantic.read").await.unwrap());
-	assert_eq!(scope.calls, vec!["workspace", "semantic_policy"]);
+	assert_eq!(scope.calls, vec!["thread", "semantic_policy"]);
 }
 #[rstest]
 #[case::allowed(true)]
 #[case::denied(false)]
 #[tokio::test]
-async fn deployment_administrator_disclosure_requires_visible_workspace_before_any_source(
+async fn deployment_administrator_disclosure_requires_visible_thread_before_any_source(
 	mut scope: Scope,
 	mut entry: Entry,
 	#[case] allowed: bool,
@@ -213,7 +213,7 @@ async fn deployment_administrator_disclosure_requires_visible_workspace_before_a
 	scope.calls.clear();
 	let result = source(
 		&mut scope,
-		entry.workspace_id,
+		entry.thread_id,
 		&Source::Memory {
 			text: "saved".into(),
 		},
@@ -309,7 +309,7 @@ async fn absent_or_denied_stored_source_cannot_disclose_content(
 #[case::artifact(true)]
 #[case::message(false)]
 #[tokio::test]
-async fn deployment_administrator_source_checks_workspace_and_retains_query_scope(
+async fn deployment_administrator_source_checks_thread_and_retains_query_scope(
 	mut scope: Scope,
 	#[case] artifact_kind: bool,
 ) {
@@ -363,14 +363,9 @@ async fn active_semantic_read_rechecks_its_saved_underlying_source(
 	assert_eq!(
 		scope.calls,
 		if artifact_kind {
-			vec![
-				"workspace",
-				"semantic_policy",
-				"artifact",
-				"artifact_visible",
-			]
+			vec!["thread", "semantic_policy", "artifact", "artifact_visible"]
 		} else {
-			vec!["workspace", "semantic_policy", "message", "message_visible"]
+			vec!["thread", "semantic_policy", "message", "message_visible"]
 		}
 	);
 }
@@ -385,10 +380,10 @@ async fn malformed_active_source_returns_its_decode_error_after_policy(
 		permits(&mut scope, &entry, "semantic.read").await,
 		Err(Error::Json(_))
 	));
-	assert_eq!(scope.calls, vec!["workspace", "semantic_policy"]);
+	assert_eq!(scope.calls, vec!["thread", "semantic_policy"]);
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::semantic("semantic_policy")]
 #[case::artifact("artifact")]
 #[case::artifact_visibility("artifact_visible")]

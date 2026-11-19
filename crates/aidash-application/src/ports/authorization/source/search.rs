@@ -31,16 +31,16 @@ pub trait SemanticSearchScope: Send {
 	/// Select worker audit context and the grant for all inherited source reads.
 	fn disclosure_mode(&mut self, grant: Uuid) -> Result<()>;
 	async fn disclosure_task(&mut self, task: Uuid) -> Result<Task>;
-	async fn input_message(&mut self, workspace: Uuid, message: Uuid) -> Result<Message>;
+	async fn input_message(&mut self, thread: Uuid, message: Uuid) -> Result<Message>;
 	/// Retain the shared index lock, decoding native configuration defaults.
-	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec>;
-	/// The current corpus digest of the Description's Workspace and, with
+	async fn index_spec(&mut self, thread: Uuid) -> Result<IndexingSpec>;
+	/// The current corpus digest of the Description's Thread and, with
 	/// native memory, of the Home participant's banks, read through this
 	/// scope's own lease transaction.
 	async fn corpus_digest(&mut self, description: &Description) -> Result<String>;
 	async fn prepare_search(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &Search,
 		controls: &AgentConfig,
 	) -> Result<PreparedSearch>;

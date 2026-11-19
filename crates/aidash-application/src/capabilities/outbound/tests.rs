@@ -203,7 +203,7 @@ impl OutboundScope for Scope {
 		}
 		Ok(AuthorizedRun {
 			id: Uuid::from_u128(4),
-			workspace_id: Uuid::from_u128(5),
+			thread_id: Uuid::from_u128(5),
 		})
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
@@ -231,7 +231,7 @@ impl OutboundScope for Scope {
 	}
 	async fn event(&mut self, run: &AuthorizedRun, id: Uuid, status: u16) -> Result<()> {
 		assert_eq!(run.id, Uuid::from_u128(4));
-		assert_eq!(run.workspace_id, Uuid::from_u128(5));
+		assert_eq!(run.thread_id, Uuid::from_u128(5));
 		assert_eq!(id, Uuid::from_u128(1));
 		assert_eq!(status, 201);
 		let mut state = self.state.lock().unwrap();

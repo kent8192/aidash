@@ -24,9 +24,9 @@ pub async fn grant(
 }
 
 async fn workspace_read(scope: &mut dyn ExecutionGrantSession, run: &RunMetadata) -> Result<()> {
-	let workspace = scope.workspace(run.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
-	scope.require(&workspace, "workspace.read").await
+	let thread = scope.thread(run.thread_id).await?;
+	scope.set_context(thread.attributes.clone());
+	scope.require(&thread, "thread.read").await
 }
 
 pub async fn bind_worker(

@@ -23,7 +23,7 @@ use uuid::Uuid;
 #[async_trait]
 pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 	/// The address of the Home Node that issued the grant, known once the
-	/// task's Workspace has been read in this scope.
+	/// task's Thread has been read in this scope.
 	fn home_address(&self) -> String;
 	/// What the Home's Node Registration of `receiver` asks it to let this grant's
 	/// Runs use (ADR 0139), read now. `None` when the Home registers no such Node,
@@ -49,8 +49,8 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 		reason: &str,
 	) -> Result<()>;
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()>;
-	/// A Subnode Workspace may delegate only to its local members.
-	async fn require_non_subnode_workspace(&mut self, workspace: Uuid) -> Result<()>;
+	/// A Subnode Thread may delegate only to its local members.
+	async fn require_non_subnode_thread(&mut self, thread: Uuid) -> Result<()>;
 	async fn command_lock(&mut self, id: Uuid) -> Result<()>;
 	async fn current_grant(&mut self, id: Uuid) -> Result<Grant>;
 	async fn live(&mut self, id: Uuid) -> Result<bool>;
@@ -73,7 +73,7 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 	async fn persist_semantic(&mut self, id: Uuid, semantic: &Value) -> Result<()>;
 	async fn revocation_grant(&mut self, task: Uuid, id: Uuid) -> Result<Option<Grant>>;
 	async fn revoke_locked(&mut self, id: Uuid) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 }
 #[async_trait]
 pub trait GrantRepository: Send + Sync {

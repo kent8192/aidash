@@ -12,8 +12,8 @@ pub struct TaskDependency {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	/// Denormalized business reference; the typed relation is authoritative.
-	#[field(db_column = "workspace_id")]
-	pub workspace_key: uuid::Uuid,
+	#[field(db_column = "thread_id")]
+	pub thread_key: uuid::Uuid,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(primary_key = true, db_column = "dependency_id", field_type = "uuid")]
 	pub dependency_key: uuid::Uuid,

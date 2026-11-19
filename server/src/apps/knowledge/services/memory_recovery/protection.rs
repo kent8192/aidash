@@ -99,7 +99,7 @@ async fn inventory(store: &Store, cut: DateTime<Utc>) -> Result<Vec<BankState>> 
 		let rows = native::query(
 			&Query::select()
 				.columns(
-					["id", "home", "tenant", "workspace_id", "participant_id"]
+					["id", "home", "tenant", "thread_id", "participant_id"]
 						.map(|column| (Alias::new("b"), Alias::new(column))),
 				)
 				.columns(
@@ -161,7 +161,7 @@ async fn inventory(store: &Store, cut: DateTime<Utc>) -> Result<Vec<BankState>> 
 				bank: Bank {
 					home: row.try_get("home")?,
 					tenant: row.try_get("tenant")?,
-					workspace: row.try_get("workspace_id")?,
+					thread: row.try_get("thread_id")?,
 					participant: row.try_get("participant_id")?,
 				},
 				provider: EntityRef {
@@ -581,7 +581,7 @@ pub async fn reconcile_all(
 		}
 		let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
 		let result: Result<()> = async {
-			repository::lock_workspace(&mut lease, bank.bank.workspace, true).await?;
+			repository::lock_thread(&mut lease, bank.bank.thread, true).await?;
 			let id = repository::bank_id(&mut lease, &bank.bank, false)
 				.await?
 				.ok_or(Error::Forbidden)?;

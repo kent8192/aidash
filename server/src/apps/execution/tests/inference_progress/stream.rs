@@ -343,7 +343,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 	match revocation {
 		Revocation::RunRead => {
 			let mut denied = common::policy(c.f.config.deployment.as_str());
-			denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[c.run.workspace_id]}}));
+			denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[c.run.thread_id]}}));
 			let (status, value) = request(
 				&c.app,
 				deployment_administrator,
@@ -457,7 +457,7 @@ async fn deployment_administrators_cannot_open_or_resume_the_inference_stream(
 	c.text(worker, attempt, "private progress").await;
 	let administrator = common::BrowserAdministrator::new(&c.f).await;
 	let run_stream = format!("/api/runs/{}/inference/stream", c.run.id);
-	let workspace = c.run.workspace_id;
+	let thread = c.run.thread_id;
 
 	// Act and Assert: every cursor of the Run stream is refused.
 	for (query, last_event_id) in [
@@ -501,8 +501,8 @@ async fn deployment_administrators_cannot_open_or_resume_the_inference_stream(
 	// The Tenant's events and event stream, replayed from a cursor, refuse it too.
 	for path in [
 		"/api/events".to_owned(),
-		format!("/api/events?workspace_id={workspace}&after=0"),
-		format!("/api/events/stream?workspace_id={workspace}"),
+		format!("/api/events?thread_id={thread}&after=0"),
+		format!("/api/events/stream?thread_id={thread}"),
 	] {
 		let (status, body) = if browser {
 			administrator.send("GET", &path, Value::Null).await

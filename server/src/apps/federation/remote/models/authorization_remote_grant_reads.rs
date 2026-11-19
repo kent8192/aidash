@@ -20,7 +20,7 @@ pub struct AuthorizationRemoteGrantRead {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[field(primary_key = true, field_type = "text")]
 	pub resource_kind: String,
 	#[field(primary_key = true, field_type = "uuid")]
@@ -31,7 +31,7 @@ impl AuthorizationRemoteGrantRead {
 	pub(crate) async fn record_sources(
 		tx: &mut dyn TransactionExecutor,
 		grant: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
 		let tenant =
@@ -44,7 +44,7 @@ impl AuthorizationRemoteGrantRead {
 				.columns(
 					[
 						"grant_id",
-						"workspace_id",
+						"thread_id",
 						"resource_kind",
 						"resource_id",
 						"tenant",
@@ -52,18 +52,13 @@ impl AuthorizationRemoteGrantRead {
 					.map(Alias::new),
 				)
 				.on_conflict(
-					OnConflict::columns([
-						"grant_id",
-						"workspace_id",
-						"resource_kind",
-						"resource_id",
-					])
-					.do_nothing(),
+					OnConflict::columns(["grant_id", "thread_id", "resource_kind", "resource_id"])
+						.do_nothing(),
 				);
 			for (kind, id) in chunk {
 				query.values_panic([
 					IntoValue::into_value(grant),
-					IntoValue::into_value(workspace),
+					IntoValue::into_value(thread),
 					IntoValue::into_value(kind),
 					IntoValue::into_value(*id),
 					IntoValue::into_value(tenant.as_str()),

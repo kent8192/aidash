@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-	authorization::{identity::Actor, workspace::Workspaces},
+	authorization::{identity::Actor, thread::Threads},
 	dashboard_auth::BrowserOrigin,
 	domain::Event,
 	federation::Federation,
@@ -183,10 +183,10 @@ impl<T> Stream for EventStream<T> {
 #[derive(Clone)]
 struct Context {
 	f: Federation,
-	scope: Workspaces,
+	scope: Threads,
 	browser: Option<BrowserOrigin>,
 	headers: HeaderMap,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	service: Service,
 }
 impl Context {
@@ -233,7 +233,7 @@ impl Context {
 			.checks
 			.fetch_add(1, Ordering::Relaxed);
 		metrics::counter!("aidash_sse_authority_checks_total").increment(1);
-		self.scope.stream_authority(self.workspace).await?;
+		self.scope.stream_authority(self.thread).await?;
 		if browser
 			&& !self
 				.browser_authorized(aidash_application::ports::accounts::Recheck::Online)
@@ -325,7 +325,7 @@ pub(crate) struct StreamRequest {
 	pub browser: Option<BrowserOrigin>,
 	pub headers: HeaderMap,
 	pub cursor: i64,
-	pub workspace: Option<Uuid>,
+	pub thread: Option<Uuid>,
 	pub lease: Option<crate::http::SseLeaseHandle>,
 }
 
@@ -336,17 +336,17 @@ impl Service {
 			browser,
 			headers,
 			mut cursor,
-			workspace,
+			thread,
 			lease,
 		} = request;
 		// Register before validation/high-water lookup/initial read.
-		let observation = self.register(workspace);
+		let observation = self.register(thread);
 		// The event stream is Tenant content: an administrator reads none (#484).
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
 		let tenancy = identity.tenancy()?;
-		let scope = Workspaces {
+		let scope = Threads {
 			store: f.store.clone(),
 			identity,
 		};
@@ -355,7 +355,7 @@ impl Service {
 			scope,
 			browser,
 			headers,
-			workspace,
+			thread,
 			service: self.clone(),
 		};
 		context.authority(true).await?;
@@ -511,7 +511,7 @@ async fn read(
 		control.waiting_for_gate(&context.service, false);
 		let (events, scanned, more) = context
 			.scope
-			.stream_page(cursor, context.workspace, || {
+			.stream_page(cursor, context.thread, || {
 				context.service.record_read(reasons)
 			})
 			.await?;

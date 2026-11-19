@@ -1014,28 +1014,26 @@ async fn incident_history_keeps_the_latest_events_in_display_order(
 
 #[rstest::fixture]
 async fn trust_run_backlog(
-	#[default("workspace.read")] denied_action: &str,
+	#[default("thread.read")] denied_action: &str,
 	#[future(awt)] workbench: Workbench,
 ) -> (Workbench, Value) {
 	let wb = workbench;
 	wb.register().await;
 	let visible =
 		wb.f.store
-			.create_workspace(
+			.create_thread(
 				&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 				"alice",
 				"Visible history",
-				"Fixture",
 			)
 			.await
 			.unwrap();
 	let hidden =
 		wb.f.store
-			.create_workspace(
+			.create_thread(
 				&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 				"alice",
 				"Hidden history",
-				"Fixture",
 			)
 			.await
 			.unwrap();
@@ -1043,7 +1041,7 @@ async fn trust_run_backlog(
 	let hidden = serde_json::to_value(hidden).unwrap();
 	let mut hidden_runs = Vec::new();
 	for n in 0..502 {
-		let workspace = uuid::Uuid::parse_str(if n == 0 {
+		let thread = uuid::Uuid::parse_str(if n == 0 {
 			visible["id"].as_str().unwrap()
 		} else {
 			hidden["id"].as_str().unwrap()
@@ -1053,7 +1051,7 @@ async fn trust_run_backlog(
 			wb.f.store
 				.create_task(
 					&TEST_FIXTURE,
-					workspace,
+					thread,
 					&aidash_server::domain::NewTask {
 						title: "History".into(),
 						description: "Fixture".into(),
@@ -1072,7 +1070,7 @@ async fn trust_run_backlog(
 				[
 					"id",
 					"task_id",
-					"workspace_id",
+					"thread_id",
 					"home_node",
 					"node",
 					"agent_id",
@@ -1088,13 +1086,13 @@ async fn trust_run_backlog(
 					.expr(Expr::cust("$2"))
 					.expr(Expr::cust("$3"))
 					.expr(Expr::cust(
-						"$4 || '/' || (SELECT node FROM workspaces WHERE id = $3)",
+						"$4 || '/' || (SELECT node FROM threads WHERE id = $3)",
 					))
-					.expr(Expr::cust("(SELECT node FROM workspaces WHERE id = $3)"))
+					.expr(Expr::cust("(SELECT node FROM threads WHERE id = $3)"))
 					.expr(Expr::cust("$5"))
 					.expr(Expr::cust("'1.0.0'"))
 					.expr(Expr::cust("'COMPLETED'"))
-					.expr(Expr::cust("(SELECT tenant FROM workspaces WHERE id = $3)"))
+					.expr(Expr::cust("(SELECT tenant FROM threads WHERE id = $3)"))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder);
@@ -1105,22 +1103,22 @@ async fn trust_run_backlog(
 		sqlx::query(&query)
 			.bind(run_id)
 			.bind(task.id)
-			.bind(workspace)
+			.bind(thread)
 			.bind(wb.f.config.deployment.as_str())
 			.bind(wb.draft["entry"]["id"].as_str().unwrap())
 			.execute(wb.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
-	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"hidden-workspace","effect":"deny","subjects":{"any":true},"actions":[denied_action],"resources":{"kinds":[if denied_action == "workspace.read" {"workspace"} else {"run"}],"ids":if denied_action == "workspace.read" {json!([hidden["id"]])} else {json!(hidden_runs)}}}]}})).await.0,200);
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"hidden-thread","effect":"deny","subjects":{"any":true},"actions":[denied_action],"resources":{"kinds":[if denied_action == "thread.read" {"thread"} else {"run"}],"ids":if denied_action == "thread.read" {json!([hidden["id"]])} else {json!(hidden_runs)}}}]}})).await.0,200);
 	(wb, visible)
 }
 
 #[rstest::rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("run.read")]
 #[tokio::test]
-async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
+async fn trust_inspection_reaches_older_runs_in_authorized_threads(
 	#[case] _denied_action: &str,
 	#[future(awt)]
 	#[with(_denied_action)]
@@ -1141,11 +1139,11 @@ async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
 	.await
 	.expect("Trust inspection must not wait on its own audit lease");
 	assert_eq!(
-		inspection["workspaces"].as_array().unwrap().len(),
+		inspection["threads"].as_array().unwrap().len(),
 		1,
 		"inspection: {inspection}"
 	);
-	assert_eq!(inspection["workspaces"][0]["workspace_id"], visible["id"]);
+	assert_eq!(inspection["threads"][0]["thread_id"], visible["id"]);
 	assert_eq!(inspection["usage_truncated"], false);
 	wb.cleanup().await;
 }

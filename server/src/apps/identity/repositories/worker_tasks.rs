@@ -26,7 +26,7 @@ pub(crate) struct WorkerTasks<'a> {
 }
 #[async_trait]
 impl WorkerTaskScope for WorkerTasks<'_> {
-	async fn subnode_members(&mut self, workspace: Uuid) -> Result<Option<Vec<EntityRef>>> {
+	async fn subnode_members(&mut self, thread: Uuid) -> Result<Option<Vec<EntityRef>>> {
 		use crate::apps::execution::models::subnodes::{SubnodeMemberRecord, SubnodeRecord};
 		let tenant = self.access.identity.tenant.clone();
 		let result: NativeResult<Option<Vec<EntityRef>>> = async {
@@ -36,7 +36,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("subnodes"))
 				.and_where(Expr::col("tenant").eq(tenant.clone()))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.lock(LockType::Update)
 				.build(PostgresQueryBuilder);
 			let row = self
@@ -111,15 +111,15 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			.record_output_in(
 				&mut self.access.tx,
 				Some(source.id),
-				source.workspace_id,
+				source.thread_id,
 				kind,
 				id,
 			)
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -127,22 +127,22 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()> {
+	async fn related_tasks(&mut self, thread: Uuid, input: &NewTask) -> Result<()> {
 		self.access
-			.related_tasks(workspace, input)
+			.related_tasks(thread, input)
 			.await
 			.map_err(Into::into)
 	}
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: &str,
 	) -> Result<Task> {
 		self.federation
 			.store
-			.create_task_in(&mut self.access.tx, workspace, input, creator, Some(key))
+			.create_task_in(&mut self.access.tx, thread, input, creator, Some(key))
 			.await
 			.map_err(Into::into)
 	}
@@ -162,13 +162,13 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn task_workspace(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+	async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>> {
 		let result: NativeResult<Option<Uuid>> = async {
 			Ok({
 				let query_bind_1 = task;
 				crate::database::native::query_scalar(
 					&Query::select()
-						.column(Alias::new("workspace_id"))
+						.column(Alias::new("thread_id"))
 						.from(Alias::new("tasks"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(

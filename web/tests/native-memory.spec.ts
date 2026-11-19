@@ -6,7 +6,7 @@ import {
   tenantSubject,
 } from "./registry-fixture";
 
-const workspace = "019c0000-0000-7000-8000-000000000001";
+const thread = "019c0000-0000-7000-8000-000000000001";
 const participant = "019c0000-0000-7000-8000-000000000002";
 const task = "019c0000-0000-7000-8000-000000000003";
 const source = "019c0000-0000-7000-8000-000000000004";
@@ -59,7 +59,7 @@ async function fixture(
   const bank = {
     home: "aidash://test",
     tenant: "acme",
-    workspace,
+    thread,
     participant,
   };
   const state = {
@@ -70,9 +70,9 @@ async function fixture(
       protocol_version: "0.1",
       key: null,
     },
-    workspaces: [
+    threads: [
       {
-        id: workspace,
+        id: thread,
         title: "Memory fixture",
         goal: "Current evidence",
         state: {},
@@ -83,7 +83,7 @@ async function fixture(
     tasks: [
       {
         id: task,
-        workspace_id: workspace,
+        thread_id: thread,
         title: "Assigned task",
         description: "Use current memory",
         status: "OPEN",
@@ -122,7 +122,7 @@ async function fixture(
     artifacts: [],
     conversations: [],
     next_cursors: {
-      workspaces: null,
+      threads: null,
       tasks: null,
       runs: null,
       artifacts: null,
@@ -691,7 +691,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         kind: "unit",
         id: source,
         revision: 4,
-        bank: { home: "aidash://test", tenant: "acme", workspace, participant },
+        bank: { home: "aidash://test", tenant: "acme", thread, participant },
       },
     ]);
     expect(saved.verification).toBe("unverified");

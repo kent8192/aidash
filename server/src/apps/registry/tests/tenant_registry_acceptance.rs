@@ -188,8 +188,8 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 	.await;
 	let response = owner
 		.post(
-			"/api/conversations",
-			&json!({"title":"Mine","goal":"Use my agent","target":{"id":"helper","version":"1.1.0"},"target_kind":"agent"}),
+			"/api/threads",
+			&json!({"title":"Mine","request":"Use my agent","target":{"id":"helper","version":"1.1.0"},"target_kind":"agent"}),
 			"json",
 		)
 		.await
@@ -1401,9 +1401,9 @@ async fn marketplace_copy_is_local_and_recall_survives_disconnect(
 		.await
 		.unwrap();
 	let scope = TenancyScope::tenant("acme").unwrap();
-	let workspace = runtime
+	let thread = runtime
 		.store
-		.create_workspace(&scope, "owner", "Marketplace", "Recall acceptance")
+		.create_thread(&scope, "owner", "Marketplace")
 		.await
 		.unwrap();
 	let task_input: aidash_domain::NewTask = serde_json::from_value(
@@ -1412,7 +1412,7 @@ async fn marketplace_copy_is_local_and_recall_survives_disconnect(
 	.unwrap();
 	let first = runtime
 		.store
-		.create_task(&scope, workspace.id, &task_input, "owner", None)
+		.create_task(&scope, thread.id, &task_input, "owner", None)
 		.await
 		.unwrap();
 	let aidash_server::authorization::identity::Actor::Subject(identity) =
@@ -1447,7 +1447,7 @@ async fn marketplace_copy_is_local_and_recall_survives_disconnect(
 	tx.commit().await.unwrap();
 	let expired = runtime
 		.store
-		.create_task(&scope, workspace.id, &task_input, "owner", None)
+		.create_task(&scope, thread.id, &task_input, "owner", None)
 		.await
 		.unwrap();
 	let denied = aidash_server::authorization::services::execution::claim(
@@ -1493,7 +1493,7 @@ async fn marketplace_copy_is_local_and_recall_survives_disconnect(
 	drop(remote);
 	let second = runtime
 		.store
-		.create_task(&scope, workspace.id, &task_input, "owner", None)
+		.create_task(&scope, thread.id, &task_input, "owner", None)
 		.await
 		.unwrap();
 	let rejected = aidash_server::authorization::services::execution::claim(

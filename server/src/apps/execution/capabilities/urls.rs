@@ -138,8 +138,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::restore)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(super::views::management::restore_new_thread)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::transfer_status)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::transfer_history)

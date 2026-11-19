@@ -15,7 +15,7 @@ fn run() -> RunMetadata {
 	RunMetadata {
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "creator".into(),
@@ -163,7 +163,7 @@ impl CreateScope for Scope {
 				})
 				.collect(),
 			allowance: input.allowance.clone(),
-			workspace_id: Uuid::from_u128(5),
+			thread_id: Uuid::from_u128(5),
 			title: input.title.clone(),
 			state: State::Active,
 			created_at: now,
@@ -322,7 +322,7 @@ impl Management {
 					added_at: now,
 				}],
 				allowance: Allowance::default(),
-				workspace_id: Uuid::from_u128(5),
+				thread_id: Uuid::from_u128(5),
 				title: None,
 				state: State::Active,
 				created_at: now,
@@ -390,7 +390,7 @@ async fn management_requires_creator_or_member_and_preserves_leader() {
 	let id = scope.subnode.id;
 	let mut member = run();
 	member.id = Uuid::from_u128(9);
-	member.workspace_id = scope.subnode.workspace_id;
+	member.thread_id = scope.subnode.thread_id;
 	member.agent_id = "leader".into();
 	let mut outsider = member.clone();
 	outsider.agent_id = "outsider".into();

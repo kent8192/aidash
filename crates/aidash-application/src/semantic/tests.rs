@@ -19,7 +19,7 @@ struct State {
 	restore_denial: Option<&'static str>,
 	exists: bool,
 	locked: bool,
-	workspace_denied: bool,
+	thread_denied: bool,
 	write: bool,
 	read: bool,
 	authority: Value,
@@ -56,7 +56,7 @@ impl Default for Fixture {
 			restore_denial: None,
 			exists: true,
 			locked: true,
-			workspace_denied: false,
+			thread_denied: false,
 			write: true,
 			read: true,
 			current: authority.clone(),
@@ -70,7 +70,7 @@ impl Default for Fixture {
 			},
 			entry: IndexingEntry {
 				id: Uuid::from_u128(1),
-				workspace_id: Uuid::from_u128(2),
+				thread_id: Uuid::from_u128(2),
 				source: json!({"kind":"memory","text":"source text"}),
 				revision: 3,
 				point_id: Uuid::from_u128(4),
@@ -174,8 +174,7 @@ impl SemanticIndexingRepository for Fixture {
 	async fn initial(&self, _: Uuid) -> Result<Option<(Uuid, Value)>> {
 		self.record("initial")?;
 		let s = self.0.lock().unwrap();
-		Ok(s.exists
-			.then(|| (s.entry.workspace_id, s.authority.clone())))
+		Ok(s.exists.then(|| (s.entry.thread_id, s.authority.clone())))
 	}
 	async fn restore(&self, _: Uuid, _: &Value) -> Result<Box<dyn SemanticIndexingSession>> {
 		self.record("restore")?;
@@ -215,9 +214,9 @@ impl SemanticIndexingSession for Session {
 	fn durable(&mut self) {
 		self.fixture.record("durable").unwrap();
 	}
-	async fn workspace_write(&mut self, _: Uuid) -> Result<()> {
-		self.fixture.record("workspace")?;
-		if self.fixture.0.lock().unwrap().workspace_denied {
+	async fn thread_write(&mut self, _: Uuid) -> Result<()> {
+		self.fixture.record("thread")?;
+		if self.fixture.0.lock().unwrap().thread_denied {
 			Err(Error::Forbidden)
 		} else {
 			Ok(())
@@ -460,9 +459,9 @@ impl VectorIndex for Fixture {
 #[tokio::test]
 async fn indexing_uses_both_permissions_and_commits_ready_after_external_acknowledgement() {
 	let f = Fixture::default();
-	let (id, workspace) = {
+	let (id, thread) = {
 		let s = f.0.lock().unwrap();
-		(s.entry.id, s.entry.workspace_id)
+		(s.entry.id, s.entry.thread_id)
 	};
 	assert!(process(&f, &f, id).await.unwrap());
 	assert_eq!(
@@ -471,7 +470,7 @@ async fn indexing_uses_both_permissions_and_commits_ready_after_external_acknowl
 			"initial",
 			"restore",
 			"durable",
-			"workspace",
+			"thread",
 			"plan",
 			"entry",
 			"authority",
@@ -491,7 +490,7 @@ async fn indexing_uses_both_permissions_and_commits_ready_after_external_acknowl
 	assert_eq!(
 		f.0.lock().unwrap().payload,
 		Some(
-			json!({"entry_id":id,"revision":3,"index_revision":7,"workspace_id":workspace,"tenant":"tenant"})
+			json!({"entry_id":id,"revision":3,"index_revision":7,"thread_id":thread,"tenant":"tenant"})
 		)
 	);
 }
@@ -511,7 +510,7 @@ async fn revoked_saved_authority_retires_only_the_exact_persisted_authority(
 #[rstest]
 #[case::initial("initial")]
 #[case::restore("restore")]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::plan("plan")]
 #[case::entry("entry")]
 #[case::authority("authority")]
@@ -560,7 +559,7 @@ async fn deleted_busy_or_rebound_entries_are_not_indexed(
 	assert!(!f.has("revoked:source authority revoked or source removed"));
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::write("write")]
 #[case::read("read")]
 #[case::source("source")]
@@ -573,7 +572,7 @@ async fn unavailable_authority_source_or_index_retires_vectors_without_external_
 	{
 		let mut s = f.0.lock().unwrap();
 		match reason {
-			"workspace" => s.workspace_denied = true,
+			"thread" => s.thread_denied = true,
 			"write" => s.write = false,
 			"read" => s.read = false,
 			"source" => s.text = None,
@@ -591,7 +590,7 @@ async fn unavailable_authority_source_or_index_retires_vectors_without_external_
 	} else {
 		"revoked:source authority revoked or source removed"
 	}));
-	if reason == "workspace" {
+	if reason == "thread" {
 		assert!(!f.has("semantic.write"));
 	}
 	if reason == "write" {
@@ -877,7 +876,7 @@ async fn working_image_is_embedded_as_image_without_storing_bytes_in_vector_payl
 			"entry_id": Uuid::from_u128(1),
 			"revision": 3,
 			"index_revision": 7,
-			"workspace_id": Uuid::from_u128(2),
+			"thread_id": Uuid::from_u128(2),
 			"tenant": "tenant"
 		})
 	);

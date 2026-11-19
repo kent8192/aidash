@@ -30,7 +30,7 @@ fn asks(fixture: &mut Fixture, deadline: Option<i64>) -> Uuid {
 fn journal(fixture: &Fixture, request: Uuid, kind: &str, response: Option<Value>) {
 	*fixture.backend.0.human.lock().unwrap() = Some(HumanRequest {
 		id: request,
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: kind.into(),
 		prompt: "Which one?".into(),

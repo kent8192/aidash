@@ -60,11 +60,7 @@ async fn native_frontend_serves_assets_shell_routes_head_and_conditional_request
 	let fixture = Box::pin(frontend).await;
 	let client = &fixture.app.anonymous;
 	// Act / Assert
-	for path in [
-		"/",
-		"/workspaces/fixture",
-		"/workspaces/fixture?view=threads",
-	] {
+	for path in ["/", "/threads/fixture", "/threads/fixture?view=threads"] {
 		let response = client.get(path).await.unwrap();
 		assert_eq!(response.status_code(), 200, "{path}: {}", response.text());
 		assert_eq!(response.content_type(), Some("text/html"));
@@ -128,7 +124,7 @@ async fn frontend_fallback_preserves_api_boundaries_and_missing_asset_errors(
 		);
 	}
 	let response = client
-		.post("/workspaces/fixture", &json!({}), "json")
+		.post("/threads/fixture", &json!({}), "json")
 		.await
 		.unwrap();
 	assert_eq!(response.status_code(), 405);

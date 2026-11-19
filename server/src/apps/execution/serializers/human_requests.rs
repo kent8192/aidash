@@ -9,7 +9,7 @@ impl From<HumanRequestRecord> for HumanRequest {
 			run_id: record.run_id(),
 			answered_by: record.answered_by,
 			id: record.id,
-			workspace_id: record.workspace_id,
+			thread_id: record.thread_id,
 			kind: match record.kind {
 				HumanRequestKind::Question => "QUESTION",
 				HumanRequestKind::ApprovalRequired => "APPROVAL_REQUIRED",

@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn tenant_memory_scope_widens_only_for_the_same_agent_and_tenant() {
-	assert!(SharingScope::Workspace.permits(true, true, false));
-	assert!(!SharingScope::Workspace.permits(true, false, true));
+	assert!(SharingScope::Thread.permits(true, true, false));
+	assert!(!SharingScope::Thread.permits(true, false, true));
 	assert!(SharingScope::TenantAgent.permits(true, false, true));
 	assert!(!SharingScope::TenantAgent.permits(true, false, false));
 	assert!(!SharingScope::TenantAgent.permits(false, true, true));
@@ -86,7 +86,7 @@ fn unit(id: u128) -> Unit {
 		bank: Bank {
 			home: "home".into(),
 			tenant: "tenant".into(),
-			workspace: Uuid::from_u128(100),
+			thread: Uuid::from_u128(100),
 			participant: Some(Uuid::from_u128(101)),
 		},
 		revision: 1,
@@ -130,7 +130,7 @@ fn recovery_fences_never_lower_revisions_or_revive_deleted_identities() {
 	corrected.revision = 4;
 	assert!(ledger.observe(&corrected).is_err());
 	let mut other = unit(1);
-	other.bank.workspace = Uuid::new_v4();
+	other.bank.thread = Uuid::new_v4();
 	other.revision = 4;
 	other.deleted = true;
 	assert!(ledger.observe(&other).is_err());
@@ -697,7 +697,7 @@ fn graph_resolves_explicit_multilingual_aliases_and_occurrence_edges_with_curren
 	}];
 	let mut other_bank = alias.clone();
 	other_bank.id = Uuid::from_u128(5);
-	other_bank.bank.workspace = Uuid::from_u128(999);
+	other_bank.bank.thread = Uuid::from_u128(999);
 	let mut other_kind = alias.clone();
 	other_kind.id = Uuid::from_u128(6);
 	other_kind.content.entities[0].category = "person".into();

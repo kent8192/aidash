@@ -25,7 +25,7 @@ pub struct Snapshot {
 #[derive(Clone)]
 pub struct Area {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub generation: i64,
 	pub revision: i64,
 	pub epoch: i64,

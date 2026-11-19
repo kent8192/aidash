@@ -295,7 +295,7 @@ other than the Agent's own tools and the builtins is kept only as
 `fixture_service`, fixture tools point at an unroutable endpoint and their Tool
 call approvals are denied. With that approval, only the exact synthetic service
 and task/alias allowlist can receive calls. Usage Records have no HTTP read
-endpoint, so the live manifest's token counts come from Workspace events (at
+endpoint, so the live manifest's token counts come from Thread events (at
 most the latest 100) and do not price anything. Complete ledger imports supply
 the separate campaign report. No live-provider campaign was run for the
 [2026-10-24 report](evaluation/projection-comparison-2026-10-24.md).
@@ -364,7 +364,7 @@ prompt whole, so validation can regrade the oracle.
 
 A comparison changes only Agent definition fields; the task, its inputs, its
 oracle and the evaluator stay identical, and each arm gets its own Agent
-version and Workspaces. An arm may set only `projection_version`,
+version and Threads. An arm may set only `projection_version`,
 `prompt_cache` and `exposure`: the model, step limit, bindings and
 instructions come from the task, so live authorization and spend reservations
 price the Agent that actually runs. The corpus is refused otherwise. Live
@@ -563,7 +563,7 @@ actions and expected corrections. Its `evidence` is one of:
 - `deterministic-api`: the actions run through the authorized
   `memory/units/mutate` and `memory/units/query` endpoints with no model call,
   once per memory policy variant (`baseline-policy` and `decay-policy`), each
-  in a new Workspace and participant bank. The manifest records each variant's
+  in a new Thread and participant bank. The manifest records each variant's
   bank and seed digest and checks that seeds are equal and banks distinct.
   These scenarios detect silent replacement from a clipped preview, lost
   concurrent writes, replay side effects, tombstone resurrection and reuse after
@@ -591,7 +591,7 @@ utility; this branch measures only the first deterministically.
 - Synthetic token counts, prices and cache hits.
 - Summary recovery (#113) and parallel read tools (#119) are on this branch
   but not compared yet; both are reported as `not-measured`.
-- Live token counts come from Workspace events, capped at the latest 100; live
+- Live token counts come from Thread events, capped at the latest 100; live
   spend is enforced from full per-Run reservations, not measured cost, and the
   provider-reported model identity is not recorded.
 - The live tier cannot grade `python-tests` tasks until a container runner

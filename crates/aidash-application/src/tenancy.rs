@@ -119,7 +119,7 @@ pub enum DeploymentScopeReason {
 	/// Resolving an inbound peer's local Tenant, until #241 gives every Node a
 	/// Tenant.
 	FederationInbound,
-	/// Finding the Tenant of a Run, a Workspace or a remote operation from the
+	/// Finding the Tenant of a Run, a Thread or a remote operation from the
 	/// row that records it, when the caller names only an id.
 	RunTenant,
 	/// Resolve the Tenant of a Scratch Space named by an operator.

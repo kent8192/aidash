@@ -103,7 +103,7 @@ mod tests {
 
 	fn result(unconfirmed: Vec<crate::unconfirmed::Unconfirmed>) -> SearchResult {
 		SearchResult {
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			index_revision: 1,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -119,7 +119,7 @@ mod tests {
 		let entry = crate::unconfirmed::Unconfirmed {
 			node: "aidash://local/brave-otter-k3m9q2xa".into(),
 			kind: crate::unconfirmed::Kind::SemanticEntry,
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			count: 2,
 		};
 		let left_out = result(vec![entry]);

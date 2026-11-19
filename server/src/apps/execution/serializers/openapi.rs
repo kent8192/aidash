@@ -10,7 +10,7 @@ use crate::apps::execution::serializers::management::{
 };
 use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::{
-	StateQuery, StateResponse, WorkspacePage, WorkspacePageQuery,
+	StateQuery, StateResponse, ThreadPage, ThreadPageQuery,
 };
 use crate::apps::federation::remote::serializers::actions::SentResponse;
 use crate::apps::workspaces::serializers::entities::Task;
@@ -47,15 +47,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(document, views::management::task_runs, &["Uuid"])?;
 	contracts.response::<_, aidash_application::authorization::bounded_reads::RunPage>(
 		document,
-		views::management::workspace_runs,
+		views::management::thread_runs,
 		200,
 		"application/json",
 	)?;
-	contracts.query::<_, super::management::WorkspaceRunListQuery>(
+	contracts.query::<_, super::management::ThreadRunListQuery>(
 		document,
-		views::management::workspace_runs,
+		views::management::thread_runs,
 	)?;
-	contracts.path(document, views::management::workspace_runs, &["Uuid"])?;
+	contracts.path(document, views::management::thread_runs, &["Uuid"])?;
 	contracts.response::<_, aidash_application::authorization::bounded_reads::HumanPage>(
 		document,
 		views::management::human_requests,
@@ -74,15 +74,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.query::<_, StateQuery>(document, views::management::state)?;
-	contracts.response::<_, WorkspacePage>(
+	contracts.response::<_, ThreadPage>(
 		document,
-		crate::apps::workspaces::views::management::workspace_list,
+		crate::apps::workspaces::views::management::thread_list,
 		200,
 		"application/json",
 	)?;
-	contracts.query::<_, WorkspacePageQuery>(
+	contracts.query::<_, ThreadPageQuery>(
 		document,
-		crate::apps::workspaces::views::management::workspace_list,
+		crate::apps::workspaces::views::management::thread_list,
 	)?;
 	contracts.response::<_, aidash_domain::catalog::CatalogSnapshot>(
 		document,

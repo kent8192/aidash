@@ -31,7 +31,7 @@ const node = (g, id) =>
 const visible = (g, options = {}) =>
   filterMeshGraph(g, { mode: "mesh", kinds: meshKinds, query: "", ...options });
 
-test("projects explicit workspace, task hierarchy, dependencies, tools, artifacts and conversation links", () => {
+test("projects explicit thread, task hierarchy, dependencies, tools, artifacts and conversation links", () => {
   const graph = projectWithPeers(scene());
   for (const kind of meshKinds)
     assert.ok(
@@ -39,7 +39,6 @@ test("projects explicit workspace, task hierarchy, dependencies, tools, artifact
       kind,
     );
   for (const relation of [
-    "goal",
     "depends",
     "produces",
     "participates",
@@ -108,7 +107,7 @@ test("resolves stored agent and cluster conversation targets in both related per
     }
   }
 });
-test("node budget keeps workspace activity alongside a large registry", () => {
+test("node budget keeps thread activity alongside a large registry", () => {
   const s = scene();
   const tool = s.data.registry.find((e) => e.kind === "tool");
   for (let i = 0; i < 200; i++)
@@ -116,7 +115,7 @@ test("node budget keeps workspace activity alongside a large registry", () => {
   const graph = visible(project(s));
   assert.equal(graph.nodes.length, 180);
   assert.ok(graph.omitted > 0);
-  for (const kind of ["workspace", "task", "artifact", "agent", "tool"])
+  for (const kind of ["thread", "task", "artifact", "agent", "tool"])
     assert.ok(
       graph.nodes.some((n) => n.kind === kind),
       kind,
@@ -231,7 +230,7 @@ test("subject views cannot join discovery or remote runs, and renderers receive 
   assert.ok(!g.nodes.some((n) => n.remote || n.kind === "remote"));
   assert.ok(!JSON.stringify(g).includes("PRIVATE_"));
 });
-test("an unavailable workspace never falls back to another workspace's activity", () => {
+test("an unavailable thread never falls back to another thread's activity", () => {
   const s = scene();
   const g = buildMeshGraph(nodeView(s.data, undefined), {
     channel: "revoked",
@@ -239,14 +238,7 @@ test("an unavailable workspace never falls back to another workspace's activity"
   });
   assert.ok(
     !g.nodes.some((n) =>
-      [
-        "task",
-        "workspace",
-        "goal",
-        "human",
-        "artifact",
-        "conversation",
-      ].includes(n.kind),
+      ["task", "thread", "human", "artifact", "conversation"].includes(n.kind),
     ),
   );
   assert.ok(
@@ -332,18 +324,18 @@ test("time windows filter completed activity, retain active execution and match 
   assert.equal(inWindow(new Date(now + 1000).toISOString(), 1, now), false);
   assert.equal(inWindow("2020-01-01", 0, now), true);
 });
-test("inspector events stay within the selected workspace for agents and the local node", () => {
+test("inspector events stay within the selected thread for agents and the local node", () => {
   const s = scene();
   s.data.runs.push({
     ...s.data.runs[0],
     id: "other-run",
-    workspace_id: "other-workspace",
+    thread_id: "other-thread",
     task_id: "other-task",
   });
   s.data.events.push({
     ...s.data.events[0],
     id: "other-event",
-    workspace_id: "other-workspace",
+    thread_id: "other-thread",
     data: { run_id: "other-run" },
   });
   const graph = projectWithPeers(s);

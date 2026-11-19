@@ -327,7 +327,7 @@ pub(crate) fn run_of(snapshot: BindingSnapshot) -> aidash_domain::Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
-		workspace_id: uuid::Uuid::new_v4(),
+		thread_id: uuid::Uuid::new_v4(),
 		home_node: format!(
 			"{}/brave-otter-k3m9q2xa",
 			snapshot.agent.registry_deployment

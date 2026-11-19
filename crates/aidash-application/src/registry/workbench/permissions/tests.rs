@@ -62,7 +62,7 @@ fn input() -> PermissionInput {
 	PermissionInput {
 		tenant: "tenant".into(),
 		subject: "reader".into(),
-		workspace_id: None,
+		thread_id: None,
 	}
 }
 
@@ -194,7 +194,7 @@ impl PermissionScope for Scope<'_> {
 			},
 			revision: if registry {
 				999
-			} else if evaluation.action == "workspace.read" {
+			} else if evaluation.action == "thread.read" {
 				7
 			} else {
 				3
@@ -205,15 +205,15 @@ impl PermissionScope for Scope<'_> {
 		})
 	}
 
-	async fn workspace_owner(&mut self, workspace: Uuid, tenant: &str) -> Result<Option<String>> {
+	async fn thread_owner(&mut self, thread: Uuid, tenant: &str) -> Result<Option<String>> {
 		assert_eq!(tenant, "tenant");
-		assert_eq!(workspace, Uuid::from_u128(1));
+		assert_eq!(thread, Uuid::from_u128(1));
 		self.0
 			.state
 			.lock()
 			.unwrap()
 			.calls
-			.push("workspace_owner".into());
+			.push("thread_owner".into());
 		Ok(self.0.owner.clone())
 	}
 
@@ -345,7 +345,7 @@ async fn component_actions_use_exact_pinned_metadata_and_worker_context() {
 		assert_eq!(e.resource.attributes["languages"], json!(["en"]));
 		assert_eq!(
 			e.environment,
-			json!({"workspace_id":null,"node_id":"aidash://local","transport":"worker"})
+			json!({"thread_id":null,"node_id":"aidash://local","transport":"worker"})
 		);
 		if e.resource.id != "agent" {
 			assert_eq!(
@@ -399,7 +399,7 @@ async fn catalog_action_and_required_registry_read_each_gate_effective_permissio
 #[case(Some("owner"), false, Some(false), 7)]
 #[case(None, true, Some(false), 3)]
 #[tokio::test]
-async fn workspace_permission_uses_current_owner_and_the_final_action_revision(
+async fn thread_permission_uses_current_owner_and_the_final_action_revision(
 	#[case] owner: Option<&str>,
 	#[case] allowed: bool,
 	#[case] expected: Option<bool>,
@@ -409,23 +409,23 @@ async fn workspace_permission_uses_current_owner_and_the_final_action_revision(
 	repository.owner = owner.map(str::to_owned);
 	repository.action_allowed = allowed;
 	let mut selected = input();
-	selected.workspace_id = Some(Uuid::from_u128(1));
+	selected.thread_id = Some(Uuid::from_u128(1));
 	let result = inspect(&repository, reference("agent"), selected)
 		.await
 		.unwrap();
 	assert_eq!(result.workspace_read, expected);
 	assert_eq!(result.policy_revision, revision);
 	let s = repository.state.lock().unwrap();
-	let workspace = s.evaluations.iter().find(|v| v.action == "workspace.read");
-	assert_eq!(workspace.is_some(), owner.is_some());
-	if let Some(e) = workspace {
+	let thread = s.evaluations.iter().find(|v| v.action == "thread.read");
+	assert_eq!(thread.is_some(), owner.is_some());
+	if let Some(e) = thread {
 		assert_eq!(
 			e.resource.attributes,
-			json!({"owner":"owner","workspace_id":Uuid::from_u128(1)})
+			json!({"owner":"owner","thread_id":Uuid::from_u128(1)})
 		);
 		assert_eq!(
 			e.environment,
-			json!({"workspace_id":Uuid::from_u128(1),"node_id":"aidash://local","transport":"worker"})
+			json!({"thread_id":Uuid::from_u128(1),"node_id":"aidash://local","transport":"worker"})
 		);
 	}
 }

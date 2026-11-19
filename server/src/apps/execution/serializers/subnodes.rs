@@ -24,7 +24,7 @@ pub struct MemberRun {
 pub struct SubnodeView {
 	pub id: Uuid,
 	pub title: Option<String>,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub leader: EntityRef,
 	pub members: Vec<SubnodeMember>,
 	pub allowance: Allowance,

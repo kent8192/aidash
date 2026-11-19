@@ -8,7 +8,7 @@ pub(crate) use aidash_application::generation::embedding::{Origin, Reservation};
 pub(crate) async fn reserve_input(
 	access: &mut Access,
 	store: &Store,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	input: aidash_domain::semantic::EmbeddingInput<'_>,
 	origin: Origin,
@@ -19,7 +19,7 @@ pub(crate) async fn reserve_input(
 		Arc::new(crate::bootstrap::generation_embedding_repository(
 			store, tenancy,
 		)),
-		workspace,
+		thread,
 		config,
 		input,
 		origin,
@@ -34,7 +34,7 @@ pub(crate) async fn reserve_many(
 	accesses: &mut [&mut Access],
 	store: &Store,
 	tenancy: aidash_application::tenancy::TenancyScope,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	text: &str,
 	origin: Origin,
@@ -58,7 +58,7 @@ pub(crate) async fn reserve_many(
 		Arc::new(crate::bootstrap::generation_embedding_repository(
 			store, tenancy,
 		)),
-		workspace,
+		thread,
 		aidash_domain::semantic::EmbeddingInput::Text(text),
 		origin,
 	)

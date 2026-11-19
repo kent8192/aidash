@@ -563,7 +563,7 @@ fn native_provider_dependency_substitution_rewrites_every_role() {
 	let mut source = entry(
 		"source",
 		"source",
-		json!({"scope":"workspace","memory":r("native"),"max_tokens":4096}),
+		json!({"scope":"thread","memory":r("native"),"max_tokens":4096}),
 	);
 	rewrite(
 		&mut source,

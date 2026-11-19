@@ -45,7 +45,7 @@ impl ExecutionRecoveryStore for Repository {
 		Ok(aidash_domain::HumanRequest {
 			id: Uuid::now_v7(),
 			run_id: run.id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			kind: aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND.into(),
 			prompt: prompt.into(),
 			response: None,
@@ -110,7 +110,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			workspace_id: Uuid::new_v4(),
+			thread_id: Uuid::new_v4(),
 			home_node: "aidash://home".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1.0.0".into(),
@@ -194,7 +194,7 @@ async fn a_repeated_pending_replay_backs_off_without_consuming_retry_allowance(
 	)
 	.await
 	.unwrap();
-	// Assert: every replay repeats the charged workspace embedding, so the
+	// Assert: every replay repeats the charged thread embedding, so the
 	// next one waits longer, and the outage retry count stays the same.
 	assert!(!metric);
 	let run = repository.run.lock().unwrap();

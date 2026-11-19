@@ -32,8 +32,8 @@ fn event(n: u64) -> ContextEvent {
 /// A leased Run whose projection holds `1..=head`, with `1..=imported` recovered
 /// from a pre-journal projection.
 async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uuid) {
-	let (status, created) = request(app, token, "POST", "/api/conversations", json!({
-		"title":"Journal", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	let (status, created) = request(app, token, "POST", "/api/threads", json!({
+		"title":"Journal", "request":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	}))
 	.await;
 	assert_eq!(status, 200, "{created}");
@@ -600,10 +600,10 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 }
 
 /// Source checkpoints adopt their stored revision and retain the lease so
-/// the same step can continue after a pinned estimate or workspace recovery.
+/// the same step can continue after a pinned estimate or thread recovery.
 #[rstest::rstest]
 #[case::estimate(false)]
-#[case::workspace_recovered(true)]
+#[case::thread_recovered(true)]
 #[tokio::test]
 async fn a_source_checkpoint_is_durable_and_keeps_the_lease(
 	#[case] recovered: bool,

@@ -53,11 +53,11 @@ pub async fn provide(
 	}
 }
 impl HarnessManagement {
-	pub(crate) async fn workspace_runs(
+	pub(crate) async fn thread_runs(
 		&self,
 		actor: Actor,
 		id: Uuid,
-		q: crate::apps::execution::serializers::management::WorkspaceRunListQuery,
+		q: crate::apps::execution::serializers::management::ThreadRunListQuery,
 	) -> Result<aidash_application::authorization::bounded_reads::RunPage> {
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
@@ -72,11 +72,11 @@ impl HarnessManagement {
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
 		// A list: a silent Node leaves its Runs unconfirmed instead of failing it (#770).
 		access.lists = true;
-		let result = aidash_application::authorization::bounded_reads::workspace_runs(
+		let result = aidash_application::authorization::bounded_reads::thread_runs(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
 				access: &mut access,
-				task_workspace: None,
+				task_thread: None,
 				selected_run: None,
 				node: None,
 			},
@@ -110,7 +110,7 @@ impl HarnessManagement {
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
 				access: &mut access,
-				task_workspace: None,
+				task_thread: None,
 				selected_run: None,
 				node: None,
 			},
@@ -142,7 +142,7 @@ impl HarnessManagement {
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
 				access: &mut access,
-				task_workspace: None,
+				task_thread: None,
 				selected_run: None,
 				node: q.node.as_deref(),
 			},
@@ -178,7 +178,7 @@ impl HarnessManagement {
 			access: AccessProfile::DeploymentAdministrator,
 			deployment: crate::apps::federation::peer::services::identity::publication(&f).await?,
 			registry: Vec::new(),
-			workspaces: Vec::new(),
+			threads: Vec::new(),
 			tasks: Vec::new(),
 			runs: Vec::new(),
 			human_requests: Vec::new(),
@@ -190,12 +190,12 @@ impl HarnessManagement {
 		};
 		Ok(Response::ok().with_json(&state)?)
 	}
-	pub(crate) async fn workspace_page(
+	pub(crate) async fn thread_page(
 		&self,
 		actor: Actor,
-		query: crate::apps::execution::serializers::state::WorkspacePageQuery,
-	) -> Result<crate::apps::execution::serializers::state::WorkspacePage> {
-		use aidash_application::ports::authorization::state::WorkspaceStateScope;
+		query: crate::apps::execution::serializers::state::ThreadPageQuery,
+	) -> Result<crate::apps::execution::serializers::state::ThreadPage> {
+		use aidash_application::ports::authorization::state::ThreadStateScope;
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
@@ -213,19 +213,19 @@ impl HarnessManagement {
 				federation: &self.runtime,
 			};
 			let ids = scope
-				.workspace_candidates(query.node.as_deref(), cursor)
+				.thread_candidates(query.node.as_deref(), cursor)
 				.await?;
 			let next_cursor = (ids.len()
 				== aidash_application::authorization::bounded_reads::PAGE_SIZE)
 				.then(|| ids.last().unwrap().to_string());
 			let mut visible = Vec::new();
 			for id in ids {
-				if scope.allowed(id, "workspace.read").await? {
+				if scope.allowed(id, "thread.read").await? {
 					visible.push(id);
 				}
 			}
-			Ok(crate::apps::execution::serializers::state::WorkspacePage {
-				items: scope.workspace_rows(&visible).await?,
+			Ok(crate::apps::execution::serializers::state::ThreadPage {
+				items: scope.thread_rows(&visible).await?,
 				next_cursor,
 			})
 		}
@@ -408,9 +408,8 @@ impl HarnessManagement {
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		let (events, cursor, unconfirmed) = scope
-			.events_with_cursor(q.after, q.workspace_id, 500)
-			.await?;
+		let (events, cursor, unconfirmed) =
+			scope.events_with_cursor(q.after, q.thread_id, 500).await?;
 		let mut response = crate::marketplace::events::response(
 			&scope.store,
 			&scope.identity,
@@ -446,7 +445,7 @@ impl HarnessManagement {
 					browser,
 					headers,
 					cursor,
-					workspace: q.workspace_id,
+					thread: q.thread_id,
 					lease,
 				},
 			)
@@ -517,13 +516,13 @@ impl HarnessManagement {
 		let mut lease = crate::collaboration::access::Lease::begin_message_create(
 			&f.store,
 			actor,
-			run.workspace_id,
+			run.thread_id,
 		)
 		.await?;
 		let preflight = async {
 			let access = lease.access_mut();
 			let visible = access.run_for_interaction(id).await?;
-			if visible.workspace_id != run.workspace_id {
+			if visible.thread_id != run.thread_id {
 				return Err(Error::Forbidden);
 			}
 			access
@@ -561,7 +560,7 @@ impl HarnessManagement {
 			if existing {
 				crate::apps::workspaces::models::ChannelAttachment::attach_run_media_in(
 					lease.tx(),
-					run.workspace_id,
+					run.thread_id,
 					message,
 					&principal,
 					&input.attachment_ids,
@@ -594,7 +593,7 @@ impl HarnessManagement {
 					store: &f.store,
 					pending: Some((message, input.attachment_ids.clone(), principal.clone())),
 				},
-				run.workspace_id,
+				run.thread_id,
 				&[(record.seq, message, headroom)],
 				&model,
 				version,
@@ -612,7 +611,7 @@ impl HarnessManagement {
 			})?;
 			crate::apps::workspaces::models::ChannelAttachment::attach_run_media_in(
 				lease.tx(),
-				run.workspace_id,
+				run.thread_id,
 				message,
 				&principal,
 				&input.attachment_ids,

@@ -507,13 +507,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 
 	async fn event(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		data: Value,
 	) -> aidash_application::Result<()> {
 		self.runtime
 			.store
-			.event(self.transaction, Some(workspace), kind, data)
+			.event(self.transaction, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

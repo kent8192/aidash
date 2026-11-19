@@ -20,7 +20,7 @@ pub(crate) struct Memory<'a, 'scope> {
 /// Check existence without turning an authorization denial into a source change.
 pub(crate) async fn source_invalidated(
 	lease: &mut super::access::Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	source: &Source,
 ) -> crate::Result<bool> {
 	use crate::Error;
@@ -29,29 +29,23 @@ pub(crate) async fn source_invalidated(
 		// The Area gate may hide an image without deleting it. Image sources have
 		// no text to disclose here, so leave the subsequent authority check to refuse them.
 		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => false,
-		Source::Artifact { id } => crate::apps::workspaces::models::Artifact::read_in(
-			&mut **lease.tx(),
-			*id,
-			workspace,
-			true,
-		)
-		.await?
-		.is_none(),
-		Source::Message { id } => crate::apps::workspaces::models::Message::read_in(
-			&mut **lease.tx(),
-			*id,
-			workspace,
-			true,
-		)
-		.await?
-		.is_none(),
+		Source::Artifact { id } => {
+			crate::apps::workspaces::models::Artifact::read_in(&mut **lease.tx(), *id, thread, true)
+				.await?
+				.is_none()
+		}
+		Source::Message { id } => {
+			crate::apps::workspaces::models::Message::read_in(&mut **lease.tx(), *id, thread, true)
+				.await?
+				.is_none()
+		}
 		Source::Unit { id } => {
 			let unit = match super::units::load(lease, *id, false).await {
 				Ok(Some(unit)) => unit,
 				Ok(None) | Err(Error::Conflict(_)) => return Ok(true),
 				Err(error) => return Err(error),
 			};
-			if unit.bank.workspace != workspace {
+			if unit.bank.thread != thread {
 				return Ok(false);
 			}
 			match super::units::authorize(lease, &unit.bank, "memory.read").await {
@@ -65,7 +59,7 @@ pub(crate) async fn source_invalidated(
 			match super::units::unexpired(lease, &unit).await {
 				Ok(policy) => match super::units::current(
 					lease,
-					workspace,
+					thread,
 					&unit.content.evidence,
 					policy.bounds.max_graph_visits,
 				)
@@ -87,16 +81,16 @@ pub(crate) async fn source_invalidated(
 impl SemanticMemoryReadSession for Memory<'_, '_> {
 	async fn classified_output_source(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		source: &Source,
 		pending: &mut Vec<Uuid>,
 	) -> Result<Option<String>> {
 		if let Some(access) = self.entries.lease.access() {
 			aidash_application::authorization::visibility::provenance::classified_semantic_output_source(
-				&mut crate::bootstrap::run_visibility_scope(access), workspace, source, pending,
+				&mut crate::bootstrap::run_visibility_scope(access), thread, source, pending,
 			).await
 		} else {
-			self.entries.source(workspace, source).await
+			self.entries.source(thread, source).await
 		}
 	}
 	async fn native_invalidity(
@@ -115,8 +109,8 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		self.entries.permits(entry, action).await
 	}
-	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
-		SemanticEntriesSession::image_visible(&mut self.entries, workspace, source).await
+	async fn image_visible(&mut self, thread: Uuid, source: &Source) -> Result<bool> {
+		SemanticEntriesSession::image_visible(&mut self.entries, thread, source).await
 	}
 	async fn entry_authorized(&mut self, entry: &Entry) -> Result<bool> {
 		aidash_application::semantic::visibility::permits_resource(
@@ -126,11 +120,11 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 		)
 		.await
 	}
-	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
-		self.entries.source(workspace, source).await
+	async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
+		self.entries.source(thread, source).await
 	}
-	async fn source_invalidated(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
-		source_invalidated(self.entries.lease, workspace, source)
+	async fn source_invalidated(&mut self, thread: Uuid, source: &Source) -> Result<bool> {
+		source_invalidated(self.entries.lease, thread, source)
 			.await
 			.map_err(Into::into)
 	}

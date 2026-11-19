@@ -16,7 +16,7 @@ pub struct HumanRequest {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],

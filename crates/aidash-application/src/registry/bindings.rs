@@ -758,7 +758,7 @@ fn validate_memory_sources(
 				Error::Invalid("memory dependency is absent from the admitted closure".into())
 			})
 	};
-	let mut workspace_provider = None;
+	let mut thread_provider = None;
 	let mut providers: Vec<_> = settings.memory.iter().cloned().collect();
 	for reference in &settings.sources {
 		let source: SourceConfig = serde_json::from_value(lookup(reference)?.config.clone())?;
@@ -769,16 +769,16 @@ fn validate_memory_sources(
 				"participant Sources require the Agent's exact primary memory provider".into(),
 			));
 		}
-		if source.scope == SourceScope::Workspace {
-			if workspace_provider
+		if source.scope == SourceScope::Thread {
+			if thread_provider
 				.as_ref()
 				.is_some_and(|p| p != &source.memory)
 			{
 				return Err(Error::Invalid(
-					"workspace Sources require one exact memory provider version".into(),
+					"thread Sources require one exact memory provider version".into(),
 				));
 			}
-			workspace_provider = Some(source.memory.clone());
+			thread_provider = Some(source.memory.clone());
 		}
 		let provider: ProviderConfig =
 			serde_json::from_value(lookup(&source.memory)?.config.clone())?;

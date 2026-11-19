@@ -227,7 +227,7 @@ mod engine_tests {
 			("digits", "7".repeat(1 << 20)),
 			("punctuation", "!?".repeat(1 << 19)),
 			("cjk", "東".repeat(1 << 18)),
-			("prose", "The agent reads the workspace. ".repeat(1 << 15)),
+			("prose", "The agent reads the thread. ".repeat(1 << 15)),
 		];
 		for encoding in TokenEncoding::ALL {
 			for (name, text) in &inputs {

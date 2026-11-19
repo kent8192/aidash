@@ -37,10 +37,10 @@ fn manifest() -> Manifest {
 		.into_iter()
 		.map(|node| Participant {
 			node_id: node.into(),
-			mutations: vec![Mutation::WorkspaceState {
-				workspace_id: Uuid::from_u128(3),
+			mutations: vec![Mutation::ThreadTitle {
+				thread_id: Uuid::from_u128(3),
 				expected_revision: 0,
-				state: json!({"ready":true}),
+				title: "Title".into(),
 			}],
 		})
 		.collect(),
@@ -247,8 +247,8 @@ impl TransactionAuthorityScope for Control {
 	async fn run(&mut self, _: Uuid) -> Result<RunMetadata> {
 		Err(Error::Forbidden)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Ok(self.resource("workspace", id, json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		Ok(self.resource("thread", id, json!({})))
 	}
 	async fn task(&mut self, _: Uuid) -> Result<Task> {
 		Err(Error::Forbidden)
@@ -561,7 +561,7 @@ async fn submission_holds_admission_until_remote_preflight_then_commits_before_w
 }
 
 #[rstest]
-#[case("require:transaction.submit:workspace", true, "rollback:denied")]
+#[case("require:transaction.submit:thread", true, "rollback:denied")]
 #[case(
 	"preflight:aidash://peer/airy-hawk-2lu4as22",
 	false,
@@ -623,7 +623,7 @@ async fn replay_rechecks_current_permissions_and_never_sends_another_preflight(
 	{
 		let mut state = repository.state.lock().unwrap();
 		state.log.clear();
-		state.denial = Some("require:transaction.submit:workspace".into());
+		state.denial = Some("require:transaction.submit:thread".into());
 	}
 	assert!(matches!(
 		submit(&repository, &principal(&origin), &manifest).await,
@@ -1174,12 +1174,12 @@ async fn a_participant_admits_only_the_binding_made_for_its_own_targets(
 	origin: Origin,
 	mut manifest: Manifest,
 ) {
-	// The participants mutate different Workspaces, so a binding for the
+	// The participants mutate different Threads, so a binding for the
 	// coordinator's targets is not the participant's.
-	manifest.participants[1].mutations = vec![Mutation::WorkspaceState {
-		workspace_id: Uuid::from_u128(5),
+	manifest.participants[1].mutations = vec![Mutation::ThreadTitle {
+		thread_id: Uuid::from_u128(5),
 		expected_revision: 0,
-		state: json!({"ready":true}),
+		title: "Title".into(),
 	}];
 	let mut repository = Repository::new(origin.clone());
 	repository.node = "aidash://peer/airy-hawk-2lu4as22".into();

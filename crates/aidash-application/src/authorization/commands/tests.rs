@@ -18,7 +18,7 @@ fn scope() -> Scope {
 		}),
 		task: Task {
 			id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
@@ -102,7 +102,7 @@ async fn fresh_commands_authorize_the_saved_task_and_builtin_in_the_existing_ord
 		vec![
 			"binding",
 			"task",
-			"builtin:workspace_message",
+			"builtin:thread_message",
 			"previous",
 			"task_resource"
 		]
@@ -135,7 +135,7 @@ async fn an_exact_replay_survives_terminal_state_and_owner_changes_without_repea
 	assert_eq!(saved, json!({"saved":"result"}));
 	assert_eq!(
 		scope.calls,
-		vec!["binding", "task", "builtin:workspace_message", "previous"]
+		vec!["binding", "task", "builtin:thread_message", "previous"]
 	);
 }
 #[rstest]
@@ -153,7 +153,7 @@ async fn a_replay_key_cannot_be_rebound_to_changed_input(mut scope: Scope) {
 	);
 	assert_eq!(
 		scope.calls,
-		vec!["binding", "task", "builtin:workspace_message", "previous"]
+		vec!["binding", "task", "builtin:thread_message", "previous"]
 	);
 }
 #[rstest]
@@ -199,7 +199,7 @@ async fn fresh_mutations_cannot_replace_an_owner_or_change_terminal_tasks(
 	}
 	assert_eq!(
 		scope.calls,
-		vec!["binding", "task", "builtin:workspace_message", "previous"]
+		vec!["binding", "task", "builtin:thread_message", "previous"]
 	);
 }
 #[rstest]
@@ -207,7 +207,7 @@ async fn fresh_mutations_cannot_replace_an_owner_or_change_terminal_tasks(
 #[case::task("task")]
 #[case::previous("previous")]
 #[case::resource("task_resource")]
-#[case::builtin("builtin:workspace_message")]
+#[case::builtin("builtin:thread_message")]
 #[tokio::test]
 async fn failed_ports_preserve_the_error_and_stop_admission_at_that_boundary(
 	mut scope: Scope,
@@ -229,13 +229,13 @@ async fn revoked_builtin_stops_durable_replay_before_reading_saved_result(mut sc
 		commands::prepare("message", &data).unwrap().digest,
 		json!({"saved":"result"}),
 	));
-	scope.failure = Some("builtin:workspace_message".into());
+	scope.failure = Some("builtin:thread_message".into());
 	assert!(matches!(
 		prepare(&mut scope, input(&data)).await,
 		Err(Error::External(_))
 	));
 	assert_eq!(
 		scope.calls,
-		vec!["binding", "task", "builtin:workspace_message"]
+		vec!["binding", "task", "builtin:thread_message"]
 	);
 }

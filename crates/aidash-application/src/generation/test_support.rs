@@ -17,7 +17,7 @@ pub(super) fn request(id: u128) -> Request {
 		prepared: true,
 		grant_id: None,
 		admission_id: None,
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		credential_id: Uuid::from_u128(4),
 		root_subject: "alice".into(),
 		subject_chain: vec!["alice".into()],

@@ -62,7 +62,7 @@ impl Drop for CandidateSubjects<'_> {
 async fn candidate_allowed(
 	scope: &mut dyn GenerationAssignmentScope,
 	subject: String,
-	workspace: &Resource,
+	thread: &Resource,
 	entry: &Entry,
 	task: &Resource,
 ) -> Result<bool> {
@@ -74,7 +74,7 @@ async fn candidate_allowed(
 	// cancellation as well as success. Durable decisions remain in its audit.
 	let guard = CandidateSubjects { scope, original };
 	let catalog=guard.scope.resource(&entry.kind,&entry.id,json!({"version":entry.version,"capabilities":entry.capabilities,"tags":entry.tags,"languages":entry.languages,"config":entry.config}));
-	Ok(guard.scope.decide(workspace, "workspace.read").await?
+	Ok(guard.scope.decide(thread, "thread.read").await?
 		&& guard.scope.decide(&catalog, "agent.execute").await?
 		&& guard.scope.decide(task, "task.read").await?
 		&& guard.scope.decide(task, "task.execute").await?)
@@ -119,14 +119,14 @@ pub async fn assign_in_drafted(
 		));
 	}
 	let task = scope.task(task_id).await?;
-	let workspace = scope.workspace(task.workspace_id).await?;
-	scope.context(workspace.attributes.clone());
+	let thread = scope.thread(task.thread_id).await?;
+	scope.context(thread.attributes.clone());
 	if !scope.inherit_task_origin(task_id).await?
 		&& (task.created_by != scope.subject() || scope.subjects().len() > 1)
 	{
 		return Err(Error::Forbidden);
 	}
-	require(scope, &workspace, "workspace.read").await?;
+	require(scope, &thread, "thread.read").await?;
 	let task_resource = scope.task_resource(&task).await?;
 	require(scope, &task_resource, "task.read").await?;
 	require(scope, &task_resource, "task.delegate").await?;
@@ -162,7 +162,7 @@ pub async fn assign_in_drafted(
 			}) {
 				return Err(Error::Forbidden);
 			}
-			let node = scope.workspace_node(task.workspace_id).await?;
+			let node = scope.thread_node(task.thread_id).await?;
 			let mut expected = scope.subjects().to_vec();
 			expected.push(qualified_agent(&node, &id, &version));
 			if chain == expected {
@@ -190,7 +190,7 @@ pub async fn assign_in_drafted(
 	}
 	let mut search: Search = serde_json::from_value(task.requirements.clone())?;
 	search.kind = Some("agent".into());
-	let node = scope.workspace_node(task.workspace_id).await?;
+	let node = scope.thread_node(task.thread_id).await?;
 	for entry in scope.catalog(&search).await? {
 		if members.is_some_and(|members| {
 			!members
@@ -213,7 +213,7 @@ pub async fn assign_in_drafted(
 		{
 			continue;
 		}
-		if candidate_allowed(scope, subject, &workspace, &entry, &task_resource).await? {
+		if candidate_allowed(scope, subject, &thread, &entry, &task_resource).await? {
 			let delegation = scope
 				.delegate(
 					task_id,
@@ -235,9 +235,9 @@ pub async fn assign_in_drafted(
 	create_in_drafted(scope, &task, policy, reason, None, validation, draft).await
 }
 /// A `task_assign` that a Run started by a Remote Grant forwards to its Home (ADR 0139).
-/// The assignee is only an Agent of the Home Node that holds the Workspace, existing or
+/// The assignee is only an Agent of the Home Node that holds the Thread, existing or
 /// generated there: the catalog is this Deployment's and the delegation is local, and the
-/// result is checked once more so a Node the Home does not hold the Workspace on can never be
+/// result is checked once more so a Node the Home does not hold the Thread on can never be
 /// returned. It never selects a member filter, because a remote Run has no Subnode.
 pub async fn assign_in_home(
 	scope: &mut dyn GenerationAssignmentScope,
@@ -249,8 +249,8 @@ pub async fn assign_in_home(
 	let assignment =
 		assign_in_restricted(scope, task_id, policy_id, reason, validation, None).await?;
 	if let Assignment::Existing { delegation } = &assignment {
-		let workspace = scope.task(task_id).await?.workspace_id;
-		let home = scope.workspace_node(workspace).await?;
+		let thread = scope.task(task_id).await?.thread_id;
+		let home = scope.thread_node(thread).await?;
 		if !aidash_domain::nodes::names_home(&delegation.node_id, &home.to_string()) {
 			return Err(Error::Forbidden);
 		}
@@ -518,7 +518,7 @@ pub async fn create_in_drafted(
 	if foreign.is_none() {
 		scope
 			.event(
-				task.workspace_id,
+				task.thread_id,
 				"generation.requested",
 				json!({"id":id,"task_id":task.id,"policy_id":policy.id,"status":status}),
 			)

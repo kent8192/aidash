@@ -6,7 +6,7 @@ import { setup } from "./collaboration-fixture";
 const notice = "Tenant content is not available to a Deployment Administrator.";
 
 for (const path of [
-  "/collaboration?channel=workspace-one",
+  "/collaboration?channel=thread-one",
   "/graph",
   "/creator",
   "/settings?view=providerCredentials",
@@ -40,6 +40,6 @@ test("the switch control opens the authority switcher", async ({ page }) => {
 
 test("a Mapping still shows Tenant content", async ({ page }) => {
   await setup(page, { subject: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await expect(page.getByText(notice)).toHaveCount(0);
 });

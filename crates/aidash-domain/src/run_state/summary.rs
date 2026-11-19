@@ -93,7 +93,7 @@ mod tests {
 			metadata: RunMetadata {
 				id: Uuid::from_u128(1),
 				task_id: Uuid::from_u128(2),
-				workspace_id: Uuid::from_u128(3),
+				thread_id: Uuid::from_u128(3),
 				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 				agent_id: "agent".into(),

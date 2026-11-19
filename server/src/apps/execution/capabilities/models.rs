@@ -6,9 +6,6 @@ pub use core_areas::CoreAreas;
 mod core_runs;
 pub use core_runs::CoreRuns;
 
-mod core_task_sessions;
-pub use core_task_sessions::CoreTaskSessions;
-
 mod core_quotas;
 pub use core_quotas::CoreQuotas;
 

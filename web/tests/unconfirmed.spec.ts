@@ -11,8 +11,8 @@ const entry = (
   node: string,
   kind: Unconfirmed["kind"],
   count: number,
-  workspace_id = "workspace-one",
-): Unconfirmed => ({ node, kind, workspace_id, count });
+  thread_id = "thread-one",
+): Unconfirmed => ({ node, kind, thread_id, count });
 
 const english = (count: number, node: string) =>
   `${count} items are not shown because ${node} could not be reached to confirm them. They are checked again once it answers.`;
@@ -28,12 +28,12 @@ test("the Task list names each silent Node once, with the Tasks it left out", as
       entry(stranger, "task", 2),
       entry(known, "task", 3),
       entry(stranger, "task", 1),
-      // Other kinds and other Workspaces do not belong to this list.
+      // Other kinds and other Threads do not belong to this list.
       entry(known, "artifact", 9),
-      entry(known, "task", 40, "workspace-two"),
+      entry(known, "task", 40, "thread-two"),
     ],
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("tab", { name: /^Tasks/ }).click();
   const notice = page.getByRole("status").filter({ hasText: "not shown" });
   await expect(notice).toHaveCount(1);
@@ -55,7 +55,7 @@ test("an empty Task list with a count shows the warning instead of its empty tex
     withoutWork: true,
     unconfirmed: [entry(known, "task", 4)],
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("tab", { name: /^Tasks/ }).click();
   await expect(page.getByText(english(4, "Default"))).toBeVisible();
   await expect(page.getByText("No tasks in this channel yet.")).toHaveCount(0);
@@ -66,14 +66,14 @@ test("an empty Task list with nothing unconfirmed keeps its empty text", async (
   page,
 }) => {
   const { errors } = await setup(page, { subject: true, withoutWork: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("tab", { name: /^Tasks/ }).click();
   await expect(page.getByText("No tasks in this channel yet.")).toBeVisible();
   await expect(page.getByText("could not be reached")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
-test("a Workspace without the field reads as nothing left out", async ({
+test("a Thread without the field reads as nothing left out", async ({
   page,
 }) => {
   const { errors } = await setup(page, {
@@ -81,7 +81,7 @@ test("a Workspace without the field reads as nothing left out", async ({
     omitUnconfirmed: true,
     unconfirmed: [entry(known, "task", 3)],
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("tab", { name: /^Tasks/ }).click();
   await expect(page.getByText("Collect evidence").first()).toBeVisible();
   await expect(page.getByText("could not be reached")).toHaveCount(0);
@@ -99,7 +99,7 @@ test("results and conversation warn about their own kinds", async ({
       entry(known, "task", 7),
     ],
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   // The conversation reads pages of messages; only message counts show there.
   await expect(page.getByText(english(5, stranger))).toBeVisible();
   await expect(page.getByText(english(2, "Default"))).toHaveCount(0);
@@ -121,7 +121,7 @@ test("the warning is in Japanese, with the Node named twice", async ({
     locale: "ja-JP",
     unconfirmed: [entry(known, "task", 3)],
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("tab", { name: /^タスク/ }).click();
   await expect(page.getByText(japanese(3, "Default"))).toBeVisible();
   expect(errors).toEqual([]);

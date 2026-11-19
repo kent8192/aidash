@@ -29,12 +29,15 @@ pub trait CleanupScope: Send {
 	fn set_context(&mut self, value: Value);
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
 	async fn serialize(&mut self) -> Result<()>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
+	/// Whether the Thread was deleted (#1008). A deleted Thread refuses every
+	/// read, but the Working Areas its owners kept stay theirs.
+	async fn thread_deleted(&mut self, id: Uuid) -> Result<bool>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn sources(&mut self, workspace: Uuid, constraints: &Value) -> Result<()>;
+	async fn sources(&mut self, thread: Uuid, constraints: &Value) -> Result<()>;
 	/// Keep only Reference mounts whose source is still ready.
 	async fn reference_active(&mut self, id: Uuid) -> Result<bool>;
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()>;
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<()>;
 	async fn visible_thread(&mut self, thread: Uuid) -> Result<()>;
 	async fn load_area(&mut self, id: Uuid) -> Result<Option<Area>>;
 	async fn inventory(&mut self, cursor: Option<Uuid>) -> Result<Vec<Area>>;
@@ -42,8 +45,7 @@ pub trait CleanupScope: Send {
 	async fn cleanup_operation(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn recoverable(&mut self, area: &Area) -> Result<Option<Record>>;
 	async fn record_area(&mut self, id: Uuid) -> Result<Option<Option<Uuid>>>;
-	async fn thread_root(&mut self, area: &Area, thread: Uuid) -> Result<Option<Uuid>>;
-	async fn occupied(&mut self, area: &Area, thread: Uuid) -> Result<Option<Uuid>>;
+	async fn occupied(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn reattach_working(&mut self, area: &Area, file: Uuid) -> Result<()>;
 	async fn load_record(&mut self, id: Uuid, kind: &str) -> Result<Record>;
 	async fn create(&mut self, record: Creation) -> Result<Record>;
@@ -78,7 +80,7 @@ pub trait ErasureScope: Send {
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()>;
 	async fn update_area(&mut self, area: &Area) -> Result<()>;
 	async fn update_record(&mut self, record: &mut Record) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 	/// Removes the Working Area's retention holds, so its Retained versions
 	/// follow the same cleanup as the current manifest.
 	async fn release_holds(&mut self, area: &Area) -> Result<()>;

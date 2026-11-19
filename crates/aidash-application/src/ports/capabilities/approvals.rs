@@ -239,7 +239,7 @@ pub trait ApprovalScope: Send {
 	async fn update(&mut self, record: &mut Record) -> Result<()>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, value: &Value) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn read(&mut self, file: &MountedFile) -> Result<Vec<u8>>;
 	/// The Approval Mode and Approval Rules that cover `run`: those of the
 	/// person its chain starts at, for the Run's Thread. `None` unless that

@@ -10,7 +10,7 @@ fn event(kind: &str, data: serde_json::Value) -> Event {
 		sequence: 17,
 		id: Uuid::nil(),
 		node: None,
-		workspace_id: None,
+		thread_id: None,
 		kind: kind.into(),
 		data,
 		created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
@@ -79,18 +79,18 @@ async fn oversized_utf8_recipient_frame_is_rejected_after_current_authorization(
 	assert!(scope.calls.iter().any(|c| c == "marketplace.read"));
 }
 #[rstest]
-#[case::read_denied("workspace.read",vec!["workspace.read"])]
-#[case::events_denied("workspace.events",vec!["workspace.read","workspace.events"])]
-#[case::resource_denied("workspace_event_visible",vec!["workspace.read","workspace.events","workspace_event_visible"])]
+#[case::read_denied("thread.read",vec!["thread.read"])]
+#[case::events_denied("thread.events",vec!["thread.read","thread.events"])]
+#[case::resource_denied("thread_event_visible",vec!["thread.read","thread.events","thread_event_visible"])]
 #[tokio::test]
-async fn polling_applies_workspace_and_event_authority_in_order(
+async fn polling_applies_thread_and_event_authority_in_order(
 	#[case] denied: &str,
 	#[case] expected_calls: Vec<&str>,
 ) {
 	let mut scope = published();
 	scope.denied = Some(denied.into());
-	let mut source = event("workspace.changed", json!({}));
-	source.workspace_id = Some(Uuid::nil());
+	let mut source = event("thread.changed", json!({}));
+	source.thread_id = Some(Uuid::nil());
 	let (result, _) = poll_events(&mut scope, vec![source], "node").await.unwrap();
 	assert_eq!(result.len(), 0);
 	assert_eq!(scope.calls, expected_calls);
@@ -99,13 +99,13 @@ async fn polling_applies_workspace_and_event_authority_in_order(
 #[tokio::test]
 async fn polling_keeps_event_order_and_hides_deployment_administrator_audit() {
 	let mut scope = published();
-	let mut workspace = event("workspace.changed", json!({}));
-	workspace.workspace_id = Some(Uuid::nil());
+	let mut thread = event("thread.changed", json!({}));
+	thread.thread_id = Some(Uuid::nil());
 	let (result, _) = poll_events(
 		&mut scope,
 		vec![
 			event("marketplace.audit", json!({})),
-			workspace,
+			thread,
 			event(
 				"marketplace.published",
 				json!({"key":"package","actor":"private-subject"}),
@@ -117,7 +117,7 @@ async fn polling_keeps_event_order_and_hides_deployment_administrator_audit() {
 	.unwrap();
 	assert_eq!(
 		result.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
-		vec!["workspace.changed", "marketplace.published"]
+		vec!["thread.changed", "marketplace.published"]
 	);
 	assert_eq!(result[1].data, json!({"key":"package"}));
 }
@@ -156,11 +156,11 @@ async fn exact_retained_revision_remains_readable_without_following_active_alias
 #[tokio::test]
 async fn state_keeps_previously_authorized_workspace_events_while_hiding_marketplace_audit() {
 	let mut scope = published();
-	scope.denied = Some("workspace.read".into());
+	scope.denied = Some("thread.read".into());
 	let result = state_events(
 		&mut scope,
 		vec![
-			event("workspace.changed", json!({})),
+			event("thread.changed", json!({})),
 			event("marketplace.audit", json!({})),
 		],
 		"node",
@@ -169,7 +169,7 @@ async fn state_keeps_previously_authorized_workspace_events_while_hiding_marketp
 	.unwrap();
 	assert_eq!(
 		result.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
-		vec!["workspace.changed"]
+		vec!["thread.changed"]
 	);
 	assert_eq!(scope.calls, Vec::<String>::new());
 }
@@ -179,11 +179,11 @@ async fn state_keeps_previously_authorized_workspace_events_while_hiding_marketp
 async fn the_second_filter_counts_the_events_a_node_stopped_confirming_since_the_first() {
 	// Arrange: the Node that passed these events first no longer answers.
 	let mut scope = published();
-	scope.denied = Some("workspace_event_silent".into());
+	scope.denied = Some("thread_event_silent".into());
 	let events = (1..=3)
 		.map(|_| {
-			let mut event = event("workspace.changed", json!({}));
-			event.workspace_id = Some(Uuid::nil());
+			let mut event = event("thread.changed", json!({}));
+			event.thread_id = Some(Uuid::nil());
 			event
 		})
 		.collect();
@@ -196,7 +196,7 @@ async fn the_second_filter_counts_the_events_a_node_stopped_confirming_since_the
 		vec![aidash_domain::unconfirmed::Unconfirmed {
 			node: "aidash://other/silent".into(),
 			kind: aidash_domain::unconfirmed::Kind::Event,
-			workspace_id: Uuid::nil(),
+			thread_id: Uuid::nil(),
 			count: 3,
 		}]
 	);

@@ -134,19 +134,19 @@ pub fn admission_request(
 
 pub async fn authorized<S: AuthorizedMediaScope + ?Sized>(
 	scope: &mut S,
-	workspace: Uuid,
+	thread: Uuid,
 	messages: &[(i64, Uuid, usize)],
 	model: &ModelConfig,
 	projection: ProjectionVersion,
 ) -> Result<HumanMediaBatch> {
 	for (_, message, _) in messages {
-		scope.authorize_message(workspace, *message).await?;
+		scope.authorize_message(thread, *message).await?;
 	}
-	load(scope, workspace, messages, model, projection).await
+	load(scope, thread, messages, model, projection).await
 }
 pub async fn load<S: MediaAttachments + ?Sized>(
 	scope: &mut S,
-	workspace: Uuid,
+	thread: Uuid,
 	messages: &[(i64, Uuid, usize)],
 	model: &ModelConfig,
 	projection: ProjectionVersion,
@@ -157,7 +157,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 	let mut has_more = false;
 	let request = admission_request(model, projection, json!({}), Vec::new());
 	for (seq, id, headroom) in messages {
-		let attachments = scope.attachments(workspace, *id).await?;
+		let attachments = scope.attachments(thread, *id).await?;
 		let message_bytes = attachments
 			.iter()
 			.fold(0_usize, |sum, a| sum.saturating_add(a.content.len()));
@@ -205,7 +205,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 		for (index, (sequence, attachment)) in accepted.iter().enumerate() {
 			let wav = choice & (1 << index) != 0;
 			let bytes = if wav {
-				scope.wav_rendition(workspace, attachment).await?
+				scope.wav_rendition(thread, attachment).await?
 			} else {
 				attachment.content.clone()
 			};
@@ -308,11 +308,9 @@ pub async fn selected(
 		let (label, media_type, bytes) = match selection {
 			ModelMedia::File(selection) => {
 				let selected;
-				let file = match (selection.workspace_id, selection.area_id) {
-					(Some(workspace), Some(area)) => {
-						selected = scope
-							.subnode_file(workspace, area, selection.file_id)
-							.await?;
+				let file = match (selection.thread_id, selection.area_id) {
+					(Some(thread), Some(area)) => {
+						selected = scope.subnode_file(thread, area, selection.file_id).await?;
 						&selected
 					}
 					(None, None) => files
@@ -321,7 +319,7 @@ pub async fn selected(
 						.ok_or_else(|| Error::NotFound("file unavailable".into()))?,
 					_ => {
 						return Err(Error::Invalid(
-							"workspace_id and area_id must be supplied together".into(),
+							"thread_id and area_id must be supplied together".into(),
 						));
 					}
 				};
@@ -342,7 +340,7 @@ pub async fn selected(
 			}
 			ModelMedia::WorkingImage(selection) => {
 				let file = scope
-					.workspace_image(
+					.thread_image(
 						selection.area_id,
 						selection.generation,
 						selection.file_id,

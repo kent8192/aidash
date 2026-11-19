@@ -19,17 +19,17 @@ impl<Effects> aidash_application::ports::authorization::visibility::RowOutcome
 }
 #[async_trait]
 impl<Effects: Send> EventScope for NativeDefinitions<'_, Effects> {
-	async fn workspace_allowed(
+	async fn thread_allowed(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		action: &str,
 	) -> aidash_application::Result<bool> {
 		self.access
-			.allowed(workspace, action)
+			.allowed(thread, action)
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_event_visible(&mut self, event: &Event) -> aidash_application::Result<bool> {
+	async fn thread_event_visible(&mut self, event: &Event) -> aidash_application::Result<bool> {
 		self.access.event_visible(event).await.map_err(Into::into)
 	}
 }

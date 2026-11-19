@@ -31,7 +31,7 @@ pub trait RetentionScope: Send {
 	fn limits(&self) -> Result<RetentionLimits>;
 	fn set_context(&mut self, context: Value);
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	/// The Working Area in the caller's Tenant, or `None`.
 	async fn area(&mut self, id: Uuid) -> Result<Option<Area>>;

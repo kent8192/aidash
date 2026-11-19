@@ -240,7 +240,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			estimate: Default::default(),
 		};
 		let private = json!({"reference_documents":input["documents"]});
-		// Leave 6,000 units for the system prompt and workspace: admission fits,
+		// Leave 6,000 units for the system prompt and thread: admission fits,
 		// but reserving 8,192 units without accounting for documents cannot.
 		let padding = budget.remaining(&context::Context::default(), &private) - 6000;
 		input["documents"][0]["text"] =

@@ -1,8 +1,7 @@
 //! Selective writes on the caller's native transaction.
-use super::{Artifact, Task, Workspace};
+use super::{Artifact, Task, Thread};
 use crate::apps::workspaces::serializers::entities::{
-	Artifact as ArtifactContract, ArtifactInput, Task as TaskContract,
-	Workspace as WorkspaceContract,
+	Artifact as ArtifactContract, ArtifactInput, Task as TaskContract, Thread as ThreadContract,
 };
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -15,12 +14,14 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-impl Workspace {
+impl Thread {
 	pub(crate) async fn lock_existing(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
+			// A deleted Thread takes no new work (#1008).
+			.and_where(Expr::col("deleted_at").is_null())
 			.lock(LockType::Update)
 			.build(PostgresQueryBuilder);
 		if tx
@@ -28,21 +29,21 @@ impl Workspace {
 			.await?
 			.is_none()
 		{
-			return Err(Error::NotFound("workspace".into()));
+			return Err(Error::NotFound("thread".into()));
 		}
 		Ok(())
 	}
 
-	/// The use case validates the state contract before attempting this CAS.
-	pub(crate) async fn replace_state(
+	/// The use case validates the title before attempting this CAS.
+	pub(crate) async fn replace_title(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
 		revision: i64,
-		state: Value,
-	) -> Result<WorkspaceContract> {
+		title: String,
+	) -> Result<ThreadContract> {
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
-			.value_expr(Alias::new("state"), Expr::value(state))
+			.value_expr(Alias::new("title"), Expr::value(title))
 			.value_expr(
 				Alias::new("revision"),
 				Expr::col("revision").add(reinhardt::query::Expr::value(1_i64)),
@@ -54,7 +55,7 @@ impl Workspace {
 		let row = tx
 			.fetch_optional(&sql, convert_values(values))
 			.await?
-			.ok_or_else(|| Error::Conflict("workspace revision changed".into()))?;
+			.ok_or_else(|| Error::Conflict("thread revision changed".into()))?;
 		Ok(serde_json::from_value(
 			QueryRow::from_backend_row(row).data,
 		)?)
@@ -100,7 +101,7 @@ impl Task {
 		let tenant = crate::database::scope::parent_tenant(tx, "tasks", "id", task.id).await?;
 		let draft = Artifact::build()
 			.tenant(tenant)
-			.workspace(task.workspace_id)
+			.thread(task.thread_id)
 			.task(task.id)
 			.kind(serde_json::from_value(Value::String(
 				artifact.kind.clone(),

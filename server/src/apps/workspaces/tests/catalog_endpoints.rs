@@ -1,4 +1,4 @@
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
+use crate::endpoint::{EndpointFixture, assert_json, endpoint, thread};
 use aidash_server::apps::workspaces::models::Task;
 use reinhardt::db::orm::Model;
 use rstest::rstest;
@@ -10,14 +10,11 @@ use uuid::Uuid;
 async fn task_pages_preserve_timestamp_ties_and_public_fields(#[future] endpoint: EndpointFixture) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Task discovery").await;
+	let thread = thread(&member, "Task discovery").await;
 	let created = assert_json(
 		member
 			.post(
-				&format!(
-					"/api/workspaces/{}/tasks",
-					workspace["id"].as_str().unwrap()
-				),
+				&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 				&json!({"title":"First task", "description":"Discovery boundary"}),
 				"json",
 			)
@@ -61,7 +58,7 @@ async fn task_pages_preserve_timestamp_ties_and_public_fields(#[future] endpoint
 		.iter()
 		.chain(second_tasks)
 		.map(|task| {
-			assert_eq!(task["workspace_id"], workspace["id"]);
+			assert_eq!(task["thread_id"], thread["id"]);
 			assert_eq!(task["status"], "OPEN");
 			assert_eq!(task["requirements"], json!({}));
 			assert_eq!(task["created_at"], created["created_at"]);

@@ -35,7 +35,7 @@ fn spec() -> IndexingSpec {
 }
 fn index() -> Index {
 	Index {
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		tenant: "tenant".into(),
 		revision: 4,
 		spec: serde_json::to_value(spec()).unwrap(),
@@ -57,7 +57,7 @@ fn input() -> Put {
 fn entry() -> Entry {
 	Entry {
 		id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		key: "key".into(),
 		source: json!({"kind":"memory","text":"content"}),
 		agent: None,
@@ -132,8 +132,8 @@ impl crate::ports::authorization::visibility::RowOutcome for Scope {
 }
 #[async_trait]
 impl SemanticEntriesSession for Scope {
-	async fn workspace(&mut self, _: Uuid, action: &str) -> Result<()> {
-		self.touch("workspace")?;
+	async fn thread(&mut self, _: Uuid, action: &str) -> Result<()> {
+		self.touch("thread")?;
 		if self.denied.contains(action) {
 			return Err(Error::Forbidden);
 		}
@@ -243,7 +243,7 @@ async fn new_sources_share_one_authorized_write_and_history_order() {
 	assert_eq!(
 		scope.calls,
 		[
-			"workspace",
+			"thread",
 			"index_update",
 			"by_key",
 			"saved",
@@ -269,20 +269,13 @@ async fn identical_inputs_replay_after_authority_without_new_points(#[case] revi
 	};
 	let mut input = input();
 	input.expected_revision = revision;
-	let result = put(&mut scope, old.workspace_id, input).await.unwrap();
+	let result = put(&mut scope, old.thread_id, input).await.unwrap();
 	assert_eq!(result.point_id, old.point_id);
 	assert_eq!(result.created_by, "original");
 	assert_eq!(result.state, "READY");
 	assert_eq!(
 		scope.calls,
-		[
-			"workspace",
-			"index_update",
-			"by_key",
-			"saved",
-			"write",
-			"read"
-		]
+		["thread", "index_update", "by_key", "saved", "write", "read"]
 	);
 }
 #[rstest]
@@ -311,7 +304,7 @@ async fn authority_precedes_tombstone_or_source_decoding(
 	assert!(!scope.calls.contains(&"put"));
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::index("index_update")]
 #[case::key("by_key")]
 #[case::authority("saved")]
@@ -400,7 +393,7 @@ async fn changed_memory_preserves_creator_and_replaces_point_identity() {
 		text: Some("changed".into()),
 		..Default::default()
 	};
-	let result = put(&mut scope, old.workspace_id, input).await.unwrap();
+	let result = put(&mut scope, old.thread_id, input).await.unwrap();
 	assert_eq!(result.id, old.id);
 	assert_eq!(result.created_by, old.created_by);
 	assert_eq!(result.revision, 2);
@@ -417,7 +410,7 @@ async fn deletion_and_reindex_keep_separate_source_authority_paths(#[case] delet
 		old: Some(old.clone()),
 		..Default::default()
 	};
-	let result = change(&mut scope, old.workspace_id, old.id, 1, delete)
+	let result = change(&mut scope, old.thread_id, old.id, 1, delete)
 		.await
 		.unwrap();
 	assert_eq!(result.revision, 2);
@@ -445,7 +438,7 @@ async fn working_image_lifecycle_is_managed_by_file_publication(#[case] delete: 
 		..Default::default()
 	};
 	assert!(matches!(
-		change(&mut scope, old.workspace_id, old.id, 1, delete).await,
+		change(&mut scope, old.thread_id, old.id, 1, delete).await,
 		Err(Error::Invalid(_))
 	));
 	assert!(!scope.calls.contains(&"change"));
@@ -463,7 +456,7 @@ async fn mutation_replays_check_read_authority_and_skip_new_effects(#[case] dele
 		replay: true,
 		..Default::default()
 	};
-	let result = change(&mut scope, old.workspace_id, old.id, 1, delete)
+	let result = change(&mut scope, old.thread_id, old.id, 1, delete)
 		.await
 		.unwrap();
 	assert_eq!(result.point_id, old.point_id);
@@ -488,7 +481,7 @@ async fn listing_omits_sources_that_have_disappeared() {
 	);
 	assert_eq!(
 		scope.calls,
-		["workspace", "index_share", "list", "read", "source"]
+		["thread", "index_share", "list", "read", "source"]
 	);
 }
 
@@ -520,7 +513,7 @@ async fn listing_counts_the_entries_a_silent_node_left_out_and_not_the_vanished_
 		vec![aidash_domain::unconfirmed::Unconfirmed {
 			node: "aidash://other/silent".into(),
 			kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			count: 3,
 		}]
 	);
@@ -563,7 +556,7 @@ async fn image_index_state_is_listed_only_under_current_area_authority(
 async fn history_advances_past_two_hundred_denied_candidates() {
 	let row = |sequence, entry_id| History {
 		sequence,
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		entry_id,
 		revision: 1,
 		state: "PENDING".into(),
@@ -612,7 +605,7 @@ async fn image_history_requires_current_area_authority(#[case] visible: bool) {
 	.unwrap();
 	let row = History {
 		sequence: 1,
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		entry_id: Some(image.id),
 		revision: 1,
 		state: "PENDING".into(),

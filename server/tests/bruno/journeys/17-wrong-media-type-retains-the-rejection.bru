@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{base_url}}/api/workspaces
+  url: {{base_url}}/api/threads
   body: json
   auth: none
 }
@@ -18,8 +18,7 @@ headers {
 
 body:json {
   {
-    "title": "Wrong media type",
-    "goal": "Should not persist"
+    "title": "Wrong media type"
   }
 }
 

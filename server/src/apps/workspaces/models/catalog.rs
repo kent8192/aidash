@@ -1,5 +1,5 @@
-//! Workspace-owned reads and bounded public task discovery.
-use super::{Artifact, Message, Task, Workspace, child_flags};
+//! Thread-owned reads and bounded public task discovery.
+use super::{Artifact, Message, Task, Thread, child_flags};
 use crate::apps::workspaces::serializers::{
 	entities::{Artifact as ArtifactContract, Message as MessageContract, Task as TaskContract},
 	services::ChildTaskSummary,
@@ -15,13 +15,13 @@ use reinhardt::query::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-impl Workspace {
+impl Thread {
 	pub(crate) async fn read<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Self> {
 		Self::objects()
 			.filter(Self::field_id().eq(id))
 			.first_with_db(db)
 			.await?
-			.ok_or_else(|| Error::NotFound("workspace".into()))
+			.ok_or_else(|| Error::NotFound("thread".into()))
 	}
 
 	pub(crate) async fn newest_first<E: OrmExecutor>(db: &mut E) -> Result<Vec<Self>> {
@@ -35,27 +35,27 @@ impl Workspace {
 	/// Serialize the public contract without exposing model-only relation columns.
 	pub(crate) async fn record<E: OrmExecutor>(
 		db: &mut E,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Value> {
 		let record = match kind {
 			"task" => Task::objects()
 				.filter(Task::field_id().eq(id))
-				.filter(Task::field_workspace_id().eq(workspace))
+				.filter(Task::field_thread_id().eq(thread))
 				.first_with_db(db)
 				.await?
 				.map(|row| json!(TaskContract::from(row))),
 			"artifact" => Artifact::objects()
 				.filter(Artifact::field_id().eq(id))
-				.filter(Artifact::field_workspace_id().eq(workspace))
+				.filter(Artifact::field_thread_id().eq(thread))
 				.first_with_db(db)
 				.await?
 				.map(|row| json!(ArtifactContract::from(row))),
 			"message" => {
 				let row = Message::objects()
 					.filter(Message::field_id().eq(id))
-					.filter(Message::field_workspace_id().eq(workspace))
+					.filter(Message::field_thread_id().eq(thread))
 					.first_with_db(db)
 					.await?;
 				match row {
@@ -63,9 +63,9 @@ impl Workspace {
 					None => None,
 				}
 			}
-			_ => return Err(Error::Invalid("unknown workspace record kind".into())),
+			_ => return Err(Error::Invalid("unknown thread record kind".into())),
 		};
-		record.ok_or_else(|| Error::Invalid("workspace record not available".into()))
+		record.ok_or_else(|| Error::Invalid("thread record not available".into()))
 	}
 }
 
@@ -80,11 +80,11 @@ impl Task {
 
 	pub(crate) async fn chronological<E: OrmExecutor>(
 		db: &mut E,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 	) -> Result<Vec<Self>> {
 		let mut query = Self::objects().all().order_by(&["created_at", "id"]);
-		if let Some(workspace) = workspace {
-			query = query.filter(Self::field_workspace_id().eq(workspace));
+		if let Some(thread) = thread {
+			query = query.filter(Self::field_thread_id().eq(thread));
 		}
 		Ok(query.all_with_db(db).await?)
 	}
@@ -111,7 +111,7 @@ impl Task {
 
 	pub(crate) async fn child_summary<E: OrmExecutor>(
 		db: &mut E,
-		workspace: Uuid,
+		thread: Uuid,
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
 		#[derive(serde::Deserialize)]
@@ -149,7 +149,7 @@ impl Task {
 					Alias::new("abandonable"),
 				)
 				.from(Alias::new(Self::table_name()))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.and_where(Expr::col("parent_id").eq(Expr::value(parent)))
 				.order_by(Alias::new("id"), Order::Asc)
 				.limit(100);
@@ -186,12 +186,9 @@ impl Task {
 }
 
 impl Artifact {
-	pub(crate) async fn for_workspace<E: OrmExecutor>(
-		db: &mut E,
-		workspace: Uuid,
-	) -> Result<Vec<Self>> {
+	pub(crate) async fn for_thread<E: OrmExecutor>(db: &mut E, thread: Uuid) -> Result<Vec<Self>> {
 		Ok(Self::objects()
-			.filter(Self::field_workspace_id().eq(workspace))
+			.filter(Self::field_thread_id().eq(thread))
 			.order_by(&["created_at", "id"])
 			.all_with_db(db)
 			.await?)
@@ -199,9 +196,9 @@ impl Artifact {
 }
 
 impl Message {
-	pub(crate) async fn recent<E: OrmExecutor>(db: &mut E, workspace: Uuid) -> Result<Vec<Self>> {
+	pub(crate) async fn recent<E: OrmExecutor>(db: &mut E, thread: Uuid) -> Result<Vec<Self>> {
 		let mut messages = Self::objects()
-			.filter(Self::field_workspace_id().eq(workspace))
+			.filter(Self::field_thread_id().eq(thread))
 			.order_by(&["-created_at", "-id"])
 			.limit(100)
 			.all_with_db(db)
@@ -212,7 +209,7 @@ impl Message {
 }
 
 /// The message contract plus the exact File versions it cites, as a compact
-/// record for the Run-message summary and workspace reads.
+/// record for the Run-message summary and thread reads.
 async fn message_record<E: OrmExecutor>(db: &mut E, row: Message) -> Result<Value> {
 	let (sql, values) = Query::select()
 		.columns(["file_id", "path", "digest"].map(Alias::new))

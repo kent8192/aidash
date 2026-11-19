@@ -2,14 +2,14 @@
 use super::Reads;
 use aidash_application::{
 	Error, Result,
-	ports::authorization::state::{WorkspaceListingScope, WorkspaceStateScope},
+	ports::authorization::state::{ThreadListingScope, ThreadStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Workspace,
+	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
 	policy::Resource,
 	registry::{Entry, Search},
 	run_state::RawRun,
-	workspaces::TaskPage,
+	threads::TaskPage,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -19,9 +19,9 @@ use reinhardt::query::{
 use uuid::Uuid;
 
 #[async_trait]
-impl WorkspaceListingScope for Reads<'_> {
+impl ThreadListingScope for Reads<'_> {
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>> {
-		aidash_application::authorization::workspaces::visible(self, action).await
+		aidash_application::authorization::threads::visible(self, action).await
 	}
 	async fn task_page(&mut self, ids: &[Uuid], offset: u64) -> Result<TaskPage> {
 		aidash_application::authorization::projection::task_page(self, ids, offset).await
@@ -44,19 +44,23 @@ impl StateReads<'_> {
 			.order_by(Alias::new(order), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)
 			.limit(50);
+		// A deleted Thread is listed nowhere (#1008).
+		if table == "threads" {
+			q.and_where(Expr::col(Alias::new("deleted_at")).is_null());
+		}
 		if let Some(node) = node {
-			if table == "workspaces" {
+			if table == "threads" {
 				q.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())));
 			} else {
 				let mut ids = Query::select();
 				ids.column(Alias::new("id"))
-					.from(Alias::new("workspaces"))
+					.from(Alias::new("threads"))
 					.and_where(
 						Expr::col(Alias::new("tenant"))
 							.eq(Expr::value(self.access.identity.tenant.clone())),
 					)
 					.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())));
-				q.and_where(Expr::col(Alias::new("workspace_id")).in_subquery(ids.to_owned()));
+				q.and_where(Expr::col(Alias::new("thread_id")).in_subquery(ids.to_owned()));
 			}
 		}
 		q
@@ -77,13 +81,13 @@ impl aidash_application::ports::authorization::visibility::RowOutcome for StateR
 	}
 }
 #[async_trait]
-impl WorkspaceStateScope for StateReads<'_> {
+impl ThreadStateScope for StateReads<'_> {
 	async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
 		self.access.allowed(id, action).await.map_err(Into::into)
 	}
-	async fn prepare_workspaces(&mut self, workspaces: &[Uuid]) -> Result<()> {
+	async fn prepare_threads(&mut self, threads: &[Uuid]) -> Result<()> {
 		self.access
-			.prepare_state_workspaces(workspaces)
+			.prepare_state_threads(threads)
 			.await
 			.map_err(Into::into)
 	}
@@ -106,16 +110,16 @@ impl WorkspaceStateScope for StateReads<'_> {
 		)
 		.await
 	}
-	async fn workspace_candidates(
+	async fn thread_candidates(
 		&mut self,
 		node: Option<&str>,
 		cursor: Option<Uuid>,
 	) -> Result<Vec<Uuid>> {
-		let mut q = self.candidates("workspaces", node, "created_at");
+		let mut q = self.candidates("threads", node, "created_at");
 		if let Some(id) = cursor {
-			let mut position = self.candidates("workspaces", node, "created_at");
+			let mut position = self.candidates("threads", node, "created_at");
 			position.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)));
-			let row: Option<Workspace> =
+			let row: Option<Thread> =
 				aidash_server::database::query_as(&position.to_string(PostgresQueryBuilder))
 					.fetch_optional(&mut **self.access.tx)
 					.await
@@ -133,17 +137,17 @@ impl WorkspaceStateScope for StateReads<'_> {
 					),
 			);
 		}
-		let rows: Vec<Workspace> =
+		let rows: Vec<Thread> =
 			aidash_server::database::query_as(&q.to_string(PostgresQueryBuilder))
 				.fetch_all(&mut **self.access.tx)
 				.await
 				.map_err(Error::from)?;
 		Ok(rows.into_iter().map(|row| row.id).collect())
 	}
-	async fn workspace_rows(&mut self, ids: &[Uuid]) -> Result<Vec<Workspace>> {
+	async fn thread_rows(&mut self, ids: &[Uuid]) -> Result<Vec<Thread>> {
 		let q = Query::select()
 			.column(Asterisk)
-			.from(Alias::new("workspaces"))
+			.from(Alias::new("threads"))
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 			.order_by(Alias::new("created_at"), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)

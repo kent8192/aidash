@@ -100,7 +100,7 @@ fn parses_openrouter_tool_calls() {
 	assert_eq!(result.tool_calls[0].arguments, json!({"q":"Rust"}));
 }
 #[rstest::rstest]
-fn whitespace_only_tool_call_content_is_not_a_workspace_message() {
+fn whitespace_only_tool_call_content_is_not_a_thread_message() {
 	let result = parse(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":" \n\t ","tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]})).unwrap();
 	assert!(result.text.is_empty());
 	assert_eq!(result.tool_calls.len(), 1);
@@ -1030,7 +1030,7 @@ mod cache_salt {
 		ModelRequest {
 			context: ModelContext::Ordered(OrderedContext {
 				stable: r#"{"identity":"fixture"}"#.into(),
-				volatile: r#"{"workspace":{}}"#.into(),
+				volatile: r#"{"thread":{}}"#.into(),
 			}),
 			cache_scope: Some(scope),
 			..legacy()
@@ -1058,7 +1058,7 @@ mod cache_salt {
 		ModelRequest {
 			context: ModelContext::Native(aidash_domain::projection::native::native_context(
 				&context,
-				&json!({"identity":"fixture","workspace":{}}),
+				&json!({"identity":"fixture","thread":{}}),
 			)),
 			cache_scope: Some(scope),
 			..legacy()
@@ -1401,7 +1401,7 @@ mod cache_salt {
 			.map(|m| m["role"].as_str().unwrap())
 			.collect();
 		// Since #942 no step state trails the history when nothing changed:
-		// an empty workspace is evidence and appends nothing.
+		// an empty thread is evidence and appends nothing.
 		assert_eq!(roles, ["system", "user", "assistant", "tool"]);
 		assert_eq!(messages[0]["content"][0]["cache_control"], ephemeral);
 		let attachment = messages[1]["content"].as_array().unwrap();
@@ -1424,7 +1424,7 @@ mod cache_salt {
 				stable:
 					json!({"identity":"fixture","history":[activity("first"), activity("second")]})
 						.to_string(),
-				volatile: r#"{"workspace":{}}"#.into(),
+				volatile: r#"{"thread":{}}"#.into(),
 			}),
 			cache_breakpoints: true,
 			..ordered(scope("tenant-a", 1))

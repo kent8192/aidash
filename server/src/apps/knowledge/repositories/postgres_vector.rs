@@ -144,7 +144,7 @@ impl VectorIndex for Transport {
 		let result: Result<()> = async {
 			provider(config)?;
 			let embedding = vector(values)?;
-			let workspace: Uuid = serde_json::from_value(payload["workspace_id"].clone())?;
+			let thread: Uuid = serde_json::from_value(payload["thread_id"].clone())?;
 			let tenant = payload["tenant"]
 				.as_str()
 				.ok_or_else(|| Error::Invalid("missing vector tenant".into()))?;
@@ -191,7 +191,7 @@ impl VectorIndex for Transport {
 					.columns([
 						Alias::new("id"),
 						Alias::new("collection"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("tenant"),
 						Alias::new("embedding"),
 						Alias::new("payload"),
@@ -200,7 +200,7 @@ impl VectorIndex for Transport {
 						Query::select()
 							.expr(Expr::value(point))
 							.expr(Expr::value(collection))
-							.expr(Expr::value(workspace))
+							.expr(Expr::value(thread))
 							.expr(Expr::value(tenant))
 							.expr(embedding)
 							.expr(Expr::value(payload.clone()))
@@ -305,7 +305,7 @@ impl VectorIndex for Transport {
 			)
 			.from(Alias::new("semantic_vectors"))
 			.and_where(Expr::col(Alias::new("collection")).eq(collection))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(filter.workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(filter.thread)))
 			.and_where(Expr::col(Alias::new("tenant")).eq(filter.tenant))
 			.and_where(
 				Expr::col(Alias::new("id")).is_in(filter.allowed.iter().copied().map(Expr::value)),

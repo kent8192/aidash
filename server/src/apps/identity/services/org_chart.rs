@@ -71,21 +71,21 @@ async fn ledger(
 	Ok(ledger)
 }
 
-/// The Node of each Workspace.
-async fn workspace_nodes(
+/// The Node of each Thread.
+async fn thread_nodes(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	workspaces: Vec<Uuid>,
+	threads: Vec<Uuid>,
 ) -> Result<BTreeMap<Uuid, String>> {
-	if workspaces.is_empty() {
+	if threads.is_empty() {
 		return Ok(BTreeMap::new());
 	}
 	let rows: Vec<(Uuid, String)> = native::query_as(
 		&Query::select()
 			.columns([Alias::new("id"), Alias::new("node")])
-			.from(Alias::new("workspaces"))
+			.from(Alias::new("threads"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").is_in(workspaces.into_iter().map(Expr::value)))
+			.and_where(Expr::col("id").is_in(threads.into_iter().map(Expr::value)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.columns(&["id", "node"])
@@ -166,8 +166,8 @@ async fn subnodes(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<
 		.collect())
 }
 
-/// What a Duty's own page checks for the person (`DutyScope::sees_workspace`
-/// and `administers`): the Workspaces holding Duties that they may read, and
+/// What a Duty's own page checks for the person (`DutyScope::sees_thread`
+/// and `administers`): the Threads holding Duties that they may read, and
 /// whether they hold `duty.administer`.
 async fn duty_visibility(
 	store: &crate::store::Store,
@@ -176,10 +176,10 @@ async fn duty_visibility(
 ) -> Result<(BTreeSet<Uuid>, bool)> {
 	let mut access = crate::authorization::access::Access::begin(store, identity).await?;
 	let result = async {
-		let workspaces: Vec<Uuid> = native::query_scalar(
+		let threads: Vec<Uuid> = native::query_scalar(
 			&Query::select()
 				.distinct()
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.from(Alias::new("duties"))
 				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 				.to_string(PostgresQueryBuilder),
@@ -187,14 +187,14 @@ async fn duty_visibility(
 		.scalar_all(&mut **access.tx)
 		.await?;
 		let mut readable = BTreeSet::new();
-		for workspace in workspaces {
-			let resource = match access.workspace(workspace).await {
+		for thread in threads {
+			let resource = match access.thread(thread).await {
 				Ok(resource) => resource,
 				Err(crate::Error::NotFound(_) | crate::Error::Forbidden) => continue,
 				Err(error) => return Err(error),
 			};
-			if access.decide(&resource, "workspace.read").await? {
-				readable.insert(workspace);
+			if access.decide(&resource, "thread.read").await? {
+				readable.insert(thread);
 			}
 		}
 		let resource = access.resource("tenant", tenant, json!({}));
@@ -217,7 +217,7 @@ impl TenantAdministrations {
 	) -> Result<OrgChart> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let since = chart::month_start(Utc::now());
-		let (workspaces, duty_administrator) =
+		let (threads, duty_administrator) =
 			duty_visibility(&self.runtime.store, &administrator.identity, &tenant).await?;
 		let result = self
 			.runtime
@@ -227,7 +227,7 @@ impl TenantAdministrations {
 				let snapshot = administrator.lock(tx, false).await?;
 				let mut viewer = Viewer {
 					subject: administrator.identity.subject.clone(),
-					workspaces,
+					threads,
 					duty_administrator,
 					..Viewer::default()
 				};
@@ -279,10 +279,10 @@ impl TenantAdministrations {
 				let creating =
 					crate::apps::workspaces::repositories::duties::creating_tasks(tx, &tenant)
 						.await?;
-				let nodes = workspace_nodes(
+				let nodes = thread_nodes(
 					tx,
 					&tenant,
-					duties.iter().map(|duty| duty.workspace_id).collect(),
+					duties.iter().map(|duty| duty.thread_id).collect(),
 				)
 				.await?;
 				rows.duties = duties
@@ -290,8 +290,8 @@ impl TenantAdministrations {
 					.filter_map(|duty| {
 						Some(DutyRow {
 							id: duty.id,
-							node: nodes.get(&duty.workspace_id)?.clone(),
-							workspace: duty.workspace_id,
+							node: nodes.get(&duty.thread_id)?.clone(),
+							thread: duty.thread_id,
 							successor: duty.successor.clone(),
 							state: duty.status().to_owned(),
 							title: duty.definition.title.clone(),

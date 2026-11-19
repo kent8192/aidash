@@ -91,14 +91,14 @@ test.beforeEach(async ({ page }) => {
               skills: [],
             })),
           ],
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -816,7 +816,7 @@ test("source declarations preserve exact tools and prevent mandatory Home filter
   await dialog.getByLabel("Configure an explicit source declaration").check();
   await dialog
     .getByLabel("Provider operation: provider", { exact: true })
-    .fill("workspace");
+    .fill("thread");
   await dialog
     .getByLabel("Provider operation", { exact: true })
     .fill("retrieve");
@@ -850,7 +850,7 @@ test("source declarations preserve exact tools and prevent mandatory Home filter
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
   expect((await posted).postDataJSON().config.context_source).toMatchObject({
-    provider: "workspace",
+    provider: "thread",
     operation: "retrieve",
     pin: { policy: "always" },
     tools: {

@@ -20,10 +20,10 @@ pub struct Task {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "tasks_workspace_id_fkey",
+		db_constraint = "tasks_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field(field_type = "text")]
 	pub title: String,
 	#[field(field_type = "text")]

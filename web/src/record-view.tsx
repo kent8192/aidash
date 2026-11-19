@@ -42,8 +42,8 @@ export function useRecordLabels() {
         entityLabel(entry),
       );
   }
-  for (const workspace of data?.workspaces ?? [])
-    labels.set(workspace.id, workspace.title || t("workspace"));
+  for (const thread of data?.threads ?? [])
+    labels.set(thread.id, thread.title || t("thread"));
   for (const task of data?.tasks ?? [])
     labels.set(task.id, task.title || t("task"));
   for (const run of data?.runs ?? [])

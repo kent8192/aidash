@@ -871,7 +871,7 @@ async fn cancellation_during_authorization_releases_the_exclusive_draft_scope() 
 #[tokio::test]
 async fn sole_skill_source_instructions_are_included_in_the_admitted_request(#[case] root: bool) {
 	let mut repository = Repository::new();
-	let instructions = "---\nname: fixture-skill\ndescription: skill source fixture\n---\nAlways inspect the selected workspace.";
+	let instructions = "---\nname: fixture-skill\ndescription: skill source fixture\n---\nAlways inspect the selected thread.";
 	let attachment = aidash_domain::capabilities::skills::imported(
 		format!("area:{}:.agents/skills/fixture", Uuid::from_u128(10)),
 		instructions.into(),
@@ -911,7 +911,7 @@ async fn sole_skill_source_instructions_are_included_in_the_admitted_request(#[c
 			.job
 			.request
 			.instructions
-			.contains("Always inspect the selected workspace.")
+			.contains("Always inspect the selected thread.")
 	);
 	assert!(admitted.job.request.instructions.contains("fixture-skill"));
 	assert!(repository.state.lock().unwrap().committed);
@@ -936,7 +936,7 @@ async fn unresolved_mounted_skill_context_cannot_produce_behavioral_evidence() {
 async fn deferred_agents_simulate_the_selected_first_request(#[case] attachment: bool) {
 	let mut repository = Repository::new();
 	repository.deferred = true;
-	let instructions = "---\nname: fixture-skill\ndescription: skill source fixture\n---\nAlways inspect the selected workspace.";
+	let instructions = "---\nname: fixture-skill\ndescription: skill source fixture\n---\nAlways inspect the selected thread.";
 	if attachment {
 		let attachment = aidash_domain::capabilities::skills::imported(
 			"fixture".into(),
@@ -971,7 +971,7 @@ async fn deferred_agents_simulate_the_selected_first_request(#[case] attachment:
 		assert!(
 			!request
 				.instructions
-				.contains("Always inspect the selected workspace.")
+				.contains("Always inspect the selected thread.")
 		);
 	} else {
 		assert!(names.contains("plugin_0"));

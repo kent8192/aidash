@@ -1,5 +1,5 @@
 //! A Run's call that passed the tool's entrance just before its Subnode ended,
-//! on a fixture that has no Subnode: the Run's own Workspace is made a Subnode,
+//! on a fixture that has no Subnode: the Run's own Thread is made a Subnode,
 //! the call is recorded as the model's choice, and the end is committed while
 //! the call waits at the Subnode check of the write (#759).
 //!
@@ -10,7 +10,7 @@ use aidash_server::{domain::Run, federation::Federation, harness::Harness};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// Make `run`'s own Workspace an active Subnode whose only member is the Run's
+/// Make `run`'s own Thread an active Subnode whose only member is the Run's
 /// Agent, with `allowance` as the tools its members may use. The Run is also the
 /// creator, which the schema allows and nothing here reads.
 #[allow(dead_code)]
@@ -19,9 +19,9 @@ pub async fn seed_subnode(f: &Federation, run: Uuid, allowance: &[String]) -> Uu
 	sqlx::query(
 		"INSERT INTO subnodes (id, tenant, node, creator_run_id, creator_task_id, \
 		  creator_agent_id, creator_agent_version, leader_agent_id, leader_agent_version, \
-		  allowance, workspace_id, title, state, created_at, creation_key, creation_fingerprint) \
+		  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
 		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
-		  $2, workspace_id, 'Late writes', 'active', now(), 'late', 'late' \
+		  $2, thread_id, 'Late writes', 'active', now(), 'late', 'late' \
 		 FROM runs WHERE id = $3",
 	)
 	.bind(subnode)

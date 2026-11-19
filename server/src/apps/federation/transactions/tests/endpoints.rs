@@ -1,5 +1,5 @@
 use crate::endpoint::{
-	EndpointFixture, assert_json, assert_json_rejection, endpoint, subject, workspace,
+	EndpointFixture, assert_json, assert_json_rejection, endpoint, subject, thread,
 };
 use aidash_server::apps::federation::transactions::models::states::AtomicCoordinatorDecision;
 use aidash_server::apps::federation::transactions::models::{AtomicCoordinator, AtomicHistory};
@@ -28,11 +28,11 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	// Arrange
 	let app = endpoint.await;
 	let subject = subject(&app, "alice", _credential_client_0.await).await;
-	let created = workspace(&subject, "Atomic validation").await;
+	let created = thread(&subject, "Atomic validation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,
-		"mutations":[{"kind":"workspace_state","workspace_id":created["id"],"expected_revision":0,"state":{"result":"committed"}}]}]});
+		"mutations":[{"kind":"thread_title","thread_id":created["id"],"expected_revision":0,"title":"Committed"}]}]});
 	// Act / Assert
 	let session = assert_json(subject.get("/api/session").await.unwrap(), 200);
 	assert_eq!(
@@ -94,15 +94,12 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	);
 	let snapshot = assert_json(
 		subject
-			.get(&format!(
-				"/api/workspaces/{}",
-				created["id"].as_str().unwrap()
-			))
+			.get(&format!("/api/threads/{}", created["id"].as_str().unwrap()))
 			.await
 			.unwrap(),
 		200,
 	);
-	assert_eq!(snapshot["workspace"]["state"], json!({}));
+	assert_eq!(snapshot["thread"]["state"], json!({}));
 }
 
 #[rstest]
@@ -113,9 +110,9 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Atomic mutation").await;
+	let thread = thread(&member, "Atomic mutation").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,"mutations":[{"kind":"thread_title","thread_id":thread["id"],"expected_revision":0,"title":"Committed"}]}]});
 	let path = format!("/api/transactions/{id}");
 	// Act
 	let admitted = member
@@ -158,15 +155,12 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 	assert_eq!(history.len(), 2, "one admission and one durable abort");
 	let snapshot = assert_json(
 		member
-			.get(&format!(
-				"/api/workspaces/{}",
-				workspace["id"].as_str().unwrap()
-			))
+			.get(&format!("/api/threads/{}", thread["id"].as_str().unwrap()))
 			.await
 			.unwrap(),
 		200,
 	);
-	assert_eq!(snapshot["workspace"]["state"], json!({}));
+	assert_eq!(snapshot["thread"]["state"], json!({}));
 }
 
 #[rstest]
@@ -180,12 +174,12 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Concurrent admission").await;
+	let thread = thread(&member, "Concurrent admission").await;
 	let id = Uuid::new_v4();
 	let first = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state",
-            "workspace_id":workspace["id"],"expected_revision":0,"state":{"literal":"'$1 $2'"}}]}]});
+        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"thread_title",
+            "thread_id":thread["id"],"expected_revision":0,"title":"Committed"}]}]});
 	let mut second = first.clone();
 	if conflicting {
 		second["participants"][0]["mutations"][0]["state"] = json!({"other":true});
@@ -246,12 +240,12 @@ async fn tenant_subject_abort_is_durable_while_recovery_owns_the_lease(
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Abort during recovery").await;
+	let thread = thread(&member, "Abort during recovery").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state",
-            "workspace_id":workspace["id"],"expected_revision":0,"state":{"never": "applied"}}]}]});
+        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"thread_title",
+            "thread_id":thread["id"],"expected_revision":0,"title":"Committed"}]}]});
 	assert_json(
 		member
 			.post("/api/transactions", &manifest, "json")
@@ -341,8 +335,8 @@ async fn visibility_lock_blocks_protected_reads_but_leaves_recovery_routes_avail
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let created = workspace(&member, "Visibility barrier").await;
-	let path = format!("/api/workspaces/{}", created["id"].as_str().unwrap());
+	let created = thread(&member, "Visibility barrier").await;
+	let path = format!("/api/threads/{}", created["id"].as_str().unwrap());
 	let mut held = app.database.connection.begin().await.unwrap();
 	let sql = Query::select()
 		.column(Alias::new("singleton"))
@@ -361,7 +355,7 @@ async fn visibility_lock_blocks_protected_reads_but_leaves_recovery_routes_avail
 	assert_json(hidden, 503);
 	assert_eq!(assert_json(recovery, 200), json!([]));
 	let visible = assert_json(visible, 200);
-	assert_eq!(visible["workspace"]["id"], created["id"]);
+	assert_eq!(visible["thread"]["id"], created["id"]);
 }
 
 #[rstest]
@@ -380,8 +374,8 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let created = workspace(&member, "Pending visibility").await;
-	let path = format!("/api/workspaces/{}", created["id"].as_str().unwrap());
+	let created = thread(&member, "Pending visibility").await;
+	let path = format!("/api/threads/{}", created["id"].as_str().unwrap());
 	let mut db = app.database.lease.handle();
 	let mut lease = ReadLease::begin(&app.runtime.store).await.unwrap();
 	lease.suspend().await.unwrap();
@@ -433,5 +427,5 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 	assert_eq!(gate.commit_epoch(), 1);
 	assert_eq!(gate.transaction_id(), None);
 	let visible = assert_json(member.get(&path).await.unwrap(), 200);
-	assert_eq!(visible["workspace"]["id"], created["id"]);
+	assert_eq!(visible["thread"]["id"], created["id"]);
 }

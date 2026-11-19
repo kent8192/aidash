@@ -1,4 +1,4 @@
-//! Consume File publications under a Workspace lock, retaining saved authority.
+//! Consume File publications under a Thread lock, retaining saved authority.
 use super::{access::Lease, mutations::Entries, storage};
 use crate::{Error, Result, database::native, store::Store};
 use aidash_application::{
@@ -26,27 +26,27 @@ use uuid::Uuid;
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
-/// Serialize image publication and rebuild within one Workspace only.
+/// Serialize image publication and rebuild within one Thread only.
 ///
-/// Every caller takes the parent `workspaces` row before the advisory lock.
+/// Every caller takes the parent `threads` row before the advisory lock.
 /// Publication inserts need a key-share lock on that row through their foreign
 /// key, while configuration and bootstrap lock it `FOR UPDATE` first; taking
 /// the row here keeps one order and avoids a lock cycle. A caller already
 /// holding `FOR UPDATE` keeps it.
-pub(crate) async fn lock_workspace(
+pub(crate) async fn lock_thread(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Result<()> {
 	let parent = Query::select()
 		.column(Alias::new("id"))
-		.from(Alias::new("workspaces"))
-		.and_where(Expr::col("id").eq(Expr::value(workspace)))
+		.from(Alias::new("threads"))
+		.and_where(Expr::col("id").eq(Expr::value(thread)))
 		.lock(LockType::KeyShare)
 		.to_string(PostgresQueryBuilder);
 	native::query(&parent).execute(&mut *tx).await?;
 	let statement = Query::select()
 		.expr(Expr::cust(format!(
-			"pg_advisory_xact_lock(71003201, hashtext('{workspace}'::text))"
+			"pg_advisory_xact_lock(71003201, hashtext('{thread}'::text))"
 		)))
 		.to_string(PostgresQueryBuilder);
 	native::query(&statement).execute(tx).await?;
@@ -55,7 +55,7 @@ pub(crate) async fn lock_workspace(
 
 struct Session {
 	lease: Option<Lease<'static>>,
-	workspace: Uuid,
+	thread: Uuid,
 	index: Option<crate::apps::knowledge::serializers::contracts::Index>,
 	authorities: Value,
 }
@@ -96,7 +96,7 @@ fn waiting_for_owner(authority: &Value) -> bool {
 
 async fn owner_authority(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	area: Uuid,
 	tenant: &str,
 	owner: &str,
@@ -109,7 +109,7 @@ async fn owner_authority(
 		.and_where(Expr::col(("r", "area_id")).eq(Expr::value(area)))
 		.and_where(Expr::col(("r", "tenant")).eq(Expr::value(tenant)))
 		.and_where(Expr::col(("authorization_execution", "tenant")).eq(Expr::value(tenant)))
-		.and_where(Expr::col(("authorization_execution", "workspace_id")).eq(Expr::value(workspace)))
+		.and_where(Expr::col(("authorization_execution", "thread_id")).eq(Expr::value(thread)))
 		.and_where(Expr::col(("authorization_execution", "root_subject")).eq(Expr::value(owner)))
 		.and_where(Expr::col(("authorization_credentials", "tenant")).eq(Expr::value(tenant)))
 		.and_where(Expr::col(("authorization_credentials", "subject")).eq(Expr::value(owner)))
@@ -147,7 +147,7 @@ async fn mark_waiting(entries: &mut Entries<'_, '_>, entry: &Entry) -> Result<()
 /// An owner Run can restore a missing grant without impersonating the owner.
 async fn refresh_owner_authority(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	slots: &ImageSlots,
 	mut authorities: Value,
 ) -> Result<Value> {
@@ -167,11 +167,11 @@ async fn refresh_owner_authority(
 		let tenant = saved["tenant"].as_str().ok_or(Error::Forbidden)?;
 		let owner = saved["subject"].as_str().ok_or(Error::Forbidden)?;
 		let Some(authority) =
-			owner_authority(entries.lease, workspace, slot.area_id, tenant, owner).await?
+			owner_authority(entries.lease, thread, slot.area_id, tenant, owner).await?
 		else {
 			continue;
 		};
-		if let Some(entry) = entries.by_key(workspace, &entry_key).await?
+		if let Some(entry) = entries.by_key(thread, &entry_key).await?
 			&& !entry.deleted
 		{
 			let mut update = Query::update();
@@ -202,7 +202,7 @@ async fn refresh_owner_authority(
 				"next_authority_check",
 				Expr::cust("CLOCK_TIMESTAMP() + INTERVAL '5 seconds'"),
 			)
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(&mut **entries.lease.tx())
@@ -212,7 +212,7 @@ async fn refresh_owner_authority(
 
 pub(crate) async fn mark_limit(
 	entries: &mut Entries<'_, '_>,
-	workspace: Uuid,
+	thread: Uuid,
 	entry: &Entry,
 ) -> Result<()> {
 	native::query(
@@ -238,27 +238,23 @@ pub(crate) async fn mark_limit(
 	.execute(&mut **entries.lease.tx())
 	.await?;
 	entries
-		.history(workspace, entry.id, entry.revision, "UNSUPPORTED", "limit")
+		.history(thread, entry.id, entry.revision, "UNSUPPORTED", "limit")
 		.await?;
 	Ok(())
 }
 
 /// Configuration rotates active points before the quota is reconsidered.
-pub(crate) async fn rebuild(
-	lease: &mut Lease<'_>,
-	workspace: Uuid,
-	max_images: usize,
-) -> Result<()> {
+pub(crate) async fn rebuild(lease: &mut Lease<'_>, thread: Uuid, max_images: usize) -> Result<()> {
 	// Serialize the rebuild boundary with File publication commits.
-	lock_workspace(&mut **lease.tx(), workspace).await?;
+	lock_thread(&mut **lease.tx(), thread).await?;
 	// Thread Attachment images share the one image limit (#622 decision 12).
 	let max_images =
-		max_images.saturating_sub(super::attachment_images::counted(lease.tx(), workspace).await?);
+		max_images.saturating_sub(super::attachment_images::counted(lease.tx(), thread).await?);
 	let ledger = native::query(
 		&Query::select()
 			.columns(["slots", "authorities"].map(Alias::new))
 			.from(Alias::new("semantic_image_ledgers"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -273,7 +269,7 @@ pub(crate) async fn rebuild(
 		&Query::select()
 			.column("sequence")
 			.from(Alias::new("semantic_image_publications"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.order_by("sequence", Order::Desc)
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
@@ -288,11 +284,11 @@ pub(crate) async fn rebuild(
 		// committed event so later deletions cannot cause an implicit refill.
 		slots.request_rebuild(pending);
 	}
-	let index = storage::index(lease.tx(), workspace, true).await?;
+	let index = storage::index(lease.tx(), thread, true).await?;
 	let mut entries = Entries { lease };
 	for slot in &slots.entries {
 		let entry_key = key(slot);
-		let Some(entry) = entries.by_key(workspace, &entry_key).await? else {
+		let Some(entry) = entries.by_key(thread, &entry_key).await? else {
 			continue;
 		};
 		if entry.deleted {
@@ -305,7 +301,7 @@ pub(crate) async fn rebuild(
 			if entry.state == "UNSUPPORTED" && entry.last_error.as_deref() == Some("limit") {
 				let pending = entries
 					.change(
-						workspace,
+						thread,
 						entry.id,
 						Uuid::new_v4(),
 						index.revision,
@@ -319,7 +315,7 @@ pub(crate) async fn rebuild(
 				}
 				entries
 					.history(
-						workspace,
+						thread,
 						pending.id,
 						pending.revision,
 						"PENDING",
@@ -331,13 +327,13 @@ pub(crate) async fn rebuild(
 			}
 			continue;
 		}
-		mark_limit(&mut entries, workspace, &entry).await?;
+		mark_limit(&mut entries, thread, &entry).await?;
 	}
 	native::query(
 		&Query::update()
 			.table(Alias::new("semantic_image_ledgers"))
 			.value("slots", serde_json::to_value(slots)?)
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(&mut **entries.lease.tx())
@@ -347,13 +343,13 @@ pub(crate) async fn rebuild(
 
 /// Seed current pre-feature images ahead of queued publications. The event
 /// lock makes the snapshot and new publication order agree at commit.
-async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -> Result<bool> {
-	lock_workspace(&mut **lease.tx(), workspace).await?;
+async fn bootstrap(lease: &mut Lease<'_>, thread: Uuid, slots: &ImageSlots) -> Result<bool> {
+	lock_thread(&mut **lease.tx(), thread).await?;
 	let queued = native::query(
 		&Query::select()
 			.columns(["area_id", "changes"].map(Alias::new))
 			.from(Alias::new("semantic_image_publications"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_all(&mut **lease.tx())
@@ -376,7 +372,7 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 	// Each Area's manifest is projected from its current revision row.
 	let areas = native::query(
 		&crate::apps::execution::repositories::sessions::select("core_areas")
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.order_by("id", Order::Desc)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -419,7 +415,7 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 		if changes.is_empty() {
 			continue;
 		}
-		let authority = owner_authority(lease, workspace, area, &tenant, &owner)
+		let authority = owner_authority(lease, thread, area, &tenant, &owner)
 			.await?
 			.unwrap_or_else(
 				|| json!({"credential":null,"tenant":tenant,"subject":owner,"subjects":[]}),
@@ -439,7 +435,7 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 					[
 						"sequence",
 						"tenant",
-						"workspace_id",
+						"thread_id",
 						"area_id",
 						"generation",
 						"changes",
@@ -453,7 +449,7 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 						.expr(Expr::value(
 							authority["tenant"].as_str().unwrap_or_default(),
 						))
-						.expr(Expr::value(workspace))
+						.expr(Expr::value(thread))
 						.expr(Expr::value(area))
 						.expr(Expr::value(generation))
 						.expr(Expr::value(serde_json::to_value(changes)?))
@@ -470,7 +466,7 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 
 /// Inspect one pre-feature generic File only after restoring its owner's Run.
 /// The Area lock precedes the publication lock, as in ordinary File writes.
-async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
+async fn probe_legacy(store: &Store, thread: Uuid) -> Result<()> {
 	use aidash_domain::semantic::indexing::LegacyCandidate;
 
 	let mut lookup = Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
@@ -478,7 +474,7 @@ async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
 		&Query::select()
 			.column("slots")
 			.from(Alias::new("semantic_image_ledgers"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_optional(&mut **lookup.tx())
@@ -501,7 +497,7 @@ async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
 				.columns(["tenant", "owner"].map(Alias::new))
 				.from(Alias::new("core_areas"))
 				.and_where(Expr::col("id").eq(Expr::value(candidate.area_id)))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_optional(&mut **lookup.tx())
@@ -513,7 +509,7 @@ async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
 		let tenant: String = area.try_get("tenant")?;
 		let owner: String = area.try_get("owner")?;
 		let authority =
-			owner_authority(&mut lookup, workspace, candidate.area_id, &tenant, &owner).await?;
+			owner_authority(&mut lookup, thread, candidate.area_id, &tenant, &owner).await?;
 		if let Some(authority) = &authority {
 			selected.push((candidate.clone(), authority.clone()));
 		}
@@ -527,7 +523,7 @@ async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
 			continue;
 		}
 		let area_id = candidate.area_id;
-		match probe_one_legacy(store, workspace, candidate, authority).await {
+		match probe_one_legacy(store, thread, candidate, authority).await {
 			Ok(()) => {
 				processed += 1;
 				if processed == 8 {
@@ -547,7 +543,7 @@ async fn probe_legacy(store: &Store, workspace: Uuid) -> Result<()> {
 
 async fn probe_one_legacy(
 	store: &Store,
-	workspace: Uuid,
+	thread: Uuid,
 	candidate: aidash_domain::semantic::indexing::LegacyCandidate,
 	authority: Value,
 ) -> Result<()> {
@@ -557,17 +553,17 @@ async fn probe_one_legacy(
 	};
 	use aidash_domain::semantic::indexing::ImageChange;
 	use tokio::io::AsyncReadExt as _;
-	let mut lease = Lease::restore(store, authority.clone(), workspace).await?;
+	let mut lease = Lease::restore(store, authority.clone(), thread).await?;
 	let result: Result<()> = async {
 		let access = lease.access().ok_or(Error::Forbidden)?;
 		let mut area = match sessions::load(access, candidate.area_id).await {
 			Err(Error::NotFound(_)) => return Err(Error::Forbidden),
 			other => other?,
 		};
-		if area.workspace_id != workspace { return Err(Error::Forbidden); }
+		if area.thread_id != thread { return Err(Error::Forbidden); }
 		// The candidate may have been removed while its authority was restored.
 		let ledger = native::query(&Query::select().column("slots").from(Alias::new("semantic_image_ledgers"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace))).to_string(PostgresQueryBuilder))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread))).to_string(PostgresQueryBuilder))
 			.fetch_optional(&mut **access.tx).await?;
 		let Some(ledger) = ledger else { return Ok(()); };
 		let current: ImageSlots = serde_json::from_value(ledger.try_get("slots")?)?;
@@ -592,7 +588,7 @@ async fn probe_one_legacy(
 					media_type = Some(file.media_type.clone());
 				}
 		}
-		lock_workspace(&mut **access.tx, workspace).await?;
+		lock_thread(&mut **access.tx, thread).await?;
 		if changed {
 			area.revision += 1;
 			area.manifest = serde_json::to_value(files)?;
@@ -604,13 +600,13 @@ async fn probe_one_legacy(
 				.value("revision", area.revision)
 				.and_where(Expr::col("id").eq(Expr::value(area.id))).to_string(PostgresQueryBuilder))
 				.execute(&mut **access.tx).await?;
-			store.event(&mut access.tx, Some(workspace), "capability.files_changed", json!({"area_id":area.id,"revision":area.revision,"generation":area.generation})).await?;
+			store.event(&mut access.tx, Some(thread), "capability.files_changed", json!({"area_id":area.id,"revision":area.revision,"generation":area.generation})).await?;
 		}
 		let change = ImageChange::LegacyResolved { file_id: candidate.file_id, path: candidate.path.clone(), position: candidate.position, media_type, size };
 		native::query(&Query::insert().into_table(Alias::new("semantic_image_publications"))
-			.columns(["sequence", "tenant", "workspace_id", "area_id", "generation", "changes", "authority"].map(Alias::new))
+			.columns(["sequence", "tenant", "thread_id", "area_id", "generation", "changes", "authority"].map(Alias::new))
 			.from_subquery(Query::select().expr(Expr::cust("-nextval(pg_get_serial_sequence('public.semantic_image_publications', 'sequence')::regclass)"))
-				.expr(Expr::value(area.tenant)).expr(Expr::value(workspace)).expr(Expr::value(area.id)).expr(Expr::value(candidate.generation))
+				.expr(Expr::value(area.tenant)).expr(Expr::value(thread)).expr(Expr::value(area.id)).expr(Expr::value(candidate.generation))
 				.expr(Expr::value(serde_json::to_value(vec![change])?)).expr(Expr::value(authority)).to_owned())
 			.to_string(PostgresQueryBuilder)).execute(&mut **access.tx).await?;
 		Ok(())
@@ -618,27 +614,27 @@ async fn probe_one_legacy(
 	lease.finish(result).await
 }
 
-/// Bounded discovery skips Workspaces that have not configured an index yet.
+/// Bounded discovery skips Threads that have not configured an index yet.
 pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	let pending_baselines = native::query(
 		&Query::select()
-			.column(("semantic_indexes", "workspace_id"))
+			.column(("semantic_indexes", "thread_id"))
 			.from(Alias::new("semantic_indexes"))
 			.join(
 				JoinType::LeftJoin,
 				Alias::new("semantic_image_ledgers"),
-				Expr::col(("semantic_indexes", "workspace_id"))
-					.equals(("semantic_image_ledgers", "workspace_id")),
+				Expr::col(("semantic_indexes", "thread_id"))
+					.equals(("semantic_image_ledgers", "thread_id")),
 			)
 			.and_where(Expr::cust("semantic_indexes.spec->>'enabled' = 'true'"))
 			.and_where(Expr::cust(
-				"semantic_image_ledgers.workspace_id IS NULL OR NOT semantic_image_ledgers.initialized OR (semantic_image_ledgers.waiting_authority AND semantic_image_ledgers.next_authority_check <= CLOCK_TIMESTAMP())",
+				"semantic_image_ledgers.thread_id IS NULL OR NOT semantic_image_ledgers.initialized OR (semantic_image_ledgers.waiting_authority AND semantic_image_ledgers.next_authority_check <= CLOCK_TIMESTAMP())",
 			))
 			.order_by_expr(
 				Expr::cust("COALESCE(semantic_image_ledgers.next_authority_check, '-infinity'::timestamptz)"),
 				Order::Asc,
 			)
-			.order_by(("semantic_indexes", "workspace_id"), Order::Asc)
+			.order_by(("semantic_indexes", "thread_id"), Order::Asc)
 			.limit(64)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -646,7 +642,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	.await?;
 	let rows = native::query(
 		&Query::select()
-			.column(("p", "workspace_id"))
+			.column(("p", "thread_id"))
 			.expr_as(
 				Func::min(Expr::col(("p", "sequence")).into()),
 				Alias::new("oldest"),
@@ -655,10 +651,10 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			.join(
 				JoinType::InnerJoin,
 				Alias::new("semantic_indexes"),
-				Expr::col(("p", "workspace_id")).equals(("semantic_indexes", "workspace_id")),
+				Expr::col(("p", "thread_id")).equals(("semantic_indexes", "thread_id")),
 			)
 			.and_where(Expr::cust("semantic_indexes.spec->>'enabled' = 'true'"))
-			.group_by_col(("p", "workspace_id"))
+			.group_by_col(("p", "thread_id"))
 			.order_by(Alias::new("oldest"), Order::Asc)
 			.limit(64)
 			.to_string(PostgresQueryBuilder),
@@ -667,11 +663,11 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	.await?;
 	let mut seen = BTreeSet::new();
 	for row in pending_baselines.into_iter().chain(rows) {
-		let workspace: Uuid = row.try_get("workspace_id")?;
-		if !seen.insert(workspace) {
+		let thread: Uuid = row.try_get("thread_id")?;
+		if !seen.insert(thread) {
 			continue;
 		}
-		if probe_legacy(store, workspace).await.is_err() {
+		if probe_legacy(store, thread).await.is_err() {
 			tracing::warn!("legacy image probe deferred");
 		}
 		for _ in 0..8 {
@@ -679,7 +675,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 				Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
 			let session = Session {
 				lease: Some(lease),
-				workspace,
+				thread,
 				index: None,
 				authorities: json!({}),
 			};
@@ -689,7 +685,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 				Ok(false) => break,
 				Err(_) => {
 					// One Area's stale authority or persistence error must not block text
-					// indexing or other Workspaces; its durable event remains for retry.
+					// indexing or other Threads; its durable event remains for retry.
 					tracing::warn!("image publication deferred");
 					break;
 				}
@@ -702,15 +698,15 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 #[async_trait]
 impl ImagePublicationSession for Session {
 	async fn load(&mut self) -> aidash_application::Result<Option<ImagePublication>> {
-		let workspace = self.workspace;
+		let thread = self.thread;
 		let lease = self.lease()?;
-		// Maintenance must not wait behind a reader of this Workspace. Leave its
+		// Maintenance must not wait behind a reader of this Thread. Leave its
 		// publications and baseline pending so a later sweep can retry them.
 		if native::query(
 			&Query::select()
 				.column(Alias::new("id"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col("id").eq(Expr::value(thread)))
 				.lock(LockType::Update)
 				.lock_behavior(LockBehavior::SkipLocked)
 				.to_string(PostgresQueryBuilder),
@@ -721,7 +717,7 @@ impl ImagePublicationSession for Session {
 		{
 			return Ok(None);
 		}
-		let index = storage::index(lease.tx(), workspace, true).await?;
+		let index = storage::index(lease.tx(), thread, true).await?;
 		let spec: IndexingSpec = serde_json::from_value(index.spec.clone())?;
 		if !spec.enabled {
 			return Ok(None);
@@ -730,7 +726,7 @@ impl ImagePublicationSession for Session {
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("semantic_image_ledgers"))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -749,18 +745,12 @@ impl ImagePublicationSession for Session {
 				&Query::insert()
 					.into_table(Alias::new("semantic_image_ledgers"))
 					.columns(
-						[
-							"workspace_id",
-							"tenant",
-							"slots",
-							"authorities",
-							"initialized",
-						]
-						.map(Alias::new),
+						["thread_id", "tenant", "slots", "authorities", "initialized"]
+							.map(Alias::new),
 					)
 					.from_subquery(
 						Query::select()
-							.expr(Expr::value(workspace))
+							.expr(Expr::value(thread))
 							.expr(Expr::value(index.tenant.clone()))
 							.expr(Expr::value(serde_json::to_value(ImageSlots::default())?))
 							.expr(Expr::value(json!({})))
@@ -768,7 +758,7 @@ impl ImagePublicationSession for Session {
 							.to_owned(),
 					)
 					.on_conflict(
-						OnConflict::column(Alias::new("workspace_id"))
+						OnConflict::column(Alias::new("thread_id"))
 							.do_nothing()
 							.to_owned(),
 					)
@@ -779,17 +769,17 @@ impl ImagePublicationSession for Session {
 			(ImageSlots::default(), json!({}), false, false)
 		};
 		if waiting_authority {
-			authorities = refresh_owner_authority(lease, workspace, &slots, authorities).await?;
+			authorities = refresh_owner_authority(lease, thread, &slots, authorities).await?;
 		}
 		if !initialized {
-			if !bootstrap(lease, workspace, &slots).await? {
+			if !bootstrap(lease, thread, &slots).await? {
 				return Ok(None);
 			}
 			native::query(
 				&Query::update()
 					.table(Alias::new("semantic_image_ledgers"))
 					.value("initialized", true)
-					.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
@@ -799,7 +789,7 @@ impl ImagePublicationSession for Session {
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("semantic_image_publications"))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.order_by("sequence", Order::Asc)
 				.lock(LockType::Update)
 				.limit(1)
@@ -813,9 +803,9 @@ impl ImagePublicationSession for Session {
 		let sequence: i64 = row.try_get("sequence")?;
 		let rebuild_after = slots.rebuild_through == Some(sequence);
 		// Thread Attachment images share the one image limit (#622 decision 12).
-		let attachments = super::attachment_images::counted(lease.tx(), workspace).await?;
+		let attachments = super::attachment_images::counted(lease.tx(), thread).await?;
 		let publication = ImagePublication {
-			workspace,
+			thread,
 			area: row.try_get("area_id")?,
 			generation: row.try_get("generation")?,
 			sequence,
@@ -855,12 +845,12 @@ impl ImagePublicationSession for Session {
 				continue;
 			}
 			let entry_key = key(old);
-			if let Some(entry) = entries.by_key(publication.workspace, &entry_key).await?
+			if let Some(entry) = entries.by_key(publication.thread, &entry_key).await?
 				&& !entry.deleted
 			{
 				let deleted = entries
 					.change(
-						publication.workspace,
+						publication.thread,
 						entry.id,
 						Uuid::new_v4(),
 						index.revision,
@@ -871,7 +861,7 @@ impl ImagePublicationSession for Session {
 				entries.schedule(&deleted, &index.collection).await?;
 				entries
 					.history(
-						publication.workspace,
+						publication.thread,
 						deleted.id,
 						deleted.revision,
 						"DELETED",
@@ -889,7 +879,7 @@ impl ImagePublicationSession for Session {
 			{
 				if old.assigned != slot.assigned {
 					let entry_key = key(slot);
-					if let Some(entry) = entries.by_key(publication.workspace, &entry_key).await?
+					if let Some(entry) = entries.by_key(publication.thread, &entry_key).await?
 						&& !entry.deleted
 					{
 						if slot.assigned {
@@ -899,7 +889,7 @@ impl ImagePublicationSession for Session {
 							let waiting = waiting_for_owner(&authority);
 							let pending = entries
 								.change(
-									publication.workspace,
+									publication.thread,
 									entry.id,
 									Uuid::new_v4(),
 									index.revision,
@@ -913,7 +903,7 @@ impl ImagePublicationSession for Session {
 							}
 							entries
 								.history(
-									publication.workspace,
+									publication.thread,
 									pending.id,
 									pending.revision,
 									"PENDING",
@@ -921,7 +911,7 @@ impl ImagePublicationSession for Session {
 								)
 								.await?;
 						} else {
-							mark_limit(&mut entries, publication.workspace, &entry).await?;
+							mark_limit(&mut entries, publication.thread, &entry).await?;
 						}
 					}
 				}
@@ -936,7 +926,7 @@ impl ImagePublicationSession for Session {
 			};
 			let entry = Entry {
 				id: Uuid::new_v4(),
-				workspace_id: publication.workspace,
+				thread_id: publication.thread,
 				key: entry_key.clone(),
 				source: serde_json::to_value(source)?,
 				agent: None,
@@ -957,14 +947,14 @@ impl ImagePublicationSession for Session {
 			let entry = entries.put(entry, publication.authority.clone()).await?;
 			entries.schedule(&entry, &index.collection).await?;
 			if !slot.assigned {
-				mark_limit(&mut entries, publication.workspace, &entry).await?;
+				mark_limit(&mut entries, publication.thread, &entry).await?;
 			} else {
 				if waiting_for_owner(&publication.authority) {
 					mark_waiting(&mut entries, &entry).await?;
 				}
 				entries
 					.history(
-						publication.workspace,
+						publication.thread,
 						entry.id,
 						entry.revision,
 						"PENDING",
@@ -983,7 +973,7 @@ impl ImagePublicationSession for Session {
 			.value("authorities", authorities)
 			.value("waiting_authority", waiting)
 			.value_expr("next_authority_check", Expr::cust("CLOCK_TIMESTAMP()"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(publication.workspace)));
+			.and_where(Expr::col("thread_id").eq(Expr::value(publication.thread)));
 		if publication.rebuild_after {
 			update.value("initialized", true);
 		}
@@ -1012,7 +1002,7 @@ impl ImagePublicationSession for Session {
 
 #[cfg(test)]
 mod tests {
-	use super::lock_workspace;
+	use super::lock_thread;
 	use crate::apps::execution::test_database::{DatabaseFixture, database};
 	use rstest::rstest;
 	use std::time::Duration;
@@ -1020,41 +1010,35 @@ mod tests {
 
 	#[rstest]
 	#[tokio::test]
-	async fn image_publication_lock_serializes_only_the_same_workspace(
+	async fn image_publication_lock_serializes_only_the_same_thread(
 		#[future] database: DatabaseFixture,
 	) {
 		let database = database.await;
-		let workspace = Uuid::new_v4();
+		let thread = Uuid::new_v4();
 		let mut first = database.begin_fixture().await;
 		let mut same = database.begin_fixture().await;
 		let mut other = database.begin_fixture().await;
-		lock_workspace(&mut *first, workspace).await.unwrap();
+		lock_thread(&mut *first, thread).await.unwrap();
 		assert!(
 			tokio::time::timeout(
 				Duration::from_secs(2),
-				lock_workspace(&mut *other, Uuid::new_v4())
+				lock_thread(&mut *other, Uuid::new_v4())
 			)
 			.await
 			.unwrap()
 			.is_ok()
 		);
 		assert!(
-			tokio::time::timeout(
-				Duration::from_millis(100),
-				lock_workspace(&mut *same, workspace)
-			)
-			.await
-			.is_err()
+			tokio::time::timeout(Duration::from_millis(100), lock_thread(&mut *same, thread))
+				.await
+				.is_err()
 		);
 		first.commit().await.unwrap();
 		assert!(
-			tokio::time::timeout(
-				Duration::from_secs(2),
-				lock_workspace(&mut *same, workspace)
-			)
-			.await
-			.unwrap()
-			.is_ok()
+			tokio::time::timeout(Duration::from_secs(2), lock_thread(&mut *same, thread))
+				.await
+				.unwrap()
+				.is_ok()
 		);
 	}
 }

@@ -74,18 +74,17 @@ async fn keeper(node: &Node) -> (String, Uuid) {
 		)
 		.await;
 	assert_eq!(status, 200, "{body}");
-	let workspace = node
+	let thread = node
 		.f
 		.store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"Keeper",
-			"Must survive",
 		)
 		.await
 		.unwrap();
-	(name, workspace.id)
+	(name, thread.id)
 }
 
 fn fixture_bytes(id: Uuid) -> Vec<u8> {
@@ -100,12 +99,12 @@ fn fixture_blob_path(root: &std::path::Path, id: Uuid) -> std::path::PathBuf {
 		.join(&digest[2..4])
 		.join(digest)
 }
-async fn file(node: &Node, workspace: Uuid) -> Uuid {
+async fn file(node: &Node, thread: Uuid) -> Uuid {
 	let area = Uuid::new_v4();
 	let id = Uuid::new_v4();
 	let driver = node.f.store.pool.fixture_driver();
-	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
-        .bind(area).bind(&node.address).bind(workspace).bind(Uuid::new_v4()).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
+        .bind(area).bind(&node.address).bind(thread).bind(Uuid::new_v4()).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')").bind(area).execute(driver).await.unwrap();
 	let bytes = fixture_bytes(id);
 	let digest = aidash_server::capabilities::objects::digest(&bytes);
@@ -338,8 +337,8 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	}
 	let target_a = NodeAddress::parse(&a.address).unwrap().node.to_string();
 	let target_b = NodeAddress::parse(&b.address).unwrap().node.to_string();
-	let (keeper_a, workspace_a) = keeper(&a).await;
-	let (_, workspace_b) = keeper(&b).await;
+	let (keeper_a, thread_a) = keeper(&a).await;
+	let (_, thread_b) = keeper(&b).await;
 	let keeper_a_address =
 		a.f.config
 			.deployment
@@ -355,8 +354,8 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 		)
 		.await;
 	assert_eq!(status, 200, "{body}");
-	let (target_file_a, kept_file_a) = (file(&a, wa).await, file(&a, workspace_a).await);
-	let (target_file_b, kept_file_b) = (file(&b, wb).await, file(&b, workspace_b).await);
+	let (target_file_a, kept_file_a) = (file(&a, wa).await, file(&a, thread_a).await);
+	let (target_file_b, kept_file_b) = (file(&b, wb).await, file(&b, thread_b).await);
 	a.submit(&manifest).await;
 	if abort {
 		steps(&a, manifest.id, 2).await;
@@ -556,8 +555,15 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	let (status, value) = signed_call(&b, &denied, &next_a, &body).await;
 	assert_eq!(status, 401, "quarantined exact recovery refuses: {value}");
 	assert_eq!(trust_row(&b, &target_b, &a.address).await, held);
-	for (node, removed, kept) in [(&a, wa, workspace_a), (&b, wb, workspace_b)] {
-		let counts: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM workspaces WHERE id=$1),(SELECT count(*) FROM workspaces WHERE id=$2)").bind(removed).bind(kept).fetch_one(node.f.store.pool.fixture_driver()).await.unwrap();
+	for (node, removed, kept) in [(&a, wa, thread_a), (&b, wb, thread_b)] {
+		let counts: (i64, i64) = sqlx::query_as(
+			"SELECT (SELECT count(*) FROM threads WHERE id=$1),(SELECT count(*) FROM threads WHERE id=$2)",
+		)
+		.bind(removed)
+		.bind(kept)
+		.fetch_one(node.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 		assert_eq!(counts, (0, 1), "recovery never resurrects ordinary data");
 	}
 }

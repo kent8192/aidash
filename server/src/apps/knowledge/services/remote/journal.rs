@@ -41,14 +41,14 @@ pub(crate) async fn resume_in(
 	tx: &mut crate::database::native::Transaction,
 	grant: Uuid,
 	admission: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	actor: &str,
 ) -> Result<()> {
 	aidash_application::semantic::remote_journal::resume(
 		&mut crate::bootstrap::semantic_journal_scope(store, tx),
 		grant,
 		admission,
-		workspace,
+		thread,
 		actor,
 	)
 	.await

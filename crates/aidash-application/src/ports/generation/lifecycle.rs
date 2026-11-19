@@ -43,7 +43,7 @@ pub trait GenerationLifecycleScope: Send {
 		actor: &str,
 		reason: &str,
 	) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn replay(
 		&mut self,
 		job: &Request,

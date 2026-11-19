@@ -2,7 +2,7 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/deployment.rs"]
 mod deployment;
-use aidash_server::apps::workspaces::models::Workspace;
+use aidash_server::apps::workspaces::models::Thread;
 use deployment::{deployment_command, deployment_command_excluding};
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
 use reinhardt::db::migrations::{
@@ -168,6 +168,15 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
 	("marketplace", "0011_tenant_owned_row_level_security"),
+	("workspaces", "0049_threads"),
+	("workspaces", "0050_threads_state"),
+	("execution", "0148_threads"),
+	("execution", "0149_threads_state"),
+	("identity", "0110_threads"),
+	("identity", "0111_thread_member_policy"),
+	("knowledge", "0058_threads"),
+	("federation", "0030_threads"),
+	("registry", "0081_thread_tools"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -207,6 +216,14 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0145_stints"),
 	("execution", "0146_stints_row_level_security"),
 	("execution", "0147_unscheduled_generations"),
+	("workspaces", "0049_threads"),
+	("workspaces", "0050_threads_state"),
+	("execution", "0148_threads"),
+	("execution", "0149_threads_state"),
+	("identity", "0110_threads"),
+	("identity", "0111_thread_member_policy"),
+	("knowledge", "0058_threads"),
+	("federation", "0030_threads"),
 ];
 
 async fn history_size() -> usize {
@@ -246,19 +263,16 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let federation = graph.get_leaf_nodes_for_app("federation");
 	assert_eq!(federation.len(), 1);
-	assert_eq!(federation[0].name, "0029_run_only_tool_answers_state");
+	assert_eq!(federation[0].name, "0030_threads");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0080_node_tools");
+	assert_eq!(registry[0].name, "0081_thread_tools");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0147_unscheduled_generations");
+	assert_eq!(execution[0].name, "0149_threads_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(
-		knowledge[0].name,
-		"0057_journal_proofs_without_research_state"
-	);
+	assert_eq!(knowledge[0].name, "0058_threads");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -270,7 +284,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		131
+		133
 	);
 	let tables = migrations
 		.iter()
@@ -536,15 +550,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0148_policy_probe")
+		.get_migration("execution", "0150_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0147_unscheduled_generations".to_owned()
-		)]
+		vec![("execution".to_owned(), "0149_threads_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -620,27 +631,52 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0145_stints"),
 			("execution", "0146_stints_row_level_security"),
 			("execution", "0147_unscheduled_generations"),
+			("workspaces", "0049_threads"),
+			("workspaces", "0050_threads_state"),
+			("execution", "0148_threads"),
+			("execution", "0149_threads_state"),
+			("identity", "0110_threads"),
+			("identity", "0111_thread_member_policy"),
+			("knowledge", "0058_threads"),
+			("federation", "0030_threads"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
-	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
-	let mut connection = lease.handle();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let workspace_id = Uuid::new_v4();
 	let scratch_space_id = fixture.scratch_space("acme").await;
-	let workspace = Workspace::build()
-		.scratch_space(scratch_space_id)
-		.created_by("alice")
-		.id(workspace_id)
-		.tenant("acme")
-		.node(node.clone())
-		.title("Migration")
-		.goal("Preserve creation time")
-		.state(json!({}).into())
-		.revision(0)
-		.finish();
-	Workspace::objects()
-		.create_with_conn(&mut connection, &workspace)
+	// The history before #1008 still has the Workspace table and its goal.
+	let workspace = Query::insert()
+		.into_table(Alias::new("workspaces"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"node",
+				"title",
+				"goal",
+				"state",
+				"revision",
+				"scratch_space_id",
+				"created_by",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			workspace_id.into(),
+			"acme".into(),
+			node.clone().into(),
+			"Migration".into(),
+			"Preserve creation time".into(),
+			json!({}).into(),
+			0_i64.into(),
+			scratch_space_id.into(),
+			"alice".into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture
+		.connection
+		.execute(&workspace, vec![])
 		.await
 		.unwrap();
 	let run_id = Uuid::new_v4();
@@ -790,15 +826,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0048_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0051_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"workspaces".to_owned(),
-			"0047_duty_creating_task".to_owned()
-		)]
+		vec![("workspaces".to_owned(), "0050_threads_state".to_owned())]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -1088,7 +1121,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		131
+		133
 	);
 }
 
@@ -1111,6 +1144,11 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 		.filter(|migration| match migration.app_label.as_str() {
 			"registry" => migration.name.as_str() < "0054_",
 			"execution" => migration.name.as_str() < "0089_",
+			// The Thread rename (#1008) follows every app's later history.
+			"workspaces" => migration.name.as_str() < "0049_",
+			"identity" => migration.name.as_str() < "0110_",
+			"knowledge" => migration.name.as_str() < "0058_",
+			"federation" => migration.name.as_str() < "0028_",
 			_ => true,
 		})
 		.cloned()
@@ -1269,18 +1307,17 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 	let mut connection = lease.handle();
 	fixture.tenant_root("acme").await;
 	let scratch_space_id = fixture.scratch_space("acme").await;
-	let workspace = Workspace::build()
+	let workspace = Thread::build()
 		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title("After native migration")
-		.goal("Preserve on replay")
-		.state(json!({"keep":true}).into())
 		.revision(0)
+		.deleted_at(None)
 		.finish();
-	Workspace::objects()
+	Thread::objects()
 		.create_with_conn(&mut connection, &workspace)
 		.await
 		.unwrap();
@@ -1298,13 +1335,13 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.collect();
 	assert_eq!(actual, expected);
 	assert_eq!(applied.len(), migrations.len());
-	let loaded = Workspace::objects()
-		.filter(Workspace::field_id().eq(workspace.id))
+	let loaded = Thread::objects()
+		.filter(Thread::field_id().eq(workspace.id))
 		.get_with_db(&mut connection)
 		.await
 		.unwrap();
 	assert_eq!(loaded.title, "After native migration");
-	assert_eq!(loaded.state.0, json!({"keep":true}));
+	assert_eq!(loaded.revision, 0);
 }
 
 async fn assert_image_policies(pool: &PgPool) {
@@ -1518,7 +1555,7 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 		.unwrap();
 	assert_eq!(count, history_size().await as i64);
 	let owner: String = sqlx::query_scalar(
-		"SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='workspaces'",
+		"SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='threads'",
 	)
 	.fetch_one(&admin)
 	.await
@@ -1749,18 +1786,17 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	fixture.tenant_root("acme").await;
 	let scratch_space_id = fixture.scratch_space("acme").await;
-	let workspace = Workspace::build()
+	let workspace = Thread::build()
 		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title("Retained")
-		.goal("Refuse unsafe reversal")
-		.state(json!({"keep": true}).into())
 		.revision(0)
+		.deleted_at(None)
 		.finish();
-	Workspace::objects()
+	Thread::objects()
 		.create_with_conn(&mut lease.handle(), &workspace)
 		.await
 		.unwrap();
@@ -1780,13 +1816,13 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 		String::from_utf8_lossy(&output.stderr)
 	);
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
-	let retained = Workspace::objects()
-		.filter(Workspace::field_id().eq(workspace.id))
+	let retained = Thread::objects()
+		.filter(Thread::field_id().eq(workspace.id))
 		.get_with_db(&mut lease.handle())
 		.await
 		.unwrap();
 	assert_eq!(retained.title, "Retained");
-	assert_eq!(retained.state.0, json!({"keep": true}));
+	assert_eq!(retained.revision, 0);
 }
 
 #[rstest]
@@ -1937,24 +1973,23 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	fixture.tenant_root("acme").await;
 	let scratch_space_id = fixture.scratch_space("acme").await;
-	let workspace = Workspace::build()
+	let workspace = Thread::build()
 		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title(whitespace)
-		.goal("Valid goal")
-		.state(json!({}).into())
 		.revision(0)
+		.deleted_at(None)
 		.finish();
 	// Act
-	let error = Workspace::objects()
+	let error = Thread::objects()
 		.create_with_conn(&mut lease.handle(), &workspace)
 		.await
 		.unwrap_err();
 	// Assert: retain PostgreSQL's frozen nonblank constraint, not only model validation.
-	assert!(error.to_string().contains("workspaces_content"), "{error}");
+	assert!(error.to_string().contains("threads_content"), "{error}");
 }
 
 #[rstest]
@@ -2223,6 +2258,15 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0078_duty_tools"),
 			("registry", "0079_workbench_input_bytes"),
 			("registry", "0080_node_tools"),
+			("workspaces", "0049_threads"),
+			("workspaces", "0050_threads_state"),
+			("execution", "0148_threads"),
+			("execution", "0149_threads_state"),
+			("identity", "0110_threads"),
+			("identity", "0111_thread_member_policy"),
+			("knowledge", "0058_threads"),
+			("federation", "0030_threads"),
+			("registry", "0081_thread_tools"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5426,6 +5470,14 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0043_duty_trigger_from_node"),
 			("workspaces", "0044_duty_trigger_node_event_check"),
 			("workspaces", "0047_duty_creating_task"),
+			("workspaces", "0049_threads"),
+			("workspaces", "0050_threads_state"),
+			("execution", "0148_threads"),
+			("execution", "0149_threads_state"),
+			("identity", "0110_threads"),
+			("identity", "0111_thread_member_policy"),
+			("knowledge", "0058_threads"),
+			("federation", "0030_threads"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5500,6 +5552,14 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0043_duty_trigger_from_node"),
 			("workspaces", "0044_duty_trigger_node_event_check"),
 			("workspaces", "0047_duty_creating_task"),
+			("workspaces", "0049_threads"),
+			("workspaces", "0050_threads_state"),
+			("execution", "0148_threads"),
+			("execution", "0149_threads_state"),
+			("identity", "0110_threads"),
+			("identity", "0111_thread_member_policy"),
+			("knowledge", "0058_threads"),
+			("federation", "0030_threads"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5582,6 +5642,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0043_duty_trigger_from_node"),
 			("workspaces", "0044_duty_trigger_node_event_check"),
 			("workspaces", "0047_duty_creating_task"),
+			("workspaces", "0049_threads"),
+			("workspaces", "0050_threads_state"),
+			("execution", "0148_threads"),
+			("execution", "0149_threads_state"),
+			("identity", "0110_threads"),
+			("identity", "0111_thread_member_policy"),
+			("knowledge", "0058_threads"),
+			("federation", "0030_threads"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
@@ -5734,7 +5802,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			]
 			.map(|(table, column)| (Alias::new(table), Alias::new(column))),
 		)
-		.from_as(Alias::new("workspaces"), Alias::new("w"))
+		.from_as(Alias::new("threads"), Alias::new("w"))
 		.join(
 			reinhardt::query::JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(Alias::new("scratch_spaces"), Alias::new("s")),
@@ -5751,14 +5819,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	);
 	let sql = Query::select()
 		.column(Alias::new("created_by"))
-		.from(Alias::new("workspaces"))
+		.from(Alias::new("threads"))
 		.and_where(Expr::col("id").eq(Expr::value(task_workspace)))
 		.to_string(PostgresQueryBuilder);
 	let (task_starter,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 	assert_eq!(task_starter, "early");
 	let sql = Query::select()
 		.columns(["scratch_space_id", "created_by"].map(Alias::new))
-		.from(Alias::new("workspaces"))
+		.from(Alias::new("threads"))
 		.and_where(Expr::col("id").eq(Expr::value(conversation_workspace)))
 		.to_string(PostgresQueryBuilder);
 	let (selected, conversation_starter): (Uuid, String) =
@@ -5796,7 +5864,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	let sql = Query::select()
 		.column(Alias::new("scratch_space_id"))
 		.from(Alias::new("conversations"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(conversation_workspace)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(conversation_workspace)))
 		.to_string(PostgresQueryBuilder);
 	let bindings: Vec<(Uuid,)> = sqlx::query_as(&sql).fetch_all(&pool).await.unwrap();
 	assert_eq!(bindings.len(), 2);
@@ -5806,7 +5874,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			.column(Alias::new("is_nullable"))
 			.from((Alias::new("information_schema"), Alias::new("columns")))
 			.and_where(Expr::col("table_schema").eq("public"))
-			.and_where(Expr::col("table_name").eq("workspaces"))
+			.and_where(Expr::col("table_name").eq("threads"))
 			.and_where(Expr::col("column_name").eq(column))
 			.to_string(PostgresQueryBuilder);
 		let (nullable,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
@@ -6055,7 +6123,7 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 		.unwrap();
 	sqlx::query("INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,'acme','thread_attachment',$2,1)")
 		.bind(current).bind(&digest).execute(&pool).await.unwrap();
-	sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,object_id) VALUES ($1,'acme',$2,'alice',$3,'new','text/plain',$4,1,$5)")
+	sqlx::query("INSERT INTO channel_attachments (id,tenant,thread_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,object_id) VALUES ($1,'acme',$2,'alice',$3,'new','text/plain',$4,1,$5)")
 		.bind(new_attachment).bind(workspace).bind(Uuid::new_v4()).bind(&digest).bind(current).execute(&pool).await.unwrap();
 	let mut reverse = deployment_command(&fixture.url, fixture.directory.path());
 	reverse.args(["migrate", "execution", "0112_content_blobs"]);
@@ -6079,4 +6147,74 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 		"reverse must restore the legacy retention constraints"
 	);
 	pool.close().await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn thread_member_policy_names_thread_actions_kind_and_attribute(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: a stored bundle from before #1008, with a custom condition.
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[("identity", "0111_thread_member_policy")])
+		.await;
+	fixture.tenant_root("thread-policy").await;
+	let before = json!({
+		"tenant": "thread-policy",
+		"subjects": {"alice": {"kind": "user"}},
+		"policies": [{
+			"id": "members",
+			"effect": "allow",
+			"subjects": {"any": true},
+			"actions": [
+				"workspace.create", "workspace.events", "workspace.read",
+				"workspace.share", "workspace.update", "message.read"
+			],
+			"resources": {"kinds": ["workspace", "message"]},
+			"condition": {
+				"op": "exists",
+				"value": {"source": "resource", "path": "/workspace_id"}
+			}
+		}]
+	});
+	let insert = Query::insert()
+		.into_table(Alias::new("authorization_bundles"))
+		.columns(["tenant", "revision", "document"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			"thread-policy".into(),
+			1_i64.into(),
+			before.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&insert, vec![]).await.unwrap();
+
+	// Act
+	fixture.migrate().await;
+
+	// Assert: every Workspace name became the Thread's, the rest stayed, and
+	// the bundle has a new revision.
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let (document, revision): (serde_json::Value, i64) = sqlx::query_as(
+		"SELECT document, revision FROM authorization_bundles WHERE tenant = 'thread-policy'",
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(revision, 2);
+	let policy = &document["policies"][0];
+	assert_eq!(
+		policy["actions"],
+		json!([
+			"thread.create",
+			"thread.events",
+			"thread.read",
+			"thread.share",
+			"thread.update",
+			"message.read"
+		])
+	);
+	assert_eq!(policy["resources"]["kinds"], json!(["thread", "message"]));
+	assert_eq!(policy["condition"]["value"]["path"], "/thread_id");
+	assert!(!document.to_string().contains("workspace"), "{document}");
 }

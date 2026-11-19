@@ -13,7 +13,7 @@ fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		home_node: "aidash://node/brave-otter-k3m9q2xa".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -33,7 +33,7 @@ fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 	let grant = ExecutionGrant {
 		run_id: run.id,
 		task_id: run.task_id,
-		workspace_id: run.workspace_id,
+		thread_id: run.thread_id,
 		tenant: "tenant".into(),
 		credential_id: Uuid::from_u128(4),
 		root_subject: "root".into(),
@@ -157,13 +157,13 @@ impl ExecutionGrantSession for Scope {
 	async fn federated_origin(&mut self, _: Uuid) -> Result<bool> {
 		Ok(false)
 	}
-	async fn workspace(&mut self, _: Uuid) -> Result<Resource> {
-		self.touch("workspace")?;
+	async fn thread(&mut self, _: Uuid) -> Result<Resource> {
+		self.touch("thread")?;
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
-			id: fixture().0.workspace_id.to_string(),
-			attributes: json!({"workspace":"context"}),
+			kind: "thread".into(),
+			id: fixture().0.thread_id.to_string(),
+			attributes: json!({"thread":"context"}),
 		})
 	}
 	fn set_context(&mut self, context: Value) {
@@ -171,7 +171,7 @@ impl ExecutionGrantSession for Scope {
 		self.context = context;
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
-		assert_eq!(action, "workspace.read");
+		assert_eq!(action, "thread.read");
 		self.touch("require")?;
 		if self.denied {
 			Err(Error::Forbidden)
@@ -200,7 +200,7 @@ async fn worker_admission_reads_only_the_grant(#[case] scoped: bool) {
 #[tokio::test]
 async fn invalid_scoped_binding_is_refused() {
 	let (run, mut binding, _) = fixture();
-	binding.workspace_id = Uuid::from_u128(9);
+	binding.thread_id = Uuid::from_u128(9);
 	let repository = Repository {
 		current: Some(binding),
 		calls: Mutex::new(vec![]),
@@ -233,7 +233,7 @@ async fn admission_preserves_adapter_error_identity(#[case] fail: &'static str) 
 #[case::durable(true)]
 #[case::transient(false)]
 #[tokio::test]
-async fn binding_retains_every_delegator_and_requires_the_workspace(#[case] durable: bool) {
+async fn binding_retains_every_delegator_and_requires_the_thread(#[case] durable: bool) {
 	let (run, initial, _) = fixture();
 	let mut scope = Scope::default();
 	bind_worker(&mut scope, &run, &initial, durable)
@@ -241,14 +241,14 @@ async fn binding_retains_every_delegator_and_requires_the_workspace(#[case] dura
 		.unwrap();
 	assert_eq!(scope.subjects, initial.subject_chain);
 	assert_eq!(scope.selected, Some((run.id, Some(durable))));
-	assert_eq!(scope.context, json!({"workspace":"context"}));
+	assert_eq!(scope.context, json!({"thread":"context"}));
 	assert_eq!(
 		scope.calls,
 		[
 			"required_grant",
 			"subjects",
 			"worker",
-			"workspace",
+			"thread",
 			"context",
 			"require"
 		]
@@ -259,7 +259,7 @@ async fn binding_retains_every_delegator_and_requires_the_workspace(#[case] dura
 #[case::credential(true)]
 #[case::delegator(false)]
 #[tokio::test]
-async fn changed_authority_retries_before_workspace_or_worker_selection(#[case] credential: bool) {
+async fn changed_authority_retries_before_thread_or_worker_selection(#[case] credential: bool) {
 	let (run, initial, _) = fixture();
 	let mut scope = Scope::default();
 	if credential {
@@ -292,7 +292,7 @@ async fn missing_required_grants_preserve_storage_failure_identity() {
 #[case::binding(false)]
 #[case::refresh(true)]
 #[tokio::test]
-async fn authority_binding_cannot_bypass_a_workspace_denial(#[case] refreshed: bool) {
+async fn authority_binding_cannot_bypass_a_thread_denial(#[case] refreshed: bool) {
 	let mut scope = Scope {
 		denied: true,
 		..Default::default()
@@ -351,7 +351,7 @@ async fn refresh_locks_policy_and_credential_before_the_current_grant() {
 			"optional_grant",
 			"subjects",
 			"worker",
-			"workspace",
+			"thread",
 			"context",
 			"require"
 		]
@@ -441,7 +441,7 @@ async fn task_origin_cannot_replace_an_already_delegated_authority() {
 #[rstest]
 #[case::refresh("refresh")]
 #[case::grant("optional_grant")]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::decision("require")]
 #[tokio::test]
 async fn refresh_preserves_scoped_adapter_errors(#[case] fail: &'static str) {

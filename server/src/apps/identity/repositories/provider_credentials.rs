@@ -698,11 +698,11 @@ impl AdmittedAccess {
 	}
 }
 
-#[allow(clippy::too_many_arguments)] // Keep the workspace and current policy inputs explicit at admission.
-pub(crate) async fn admit_workspace(
+#[allow(clippy::too_many_arguments)] // Keep the thread and current policy inputs explicit at admission.
+pub(crate) async fn admit_thread(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	configured: bool,
 	floor: aidash_domain::data_protection::Level,
@@ -712,8 +712,8 @@ pub(crate) async fn admit_workspace(
 	use reinhardt::query::{Alias, ExprTrait};
 	let (sql, values) = Query::select()
 		.column(Alias::new("tenant"))
-		.from(Alias::new("authorization_workspaces"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.from(Alias::new("authorization_threads"))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 		.build(PostgresQueryBuilder);
 	let row = tx.fetch_optional(&sql, convert_values(values)).await?;
 	let tenant = match row {
@@ -728,11 +728,11 @@ pub(crate) async fn admit_workspace(
 		refuse_plans(&selected)?;
 	}
 	let mut providers = selected.credentials;
-	// Workspace retrieval is another admitted provider consumer, even when the
+	// Thread retrieval is another admitted provider consumer, even when the
 	// Agent's own Model uses an environment source. Lock the index generation
 	// with the Run admission so configuration cannot change while pins are made.
 	if let Some(index) =
-		crate::apps::knowledge::models::SemanticIndexe::locked(tx, workspace, false).await?
+		crate::apps::knowledge::models::SemanticIndexe::locked(tx, thread, false).await?
 	{
 		let spec = index.configuration()?;
 		if spec.enabled

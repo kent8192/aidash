@@ -36,7 +36,8 @@ fn mode_text(mode: ApprovalMode) -> Result<String> {
 pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 	Ok(Duty {
 		id: row.id,
-		workspace_id: row.workspace_id,
+		thread_id: row.thread_id,
+		origin_thread_id: row.origin_thread_id,
 		requester: row.requester,
 		credential_id: row.credential_id,
 		definition: Definition {
@@ -66,7 +67,6 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 				.map(|watcher| serde_json::from_value(watcher.0))
 				.transpose()?,
 		},
-		thread_id: row.thread_id,
 		anchor: row.anchor,
 		next_scheduled_at: row.next_scheduled_at,
 		watcher_next_at: row.watcher_next_at,
@@ -86,7 +86,8 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 /// Writes every field of `duty` onto `row`; the caller sets the revision.
 fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 	let definition = &duty.definition;
-	row.workspace_id = duty.workspace_id;
+	row.thread_id = duty.thread_id;
+	row.origin_thread_id = duty.origin_thread_id;
 	row.requester = duty.requester.clone();
 	row.credential_id = duty.credential_id;
 	row.title = definition.title.trim().to_owned();
@@ -99,7 +100,6 @@ fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 		.as_ref()
 		.map(|trigger| serde_json::to_value(trigger).map(reinhardt::db::orm::Json))
 		.transpose()?;
-	row.thread_id = duty.thread_id;
 	row.approval_mode = definition.approval_mode.map(mode_text).transpose()?;
 	row.max_lateness_seconds = definition.max_lateness_seconds;
 	row.pause_after_failures = definition.pause_after_failures;
@@ -137,7 +137,8 @@ pub(crate) async fn insert(
 	let mut row = DutyRecord::build()
 		.id(duty.id)
 		.tenant(tenant.to_owned())
-		.workspace_id(duty.workspace_id)
+		.thread_id(duty.thread_id)
+		.origin_thread_id(duty.origin_thread_id)
 		.requester(duty.requester.clone())
 		.credential_id(duty.credential_id)
 		.title(String::new())
@@ -146,7 +147,6 @@ pub(crate) async fn insert(
 		.agent_id(String::new())
 		.agent_version(String::new())
 		.trigger(None)
-		.thread_id(None)
 		.approval_mode(None)
 		.max_lateness_seconds(0)
 		.pause_after_failures(0)
@@ -176,7 +176,7 @@ pub(crate) async fn insert(
 }
 
 /// Records, or clears, the Task whose Run set the Duty up (#1012; see
-/// workspaces 0047): a flow's stop pauses the Duties its Runs set up. A
+/// threads 0047): a flow's stop pauses the Duties its Runs set up. A
 /// successor taking the Duty over clears the creating Run, and with it this.
 async fn creating_task(tx: &mut dyn TransactionExecutor, tenant: &str, duty: &Duty) -> Result<()> {
 	let task = match duty.created_by_run_id {
@@ -203,7 +203,7 @@ async fn creating_task(tx: &mut dyn TransactionExecutor, tenant: &str, duty: &Du
 	Ok(())
 }
 
-/// The Duties Runs of `tasks` set up, or Runs of `runs` before workspaces
+/// The Duties Runs of `tasks` set up, or Runs of `runs` before threads
 /// 0047 recorded the creating Task (#1012): what a flow's stop pauses.
 pub(crate) async fn created_by_flow(
 	tx: &mut dyn TransactionExecutor,
@@ -322,7 +322,7 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 
 /// Which Duties a list reads.
 pub(crate) enum Filter<'a> {
-	Workspace(Uuid),
+	Thread(Uuid),
 	/// The person's own Duties, and those waiting for them to take over
 	/// as the named successor.
 	Mine(&'a str),
@@ -336,9 +336,11 @@ pub(crate) async fn list(
 ) -> Result<Vec<Duty>> {
 	let query = DutyRecord::objects().filter(DutyRecord::field_tenant().eq(tenant.to_owned()));
 	let query = match filter {
-		Filter::Workspace(workspace) => {
-			query.filter(DutyRecord::field_workspace_id().eq(workspace))
-		}
+		Filter::Thread(thread) => query.filter(
+			DutyRecord::field_thread_id()
+				.eq(thread)
+				.or(DutyRecord::field_origin_thread_id().eq(Some(thread))),
+		),
 		Filter::Mine(subject) => query.filter(
 			DutyRecord::field_requester()
 				.eq(subject.to_owned())
@@ -430,27 +432,6 @@ pub(crate) async fn brief_of_task(
 	})
 }
 
-/// Records the Duty's own Thread, which its first Task opened.
-pub(crate) async fn open_thread(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	duty: Uuid,
-	thread: Uuid,
-) -> Result<()> {
-	native::query(
-		&Query::update()
-			.table(Alias::new("duties"))
-			.value(Alias::new("thread_id"), thread)
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(Expr::value(duty)))
-			.and_where(Expr::col("thread_id").is_null())
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await?;
-	Ok(())
-}
-
 fn tick_of(row: DutyTickRecord) -> Result<Tick> {
 	Ok(Tick {
 		id: row.id,
@@ -460,7 +441,6 @@ fn tick_of(row: DutyTickRecord) -> Result<Tick> {
 		status: TickStatus::parse(&row.status)?,
 		reason: row.reason,
 		task_id: row.task_id,
-		thread_id: row.thread_id,
 		started_by: row.started_by,
 	})
 }
@@ -487,20 +467,19 @@ pub(crate) async fn ticks(
 pub(crate) async fn insert_tick(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	tick: &Tick,
 ) -> Result<()> {
 	let row = DutyTickRecord::build()
 		.id(tick.id)
 		.tenant(tenant.to_owned())
 		.duty_id(tick.duty_id)
-		.workspace_id(workspace)
+		.thread_id(thread)
 		.scheduled_at(tick.scheduled_at)
 		.recorded_at(tick.recorded_at)
 		.status(tick.status.as_str().to_owned())
 		.reason(tick.reason.clone())
 		.task_id(tick.task_id)
-		.thread_id(tick.thread_id)
 		.started_by(tick.started_by.clone())
 		.settled_at(None)
 		.finish();
@@ -766,9 +745,9 @@ pub(crate) async fn stop(
 			Halt::Paused,
 		),
 	};
-	// Deleting a Thread holds its channel row, and a tick holds its Duty
-	// while it reads that row: waiting here could deadlock. A Duty a tick
-	// holds is skipped; that tick then finds the Thread deleted and stops it.
+	// Deleting a Thread holds its row, and a tick holds its Duty while it
+	// reads that row: waiting here could deadlock. A Duty a tick holds is
+	// skipped; that tick then finds the Thread deleted and stops it.
 	let query = match stop {
 		Stop::Thread(thread) => {
 			let held: Vec<Uuid> = native::query_scalar(
@@ -885,7 +864,7 @@ pub(crate) async fn mapping_credential(
 #[cfg(test)]
 mod tests;
 
-/// Records the Duty a Task works for (#1012); see workspaces 0038.
+/// Records the Duty a Task works for (#1012); see threads 0038.
 pub(crate) async fn mark_task_duty(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -905,18 +884,18 @@ pub(crate) async fn mark_task_duty(
 	Ok(())
 }
 
-/// The Node of the Workspace a Duty works in.
-pub(crate) async fn workspace_node(
+/// The Node of the Thread a Duty works in.
+pub(crate) async fn thread_node(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Result<String> {
 	native::query_scalar(
 		&Query::select()
 			.column(Alias::new("node"))
-			.from(Alias::new("workspaces"))
+			.from(Alias::new("threads"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_one(&mut *tx)

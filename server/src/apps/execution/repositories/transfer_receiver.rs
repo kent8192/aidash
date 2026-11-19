@@ -474,15 +474,10 @@ impl ReceiverScope for Scope<'_> {
 		*area = row.into();
 		result.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
 			.ok_or_else(missing)?
-			.event(
-				&mut self.authority.get_mut().tx,
-				Some(workspace),
-				kind,
-				data,
-			)
+			.event(&mut self.authority.get_mut().tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

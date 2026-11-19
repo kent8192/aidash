@@ -336,23 +336,20 @@ impl Batching {
 			.find(|run| run.task_id == task)
 			.unwrap()
 	}
-	/// A task in a fresh Workspace, so earlier Runs never grow its context.
+	/// A task in a fresh Thread, so earlier Runs never grow its context.
 	async fn new_task(&self) -> Uuid {
-		let (status, workspace) = common::post(
+		let (status, thread) = common::post(
 			&self.app,
 			&self.token,
-			"/api/workspaces",
-			json!({"title":"Batch","goal":"Read files in one response"}),
+			"/api/threads",
+			json!({"title":"Batch"}),
 		)
 		.await;
-		assert_eq!(status, 200, "{workspace}");
+		assert_eq!(status, 200, "{thread}");
 		let (status, task) = common::post(
 			&self.app,
 			&self.token,
-			&format!(
-				"/api/workspaces/{}/tasks",
-				workspace["id"].as_str().unwrap()
-			),
+			&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 			json!({"title":"Batch","description":"Read files in one response"}),
 		)
 		.await;
@@ -364,7 +361,7 @@ impl Batching {
 		let (status, message) = common::post(
 			&self.app,
 			&self.token,
-			&format!("/api/workspaces/{}/thread-messages", run.workspace_id),
+			&format!("/api/threads/{}/channel-messages", run.thread_id),
 			json!({"content":text,"idempotency_key":Uuid::new_v4()}),
 		)
 		.await;
@@ -1275,25 +1272,17 @@ async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
 		.unwrap();
 }
 
-/// Create a task in a fresh Workspace whose title and description are both
+/// Create a task in a fresh Thread whose title and description are both
 /// `description`, and return its id. Start recall searches the Task text with
 /// PGroonga query syntax, where every word must match the fact.
-async fn task_in_new_workspace(b: &Batching, description: &str) -> Uuid {
-	let (status, workspace) = common::post(
-		&b.app,
-		&b.token,
-		"/api/workspaces",
-		json!({"title":"Memory","goal":description}),
-	)
-	.await;
-	assert_eq!(status, 200, "{workspace}");
+async fn task_in_new_thread(b: &Batching, description: &str) -> Uuid {
+	let (status, thread) =
+		common::post(&b.app, &b.token, "/api/threads", json!({"title":"Memory"})).await;
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&b.app,
 		&b.token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":description,"description":description}),
 	)
 	.await;
@@ -1400,7 +1389,7 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 				.build()
 				.unwrap()
 				.block_on(async move {
-					// Arrange: a fact learned in the Workspace, recalled by a new Run.
+					// Arrange: a fact learned in the Thread, recalled by a new Run.
 					let b = Batching::new(runtime, scripted_model, 1, 1).await;
 					let pool = b.f.store.pool.fixture_driver().clone();
 					let gone = "The staging deploy key rotates every quarter.";
@@ -1409,7 +1398,7 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					let (status, task) = common::post(
 						&b.app,
 						&b.token,
-						&format!("/api/workspaces/{}/tasks", source.workspace_id),
+						&format!("/api/threads/{}/tasks", source.thread_id),
 						json!({"title":"staging deploy key","description":"staging deploy key"}),
 					)
 					.await;
@@ -1483,12 +1472,12 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 }
 
 /// #852 decision 6: when the Tenant widens Built-in Memory to the Agent, a
-/// Run in one Workspace recalls at start what the same Agent learned in
-/// another Workspace, and the fact reaches the model. Under the default
-/// Workspace scope it does not.
+/// Run in one Thread recalls at start what the same Agent learned in
+/// another Thread, and the fact reaches the model. Under the default
+/// Thread scope it does not.
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace(
+async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_thread(
 	#[future(awt)]
 	#[from(common::runtime)]
 	runtime: RuntimeFixture,
@@ -1504,7 +1493,7 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace
 				.build()
 				.unwrap()
 				.block_on(async move {
-					// Arrange: the research Agent learns a fact in its first Workspace.
+					// Arrange: the research Agent learns a fact in its first Thread.
 					let b = Batching::new(runtime, scripted_model, 1, 1).await;
 					let pool = b.f.store.pool.fixture_driver().clone();
 					let fact = "The staging deploy key rotates every quarter.";
@@ -1513,9 +1502,7 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace
 					let description = "staging deploy key";
 
 					// Act: one Run under the default scope, one after widening it.
-					let local = b
-						.delegate(task_in_new_workspace(&b, description).await)
-						.await;
+					let local = b.delegate(task_in_new_thread(&b, description).await).await;
 					complete(&b.f, local.id).await;
 					sqlx::query(
 						"INSERT INTO memory_tenant_scope (tenant, scope, revision, updated_at) \
@@ -1525,16 +1512,14 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace
 					.await
 					.unwrap();
 					let seen = b.requests.lock().unwrap().len();
-					let widened = b
-						.delegate(task_in_new_workspace(&b, description).await)
-						.await;
+					let widened = b.delegate(task_in_new_thread(&b, description).await).await;
 					complete(&b.f, widened.id).await;
 
 					// Assert
 					let local = b.f.store.run(&TEST_FIXTURE, local.id).await.unwrap();
 					assert!(
 						!start_recall_units(&local).contains(&unit),
-						"the default scope stays within one Workspace"
+						"the default scope stays within one Thread"
 					);
 					let widened = b.f.store.run(&TEST_FIXTURE, widened.id).await.unwrap();
 					assert_eq!(widened.phase(), RunPhase::Completed, "{:?}", widened.error);
@@ -1559,7 +1544,7 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace
 }
 
 /// #852 decision 8 keeps lost authority as the one memory failure. A Run that
-/// recalled another Workspace's fact under the Tenant's `tenant_agent` scope
+/// recalled another Thread's fact under the Tenant's `tenant_agent` scope
 /// must stop when the Tenant narrows the scope again, even though that fact
 /// also left the bank (a change that alone would not stop it).
 #[rstest::rstest]
@@ -1580,7 +1565,7 @@ async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
 				.build()
 				.unwrap()
 				.block_on(async move {
-					// Arrange: a fact from another Workspace, recalled at start.
+					// Arrange: a fact from another Thread, recalled at start.
 					let b = Batching::new(runtime, scripted_model, 1, 1).await;
 					let pool = b.f.store.pool.fixture_driver().clone();
 					let source = b.delegate(b.task).await;
@@ -1598,7 +1583,7 @@ async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
 					.await
 					.unwrap();
 					let reader = b
-						.delegate(task_in_new_workspace(&b, "staging deploy key").await)
+						.delegate(task_in_new_thread(&b, "staging deploy key").await)
 						.await;
 					b.script(&[(
 						"before",
@@ -1631,7 +1616,7 @@ async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
 						.await
 						.unwrap();
 					sqlx::query(
-						"UPDATE memory_tenant_scope SET scope = 'workspace', revision = 2 \
+						"UPDATE memory_tenant_scope SET scope = 'thread', revision = 2 \
 						 WHERE tenant = 'acme'",
 					)
 					.execute(&pool)

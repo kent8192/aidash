@@ -16,8 +16,8 @@ use aidash_domain::{
 };
 use serde_json::json;
 use uuid::Uuid;
-pub async fn authority(scope: &dyn StreamAuthorityStore, workspace: Option<Uuid>) -> Result<()> {
-	let current = scope.current(workspace).await?.ok_or(Error::Unauthorized)?;
+pub async fn authority(scope: &dyn StreamAuthorityStore, thread: Option<Uuid>) -> Result<()> {
+	let current = scope.current(thread).await?.ok_or(Error::Unauthorized)?;
 	if current.mapping_id.is_some() {
 		if current.mapping_enabled != Some(true) {
 			return Err(Error::Forbidden);
@@ -41,17 +41,17 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, workspace: Option<Uuid>
 	if !enabled(&snapshot.bundle, scope.subject()) {
 		return Err(Error::Forbidden);
 	}
-	if let Some(id) = workspace {
+	if let Some(id) = thread {
 		let owner = current.owner_subject.ok_or(Error::Forbidden)?;
-		for action in ["workspace.read", "workspace.events"] {
+		for action in ["thread.read", "thread.events"] {
 			let input = Evaluation {
 				subject: scope.subject().into(),
 				action: action.into(),
 				resource: Resource {
 					tenant: scope.tenant().into(),
-					kind: "workspace".into(),
+					kind: "thread".into(),
 					id: id.to_string(),
-					attributes: json!({"owner":owner,"workspace_id":id}),
+					attributes: json!({"owner":owner,"thread_id":id}),
 				},
 				environment: json!({"node_id":scope.node_id(),"transport":"api"}),
 			};
@@ -65,18 +65,18 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, workspace: Option<Uuid>
 pub async fn stream_page<F>(
 	scope: &mut dyn StreamSession,
 	after: i64,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	on_query: F,
 ) -> Result<(Vec<Event>, i64, bool)>
 where
 	F: FnOnce(),
 {
-	let visible = scope.event_workspaces(workspace).await?;
-	if workspace.is_some() && visible.is_empty() {
+	let visible = scope.event_threads(thread).await?;
+	if thread.is_some() && visible.is_empty() {
 		return Err(Error::Forbidden);
 	}
 	on_query();
-	let batch = scope.stream_rows(after, workspace, &visible).await?;
+	let batch = scope.stream_rows(after, thread, &visible).await?;
 	let more = batch.len() == 100;
 	let scanned = batch.last().map_or(after, |event| event.sequence);
 	let mut events = vec![];
@@ -91,17 +91,17 @@ where
 pub async fn read_events(
 	scope: &mut dyn StreamSession,
 	after: i64,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	limit: i64,
 ) -> Result<(Vec<Event>, i64, Tally)> {
-	let visible = if let Some(id) = workspace {
-		scope.require_workspace(id, "workspace.read").await?;
-		scope.require_workspace(id, "workspace.events").await?;
+	let visible = if let Some(id) = thread {
+		scope.require_thread(id, "thread.read").await?;
+		scope.require_thread(id, "thread.events").await?;
 		vec![id]
 	} else {
 		let mut visible = vec![];
-		for id in scope.visible("workspace.read").await? {
-			if scope.allowed(id, "workspace.events").await? {
+		for id in scope.visible("thread.read").await? {
+			if scope.allowed(id, "thread.events").await? {
 				visible.push(id);
 			}
 		}
@@ -115,9 +115,7 @@ pub async fn read_events(
 	let mut runs = RunVerdicts::default();
 	while scanned < EVENT_SCAN_LIMIT {
 		let page_size = (EVENT_SCAN_LIMIT - scanned).min(500);
-		let batch = scope
-			.read_rows(cursor, workspace, &visible, page_size)
-			.await?;
+		let batch = scope.read_rows(cursor, thread, &visible, page_size).await?;
 		let exhausted = batch.len() < page_size;
 		scanned += batch.len();
 		for event in batch {
@@ -125,7 +123,7 @@ pub async fn read_events(
 			scope.begin_row();
 			let visible = scope.event_visible(&event, &mut runs).await?;
 			let silence = scope.take_row_silence();
-			if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, visible) {
+			if unconfirmed.settle_in(silence, Kind::Event, event.thread_id, visible) {
 				result.push(event);
 			}
 			if result.len() == limit {
@@ -140,7 +138,7 @@ pub async fn read_events(
 }
 
 pub async fn can_emit(scope: &mut dyn StreamSession, event: &Event) -> Result<bool> {
-	if event.workspace_id.is_none()
+	if event.thread_id.is_none()
 		&& (event.kind.starts_with("provider_credential.")
 			|| event.kind.starts_with("provider_credential_binding."))
 	{
@@ -148,10 +146,10 @@ pub async fn can_emit(scope: &mut dyn StreamSession, event: &Event) -> Result<bo
 			.event_visible(event, &mut RunVerdicts::default())
 			.await;
 	}
-	let Some(id) = event.workspace_id else {
+	let Some(id) = event.thread_id else {
 		return Ok(false);
 	};
-	Ok(!scope.event_workspaces(Some(id)).await?.is_empty()
+	Ok(!scope.event_threads(Some(id)).await?.is_empty()
 		&& scope
 			.event_visible(event, &mut RunVerdicts::default())
 			.await?)

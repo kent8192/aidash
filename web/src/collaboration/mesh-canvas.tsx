@@ -188,7 +188,7 @@ function meshStylesheet(t: GraphTokens): StylesheetJson {
       },
     },
     {
-      selector: 'edge[relation = "goal"], edge[relation = "produces"]',
+      selector: 'edge[relation = "produces"]',
       style: { "target-arrow-shape": "triangle" },
     },
     {
@@ -608,17 +608,17 @@ export function MeshCanvas({
           const point = camera.regions[region.id];
           if (!point || (region.kind === "execution" && !showNodeFrames))
             return null;
-          const workspace = graph.nodes.find(
+          const thread = graph.nodes.find(
             (node) =>
-              node.kind === "workspace" &&
+              node.kind === "thread" &&
               node.nodeId === region.nodeId &&
-              node.resourceId === region.workspaceId,
+              node.resourceId === region.threadId,
           );
           const heading =
             region.kind === "execution"
               ? `${copy.executionRegion} · ${region.nodeId}`
               : region.kind === "shared"
-                ? `${copy.sharedData} · ${workspace ? label(workspace) : region.workspaceId} · ${copy.homeNode}: ${region.nodeId}`
+                ? `${copy.sharedData} · ${thread ? label(thread) : region.threadId} · ${copy.homeNode}: ${region.nodeId}`
                 : `${copy.configurationReferences} · ${region.nodeId}`;
           const style = {
             left: point.x,
@@ -641,7 +641,7 @@ export function MeshCanvas({
                   {copy.sharedData}
                 </span>
                 <span className="truncate font-sans text-muted-foreground">
-                  {workspace ? label(workspace) : region.workspaceId}
+                  {thread ? label(thread) : region.threadId}
                 </span>
                 <span className="truncate text-faint">
                   {`${copy.homeNode}: ${region.nodeId}`}

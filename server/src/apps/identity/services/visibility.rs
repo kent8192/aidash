@@ -21,7 +21,7 @@ impl NativeAccess {
 	}
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<domain::Run> {
 		let mark = self.access.call_mark();
-		let result = aidash_application::authorization::workspaces::run_for_interaction(
+		let result = aidash_application::authorization::threads::run_for_interaction(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			id,
 		)
@@ -42,8 +42,8 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		aidash_application::authorization::workspaces::resource(
+	pub(crate) async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		aidash_application::authorization::threads::resource(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			id,
 		)
@@ -73,10 +73,10 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
+	pub(crate) async fn human_reads(&mut self, thread: Uuid, run: Uuid) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::human_reads(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
-			workspace,
+			thread,
 			run,
 		)
 		.await
@@ -112,13 +112,13 @@ impl NativeAccess {
 
 	pub(crate) async fn output_visible(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<bool> {
 		aidash_application::authorization::visibility::provenance::local_output_visible(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
-			workspace,
+			thread,
 			kind,
 			id,
 		)
@@ -198,7 +198,7 @@ impl NativeAccess {
 	pub(crate) fn cached_run(&self, run: &domain::RunMetadata) -> Option<bool> {
 		self.access
 			.cached_runs
-			.get(&(run.workspace_id, run.id))
+			.get(&(run.thread_id, run.id))
 			.copied()
 	}
 	pub(crate) fn remember_run(&mut self, run: &domain::RunMetadata, allowed: bool) {
@@ -208,7 +208,7 @@ impl NativeAccess {
 		}
 		self.access
 			.cached_runs
-			.insert((run.workspace_id, run.id), allowed);
+			.insert((run.thread_id, run.id), allowed);
 	}
 }
 

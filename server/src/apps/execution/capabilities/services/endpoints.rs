@@ -6,7 +6,7 @@ use crate::{
 	federation::Federation,
 	registry::EntityRef,
 };
-use reinhardt::query::{Alias, Expr, LockType, Order, PostgresQueryBuilder};
+use reinhardt::query::{Alias, Expr, Order, PostgresQueryBuilder};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -85,16 +85,34 @@ pub(crate) async fn areas(
 ) -> Result<AreaPage> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
-		let rows: Vec<Area> = { let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); let query_bind_4 = page.thread_id; let query_bind_5 = page.workspace_id; crate::database::native::query_as(&sessions::select("core_areas")
-				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())))
-				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_2.to_owned())))
-				.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned())))
-				.and_where(SimpleExpr::CustomWithExpr("((?::uuid IS NULL OR thread_id = ?) AND (?::uuid IS NULL OR workspace_id = ?))".into(), vec![Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()]))
-				.order_by(Alias::new("id"), Order::Asc)
-				.limit(51)
-				.to_string(PostgresQueryBuilder))
-		.fetch_all(&mut **access.tx)
-		.await? };
+		let rows: Vec<Area> = {
+			let query_bind_1 = &access.identity.tenant;
+			let query_bind_2 = &access.identity.subject;
+			let query_bind_3 = page.cursor.unwrap_or(Uuid::nil());
+			let query_bind_5 = page.thread_id;
+			crate::database::native::query_as(
+				&sessions::select("core_areas")
+					.and_where(
+						Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())),
+					)
+					.and_where(
+						Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_2.to_owned())),
+					)
+					.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned())))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(?::uuid IS NULL OR thread_id = ?)".into(),
+						vec![
+							Expr::value(query_bind_5.to_owned()).into(),
+							Expr::value(query_bind_5.to_owned()).into(),
+						],
+					))
+					.order_by(Alias::new("id"), Order::Asc)
+					.limit(51)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(&mut **access.tx)
+			.await?
+		};
 		let next_cursor = if rows.len() == 51 {
 			Some(rows[49].id)
 		} else {
@@ -149,7 +167,7 @@ async fn dispatch(
 		) {
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 		}
@@ -212,7 +230,7 @@ pub(crate) async fn materialize(
 	let result = async {
 		crate::apps::execution::repositories::subnodes::require_writable(
 			access.tx.native_mut(),
-			run.workspace_id,
+			run.thread_id,
 		)
 		.await?;
 		service::materialize(&f.store, &mut access, &run, input).await
@@ -249,14 +267,14 @@ pub(crate) async fn enqueue(
 			return Err(Error::Conflict("QUEUE_LIMIT".into()));
 		}
 		check_url_intents(&input.read_pages)?;
-		let workspace = access.workspace(area.workspace_id).await?;
-		access.require(&workspace, "task.create").await?;
+		let thread = access.thread(area.thread_id).await?;
+		access.require(&thread, "task.create").await?;
 		let creator = access.identity.subject.clone();
 		let task = f
 			.store
 			.create_task_in(
 				&mut access.tx,
-				area.workspace_id,
+				area.thread_id,
 				&NewTask {
 					title: input.title,
 					description: input.description,
@@ -268,7 +286,6 @@ pub(crate) async fn enqueue(
 				None,
 			)
 			.await?;
-		sessions::bind_task(&mut access, task.id, area.thread_id).await?;
 		execution::delegate_in(
 			&f,
 			&mut access,
@@ -378,7 +395,7 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 			.await?;
 		access
 			.require(
-				&access.resource("workspace", area.workspace_id, json!({})),
+				&access.resource("thread", area.thread_id, json!({})),
 				"message.create",
 			)
 			.await?;
@@ -501,110 +518,50 @@ pub(crate) async fn file_share(
 	dispatch(f, actor, id, "file_share", json!(input)).await
 }
 
-/// Checks that `thread` is a live Thread of `workspace` that the caller may
-/// read, holding the Thread's row lock like Thread deletion does so a deletion
-/// that already passed its final area page cannot race the caller's write.
-pub(crate) async fn readable_thread(
-	access: &mut Access,
-	workspace: Uuid,
-	thread: Uuid,
-) -> Result<()> {
-	let channel: crate::apps::workspaces::models::ChannelThread = {
-		let query_bind_1 = thread;
-		let query_bind_2 = workspace;
-		crate::database::query_as(
-			&sessions::select("channel_threads")
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					),
-				)
-				.lock(LockType::Update)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **access.tx)
-		.await?
-	}
-	.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
-	let channel = crate::collaboration::ChannelThread::from(channel);
+/// Checks that `thread` is a live Thread the caller may read, holding
+/// its row lock like Thread deletion does, so a deletion that already
+/// passed its final area page cannot race the caller's write.
+pub(crate) async fn readable_thread(access: &mut Access, thread: Uuid) -> Result<()> {
+	crate::apps::workspaces::models::Thread::lock_existing(&mut *access.tx, thread)
+		.await
+		.map_err(|error| match error {
+			Error::NotFound(_) => Error::NotFound("thread unavailable".into()),
+			error => error,
+		})?;
 	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
-	access
-		.workspace_record(workspace, "message", channel.root_message_id)
-		.await?;
+	let resource = access.thread(thread).await?;
+	access.require(&resource, "thread.read").await?;
 	Ok(())
 }
 
 /// Starts an Agent's Run in a Thread inside `access`'s transaction, as its
-/// subject: the Task, its binding to the Thread and the delegation. Schedules
-/// start their ticks through it as their Registrant (#557). The Task is None
-/// when the idempotency key returned an earlier start.
+/// subject: a Root Task and its delegation. Duties start their Tasks through
+/// it as their Requester (#557, #1011). The Task is None when the idempotency
+/// key returned an earlier start.
 pub(crate) async fn start_in_thread(
 	f: &Federation,
 	access: &mut Access,
-	(workspace, thread, agent): (Uuid, Uuid, String),
+	(thread, agent): (Uuid, String),
 	input: Enqueue,
 ) -> Result<(Area, Option<Uuid>)> {
-	let channel: crate::apps::workspaces::models::ChannelThread = {
-		let query_bind_1 = thread;
-		let query_bind_2 = workspace;
-		crate::database::query_as(
-			&sessions::select("channel_threads")
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					),
-				)
-				.lock(LockType::Update)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **access.tx)
-		.await?
-	}
-	.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
-	let channel = crate::collaboration::ChannelThread::from(channel);
-	// Thread deletion takes this same row lock before writing its tombstone.
-	// Recheck visibility after acquiring it so a run cannot commit behind a
-	// delete that already passed its final area page.
-	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
-	let digest = crate::registry::digest(&json!(["thread_run", workspace, thread, agent, input]));
+	// Thread deletion takes this same row lock before writing its
+	// tombstone, so a Run cannot commit behind a delete that already passed
+	// its final area page.
+	readable_thread(access, thread).await?;
+	let digest = crate::registry::digest(&json!(["thread_run", thread, agent, input]));
 	if let Some(previous) = sessions::cached(access, input.idempotency_key, &digest).await? {
 		let id = serde_json::from_value(previous["area_id"].clone())?;
 		return Ok((sessions::load(access, id).await?, None));
 	}
-	access
-		.workspace_record(workspace, "message", channel.root_message_id)
-		.await?;
 	check_url_intents(&input.read_pages)?;
-	let resource = access.workspace(workspace).await?;
+	let resource = access.thread(thread).await?;
 	access.require(&resource, "task.create").await?;
 	let creator = access.identity.subject.clone();
 	let task = f
 		.store
 		.create_task_in(
 			&mut access.tx,
-			workspace,
+			thread,
 			&NewTask {
 				title: input.title,
 				description: input.description,
@@ -616,7 +573,6 @@ pub(crate) async fn start_in_thread(
 			None,
 		)
 		.await?;
-	sessions::bind_task(access, task.id, thread).await?;
 	let delegation = execution::delegate_in(
 		f,
 		access,
@@ -644,7 +600,7 @@ pub(crate) async fn start_in_thread(
 pub(crate) async fn thread_run(
 	f: Federation,
 	actor: Actor,
-	target: (Uuid, Uuid, String),
+	target: (Uuid, String),
 	input: Enqueue,
 ) -> Result<Area> {
 	let mut access = access(&f, actor).await?;
@@ -883,7 +839,7 @@ async fn approval_card(
 	};
 	// A rule can name an outbound read or a tool call, and
 	// only the person the Run's delegation chain starts at may make one. Only
-	// someone who may decide it can, which also skips a record whose Workspace
+	// someone who may decide it can, which also skips a record whose Thread
 	// is no longer live, as its Run's context no longer loads.
 	let allow_always = state == "pending"
 		&& reader.approver
@@ -1311,59 +1267,6 @@ pub(crate) async fn restore(
 	access.finish(result).await
 }
 
-pub(crate) async fn restore_new_thread(
-	f: Federation,
-	actor: Actor,
-	(workspace, id): (Uuid, Uuid),
-	input: super::cleanup::RestoreNewThread,
-) -> Result<Value> {
-	let mut lease =
-		crate::collaboration::access::Lease::begin_message_create(&f.store, actor, workspace)
-			.await?;
-	let result = async {
-		// Restore takes the sharing lock before publishing events. Acquire it
-		// before the new message does too, so concurrent restores cannot deadlock.
-		super::sharing::serialize(lease.access_mut()).await?;
-		let message = crate::collaboration::threads::post(
-			&f.store,
-			None,
-			&mut lease,
-			workspace,
-			crate::collaboration::ChannelMessageInput {
-				content: input.content,
-				thread_id: None,
-				idempotency_key: input.idempotency_key,
-				attachment_ids: vec![],
-				file_versions: vec![],
-			},
-		)
-		.await?;
-		let thread = crate::collaboration::threads::create(
-			&f.store,
-			&mut lease,
-			workspace,
-			message.message.id,
-		)
-		.await?;
-		let access = lease.access_mut();
-		let area = super::cleanup::restore(
-			&f.store,
-			access,
-			id,
-			super::cleanup::Restore {
-				idempotency_key: input.idempotency_key,
-				expected_revision: input.expected_revision,
-				snapshot_id: input.snapshot_id,
-				thread_id: thread.id,
-			},
-		)
-		.await?;
-		Ok(json!({"thread":thread,"area":area}))
-	}
-	.await;
-	lease.finish(result).await
-}
-
 pub(crate) async fn transfer_status(
 	f: Federation,
 	actor: Actor,
@@ -1557,22 +1460,19 @@ pub(crate) async fn reference_list(
 pub(crate) async fn thread_delete(
 	f: Federation,
 	actor: Actor,
-	(workspace, thread): (Uuid, Uuid),
+	thread: Uuid,
 	input: super::thread_lifecycle::DeleteThread,
 ) -> Result<DeletedThread> {
 	let mut access = access(&f, actor).await?;
 	let releases =
-		match super::federation_previews::releases_for_thread(&f, &mut access, workspace, thread)
-			.await
-		{
+		match super::federation_previews::releases_for_thread(&f, &mut access, thread).await {
 			Ok(releases) => releases,
 			Err(error) => {
 				tracing::warn!(%error, "remote File version release routes could not be gathered");
 				Vec::new()
 			}
 		};
-	let result =
-		super::thread_lifecycle::delete(&f.store, &mut access, workspace, thread, input).await;
+	let result = super::thread_lifecycle::delete(&f.store, &mut access, thread, input).await;
 	let result = access.finish(result).await?;
 	if tokio::time::timeout(
 		std::time::Duration::from_secs(10),

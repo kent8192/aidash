@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: {{base_url}}/api/workspaces/{{browser_workspace_id}}
+  url: {{base_url}}/api/threads/{{browser_thread_id}}
   body: none
   auth: none
 }
@@ -22,6 +22,6 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody().workspace.id).to.equal(bru.getVar("browser_workspace_id"));
+    expect(res.getBody().thread.id).to.equal(bru.getVar("browser_thread_id"));
   });
 }

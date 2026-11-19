@@ -466,7 +466,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let (status, inspection) = common::get(&app, alice_token, &trust_path).await;
 	assert_eq!(status, 200, "inspection: {inspection}");
 	assert_eq!(inspection["external_assessment_available"], false);
-	assert_eq!(inspection["workspaces"], json!([]));
+	assert_eq!(inspection["threads"], json!([]));
 	assert_eq!(inspection["test_evidence"], json!([]));
 	let (status, incident) = common::post(&app, alice_token, &format!("{trust_path}/incidents"), json!({"severity":"medium","owner":"alice","notes":"Manual report","evidence":[{"title":"Observation","content":"Fixed copy"}]})).await;
 	assert_eq!(status, 200, "incident: {incident}");

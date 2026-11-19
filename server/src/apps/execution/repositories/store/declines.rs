@@ -48,10 +48,10 @@ impl Store {
 		.scalar_optional(&mut *tx)
 		.await?;
 		let result = json!({"error": paused.kind.declined_sentence()});
-		let workspace = raw
+		let thread = raw
 			.metadata
 			.is_local(self.deployment.as_str())
-			.then_some(raw.metadata.workspace_id);
+			.then_some(raw.metadata.thread_id);
 		match status.as_deref() {
 			Some("REFUSED") => {
 				crate::database::native::query(
@@ -143,7 +143,7 @@ impl Store {
 		event_records::append_run(
 			&mut **tx,
 			id,
-			workspace,
+			thread,
 			"tool.completed",
 			json!({"run_id":id,"idempotency_key":key,"result":result}),
 		)
@@ -181,10 +181,10 @@ impl Store {
 			.clone()
 			.filter(|paused| paused.key == key)
 			.ok_or_else(not_paused_on_call)?;
-		let workspace = raw
+		let thread = raw
 			.metadata
 			.is_local(self.deployment.as_str())
-			.then_some(raw.metadata.workspace_id);
+			.then_some(raw.metadata.thread_id);
 		self.complete_declined_in(tx, &raw, &state, &paused).await?;
 		// Resume through the ordinary control path, which forgets `paused_call`; then keep the
 		// decision until the worker has answered the call.
@@ -243,7 +243,7 @@ impl Store {
 		event_records::append_run(
 			&mut **tx,
 			id,
-			workspace,
+			thread,
 			"run.call_declined",
 			json!({
 				"run_id": id,
@@ -328,14 +328,14 @@ impl Store {
 		if changed == 0 {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
-		let workspace = raw
+		let thread = raw
 			.metadata
 			.is_local(self.deployment.as_str())
-			.then_some(raw.metadata.workspace_id);
+			.then_some(raw.metadata.thread_id);
 		event_records::append_run(
 			&mut **tx,
 			id,
-			workspace,
+			thread,
 			"run.call_declined",
 			json!({
 				"run_id": id,

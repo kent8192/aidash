@@ -10,7 +10,7 @@ fn metadata_projection_cost_does_not_grow_with_unselected_run_context() {
 		"context".into(),
 		QueryValue::Json(Some(Box::new(json!({
 			"history": vec![json!({
-				"role":"assistant", "content":"observed workspace state".repeat(8),
+				"role":"assistant", "content":"observed thread state".repeat(8),
 				"observations":[{"task":"source", "revision":3}]
 			}); 16_384]
 		})))),

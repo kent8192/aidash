@@ -24,7 +24,7 @@ fn outage_tracking_survives_wake_and_is_cleared_after_progress(mut run: Run) {
 #[fixture]
 fn run() -> Run {
 	serde_json::from_value::<RawRun>(json!({
-        "id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
+        "id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),
         "node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE",
         "step":4,"revision":7,"observed_input_seq":9,"ledger_worker_ready":true,"error":"saved diagnostic",
         "lease_owner":Uuid::from_u128(5),"lease_until":"2030-01-01T00:00:00Z","updated_at":"2030-01-01T00:00:00Z",

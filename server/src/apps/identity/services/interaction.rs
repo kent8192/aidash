@@ -24,10 +24,10 @@ impl Access {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
+	pub(crate) async fn human_reads(&mut self, thread: Uuid, run: Uuid) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::human_reads(
 			&mut crate::bootstrap::run_visibility_scope(self),
-			workspace,
+			thread,
 			run,
 		)
 		.await
@@ -35,14 +35,14 @@ impl Access {
 	}
 
 	/// What the Continuation Check knows of a Run: it exists and this authority
-	/// may still reach its Workspace. It never looks at what the Run has read; that
+	/// may still reach its Thread. It never looks at what the Run has read; that
 	/// is the Read Recheck's job, so its cost does not grow with the reads (ADR 0116).
 	pub(crate) async fn run_for_continuation(&mut self, id: Uuid) -> Result<Run> {
 		let mut check = self.rechecking(id);
 		let run = crate::apps::execution::models::Run::read_in(&mut **check.tx, id, None)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		// A Run this Node executes for another Home has no Workspace here: its admission
+		// A Run this Node executes for another Home has no Thread here: its admission
 		// answers for it (#989).
 		if crate::apps::federation::peer::repositories::admissions::for_run(check.tx.as_mut(), id)
 			.await?
@@ -54,9 +54,9 @@ impl Access {
 				Err(Error::Forbidden)
 			};
 		}
-		let workspace = check.workspace(run.workspace_id).await?;
-		check.context = workspace.attributes.clone();
-		check.require(&workspace, "workspace.read").await?;
+		let thread = check.thread(run.thread_id).await?;
+		check.context = thread.attributes.clone();
+		check.require(&thread, "thread.read").await?;
 		Ok(run)
 	}
 
@@ -81,7 +81,7 @@ impl Access {
 	/// The Read Recheck, in full. Every allow repeats the same question for this
 	/// Run, so a repeat adds no Authorization Decision.
 	///
-	/// A Run this Node executes for another Home has no Workspace here, so it is checked through
+	/// A Run this Node executes for another Home has no Thread here, so it is checked through
 	/// its admission instead (#904, #989).
 	pub(crate) async fn recheck_run_reads(&mut self, id: Uuid) -> Result<Run> {
 		self.rechecking(id).run_for_reads(id).await
@@ -89,9 +89,9 @@ impl Access {
 
 	/// [`Self::run_for_interaction`], except that a Run this Node executes for another Home is
 	/// checked through its admission (expiry, Peer Mapping, the chain's read policies and what
-	/// the Run has read) instead of through a Workspace this Node does not hold.
+	/// the Run has read) instead of through a Thread this Node does not hold.
 	pub(crate) async fn run_for_reads(&mut self, id: Uuid) -> Result<Run> {
-		aidash_application::authorization::workspaces::run_for_action(
+		aidash_application::authorization::threads::run_for_action(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
@@ -100,7 +100,7 @@ impl Access {
 	}
 
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<Run> {
-		aidash_application::authorization::workspaces::run_for_interaction(
+		aidash_application::authorization::threads::run_for_interaction(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
@@ -112,8 +112,8 @@ impl Access {
 	/// commands and operations. It also refuses once the Run may no longer use its Agent or
 	/// anything its Binding names (the Use Recheck), which a read of the Run does not.
 	///
-	/// A Run this Node executes for another Home has no Workspace here, so its visibility is
-	/// its admission's (#989); see [`aidash_application::authorization::workspaces::run_for_action`].
+	/// A Run this Node executes for another Home has no Thread here, so its visibility is
+	/// its admission's (#989); see [`aidash_application::authorization::threads::run_for_action`].
 	pub(crate) async fn run_for_action(&mut self, id: Uuid) -> Result<Run> {
 		let run = self.run_for_reads(id).await?;
 		if crate::apps::identity::repositories::execution::guard::use_block(
@@ -154,10 +154,10 @@ impl Access {
 pub async fn conversation(
 	f: &Federation,
 	identity: &SubjectIdentity,
-	input: aidash_application::workspaces::ConversationRequest<'_>,
+	input: aidash_application::threads::ConversationRequest<'_>,
 ) -> Result<ConversationResponse> {
 	let mut access = Access::begin(&f.store, identity).await?;
-	let result = aidash_application::workspaces::conversation(
+	let result = aidash_application::threads::conversation(
 		&mut crate::bootstrap::conversation_scope(f, &mut access),
 		input,
 	)
@@ -195,7 +195,7 @@ pub async fn message_keyed(
 				.await?;
 			access
 				.require(
-					&access.resource("workspace", run.workspace_id, json!({})),
+					&access.resource("thread", run.thread_id, json!({})),
 					"message.create",
 				)
 				.await?;
@@ -304,7 +304,7 @@ pub async fn message_keyed(
 				.await?;
 			access
 				.require(
-					&access.resource("workspace", current.workspace_id, json!({})),
+					&access.resource("thread", current.thread_id, json!({})),
 					"message.create",
 				)
 				.await?;
@@ -395,7 +395,7 @@ pub async fn answer(
 			.await?
 			.ok_or(Error::Forbidden)?;
 		let run = access.run_for_interaction(request.run_id).await?;
-		if request.workspace_id != run.workspace_id {
+		if request.thread_id != run.thread_id {
 			return Err(Error::Forbidden);
 		}
 		let resource = access.human_resource(&request).await?;
@@ -440,9 +440,9 @@ pub async fn abandon(
 			.await?
 		}
 		.ok_or(Error::Forbidden)?;
-		let workspace = access.workspace(task.workspace_id).await?;
-		access.context = workspace.attributes.clone();
-		access.require(&workspace, "workspace.read").await?;
+		let thread = access.thread(task.thread_id).await?;
+		access.context = thread.attributes.clone();
+		access.require(&thread, "thread.read").await?;
 		let resource = access.task_resource(&task).await?;
 		access.require(&resource, "task.read").await?;
 		access.require(&resource, "task.abandon").await?;

@@ -2,9 +2,9 @@
 //! (ADR 0139, decision 20).
 //!
 //! `file-transfer/1` identifies its sender by a Peer Mapping and reads its snapshot from a
-//! Workspace the sender holds, so it cannot serve a Run whose Workspace lives at the Home. A
+//! Thread the sender holds, so it cannot serve a Run whose Thread lives at the Home. A
 //! delivery is named by the Remote Grant, the admission and the Run's own call key instead. The
-//! Home derives everything else (the delegating Run's Working Area, the Workspace, the sender)
+//! Home derives everything else (the delegating Run's Working Area, the Thread, the sender)
 //! from the live grant and never from the request.
 use crate::capabilities::operations::{FileScope, MountedFile};
 use crate::capabilities::sharing::Recipient;
@@ -22,9 +22,9 @@ use uuid::Uuid;
 /// The largest chunk a delivery accepts: the chunk size of `/scoped/files/chunk`, which fits the
 /// 6 MiB request body of the chunk routes once base64 encoded.
 pub const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
-/// A message may carry at most this many files, the same as a local `workspace_message`.
+/// A message may carry at most this many files, the same as a local `thread_message`.
 pub const MESSAGE_FILES: usize = 8;
-/// A message's files may total at most this many bytes, the same as a local `workspace_message`.
+/// A message's files may total at most this many bytes, the same as a local `thread_message`.
 pub const MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// What a delivery arrives for. Which tool the Run called decides what the Home checks in its
 /// Binding and what the Home does with the bytes.
@@ -34,7 +34,7 @@ pub enum Purpose {
 	/// `file_share` to the Home: the files become a delivered share in the Working Area of the
 	/// Run that delegated.
 	FileShare,
-	/// `workspace_message` with files: the files become Thread Attachments of the message the
+	/// `thread_message` with files: the files become Thread Attachments of the message the
 	/// Home posts for the Agent. `descriptions` is keyed by path, as in the local tool.
 	Message {
 		content: String,
@@ -47,7 +47,7 @@ impl Purpose {
 	pub fn tool(&self) -> &'static str {
 		match self {
 			Self::FileShare => "file_share",
-			Self::Message { .. } => "workspace_message",
+			Self::Message { .. } => "thread_message",
 		}
 	}
 }
@@ -231,7 +231,7 @@ pub struct Parties {
 	pub agent: EntityRef,
 	/// Where the Home stages the files: the Working Area of the Run that delegated for a file
 	/// share; the executing Agent version and the grant's Task for a message, which the Home posts
-	/// in the grant's Workspace.
+	/// in the grant's Thread.
 	pub target: Recipient,
 }
 /// The description the receiving-side `file-transfer/1` code stores for a staged delivery.

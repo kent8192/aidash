@@ -340,21 +340,17 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries(
+async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	#[future(awt)]
 	#[from(executor_runtime)]
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let other = f
 		.store
-		.create_workspace(&ACME, "alice", "Other", "Goal")
+		.create_thread(&ACME, "alice", "Other")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -366,7 +362,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	};
 	let task = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let foreign = f
@@ -377,22 +373,22 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	check_rejected(
 		update(
 			f.store.pool.fixture_driver(),
-			"workspaces",
+			"threads",
 			"revision",
 			Expr::value(-1),
 		)
 		.await,
-		"workspaces_content",
+		"threads_content",
 	);
 	check_rejected(
 		update(
 			f.store.pool.fixture_driver(),
-			"workspaces",
+			"threads",
 			"state",
 			Expr::cust("'[]'::jsonb"),
 		)
 		.await,
-		"workspaces_content",
+		"threads_content",
 	);
 	check_rejected(
 		update(
@@ -480,14 +476,14 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	.unwrap_err();
 	assert_eq!(
 		result.as_database_error().unwrap().constraint(),
-		Some("tasks_parent_workspace")
+		Some("tasks_parent_thread")
 	);
 	let artifact = Query::insert()
 		.into_table(Alias::new("artifacts"))
 		.columns(
 			[
 				"id",
-				"workspace_id",
+				"thread_id",
 				"task_id",
 				"kind",
 				"name",
@@ -520,25 +516,25 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 		.unwrap_err();
 	assert_eq!(
 		error.as_database_error().unwrap().constraint(),
-		Some("artifacts_task_workspace")
+		Some("artifacts_task_thread")
 	);
 	sqlx::query(&artifact)
-		.bind(workspace.id)
+		.bind(thread.id)
 		.bind(task.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	// Remote runs are allowed even if their workspace/task only exist at their home node.
+	// Remote runs are allowed even if their thread/task only exist at their home node.
 	let mut remote = task.clone();
 	remote.id = uuid::Uuid::new_v4();
-	remote.workspace_id = uuid::Uuid::new_v4();
+	remote.thread_id = uuid::Uuid::new_v4();
 	let run = common::remote_run(&f.store, &remote, "aidash://remote", "executor", "1.0.0").await;
 	let human_request = Query::insert()
 		.into_table(Alias::new("human_requests"))
 		.columns(
 			[
 				"id",
-				"workspace_id",
+				"thread_id",
 				"run_id",
 				"kind",
 				"prompt",
@@ -560,17 +556,17 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 		)
 		.to_string(PostgresQueryBuilder);
 	let error = sqlx::query(&human_request)
-		.bind(workspace.id)
+		.bind(thread.id)
 		.bind(run.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap_err();
 	assert_eq!(
 		error.as_database_error().unwrap().constraint(),
-		Some("human_requests_run_workspace")
+		Some("human_requests_run_thread")
 	);
 	sqlx::query(&human_request)
-		.bind(remote.workspace_id)
+		.bind(remote.thread_id)
 		.bind(run.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -613,15 +609,11 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 	)
 	.await
 	.unwrap();
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	f.store
 		.create_task(
 			&ACME,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Task".into(),
 				description: "Work".into(),
@@ -659,8 +651,8 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 			);
 		}
 		for (table, column, constraint) in [
-			("workspaces", "title", "workspaces_content"),
-			("workspaces", "goal", "workspaces_content"),
+			("threads", "title", "threads_content"),
+			("threads", "goal", "threads_content"),
 			("tasks", "title", "tasks_content"),
 			("tasks", "description", "tasks_content"),
 		] {
@@ -697,8 +689,8 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 				.unwrap();
 		}
 		for (table, column) in [
-			("workspaces", "title"),
-			("workspaces", "goal"),
+			("threads", "title"),
+			("threads", "goal"),
 			("tasks", "title"),
 			("tasks", "description"),
 		] {
@@ -1212,16 +1204,12 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let task = f
 		.store
 		.create_task(
 			&ACME,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Task".into(),
 				description: "Work".into(),
@@ -1356,7 +1344,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.store
 		.create_task(
 			&ACME,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Other request task".into(),
 				description: "Work".into(),
@@ -1463,7 +1451,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.store
 		.create_task(
 			&ACME,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Second task".into(),
 				description: "Work".into(),
@@ -1505,7 +1493,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.store
 		.create_task(
 			&ACME,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Third task".into(),
 				description: "Work".into(),
@@ -1610,18 +1598,14 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let spec = index_spec();
 	let _: aidash_server::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
 	insert_values(
 		f.store.pool.fixture_driver(),
 		"semantic_indexes",
 		&[
-			("workspace_id", uuid_expr(workspace.id)),
+			("thread_id", uuid_expr(thread.id)),
 			("tenant", Expr::value("acme").into()),
 			("revision", Expr::value(1).into()),
 			("spec", Expr::value(spec.clone()).into()),
@@ -1815,7 +1799,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		&[
 			("id", uuid_expr(uuid::Uuid::new_v4())),
 			("tenant", Expr::value("acme").into()),
-			("workspace_id", uuid_expr(workspace.id)),
+			("thread_id", uuid_expr(thread.id)),
 			("key", Expr::value("entry").into()),
 			(
 				"source",
@@ -2006,7 +1990,7 @@ fn dependency_error(error: sqlx::Error) {
 	assert_eq!(db.code().as_deref(), Some("23503"), "{error}");
 	assert_eq!(
 		db.constraint(),
-		Some("tasks_dependencies_target_workspace"),
+		Some("tasks_dependencies_target_thread"),
 		"{error}"
 	);
 }
@@ -2021,11 +2005,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	use std::time::Duration;
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2035,13 +2015,13 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	};
 	let task = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	for deletion_first in [true, false] {
 		let target = f
 			.store
-			.create_task(&ACME, workspace.id, &input, "human", None)
+			.create_task(&ACME, thread.id, &input, "human", None)
 			.await
 			.unwrap();
 		let mut transaction = f.store.pool.fixture_driver().begin().await.unwrap();
@@ -2104,11 +2084,7 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2118,12 +2094,12 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	};
 	let parent = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let child = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let parent_update = Query::update()
@@ -2158,11 +2134,7 @@ async fn task_dependency_cycles_include_parent_edges(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2172,12 +2144,12 @@ async fn task_dependency_cycles_include_parent_edges(
 	};
 	let first = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let second = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let set_dependencies = Query::update()
@@ -2235,11 +2207,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2253,7 +2221,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 		for _ in 0..2 {
 			level.push(
 				f.store
-					.create_task(&ACME, workspace.id, &input, "human", None)
+					.create_task(&ACME, thread.id, &input, "human", None)
 					.await
 					.unwrap()
 					.id,
@@ -2296,11 +2264,7 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2310,12 +2274,12 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	};
 	let first_task = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let second_task = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let parent_update = Query::update()
@@ -2420,14 +2384,10 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 ) {
 	let (f, url, schema) = fixture.parts();
 	common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
-		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
-		.await
-		.unwrap();
+	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let other = f
 		.store
-		.create_workspace(&ACME, "alice", "Other", "Goal")
+		.create_thread(&ACME, "alice", "Other")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2439,12 +2399,12 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	};
 	let task = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let target = f
 		.store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	let foreign = f
@@ -2471,7 +2431,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 			&[
 				("id", uuid_expr(uuid::Uuid::new_v4())),
 				("tenant", Expr::value("acme").into()),
-				("workspace_id", uuid_expr(workspace.id)),
+				("thread_id", uuid_expr(thread.id)),
 				("title", Expr::value("Direct").into()),
 				("created_by", Expr::value("human").into()),
 				("description", Expr::value("Work").into()),
@@ -2500,7 +2460,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	);
 	let move_target = Query::update()
 		.table(Alias::new("tasks"))
-		.value_expr(Alias::new("workspace_id"), uuid_expr(other.id))
+		.value_expr(Alias::new("thread_id"), uuid_expr(other.id))
 		.and_where(Expr::col(Alias::new("id")).eq(uuid_expr(target.id)))
 		.to_string(PostgresQueryBuilder);
 	dependency_error(

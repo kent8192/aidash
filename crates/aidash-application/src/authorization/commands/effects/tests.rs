@@ -31,7 +31,7 @@ fn scope() -> Scope {
 		connection_result: json!({"content":[{"type":"text","text":"called"}]}),
 		task: Task {
 			id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
@@ -163,10 +163,10 @@ impl RemoteCommandEffects for Scope {
 		}
 		self.call(&format!("require:{action}"))
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		assert_eq!(id, self.task.workspace_id);
-		self.call("workspace")?;
-		Ok(self.res("workspace", &id.to_string(), json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		assert_eq!(id, self.task.thread_id);
+		self.call("thread")?;
+		Ok(self.res("thread", &id.to_string(), json!({})))
 	}
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
 		assert_eq!(task, self.task.id);
@@ -200,10 +200,10 @@ impl RemoteCommandEffects for Scope {
 	}
 	async fn discover(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		search: &aidash_domain::registry::Search,
 	) -> Result<aidash_domain::federation::DiscoveryCards> {
-		assert_eq!(workspace, self.task.workspace_id);
+		assert_eq!(thread, self.task.thread_id);
 		self.call(&format!(
 			"discover:{}",
 			search.kind.as_deref().unwrap_or("")
@@ -288,12 +288,12 @@ impl RemoteCommandEffects for Scope {
 	async fn record_output(
 		&mut self,
 		grant: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
 		assert_eq!(grant, Uuid::from_u128(4));
-		assert_eq!(workspace, self.task.workspace_id);
+		assert_eq!(thread, self.task.thread_id);
 		assert_eq!(id, Uuid::from_u128(9));
 		self.call(&format!("output:{kind}"))
 	}
@@ -327,9 +327,9 @@ impl RemoteCommandEffects for Scope {
 		self.call("live")?;
 		Ok(self.live)
 	}
-	async fn workspace_search(&mut self, workspace: Uuid, input: &Value) -> Result<Value> {
-		assert_eq!(workspace, self.task.workspace_id);
-		self.call("workspace_search")?;
+	async fn thread_search(&mut self, thread: Uuid, input: &Value) -> Result<Value> {
+		assert_eq!(thread, self.task.thread_id);
+		self.call("thread_search")?;
 		self.applied.push(json!({"search":input}));
 		Ok(json!({"results":[]}))
 	}
@@ -441,7 +441,7 @@ async fn message_effect_output_journal_and_final_lease_check_keep_their_order(mu
 		&scope.calls[4..],
 		&[
 			"task_resource",
-			"workspace",
+			"thread",
 			"require:message.create",
 			"apply",
 			"output:message",
@@ -476,8 +476,8 @@ async fn exact_durable_replays_repeat_neither_effects_nor_fresh_lease_checks(mut
 	assert!(scope.journal.is_empty());
 }
 #[rstest]
-#[case::builtin("builtin:workspace_message")]
-#[case::workspace("workspace")]
+#[case::builtin("builtin:thread_message")]
+#[case::thread("thread")]
 #[case::permission("require:message.create")]
 #[case::effect("apply")]
 #[case::output("output:message")]
@@ -511,11 +511,9 @@ async fn lease_revocation_after_journaling_rejects_the_transaction_result(mut sc
 }
 #[rstest]
 #[tokio::test]
-async fn a_dependency_in_another_workspace_stops_child_creation_before_any_effect(
-	mut scope: Scope,
-) {
+async fn a_dependency_in_another_thread_stops_child_creation_before_any_effect(mut scope: Scope) {
 	let mut dependency = scope.child();
-	dependency.workspace_id = Uuid::nil();
+	dependency.thread_id = Uuid::nil();
 	let id = dependency.id;
 	scope.additional.insert(id, dependency);
 	let data = json!({"key":"id","task":{"title":"child","description":"","requirements":{},"dependencies":[id],"parent_id":scope.task.id}});
@@ -750,7 +748,7 @@ async fn negative_terminal_boundaries_fail_before_persistence(
 #[case::commit("run_message_commit", "commit")]
 #[case::deliver("run_message_delivery", "deliver")]
 #[tokio::test]
-async fn input_delivery_uses_run_and_workspace_authority_without_mutation_replay(
+async fn input_delivery_uses_run_and_thread_authority_without_mutation_replay(
 	mut scope: Scope,
 	#[case] operation: &str,
 	#[case] kind: &str,
@@ -763,7 +761,7 @@ async fn input_delivery_uses_run_and_workspace_authority_without_mutation_replay
 		&[
 			"task_resource",
 			"require:run.message",
-			"workspace",
+			"thread",
 			"require:message.create",
 			"apply",
 			"live"
@@ -849,7 +847,7 @@ async fn history_rechecks_disclosure_for_every_stored_message(mut scope: Scope) 
 	scope.history = (10..12)
 		.map(|id| Message {
 			id: Uuid::from_u128(id),
-			workspace_id: scope.task.workspace_id,
+			thread_id: scope.task.thread_id,
 			sender: "human@aidash://peer".into(),
 			content: "protected".into(),
 			idempotency_key: None,
@@ -880,7 +878,7 @@ async fn chunk_size_errors_follow_the_original_record_disclosure_check(mut scope
 	let id = Uuid::from_u128(9);
 	let data = json!({"kind":"artifact","id":id,"offset":0,"max_chars":16001});
 	assert!(
-		matches!(run(&mut scope,"workspace_record_chunk",&data).await,Err(Error::Invalid(message)) if message=="workspace chunk exceeds 16000 characters")
+		matches!(run(&mut scope,"thread_record_chunk",&data).await,Err(Error::Invalid(message)) if message=="thread chunk exceeds 16000 characters")
 	);
 	assert_eq!(
 		scope.calls.last().unwrap(),
@@ -1093,7 +1091,7 @@ async fn forwarded_assignment_needs_the_grants_own_child_and_is_replay_journaled
 }
 #[rstest]
 #[case::not_created_by_this_grant(false, false)]
-#[case::another_task_of_the_workspace(true, true)]
+#[case::another_task_of_the_thread(true, true)]
 #[tokio::test]
 async fn forwarded_assignment_refuses_a_task_the_grant_did_not_create(
 	mut scope: Scope,
@@ -1173,10 +1171,10 @@ async fn forwarded_connection_request_rechecks_the_prompt_the_tool_composed(
 }
 #[rstest]
 #[tokio::test]
-async fn forwarded_workspace_search_needs_workspace_read_and_refuses_images(mut scope: Scope) {
+async fn forwarded_thread_search_needs_thread_read_and_refuses_images(mut scope: Scope) {
 	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
-	run(&mut scope, "workspace_search", &data).await.unwrap();
-	assert!(scope.calls.contains(&"require:workspace.read".to_string()));
+	run(&mut scope, "thread_search", &data).await.unwrap();
+	assert!(scope.calls.contains(&"require:thread.read".to_string()));
 	assert_eq!(
 		scope.applied[0],
 		json!({"search":{"query":"notes","limit":3}})
@@ -1185,7 +1183,7 @@ async fn forwarded_workspace_search_needs_workspace_read_and_refuses_images(mut 
 	scope.applied.clear();
 	let image = json!({"input":{"query":"x","image":{"file_id":"a"}}});
 	assert!(matches!(
-		run(&mut scope, "workspace_search", &image).await,
+		run(&mut scope, "thread_search", &image).await,
 		Err(Error::Invalid(_))
 	));
 	assert!(scope.applied.is_empty());
@@ -1297,7 +1295,7 @@ async fn an_outbound_read_returns_only_the_question_this_tool_asked(mut scope: S
 	let request = |kind: &str| aidash_domain::HumanRequest {
 		answered_by: None,
 		id: Uuid::from_u128(77),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		run_id: Uuid::from_u128(1),
 		kind: kind.into(),
 		prompt: outbound_prompt(),
@@ -1347,7 +1345,7 @@ async fn run_requested(
 fn forwarded_calls() -> Vec<(&'static str, Value)> {
 	vec![
 		(
-			"workspace_search",
+			"thread_search",
 			json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}}),
 		),
 		("task_assign", assign_data()),
@@ -1374,7 +1372,7 @@ fn forwarded_calls() -> Vec<(&'static str, Value)> {
 #[tokio::test]
 async fn the_home_refuses_a_forwarded_tool_its_own_request_does_not_name(mut scope: Scope) {
 	// The receiving Node skipped its gate: the Home's Request names only the defaults it kept.
-	let request = home_request(&["workspace_message", "human_request"]);
+	let request = home_request(&["thread_message", "human_request"]);
 	for (operation, data) in forwarded_calls() {
 		let refused = run_requested(&mut scope, operation, &data, &request).await;
 		assert!(
@@ -1393,9 +1391,9 @@ async fn the_home_refuses_a_forwarded_tool_its_own_request_does_not_name(mut sco
 #[tokio::test]
 async fn the_home_serves_a_forwarded_tool_its_request_or_a_run_only_answer_names(mut scope: Scope) {
 	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
-	let listed = home_request(&["workspace_search", "memory_*"]);
+	let listed = home_request(&["thread_search", "memory_*"]);
 	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
-	run_requested(&mut scope, "workspace_search", &data, &listed)
+	run_requested(&mut scope, "thread_search", &data, &listed)
 		.await
 		.unwrap();
 	let recall = json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}});
@@ -1404,7 +1402,7 @@ async fn the_home_serves_a_forwarded_tool_its_request_or_a_run_only_answer_names
 		.unwrap();
 	// The Home's "this Run only" answer travels inside the Request it describes.
 	let run_only = ToolList::new([ToolPattern::new("task_assign").unwrap()]).unwrap();
-	let answered = home_request(&["workspace_message"])
+	let answered = home_request(&["thread_message"])
 		.with_run_tools(&run_only)
 		.unwrap();
 	let child = scope.child();
@@ -1419,8 +1417,8 @@ async fn older_operations_keep_only_the_binding_check_under_a_request(mut scope:
 	// A Run's own traffic (here, a record read for its context) names no list.
 	let request = home_request(&[]);
 	let data = json!({"kind":"message","id":Uuid::from_u128(6)});
-	run_requested(&mut scope, "workspace_record", &data, &request)
+	run_requested(&mut scope, "thread_record", &data, &request)
 		.await
 		.unwrap();
-	assert!(scope.calls.contains(&"builtin:workspace_read".to_string()));
+	assert!(scope.calls.contains(&"builtin:thread_read".to_string()));
 }

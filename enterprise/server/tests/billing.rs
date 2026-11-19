@@ -376,10 +376,7 @@ impl Cloud {
 		let f = &self.federation;
 		let scope = TenancyScope::tenant(tenant).unwrap();
 		let name = aidash_domain::tenancy::TenantName::new(tenant).unwrap();
-		let workspace = f
-			.store
-			.create_workspace(&scope, "owner", "Work", "Admission")
-			.await?;
+		let workspace = f.store.create_thread(&scope, "owner", "Work").await?;
 		let task = f
 			.store
 			.create_task(
@@ -643,13 +640,13 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	d.make_personal(&kept).await;
 	d.queue_run(&kept).await.unwrap();
 	let pool = d.federation.store.pool.fixture_driver();
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM runs WHERE tenant = $1")
+	let workspace: Uuid = sqlx::query_scalar("SELECT thread_id FROM runs WHERE tenant = $1")
 		.bind(&kept)
 		.fetch_one(pool)
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO channel_attachments (id, tenant, workspace_id, uploaded_by, idempotency_key, filename, media_type, sha256, size_bytes, content) VALUES ($1, $2, $3, 'alice', $4, 'report.pdf', 'application/pdf', $5, 4000, $6)",
+		"INSERT INTO channel_attachments (id, tenant, thread_id, uploaded_by, idempotency_key, filename, media_type, sha256, size_bytes, content) VALUES ($1, $2, $3, 'alice', $4, 'report.pdf', 'application/pdf', $5, 4000, $6)",
 	)
 	.bind(Uuid::new_v4())
 	.bind(&kept)
@@ -1772,9 +1769,9 @@ async fn coverage_moves_share_one_half_open_boundary(
 			.call(
 				person,
 				"POST",
-				"/api/workspaces",
+				"/api/threads",
 				Some(context),
-				json!({"title":"Retained usage", "goal":"Node purge composition", "node":node}),
+				json!({"title":"Retained usage", "node":node}),
 			)
 			.await;
 		assert_eq!(status, 200, "{workspace}");
@@ -1783,8 +1780,8 @@ async fn coverage_moves_share_one_half_open_boundary(
 		let file = Uuid::new_v4();
 		let pool = d.federation.store.pool.fixture_driver();
 		let address = format!("{}/{node}", d.federation.store.deployment);
-		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,$3,'fixture-agent','owner',$4,$5)")
-			.bind(area).bind(tenant).bind(address).bind(workspace).bind(Uuid::new_v4())
+		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,$3,'fixture-agent','owner',$4)")
+			.bind(area).bind(tenant).bind(address).bind(workspace)
 			.execute(pool).await.unwrap();
 		sqlx::query(
 			"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,'[]')",
@@ -2206,7 +2203,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 	assert!(!target.path.exists());
 	assert_eq!(tokio::fs::read(&sibling.path).await.unwrap(), b"keep-data");
 	let remaining: (i64, i64, i64, i64) = sqlx::query_as(
-		"SELECT (SELECT count(*) FROM workspaces WHERE id=$1), (SELECT count(*) FROM core_objects WHERE id=$2), (SELECT count(*) FROM workspaces WHERE id=$3), (SELECT count(*) FROM core_objects WHERE id=$4)",
+		"SELECT (SELECT count(*) FROM threads WHERE id=$1), (SELECT count(*) FROM core_objects WHERE id=$2), (SELECT count(*) FROM threads WHERE id=$3), (SELECT count(*) FROM core_objects WHERE id=$4)",
 	)
 	.bind(target.workspace).bind(target.file).bind(sibling.workspace).bind(sibling.file)
 	.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -2316,13 +2313,13 @@ async fn coverage_moves_share_one_half_open_boundary(
 		.call(
 			&alice,
 			"GET",
-			&format!("/api/workspaces/{}", sibling.workspace),
+			&format!("/api/threads/{}", sibling.workspace),
 			Some(&context),
 			Value::Null,
 		)
 		.await;
 	assert_eq!(status, 200, "{workspace}");
-	assert_eq!(workspace["workspace"]["id"], json!(sibling.workspace));
+	assert_eq!(workspace["thread"]["id"], json!(sibling.workspace));
 	assert_eq!(tokio::fs::read(&sibling.path).await.unwrap(), b"keep-data");
 	d.finish().await;
 }

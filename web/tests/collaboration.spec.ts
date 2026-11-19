@@ -55,7 +55,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
           },
         });
       });
-      await page.goto("/collaboration?channel=workspace-one");
+      await page.goto("/collaboration?channel=thread-one");
       await page
         .getByRole("button", {
           name: ja ? "タスクと成果物" : "Tasks and results",
@@ -166,7 +166,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       nativeMemory: true,
       nativeMemoryDisabled: true,
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", {
         name: ja ? "タスクと成果物" : "Tasks and results",
@@ -257,7 +257,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         },
       });
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", {
         name: ja ? "実行履歴" : "Execution history",
@@ -327,7 +327,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         },
       });
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", {
         name: ja ? "実行履歴" : "Execution history",
@@ -438,7 +438,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         }
         return route.fallback();
       });
-      await page.goto("/collaboration?channel=workspace-one");
+      await page.goto("/collaboration?channel=thread-one");
       await page
         .getByRole("button", {
           name: ja ? "タスクと成果物" : "Tasks and results",
@@ -677,7 +677,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
                     bank: {
                       home: "aidash://home",
                       tenant: "acme",
-                      workspace: "workspace-one",
+                      thread: "thread-one",
                       participant: "home-logical-agent",
                     },
                     provider: { id: "native-memory", version: "1.0.0" },
@@ -713,7 +713,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       }
       return route.fallback();
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", {
         name: ja ? "タスクと成果物" : "Tasks and results",
@@ -941,7 +941,7 @@ test("conversation is the landing view, with contextual progress and account set
   expect(errors).toEqual([]);
 });
 
-test("new request preserves the Japanese conversation creation contract", async ({
+test("new request opens a Thread with the Japanese request contract", async ({
   page,
 }) => {
   const { errors } = await setup(page, { subject: true, locale: "ja-JP" });
@@ -949,16 +949,17 @@ test("new request preserves the Japanese conversation creation contract", async 
   await page.route("**/api/scratch-spaces**", (route) =>
     route.fulfill({ json: [{ id: "scratch-one", name: "共有領域" }] }),
   );
-  await page.route("**/api/conversations", (route) => {
+  await page.route("**/api/threads", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
     payload = route.request().postDataJSON();
-    return route.fulfill({ json: { workspace: { id: "workspace-two" } } });
+    return route.fulfill({ json: { id: "thread-two" } });
   });
   await page.goto("/");
   await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("タイトル", { exact: true }).fill("競合調査");
   await dialog
-    .getByLabel("ゴール", { exact: true })
+    .getByLabel("依頼", { exact: true })
     .fill("Rustフレームワークを比較して");
   await dialog
     .getByRole("combobox", { name: "コーディネーター" })
@@ -966,15 +967,13 @@ test("new request preserves the Japanese conversation creation contract", async 
   await dialog
     .getByRole("combobox", { name: "スクラッチスペース" })
     .selectOption("scratch-one");
-  await dialog
-    .getByRole("button", { name: "新しいゴール", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "依頼する", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page).toHaveURL(/channel=workspace-two/);
+  await expect(page).toHaveURL(/channel=thread-two/);
   expect(payload).toEqual({
     node: defaultNode.name,
     title: "競合調査",
-    goal: "Rustフレームワークを比較して",
+    request: "Rustフレームワークを比較して",
     target: { id: "researcher", version: "1.0.0" },
     target_kind: "agent",
     scratch_space_id: "scratch-one",
@@ -986,7 +985,7 @@ test("failed message keeps its draft and idempotency key on retry", async ({
   page,
 }) => {
   const { submissions, errors } = await setup(page, { failFirstMessage: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   await composer.fill("Please check the source.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -1000,7 +999,7 @@ test("failed message keeps its draft and idempotency key on retry", async ({
     page.getByText("Please check the source.", { exact: true }),
   ).toBeVisible();
   const messages = submissions.filter((item) =>
-    item.path.endsWith("/thread-messages"),
+    item.path.endsWith("/channel-messages"),
   );
   expect(messages).toHaveLength(2);
   expect(messages[0].body.idempotency_key).toBe(
@@ -1013,7 +1012,7 @@ test("message attachments show their names and download in the selected tab cont
   page,
 }) => {
   const { errors } = await setup(page, { messageAttachment: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const attachment = page.getByRole("button", {
     name: "Download attachment: evidence.txt",
   });
@@ -1056,7 +1055,7 @@ test("preparing a channel does not invoke agent execution", async ({
   await expect(
     page.getByRole("heading", { name: "# Draft research", exact: true }),
   ).toBeVisible();
-  expect(submissions.map((item) => item.path)).toEqual(["/api/workspaces"]);
+  expect(submissions.map((item) => item.path)).toEqual(["/api/threads"]);
   expect(errors).toEqual([]);
 });
 
@@ -1064,17 +1063,17 @@ test("graph renders with Cytoscape and offers current related channel first", as
   page,
 }) => {
   const { errors } = await setup(page);
-  await page.goto("/collaboration?channel=workspace-two");
+  await page.goto("/collaboration?channel=thread-two");
   await page
     .getByRole("button", { name: "View in graph", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/graph\?channel=workspace-two/);
+  await expect(page).toHaveURL(/\/graph\?channel=thread-two/);
   await expect(page.locator(".collab-cytoscape canvas").first()).toBeVisible();
   const related = page.locator(".collab-selection .collab-channel-link");
   await expect(related).toHaveCount(2);
   await expect(related.first()).toHaveText("# Planning");
   await related.filter({ hasText: "Research" }).click();
-  await expect(page).toHaveURL(/\/collaboration\?channel=workspace-one/);
+  await expect(page).toHaveURL(/\/collaboration\?channel=thread-one/);
   await expect(
     page.getByText("Evidence is ready to review.", { exact: true }),
   ).toBeVisible();
@@ -1089,7 +1088,7 @@ test("graph focus survives contextual selection, reload, and history", async ({
     subject: true,
   });
   const node = `aidash://home/${defaultNode.name}`;
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: "Tasks and results" }).click();
   await page
     .getByRole("dialog")
@@ -1564,7 +1563,7 @@ test("a question closed at the Answer Deadline reads as unanswered", async ({
   await expect(dialog).not.toContainText("continues on its own");
 
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await expect(
     page.getByText(
       "No answer before the Answer Deadline: Which market should I examine?",
@@ -1577,7 +1576,7 @@ test("revoked history is hidden rather than retaining a stale conversation", asy
   page,
 }) => {
   const { revokeHistory } = await setup(page);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await expect(
     page.getByText("Evidence is ready to review.", { exact: true }),
   ).toBeVisible();
@@ -1621,7 +1620,7 @@ test("mobile conversation and channel switching do not require horizontal scroll
 }) => {
   const { errors } = await setup(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
   ).toBeVisible();
@@ -1642,7 +1641,7 @@ test("thread replies persist separately and channel drafts survive thread naviga
   page,
 }) => {
   const { submissions, errors } = await setup(page);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   await composer.fill("Unsent channel note");
   await page
@@ -1671,7 +1670,7 @@ test("thread replies persist separately and channel drafts survive thread naviga
     page.getByText("Here is the supporting source.", { exact: true }),
   ).toBeVisible();
   const posts = submissions.filter((item) =>
-    item.path.endsWith("/thread-messages"),
+    item.path.endsWith("/channel-messages"),
   );
   expect(posts).toHaveLength(1);
   expect(posts[0].body.thread_id).toBe("thread-message-one");
@@ -1682,7 +1681,7 @@ test("older message pages are prepended without losing the latest messages", asy
   page,
 }) => {
   const { errors } = await setup(page, { olderMessages: 45 });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const feed = page.getByRole("region", { name: "Conversation", exact: true });
   await expect(feed.getByRole("article")).toHaveCount(40);
   await expect(
@@ -1706,7 +1705,7 @@ test("older message pages are prepended without losing the latest messages", asy
 
 test("local run details retain execution memory", async ({ page }) => {
   const { errors } = await setup(page, { subject: true, runMemory: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -1730,18 +1729,15 @@ test("run message attachments stay fixed while an upload is pending", async ({
   let finishUpload!: () => void;
   const started = new Promise<void>((resolve) => (uploadStarted = resolve));
   const uploadGate = new Promise<void>((resolve) => (finishUpload = resolve));
-  await page.route(
-    "**/api/workspaces/workspace-one/attachments?*",
-    async (route) => {
-      uploadStarted();
-      await uploadGate;
-      await route.fallback();
-    },
-  );
+  await page.route("**/api/threads/thread-one/attachments?*", async (route) => {
+    uploadStarted();
+    await uploadGate;
+    await route.fallback();
+  });
   await page.route("**/api/runs/run-0/message", (route) =>
     route.fulfill({ json: { id: "run-message-one" } }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -1785,7 +1781,7 @@ test("run media picker follows the effective model route before uploads", async 
     subject: true,
     runMediaRoutes: [],
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -1850,7 +1846,7 @@ test("a same-length refreshed page follows a new latest message", async ({
     latestMessageChangesOnPoll: true,
     olderMessages: 39,
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const feed = page.getByRole("region", { name: "Conversation", exact: true });
   await expect(feed.getByRole("article")).toHaveCount(40);
   await expect(
@@ -1882,7 +1878,7 @@ test("message following keeps context after the latest message and respects read
   const { errors } = await setup(page, { olderMessages: 39 });
   // On narrow screens pending requests follow the latest message inside the feed.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const feed = page.getByRole("region", { name: "Conversation", exact: true });
   await expect(feed.getByRole("article")).toHaveCount(40);
   await expect
@@ -1898,13 +1894,12 @@ test("message following keeps context after the latest message and respects read
     )
     .toBe(true);
   const history: ChannelMessagePage = await page.evaluate(() =>
-    fetch("/api/workspaces/workspace-one/message-history").then((response) =>
+    fetch("/api/threads/thread-one/message-history").then((response) =>
       response.json(),
     ),
   );
-  await page.route(
-    "**/api/workspaces/workspace-one/message-history**",
-    (route) => route.fulfill({ json: history }),
+  await page.route("**/api/threads/thread-one/message-history**", (route) =>
+    route.fulfill({ json: history }),
   );
   await feed.evaluate((element) => {
     element.scrollTop = 0;
@@ -1953,7 +1948,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     const ja = locale === "ja-JP";
     if (ja) await page.setViewportSize({ width: 390, height: 1000 });
     const { errors } = await setup(page, { subject: true, locale });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     const open = page.getByRole("button", {
       name: ja ? "状況を表示" : "Show channel status",
       exact: true,
@@ -2001,7 +1996,7 @@ for (const action of ["task", "participant", "new task"] as const) {
     page,
   }) => {
     const { errors } = await setup(page, { subject: true });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     const open = page.getByRole("button", {
       name: "Show channel status",
       exact: true,
@@ -2030,8 +2025,8 @@ for (const action of ["task", "participant", "new task"] as const) {
       await expect(dialog).toContainText("Thinking");
     else {
       await expect(dialog.getByLabel("Title", { exact: true })).toHaveValue("");
-      await expect(dialog.getByLabel("Workspace", { exact: true })).toHaveValue(
-        "workspace-one",
+      await expect(dialog.getByLabel("Thread", { exact: true })).toHaveValue(
+        "thread-one",
       );
     }
     await page.keyboard.press("Escape");
@@ -2048,7 +2043,7 @@ test("revoking a thread read hides cached replies without exposing another conve
   page,
 }) => {
   const { revokeThreads } = await setup(page);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Reply in thread", exact: true })
     .click();
@@ -2101,7 +2096,7 @@ test("attachment retries preserve uploads, files and message identity", async ({
     item.path.endsWith("/attachments"),
   );
   const messages = submissions.filter((item) =>
-    item.path.endsWith("/thread-messages"),
+    item.path.endsWith("/channel-messages"),
   );
   expect(uploads).toHaveLength(1);
   expect(uploads[0].body.size).toBe(8);
@@ -2135,7 +2130,7 @@ test("upload failures retain their key and file limits apply before network use"
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("upload unavailable");
   expect(
-    submissions.filter((item) => item.path.endsWith("/thread-messages")),
+    submissions.filter((item) => item.path.endsWith("/channel-messages")),
   ).toHaveLength(0);
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(
@@ -2203,7 +2198,7 @@ test("channel can resume a paused run outside the state window", async ({
       },
     }),
   );
-  await page.route("**/api/workspaces/workspace-one/runs?**", (route) =>
+  await page.route("**/api/threads/thread-one/runs?**", (route) =>
     route.fulfill({
       json: {
         items: [{ ...data.runs[0], control: "PAUSED" }],
@@ -2211,7 +2206,7 @@ test("channel can resume a paused run outside the state window", async ({
       },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
     .click();
@@ -2352,7 +2347,7 @@ for (const viewport of [
   });
 }
 
-test("workspace reference renders light, dark and thread layouts", async ({
+test("thread reference renders light, dark and thread layouts", async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -2372,23 +2367,23 @@ test("workspace reference renders light, dark and thread layouts", async ({
       exact: true,
     }),
   ).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("workspace-dark.png") });
+  await page.screenshot({ path: testInfo.outputPath("thread-dark.png") });
   await page.getByRole("dialog").screenshot({
-    path: testInfo.outputPath("workspace-status.png"),
+    path: testInfo.outputPath("thread-status.png"),
   });
   await page.keyboard.press("Escape");
   await page
     .locator("form")
     .filter({ has: page.getByRole("textbox", { name: "メッセージ" }) })
     .screenshot({
-      path: testInfo.outputPath("workspace-composer.png"),
+      path: testInfo.outputPath("thread-composer.png"),
     });
   await page
     .getByRole("button", { name: "ライトテーマに切り替え", exact: true })
     .click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.screenshot({
-    path: testInfo.outputPath("workspace-light.png"),
+    path: testInfo.outputPath("thread-light.png"),
     animations: "disabled",
   });
   await page
@@ -2398,15 +2393,15 @@ test("workspace reference renders light, dark and thread layouts", async ({
   await expect(
     page.getByRole("textbox", { name: "返信", exact: true }),
   ).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("workspace-thread.png") });
+  await page.screenshot({ path: testInfo.outputPath("thread-thread.png") });
   await page.setViewportSize({ width: 1280, height: 960 });
   await page.screenshot({
-    path: testInfo.outputPath("workspace-thread-tall.png"),
+    path: testInfo.outputPath("thread-thread-tall.png"),
   });
   expect(errors).toEqual([]);
 });
 
-test("shared files can be inspected without leaving the workspace", async ({
+test("shared files can be inspected without leaving the thread", async ({
   page,
 }) => {
   const { errors } = await setup(page, { messageAttachment: true });
@@ -2521,7 +2516,7 @@ for (const width of [1440, 390]) {
       }
       return route.fallback();
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page.getByRole("button", { name: "Tasks and results" }).click();
     await page
       .getByRole("dialog")
@@ -2626,7 +2621,7 @@ for (const pause of [
         ? { subject: true, invalidRun: true }
         : { subject: true, semanticPause: pause },
     );
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", { name: "Show channel status", exact: true })
       .click();
@@ -2676,7 +2671,7 @@ test("paused failure delivery can resume while retaining its invalid Context dia
     subject: true,
     failureDeliveryRun: true,
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -2711,7 +2706,7 @@ test("channel controls resume a validated failure delivery with an invalid Conte
     subject: true,
     failureDeliveryRun: true,
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
     .click();
@@ -2770,7 +2765,7 @@ for (const collision of [false, true]) {
         },
       });
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", { name: "Tasks and results", exact: true })
       .click();
@@ -2835,7 +2830,7 @@ test("topology renders each discovered Node once with its agents and cross-Node 
       },
     }),
   );
-  await page.goto("/graph?channel=workspace-one");
+  await page.goto("/graph?channel=thread-one");
   await page.getByLabel("Graph perspective").selectOption("neighborhood");
   await page
     .getByRole("button", {
@@ -2911,7 +2906,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     // Short enough that the chooser sits below the fold until the page
     // scrolls to it.
     await page.setViewportSize({ width: 1280, height: 500 });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     const link = page.getByRole("link", {
       name: "Tabechao build",
       exact: true,
@@ -2923,7 +2918,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await link.click();
     await expect(page).toHaveURL(/\/settings\?/);
     await expect(page).toHaveURL(/view=node/);
-    await expect(page).toHaveURL(/channel=workspace-one/);
+    await expect(page).toHaveURL(/channel=thread-one/);
     const chooser = page.getByLabel(
       ja ? "スクラッチスペースを選択" : "Choose a Scratch Space",
       { exact: true },
@@ -2953,7 +2948,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     });
     await page.setViewportSize({ width: 1280, height: 500 });
     await page.goto(
-      `/settings?view=node&channel=workspace-one&focus=${boundSpaceId}`,
+      `/settings?view=node&channel=thread-one&focus=${boundSpaceId}`,
     );
     await expect(
       page.getByLabel(
@@ -3002,7 +2997,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await page.route(`**${boundSpace}`, (route) =>
       route.fulfill({ json: { ...namedSpace, expired: true } }),
     );
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await expect(
       page.getByRole("link", { name: "Tabechao build", exact: true }),
     ).toBeVisible();
@@ -3035,7 +3030,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await page.route(`**${boundSpace}`, (route) =>
       route.fulfill({ status: current.status, json: current.body }),
     );
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await expect(
       page.getByRole("link", { name: "Tabechao build", exact: true }),
     ).toBeVisible();
@@ -3070,7 +3065,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       await page.route(`**${boundSpace}`, (route) =>
         route.fulfill({ status, json: { error: "refused" } }),
       );
-      await page.goto("/collaboration?channel=workspace-one");
+      await page.goto("/collaboration?channel=thread-one");
       await expect(
         page.getByText(
           ja ? "使えないスクラッチスペース" : "Unavailable Scratch Space",
@@ -3088,7 +3083,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await page.route(`**${boundSpace}`, (route) =>
       route.fulfill({ status: 500, json: { error: "unavailable" } }),
     );
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await expect(
       page.getByText(
         ja
@@ -3237,7 +3232,7 @@ for (const failDecline of [false, true]) {
       declinableCall: true,
       failDecline,
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", { name: "Execution history", exact: true })
       .click();
@@ -3313,7 +3308,7 @@ test("the decline button is absent when the server offers no call", async ({
     subject: true,
     semanticPause: "invalidated",
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -3363,7 +3358,7 @@ test("a hidden Run offers declining a paused call without a sentence field", asy
     // The Run's content is private to its owner, so the reader gets a plain refusal.
     return route.fulfill({ status: 403, json: { error: "forbidden" } });
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -3461,7 +3456,7 @@ for (const failMessage of [false, true]) {
       }
       return route.fallback();
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", { name: "Tasks and results", exact: true })
       .click();
@@ -3515,9 +3510,7 @@ for (const failMessage of [false, true]) {
   });
 }
 
-test("workspace history continues from its candidate cursor", async ({
-  page,
-}) => {
+test("thread history continues from its candidate cursor", async ({ page }) => {
   await setup(page, { locale: "en-US" });
   const data = fixture();
   await page.route("**/api/state**", (route) =>
@@ -3525,39 +3518,39 @@ test("workspace history continues from its candidate cursor", async ({
       json: {
         ...data,
         access: { kind: "subject", tenant: "acme", subject: "alice" },
-        next_cursors: { ...data.next_cursors, workspaces: "next-page" },
+        next_cursors: { ...data.next_cursors, threads: "next-page" },
       },
     }),
   );
   let requested = "";
-  await page.route("**/api/workspaces?**", (route) => {
+  await page.route("**/api/threads?**", (route) => {
     requested = route.request().url();
     return route.fulfill({
       json: {
         items: [
           {
-            ...data.workspaces[0],
-            id: "older-workspace",
-            title: "Older workspace",
+            ...data.threads[0],
+            id: "older-thread",
+            title: "Older thread",
           },
         ],
         next_cursor: null,
       },
     });
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: /Switch request/ }).click();
   await page.getByRole("button", { name: "Show more" }).click();
   await expect(
-    page.getByRole("link", { name: "# Older workspace" }),
+    page.getByRole("link", { name: "# Older thread" }),
   ).toBeVisible();
   expect(new URL(requested).searchParams.get("cursor")).toBe("next-page");
   expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
   await expect(page.getByRole("button", { name: "Show more" })).toHaveCount(0);
-  await page.getByRole("link", { name: "# Older workspace" }).click();
-  await expect(page).toHaveURL(/channel=older-workspace/);
+  await page.getByRole("link", { name: "# Older thread" }).click();
+  await expect(page).toHaveURL(/channel=older-thread/);
   await expect(
-    page.getByRole("heading", { name: "# Older workspace" }),
+    page.getByRole("heading", { name: "# Older thread" }),
   ).toBeVisible();
 });
 
@@ -3583,7 +3576,7 @@ test("pending requests continue within the selected node", async ({ page }) => {
             ...data.human_requests[0],
             id: "older-question",
             run_id: "old-run",
-            workspace_id: "older-workspace",
+            thread_id: "older-thread",
             prompt: "Older request from an old run",
           },
         ],
@@ -3591,13 +3584,13 @@ test("pending requests continue within the selected node", async ({ page }) => {
       },
     });
   });
-  await page.route("**/api/workspaces/older-workspace", (route) =>
+  await page.route("**/api/threads/older-thread", (route) =>
     route.fulfill({
       json: {
-        workspace: {
-          ...data.workspaces[0],
-          id: "older-workspace",
-          title: "Older workspace",
+        thread: {
+          ...data.threads[0],
+          id: "older-thread",
+          title: "Older thread",
         },
         tasks: [],
         artifacts: [],
@@ -3606,7 +3599,7 @@ test("pending requests continue within the selected node", async ({ page }) => {
       },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: /Decisions 1/ }).click();
   expect(requested).toBe("");
   await page.getByRole("button", { name: "Show more" }).click();
@@ -3623,7 +3616,7 @@ test("pending requests continue within the selected node", async ({ page }) => {
     })
     .last()
     .click();
-  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(page).toHaveURL(/channel=older-thread/);
   await expect(page.getByRole("dialog", { name: "Human input" })).toContainText(
     "Older request from an old run",
   );
@@ -3655,7 +3648,7 @@ test("an empty pending-request page can continue", async ({ page }) => {
       },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: /Decisions 0/ }).click();
   await page.getByRole("button", { name: "Show more" }).click();
   await expect(
@@ -3667,18 +3660,18 @@ test("an empty pending-request page can continue", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("an opened older workspace survives a fresh state window", async ({
+test("an opened older thread survives a fresh state window", async ({
   page,
 }) => {
   await setup(page, { locale: "en-US" });
   const data = fixture();
-  await page.route("**/api/workspaces/older-workspace", (route) =>
+  await page.route("**/api/threads/older-thread", (route) =>
     route.fulfill({
       json: {
-        workspace: {
-          ...data.workspaces[0],
-          id: "older-workspace",
-          title: "Older workspace",
+        thread: {
+          ...data.threads[0],
+          id: "older-thread",
+          title: "Older thread",
         },
         tasks: [],
         artifacts: [],
@@ -3687,9 +3680,9 @@ test("an opened older workspace survives a fresh state window", async ({
       },
     }),
   );
-  await page.goto("/collaboration?channel=older-workspace");
+  await page.goto("/collaboration?channel=older-thread");
   await expect(
-    page.getByRole("heading", { name: "# Older workspace" }),
+    page.getByRole("heading", { name: "# Older thread" }),
   ).toBeVisible();
 });
 
@@ -3719,7 +3712,7 @@ test("task dependency picker can load older tasks on demand", async ({
       },
     });
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
     .click();
@@ -3760,10 +3753,10 @@ test("failed task can be abandoned even when older runs exist", async ({
       },
     }),
   );
-  await page.route("**/api/workspaces/workspace-one", (route) =>
+  await page.route("**/api/threads/thread-one", (route) =>
     route.fulfill({
       json: {
-        workspace: data.workspaces[0],
+        thread: data.threads[0],
         tasks: [task],
         artifacts: [],
         events: [],
@@ -3771,7 +3764,7 @@ test("failed task can be abandoned even when older runs exist", async ({
       },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
     .click();
@@ -3793,7 +3786,7 @@ test("returning focus refreshes the current state", async ({ page }) => {
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/state") reads += 1;
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await expect(
     page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
@@ -3831,7 +3824,7 @@ test("a remote decline holder sees only the paused call and cannot send a senten
     }
     return route.fallback();
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Tasks and results", exact: true })
     .click();

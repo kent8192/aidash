@@ -10,7 +10,6 @@ export type CoreFile = {
 };
 export type Area = {
   id: string;
-  workspace_id: string;
   thread_id: string;
   agent_id: string;
   state: string;

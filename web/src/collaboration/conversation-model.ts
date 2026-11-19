@@ -14,19 +14,17 @@ export function mergeMessagePages<
 }
 
 export type MessageSubmission = {
-  workspace: string;
-  thread: string | null;
+  thread: string;
   content: string;
   key: string;
   attachments: string[];
   citations: string[];
 };
 
-/** Retries retain identity only while channel, thread and payload agree. */
+/** Retries retain identity only while the Thread and payload agree. */
 export function submissionFor(
   previous: MessageSubmission | null,
-  workspace: string,
-  thread: string | null,
+  thread: string,
   draft: string,
   newKey: () => string,
   attachments: readonly string[] = [],
@@ -36,8 +34,7 @@ export function submissionFor(
   const canonical = [...attachments];
   const cited = [...citations];
   if (
-    previous?.workspace === workspace &&
-    previous.thread === thread &&
+    previous?.thread === thread &&
     previous.content === content &&
     JSON.stringify(previous.attachments) === JSON.stringify(canonical) &&
     JSON.stringify(previous.citations) === JSON.stringify(cited)
@@ -45,7 +42,6 @@ export function submissionFor(
     return previous;
   }
   return {
-    workspace,
     thread,
     content,
     key: newKey(),

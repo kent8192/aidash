@@ -144,7 +144,7 @@ test(
   },
 );
 
-test("creates a workspace and task and receives live assignment changes", async ({
+test("creates a thread and task and receives live assignment changes", async ({
   page,
 }) => {
   // A Tenant subject's state can take seconds to refresh (#404).
@@ -155,7 +155,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     tenant: subject.tenant,
     name: subject.name,
   });
-  const name = `Browser workspace ${Date.now()}`;
+  const name = `Browser thread ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
   await page.goto("/collaboration");
   await page.getByRole("button", { name: "設定", exact: true }).click();
@@ -181,7 +181,7 @@ test("creates a workspace and task and receives live assignment changes", async 
   await page.getByRole("button", { name: "タスクを追加", exact: true }).click();
   await page
     .getByRole("dialog")
-    .getByLabel("ワークスペース", { exact: true })
+    .getByLabel("スレッド", { exact: true })
     .selectOption({ label: name });
   await page
     .getByRole("dialog")
@@ -263,7 +263,7 @@ test("preserves a draft after a failed message request and clears it after succe
     .getByRole("textbox", { name: "メッセージ", exact: true })
     .first();
   await input.fill("Keep this unsent draft");
-  await page.route("**/api/workspaces/*/thread-messages", async (route) => {
+  await page.route("**/api/threads/*/channel-messages", async (route) => {
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -272,12 +272,12 @@ test("preserves a draft after a failed message request and clears it after succe
   });
   const failed = page.waitForResponse(
     (response) =>
-      response.url().includes("/thread-messages") && response.status() === 503,
+      response.url().includes("/channel-messages") && response.status() === 503,
   );
   await page.getByRole("button", { name: "送信", exact: true }).first().click();
   await failed;
   await expect(input).toHaveValue("Keep this unsent draft");
-  await page.unroute("**/api/workspaces/*/thread-messages");
+  await page.unroute("**/api/threads/*/channel-messages");
   await page.getByRole("button", { name: "送信", exact: true }).first().click();
   await expect(input).toHaveValue("");
 });
@@ -292,8 +292,8 @@ test("creates task dependencies and a parent through the dashboard", async ({
   });
   const headers = { authorization: `Bearer ${subject.token}` };
   const name = `Relationships ${Date.now()}`;
-  const workspace = await (
-    await page.request.post("/api/workspaces", {
+  const thread = await (
+    await page.request.post("/api/threads", {
       headers,
       data: { title: name, goal: "Task relationships" },
     })
@@ -301,7 +301,7 @@ test("creates task dependencies and a parent through the dashboard", async ({
   const tasks = [];
   for (const title of ["Parent", "Prerequisite"]) {
     const response = await page.request.post(
-      `/api/workspaces/${workspace.id}/tasks`,
+      `/api/threads/${thread.id}/tasks`,
       {
         headers,
         data: {
@@ -316,18 +316,16 @@ test("creates task dependencies and a parent through the dashboard", async ({
     expect(response.status()).toBe(200);
     tasks.push(await response.json());
   }
-  await page.goto(`/collaboration?channel=${encodeURIComponent(workspace.id)}`);
+  await page.goto(`/collaboration?channel=${encodeURIComponent(thread.id)}`);
   await page
     .getByRole("button", { name: "タスクと成果物", exact: true })
     .click();
   await page.getByRole("button", { name: "タスクを追加", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
-    dialog.locator(`select[name="workspace"] option[value="${workspace.id}"]`),
+    dialog.locator(`select[name="thread"] option[value="${thread.id}"]`),
   ).toHaveCount(1);
-  await dialog
-    .getByLabel("ワークスペース", { exact: true })
-    .selectOption(workspace.id);
+  await dialog.getByLabel("スレッド", { exact: true }).selectOption(thread.id);
   await dialog
     .getByLabel("タイトル", { exact: true })
     .fill("Child with prerequisite");
@@ -348,7 +346,7 @@ test("creates task dependencies and a parent through the dashboard", async ({
     .selectOption([tasks[1].id]);
   const response = page.waitForResponse(
     (r) =>
-      r.url().endsWith(`/api/workspaces/${workspace.id}/tasks`) &&
+      r.url().endsWith(`/api/threads/${thread.id}/tasks`) &&
       r.request().method() === "POST",
   );
   await dialog.getByRole("button", { name: "作成", exact: true }).click();
@@ -356,7 +354,7 @@ test("creates task dependencies and a parent through the dashboard", async ({
   expect(created.status()).toBe(200);
   await expect(dialog).not.toBeVisible();
   // Verify persisted relationships without Chromium's page-response body cache.
-  const snapshot = await page.request.get(`/api/workspaces/${workspace.id}`, {
+  const snapshot = await page.request.get(`/api/threads/${thread.id}`, {
     headers,
   });
   expect(snapshot.status()).toBe(200);

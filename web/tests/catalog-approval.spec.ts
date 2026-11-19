@@ -74,14 +74,14 @@ async function dashboard(
               (version) => !version.needs_approval || version.approval?.enabled,
             )
             .map((version) => version.entry),
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,

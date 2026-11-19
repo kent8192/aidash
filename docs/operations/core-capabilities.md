@@ -475,7 +475,7 @@ figure. OCR is not performed (#742).
 
 ## Files, references, Skills and packages
 
-A working area belongs to an authorized subject, home/workspace/thread and Agent.
+A working area belongs to an authorized subject, home/thread/thread and Agent.
 Different subjects using the same thread and Agent have separate areas.
 Follow-up Runs by the same subject share files in admission order. Queue adds a future Run; steer
 addresses the expected active Run; stop bypasses ordinary queued work. Python
@@ -622,7 +622,7 @@ messages or old authority.
 Choosing **Keep** for an existing recovery snapshot converts it to retained
 storage without expiry. Restoration rechecks the current working-byte limit
 before copying or reattaching files. Authorized file administrators can restore
-another owner's area subject to current workspace, source and restoration policy;
+another owner's area subject to current thread, source and restoration policy;
 the original ownership remains unchanged.
 
 ## Requirement evidence
@@ -649,11 +649,11 @@ copy after the sender's completed cleanup. Network tests use public HTTPBingo
 fixtures (no credentials) to test real HTTPS redirects and revocation while a
 response is pending. Infrastructure failures remain failed evidence.
 
-Subject-scoped remote workspace execution uses durable source grants and
+Subject-scoped remote thread execution uses durable source grants and
 receiver admissions, with independently rechecked policies at both nodes.
 It has no legacy-offer fallback. The task dialog exposes status, pause/resume,
-cancel and idempotent additional instructions. Remote workspace Agents use the
-workspace tool set; core working-area capabilities require an explicitly
+cancel and idempotent additional instructions. Remote thread Agents use the
+thread tool set; core working-area capabilities require an explicitly
 admitted local thread. Use the scoped file-transfer protocol to exchange files
 between those local threads. Cross-node Bindings do not manufacture a local
 conversation or authorize private working data.

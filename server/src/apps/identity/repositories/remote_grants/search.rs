@@ -150,15 +150,15 @@ impl SemanticSearchScope for Scope {
 	async fn disclosure_task(&mut self, task: Uuid) -> Result<Task> {
 		self.access()?.task_read(task).await.map_err(Into::into)
 	}
-	async fn input_message(&mut self, workspace: Uuid, message: Uuid) -> Result<Message> {
+	async fn input_message(&mut self, thread: Uuid, message: Uuid) -> Result<Message> {
 		Ok(serde_json::from_value(
 			self.access()?
-				.workspace_record(workspace, "message", message)
+				.thread_record(thread, "message", message)
 				.await?,
 		)?)
 	}
-	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec> {
-		let index = service::index(self.lease.tx(), workspace, false).await?;
+	async fn index_spec(&mut self, thread: Uuid) -> Result<IndexingSpec> {
+		let index = service::index(self.lease.tx(), thread, false).await?;
 		index.configuration().map(Into::into).map_err(Into::into)
 	}
 	async fn corpus_digest(&mut self, description: &Description) -> Result<String> {
@@ -171,14 +171,14 @@ impl SemanticSearchScope for Scope {
 	}
 	async fn prepare_search(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &Search,
 		controls: &AgentConfig,
 	) -> Result<PreparedSearch> {
 		let store = self.runtime.store.clone();
 		aidash_application::semantic::retrieval::prepare(
 			&mut crate::bootstrap::semantic_retrieval_scope(&store, &mut self.lease),
-			workspace,
+			thread,
 			input,
 			Some(controls),
 		)

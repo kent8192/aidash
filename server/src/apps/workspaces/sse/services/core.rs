@@ -170,10 +170,10 @@ impl Service {
 			seen,
 		}
 	}
-	fn notify(&self, workspace: Option<Uuid>, recovery: bool) {
+	fn notify(&self, thread: Option<Uuid>, recovery: bool) {
 		let slots = self.inner.slots.lock().expect("SSE registrations");
 		for (scope, slot) in slots.iter() {
-			if recovery || workspace.is_none() || scope.is_none() || *scope == workspace {
+			if recovery || thread.is_none() || scope.is_none() || *scope == thread {
 				slot.signal.send_modify(|v| {
 					if recovery {
 						v.recovery = v.recovery.wrapping_add(1);

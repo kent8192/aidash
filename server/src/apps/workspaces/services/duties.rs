@@ -60,22 +60,22 @@ impl DutyScope for Adapter<'_> {
 	fn now(&self) -> DateTime<Utc> {
 		self.now
 	}
-	async fn require_workspace(
+	async fn require_thread(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		action: &str,
 	) -> aidash_application::Result<()> {
-		let resource = self.access.workspace(workspace).await?;
+		let resource = self.access.thread(thread).await?;
 		self.access.require(&resource, action).await?;
 		Ok(())
 	}
-	async fn sees_workspace(&mut self, workspace: Uuid) -> aidash_application::Result<bool> {
-		let resource = match self.access.workspace(workspace).await {
+	async fn sees_thread(&mut self, thread: Uuid) -> aidash_application::Result<bool> {
+		let resource = match self.access.thread(thread).await {
 			Ok(resource) => resource,
 			Err(Error::NotFound(_) | Error::Forbidden) => return Ok(false),
 			Err(error) => return Err(error.into()),
 		};
-		Ok(self.access.decide(&resource, "workspace.read").await?)
+		Ok(self.access.decide(&resource, "thread.read").await?)
 	}
 	async fn administers(&mut self) -> aidash_application::Result<bool> {
 		let resource = self
@@ -180,6 +180,61 @@ impl DutyScope for Adapter<'_> {
 		let tenant = tenant(self.access);
 		Ok(repository::count(&mut *self.access.tx, &tenant).await?)
 	}
+	async fn open_thread(
+		&mut self,
+		from: Uuid,
+		definition: &Definition,
+	) -> aidash_application::Result<Uuid> {
+		use reinhardt::query::QueryStatementBuilder as _;
+		use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query};
+		let tenant = tenant(self.access);
+		let (node, scratch_space_id): (String, Uuid) = crate::database::native::query_as(
+			&Query::select()
+				.column(Alias::new("node"))
+				.column(Alias::new("scratch_space_id"))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col("tenant").eq(tenant.clone()))
+				.and_where(Expr::col("id").eq(Expr::value(from)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&["node", "scratch_space_id"])
+		.fetch_optional(&mut **self.access.tx)
+		.await?
+		.ok_or_else(|| Error::NotFound("thread".into()))?;
+		let node = aidash_domain::nodes::NodeName::parse(&node)?;
+		// The Requester opens the Duty's own Thread in the Node and
+		// Scratch Space it was registered from (#1008, ADR 0140).
+		let requester = self.subject().to_owned();
+		let thread = self
+			.store
+			.create_thread_in(
+				&mut self.access.tx,
+				crate::apps::execution::repositories::store::ThreadInsert {
+					id: Uuid::new_v4(),
+					tenant: &tenant,
+					node: &node,
+					title: definition.title.trim(),
+					scratch_space_id,
+					created_by: &requester,
+				},
+			)
+			.await?;
+		self.store
+			.record_thread_tenant_in(&mut self.access.tx, thread.id, &tenant, &requester)
+			.await?;
+		// Its mission is the first message, as the person's request is in a
+		// Thread a person opens.
+		crate::apps::workspaces::models::Message::append_in(
+			&mut *self.access.tx,
+			thread.id,
+			&requester,
+			&format!("{}\n\n{}", definition.title.trim(), definition.mission),
+			&format!("duty-mission:{}", thread.id),
+			None,
+		)
+		.await?;
+		Ok(thread.id)
+	}
 	async fn insert(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
 		repository::insert(&mut *self.access.tx, &tenant, duty).await?;
@@ -229,7 +284,7 @@ impl DutyScope for Adapter<'_> {
 	async fn list(&mut self, listing: Listing) -> aidash_application::Result<Vec<Duty>> {
 		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
 		let filter = match listing {
-			Listing::Workspace(workspace) => Filter::Workspace(workspace),
+			Listing::Thread(thread) => Filter::Thread(thread),
 			Listing::Mine => Filter::Mine(&subject),
 			Listing::Tenant => Filter::Tenant,
 		};
@@ -278,8 +333,8 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		let administers = scope.administers().await?;
 		let view = |duty: Duty| DutyView::new(duty, &mine, administers);
 		Ok(match op {
-			Operation::Create(workspace, definition) => serde_json::to_value(view(
-				app::register(&mut scope, workspace, definition, Origin::Person).await?,
+			Operation::Create(thread, definition) => serde_json::to_value(view(
+				app::register(&mut scope, thread, definition, Origin::Person).await?,
 			))?,
 			Operation::List(listing) => serde_json::to_value(
 				app::list(&mut scope, listing)
@@ -376,16 +431,14 @@ fn tick_key(duty: Uuid, scheduled_at: DateTime<Utc>, part: &str) -> Uuid {
 	uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
-/// Starts one Task of `duty` as the lease's subject, in the Duty's own
-/// Thread. Its first Task opens that Thread with the mission as its first
-/// message and records it on the Duty (#1011). Returns the Task and the
-/// Thread.
+/// Starts a Task of the Duty, as its Requester, in the Duty's own Thread
+/// (#1008, ADR 0140). Returns the Task.
 async fn start(
 	f: &Federation,
 	lease: &mut Lease,
 	duty: &Duty,
 	key: (DateTime<Utc>, &str),
-) -> Result<(Uuid, Uuid)> {
+) -> Result<Uuid> {
 	let description = duty.definition.mission.clone();
 	let title = duty.definition.title.clone();
 	start_with(f, lease, duty, key, (title, description)).await
@@ -399,39 +452,9 @@ pub(crate) async fn start_with(
 	duty: &Duty,
 	key: (DateTime<Utc>, &str),
 	(title, description): (String, String),
-) -> Result<(Uuid, Uuid)> {
-	let workspace = duty.workspace_id;
+) -> Result<Uuid> {
+	let thread = duty.thread_id;
 	let definition = &duty.definition;
-	let thread = match duty.thread_id {
-		Some(thread_id) => thread_id,
-		None => {
-			let resource = lease.access_mut().workspace(workspace).await?;
-			lease
-				.access_mut()
-				.require(&resource, "message.create")
-				.await?;
-			let message = super::threads::post(
-				&f.store,
-				Some(f),
-				lease,
-				workspace,
-				crate::apps::workspaces::serializers::channels::ChannelMessageInput {
-					content: format!("{}\n\n{}", definition.title, definition.mission),
-					thread_id: None,
-					idempotency_key: tick_key(duty.id, key.0, &format!("{}:message", key.1)),
-					attachment_ids: vec![],
-					file_versions: vec![],
-				},
-			)
-			.await?;
-			let thread = super::threads::create(&f.store, lease, workspace, message.message.id)
-				.await?
-				.id;
-			let tenant = tenant(lease.access_mut());
-			repository::open_thread(lease.tx(), &tenant, duty.id, thread).await?;
-			thread
-		}
-	};
 	// "Run now" is an ordinary Run of the person who clicked it, in their own
 	// mode; only a Task the Duty started carries the Duty's. The Duty's mode
 	// is its Thread's mode for its Requester, so a Duty set back to the
@@ -439,8 +462,6 @@ pub(crate) async fn start_with(
 	let scheduled = key.1.is_empty();
 	if scheduled {
 		let mode = definition.approval_mode;
-		// The Duty's Approval Mode is its Thread's mode for the person
-		// its Runs act as (#557 decision 4).
 		let access = lease.access_mut();
 		let (tenant, subject) = (tenant(access), access.identity.subject.clone());
 		crate::apps::identity::repositories::approval_preferences::lock_owner(
@@ -461,7 +482,7 @@ pub(crate) async fn start_with(
 	let (_, task) = crate::apps::execution::capabilities::services::endpoints::start_in_thread(
 		f,
 		lease.access_mut(),
-		(workspace, thread, definition.agent.id.clone()),
+		(thread, definition.agent.id.clone()),
 		crate::apps::execution::capabilities::serializers::contracts::Enqueue {
 			idempotency_key: tick_key(duty.id, key.0, &format!("{}:run", key.1)),
 			agent_version: definition.agent.version.clone(),
@@ -475,7 +496,7 @@ pub(crate) async fn start_with(
 	// Budgets charge this Task's spend, and its descendants', to the Duty.
 	let tenant = tenant(lease.access_mut());
 	repository::mark_task_duty(lease.tx(), &tenant, task, duty.id).await?;
-	Ok((task, thread))
+	Ok(task)
 }
 
 /// "Run now": an ordinary Run of the Duty as the person who clicked it,
@@ -489,19 +510,15 @@ async fn run_now(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result
 		let duty = repository::load(lease.tx(), &tenant, id, false)
 			.await?
 			.ok_or_else(|| Error::NotFound("duty not found".into()))?;
-		let resource = lease.access_mut().workspace(duty.workspace_id).await?;
-		if !lease
-			.access_mut()
-			.decide(&resource, "workspace.read")
-			.await?
-		{
+		let resource = lease.access_mut().thread(duty.thread_id).await?;
+		if !lease.access_mut().decide(&resource, "thread.read").await? {
 			return Err(Error::NotFound("duty not found".into()));
 		}
-		let (task, thread) = start(f, &mut lease, &duty, (now, &identity.subject)).await?;
+		let task = start(f, &mut lease, &duty, (now, &identity.subject)).await?;
 		repository::insert_tick(
 			lease.tx(),
 			&tenant,
-			duty.workspace_id,
+			duty.thread_id,
 			&Tick {
 				id: Uuid::new_v4(),
 				duty_id: duty.id,
@@ -510,12 +527,11 @@ async fn run_now(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result
 				status: TickStatus::Started,
 				reason: None,
 				task_id: Some(task),
-				thread_id: Some(thread),
 				started_by: Some(identity.subject.clone()),
 			},
 		)
 		.await?;
-		Ok(json!({"task_id": task, "thread_id": thread}))
+		Ok(json!({"task_id": task, "thread_id": duty.thread_id}))
 	}
 	.await;
 	let value = lease.finish(result).await?;
@@ -792,13 +808,13 @@ async fn fire(
 			return Ok(Fired::Skipped(reason));
 		}
 		// The Requester must still be able to register it and start Tasks
-		// in its Workspace; otherwise they lost access there.
-		let resource = lease.access_mut().workspace(duty.workspace_id).await?;
-		for action in ["workspace.read", "task.create", duties::CREATE] {
+		// in its Thread; otherwise they lost access there.
+		let resource = lease.access_mut().thread(duty.thread_id).await?;
+		for action in ["thread.read", "task.create", duties::CREATE] {
 			if !lease.access_mut().decide(&resource, action).await? {
 				stopping = Some((
 					Halt::RequesterLeft,
-					format!("the Requester may no longer {action} in this Workspace"),
+					format!("the Requester may no longer {action} in this Thread"),
 					TickStatus::Failed,
 				));
 				return Err(Error::Forbidden);
@@ -806,25 +822,22 @@ async fn fire(
 		}
 		// Only a refusal stops the Duty; any other error, such as a
 		// database outage, leaves the tick to the next pass.
-		if let Some(thread_id) = duty.thread_id {
-			match crate::apps::execution::capabilities::services::endpoints::readable_thread(
-				lease.access_mut(),
-				duty.workspace_id,
-				thread_id,
-			)
-			.await
-			{
-				Ok(()) => {}
-				Err(error @ (Error::NotFound(_) | Error::Forbidden)) => {
-					stopping = Some((
-						Halt::ThreadDeleted,
-						"the Duty's Thread was deleted".into(),
-						TickStatus::Failed,
-					));
-					return Err(error);
-				}
-				Err(error) => return Err(error),
+		match crate::apps::execution::capabilities::services::endpoints::readable_thread(
+			lease.access_mut(),
+			duty.thread_id,
+		)
+		.await
+		{
+			Ok(()) => {}
+			Err(error @ (Error::NotFound(_) | Error::Forbidden)) => {
+				stopping = Some((
+					Halt::ThreadDeleted,
+					"the Duty's Thread was deleted".into(),
+					TickStatus::Failed,
+				));
+				return Err(error);
 			}
+			Err(error) => return Err(error),
 		}
 		match crate::apps::identity::services::catalog::entry(
 			lease.access_mut(),
@@ -862,17 +875,12 @@ async fn fire(
 			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
-		let (task, thread) = start(f, &mut lease, &duty, (claim.scheduled_at, "")).await?;
-		// Saving the Duty past this tick keeps the Thread its first Task opened.
-		let duty = Duty {
-			thread_id: Some(thread),
-			..duty
-		};
+		let task = start(f, &mut lease, &duty, (claim.scheduled_at, "")).await?;
 		advance(lease.tx(), tenant, &duty, &claim, now).await?;
 		repository::insert_tick(
 			lease.tx(),
 			tenant,
-			duty.workspace_id,
+			duty.thread_id,
 			&Tick {
 				id: Uuid::new_v4(),
 				duty_id: duty.id,
@@ -881,7 +889,6 @@ async fn fire(
 				status: TickStatus::Started,
 				reason: None,
 				task_id: Some(task),
-				thread_id: Some(thread),
 				started_by: None,
 			},
 		)
@@ -950,7 +957,7 @@ async fn skipped_tick(
 	repository::insert_tick(
 		&mut *tx,
 		tenant,
-		duty.workspace_id,
+		duty.thread_id,
 		&Tick {
 			id: Uuid::new_v4(),
 			duty_id: duty.id,
@@ -959,7 +966,6 @@ async fn skipped_tick(
 			status: TickStatus::Skipped,
 			reason: Some(reason.to_owned()),
 			task_id: None,
-			thread_id: None,
 			started_by: None,
 		},
 	)
@@ -1024,7 +1030,7 @@ async fn record_miss(
 			repository::insert_tick(
 				&mut tx,
 				tenant,
-				duty.workspace_id,
+				duty.thread_id,
 				&Tick {
 					id: Uuid::new_v4(),
 					duty_id: duty.id,
@@ -1033,7 +1039,6 @@ async fn record_miss(
 					status,
 					reason: Some(reason),
 					task_id: None,
-					thread_id: None,
 					started_by: None,
 				},
 			)
@@ -1091,7 +1096,7 @@ pub(crate) async fn stop_for_tenant(
 
 /// A Duty tool call by an Agent (#557 decisions 5 to 7, #1011). It acts for
 /// the person at the root of the Run's chain, with the credential the Run
-/// was admitted with, in the Run's Workspace. A Run a Duty started may set
+/// was admitted with, in the Run's Thread. A Run a Duty started may set
 /// up Duties too (#1012). Its approval was already decided by that person's
 /// Approval Mode and Approval Rules before the call ran.
 pub async fn agent_tool(
@@ -1149,13 +1154,17 @@ pub async fn agent_tool(
 			})
 		};
 		// An Agent changes only its person's own Duties (#557 decision 7),
-		// and only in its Run's Workspace, the one it lists and registers in.
+		// and only those of its Run's Thread: registered from it, or owning
+		// it (#1008).
 		let own = |duty: &Duty| -> Result<()> {
-			if duty.requester == requester && duty.workspace_id == run.workspace_id {
+			if duty.requester == requester
+				&& (duty.thread_id == run.thread_id
+					|| duty.origin_thread_id == Some(run.thread_id))
+			{
 				Ok(())
 			} else {
 				Err(Error::Invalid(
-					"an Agent may change only Duties of this Workspace that act as the person who started this conversation".into(),
+					"an Agent may change only Duties of this Thread that act as the person who started this conversation".into(),
 				))
 			}
 		};
@@ -1186,7 +1195,7 @@ pub async fn agent_tool(
 				};
 				let duty = app::register(
 					&mut scope,
-					run.workspace_id,
+					run.thread_id,
 					definition,
 					Origin::Agent {
 						run_id: run.id,
@@ -1197,7 +1206,7 @@ pub async fn agent_tool(
 				summary(&duty)
 			}
 			"duty_list" => json!({
-				"duties": app::list(&mut scope, Listing::Workspace(run.workspace_id))
+				"duties": app::list(&mut scope, Listing::Thread(run.thread_id))
 					.await?
 					.iter()
 					.map(summary)
@@ -1276,7 +1285,7 @@ pub(crate) async fn budget_skip(
 	duty: &Duty,
 	now: DateTime<Utc>,
 ) -> Result<Option<String>> {
-	let node = repository::workspace_node(lease.tx(), tenant, duty.workspace_id).await?;
+	let node = repository::thread_node(lease.tx(), tenant, duty.thread_id).await?;
 	let charge = crate::apps::identity::repositories::budgets::Charge {
 		tenant: tenant.to_owned(),
 		node,

@@ -64,21 +64,21 @@ pub(crate) async fn render_wav(media_type: &str, bytes: &[u8]) -> Result<Vec<u8>
 pub(crate) async fn upload(
 	store: &Store,
 	lease: &mut Lease,
-	workspace: Uuid,
+	thread: Uuid,
 	input: ChannelAttachmentUploadQuery,
 	content: &[u8],
 ) -> Result<ChannelAttachment> {
-	upload_for_run(store, lease, workspace, input, content, None).await
+	upload_for_run(store, lease, thread, input, content, None).await
 }
 pub(crate) async fn upload_for_run(
 	store: &Store,
 	lease: &mut Lease,
-	workspace: Uuid,
+	thread: Uuid,
 	input: ChannelAttachmentUploadQuery,
 	content: &[u8],
 	run_id: Option<Uuid>,
 ) -> Result<ChannelAttachment> {
-	aidash_domain::workspaces::channels::validate_attachment(
+	aidash_domain::threads::channels::validate_attachment(
 		&input.filename,
 		&input.media_type,
 		content,
@@ -89,14 +89,14 @@ pub(crate) async fn upload_for_run(
 		decode(move || aidash_integrations::media::validate(&media_type, &bytes)).await?;
 	let mut scope = crate::bootstrap::channel_scope(store, lease);
 	scope.run_id = run_id;
-	aidash_application::workspaces::channels::upload(
+	aidash_application::threads::channels::upload(
 		&mut scope,
-		workspace,
-		aidash_application::workspaces::channels::AttachmentUpload {
+		thread,
+		aidash_application::threads::channels::AttachmentUpload {
 			filename: &input.filename,
 			media_type: &input.media_type,
 			idempotency_key: input.idempotency_key,
-			measurements: aidash_application::workspaces::channels::MediaMeasurements {
+			measurements: aidash_application::threads::channels::MediaMeasurements {
 				width: measured.width,
 				height: measured.height,
 				duration_ms: measured.duration_ms,
@@ -112,13 +112,13 @@ pub(crate) async fn upload_for_run(
 pub(crate) async fn describe(
 	store: &Store,
 	lease: &mut Lease,
-	workspace: Uuid,
+	thread: Uuid,
 	attachment: Uuid,
 	description: &str,
 ) -> Result<ChannelAttachment> {
-	aidash_application::workspaces::channels::describe(
+	aidash_application::threads::channels::describe(
 		&mut crate::bootstrap::channel_scope(store, lease),
-		workspace,
+		thread,
 		attachment,
 		description,
 	)
@@ -128,12 +128,12 @@ pub(crate) async fn describe(
 pub(crate) async fn download(
 	store: &Store,
 	lease: &mut Lease,
-	workspace: Uuid,
+	thread: Uuid,
 	id: Uuid,
 ) -> Result<(ChannelAttachment, Vec<u8>)> {
-	aidash_application::workspaces::channels::download(
+	aidash_application::threads::channels::download(
 		&mut crate::bootstrap::channel_scope(store, lease),
-		workspace,
+		thread,
 		id,
 	)
 	.await

@@ -44,7 +44,7 @@ pub(crate) async fn source(lease: &mut Lease<'_>, id: Uuid, revision: i64) -> Re
 }
 pub(crate) async fn check(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	id: Uuid,
 	revision: i64,
 	max_visits: usize,
@@ -78,10 +78,10 @@ pub(crate) async fn check(
 	let destination = Bank {
 		home: bank.try_get("home")?,
 		tenant: bank.try_get("tenant")?,
-		workspace: bank.try_get("workspace_id")?,
+		thread: bank.try_get("thread_id")?,
 		participant: bank.try_get("participant_id")?,
 	};
-	if destination.workspace != workspace || destination.participant.is_some() {
+	if destination.thread != thread || destination.participant.is_some() {
 		return Err(Error::Forbidden);
 	}
 	units::authorize(lease, &destination, "memory.read").await?;
@@ -206,7 +206,7 @@ async fn check_source(
 	let source = units::load(lease, id, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	if source.bank.workspace != destination.workspace
+	if source.bank.thread != destination.thread
 		|| source.bank.home != destination.home
 		|| source.bank.tenant != destination.tenant
 		|| source.bank.participant.is_none()
@@ -218,7 +218,7 @@ async fn check_source(
 	units::authorize(lease, &source.bank, "memory.publish").await?;
 	Box::pin(units::current_in_reader(
 		lease,
-		destination.workspace,
+		destination.thread,
 		&[source.evidence()],
 		max_visits,
 		visits,
@@ -243,19 +243,19 @@ pub(crate) async fn publish(
 		|| mutation.bank.participant.is_some()
 		|| bank.home != mutation.bank.home
 		|| bank.tenant != mutation.bank.tenant
-		|| bank.workspace != mutation.bank.workspace
+		|| bank.thread != mutation.bank.thread
 		|| mutation.changes.len() != 1
 	{
 		return Err(Error::Invalid(
-			"publication selects one private unit into its Workspace bank".into(),
+			"publication selects one private unit into its Thread bank".into(),
 		));
 	}
-	repository::lock_workspace(lease, bank.workspace, true).await?;
+	repository::lock_thread(lease, bank.thread, true).await?;
 	units::authorize(lease, bank, "memory.publish").await?;
 	units::authorize(lease, &mutation.bank, "memory.write").await?;
 	units::current(
 		lease,
-		bank.workspace,
+		bank.thread,
 		std::slice::from_ref(source),
 		bounds.max_graph_visits,
 	)

@@ -171,7 +171,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 	insert.into_table(a("runs")).columns([
 		a("id"),
 		a("task_id"),
-		a("workspace_id"),
+		a("thread_id"),
 		a("home_node"),
 		a("node"),
 		a("agent_id"),
@@ -302,7 +302,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+		&format!("/api/threads/{}/tasks", parent.thread_id),
 		json!({"title":"Dependent","description":"Wait"}),
 	)
 	.await;

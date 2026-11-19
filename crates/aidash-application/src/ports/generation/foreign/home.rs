@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait HomeGenerationScope: ForeignGenerationGuard {
-	/// The address of the Node the Task's Workspace belongs to, known once the
-	/// Workspace has been read through the guard.
+	/// The address of the Node the Task's Thread belongs to, known once the
+	/// Thread has been read through the guard.
 	fn home_address(&self) -> String;
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn snapshot(&self) -> &Snapshot;
@@ -58,6 +58,6 @@ pub trait HomeGenerationRepository: Send + Sync {
 		exclusive: bool,
 	) -> Result<Box<dyn HomeGenerationScope>>;
 	/// Called after committing the Home intent, without holding a local lease.
-	/// The request is sent as `home`, the Node the Task's Workspace belongs to.
+	/// The request is sent as `home`, the Node the Task's Thread belongs to.
 	async fn prepare(&self, home: &str, target: &str, id: Uuid) -> Result<Prepared>;
 }

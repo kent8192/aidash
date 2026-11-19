@@ -376,7 +376,7 @@ fn bench(
 ) -> (Bench, Run) {
 	let now = "2026-10-02T00:00:00Z".parse().unwrap();
 	let token = Uuid::new_v4();
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let task = Uuid::new_v4();
 	let tool_calls = names
 		.iter()
@@ -391,7 +391,7 @@ fn bench(
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: task,
-		workspace_id: workspace,
+		thread_id: thread,
 		home_node: "aidash://fixture".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -427,7 +427,7 @@ fn bench(
 		token,
 		task: Task {
 			id: task,
-			workspace_id: workspace,
+			thread_id: thread,
 			title: "Task".into(),
 			description: "Fixture task".into(),
 			status: TaskStatus::Running,
@@ -499,8 +499,8 @@ impl ExecutionStore for Bench {
 	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
 		Ok(0)
 	}
-	async fn workspace_events(&self, _: &Run, _: i64) -> Result<WorkspaceEvents> {
-		Ok(WorkspaceEvents::default())
+	async fn workspace_events(&self, _: &Run, _: i64) -> Result<ThreadEvents> {
+		Ok(ThreadEvents::default())
 	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
@@ -511,7 +511,7 @@ impl ExecutionStore for Bench {
 			.push((event.to_owned(), run.clone()));
 		Ok(())
 	}
-	async fn emit(&self, _workspace: Option<Uuid>, _kind: &str, _data: Value) -> Result<Event> {
+	async fn emit(&self, _thread: Option<Uuid>, _kind: &str, _data: Value) -> Result<Event> {
 		unexpected("ExecutionStore.emit")
 	}
 	async fn start_inference(
@@ -1018,7 +1018,7 @@ impl ExecutionEnvironment for Bench {
 		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
 		let result = match source.as_str() {
-			"workspace" => self
+			"thread" => self
 				.home(run)
 				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
@@ -1031,7 +1031,7 @@ impl ExecutionEnvironment for Bench {
 		SemanticContextRead {
 			selections: vec![],
 			contributions: vec![],
-			workspace_retrieved: false,
+			thread_retrieved: false,
 			result,
 		}
 	}

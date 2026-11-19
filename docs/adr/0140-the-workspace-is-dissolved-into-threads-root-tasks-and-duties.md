@@ -20,3 +20,14 @@ Decided on 2026-11-17 and 2026-11-18 in the agent activation grilling (umbrella 
 ## Consequences
 
 - `workspace.*` policy actions, the `workspace` resource kind, `/api/workspaces` routes and Workspace-centric screens are replaced; Aidash is not deployed, so no compatibility layer is kept and existing Workspace data is migrated into Threads and Root Tasks or dropped.
+
+## Amendment (2026-11-20, implementation of #1008)
+
+Calls made while implementing, recorded here so the decisions above are read with them:
+
+- **A Duty's Thread opens when the Duty is registered**, not with its first Task: a Duty needs its Node, Scratch Space and a place for its events and notices before anything runs. It opens in the Node and Scratch Space of the Thread it was registered from, as its Requester, with the mission as its first message, and the Duty keeps both (`thread_id`, `origin_thread_id`).
+- **Reply threads are dropped, not promoted.** Aidash is undeployed: the migration deletes them, their replies stay as flat messages of the Thread they were in, and the columns and Approval Modes that named them go. A Working Area is keyed on (home Node, Thread, Agent, owner), so Areas that differed only by a reply thread, conversation or Root Task are merged.
+- **The Reinhardt app label stays `workspaces`.** The migration ledger stores (app, name), so the label, its migration directory and its module path keep the old name; the app now holds Threads, Tasks and Duties.
+- **Stored identifiers keep their names where renaming would break immutable records**: the builtin `workspace_*` tools (saved Agent versions pin them; `thread_*` and `task_wait` are the new defaults), the Registry Binding source `aidash.workspace-observation` and its `allow_workspace_retrieval` key, the memory sharing scope value `workspace` and the read-dependency kind `workspace_events`.
+- **A Thread's title is its only mutable attribute**, and a deleted Thread is marked (`deleted_at`) and refuses every later read and write; the Working Areas its owners kept stay theirs to list, download and clean up, but nothing is restored into it.
+- **Node administrators read every Thread of their Node** and its events (`node.administer` on the Thread's Node), unless a policy denies them the Thread by name; it gives them no other action in the Thread except deleting it.

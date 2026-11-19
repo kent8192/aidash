@@ -1,7 +1,7 @@
-//! Native workspace writes keep atomic storage operations in the existing Access transaction.
+//! Native thread writes keep atomic storage operations in the existing Access transaction.
 use crate::{apps::identity::services::access::Access, store::Store};
-use aidash_application::{Result, ports::workspaces::mutations::WorkspaceMutations};
-use aidash_domain::{NewTask, Task, Workspace, nodes::NodeName, policy::Resource};
+use aidash_application::{Result, ports::threads::mutations::ThreadMutations};
+use aidash_domain::{NewTask, Task, Thread, nodes::NodeName, policy::Resource};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ pub(crate) struct NativeMutations<'a> {
 	pub(crate) requested_scratch: Option<Uuid>,
 }
 #[async_trait]
-impl WorkspaceMutations for NativeMutations<'_> {
+impl ThreadMutations for NativeMutations<'_> {
 	fn identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
@@ -25,9 +25,9 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn require_workspace(&mut self, id: Uuid, action: &str) -> Result<()> {
+	async fn require_thread(&mut self, id: Uuid, action: &str) -> Result<()> {
 		self.access
-			.require_workspace(id, action)
+			.require_thread(id, action)
 			.await
 			.map_err(Into::into)
 	}
@@ -59,17 +59,9 @@ impl WorkspaceMutations for NativeMutations<'_> {
 		self.access.set_node(node.name.clone());
 		Ok(node.name)
 	}
-	async fn insert_workspace(
-		&mut self,
-		id: Uuid,
-		node: &NodeName,
-		title: &str,
-		goal: &str,
-	) -> Result<Workspace> {
+	async fn insert_thread(&mut self, id: Uuid, node: &NodeName, title: &str) -> Result<Thread> {
 		let policy = self.scratch_policy.ok_or_else(|| {
-			aidash_application::Error::Invalid(
-				"Scratch policy required for Workspace creation".into(),
-			)
+			aidash_application::Error::Invalid("Scratch policy required for Thread creation".into())
 		})?;
 		let mut services = super::scratch::NativeScratchServices { policy };
 		let mut scratch = super::scratch::ScratchAdapter {
@@ -77,7 +69,7 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			services: &mut services,
 			person_override: None,
 		};
-		let scratch_id = aidash_application::scratch::select_for_workspace(
+		let scratch_id = aidash_application::scratch::select_for_thread(
 			&mut scratch,
 			node,
 			title,
@@ -87,14 +79,13 @@ impl WorkspaceMutations for NativeMutations<'_> {
 		.await?;
 		let creator = self.access.identity.subject.clone();
 		self.store
-			.create_workspace_in(
+			.create_thread_in(
 				&mut self.access.tx,
-				crate::store::WorkspaceInsert {
+				crate::store::ThreadInsert {
 					id,
 					tenant: &self.access.identity.tenant,
 					node,
 					title,
-					goal,
 					scratch_space_id: scratch_id,
 					created_by: &creator,
 				},
@@ -102,27 +93,27 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn update_state(&mut self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
+	async fn update_title(&mut self, id: Uuid, revision: i64, title: &str) -> Result<Thread> {
 		self.store
-			.update_state_in(&mut self.access.tx, id, revision, state)
+			.update_title_in(&mut self.access.tx, id, revision, title)
 			.await
 			.map_err(Into::into)
 	}
-	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()> {
+	async fn related_tasks(&mut self, thread: Uuid, input: &NewTask) -> Result<()> {
 		self.access
-			.related_tasks(workspace, input)
+			.related_tasks(thread, input)
 			.await
 			.map_err(Into::into)
 	}
 	async fn insert_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		created_by: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
 		self.store
-			.create_task_in(&mut self.access.tx, workspace, input, created_by, key)
+			.create_task_in(&mut self.access.tx, thread, input, created_by, key)
 			.await
 			.map_err(Into::into)
 	}
@@ -131,20 +122,20 @@ impl WorkspaceMutations for NativeMutations<'_> {
 	}
 	async fn insert_message(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: &str,
 	) -> Result<()> {
 		self.store
-			.message_in(&mut self.access.tx, workspace, sender, content, Some(key))
+			.message_in(&mut self.access.tx, thread, sender, content, Some(key))
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn record_owner(&mut self, id: Uuid) -> Result<()> {
 		self.store
-			.record_workspace_tenant_in(
+			.record_thread_tenant_in(
 				&mut self.access.tx,
 				id,
 				&self.access.identity.tenant,

@@ -713,12 +713,12 @@ async fn admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	assert_eq!(status, 200, "{response}");
 	c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0)
 }
-async fn source(c: &CoreFixture, workspace: Uuid, text: &str) -> Uuid {
+async fn source(c: &CoreFixture, thread: Uuid, text: &str) -> Uuid {
 	let (status, response) = request(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":text,"idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
@@ -732,7 +732,7 @@ async fn files_preserve_unicode_revision_and_source_authority(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let message = source(&c, run.workspace_id, &"東京の資料\n".repeat(61)).await;
+	let message = source(&c, run.thread_id, &"東京の資料\n".repeat(61)).await;
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"notes/日本語.txt","source":{"kind":"message","message_id":message}});
 	let path = format!("/api/runs/{}/files/materialize", run.id);
 	let (status, created) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
@@ -1111,7 +1111,7 @@ async fn approval_fixture(
 async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server::domain::Run) {
 	let run = admit(&c).await;
 	c.policy["policies"][0]["resources"]["kinds"] = json!([
-		"workspace",
+		"thread",
 		"task",
 		"run",
 		"tool",
@@ -1410,7 +1410,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", sender.workspace_id),
+		&format!("/api/threads/{}/tasks", sender.thread_id),
 		json!({"title":"Recipient","description":"Read a selected file"}),
 	)
 	.await;
@@ -1454,7 +1454,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	)
 	.await;
 	let source = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["thread_id"]}});
 	let share_path = format!("/api/runs/{}/files/share", sender.id);
 	let (status, receipt) = request(&c.app, &c.token, "POST", &share_path, input.clone()).await;
 	assert_eq!(status, 200, "{receipt}");
@@ -1779,7 +1779,7 @@ async fn cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations(
 		.await
 		.0 >= 400
 	);
-	let (status,restored)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/restore"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":cleaned["revision"],"snapshot_id":cleanup["operation_id"],"thread_id":area["thread_id"]})).await;
+	let (status,restored)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/restore"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":cleaned["revision"],"snapshot_id":cleanup["operation_id"]})).await;
 	assert_eq!(status, 200, "{restored}");
 	assert_eq!(restored["manifest"][0]["digest"], digest);
 	assert_ne!(

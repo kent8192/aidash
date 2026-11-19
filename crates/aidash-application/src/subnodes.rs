@@ -136,7 +136,7 @@ fn creator(subnode: &Subnode, run: &RunMetadata) -> Result<()> {
 }
 
 fn member(subnode: &Subnode, run: &RunMetadata) -> bool {
-	subnode.workspace_id == run.workspace_id
+	subnode.thread_id == run.thread_id
 		&& subnode.members.iter().any(|member| {
 			member.agent_id == run.agent_id && member.agent_version == run.agent_version
 		})
@@ -253,8 +253,8 @@ pub async fn lock_end(
 	scope: &mut dyn crate::ports::subnodes::EndScope,
 	creator: uuid::Uuid,
 ) -> Result<()> {
-	for (_, workspace) in scope.active_subnodes(creator).await? {
-		scope.active_runs(workspace).await?;
+	for (_, thread) in scope.active_subnodes(creator).await? {
+		scope.active_runs(thread).await?;
 	}
 	Ok(())
 }
@@ -280,11 +280,11 @@ pub async fn control_for_creator(
 	}
 	// Mark nothing ended, which appends an event, before every lock is held.
 	lock_end(scope, creator).await?;
-	for (id, workspace) in scope.active_subnodes(creator).await? {
+	for (id, thread) in scope.active_subnodes(creator).await? {
 		if let Some(reason) = reason {
-			scope.mark_ended(id, workspace, reason).await?;
+			scope.mark_ended(id, thread, reason).await?;
 		}
-		for run in scope.active_runs(workspace).await? {
+		for run in scope.active_runs(thread).await? {
 			scope.control_run(run, action, source).await?;
 		}
 	}

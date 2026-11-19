@@ -160,9 +160,9 @@ pub(crate) async fn stop_pending_run_with_runner(
 		if aidash_domain::nodes::is_home(&run.home_node, store.deployment.as_ref(), &run.node) {
 			let sql = Query::select()
 				.column(Alias::new("scratch_space_id"))
-				.from(Alias::new("workspaces"))
+				.from(Alias::new("threads"))
 				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-				.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
+				.and_where(Expr::col("id").eq(Expr::value(run.thread_id)))
 				.and_where(Expr::col("node").eq(run.node.clone()))
 				.to_string(PostgresQueryBuilder);
 			crate::database::native::query_scalar::<Uuid>(&sql)
@@ -197,7 +197,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 					.ok_or_else(|| Error::NotFound("Run credential".into()))?
 					.subject
 			};
-			remote_space_id(tenant, &run.node, &run.home_node, run.workspace_id, &person)
+			remote_space_id(tenant, &run.node, &run.home_node, run.thread_id, &person)
 		};
 	tx.commit().await?;
 	runner
@@ -356,14 +356,14 @@ mod tests {
 
 	#[test]
 	fn remote_run_space_identity_survives_revocation() {
-		let workspace = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
+		let thread = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
 		assert_eq!(
-			remote_space_id("acme", "node", "aidash://home/node", workspace, "alice"),
+			remote_space_id("acme", "node", "aidash://home/node", thread, "alice"),
 			Uuid::parse_str("9d8ef6c4-1f97-8300-ac32-d5431655fa0c").unwrap()
 		);
 		assert_ne!(
-			remote_space_id("acme", "node", "aidash://home/node", workspace, "bob"),
-			remote_space_id("acme", "node", "aidash://home/node", workspace, "alice")
+			remote_space_id("acme", "node", "aidash://home/node", thread, "bob"),
+			remote_space_id("acme", "node", "aidash://home/node", thread, "alice")
 		);
 	}
 }

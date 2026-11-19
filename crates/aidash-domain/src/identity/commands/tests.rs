@@ -17,9 +17,9 @@ fn effect_commands_use_the_durable_replay_journal(#[case] operation: &str) {
 #[rstest]
 #[case::task("task")]
 #[case::snapshot("snapshot")]
-#[case::record("workspace_record")]
-#[case::chunk("workspace_record_chunk")]
-#[case::children("workspace_children")]
+#[case::record("thread_record")]
+#[case::chunk("thread_record_chunk")]
+#[case::children("thread_children")]
 #[case::unknown("unknown")]
 fn reads_and_unknown_commands_do_not_enter_the_mutation_journal(#[case] operation: &str) {
 	assert!(!prepare(operation, &json!({})).unwrap().mutation);
@@ -113,7 +113,7 @@ fn a_tools_own_fallback_shaped_result_never_becomes_a_control_outcome() {
 #[case::assign("task_assign", "task_assign", true)]
 #[case::request("connection_request", "connection_request", true)]
 #[case::mutate("memory_mutate", "memory_mutate", true)]
-#[case::search("workspace_search", "workspace_search", false)]
+#[case::search("thread_search", "thread_search", false)]
 #[case::recall("memory_recall", "memory_recall", false)]
 #[case::reflect("memory_reflect", "memory_reflect", false)]
 fn home_forwarded_tools_check_their_own_tool_and_only_writes_enter_the_journal(

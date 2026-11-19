@@ -106,7 +106,7 @@ impl AgentToolScope for Scope<'_> {
 		let tenant = self.access.identity.tenant.clone();
 		let rows = SubnodeRecord::objects()
 			.filter(SubnodeRecord::field_tenant().eq(tenant.clone()))
-			.filter(SubnodeRecord::field_workspace_id().eq(self.run.workspace_id))
+			.filter(SubnodeRecord::field_thread_id().eq(self.run.thread_id))
 			.all_with_executor(self.access.tx.native_mut())
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
@@ -238,7 +238,7 @@ impl AgentToolScope for Scope<'_> {
 			Ok({
 				let query_bind_1 = id;
 				let query_bind_2 = run.id;
-				let query_bind_3 = run.workspace_id;
+				let query_bind_3 = run.thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -263,7 +263,7 @@ impl AgentToolScope for Scope<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),

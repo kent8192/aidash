@@ -30,7 +30,7 @@ fn scope() -> Scope {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			workspace_id: Uuid::new_v4(),
+			thread_id: Uuid::new_v4(),
 			home_node: "home".into(),
 			agent_id: "agent".into(),
 			agent_version: "1".into(),
@@ -225,7 +225,7 @@ fn input(seq: i64, key: &str) -> RunInput {
 fn message(scope: &Scope, key: &str) -> Message {
 	Message {
 		id: Uuid::new_v4(),
-		workspace_id: scope.run.workspace_id,
+		thread_id: scope.run.thread_id,
 		sender: "human".into(),
 		content: "correction".into(),
 		idempotency_key: Some(remote::full_key(scope.node(), scope.run.task_id, key)),
@@ -393,7 +393,7 @@ async fn delivery_skips_observed_inputs_and_binds_only_valid_records(mut scope: 
 async fn mismatched_delivery_never_binds_an_executor_record(mut scope: Scope) {
 	scope.inputs.lock().unwrap().push(input(1, "key"));
 	let mut record = message(&scope, "key");
-	record.workspace_id = Uuid::new_v4();
+	record.thread_id = Uuid::new_v4();
 	scope.delivery = Some(record);
 	assert_eq!(
 		deliver(&scope).await.unwrap_err().to_string(),

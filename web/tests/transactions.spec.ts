@@ -16,7 +16,7 @@ test("transaction dashboard aborts a stale change safely and displays committed 
 }) => {
   test.setTimeout(90000);
   // A Deployment Administrator holds no Tenant content authority (#484): the
-  // Tenant's subject creates the Workspace and submits the transaction.
+  // Tenant's subject creates the Thread and submits the transaction.
   const subject = acceptanceSubject();
   const token = subject.token;
   const headers = { authorization: `Bearer ${token}` };
@@ -29,13 +29,13 @@ test("transaction dashboard aborts a stale change safely and displays committed 
     return response.json();
   };
   const session = await api("/api/session");
-  const created = await request.post("/api/workspaces", {
+  const created = await request.post("/api/threads", {
     headers,
     data: { title: "Atomic dashboard", goal: "Commit or abort together" },
   });
   expect(created.status(), await created.text()).toBe(200);
-  const workspace = await created.json();
-  const nodeId = `${session.node_id}/${workspace.node}`;
+  const thread = await created.json();
+  const nodeId = `${session.node_id}/${thread.node}`;
   await installBearerDashboard(page, token, {
     tenant: subject.tenant,
     name: subject.name,
@@ -54,8 +54,8 @@ test("transaction dashboard aborts a stale change safely and displays committed 
         node_id: nodeId,
         mutations: [
           {
-            kind: "workspace_state",
-            workspace_id: workspace.id,
+            kind: "thread_state",
+            thread_id: thread.id,
             expected_revision,
             state: { result: "committed" },
           },
@@ -73,11 +73,9 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       nodeId,
     );
     await expect(dialog.getByLabel("Node", { exact: true })).toBeDisabled();
+    await dialog.getByLabel("Thread", { exact: true }).selectOption(thread.id);
     await dialog
-      .getByLabel("Workspace", { exact: true })
-      .selectOption(workspace.id);
-    await dialog
-      .getByLabel("Workspace state", { exact: true })
+      .getByLabel("Thread state", { exact: true })
       .fill(JSON.stringify(mutation.state));
     await dialog
       .getByLabel("Revision", { exact: true })
@@ -121,30 +119,28 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       exact: true,
     }),
   ).toHaveCount(0);
-  expect(
-    (await api(`/api/workspaces/${workspace.id}`)).workspace.state,
-  ).toEqual({ result: "committed" });
+  expect((await api(`/api/threads/${thread.id}`)).thread.state).toEqual({
+    result: "committed",
+  });
   await page.screenshot({
     path: "../private/dashboard-transactions-desktop.png",
     fullPage: true,
   });
   await page.getByRole("button", { name: "Close", exact: true }).click();
 
-  // The Workspace is at revision 1 now, so a change that still expects 0 aborts.
+  // The Thread is at revision 1 now, so a change that still expects 0 aborts.
   await submit(manifest());
   await expect(page.locator(".transaction-details > .badge")).toHaveText(
     "Aborted",
     { timeout: 30000 },
   );
-  expect(
-    (await api(`/api/workspaces/${workspace.id}`)).workspace.revision,
-  ).toBe(1);
+  expect((await api(`/api/threads/${thread.id}`)).thread.revision).toBe(1);
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page
     .getByRole("dialog", { name: "Progress and transactions", exact: true })
     .getByRole("button", { name: "Close", exact: true })
     .click();
-  await page.goto(`/collaboration?channel=${encodeURIComponent(workspace.id)}`);
+  await page.goto(`/collaboration?channel=${encodeURIComponent(thread.id)}`);
   await selectDashboardLanguage(page, "ja-JP");
   await page.getByRole("button", { name: "状況を表示", exact: true }).click();
   await page.getByRole("button", { name: "整合性と復旧", exact: true }).click();

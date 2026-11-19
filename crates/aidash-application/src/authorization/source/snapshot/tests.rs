@@ -8,8 +8,8 @@ struct Scope {
 	grant: Option<Uuid>,
 	calls: Vec<&'static str>,
 }
-fn snapshot() -> WorkspaceSnapshot {
-	serde_json::from_value(json!({"workspace":{"id":Uuid::from_u128(2),"scratch_space_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","title":"workspace","goal":"intent","state":{},"revision":3,"created_at":"2026-10-04T00:00:00Z"},"tasks":[],"artifacts":[],"events":[],"messages":[]})).unwrap()
+fn snapshot() -> ThreadSnapshot {
+	serde_json::from_value(json!({"thread":{"id":Uuid::from_u128(2),"scratch_space_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","title":"thread","created_by":"alice","revision":3,"created_at":"2026-10-04T00:00:00Z"},"tasks":[],"artifacts":[],"events":[],"messages":[]})).unwrap()
 }
 #[async_trait]
 impl SnapshotScope for Scope {
@@ -17,8 +17,8 @@ impl SnapshotScope for Scope {
 		self.grant = Some(grant);
 		self.calls.push("read_grant");
 	}
-	async fn workspace_snapshot(&mut self, workspace: Uuid) -> Result<WorkspaceSnapshot> {
-		assert_eq!(workspace, snapshot().workspace.id);
+	async fn thread_snapshot(&mut self, thread: Uuid) -> Result<ThreadSnapshot> {
+		assert_eq!(thread, snapshot().thread.id);
 		assert_eq!(self.grant, Some(Uuid::from_u128(1)));
 		self.calls.push("snapshot");
 		if self.denied {

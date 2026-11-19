@@ -16,20 +16,20 @@ pub const MAX_PATTERN_BYTES: usize = 200;
 /// The `type` of the RFC 9396 `authorization_details` entry a Remote Grant carries.
 pub const AUTHORIZATION_DETAIL_TYPE: &str = "aidash.federation.tools";
 
-/// The key a `workspace_message` call that sends files is listed under. A message with files
+/// The key a `thread_message` call that sends files is listed under. A message with files
 /// moves the Run's files to the Home, which a plain message does not, so the lists name it apart
-/// and the defaults leave it out (decision 6). `workspace_message*` names both.
-pub const WORKSPACE_MESSAGE_FILES: &str = "workspace_message:files";
+/// and the defaults leave it out (decision 6). `thread_message*` names both.
+pub const THREAD_MESSAGE_FILES: &str = "thread_message:files";
 
 /// The tools a new Node Registration starts with on both sides: those acting only on the
-/// Home's own Workspace and people, plus the receiving Agent's Skills. `workspace_message` is
-/// a message without files; with files it is [`WORKSPACE_MESSAGE_FILES`].
+/// Home's own Threads and people, plus the receiving Agent's Skills. `thread_message` is
+/// a message without files; with files it is [`THREAD_MESSAGE_FILES`].
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"task_create",
 	"artifact_publish",
-	"workspace_message",
-	"workspace_read",
-	"workspace_observe",
+	"thread_message",
+	"thread_read",
+	"thread_observe",
 	"memory_recall",
 	"memory_reflect",
 	"memory_mutate",
@@ -41,6 +41,25 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 /// What a call to a tool that is blocked, Reach never, or unknown to this Node answers a remote
 /// Run, the same words for all three so the answer reveals nothing about which it was.
 pub const UNAVAILABLE_TOOL: &str = "this tool is not available on this Node";
+
+/// The key the lists know a builtin `key` by: a Workspace tool a saved Agent pins is listed
+/// under the Thread tool that replaces it (#1008), and so is the key of its message's files.
+/// Any other key is unchanged.
+pub fn current_key(key: &str) -> &str {
+	match key {
+		"workspace_message:files" => THREAD_MESSAGE_FILES,
+		key => crate::tool::thread_tools::current(key),
+	}
+}
+
+/// The key a list written before #1008 named the same tool by, if `key` (a [`current_key`])
+/// has one.
+fn former_key(key: &str) -> Option<&'static str> {
+	match key {
+		THREAD_MESSAGE_FILES => Some("workspace_message:files"),
+		key => crate::tool::thread_tools::former(key),
+	}
+}
 
 /// The key a list matches for a Registry tool.
 pub fn registry_key(definition: &str, tool: &str) -> String {
@@ -58,15 +77,20 @@ pub fn registry_operation(config: &ToolConfig) -> &str {
 }
 
 /// The key the Federation tool lists match for `contract`. A builtin, and a core provider's
-/// descriptor, is its builtin name; a Registry tool or a descriptor of another provider is
+/// descriptor, is its builtin name ([`current_key`]: a pinned Workspace tool is its Thread
+/// tool); a Registry tool or a descriptor of another provider is
 /// `registry:<definition id>/<operation>`, which names the definition and operation but not
 /// the version, so a list outlives a new version. `operation` is the descriptor's operation or
 /// [`registry_operation`]; it is ignored for a builtin.
 pub fn list_key(contract: &ToolContract, operation: &str) -> String {
 	match &contract.identity {
-		ToolIdentity::Builtin(name) => name.strip_prefix("builtin:").unwrap_or(name).to_owned(),
+		ToolIdentity::Builtin(name) => {
+			current_key(name.strip_prefix("builtin:").unwrap_or(name)).to_owned()
+		}
 		ToolIdentity::Registry(reference) => registry_key(&reference.id, operation),
-		ToolIdentity::Descriptor(_) if builtin_reach(operation).is_some() => operation.to_owned(),
+		ToolIdentity::Descriptor(_) if builtin_reach(operation).is_some() => {
+			current_key(operation).to_owned()
+		}
 		ToolIdentity::Descriptor(reference) => registry_key(&reference.id, operation),
 		// Never reaches a remote Run, so no list names it.
 		ToolIdentity::AgentPlugin(tool) => {
@@ -76,19 +100,20 @@ pub fn list_key(contract: &ToolContract, operation: &str) -> String {
 }
 
 /// The keys the lists must all let through, in order, for one call of a tool listed under `key`.
-/// A `workspace_message` whose `files` is anything but absent, null or empty also needs
-/// [`WORKSPACE_MESSAGE_FILES`], after the plain key, so a message with files is never more
-/// permitted than one without and a call the tool would refuse never passes as a plain message.
-/// Every other call needs `key` alone.
+/// A `thread_message` (or the pinned `workspace_message`) whose `files` is anything but absent,
+/// null or empty also needs [`THREAD_MESSAGE_FILES`], after the plain key, so a message with
+/// files is never more permitted than one without and a call the tool would refuse never passes
+/// as a plain message. Every other call needs `key` alone. Keys are [`current_key`]s.
 pub fn call_keys(key: String, arguments: &serde_json::Value) -> Vec<String> {
-	let files = key == "workspace_message"
+	let key = current_key(&key).to_owned();
+	let files = key == "thread_message"
 		&& match arguments.get("files") {
 			None | Some(serde_json::Value::Null) => false,
 			Some(serde_json::Value::Array(files)) => !files.is_empty(),
 			Some(_) => true,
 		};
 	if files {
-		vec![key, WORKSPACE_MESSAGE_FILES.to_owned()]
+		vec![key, THREAD_MESSAGE_FILES.to_owned()]
 	} else {
 		vec![key]
 	}
@@ -102,7 +127,7 @@ pub fn definition_key(id: &str, config: &serde_json::Value) -> Option<String> {
 		let descriptor: crate::tool::providers::ToolDescriptor =
 			serde_json::from_value(config.clone()).ok()?;
 		return Some(if builtin_reach(&descriptor.operation).is_some() {
-			descriptor.operation
+			current_key(&descriptor.operation).to_owned()
 		} else {
 			registry_key(id, &descriptor.operation)
 		});
@@ -223,8 +248,14 @@ impl ToolList {
 		&self.0
 	}
 
+	/// Whether a pattern names `key`. A builtin is matched under its [`current_key`] and, so a
+	/// list written before #1008 keeps its meaning, under the Workspace tool name it replaces.
 	pub fn matches(&self, key: &str) -> bool {
-		self.0.iter().any(|pattern| pattern.matches(key))
+		let key = current_key(key);
+		let former = former_key(key);
+		self.0.iter().any(|pattern| {
+			pattern.matches(key) || former.is_some_and(|former| pattern.matches(former))
+		})
 	}
 
 	/// The list with `pattern` added, as an answer "add to the list" does.

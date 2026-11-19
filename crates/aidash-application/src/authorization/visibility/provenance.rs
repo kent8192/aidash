@@ -125,8 +125,8 @@ async fn one_run_reads_block(
 	}
 	let sources = scope.sources(run).await?;
 	scope.prepare_sources(&sources).await?;
-	for (workspace, kind, id) in sources {
-		if !source_visible(scope, workspace, &kind, id, pending).await?
+	for (thread, kind, id) in sources {
+		if !source_visible(scope, thread, &kind, id, pending).await?
 			&& let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::Source(kind))
 		{
 			return Ok(Some(block));
@@ -190,8 +190,8 @@ async fn one_run_reads_invalidity(
 	}
 	let sources = scope.sources(run).await?;
 	scope.prepare_sources(&sources).await?;
-	for (workspace, kind, id) in sources {
-		if let Some(reason) = source_invalidity(scope, workspace, &kind, id, pending, true).await? {
+	for (thread, kind, id) in sources {
+		if let Some(reason) = source_invalidity(scope, thread, &kind, id, pending, true).await? {
 			return Ok(Some(reason));
 		}
 	}
@@ -211,14 +211,14 @@ pub async fn classified_task_visible(
 /// and defer producer journals to the caller's cycle-safe worklist.
 pub async fn classified_semantic_output_source(
 	scope: &mut dyn ReadProvenanceScope,
-	workspace: Uuid,
+	thread: Uuid,
 	source: &aidash_domain::semantic::Source,
 	pending: &mut Vec<Uuid>,
 ) -> Result<Option<String>> {
 	use aidash_domain::semantic::Source;
 	match source {
 		Source::Artifact { id } => {
-			let Some(row) = scope.source_artifact(*id, workspace).await? else {
+			let Some(row) = scope.source_artifact(*id, thread).await? else {
 				return Ok(None);
 			};
 			if !artifact_visible(&mut ClassifiedOutputs { scope, pending }, &row).await? {
@@ -227,7 +227,7 @@ pub async fn classified_semantic_output_source(
 			Ok(Some(serde_json::to_string(&row.content)?))
 		}
 		Source::Message { id } => {
-			let Some(row) = scope.source_message(*id, workspace).await? else {
+			let Some(row) = scope.source_message(*id, thread).await? else {
 				return Ok(None);
 			};
 			if !message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await? {
@@ -241,7 +241,7 @@ pub async fn classified_semantic_output_source(
 
 async fn source_invalidity(
 	scope: &mut dyn ReadProvenanceScope,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 	id: Uuid,
 	pending: &mut Vec<Uuid>,
@@ -249,38 +249,38 @@ async fn source_invalidity(
 ) -> Result<Option<Failure>> {
 	let visible = match kind {
 		"workspace_events" => {
-			let resource = scope.workspace(workspace).await?;
-			scope.decide(&resource, "workspace.events").await?
+			let resource = scope.thread(thread).await?;
+			scope.decide(&resource, "thread.events").await?
 		}
-		"task" => match scope.source_task(id, workspace).await? {
+		"task" => match scope.source_task(id, thread).await? {
 			Some(task) if classify_outputs => {
 				task_visible(&mut ClassifiedOutputs { scope, pending }, &task).await?
 			}
 			Some(task) => task_visible(scope, &task).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
-		"artifact" => match scope.source_artifact(id, workspace).await? {
+		"artifact" => match scope.source_artifact(id, thread).await? {
 			Some(row) if classify_outputs => {
 				artifact_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
 			}
 			Some(row) => artifact_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
-		"attachment" => match scope.source_attachment_message(id, workspace).await? {
+		"attachment" => match scope.source_attachment_message(id, thread).await? {
 			Some(row) if classify_outputs => {
 				message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
 			}
 			Some(row) => message_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
-		"message" => match scope.source_message(id, workspace).await? {
+		"message" => match scope.source_message(id, thread).await? {
 			Some(row) if classify_outputs => {
 				message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
 			}
 			Some(row) => message_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
-		"run" => match scope.source_run(id, workspace).await? {
+		"run" => match scope.source_run(id, thread).await? {
 			Some(run) => {
 				pending.push(run.id);
 				if classify_outputs {
@@ -293,14 +293,14 @@ async fn source_invalidity(
 			}
 			None => return Ok(Some(Failure::Invalidated)),
 		},
-		"conversation" => match scope.source_conversation(id, workspace).await? {
+		"conversation" => match scope.source_conversation(id, thread).await? {
 			Some(row) => {
 				let resource = conversation_resource(scope, &row).await?;
 				scope.decide(&resource, "conversation.read").await?
 			}
 			None => return Ok(Some(Failure::Invalidated)),
 		},
-		"generation" => match scope.source_generation(id, workspace).await? {
+		"generation" => match scope.source_generation(id, thread).await? {
 			Some(row) => scope.generation_visible(&row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
@@ -310,16 +310,14 @@ async fn source_invalidity(
 }
 pub async fn source_visible(
 	scope: &mut dyn ReadProvenanceScope,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 	id: Uuid,
 	pending: &mut Vec<Uuid>,
 ) -> Result<bool> {
-	Ok(
-		source_invalidity(scope, workspace, kind, id, pending, false)
-			.await?
-			.is_none(),
-	)
+	Ok(source_invalidity(scope, thread, kind, id, pending, false)
+		.await?
+		.is_none())
 }
 
 /// Reuse resource policy checks while deferring local producer journals to the
@@ -335,8 +333,8 @@ impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.scope.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.scope.workspace(id).await
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.scope.thread(id).await
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		self.scope.decide(resource, action).await
@@ -344,8 +342,8 @@ impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
 	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
 		self.scope.artifact_task(artifact).await
 	}
-	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
-		match self.scope.output_producers(workspace, kind, id).await? {
+	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+		match self.scope.output_producers(thread, kind, id).await? {
 			Some(producers) => {
 				self.pending.extend(producers);
 				Ok(true)
@@ -359,8 +357,8 @@ impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
 	fn remember_human(&mut self, id: Uuid, allowed: bool) {
 		self.scope.remember_human(id, allowed);
 	}
-	async fn humans(&mut self, workspace: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
-		self.scope.humans(workspace, run).await
+	async fn humans(&mut self, thread: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
+		self.scope.humans(thread, run).await
 	}
 }
 
@@ -370,12 +368,12 @@ mod tests;
 /// The native local journal checks local producers; its foreign reader owns grant provenance.
 pub async fn local_output_visible(
 	scope: &mut dyn crate::ports::authorization::visibility::provenance::LocalOutputScope,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 	id: Uuid,
 ) -> Result<bool> {
 	let mut silent = None;
-	for producer in scope.producers(workspace, kind, id).await? {
+	for producer in scope.producers(thread, kind, id).await? {
 		if !scope.producer_reads_visible(producer).await? {
 			match scope.take_row_silence() {
 				Some(node) => {
@@ -391,12 +389,12 @@ pub async fn local_output_visible(
 }
 pub async fn output_visible(
 	scope: &mut dyn crate::ports::authorization::visibility::provenance::OutputScope,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 	id: Uuid,
 ) -> Result<bool> {
 	let mut silent = None;
-	for grant in scope.remote_grants(workspace, kind, id).await? {
+	for grant in scope.remote_grants(thread, kind, id).await? {
 		if !scope.grant_visible(grant).await? {
 			match scope.take_row_silence() {
 				Some(node) => {
@@ -406,7 +404,7 @@ pub async fn output_visible(
 			}
 		}
 	}
-	if !local_output_visible(scope, workspace, kind, id).await? {
+	if !local_output_visible(scope, thread, kind, id).await? {
 		match scope.take_row_silence() {
 			Some(node) => {
 				silent.get_or_insert(node);

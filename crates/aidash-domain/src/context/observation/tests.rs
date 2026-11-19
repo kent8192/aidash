@@ -1,26 +1,25 @@
 use super::*;
-use crate::{Artifact, Event, Message, Task, Workspace};
+use crate::{Artifact, Event, Message, Task, Thread};
 use chrono::Utc;
 use uuid::Uuid;
 
-fn snapshot(rows: usize) -> WorkspaceSnapshot {
-	let workspace_id = Uuid::new_v4();
+fn snapshot(rows: usize) -> ThreadSnapshot {
+	let thread_id = Uuid::new_v4();
 	let now = Utc::now();
-	WorkspaceSnapshot {
-		workspace: Workspace {
+	ThreadSnapshot {
+		thread: Thread {
 			scratch_space_id: uuid::Uuid::nil(),
-			id: workspace_id,
+			id: thread_id,
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			title: "\0".repeat(256),
-			goal: "\0".repeat(512),
-			state: json!({}),
+			created_by: "subject".into(),
 			revision: 1,
 			created_at: now,
 		},
 		tasks: (0..rows)
 			.map(|_| Task {
 				id: Uuid::new_v4(),
-				workspace_id,
+				thread_id,
 				title: "\0".repeat(256),
 				description: "\0".repeat(512),
 				status: crate::TaskStatus::Running,
@@ -36,7 +35,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 		artifacts: (0..rows)
 			.map(|_| Artifact {
 				id: Uuid::new_v4(),
-				workspace_id,
+				thread_id,
 				task_id: Uuid::new_v4(),
 				kind: "text".into(),
 				name: "\0".repeat(256),
@@ -52,7 +51,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 				sequence: sequence as i64,
 				id: Uuid::new_v4(),
 				node: None,
-				workspace_id: Some(workspace_id),
+				thread_id: Some(thread_id),
 				kind: "\0".repeat(128),
 				data: json!({}),
 				created_at: now,
@@ -61,7 +60,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 		messages: (0..rows)
 			.map(|_| Message {
 				id: Uuid::new_v4(),
-				workspace_id,
+				thread_id,
 				sender: "\0".repeat(256),
 				content: "\0".repeat(512),
 				idempotency_key: None,
@@ -88,7 +87,7 @@ fn an_observation_that_left_items_out_says_so_and_counts_it_when_fitting() {
 	snapshot.unconfirmed = vec![Unconfirmed {
 		node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		kind: Kind::Task,
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		count: 3,
 	}];
 	let value = project(&snapshot, 0, 1);
@@ -137,7 +136,7 @@ fn event(sequence: i64, kind: &str, data: Value) -> Event {
 		sequence,
 		id: Uuid::from_u128(1000 + sequence as u128),
 		node: None,
-		workspace_id: None,
+		thread_id: None,
 		kind: kind.into(),
 		data,
 		created_at: chrono::DateTime::<Utc>::UNIX_EPOCH,
@@ -153,7 +152,7 @@ fn a_step_view_leaves_out_the_observing_runs_own_events() {
 		event(1, "run.thinking", json!({"run_id": own})),
 		event(2, "task.created", json!({"run_id": Uuid::from_u128(2)})),
 		event(3, "tool.completed", json!({"run_id": own.to_string()})),
-		event(4, "workspace.updated", json!({})),
+		event(4, "thread.updated", json!({})),
 		event(5, "context.compacted", json!({"run_id": own, "other": 1})),
 	];
 
@@ -171,6 +170,6 @@ fn a_step_view_leaves_out_the_observing_runs_own_events() {
 		.iter()
 		.map(|event| event["kind"].as_str().unwrap())
 		.collect::<Vec<_>>();
-	assert_eq!(kinds, ["workspace.updated", "task.created"]);
+	assert_eq!(kinds, ["thread.updated", "task.created"]);
 	assert_eq!(filtered["pages"]["events"]["total"], 2);
 }

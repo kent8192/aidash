@@ -15,11 +15,11 @@ use uuid::Uuid;
 pub struct RunVerdicts(HashMap<(Uuid, Option<Uuid>), bool>);
 
 impl RunVerdicts {
-	pub fn get(&self, run: Uuid, workspace: Option<Uuid>) -> Option<bool> {
-		self.0.get(&(run, workspace)).copied()
+	pub fn get(&self, run: Uuid, thread: Option<Uuid>) -> Option<bool> {
+		self.0.get(&(run, thread)).copied()
 	}
-	pub fn remember(&mut self, run: Uuid, workspace: Option<Uuid>, visible: bool) {
-		self.0.insert((run, workspace), visible);
+	pub fn remember(&mut self, run: Uuid, thread: Option<Uuid>, visible: bool) {
+		self.0.insert((run, thread), visible);
 	}
 	#[cfg(test)]
 	pub(crate) fn remembered(&self) -> usize {
@@ -66,16 +66,12 @@ pub trait LocalRunVisibilityScope: Send + RowOutcome {
 	fn cached(&self, run: &RunMetadata) -> Option<bool>;
 	fn remember(&mut self, run: &RunMetadata, allowed: bool);
 	fn resource(&self, kind: &str, id: &str, attributes: serde_json::Value) -> Resource;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
-	async fn memory_resource(
-		&mut self,
-		run: &RunMetadata,
-		workspace: &Resource,
-	) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
+	async fn memory_resource(&mut self, run: &RunMetadata, thread: &Resource) -> Result<Resource>;
 	async fn task(&mut self, run: &RunMetadata) -> Result<Option<Task>>;
 	async fn task_visible(&mut self, task: &Task) -> Result<bool>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
-	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool>;
+	async fn human_reads(&mut self, thread: Uuid, run: Uuid) -> Result<bool>;
 	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool>;
 	async fn run_reads(&mut self, run: Uuid) -> Result<bool>;
 }
@@ -92,18 +88,18 @@ pub trait RunVisibilityScope: LocalRunVisibilityScope {
 pub trait EventVisibilityScope: Send + RowOutcome {
 	async fn marketplace_visible(&mut self, event: &Event) -> Result<bool>;
 	async fn resource_visible(&mut self, event: &Event) -> Result<Option<bool>>;
-	async fn generation(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Request>>;
+	async fn generation(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Request>>;
 	async fn generation_visible(&mut self, job: &Request) -> Result<bool>;
 	async fn conversation(
 		&mut self,
 		id: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 	) -> Result<Option<Conversation>>;
 	async fn conversation_resource(&mut self, conversation: &Conversation) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
-	async fn human(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<HumanRequest>>;
+	async fn human(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<HumanRequest>>;
 	async fn human_visible(&mut self, request: &HumanRequest) -> Result<bool>;
-	async fn run(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<RunMetadata>>;
+	async fn run(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<RunMetadata>>;
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 }
 

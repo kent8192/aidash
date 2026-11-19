@@ -5,20 +5,7 @@ use reinhardt::{get, post, put};
 use uuid::Uuid;
 
 #[post(
-	"/api/workspaces/{id}/threads",
-	name = "channel-thread-create",
-	auth = "protected"
-)]
-pub async fn channel_thread_create(
-	#[inject] channels: Depends<Channels>,
-	Path(id): Path<Uuid>,
-	Json(input): Json<ChannelThreadInput>,
-) -> ViewResult<Response> {
-	crate::http::json(channels.create_thread(id, input).await)
-}
-
-#[post(
-	"/api/workspaces/{id}/thread-messages",
+	"/api/threads/{id}/channel-messages",
 	name = "channel-message-create",
 	auth = "protected"
 )]
@@ -31,7 +18,7 @@ pub async fn channel_message_create(
 }
 
 #[get(
-	"/api/workspaces/{id}/message-history",
+	"/api/threads/{id}/message-history",
 	name = "channel-message-history",
 	auth = "protected"
 )]
@@ -44,7 +31,7 @@ pub async fn channel_message_history(
 }
 
 #[post(
-	"/api/workspaces/{id}/attachments",
+	"/api/threads/{id}/attachments",
 	name = "channel-attachment-upload",
 	auth = "protected"
 )]
@@ -60,29 +47,29 @@ pub async fn channel_attachment_upload(
 }
 
 #[put(
-	"/api/workspaces/{id}/attachments/{attachment_id}/description",
+	"/api/threads/{id}/attachments/{attachment_id}/description",
 	name = "channel-attachment-description",
 	auth = "protected"
 )]
 pub async fn channel_attachment_description(
 	#[inject] channels: Depends<Channels>,
-	Path((workspace, attachment)): Path<(Uuid, Uuid)>,
+	Path((thread, attachment)): Path<(Uuid, Uuid)>,
 	Json(input): Json<ChannelAttachmentDescription>,
 ) -> ViewResult<Response> {
-	crate::http::json(channels.describe(workspace, attachment, input).await)
+	crate::http::json(channels.describe(thread, attachment, input).await)
 }
 
 #[get(
-	"/api/workspaces/{id}/attachments/{attachment_id}",
+	"/api/threads/{id}/attachments/{attachment_id}",
 	name = "channel-attachment-download",
 	auth = "protected"
 )]
 pub async fn channel_attachment_download(
 	#[inject] channels: Depends<Channels>,
-	Path((workspace, attachment)): Path<(Uuid, Uuid)>,
+	Path((thread, attachment)): Path<(Uuid, Uuid)>,
 ) -> ViewResult<Response> {
 	let result = async {
-		let (attachment, content) = channels.download(workspace, attachment).await?;
+		let (attachment, content) = channels.download(thread, attachment).await?;
 		Ok(Response::ok()
 			.with_body(content)
 			.with_header("Content-Type", &attachment.media_type)

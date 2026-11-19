@@ -18,7 +18,7 @@ pub mod events;
 pub mod scripts;
 
 /// Registering Duties, and changing, pausing and deleting your own. Judged
-/// on the Workspace the Duty belongs to. Members hold it by default.
+/// on the Thread the Duty belongs to. Members hold it by default.
 pub const CREATE: &str = "duty.create";
 /// Seeing, stopping and deleting anyone's Duties and naming a successor for
 /// a Duty whose Requester left. Judged on the Tenant. Administrators hold it.
@@ -272,7 +272,14 @@ pub struct Timing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Duty {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	/// The Duty's own Thread, opened when it is registered: its Tasks
+	/// belong there, report there, and its Requester talks to it there
+	/// (#1008, ADR 0140).
+	pub thread_id: Uuid,
+	/// The Thread it was registered from: its Agents list and change the
+	/// Duty there too. None for a Duty from before #1008, whose own Thread
+	/// is the one it was registered in.
+	pub origin_thread_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
 	pub requester: String,
 	/// The Requester's credential its Runs are admitted with. Revoking it, as
@@ -282,9 +289,6 @@ pub struct Duty {
 	pub credential_id: Uuid,
 	#[serde(flatten)]
 	pub definition: Definition,
-	/// The Duty's own Thread, where its Tasks report and its Requester talks
-	/// to it. Opened by its first Task.
-	pub thread_id: Option<Uuid>,
 	/// Where an interval counts from: registration or the last resume.
 	pub anchor: DateTime<Utc>,
 	/// The next scheduled time, shown without its jitter. None once the
@@ -517,7 +521,6 @@ pub struct Tick {
 	/// Why it was skipped or failed.
 	pub reason: Option<String>,
 	pub task_id: Option<Uuid>,
-	pub thread_id: Option<Uuid>,
 	/// The person who clicked "Run now"; None for a scheduled tick.
 	pub started_by: Option<String>,
 }

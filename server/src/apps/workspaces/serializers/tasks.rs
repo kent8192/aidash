@@ -2,7 +2,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-pub use aidash_domain::workspaces::{ConversationResponse, TaskPage};
+pub use aidash_domain::threads::{ConversationResponse, TaskPage};
 
 #[derive(Default, Deserialize, JsonSchema)]
 pub struct PageQuery {

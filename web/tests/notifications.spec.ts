@@ -18,7 +18,7 @@ function addRequest(data: State, id: string, prompt: string) {
   data.human_requests.push({
     ...data.human_requests[0],
     id,
-    workspace_id: "workspace-two",
+    thread_id: "thread-two",
     run_id: "run-1",
     kind: "APPROVAL_REQUIRED",
     prompt,
@@ -48,13 +48,13 @@ test("an older task completing emits one notice from the visible event", async (
 }) => {
   await page.clock.install();
   await setup(page, { subject: true, locale: "en-US" });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const data = await stateAfterLoad(page);
   const old = {
     ...data.tasks[0],
     id: "old-task",
     title: "Older task",
-    workspace_id: "older-workspace",
+    thread_id: "older-thread",
     status: "COMPLETED",
     revision: 42,
   };
@@ -63,8 +63,8 @@ test("an older task completing emits one notice from the visible event", async (
     id: "completion-event",
     sequence: 123456,
     kind: "task.completed",
-    workspace_id: old.workspace_id,
-    node: data.workspaces[0].node,
+    thread_id: old.thread_id,
+    node: data.threads[0].node,
     created_at: new Date().toISOString(),
     data: { task: old },
   });
@@ -75,30 +75,30 @@ test("an older task completing emits one notice from the visible event", async (
   await expect(page.locator(".intent-toast")).toHaveCount(0);
 });
 
-test("a notice opens an older task through its workspace snapshot", async ({
+test("a notice opens an older task through its thread snapshot", async ({
   page,
 }) => {
   await page.clock.install();
   await setup(page, { subject: true, locale: "en-US" });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const data = await stateAfterLoad(page);
-  const workspace = {
-    ...data.workspaces[0],
-    id: "older-workspace",
-    title: "Older workspace",
+  const thread = {
+    ...data.threads[0],
+    id: "older-thread",
+    title: "Older thread",
   };
   const task = {
     ...data.tasks[0],
     id: "old-task",
     title: "Older task",
-    workspace_id: workspace.id,
+    thread_id: thread.id,
     status: "COMPLETED" as const,
     revision: 42,
   };
-  await page.route("**/api/workspaces/older-workspace", (route) =>
+  await page.route("**/api/threads/older-thread", (route) =>
     route.fulfill({
       json: {
-        workspace,
+        thread,
         tasks: [task],
         artifacts: [],
         events: [],
@@ -110,14 +110,14 @@ test("a notice opens an older task through its workspace snapshot", async ({
     id: "completion-event",
     sequence: 123456,
     kind: "task.completed",
-    workspace_id: workspace.id,
-    node: workspace.node,
+    thread_id: thread.id,
+    node: thread.node,
     created_at: new Date().toISOString(),
     data: { task },
   });
   await nextToast(page);
   await page.locator(".intent-toast-open").click();
-  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(page).toHaveURL(/channel=older-thread/);
   await expect(
     page.getByRole("dialog").getByRole("heading", { name: "Older task" }),
   ).toBeVisible();
@@ -137,7 +137,7 @@ for (const width of [1440, 390]) {
       await page.addInitScript(() =>
         localStorage.setItem("aidash-theme", "dark"),
       );
-    await page.goto("/graph?channel=workspace-one&focus=old-selection");
+    await page.goto("/graph?channel=thread-one&focus=old-selection");
     await expect(
       page.getByRole("combobox", { name: "グラフの視点", exact: true }),
     ).toBeVisible();
@@ -167,7 +167,7 @@ for (const width of [1440, 390]) {
       await open.focus();
       await page.keyboard.press("Enter");
     } else await open.click();
-    await expect(page).toHaveURL(/\/collaboration\?channel=workspace-two$/);
+    await expect(page).toHaveURL(/\/collaboration\?channel=thread-two$/);
     await expect(page.getByRole("dialog")).toHaveCount(1);
     await expect(page.getByRole("dialog")).toContainText(
       "リリースの実行を承認してください。",
@@ -182,20 +182,18 @@ test("bursts produce one summary and each notification opens its exact task or r
 }) => {
   await page.clock.install();
   const { errors } = await setup(page, { subject: true });
-  await page.goto("/collaboration?channel=workspace-two");
+  await page.goto("/collaboration?channel=thread-two");
   const data = await stateAfterLoad(page);
   data.tasks[0] = { ...data.tasks[0], status: "FAILED", revision: 3 };
   data.tasks[1] = { ...data.tasks[1], status: "COMPLETED", revision: 3 };
   addRequest(data, "release", "Approve release?");
   addRequest(data, "publish", "Approve publishing?");
-  await page.route("**/api/workspaces/workspace-one", (route) =>
+  await page.route("**/api/threads/thread-one", (route) =>
     route.fulfill({
       json: {
-        workspace: data.workspaces[0],
-        tasks: data.tasks.filter(
-          (task) => task.workspace_id === "workspace-one",
-        ),
-        runs: data.runs.filter((run) => run.workspace_id === "workspace-one"),
+        thread: data.threads[0],
+        tasks: data.tasks.filter((task) => task.thread_id === "thread-one"),
+        runs: data.runs.filter((run) => run.thread_id === "thread-one"),
         conversations: [],
         artifacts: [],
         events: [],
@@ -211,7 +209,7 @@ test("bursts produce one summary and each notification opens its exact task or r
   await center
     .getByRole("button", { name: /Task failed Collect evidence/ })
     .click();
-  await expect(page).toHaveURL(/channel=workspace-one/);
+  await expect(page).toHaveURL(/channel=thread-one/);
   await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(
     page.getByRole("dialog").getByRole("heading", { name: "Collect evidence" }),
@@ -226,7 +224,7 @@ test("bursts produce one summary and each notification opens its exact task or r
     .getByRole("button", { name: "Notifications", exact: true })
     .click();
   await center.getByRole("button", { name: /Approve publishing\?/ }).click();
-  await expect(page).toHaveURL(/channel=workspace-two/);
+  await expect(page).toHaveURL(/channel=thread-two/);
   await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(page.getByRole("dialog")).toContainText("Approve publishing?");
   expect(errors).toEqual([]);
@@ -249,7 +247,7 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
       },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const data = await stateAfterLoad(page);
   addRequest(data, "first", "First approval");
   await nextToast(page);
@@ -300,7 +298,7 @@ test("recent updates and throttled requests survive a temporary state outage", a
 }) => {
   await page.clock.install();
   const { errors } = await setup(page, { subject: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const data = await stateAfterLoad(page);
   let unavailable = false;
   await page.route("**/api/state**", (route) =>

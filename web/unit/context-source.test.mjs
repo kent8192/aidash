@@ -10,7 +10,7 @@ const form = () => {
   const input = new FormData();
   for (const [name, value] of Object.entries({
     source_declaration: "on",
-    source_provider: "workspace",
+    source_provider: "thread",
     source_operation: "retrieve",
     source_pin: "scored",
     source_mode: "shadow",

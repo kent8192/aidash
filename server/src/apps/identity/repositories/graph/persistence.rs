@@ -5,7 +5,7 @@ use crate::authorization::access::Access;
 use crate::database::native::Transaction;
 use crate::{
 	Error, Result,
-	domain::{Artifact, Conversation, Event, Task, Workspace},
+	domain::{Artifact, Conversation, Event, Task, Thread},
 	federation::Federation,
 	registry::Entry,
 };
@@ -55,13 +55,13 @@ impl GraphAuthority<'_> {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn workspace_allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
-		let resource = self.0.workspace(id).await?;
+	pub(crate) async fn thread_allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
+		let resource = self.0.thread(id).await?;
 		self.0.decide(&resource, action).await
 	}
 
 	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
-		// project_activity checks workspace.events once per workspace. Retain
+		// project_activity checks thread.events once per thread. Retain
 		// the event-specific resource and provenance checks without repeating it.
 		self.0.event_visible(event).await
 	}
@@ -77,10 +77,10 @@ pub(crate) async fn candidates(
 	source_node: &str,
 ) -> Result<Vec<Candidate>> {
 	let tenant = authority.tenant().to_owned();
-	if options.scope_workspace.is_some() && kind != 3 && kind != 5 {
+	if options.scope_thread.is_some() && kind != 3 && kind != 5 {
 		return Ok(vec![]);
 	}
-	if kind == 0 && !kind_allowed("workspace", options) && !kind_allowed("goal", options) {
+	if kind == 0 && !kind_allowed("thread", options) && !kind_allowed("goal", options) {
 		return Ok(vec![]);
 	}
 	if kind == 1 && !kind_allowed("task", options) {
@@ -96,37 +96,37 @@ pub(crate) async fn candidates(
 		return Ok(vec![]);
 	}
 	if kind == 3
-		&& let Some(workspace) = options.scope_workspace
+		&& let Some(thread) = options.scope_thread
 	{
-		return scoped::candidates(authority, workspace, source_node, offset).await;
+		return scoped::candidates(authority, thread, source_node, offset).await;
 	}
 	if kind == 5 {
 		return catalog::candidates(authority, options, offset).await;
 	}
 	let conn = authority.connection();
 	let table = match kind {
-		0 => "workspaces",
+		0 => "threads",
 		1 => "tasks",
 		2 => "artifacts",
 		3 => "runs",
 		4 => "conversations",
 		_ => unreachable!(),
 	};
-	let join_column = if kind == 0 { "id" } else { "workspace_id" };
+	let join_column = if kind == 0 { "id" } else { "thread_id" };
 	let sql = Query::select()
 		.column(reinhardt::query::ColumnRef::table_asterisk("r"))
 		.from_as(Alias::new(table), Alias::new("r"))
 		.join(
 			JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(
-				Alias::new("authorization_workspaces"),
+				Alias::new("authorization_threads"),
 				Alias::new("a"),
 			),
 			reinhardt::query::SimpleExpr::from(Expr::col((
 				Alias::new("r"),
 				Alias::new(join_column),
 			)))
-			.eq(Expr::col((Alias::new("a"), Alias::new("workspace_id")))),
+			.eq(Expr::col((Alias::new("a"), Alias::new("thread_id")))),
 		)
 		.and_where(
 			reinhardt::query::SimpleExpr::from(Expr::col((Alias::new("a"), Alias::new("tenant"))))
@@ -137,11 +137,11 @@ pub(crate) async fn candidates(
 		.offset(offset)
 		.to_string(PostgresQueryBuilder);
 	match kind {
-		0 => Ok(aidash_server::database::query_as::<Workspace>(&sql)
+		0 => Ok(aidash_server::database::query_as::<Thread>(&sql)
 			.fetch_all(conn)
 			.await?
 			.into_iter()
-			.map(Candidate::Workspace)
+			.map(Candidate::Thread)
 			.collect()),
 		1 => Ok(aidash_server::database::query_as::<Task>(&sql)
 			.fetch_all(conn)
@@ -171,20 +171,20 @@ pub(crate) async fn candidates(
 	}
 }
 
-pub(crate) async fn linked_workspace(
+pub(crate) async fn linked_thread(
 	authority: &mut GraphAuthority<'_>,
 	id: Uuid,
 ) -> Result<Option<Candidate>> {
 	let tenant = authority.tenant().to_owned();
-	let sql = tenant_resources("workspaces", "id", &tenant)
+	let sql = tenant_resources("threads", "id", &tenant)
 		.expr(Expr::cust("r.*"))
 		.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).eq(Expr::value(id)))
 		.limit(1)
 		.to_string(PostgresQueryBuilder);
-	Ok(aidash_server::database::query_as::<Workspace>(&sql)
+	Ok(aidash_server::database::query_as::<Thread>(&sql)
 		.fetch_optional(authority.connection())
 		.await?
-		.map(Candidate::Workspace))
+		.map(Candidate::Thread))
 }
 
 pub(crate) async fn linked_task(
@@ -192,7 +192,7 @@ pub(crate) async fn linked_task(
 	id: Uuid,
 ) -> Result<Option<Candidate>> {
 	let tenant = authority.tenant().to_owned();
-	let sql = tenant_resources("tasks", "workspace_id", &tenant)
+	let sql = tenant_resources("tasks", "thread_id", &tenant)
 		.expr(Expr::cust("r.*"))
 		.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).eq(Expr::value(id)))
 		.limit(1)
@@ -324,14 +324,14 @@ fn tenant_resources(
 		.join(
 			JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(
-				Alias::new("authorization_workspaces"),
+				Alias::new("authorization_threads"),
 				Alias::new("a"),
 			),
 			reinhardt::query::SimpleExpr::from(Expr::col((
 				Alias::new("r"),
 				Alias::new(join_column),
 			)))
-			.eq(Expr::col((Alias::new("a"), Alias::new("workspace_id")))),
+			.eq(Expr::col((Alias::new("a"), Alias::new("thread_id")))),
 		)
 		.and_where(Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::value(tenant)))
 		.to_owned()
@@ -360,20 +360,18 @@ pub(crate) async fn graph_generation(
 	.columns(&["sum", "count"])
 	.fetch_one(authority.connection())
 	.await?;
-	if let Some(workspace) = options.scope_workspace {
-		let scope = scoped::revision(authority, options, workspace, source_node).await?;
+	if let Some(thread) = options.scope_thread {
+		let scope = scoped::revision(authority, options, thread, source_node).await?;
 		return Ok(crate::registry::digest(&json!({
 			"authority":authority_revision,"catalog":catalog,"scope":scope,
 		})));
 	}
 	let conn = authority.connection();
-	let workspaces =
-		aggregate_revision(&mut *conn, "workspaces", "revision", "id", &tenant).await?;
-	let tasks =
-		aggregate_revision(&mut *conn, "tasks", "revision", "workspace_id", &tenant).await?;
-	let runs = aggregate_revision(&mut *conn, "runs", "revision", "workspace_id", &tenant).await?;
+	let threads = aggregate_revision(&mut *conn, "threads", "revision", "id", &tenant).await?;
+	let tasks = aggregate_revision(&mut *conn, "tasks", "revision", "thread_id", &tenant).await?;
+	let runs = aggregate_revision(&mut *conn, "runs", "revision", "thread_id", &tenant).await?;
 	let artifacts: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
-		&tenant_resources("artifacts", "workspace_id", &tenant)
+		&tenant_resources("artifacts", "thread_id", &tenant)
 			.expr(reinhardt::query::Func::max(
 				Expr::col((Alias::new("r"), Alias::new("created_at"))).into(),
 			))
@@ -386,7 +384,7 @@ pub(crate) async fn graph_generation(
 	.fetch_one(&mut *conn)
 	.await?;
 	let conversations: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
-		&tenant_resources("conversations", "workspace_id", &tenant)
+		&tenant_resources("conversations", "thread_id", &tenant)
 			.expr(reinhardt::query::Func::max(
 				Expr::col((Alias::new("r"), Alias::new("created_at"))).into(),
 			))
@@ -399,7 +397,7 @@ pub(crate) async fn graph_generation(
 	.fetch_one(&mut *conn)
 	.await?;
 	let events: Option<i64> = crate::database::native::query_scalar(
-		&tenant_resources("events", "workspace_id", &tenant)
+		&tenant_resources("events", "thread_id", &tenant)
 			.expr(reinhardt::query::Func::max(
 				Expr::col((Alias::new("r"), Alias::new("sequence"))).into(),
 			))
@@ -408,7 +406,7 @@ pub(crate) async fn graph_generation(
 	.scalar_one(&mut *conn)
 	.await?;
 	Ok(crate::registry::digest(&json!({
-		"authority":authority_revision,"catalog":catalog,"workspaces":workspaces,
+		"authority":authority_revision,"catalog":catalog,"threads":threads,
 		"tasks":tasks,"runs":runs,"artifacts":artifacts,"conversations":conversations,"events":events,
 	})))
 }
@@ -424,33 +422,22 @@ pub(crate) async fn project_activity(
 	if nodes.is_empty() {
 		return Ok(vec![]);
 	}
-	if let Some(workspace) = options.scope_workspace {
+	if let Some(thread) = options.scope_thread {
 		let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
-		return scoped::activity(
-			authority,
-			options,
-			nodes,
-			end,
-			(source_node, node),
-			workspace,
-		)
-		.await;
+		return scoped::activity(authority, options, nodes, end, (source_node, node), thread).await;
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
-	let mut workspaces = Vec::new();
-	for workspace in nodes
+	let mut threads = Vec::new();
+	for thread in nodes
 		.iter()
-		.filter_map(|node| node.workspace_id)
+		.filter_map(|node| node.thread_id)
 		.collect::<BTreeSet<_>>()
 	{
-		if authority
-			.workspace_allowed(workspace, "workspace.events")
-			.await?
-		{
-			workspaces.push(workspace);
+		if authority.thread_allowed(thread, "thread.events").await? {
+			threads.push(thread);
 		}
 	}
-	if workspaces.is_empty() {
+	if threads.is_empty() {
 		return Ok(vec![]);
 	}
 	let tenant = authority.tenant().to_owned();
@@ -470,22 +457,22 @@ pub(crate) async fn project_activity(
 		.join(
 			JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(
-				Alias::new("authorization_workspaces"),
+				Alias::new("authorization_threads"),
 				Alias::new("a"),
 			),
 			reinhardt::query::SimpleExpr::from(Expr::col((
 				Alias::new("e"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 			)))
-			.eq(Expr::col((Alias::new("a"), Alias::new("workspace_id")))),
+			.eq(Expr::col((Alias::new("a"), Alias::new("thread_id")))),
 		)
 		.and_where(
 			Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::value(tenant.clone())),
 		)
 		.and_where(Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(end)))
 		.and_where(
-			Expr::col((Alias::new("e"), Alias::new("workspace_id")))
-				.is_in(workspaces.iter().copied().map(Expr::value)),
+			Expr::col((Alias::new("e"), Alias::new("thread_id")))
+				.is_in(threads.iter().copied().map(Expr::value)),
 		)
 		.cond_where(
 			Condition::any()
@@ -494,7 +481,7 @@ pub(crate) async fn project_activity(
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("run.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("conversation.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("message.%"))
-				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("workspace.%")),
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("thread.%")),
 		)
 		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
 		.limit(512);
@@ -549,10 +536,10 @@ pub(crate) async fn candidate_visible(
 	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	candidate: &Candidate,
-	scoped_workspace: bool,
+	scoped_thread: bool,
 ) -> Result<bool> {
 	match candidate {
-		Candidate::Run(run) if scoped_workspace => scoped::visible(f, authority, run).await,
+		Candidate::Run(run) if scoped_thread => scoped::visible(f, authority, run).await,
 		_ => authority.visible(candidate).await,
 	}
 }

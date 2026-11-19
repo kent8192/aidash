@@ -1,7 +1,6 @@
 //! Agent context retains input order, remote boundary refresh and durable local dependencies.
 use crate::{
-	Result, ports::semantic::run_context::RunSemanticRepository,
-	semantic::retrieval::WorkspaceContext,
+	Result, ports::semantic::run_context::RunSemanticRepository, semantic::retrieval::ThreadContext,
 };
 use aidash_domain::{
 	Task,
@@ -11,7 +10,7 @@ use aidash_domain::{
 	},
 };
 use serde_json::Value;
-/// `degrade`: a local workspace outage yields the Degraded context marker
+/// `degrade`: a local thread outage yields the Degraded context marker
 /// instead of an error (ADR 0059). A remote Run never degrades.
 pub async fn retrieve(
 	repository: &dyn RunSemanticRepository,
@@ -53,10 +52,10 @@ pub async fn retrieve_with_query(
 	let mut scope = repository.local_scope().await?;
 	let (result, incomplete) = match scope.retrieve(query, budget, degrade).await? {
 		// A degraded slot read no entry, so it begins no dependency journal.
-		WorkspaceContext::Unavailable(cause) if degrade => return Ok(Some(marker(cause))),
+		ThreadContext::Unavailable(cause) if degrade => return Ok(Some(marker(cause))),
 		// The READY part of an incomplete index still depends on what it read.
-		WorkspaceContext::Partial(result) if degrade => (Some(result), true),
-		workspace => (workspace.required()?, false),
+		ThreadContext::Partial(result) if degrade => (Some(result), true),
+		thread => (thread.required()?, false),
 	};
 	if let Some(result) = &result {
 		let mut journal = scope.begin_dependencies().await?;

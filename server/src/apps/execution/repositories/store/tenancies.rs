@@ -1,4 +1,4 @@
-//! The Tenants of Runs, Workspaces, tasks and remote grants, remembered once
+//! The Tenants of Runs, Threads, tasks and remote grants, remembered once
 //! found (#263).
 //!
 //! Work that names one of these only by id looks its Tenant up before opening
@@ -17,7 +17,7 @@ const CAPACITY: usize = 16_384;
 #[derive(Default)]
 pub(crate) struct Tenancies {
 	runs: Ids<TenantName>,
-	workspaces: Ids<TenantName>,
+	threads: Ids<TenantName>,
 	grants: Ids<TenantName>,
 }
 
@@ -28,11 +28,11 @@ impl Tenancies {
 	pub(crate) fn remember_run(&self, id: Uuid, tenant: TenantName) {
 		self.runs.insert(id, tenant);
 	}
-	pub(crate) fn workspace(&self, id: Uuid) -> Option<TenantName> {
-		self.workspaces.get(id)
+	pub(crate) fn thread(&self, id: Uuid) -> Option<TenantName> {
+		self.threads.get(id)
 	}
-	pub(crate) fn remember_workspace(&self, id: Uuid, tenant: TenantName) {
-		self.workspaces.insert(id, tenant);
+	pub(crate) fn remember_thread(&self, id: Uuid, tenant: TenantName) {
+		self.threads.insert(id, tenant);
 	}
 	pub(crate) fn grant(&self, id: Uuid) -> Option<TenantName> {
 		self.grants.get(id)
@@ -83,11 +83,11 @@ mod tests {
 		tenancies.remember_run(run, acme.clone());
 		assert_eq!(tenancies.run(run), Some(acme.clone()));
 		for _ in 0..CAPACITY {
-			tenancies.remember_workspace(Uuid::new_v4(), acme.clone());
+			tenancies.remember_thread(Uuid::new_v4(), acme.clone());
 		}
 		let last = Uuid::new_v4();
-		tenancies.remember_workspace(last, acme.clone());
-		assert_eq!(tenancies.workspace(last), Some(acme));
-		assert_eq!(tenancies.workspaces.lock().len(), 1);
+		tenancies.remember_thread(last, acme.clone());
+		assert_eq!(tenancies.thread(last), Some(acme));
+		assert_eq!(tenancies.threads.lock().len(), 1);
 	}
 }

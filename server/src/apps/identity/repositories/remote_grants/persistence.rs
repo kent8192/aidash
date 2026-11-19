@@ -94,8 +94,8 @@ impl SourceAuthorityScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		HomeScope::workspace(self, id).await
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		HomeScope::thread(self, id).await
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		HomeScope::task_resource(self, task).await
@@ -183,12 +183,12 @@ impl GrantScope for Scope {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn require_non_subnode_workspace(&mut self, workspace: Uuid) -> Result<()> {
+	async fn require_non_subnode_thread(&mut self, thread: Uuid) -> Result<()> {
 		use crate::apps::execution::models::subnodes::SubnodeRecord;
 		use reinhardt::db::orm::Model;
 		let records = SubnodeRecord::objects()
 			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
-			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_thread_id().eq(thread))
 			.all_with_executor(self.access.tx.native_mut())
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
@@ -231,10 +231,10 @@ impl GrantScope for Scope {
 		.await
 		.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.runtime
 			.store
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -324,7 +324,7 @@ impl GrantScope for Scope {
 				let query_bind_1 = input.id;
 				let query_bind_2 = task.id;
 				let query_bind_3 = task.revision;
-				let query_bind_4 = task.workspace_id;
+				let query_bind_4 = task.thread_id;
 				let query_bind_5 = &input.node_id;
 				let query_bind_6 = &identity.tenant;
 				let query_bind_7 = identity.credential_id;
@@ -340,7 +340,7 @@ impl GrantScope for Scope {
 							reinhardt::query::Alias::new("id"),
 							reinhardt::query::Alias::new("task_id"),
 							reinhardt::query::Alias::new("task_revision"),
-							reinhardt::query::Alias::new("workspace_id"),
+							reinhardt::query::Alias::new("thread_id"),
 							reinhardt::query::Alias::new("node_id"),
 							reinhardt::query::Alias::new("tenant"),
 							reinhardt::query::Alias::new("credential_id"),
@@ -396,8 +396,8 @@ impl GrantScope for Scope {
 									"(CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => ?))".to_owned(),
 									vec![Expr::value(query_bind_11.to_owned()).into()]
 								))
-								// The Home Node issuing the grant is its Workspace's.
-								.expr(crate::database::scope::workspace_node(query_bind_4))
+								// The Home Node issuing the grant is its Thread's.
+								.expr(crate::database::scope::thread_node(query_bind_4))
 								.to_owned()
 						)
 						.to_owned()
@@ -611,7 +611,7 @@ pub(crate) async fn revoke_for_node_in(
 		store
 			.event_in_executor(
 				tx,
-				Some(grant.workspace_id),
+				Some(grant.thread_id),
 				"task.remote_grant_revoked",
 				serde_json::json!({"grant_id":id,"task_id":grant.task_id}),
 			)

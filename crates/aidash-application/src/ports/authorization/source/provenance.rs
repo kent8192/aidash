@@ -11,5 +11,5 @@ pub trait SemanticSourceScope: Send {
 	/// Retain a shared entry row lock through permission and content checks.
 	async fn disclosed_entry(&mut self, id: Uuid) -> Result<Option<Entry>>;
 	async fn source_permitted(&mut self, entry: &Entry) -> Result<bool>;
-	async fn source_text(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>>;
+	async fn source_text(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>>;
 }

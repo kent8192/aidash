@@ -199,13 +199,13 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 ) {
 	let p = scoped_pair;
 	let fixture = p.native.as_ref().unwrap();
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
-	let route = format!("/api/workspaces/{workspace}/memory/units/mutate");
+			.thread_id;
+	let route = format!("/api/threads/{thread}/memory/units/mutate");
 	let mut evidence = vec![];
 	for name in ["First exact-bound support", "Second exact-bound support"] {
 		let (status, body) = request(
@@ -580,17 +580,17 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 	.await
 	.unwrap();
 	assert_eq!(recorded, 2);
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let (status, index) = request(
 		&p.aa,
 		&p.token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		Value::Null,
 	)
 	.await;
@@ -599,7 +599,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 		&p.aa,
 		&common::tenant_token(&p.a.store, "acme").await,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":index["revision"],"spec":index["spec"]}),
 	)
 	.await;
@@ -616,7 +616,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 		status, 200,
 		"an index rebuild must preserve canonical native context: {body}"
 	);
-	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/workspaces/{workspace}/memory/units/mutate"), json!({"operation_id":Uuid::new_v4(), "provider":fixture["provider"], "bank":banks[1]["bank"], "changes":[{"operation":"delete", "id":fixture["shared"], "expected_revision":1}]})).await;
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/threads/{thread}/memory/units/mutate"), json!({"operation_id":Uuid::new_v4(), "provider":fixture["provider"], "bank":banks[1]["bank"], "changes":[{"operation":"delete", "id":fixture["shared"], "expected_revision":1}]})).await;
 	assert_eq!(status, 200, "{body}");
 	p.step().await;
 	assert_eq!(
@@ -742,13 +742,13 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 			"{usage:?}"
 		);
 	}
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
-	let (status,body) = request(&p.aa,&p.token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),
+			.thread_id;
+	let (status,body) = request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/memory/units/mutate"),
 		json!({"operation_id":Uuid::now_v7(),"provider":p.native.as_ref().unwrap()["provider"],"bank":banks[1]["bank"],
 			"changes":[{"operation":"delete","id":p.native.as_ref().unwrap()["shared"],"expected_revision":1}]})).await;
 	assert_eq!(status, 200, "{body}");
@@ -826,7 +826,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 			&p.aa,
 			&p.token,
 			"POST",
-			&format!("/api/workspaces/{}/memory/units/mutate", bank.workspace),
+			&format!("/api/threads/{}/memory/units/mutate", bank.thread),
 			serde_json::to_value(mutation).unwrap(),
 		)
 		.await;

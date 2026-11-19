@@ -219,8 +219,8 @@ export function TrustOverview({
                 />
                 <p className="font-mono text-[11px] text-faint">
                   {permissions.tenant} / {permissions.subject} ·{" "}
-                  {permissions.workspace_id ||
-                    text("No workspace selected", "ワークスペース未選択")}{" "}
+                  {permissions.thread_id ||
+                    text("No thread selected", "スレッド未選択")}{" "}
                   · {date(permissions.observed_at)}
                 </p>
               </>
@@ -231,8 +231,8 @@ export function TrustOverview({
                 </p>
                 <Hint>
                   {text(
-                    "Select a tenant, subject and optional workspace in Policies to inspect effective access.",
-                    "ポリシーでテナント・主体・必要なワークスペースを指定すると、実効権限を確認できます。",
+                    "Select a tenant, subject and optional thread in Policies to inspect effective access.",
+                    "ポリシーでテナント・主体・必要なスレッドを指定すると、実効権限を確認できます。",
                   )}
                 </Hint>
               </>
@@ -593,28 +593,26 @@ export function TrustOverview({
                 text(" Latest 100 records only.", " 最新100件が対象です。")}
             </p>
           </InspectorSection>
-          <InspectorSection
-            title={text("Impacted workspaces", "利用ワークスペース")}
-          >
+          <InspectorSection title={text("Impacted threads", "利用スレッド")}>
             {!inspection ? (
               <Hint>{pending}</Hint>
-            ) : inspection.workspaces.length ? (
+            ) : inspection.threads.length ? (
               <ul className="divide-y divide-border">
-                {inspection.workspaces.map((workspace) => (
+                {inspection.threads.map((thread) => (
                   <li
-                    key={workspace.workspace_id}
+                    key={thread.thread_id}
                     className="flex items-center justify-between gap-3 py-1.5"
                   >
                     <span className="truncate text-[13px] font-medium">
-                      {workspace.title}
+                      {thread.title}
                     </span>
                     <span className="shrink-0 text-[11px] text-faint">
-                      {workspace.current
+                      {thread.current
                         ? text("Current", "現在利用中")
                         : text("Past", "過去の利用")}{" "}
                       ·{" "}
                       <span className="font-mono tabular">
-                        {date(workspace.latest_run_at)}
+                        {date(thread.latest_run_at)}
                       </span>
                     </span>
                   </li>

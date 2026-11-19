@@ -7,7 +7,6 @@ pub struct Area {
 	pub id: Uuid,
 	pub tenant: String,
 	pub home_node: String,
-	pub workspace_id: Uuid,
 	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub owner: String,
@@ -35,7 +34,7 @@ pub struct SessionStatus {
 	pub queue: Vec<SessionRun>,
 }
 /// The constraint kind of a Working Area a receiving Node keeps for Runs executing for another
-/// Home (ADR 0139). It records the Home, whose Workspace this Node does not hold, so reads of
+/// Home (ADR 0139). It records the Home, whose Thread this Node does not hold, so reads of
 /// the Area are authorized by the Run's admission and the Area's owner instead.
 pub const REMOTE_HOME: &str = "remote_home";
 pub fn remote_home_constraint(home_node: &str) -> Value {

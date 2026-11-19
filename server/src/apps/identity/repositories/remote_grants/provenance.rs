@@ -90,9 +90,9 @@ impl SemanticSourceScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn source_text(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
+	async fn source_text(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
 		crate::semantic::service::Lease::Inherited(&mut *self.access)
-			.source(workspace, source)
+			.source(thread, source)
 			.await
 			.map_err(Into::into)
 	}

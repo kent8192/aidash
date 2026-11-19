@@ -84,7 +84,7 @@ impl RunSemanticScope for Scope<'_> {
 		query: &str,
 		budget: usize,
 		partial: bool,
-	) -> Result<aidash_application::semantic::retrieval::WorkspaceContext> {
+	) -> Result<aidash_application::semantic::retrieval::ThreadContext> {
 		crate::semantic::service::context_in(
 			self.store,
 			&mut crate::semantic::service::Lease::Inherited(&mut self.access),

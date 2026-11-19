@@ -1,6 +1,6 @@
 //! Request authorization helpers.
 use crate::{
-	authorization::{identity::Actor, workspace::Workspaces},
+	authorization::{identity::Actor, thread::Threads},
 	federation::Federation,
 };
 use http::{HeaderMap, Method};
@@ -34,10 +34,10 @@ impl reinhardt::Injectable for InboundCall {
 			.ok_or_else(|| reinhardt::DiError::NotFound("admitted Federation caller".into()))
 	}
 }
-pub(crate) fn scoped(f: &Federation, actor: Actor) -> Option<Workspaces> {
+pub(crate) fn scoped(f: &Federation, actor: Actor) -> Option<Threads> {
 	match actor {
 		Actor::DeploymentAdministrator => None,
-		Actor::Subject(identity) => Some(Workspaces {
+		Actor::Subject(identity) => Some(Threads {
 			store: f.store.clone(),
 			identity,
 		}),

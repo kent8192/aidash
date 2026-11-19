@@ -7,7 +7,7 @@ use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Root {
-	Workspace,
+	Thread,
 	Run,
 	Task,
 	Area,
@@ -20,7 +20,6 @@ pub enum Root {
 	MemoryOperation,
 	SemanticOperation,
 	RemoteUsage,
-	Thread,
 	Observation,
 	Message,
 	RetentionHold,
@@ -61,7 +60,7 @@ use Root::*;
 /// classification is itself proof that a reviewed table survives Node purge.
 pub fn ownership(name: &str) -> Result<Ownership> {
 	Ok(match name {
-		"workspaces"
+		"threads"
 		| "runs"
 		| "generation_requests"
 		| "node_cancellation_jobs"
@@ -114,10 +113,9 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "artifacts"
 		| "messages"
 		| "conversations"
-		| "channel_threads"
 		| "channel_attachments"
 		| "channel_message_context"
-		| "authorization_workspaces"
+		| "authorization_threads"
 		| "semantic_image_ledgers"
 		| "semantic_image_publications"
 		| "semantic_indexes"
@@ -126,14 +124,13 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "semantic_history"
 		| "semantic_vectors"
 		| "memory_banks"
-		| "memory_participants" => Link("workspace_id", Workspace),
+		| "memory_participants" => Link("thread_id", Thread),
 		// A Duty's script versions and script runs are keyed on the Duty and
 		// go with it (#1011).
 		"duty_script_versions" | "duty_script_runs" => Link("duty_id", Duty),
 		"core_operations" => Link("area_id", Area),
 		"core_runs" | "egress_run_revocations" | "stints" => Link("run_id", Run),
-		"core_task_sessions"
-		| "delegations"
+		"delegations"
 		| "memory_task_participants"
 		| "generation_remote_intents" => Link("task_id", Task),
 		"authorization_task_origins" => Link("task_id", Task),
@@ -168,7 +165,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "subnode_operation_receipts" => Link("run_id", Run),
 		"generation_budgets" => Link("request_id", Request),
 		"generation_remote_usage" => RemoteUsageRows,
-		"generation_embedding_usage" => Link("workspace_id", Workspace),
+		"generation_embedding_usage" => Link("thread_id", Thread),
 		"generation_history" => Link("request_id", Request),
 		"generation_remote_finalizations" => Finalizations,
 		"generation_remote_dispatches" => Dispatches,

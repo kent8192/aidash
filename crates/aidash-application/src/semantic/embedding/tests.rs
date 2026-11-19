@@ -48,13 +48,13 @@ struct Scope {
 impl SemanticEmbeddingScope for Scope {
 	async fn reserve(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		input: aidash_domain::semantic::EmbeddingInput<'_>,
 		origin: Origin,
 	) -> Result<Option<Box<dyn EmbeddingAllowance>>> {
 		self.calls.lock().unwrap().push("reserve");
-		assert_eq!(workspace, Uuid::from_u128(1));
+		assert_eq!(thread, Uuid::from_u128(1));
 		assert_eq!(*config, configuration());
 		assert_eq!(
 			input,

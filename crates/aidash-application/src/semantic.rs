@@ -36,19 +36,19 @@ pub async fn process(
 	vector: &dyn VectorIndex,
 	id: Uuid,
 ) -> Result<bool> {
-	let Some((workspace, authority)) = repository.initial(id).await? else {
+	let Some((thread, authority)) = repository.initial(id).await? else {
 		return Ok(false);
 	};
-	let mut scope = match repository.restore(workspace, &authority).await {
+	let mut scope = match repository.restore(thread, &authority).await {
 		Ok(scope) => scope,
 		Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
-			repository.revoke(workspace, id, &authority).await?;
+			repository.revoke(thread, id, &authority).await?;
 			return Ok(true);
 		}
 		Err(error) => return Err(error),
 	};
 	scope.durable();
-	let result = index(scope.as_mut(), vector, workspace, id, &authority).await;
+	let result = index(scope.as_mut(), vector, thread, id, &authority).await;
 	scope.finish(result).await
 }
 
@@ -60,16 +60,16 @@ enum IndexContent {
 async fn index(
 	scope: &mut dyn SemanticIndexingSession,
 	vector: &dyn VectorIndex,
-	workspace: Uuid,
+	thread: Uuid,
 	id: Uuid,
 	authority: &Value,
 ) -> Result<bool> {
-	let workspace_allowed = match scope.workspace_write(workspace).await {
+	let thread_allowed = match scope.thread_write(thread).await {
 		Ok(()) => true,
 		Err(Error::Forbidden) => false,
 		Err(error) => return Err(error),
 	};
-	let plan = scope.plan(workspace).await?;
+	let plan = scope.plan(thread).await?;
 	let Some(mut entry) = scope.lock_entry(id).await? else {
 		return Ok(false);
 	};
@@ -78,7 +78,7 @@ async fn index(
 	}
 	let spec: IndexingSpec = serde_json::from_value(plan.spec.clone())?;
 	let source = indexing::source(&entry)?;
-	let permitted = workspace_allowed
+	let permitted = thread_allowed
 		&& scope.permits("semantic.write").await?
 		&& scope.permits("semantic.read").await?;
 	let content = if permitted && spec.enabled {
@@ -86,7 +86,7 @@ async fn index(
 			Source::WorkingImage { .. } | Source::AttachmentImage { .. } => {
 				let supported = spec.embedding.inputs.contains(&EmbeddingInputKind::Image);
 				let limit = if supported { spec.max_image_bytes } else { 0 };
-				let image = match scope.image(workspace, &source, limit).await {
+				let image = match scope.image(thread, &source, limit).await {
 					Ok(image) => image,
 					Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => None,
 					Err(_) => {
@@ -94,7 +94,7 @@ async fn index(
 						scope.failed(id, attempts, delay).await?;
 						scope
 							.history(
-								workspace,
+								thread,
 								id,
 								entry.revision,
 								"ERROR",
@@ -115,13 +115,7 @@ async fn index(
 						scope.unsupported(id, reason).await?;
 						scope.retire_points(id).await?;
 						scope
-							.history(
-								workspace,
-								id,
-								entry.revision,
-								"UNSUPPORTED",
-								reason.as_str(),
-							)
+							.history(thread, id, entry.revision, "UNSUPPORTED", reason.as_str())
 							.await?;
 						return Ok(true);
 					}
@@ -136,23 +130,14 @@ async fn index(
 						scope.unsupported(id, reason).await?;
 						scope.retire_points(id).await?;
 						scope
-							.history(
-								workspace,
-								id,
-								entry.revision,
-								"UNSUPPORTED",
-								reason.as_str(),
-							)
+							.history(thread, id, entry.revision, "UNSUPPORTED", reason.as_str())
 							.await?;
 						return Ok(true);
 					}
 					Some(IndexImageRead::Image(image)) => Some(IndexContent::Image(image)),
 				}
 			}
-			_ => scope
-				.source(workspace, &source)
-				.await?
-				.map(IndexContent::Text),
+			_ => scope.source(thread, &source).await?.map(IndexContent::Text),
 		}
 	} else {
 		None
@@ -172,7 +157,7 @@ async fn index(
 		if entry.state != "REVOKED" {
 			scope
 				.history(
-					workspace,
+					thread,
 					id,
 					entry.revision,
 					"REVOKED",
@@ -206,7 +191,7 @@ async fn index(
 		scope.schedule_point(&plan.collection).await?;
 		scope
 			.history(
-				workspace,
+				thread,
 				id,
 				entry.revision,
 				"PENDING",
@@ -223,11 +208,11 @@ async fn index(
         }
         vector.ensure_collection(&spec.vector, &plan.collection, spec.embedding.dimensions).await?;
         let embedding = match &content {
-            IndexContent::Text(text) => scope.embed(workspace, &spec.embedding, text, id).await?,
-            IndexContent::Image(image) => scope.embed_image(workspace, &spec.embedding, image, id).await?,
+            IndexContent::Text(text) => scope.embed(thread, &spec.embedding, text, id).await?,
+            IndexContent::Image(image) => scope.embed_image(thread, &spec.embedding, image, id).await?,
         };
         vector.upsert(&spec.vector, &plan.collection, entry.point_id, &embedding,
-            json!({"entry_id":id,"revision":entry.revision,"index_revision":plan.revision,"workspace_id":workspace,"tenant":plan.tenant})).await
+            json!({"entry_id":id,"revision":entry.revision,"index_revision":plan.revision,"thread_id":thread,"tenant":plan.tenant})).await
     }.await;
 	match result {
 		Ok(()) => {
@@ -235,7 +220,7 @@ async fn index(
 			scope.ready(id).await?;
 			scope
 				.history(
-					workspace,
+					thread,
 					id,
 					entry.revision,
 					"READY",
@@ -243,14 +228,14 @@ async fn index(
 				)
 				.await?;
 		}
-		// No retry helps until the Workspace switches to an embedding model
+		// No retry helps until the Thread switches to an embedding model
 		// that meets the Data Protection Level (#963).
 		Err(Error::RemoteSemantic(aidash_domain::semantic::Failure::DataProtection)) => {
 			let reason = UnsupportedReason::DataProtection;
 			scope.unsupported(id, reason).await?;
 			scope
 				.history(
-					workspace,
+					thread,
 					id,
 					entry.revision,
 					"UNSUPPORTED",
@@ -263,7 +248,7 @@ async fn index(
 			scope.failed(id, attempts, delay).await?;
 			scope
 				.history(
-					workspace,
+					thread,
 					id,
 					entry.revision,
 					"ERROR",

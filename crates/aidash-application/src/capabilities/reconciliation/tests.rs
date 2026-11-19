@@ -59,7 +59,7 @@ fn repository() -> Repository {
 		},
 		area: Area {
 			id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(10),
+			thread_id: Uuid::from_u128(10),
 			generation: 6,
 			revision: 7,
 			epoch: 5,
@@ -69,7 +69,7 @@ fn repository() -> Repository {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(3),
 			task_id: Uuid::from_u128(9),
-			workspace_id: Uuid::from_u128(10),
+			thread_id: Uuid::from_u128(10),
 			home_node: "aidash://local".into(),
 			agent_id: "agent".into(),
 			agent_version: "1".into(),

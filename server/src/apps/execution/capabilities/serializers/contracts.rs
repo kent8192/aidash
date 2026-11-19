@@ -43,7 +43,7 @@ pub enum Representation {
 #[serde(deny_unknown_fields)]
 pub struct FileRead {
 	pub file_id: Uuid,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 	pub area_id: Option<Uuid>,
 	pub representation: Representation,
 	pub offset: Option<usize>,
@@ -67,7 +67,6 @@ pub struct Area {
 	pub id: Uuid,
 	pub tenant: String,
 	pub home_node: String,
-	pub workspace_id: Uuid,
 	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub owner: String,
@@ -85,7 +84,6 @@ impl crate::database::native::Decode for Area {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
 			home_node: row.try_get("home_node")?,
-			workspace_id: row.try_get("workspace_id")?,
 			thread_id: row.try_get("thread_id")?,
 			agent_id: row.try_get("agent_id")?,
 			owner: row.try_get("owner")?,
@@ -466,7 +464,7 @@ pub struct ToolFileRead {
 	pub file_id: Option<Uuid>,
 	/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
 	pub path: Option<String>,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 	pub area_id: Option<Uuid>,
 	pub representation: Option<Representation>,
 	pub offset: Option<usize>,

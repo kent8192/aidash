@@ -6,7 +6,7 @@ use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
-			.endpoint(duties::workspace_list)
+			.endpoint(duties::thread_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
@@ -62,13 +62,13 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(management::workspace_list)
+			.endpoint(management::thread_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(management::workspace_create)
+			.endpoint(management::thread_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(management::workspace_get)
+			.endpoint(management::thread_get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(management::workspace_update)
+			.endpoint(management::thread_update)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
@@ -80,10 +80,6 @@ pub fn url_patterns() -> UnifiedRouter {
 					.with_visibility()
 					.stops_work(),
 			)
-			.endpoint(management::conversation_create)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(channels::channel_thread_create)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_message_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_message_history)

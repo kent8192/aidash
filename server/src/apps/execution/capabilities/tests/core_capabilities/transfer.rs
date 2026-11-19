@@ -13,7 +13,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	#[case] reverse: bool,
 	#[from(worker_control)] control: WorkerControl,
 ) {
-	// Arrange: each Node has its own Workspace and admitted file Agent.
+	// Arrange: each Node has its own Thread and admitted file Agent.
 	let c = Box::pin(capability_fixture).await;
 	let home = common::default_node(&c.f.store, "acme").await;
 	let sender = admit(&c).await;
@@ -50,21 +50,18 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.1.0")] =
 		json!({"kind":"agent", "node": name});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
-	let (status, workspace) = common::post(
+	let (status, thread) = common::post(
 		&c.app,
 		&c.token,
-		"/api/workspaces",
-		json!({"title":"Sibling files","goal":"Receive selected files","node":name}),
+		"/api/threads",
+		json!({"title":"Sibling files","node":name}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&c.app,
 		&c.token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Sibling recipient","description":"Receive selected files"}),
 	)
 	.await;
@@ -148,7 +145,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	.await;
 	assert_eq!(status, 200, "{area}");
 	let file = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":target_address,"agent_id":target.agent_id,"agent_version":target.agent_version,"thread_id":target.task_id}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":target_address,"agent_id":target.agent_id,"agent_version":target.agent_version,"thread_id":target.thread_id}});
 	let path = format!("/api/runs/{}/files/share", source.id);
 	let mut denied = policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-transfer","effect":"deny","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"]}}));
@@ -306,7 +303,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 		json!([file]),
 	)
 	.await;
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.receiver.thread_id}});
 	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
@@ -673,7 +670,7 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 	)
 	.await;
 	let file = area["manifest"][0].clone();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.receiver.thread_id}});
 	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
@@ -1064,7 +1061,7 @@ async fn inbound_file_transfers_use_the_receiving_nodes_policy_resource(
 	let receiver = common::default_node(&c.b.f.store, "acme").await;
 	let mut policy = c.b.policy.clone();
 	policy["policies"] = json!([
-		{"id":"files","effect":"allow","subjects":{"any":true},"actions":["node.use","workspace.read","file.receive","registry.read","agent.execute","tool.invoke"],"resources":{"kinds":["*"]}},
+		{"id":"files","effect":"allow","subjects":{"any":true},"actions":["node.use","thread.read","file.receive","registry.read","agent.execute","tool.invoke"],"resources":{"kinds":["*"]}},
 		{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"],"ids":[receiver.node]}},
 	]);
 	if let Some((path, value)) = condition {
@@ -1157,21 +1154,18 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	policy["subjects"][aidash_domain::agent_subject(sibling_address, "research", "1.1.0")] =
 		json!({"kind":"agent", "node": sibling_name});
 	common::replace_policy(&c.a.f.store, "acme", policy.clone()).await;
-	let (status, workspace) = common::post(
+	let (status, thread) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"/api/workspaces",
-		json!({"title":"Source","goal":"Share from sibling","node":sibling_name}),
+		"/api/threads",
+		json!({"title":"Source","node":sibling_name}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&c.a.app,
 		&c.a.token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Share","description":"Find recipients"}),
 	)
 	.await;

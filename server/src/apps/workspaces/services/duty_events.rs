@@ -106,14 +106,14 @@ fn view(f: &Federation, trigger: DutyTrigger, secret: bool, node: &str) -> Trigg
 	}
 }
 
-/// The address of the Node a Duty's Workspace belongs to.
+/// The address of the Node a Duty's Thread belongs to.
 async fn duty_node(
 	f: &Federation,
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
 	duty: &Duty,
 ) -> Result<String> {
-	let node = duty_repository::workspace_node(tx, tenant, duty.workspace_id).await?;
+	let node = duty_repository::thread_node(tx, tenant, duty.thread_id).await?;
 	Ok(f.config
 		.deployment
 		.node(aidash_domain::nodes::NodeName::parse(&node)?)
@@ -162,7 +162,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 				repository::insert_trigger(
 					&mut *scope.access.tx,
 					&tenant,
-					duty.workspace_id,
+					duty.thread_id,
 					&trigger,
 				)
 				.await?;
@@ -284,7 +284,7 @@ pub(crate) async fn receive_from_node(
 			else {
 				return Ok(None);
 			};
-			duty_repository::workspace_node(&mut **tx, &tenant, duty.workspace_id)
+			duty_repository::thread_node(&mut **tx, &tenant, duty.thread_id)
 				.await
 				.map(Some)
 		})
@@ -294,7 +294,7 @@ pub(crate) async fn receive_from_node(
 	}
 	// Per Duty: a trigger that names the sender takes its events. Otherwise
 	// only a sender of this Tenant whose subject may read the Duty (its
-	// Requester or successor, `workspace.read` on its Workspace, or
+	// Requester or successor, `thread.read` on its Thread, or
 	// `duty.administer`) may wake it; another Tenant's Node never reaches an
 	// open trigger.
 	if !trigger.kind.names(&admitted.sender) {
@@ -467,8 +467,7 @@ pub(crate) async fn deliver(
 		if let Some((task, run)) = repository::take_booking(lease.tx(), tenant, trigger.id).await? {
 			event.outcome = EventOutcome::Delivered;
 			event.task_id = Some(task);
-			repository::insert_event(lease.tx(), tenant, duty.workspace_id, &event, Some(run))
-				.await?;
+			repository::insert_event(lease.tx(), tenant, duty.thread_id, &event, Some(run)).await?;
 			repository::wake(lease.tx(), run, event.id).await?;
 			return Ok(Some(run));
 		}
@@ -491,13 +490,13 @@ pub(crate) async fn deliver(
 				events::task_description(&duty.definition.mission, &trigger.kind, &event.payload);
 			let title = duty.definition.title.clone();
 			match start_with(f, &mut lease, &duty, (now, ""), (title, description)).await {
-				Ok((task, thread)) => {
+				Ok(task) => {
 					event.outcome = EventOutcome::Started;
 					event.task_id = Some(task);
 					duty_repository::insert_tick(
 						lease.tx(),
 						tenant,
-						duty.workspace_id,
+						duty.thread_id,
 						&Tick {
 							id: Uuid::new_v4(),
 							duty_id: duty.id,
@@ -506,7 +505,6 @@ pub(crate) async fn deliver(
 							status: TickStatus::Started,
 							reason: Some(format!("event: {}", trigger.kind.as_str())),
 							task_id: Some(task),
-							thread_id: Some(thread),
 							started_by: None,
 						},
 					)
@@ -515,7 +513,7 @@ pub(crate) async fn deliver(
 				Err(error) => return Err(error),
 			}
 		}
-		repository::insert_event(lease.tx(), tenant, duty.workspace_id, &event, None).await?;
+		repository::insert_event(lease.tx(), tenant, duty.thread_id, &event, None).await?;
 		Ok(None)
 	}
 	.await;
@@ -544,7 +542,7 @@ async fn record(
 	f.store
 		.pool
 		.scoped(&scope, async |tx| {
-			repository::insert_event(&mut **tx, tenant, duty.workspace_id, event, run).await
+			repository::insert_event(&mut **tx, tenant, duty.thread_id, event, run).await
 		})
 		.await
 }
@@ -591,7 +589,7 @@ pub async fn book(
 			repository::book(
 				&mut **tx,
 				&tenant,
-				duty.workspace_id,
+				duty.thread_id,
 				trigger,
 				run.task_id,
 				run.id,

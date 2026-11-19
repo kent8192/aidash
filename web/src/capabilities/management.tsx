@@ -1,4 +1,3 @@
-import { Input } from "../components/ui/input";
 import { panelClass } from "./display";
 import {
   Alert,
@@ -19,7 +18,6 @@ import { OriginalReferences } from "./configuration";
 import { AgentCapabilities } from "./agent";
 type Managed = {
   area_id: string;
-  workspace_id: string;
   thread_id: string;
   agent_id: string;
   owner: string;
@@ -42,7 +40,6 @@ export function AreaLifecycle({ area }: { area: Managed }) {
     confirmation_id: string;
     revision: number;
   }>();
-  const [thread, setThread] = useState(area.thread_id);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const act = async (action: () => Promise<unknown>, clear = true) => {
@@ -84,38 +81,11 @@ export function AreaLifecycle({ area }: { area: Managed }) {
             type="button"
             disabled={busy}
             onClick={() =>
-              void act(async () => {
-                const restored = await post<{ thread: { id: string } }>(
-                  `/workspaces/${area.workspace_id}/working-areas/${area.area_id}/restore/new-thread`,
-                  {
-                    idempotency_key: crypto.randomUUID(),
-                    expected_revision: area.revision,
-                    snapshot_id: area.snapshot_id,
-                    content: ja
-                      ? "保存済み作業ファイルの復元"
-                      : "Restore retained working files",
-                  },
-                );
-                setThread(restored.thread.id);
-              })
-            }
-          >
-            {ja ? "新しいスレッドへ復元" : "Restore into a new thread"}
-          </Button>
-          <Field label={ja ? "復元先スレッド ID" : "Destination thread ID"}>
-            <Input value={thread} onChange={(e) => setThread(e.target.value)} />
-          </Field>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy || !thread.trim()}
-            onClick={() =>
               void act(() =>
                 post(`/working-areas/${area.area_id}/restore`, {
                   idempotency_key: crypto.randomUUID(),
                   expected_revision: area.revision,
                   snapshot_id: area.snapshot_id,
-                  thread_id: thread,
                 }),
               )
             }
@@ -231,13 +201,11 @@ export function AreaLifecycle({ area }: { area: Managed }) {
     </article>
   );
 }
-export function WorkingFileSettings({
-  workspace,
-}: { workspace?: string } = {}) {
+export function WorkingFileSettings({ thread }: { thread?: string } = {}) {
   const headingId = useId();
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const [allWorkspaces, setAllWorkspaces] = useState(false);
+  const [allThreads, setAllThreads] = useState(false);
   const query = useInfiniteQuery({
     queryKey: ["core-managed"],
     initialPageParam: "",
@@ -251,10 +219,10 @@ export function WorkingFileSettings({
     retry: false,
   });
   const areas = (query.data?.pages.flatMap((page) => page.items) ?? []).filter(
-    (area) => allWorkspaces || !workspace || area.workspace_id === workspace,
+    (area) => allThreads || !thread || area.thread_id === thread,
   );
   const searching = Boolean(
-    workspace && !allWorkspaces && areas.length === 0 && query.hasNextPage,
+    thread && !allThreads && areas.length === 0 && query.hasNextPage,
   );
   const { isFetching, isError, fetchNextPage } = query;
   useEffect(() => {
@@ -269,10 +237,10 @@ export function WorkingFileSettings({
             ? "作業の完了やスレッドの削除だけではファイルは消えません。ここで保存、復元可能な整理、完全削除を選べます。"
             : "Files remain after work ends or a thread is deleted. Choose retention, recoverable cleanup or irreversible deletion here."}
         </p>
-        {workspace && (
+        {thread && (
           <Check
-            checked={allWorkspaces}
-            onChange={(event) => setAllWorkspaces(event.target.checked)}
+            checked={allThreads}
+            onChange={(event) => setAllThreads(event.target.checked)}
           >
             {ja
               ? "すべての依頼の作業ファイルを表示"

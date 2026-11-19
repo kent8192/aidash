@@ -53,7 +53,10 @@ export type Halt =
   | "tenant_deleted";
 export type Duty = {
   id: string;
-  workspace_id: string;
+  /** The Duty's own Thread, where its Tasks belong (#1008). */
+  thread_id: string;
+  /** The Thread it was registered from; null before #1008. */
+  origin_thread_id: string | null;
   requester: string;
   mine: boolean;
   title: string;
@@ -64,8 +67,6 @@ export type Duty = {
   agent: { id: string; version: string };
   /** When it wakes by the clock, if it does. */
   trigger: Trigger | null;
-  /** Its own Thread, once its first Task opened it. */
-  thread_id: string | null;
   approval_mode: ApprovalMode | null;
   max_lateness_seconds: number;
   /** Failed Tasks in a row after which it pauses itself; 0 never does. */
@@ -100,7 +101,6 @@ export type Tick = {
   status: "started" | "completed" | "failed" | "cancelled" | "skipped";
   reason: string | null;
   task_id: string | null;
-  thread_id: string | null;
   started_by: string | null;
 };
 export type DutyDetail = {
@@ -114,7 +114,7 @@ export type DutyDetail = {
 };
 export type DutyNotice = {
   id: string;
-  workspace_id: string;
+  thread_id: string;
   title: string;
   requester: string;
   halt: Halt;
@@ -285,7 +285,7 @@ function watcherOf(form: DutyForm): Watcher | undefined {
     : undefined;
 }
 
-/** The body of `POST /api/workspaces/{workspace}/duties`. */
+/** The body of `POST /api/threads/{thread}/duties`. */
 export function definitionOf(form: DutyForm) {
   return {
     title: form.title.trim(),
@@ -485,7 +485,7 @@ export function tickLabel(tick: Tick, ja: boolean): string {
 export function dutyNoticeEntries(
   node: string,
   notices: DutyNotices,
-  workspaceTitle: (id: string) => string,
+  threadTitle: (id: string) => string,
   ja: boolean,
 ): { scope: string; entries: NoticeEntry[] } {
   const scope = JSON.stringify([node, "duties"]);
@@ -505,12 +505,12 @@ export function dutyNoticeEntries(
             0,
             180,
           ),
-        workspaceTitle: workspaceTitle(notice.workspace_id),
+        threadTitle: threadTitle(notice.thread_id),
         target: {
           kind: "duty",
           id: notice.id,
           node,
-          workspace: notice.workspace_id,
+          thread: notice.thread_id,
         },
       }),
     ),

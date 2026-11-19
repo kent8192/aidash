@@ -18,8 +18,6 @@ pub struct CoreAreas {
 	#[field(field_type = "text")]
 	pub owner: String,
 	#[field]
-	pub workspace_id: uuid::Uuid,
-	#[field]
 	pub thread_id: uuid::Uuid,
 	#[field]
 	pub generation: i64,

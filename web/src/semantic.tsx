@@ -4,7 +4,7 @@ import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Badge as StatusBadge } from "./components/ui/badge";
-import { MemoryWorkspace } from "./memory";
+import { MemoryThread } from "./memory";
 import { useRecordLabels } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useRef, useState, type FormEvent } from "react";
@@ -18,7 +18,7 @@ import {
   semanticIndex,
   semanticEntries,
   semanticPut,
-  workspaceGet,
+  threadGet,
   semanticDelete,
   semanticReindex,
   semanticSearch,
@@ -95,35 +95,35 @@ const semanticMessages: Record<string, string> = {
 
 export function SemanticPage({
   data,
-  workspaceId = "",
+  threadId = "",
 }: {
   data: State;
-  workspaceId?: string;
+  threadId?: string;
 }) {
   const { t, locale } = useI18n();
   const [chosen, setChosen] = useState<string | null>(null);
-  const requested = chosen ?? workspaceId;
-  const workspace = requested
-    ? (data.workspaces.find((w) => w.id === requested)?.id ?? "")
-    : (data.workspaces[0]?.id ?? "");
+  const requested = chosen ?? threadId;
+  const thread = requested
+    ? (data.threads.find((w) => w.id === requested)?.id ?? "")
+    : (data.threads[0]?.id ?? "");
   return (
     <div className="semantic-page grid min-w-0 gap-6">
       <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <Hint>{t("semanticHelp")}</Hint>
         <div className="w-full max-w-xs">
-          <Field label={t("workspace")}>
+          <Field label={t("thread")}>
             <NativeSelect
-              value={workspace}
+              value={thread}
               onChange={(e) => setChosen(e.target.value)}
             >
-              {!workspace && (
+              {!thread && (
                 <option value="">
                   {locale === "ja-JP"
                     ? "依頼を選択してください"
                     : "Choose a request"}
                 </option>
               )}
-              {data.workspaces.map((w) => (
+              {data.threads.map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.title}
                 </option>
@@ -132,18 +132,10 @@ export function SemanticPage({
           </Field>
         </div>
       </div>
-      {workspace ? (
+      {thread ? (
         <>
-          <MemoryWorkspace
-            key={`memory:${workspace}`}
-            workspace={workspace}
-            data={data}
-          />
-          <SemanticWorkspace
-            key={workspace}
-            workspace={workspace}
-            data={data}
-          />
+          <MemoryThread key={`memory:${thread}`} thread={thread} data={data} />
+          <SemanticThread key={thread} thread={thread} data={data} />
         </>
       ) : (
         <Empty />
@@ -151,16 +143,10 @@ export function SemanticPage({
     </div>
   );
 }
-/** A Workspace's semantic index. Configuring it needs
+/** A Thread's semantic index. Configuring it needs
  *  `semantic.index.manage`, which members hold by default (#360); the server
  *  refuses anyone else, so the controls stay visible and show its answer. */
-function SemanticWorkspace({
-  data,
-  workspace,
-}: {
-  data: State;
-  workspace: string;
-}) {
+function SemanticThread({ data, thread }: { data: State; thread: string }) {
   const { t } = useI18n();
   const labels = useRecordLabels();
   const sendingNode = useNodes().selected;
@@ -178,8 +164,8 @@ function SemanticWorkspace({
       agentLabel(agent.node_id, agent.entity),
     );
   const snapshot = useQuery({
-    queryKey: ["workspace", workspace],
-    queryFn: () => workspaceGet(workspace),
+    queryKey: ["thread", thread],
+    queryFn: () => threadGet(thread),
     retry: false,
     refetchInterval: 5000,
   });
@@ -193,7 +179,7 @@ function SemanticWorkspace({
   const scopeLabel = (agent: string | null | undefined) =>
     agent
       ? (labels.get(agent) ?? t("unavailableEntity"))
-      : t("semanticWorkspaceScope");
+      : t("semanticThreadScope");
   const entryName = (entry: SemanticEntry) => {
     const metadata = entry.metadata as { name?: unknown } | null;
     if (entry.key.startsWith("agent-memory:"))
@@ -234,10 +220,10 @@ function SemanticWorkspace({
     setDeleting(entry);
   };
   const index = useQuery({
-    queryKey: ["semantic", workspace, "index"],
+    queryKey: ["semantic", thread, "index"],
     queryFn: async () => {
       try {
-        return await semanticIndex(workspace);
+        return await semanticIndex(thread);
       } catch (e) {
         if (e instanceof ApiError && e.status === 404) return null;
         throw e;
@@ -246,23 +232,23 @@ function SemanticWorkspace({
     refetchInterval: 3000,
   });
   const entries = useQuery({
-    queryKey: ["semantic", workspace, "entries"],
+    queryKey: ["semantic", thread, "entries"],
     queryFn: async () => {
-      const list = await semanticEntries(workspace);
+      const list = await semanticEntries(thread);
       return { items: list.entries, unconfirmed: list.unconfirmed };
     },
     enabled: !!index.data && !index.isError,
     refetchInterval: 2000,
   });
   const history = useQuery({
-    queryKey: ["semantic", workspace, "history"],
-    queryFn: () => semanticHistory(workspace),
+    queryKey: ["semantic", thread, "history"],
+    queryFn: () => semanticHistory(thread),
     enabled: !!index.data && !index.isError,
     refetchInterval: 3000,
   });
   const cleanup = useQuery({
-    queryKey: ["semantic", workspace, "cleanup"],
-    queryFn: () => semanticCleanup(workspace),
+    queryKey: ["semantic", thread, "cleanup"],
+    queryFn: () => semanticCleanup(thread),
     enabled: !!index.data && !index.isError,
     refetchInterval: 3000,
   });
@@ -276,7 +262,7 @@ function SemanticWorkspace({
     setResult(null);
     try {
       await action();
-      await client.invalidateQueries({ queryKey: ["semantic", workspace] });
+      await client.invalidateQueries({ queryKey: ["semantic", thread] });
       if (dialogGeneration.current === submittedDialogGeneration) {
         closeDialogs();
       }
@@ -299,12 +285,12 @@ function SemanticWorkspace({
   const missingEntries = unconfirmedFor(
     entries.data?.unconfirmed,
     ["semantic_entry"],
-    [workspace],
+    [thread],
   );
   const missingMatches = unconfirmedFor(
     readUnconfirmed(result),
     ["semantic_entry"],
-    [workspace],
+    [thread],
   );
   const dialogAlert = error && <Alert>{describe(error)}</Alert>;
   return (
@@ -356,7 +342,7 @@ function SemanticWorkspace({
                 e.preventDefault();
                 const values = new FormData(e.currentTarget);
                 void mutate(async () => {
-                  const found = await semanticSearch(workspace, {
+                  const found = await semanticSearch(thread, {
                     query: String(values.get("query")),
                     agent: String(values.get("agent") || "") || null,
                     metadata: JSON.parse(
@@ -484,7 +470,7 @@ function SemanticWorkspace({
                           disabled={busy}
                           onClick={() =>
                             void mutate(() =>
-                              semanticReindex(workspace, entry.id, {
+                              semanticReindex(thread, entry.id, {
                                 expected_revision: entry.revision,
                               }),
                             )
@@ -573,7 +559,7 @@ function SemanticWorkspace({
             busy={busy}
             submit={(draft) =>
               mutate(() =>
-                semanticConfigure(workspace, {
+                semanticConfigure(thread, {
                   expected_revision: current?.revision ?? 0,
                   spec: draft,
                 }),
@@ -587,12 +573,12 @@ function SemanticWorkspace({
         <Modal title={t("semanticAdd")} close={closeDialogs}>
           <EntryForm
             data={data}
-            workspace={workspace}
+            thread={thread}
             knownScopes={knownScopes}
             sources={{ artifacts, messages }}
             entry={editing === "new" ? null : editing}
             busy={busy}
-            submit={(draft) => mutate(() => semanticPut(workspace, draft))}
+            submit={(draft) => mutate(() => semanticPut(thread, draft))}
           />
           {dialogAlert}
         </Modal>
@@ -612,7 +598,7 @@ function SemanticWorkspace({
               disabled={busy}
               onClick={() =>
                 void mutate(() =>
-                  semanticDelete(workspace, deleting.id, {
+                  semanticDelete(thread, deleting.id, {
                     expected_revision: deleting.revision,
                   }),
                 )
@@ -830,7 +816,7 @@ function IndexForm({
 }
 function EntryForm({
   data,
-  workspace,
+  thread,
   knownScopes,
   sources,
   entry,
@@ -838,7 +824,7 @@ function EntryForm({
   submit,
 }: {
   data: State;
-  workspace: string;
+  thread: string;
   knownScopes: string[];
   sources: {
     artifacts: State["artifacts"];
@@ -855,9 +841,9 @@ function EntryForm({
   );
   const [metadataError, setMetadataError] = useState("");
   const olderMessages = useInfiniteQuery({
-    queryKey: ["workspace", workspace, "semantic-message-sources"],
+    queryKey: ["thread", thread, "semantic-message-sources"],
     queryFn: ({ pageParam }) =>
-      channelMessageHistory(workspace, {
+      channelMessageHistory(thread, {
         before: pageParam ?? undefined,
         limit: 100,
       }),
@@ -1054,7 +1040,7 @@ function AgentScope({
   );
   return (
     <NativeSelect id={id} name="agent" defaultValue={initial}>
-      <option value="">{t("semanticWorkspaceScope")}</option>
+      <option value="">{t("semanticThreadScope")}</option>
       {[...options].map(([scope]) => (
         <option key={scope} value={scope}>
           {labels.get(scope)}

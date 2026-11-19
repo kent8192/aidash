@@ -22,7 +22,7 @@ pub struct Run {
 	#[field]
 	pub task_id: uuid::Uuid,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	/// The Node that executes the Run.
 	#[field(field_type = "text")]
 	pub node: String,

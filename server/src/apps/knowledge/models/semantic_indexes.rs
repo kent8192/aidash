@@ -10,7 +10,7 @@ use serde_json::Value;
 #[derive(Serialize, Deserialize)]
 pub struct SemanticIndexe {
 	#[field(primary_key = true)]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]

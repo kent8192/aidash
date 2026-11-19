@@ -1,6 +1,6 @@
-//! Degraded context (ADR 0059): a local Run step whose optional Workspace
+//! Degraded context (ADR 0059): a local Run step whose optional Thread
 //! semantic context stayed unavailable after the bounded retry continues with a
-//! typed marker in the workspace slot instead of pausing, when every source of
+//! typed marker in the thread slot instead of pausing, when every source of
 //! that slot opted in.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ pub enum OutageCause {
 	DataProtection,
 }
 
-/// The marker that stands in the workspace slot of `semantic_memory`, in the
+/// The marker that stands in the thread slot of `semantic_memory`, in the
 /// shape of a memory bank status. It names no endpoint, body or query.
 pub fn marker(cause: OutageCause) -> Value {
 	json!({"status":"unavailable","cause":cause})
@@ -46,7 +46,7 @@ pub fn cause(slot: &Value) -> Option<OutageCause> {
 	serde_json::from_value(slot.get("cause")?.clone()).ok()
 }
 
-/// Whether a workspace slot holds reads a step must recheck before it adopts
+/// Whether a thread slot holds reads a step must recheck before it adopts
 /// an answer built on them: a search result, complete or [`partial`]. An absent
 /// slot and the outage [`marker`] hold none.
 pub fn holds_reads(slot: &Value) -> bool {
@@ -56,10 +56,10 @@ pub fn holds_reads(slot: &Value) -> bool {
 	}
 }
 
-/// The cause of a degraded workspace slot in `semantic_memory`: the envelope's
-/// workspace slot, or the bare slot when no memory was combined with it.
+/// The cause of a degraded thread slot in `semantic_memory`: the envelope's
+/// thread slot, or the bare slot when no memory was combined with it.
 pub fn degraded(semantic: &Value) -> Option<OutageCause> {
-	cause(semantic.get("workspace").unwrap_or(semantic))
+	cause(semantic.get("thread").unwrap_or(semantic))
 }
 
 /// Steps kept in `recent`; older ones are only counted.
@@ -117,9 +117,9 @@ mod tests {
 	#[test]
 	fn the_marker_round_trips_and_other_statuses_are_not_degraded() {
 		let envelope =
-			json!({"workspace":marker(OutageCause::VectorBackend),"memory":{"status":"disabled"}});
+			json!({"thread":marker(OutageCause::VectorBackend),"memory":{"status":"disabled"}});
 		assert_eq!(
-			envelope["workspace"],
+			envelope["thread"],
 			json!({"status":"unavailable","cause":"vector_backend"})
 		);
 		assert_eq!(degraded(&envelope), Some(OutageCause::VectorBackend));
@@ -127,19 +127,19 @@ mod tests {
 			degraded(&marker(OutageCause::EmbeddingProvider)),
 			Some(OutageCause::EmbeddingProvider)
 		);
-		for workspace in [
+		for thread in [
 			json!(null),
 			json!({"status":"no_space"}),
 			json!({"status":"unavailable","cause":"missing_points"}),
 			json!({"matches":[]}),
 		] {
-			assert_eq!(degraded(&json!({"workspace":workspace})), None);
+			assert_eq!(degraded(&json!({"thread":thread})), None);
 		}
 	}
 
 	#[test]
 	fn a_partial_result_holds_reads_to_recheck_and_the_marker_holds_none() {
-		let result = json!({"workspace_id":"w","index_revision":1,"matches":[{"text":"x"}]});
+		let result = json!({"thread_id":"w","index_revision":1,"matches":[{"text":"x"}]});
 		assert!(holds_reads(&result));
 		// The READY part of an incomplete index carries real matches (ADR 0129).
 		assert!(holds_reads(&partial(result)));

@@ -8,7 +8,7 @@ fn recipient_replay_removes_legacy_publisher_subject() {
 		sequence: 1,
 		id: Uuid::nil(),
 		node: None,
-		workspace_id: None,
+		thread_id: None,
 		kind: "marketplace.published".into(),
 		data: json!({"key":"package","tenant":"owner","actor":"private-subject"}),
 		created_at: chrono::Utc::now(),

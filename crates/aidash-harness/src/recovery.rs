@@ -163,7 +163,7 @@ pub async fn recover(
 		{
 			let delay = if reason == SemanticFailure::Pending {
 				// Each replay repeats the whole semantic-context step, including
-				// its charged workspace embedding, so only the first check of a
+				// its charged thread embedding, so only the first check of a
 				// live memory attempt comes after a second; later ones wait
 				// PENDING_REPLAY_SECONDS until the attempt answers or expires.
 				if current.recovery.retry.is_some()

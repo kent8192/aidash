@@ -63,7 +63,7 @@ async fn seed_fixture_blob(f: &Federation, file: Uuid) -> String {
 }
 
 /// The address of `f`'s default Node of the fixture Tenant, where its Runs
-/// execute and its Workspaces live.
+/// execute and its Threads live.
 fn node_of(f: &Federation) -> String {
 	aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme").to_string()
 }
@@ -451,17 +451,12 @@ mod scoped_pair_composition {
 		let servers = vec![_aserver, _bserver];
 		let mut providers = vec![model_server];
 		let semantic = if semantic {
-			let workspace = a
-				.store
-				.task(&TEST_FIXTURE, task)
-				.await
-				.unwrap()
-				.workspace_id;
+			let thread = a.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 			let (fixture, server) = configure_semantic(
 				&a,
 				&aa,
 				&token,
-				workspace,
+				thread,
 				&node_of(&b),
 				(native, large_native_journal),
 				embedding_provider.await,
@@ -475,19 +470,14 @@ mod scoped_pair_composition {
 		};
 		let native = if native {
 			assert!(semantic.is_some());
-			let workspace = a
-				.store
-				.task(&TEST_FIXTURE, task)
-				.await
-				.unwrap()
-				.workspace_id;
+			let thread = a.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 			let data = native_remote_fixture(
 				&a,
 				&b,
 				&aa,
 				&ba,
 				&token,
-				workspace,
+				thread,
 				(
 					large_native_graph,
 					large_native_journal,
@@ -639,15 +629,15 @@ fn first_result(context: &Value) -> &Value {
 async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] scoped_pair: Pair) {
 	use base64::Engine as _;
 	let p = scoped_pair;
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let bytes = include_bytes!("../../execution/tests/support/media/pixel.png");
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=sample.png&media_type=image%2Fpng&idempotency_key={}",
+		"/api/threads/{thread}/attachments?filename=sample.png&media_type=image%2Fpng&idempotency_key={}",
 		Uuid::new_v4()
 	);
 	let authorization = format!("Bearer {}", p.token);
@@ -662,7 +652,7 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 			.unwrap();
 	assert_eq!(response.status_code(), 200);
 	let attachment = response.json_value().unwrap();
-	let (status, message) = request(&p.aa, &p.token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"remote image", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	let (status, message) = request(&p.aa, &p.token, "POST", &format!("/api/threads/{thread}/channel-messages"), json!({"content":"remote image", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
 	assert_eq!(status, 200, "{message}");
 	let home = Home::new(p.b.clone(), p.run().await);
 	let observation = home.observation(0, 20).await.unwrap();
@@ -755,7 +745,7 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 		.expr(Expr::cust("COUNT(*)"))
 		.from(Alias::new("authorization_remote_grant_reads"))
 		.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 		.and_where(Expr::col("resource_kind").eq("attachment"))
 		.and_where(Expr::col("resource_id").eq(Expr::value(attachment_id)))
 		.to_string(PostgresQueryBuilder);
@@ -873,15 +863,15 @@ async fn remote_selected_thread_attachment_reaches_next_inference(
 ) {
 	use base64::Engine as _;
 	let p = scoped_pair;
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let bytes = include_bytes!("../../execution/tests/support/media/pixel.png");
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=sample.png&media_type=image%2Fpng&idempotency_key={}",
+		"/api/threads/{thread}/attachments?filename=sample.png&media_type=image%2Fpng&idempotency_key={}",
 		Uuid::new_v4()
 	);
 	let authorization = format!("Bearer {}", p.token);
@@ -896,7 +886,7 @@ async fn remote_selected_thread_attachment_reaches_next_inference(
 			.unwrap();
 	assert_eq!(response.status_code(), 200);
 	let attachment = response.json_value().unwrap();
-	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"inspect this", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/threads/{thread}/channel-messages"), json!({"content":"inspect this", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
 	let credential = common::issued_credential(&p.a.store, "acme", "alice").await;
 	assert_eq!(common::set_peer_mapping(&p.a, "acme", "alice", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0, 200);
@@ -1126,7 +1116,7 @@ async fn native_remote_fixture(
 	aa: &common::TestApplication,
 	ba: &common::TestApplication,
 	token: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	(large_graph, large_journal, graph_visits): (bool, bool, usize),
 ) -> Value {
 	let (_, home_agent) = request(
@@ -1176,7 +1166,7 @@ async fn native_remote_fixture(
 			(
 				"source",
 				"native-shared",
-				json!({"memory":provider,"scope":"workspace","max_tokens":8192}),
+				json!({"memory":provider,"scope":"thread","max_tokens":8192}),
 			),
 		];
 		if runtime.config.deployment == b.config.deployment {
@@ -1268,7 +1258,7 @@ async fn native_remote_fixture(
 		aa,
 		token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/memory/participants"),
+		&format!("/api/threads/{thread}/memory/participants"),
 		json!({"agent":reference("home-native")}),
 	)
 	.await;
@@ -1283,15 +1273,15 @@ async fn native_remote_fixture(
 		),
 		(
 			shared,
-			json!({"home":aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":workspace,"participant":null}),
+			json!({"home":aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(),"acme").to_string(),"tenant":"acme","thread":thread,"participant":null}),
 			"Native shared claim: 自転車の設計 uses reciprocal rank fusion.",
 		),
 	] {
 		if id == shared {
-			let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
+			let (status,body)=request(aa,token,"POST",&format!("/api/threads/{thread}/memory/operate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
 			assert_eq!(status, 200, "{body}");
 		}
-		let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"changes":[{"operation":"add","id":id,"content":{"text":text,"kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
+		let (status,body)=request(aa,token,"POST",&format!("/api/threads/{thread}/memory/units/mutate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"changes":[{"operation":"add","id":id,"content":{"text":text,"kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
 		assert_eq!(status, 200, "{body}");
 	}
 	if large_journal {
@@ -1320,7 +1310,7 @@ async fn native_remote_fixture(
 						Query::select()
 							.column(Alias::new("id"))
 							.from(Alias::new("semantic_entries"))
-							.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+							.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 							.to_owned(),
 					),
 				)
@@ -1337,7 +1327,7 @@ async fn native_remote_fixture(
 			aidash_server::database::native::query(
 				&Query::delete()
 					.from_table(Alias::new(table))
-					.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut *tx)
@@ -1375,7 +1365,7 @@ async fn native_remote_fixture(
 			.await
 			.unwrap();
 		}
-		let (status, body) = request(aa, &common::tenant_token(&a.store, "acme").await, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+		let (status, body) = request(aa, &common::tenant_token(&a.store, "acme").await, "POST", &format!("/api/threads/{thread}/semantic/index"), json!({"expected_revision":0,"spec":{
 			"embedding":embedding["config"],"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 			"enabled":true,"auto_context":false,"max_sources":100,"max_results":10,"max_result_tokens":32768,"max_input_bytes":32768
 		}})).await;
@@ -1414,7 +1404,7 @@ async fn configure_semantic(
 	a: &Federation,
 	app: &common::TestApplication,
 	token: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	executor: &str,
 	memory_mode: (bool, bool),
 	provider: EmbeddingProvider,
@@ -1456,7 +1446,7 @@ async fn configure_semantic(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, body) = request(app, &common::tenant_token(&a.store, "acme").await, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+	let (status, body) = request(app, &common::tenant_token(&a.store, "acme").await, "POST", &format!("/api/threads/{thread}/semantic/index"), json!({"expected_revision":0,"spec":{
 		"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 		"enabled":true,"auto_context":!native,"max_sources":100,"max_results":10,"max_result_tokens":if native {32768} else {4096},"max_input_bytes":32768
 	}})).await;
@@ -1490,7 +1480,7 @@ async fn configure_semantic(
 				"DO NOT DISCLOSE: other definition version.",
 			),
 		] {
-			let (status, body) = request(app, token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":key,"expected_revision":0,"source":{"kind":"memory","text":text},"agent":owner,"metadata":{}})).await;
+			let (status, body) = request(app, token, "POST", &format!("/api/threads/{thread}/semantic/entries"), json!({"key":key,"expected_revision":0,"source":{"kind":"memory","text":text},"agent":owner,"metadata":{}})).await;
 			assert_eq!(status, 200, "{body}");
 			if key == "shared" {
 				first = serde_json::from_value(body["id"].clone()).unwrap();
@@ -1584,11 +1574,11 @@ async fn foreign_run_events_keep_the_executing_node(#[future(awt)] scoped_pair: 
 			.unwrap();
 	let run_events: Vec<_> = events
 		.iter()
-		.filter(|event| event.workspace_id.is_none() && event.data["run_id"] == json!(p.admission))
+		.filter(|event| event.thread_id.is_none() && event.data["run_id"] == json!(p.admission))
 		.collect();
 	assert!(
 		!run_events.is_empty(),
-		"remote inference writes Run events without a local Workspace"
+		"remote inference writes Run events without a local Thread"
 	);
 	let node = aidash_domain::nodes::NodeName::derived("acme");
 	for event in run_events {
@@ -1765,17 +1755,17 @@ async fn write_home_entry(
 	expected_revision: i64,
 	text: &str,
 ) {
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		&format!("/api/threads/{thread}/semantic/entries"),
 		json!({"key":key,"expected_revision":expected_revision,"source":{"kind":"memory","text":text},"agent":agent,"metadata":{}}),
 	)
 	.await;
@@ -1789,7 +1779,7 @@ async fn write_home_entry(
 			&Query::select()
 				.expr(Expr::cust("COUNT(*)"))
 				.from(Alias::new("semantic_entries"))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.and_where(Expr::col("state").ne("READY"))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -1925,12 +1915,12 @@ async fn home_describe_reports_the_corpus_digest_and_it_changes_with_the_corpus(
 ) {
 	// Arrange
 	let p = scoped_pair;
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let describe = || async {
 		let started = std::time::Instant::now();
 		let (status, body) = describe_from_receiver(&p).await;
@@ -1939,7 +1929,7 @@ async fn home_describe_reports_the_corpus_digest_and_it_changes_with_the_corpus(
 		body
 	};
 	let expected = || async {
-		aidash_server::semantic::services::corpus_digest(&p.a.store, &TEST_FIXTURE, workspace, None)
+		aidash_server::semantic::services::corpus_digest(&p.a.store, &TEST_FIXTURE, thread, None)
 			.await
 			.unwrap()
 	};
@@ -2134,14 +2124,14 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
 
 	let (path, body) = if pending_entry {
-		let workspace =
+		let thread =
 			p.a.store
 				.task(&TEST_FIXTURE, p.task)
 				.await
 				.unwrap()
-				.workspace_id;
+				.thread_id;
 		(
-			format!("/api/workspaces/{workspace}/semantic/entries"),
+			format!("/api/threads/{thread}/semantic/entries"),
 			json!({"key":"pending-during-outage","expected_revision":0,"source":{"kind":"memory","text":"New Home knowledge: ochre falcon."},"metadata":{}}),
 		)
 	} else {
@@ -2322,17 +2312,17 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		"{:?}",
 		p.run().await
 	);
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let path = format!("/api/runs/{}", p.admission);
 	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["run"]["id"], p.admission.to_string());
-	let home = format!("/api/workspaces/{workspace}");
+	let home = format!("/api/threads/{thread}");
 	let (status, body) = request(&p.aa, &p.token, "GET", &home, json!({})).await;
 	assert_eq!(status, 200, "{body}");
 	assert!(body.to_string().contains("Scoped remote result"), "{body}");
@@ -2352,7 +2342,7 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 	// Unbounded SSE uses the fixture-owned streaming client without buffering the body.
 	let response =
 		p.aa.streaming_http
-			.get(p.aa.url(format!("/api/events/stream?workspace_id={workspace}")))
+			.get(p.aa.url(format!("/api/events/stream?thread_id={thread}")))
 			.bearer_auth(&p.token)
 			.send()
 			.await
@@ -2369,7 +2359,7 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		&p.aa,
 		&p.token,
 		"DELETE",
-		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		&format!("/api/threads/{thread}/semantic/entries/{source}"),
 		json!({"expected_revision":1}),
 	)
 	.await;
@@ -2390,13 +2380,13 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 			.0,
 		403
 	);
-	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"artifact","id":artifact},"metadata":{}})).await;
+	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"artifact","id":artifact},"metadata":{}})).await;
 	assert_eq!(status, 403, "{body}");
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/messages"),
+		&format!("/api/threads/{thread}/messages"),
 		json!({"content":"independent-stream-tail"}),
 	)
 	.await;
@@ -2491,21 +2481,21 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let ids: Vec<Uuid> = {
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		let query_bind_2 = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
 				.from(Alias::new("semantic_entries"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id=? AND (agent IS NULL OR agent=?))".to_owned(),
+					"(thread_id=? AND (agent IS NULL OR agent=?))".to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),
@@ -2523,7 +2513,7 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 			&p.aa,
 			&p.token,
 			"DELETE",
-			&format!("/api/workspaces/{workspace}/semantic/entries/{id}"),
+			&format!("/api/threads/{thread}/semantic/entries/{id}"),
 			json!({"expected_revision":1}),
 		)
 		.await;
@@ -2555,7 +2545,7 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 	}
 	.unwrap();
 	assert_eq!(receipt["sources"], json!([]));
-	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"new-current-source","expected_revision":0,"source":{"kind":"memory","text":"Newly admitted cobalt raven."},"metadata":{}})).await;
+	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/semantic/entries"),json!({"key":"new-current-source","expected_revision":0,"source":{"kind":"memory","text":"Newly admitted cobalt raven."},"metadata":{}})).await;
 	assert_eq!(status, 200, "{body}");
 	aidash_server::semantic::worker::sweep(&p.a.store)
 		.await
@@ -2597,18 +2587,18 @@ async fn consumed_home_semantic_revision_blocks_next_remote_inference(
 	p.step().await;
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let source = p.semantic.as_ref().unwrap().entry;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"DELETE",
-		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		&format!("/api/threads/{thread}/semantic/entries/{source}"),
 		json!({"expected_revision":1}),
 	)
 	.await;
@@ -2689,18 +2679,18 @@ async fn invalidated_remote_run_stays_paused_across_an_execution_node_restart(
 	p.step().await;
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let source = p.semantic.as_ref().unwrap().entry;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"DELETE",
-		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		&format!("/api/threads/{thread}/semantic/entries/{source}"),
 		json!({"expected_revision":1}),
 	)
 	.await;
@@ -2842,18 +2832,18 @@ async fn source_deleted_during_remote_model_request_rejects_the_response(
 		let _ = tokio::time::timeout(Pair::IN_FLIGHT_GRACE, &mut running).await;
 		panic!("worker did not reach the held model ({reason})");
 	}
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let source = p.semantic.as_ref().unwrap().entry;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"DELETE",
-		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		&format!("/api/threads/{thread}/semantic/entries/{source}"),
 		json!({"expected_revision":1}),
 	)
 	.await;
@@ -3052,7 +3042,7 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 	assert_eq!(task.status.as_str(), "COMPLETED");
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	assert_eq!(snapshot.artifacts.len(), 1);
@@ -3067,7 +3057,7 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 	);
 	let events =
 		p.a.store
-			.events(&TEST_FIXTURE, 0, Some(task.workspace_id), 1000)
+			.events(&TEST_FIXTURE, 0, Some(task.thread_id), 1000)
 			.await
 			.unwrap();
 	let completed = events
@@ -3258,9 +3248,9 @@ async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
 	p.close().await;
 }
 
-/// A Run executing here for another Home has no Workspace on this Node, so work done on its
+/// A Run executing here for another Home has no Thread on this Node, so work done on its
 /// behalf is checked through its admission instead (#989): a healthy foreign Run may act, and a
-/// withdrawal on the executing Node stops it, as it did before the Workspace was left out.
+/// withdrawal on the executing Node stops it, as it did before the Thread was left out.
 #[rstest::rstest]
 #[tokio::test]
 async fn a_foreign_run_acts_through_its_admission_and_a_withdrawal_stops_it(
@@ -3365,17 +3355,17 @@ async fn review_receiver_only_executor_activates_required_home(
 		"{:?}",
 		p.run().await
 	);
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"GET",
-		&format!("/api/workspaces/{workspace}"),
+		&format!("/api/threads/{thread}"),
 		json!({}),
 	)
 	.await;
@@ -3853,17 +3843,17 @@ async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
 #[tokio::test]
 async fn another_tenants_node_wakes_only_a_trigger_that_names_it(#[future(awt)] scoped_pair: Pair) {
 	let p = scoped_pair;
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let (status, duty) = request(
 		&p.aa,
 		&p.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/duties"),
+		&format!("/api/threads/{thread}/duties"),
 		json!({"title":"Partner events","mission":"Read what the partner sent.","agent":{"id":"research","version":"1.0.0"}}),
 	)
 	.await;
@@ -4186,7 +4176,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 	assert_eq!(task.status.as_str(), "RUNNING");
 	assert!(
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -4324,7 +4314,7 @@ async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	assert_eq!(
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap()
 			.messages
@@ -4787,7 +4777,7 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	assert!(snapshot.artifacts.is_empty());
@@ -4871,7 +4861,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 					.task(&TEST_FIXTURE, p.task)
 					.await
 					.unwrap()
-					.workspace_id
+					.thread_id
 			)
 			.await
 			.unwrap()
@@ -4997,7 +4987,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 					.task(&TEST_FIXTURE, p.task)
 					.await
 					.unwrap()
-					.workspace_id,
+					.thread_id,
 			)
 			.await
 			.unwrap();
@@ -5100,7 +5090,7 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 					.task(&TEST_FIXTURE, p.task)
 					.await
 					.unwrap()
-					.workspace_id,
+					.thread_id,
 			)
 			.await
 			.unwrap();
@@ -5142,12 +5132,7 @@ async fn prepare_generated_pair(
 	task: Uuid,
 	(approval, semantic, native): (bool, bool, bool),
 ) -> (Uuid, Value, Value) {
-	let workspace = a
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = a.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let (_, mut parent_template) = request(
 		aa,
 		&common::tenant_token(&a.store, "acme").await,
@@ -5214,7 +5199,7 @@ async fn prepare_generated_pair(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status,parent)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/tasks"),json!({"title":"Generated origin","description":"Delegate scoped memory research","requirements":{"capability":"unique-parent-specialist"}})).await;
+	let (status,parent)=request(aa,token,"POST",&format!("/api/threads/{thread}/tasks"),json!({"title":"Generated origin","description":"Delegate scoped memory research","requirements":{"capability":"unique-parent-specialist"}})).await;
 	assert_eq!(status, 200, "{parent}");
 	let parent_id: Uuid = serde_json::from_value(parent["id"].clone()).unwrap();
 	let (status, parent) = request(
@@ -5498,7 +5483,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	assert_eq!(rows, (1, 1));
 	let foreign_with_local_ids: i64 = sqlx::query_scalar(
 		"SELECT COUNT(*) FROM generation_requests WHERE foreign_intent IS NOT NULL \
-		 AND (local_task_id IS NOT NULL OR local_workspace_id IS NOT NULL)",
+		 AND (local_task_id IS NOT NULL OR local_thread_id IS NOT NULL)",
 	)
 	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
@@ -5978,12 +5963,12 @@ async fn event_polling_refuses_a_deployment_administrator_and_shows_a_subject_no
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
-	let workspace =
+	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let cursor: i64 = sqlx::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("COALESCE(MAX(sequence),0)"))
@@ -6001,7 +5986,7 @@ async fn event_polling_refuses_a_deployment_administrator_and_shows_a_subject_no
 		p.a.store
 			.event(
 				&mut tx,
-				Some(workspace),
+				Some(thread),
 				"test.hidden",
 				json!({"secret":"hidden-burst"}),
 			)
@@ -6119,8 +6104,8 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		assert_eq!(response.status(), 403);
 	}
 	for path in [
-		format!("/api/workspaces/{}", task.workspace_id),
-		format!("/api/workspaces/{}/message-history", task.workspace_id),
+		format!("/api/threads/{}", task.thread_id),
+		format!("/api/threads/{}/message-history", task.thread_id),
 	] {
 		assert_eq!(
 			request(&p.aa, &p.a.config.api_token, "GET", &path, Value::Null)
@@ -6205,24 +6190,24 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	}
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
-	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/threads/{}/semantic/entries",task.thread_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
 	let (status, independent) = request(
 		&p.aa,
 		&p.a.config.api_token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
+		"/api/threads",
+		json!({"title":"Independent Deployment Administrator work"}),
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
 	// Required-Home content stays protected, and the Tenant's index is configured by
 	// its Subject, never by a Deployment Administrator (#484).
-	let index_path = format!("/api/workspaces/{}/semantic/index", task.workspace_id);
+	let index_path = format!("/api/threads/{}/semantic/index", task.thread_id);
 	let (status, index) = request(&p.aa, &p.token, "GET", &index_path, Value::Null).await;
 	assert_eq!(status, 200, "{index}");
 	let update = json!({"expected_revision":index["revision"],"spec":index["spec"]});
@@ -6396,7 +6381,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	assert_eq!(view["run"]["id"], json!(p.admission));
 	assert_eq!(view["run"]["phase"], phase);
 	assert_eq!(view["memory"], Value::Null);
-	let home_path = format!("/api/workspaces/{}", run.workspace_id);
+	let home_path = format!("/api/threads/{}", run.thread_id);
 	let (status, output) = request(&p.aa, &p.token, "GET", &home_path, Value::Null).await;
 	assert_eq!(status, 200, "{output}");
 	assert!(
@@ -6507,7 +6492,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
@@ -6516,7 +6501,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 	// HTTP nor suppress the receiver's current-reader check.
 	{
 		let query_bind_1 = p.grant;
-		let query_bind_2 = task.workspace_id;
+		let query_bind_2 = task.thread_id;
 		let query_bind_3 = artifact.id;
 		sqlx::query(
 			&Query::insert()
@@ -6524,7 +6509,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 				.columns(
 					[
 						"grant_id",
-						"workspace_id",
+						"thread_id",
 						"resource_kind",
 						"resource_id",
 						"tenant",
@@ -6588,7 +6573,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 		&p.aa,
 		&p.token,
 		"GET",
-		&format!("/api/workspaces/{}", task.workspace_id),
+		&format!("/api/threads/{}", task.thread_id),
 		Value::Null,
 	)
 	.await;
@@ -7027,7 +7012,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	assert!(
@@ -8158,12 +8143,12 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 		.unwrap();
 	assert_eq!(saved.run_id, p.admission);
 	assert_eq!(
-		saved.workspace_id,
+		saved.thread_id,
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
 			.await
 			.unwrap()
-			.workspace_id
+			.thread_id
 	);
 	assert_eq!(
 		home.human_request("QUESTION", "Proceed with the saved task?", &key)
@@ -8941,7 +8926,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 	);
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	assert_eq!(
@@ -9226,21 +9211,20 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 		);
 		let receiver = common::default_node(&p.b.store, "acme").await;
 		let keeper = common::second_node_in(p.b.store.pool.fixture_driver(), "acme").await;
-		let target_workspace =
+		let target_thread =
 			p.b.store
-				.create_workspace(
+				.create_thread(
 					&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 					"alice",
 					"Doomed receiver",
-					"owned file",
 				)
 				.await
 				.unwrap();
-		async fn owned_file(f: &Federation, workspace: Uuid) -> Uuid {
+		async fn owned_file(f: &Federation, thread: Uuid) -> Uuid {
 			let area = Uuid::new_v4();
 			let file = Uuid::new_v4();
-			sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
-                .bind(area).bind(node_of(f)).bind(workspace).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
+                .bind(area).bind(node_of(f)).bind(thread).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
 			let digest = seed_fixture_blob(f, file).await;
 			sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working',$3,4)")
                 .bind(file).bind(area).bind(digest).execute(f.store.pool.fixture_driver()).await.unwrap();
@@ -9248,7 +9232,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
                 .execute(f.store.pool.fixture_driver()).await.unwrap();
 			file
 		}
-		let target_file = owned_file(&p.b, target_workspace.id).await;
+		let target_file = owned_file(&p.b, target_thread.id).await;
 		let (status, body) = common::administer_node(
 			&p.b,
 			"acme",
@@ -9257,17 +9241,16 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		let keeper_workspace =
+		let keeper_thread =
 			p.b.store
-				.create_workspace(
+				.create_thread(
 					&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 					"alice",
 					"Keeper receiver",
-					"unrelated file",
 				)
 				.await
 				.unwrap();
-		let keeper_file = owned_file(&p.b, keeper_workspace.id).await;
+		let keeper_file = owned_file(&p.b, keeper_thread.id).await;
 		let accepted = AcceptedControl {
 			arrived: Arc::new(AtomicUsize::new(0)),
 			entered: Arc::new(tokio::sync::Barrier::new(3)),
@@ -9968,8 +9951,8 @@ async fn node_deletion_fences_old_home_grant_after_decided_recovery(
 	let revision: i64 = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("revision"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(task.workspace_id)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(task.thread_id)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(p.a.store.pool.fixture_driver())
@@ -9977,8 +9960,8 @@ async fn node_deletion_fences_old_home_grant_after_decided_recovery(
 	.unwrap();
 	let manifest: Manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),
 		"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
-		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"workspace_state","workspace_id":task.workspace_id,
-		"expected_revision":revision,"state":{"recovered":true}}]}]})).unwrap();
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"thread_title","thread_id":task.thread_id,
+		"expected_revision":revision,"title":"Committed"}]}]})).unwrap();
 	coordinator::submit(&p.a, &manifest).await.unwrap();
 	for _ in 0..12 {
 		let state = coordinator::advance(&p.a, manifest.id).await.unwrap();
@@ -10045,7 +10028,7 @@ async fn node_deletion_fences_old_home_grant_after_decided_recovery(
 	// History remains readable; cancellation maintenance has not changed the Task.
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
 	assert!(
@@ -10126,23 +10109,20 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 	let credential = common::issued_credential(&f.store, "acme", "alice").await;
 	let (status, body) = common::set_peer_mapping(&f, "acme", "alice", json!({"node":receiver.node,"source_node":source,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, workspace) = request(
+	let (status, thread) = request(
 		&app,
 		&beta_token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Local Home","goal":"exact local control"}),
+		"/api/threads",
+		json!({"title":"Local Home"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = request(
 		&app,
 		&beta_token,
 		"POST",
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Local delegated task","description":"Never activate"}),
 	)
 	.await;
@@ -10198,16 +10178,16 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 		saved, actual,
 		"the real local response owner captured the receipt"
 	);
-	let receiver_workspace = f
+	let receiver_thread = f
 		.store
 		.task(&TEST_FIXTURE, receiver_task)
 		.await
 		.unwrap()
-		.workspace_id;
+		.thread_id;
 	let area = Uuid::new_v4();
 	let file = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3,$4)")
-		.bind(area).bind(receiver.to_string()).bind(receiver_workspace).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3,$4)")
+		.bind(area).bind(receiver.to_string()).bind(receiver_thread).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let digest = seed_fixture_blob(&f, file).await;
 	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES($1,'acme',$2,'working',$3,4)")
 		.bind(file).bind(area).bind(digest).execute(f.store.pool.fixture_driver()).await.unwrap();
@@ -10387,7 +10367,7 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 		p.a.store
 			.create_task(
 				&TEST_FIXTURE,
-				parent.workspace_id,
+				parent.thread_id,
 				&aidash_server::domain::NewTask {
 					title: "Remote subtask".into(),
 					description: "Nobody is given this".into(),
@@ -10400,9 +10380,9 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 			)
 			.await
 			.unwrap();
-	sqlx::query("INSERT INTO authorization_remote_outputs (grant_id, workspace_id, resource_kind, resource_id, tenant) VALUES ($1, $2, 'task', $3, 'acme')")
+	sqlx::query("INSERT INTO authorization_remote_outputs (grant_id, thread_id, resource_kind, resource_id, tenant) VALUES ($1, $2, 'task', $3, 'acme')")
 		.bind(p.grant)
-		.bind(parent.workspace_id)
+		.bind(parent.thread_id)
 		.bind(child.id)
 		.execute(p.a.store.pool.fixture_driver())
 		.await
@@ -10449,7 +10429,7 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 	assert_eq!(p.requests.lock().await.len(), 3);
 	let snapshot =
 		p.a.store
-			.snapshot(&TEST_FIXTURE, parent.workspace_id)
+			.snapshot(&TEST_FIXTURE, parent.thread_id)
 			.await
 			.unwrap();
 	assert!(snapshot.artifacts.iter().any(|artifact| {

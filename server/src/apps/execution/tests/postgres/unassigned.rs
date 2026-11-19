@@ -3,14 +3,14 @@
 use super::*;
 use aidash_server::domain::TaskStatus;
 
-async fn workspace_with_parent(f: &Federation, agent: &Entry) -> (Uuid, Task) {
-	let workspace = f
+async fn thread_with_parent(f: &Federation, agent: &Entry) -> (Uuid, Task) {
+	let thread = f
 		.store
-		.create_workspace(&ACME, "alice", "Unassigned", "Subtasks nobody runs")
+		.create_thread(&ACME, "alice", "Unassigned")
 		.await
 		.unwrap();
-	let parent = running_task(f, agent, workspace.id, None).await;
-	(workspace.id, parent)
+	let parent = running_task(f, agent, thread.id, None).await;
+	(thread.id, parent)
 }
 
 async fn run_of(store: &Store, task: Uuid) -> Uuid {
@@ -22,19 +22,19 @@ async fn run_of(store: &Store, task: Uuid) -> Uuid {
 }
 
 /// A child a person made: no origin row.
-async fn person_child(f: &Federation, workspace: Uuid, parent: Uuid, title: &str) -> Task {
+async fn person_child(f: &Federation, thread: Uuid, parent: Uuid, title: &str) -> Task {
 	let mut input = new_task();
 	input.title = title.into();
 	input.parent_id = Some(parent);
 	f.store
-		.create_task(&ACME, workspace, &input, "alice", None)
+		.create_task(&ACME, thread, &input, "alice", None)
 		.await
 		.unwrap()
 }
 
 /// A child a Run of the parent made, the way `task_create` records it.
-async fn run_child(f: &Federation, workspace: Uuid, parent: &Task, title: &str) -> Task {
-	let child = person_child(f, workspace, parent.id, title).await;
+async fn run_child(f: &Federation, thread: Uuid, parent: &Task, title: &str) -> Task {
+	let child = person_child(f, thread, parent.id, title).await;
 	let run = run_of(&f.store, parent.id).await;
 	sqlx::query("INSERT INTO authorization_task_origins (task_id, tenant, source_run_id, root_subject, subject_chain) VALUES ($1, 'acme', $2, 'alice', ARRAY['alice','fixture-agent'])")
 		.bind(child.id)
@@ -117,16 +117,16 @@ async fn the_summary_names_each_unassigned_child_from_real_rows(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
 	// A: made by a Run of the parent. B: made by a person.
-	let a = run_child(&f, workspace, &parent, "A").await;
-	let b = person_child(&f, workspace, parent.id, "B").await;
+	let a = run_child(&f, thread, &parent, "A").await;
+	let b = person_child(&f, thread, parent.id, "B").await;
 	// C: made by a Run, with an open child of its own.
-	let c = run_child(&f, workspace, &parent, "C").await;
+	let c = run_child(&f, thread, &parent, "C").await;
 	let mut under_c = new_task();
 	under_c.parent_id = Some(c.id);
 	store
-		.create_task(&ACME, workspace, &under_c, "alice", None)
+		.create_task(&ACME, thread, &under_c, "alice", None)
 		.await
 		.unwrap();
 	// D: handed over (claimed) but waiting on A.
@@ -134,18 +134,18 @@ async fn the_summary_names_each_unassigned_child_from_real_rows(
 	waiting.title = "D".into();
 	waiting.parent_id = Some(parent.id);
 	waiting.dependencies = vec![a.id];
-	let d = run_child_with(&f, workspace, &parent, waiting).await;
+	let d = run_child_with(&f, thread, &parent, waiting).await;
 	force_claimed(&f, &d).await;
 	// E: activated on another Node. F: activation refused. G: a Run that ended.
-	let e = run_child(&f, workspace, &parent, "E").await;
+	let e = run_child(&f, thread, &parent, "E").await;
 	bind_remote(&f, &e, true, false).await;
-	let g = run_child(&f, workspace, &parent, "G").await;
+	let g = run_child(&f, thread, &parent, "G").await;
 	bind_remote(&f, &g, true, true).await;
-	let h = run_child(&f, workspace, &parent, "F").await;
+	let h = run_child(&f, thread, &parent, "F").await;
 	bind_remote(&f, &h, false, false).await;
 
 	let summary = store
-		.child_task_summary(&ACME, workspace, parent.id)
+		.child_task_summary(&ACME, thread, parent.id)
 		.await
 		.unwrap();
 	assert_eq!(flags(&summary, a.id), Some((true, false)));
@@ -172,10 +172,10 @@ async fn the_summary_names_each_unassigned_child_from_real_rows(
 	cleanup(store, &url, &schema).await;
 }
 
-async fn run_child_with(f: &Federation, workspace: Uuid, parent: &Task, input: NewTask) -> Task {
+async fn run_child_with(f: &Federation, thread: Uuid, parent: &Task, input: NewTask) -> Task {
 	let child = f
 		.store
-		.create_task(&ACME, workspace, &input, "alice", None)
+		.create_task(&ACME, thread, &input, "alice", None)
 		.await
 		.unwrap();
 	let run = run_of(&f.store, parent.id).await;
@@ -199,8 +199,8 @@ async fn completing_abandons_the_listed_tasks_in_the_same_transaction(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let child = run_child(&f, workspace, &parent, "Nobody's").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let child = run_child(&f, thread, &parent, "Nobody's").await;
 
 	let done = complete(&f, &parent, &[child.id]).await.unwrap();
 	assert_eq!(done.status, TaskStatus::Completed);
@@ -208,7 +208,7 @@ async fn completing_abandons_the_listed_tasks_in_the_same_transaction(
 		store.task(&ACME, child.id).await.unwrap().status,
 		TaskStatus::Abandoned
 	);
-	let events = store.events(&ACME, 0, Some(workspace), 1000).await.unwrap();
+	let events = store.events(&ACME, 0, Some(thread), 1000).await.unwrap();
 	let abandoned: Vec<_> = events
 		.iter()
 		.filter(|event| event.kind == "task.abandoned")
@@ -238,9 +238,9 @@ async fn a_task_handed_over_just_before_completion_is_kept_and_nothing_commits(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let kept = run_child(&f, workspace, &parent, "Handed over").await;
-	let other = run_child(&f, workspace, &parent, "Still nobody's").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let kept = run_child(&f, thread, &parent, "Handed over").await;
+	let other = run_child(&f, thread, &parent, "Still nobody's").await;
 	store
 		.claim(&ACME, kept.id, kept.revision, "node/agent@1", &agent)
 		.await
@@ -280,8 +280,8 @@ async fn a_persons_task_and_a_task_with_children_are_never_abandoned_by_a_comple
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let people = person_child(&f, workspace, parent.id, "A person's").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let people = person_child(&f, thread, parent.id, "A person's").await;
 	assert!(complete(&f, &parent, &[people.id]).await.is_err());
 	assert_eq!(
 		store.task(&ACME, people.id).await.unwrap().status,
@@ -301,14 +301,14 @@ async fn abandoning_without_completing_leaves_a_handed_over_dependent_alone(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let root = run_child(&f, workspace, &parent, "Root").await;
-	let handed_over = run_child(&f, workspace, &parent, "Handed over").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let root = run_child(&f, thread, &parent, "Root").await;
+	let handed_over = run_child(&f, thread, &parent, "Handed over").await;
 	bind_remote(&f, &handed_over, true, false).await;
 	let mut dependent = new_task();
 	dependent.parent_id = Some(parent.id);
 	dependent.dependencies = vec![root.id];
-	let dependent = run_child_with(&f, workspace, &parent, dependent).await;
+	let dependent = run_child_with(&f, thread, &parent, dependent).await;
 	force_claimed(&f, &dependent).await;
 
 	let abandoned = store
@@ -351,9 +351,9 @@ async fn a_person_can_abandon_an_open_task_nobody_started_but_not_one_with_a_run
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let free = person_child(&f, workspace, parent.id, "Free").await;
-	let busy = person_child(&f, workspace, parent.id, "Busy").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let free = person_child(&f, thread, parent.id, "Free").await;
+	let busy = person_child(&f, thread, parent.id, "Busy").await;
 	bind_remote(&f, &busy, true, false).await;
 
 	// A Run under way (here: another Node confirmed it started) is refused.
@@ -391,8 +391,8 @@ async fn a_failed_parent_can_be_abandoned_once_its_unassigned_child_is(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let child = person_child(&f, workspace, parent.id, "Nobody's").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let child = person_child(&f, thread, parent.id, "Nobody's").await;
 	let failed = store
 		.transition(
 			&ACME,
@@ -433,8 +433,8 @@ async fn a_finishing_run_tells_the_model_once_then_abandons_and_completes(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let child = run_child(&f, workspace, &parent, "Nobody's").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let child = run_child(&f, thread, &parent, "Nobody's").await;
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -462,7 +462,7 @@ async fn a_finishing_run_tells_the_model_once_then_abandons_and_completes(
 		store.task(&ACME, child.id).await.unwrap().status,
 		TaskStatus::Abandoned
 	);
-	let artifacts = store.snapshot(&ACME, workspace).await.unwrap().artifacts;
+	let artifacts = store.snapshot(&ACME, thread).await.unwrap().artifacts;
 	assert_eq!(artifacts.len(), 1);
 	assert!(artifacts[0].content.as_str().unwrap().contains("Nobody's"));
 	cleanup(store, &url, &schema).await;
@@ -479,8 +479,8 @@ async fn a_task_a_person_made_raises_a_request_and_can_then_be_abandoned(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let child = person_child(&f, workspace, parent.id, "A person's").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let child = person_child(&f, thread, parent.id, "A person's").await;
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -530,12 +530,12 @@ async fn claiming_refuses_a_task_whose_dependency_is_unfinished(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
-	let root = run_child(&f, workspace, &parent, "Root").await;
+	let (thread, parent) = thread_with_parent(&f, &agent).await;
+	let root = run_child(&f, thread, &parent, "Root").await;
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
 	input.dependencies = vec![root.id];
-	let dependent = run_child_with(&f, workspace, &parent, input).await;
+	let dependent = run_child_with(&f, thread, &parent, input).await;
 	let refused = store
 		.claim(
 			&ACME,
@@ -548,7 +548,7 @@ async fn claiming_refuses_a_task_whose_dependency_is_unfinished(
 	assert!(matches!(refused, Err(aidash_server::Error::Conflict(_))));
 	// Left OPEN with no Run, it is an Unassigned Task itself.
 	let summary = store
-		.child_task_summary(&ACME, workspace, parent.id)
+		.child_task_summary(&ACME, thread, parent.id)
 		.await
 		.unwrap();
 	assert_eq!(flags(&summary, dependent.id), Some((true, false)));

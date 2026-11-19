@@ -1,6 +1,6 @@
 use super::*;
 use aidash_domain::{
-	Artifact, ArtifactInput, RecoveryState, RunControl, RunPhase, RunState, Task, Workspace,
+	Artifact, ArtifactInput, RecoveryState, RunControl, RunPhase, RunState, Task, Thread,
 	context::{Context, ContextUsage},
 	provider::ToolCall,
 	run_state::{RawRun, ToolCallState, encode},
@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn task() -> Task {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"title":"Task","description":"Complete atomically","status":"RUNNING","requirements":{},"owner":"aidash://worker/agents/agent@1","created_by":"deployment_administrator","dependencies":[],"parent_id":null,"revision":3,"created_at":"2030-01-01T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"thread_id":Uuid::from_u128(2),"title":"Task","description":"Complete atomically","status":"RUNNING","requirements":{},"owner":"aidash://worker/agents/agent@1","created_by":"deployment_administrator","dependencies":[],"parent_id":null,"revision":3,"created_at":"2030-01-01T00:00:00Z"})).unwrap()
 }
 
 #[fixture]
@@ -29,7 +29,7 @@ fn run() -> RawRun {
 		..Default::default()
 	};
 	RawRun {
-		metadata: serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap(),
+		metadata: serde_json::from_value(json!({"id":Uuid::from_u128(4),"task_id":Uuid::from_u128(1),"thread_id":Uuid::from_u128(2),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"TOOL_CALL","control":"ACTIVE","step":7,"revision":5,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap(),
 		context: json!(context),
 		pending: encode(&RunState::ToolCall(Box::default()), &RecoveryState::default()).unwrap(),
 	}
@@ -114,20 +114,14 @@ impl Scope {
 }
 #[async_trait]
 impl MutationScope for Scope {
-	async fn replace_workspace(
-		&mut self,
-		id: Uuid,
-		revision: i64,
-		state: Value,
-	) -> Result<Workspace> {
-		self.call("workspace")?;
-		Ok(Workspace {
+	async fn replace_thread(&mut self, id: Uuid, revision: i64, title: String) -> Result<Thread> {
+		self.call("thread")?;
+		Ok(Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
-			title: "Workspace".into(),
-			goal: "Goal".into(),
-			state,
+			title,
+			created_by: "subject".into(),
 			revision: revision + 1,
 			created_at: self.task.created_at,
 		})
@@ -160,7 +154,7 @@ impl MutationScope for Scope {
 		saved.revision += 1;
 		let created = Artifact {
 			id: Uuid::from_u128(8),
-			workspace_id: task.workspace_id,
+			thread_id: task.thread_id,
 			task_id: task.id,
 			kind: artifact.kind.clone(),
 			name: artifact.name.clone(),
@@ -177,15 +171,9 @@ impl MutationScope for Scope {
 		assert_eq!(task, self.task.id);
 		Ok(self.source)
 	}
-	async fn record_output(
-		&mut self,
-		run: Uuid,
-		workspace: Uuid,
-		kind: &str,
-		id: Uuid,
-	) -> Result<()> {
+	async fn record_output(&mut self, run: Uuid, thread: Uuid, kind: &str, id: Uuid) -> Result<()> {
 		self.call("output")?;
-		self.outputs.push((run, workspace, kind.into(), id));
+		self.outputs.push((run, thread, kind.into(), id));
 		Ok(())
 	}
 	async fn lock_run(&mut self, id: Uuid) -> Result<(RawRun, bool)> {
@@ -202,14 +190,9 @@ impl MutationScope for Scope {
 		assert_eq!(id, self.run.id);
 		Ok(())
 	}
-	async fn append_event(
-		&mut self,
-		workspace: Option<Uuid>,
-		kind: &str,
-		data: Value,
-	) -> Result<()> {
+	async fn append_event(&mut self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<()> {
 		self.call("event")?;
-		self.events.push((workspace, kind.into(), data));
+		self.events.push((thread, kind.into(), data));
 		Ok(())
 	}
 }
@@ -296,7 +279,7 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 		scope.outputs,
 		[(
 			Uuid::from_u128(6),
-			scope.task.workspace_id,
+			scope.task.thread_id,
 			"artifact".into(),
 			Uuid::from_u128(8)
 		)]
@@ -319,9 +302,9 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 	assert_eq!(
 		scope.events,
 		[(
-			Some(scope.task.workspace_id),
+			Some(scope.task.thread_id),
 			"task.completed".into(),
-			json!({"task":task,"artifact":{"id":Uuid::from_u128(8),"workspace_id":scope.task.workspace_id,"task_id":scope.task.id,"kind":"text","name":"Answer","content":"Done","created_by":scope.task.owner,"idempotency_key":key,"created_at":scope.task.created_at}})
+			json!({"task":task,"artifact":{"id":Uuid::from_u128(8),"thread_id":scope.task.thread_id,"task_id":scope.task.id,"kind":"text","name":"Answer","content":"Done","created_by":scope.task.owner,"idempotency_key":key,"created_at":scope.task.created_at}})
 		)]
 	);
 }
@@ -444,7 +427,7 @@ async fn run_completion_requires_the_home_task_pair(
 async fn execution_event_preserves_raw_usage_and_home_visibility(
 	mut scope: Scope,
 	#[case] node: &str,
-	#[case] workspace: Option<Uuid>,
+	#[case] thread: Option<Uuid>,
 ) {
 	let (mutations, other) = if node == "aidash://home/brave-otter-k3m9q2xa" {
 		(vec![finalization(), completion()], None)
@@ -462,9 +445,9 @@ async fn execution_event_preserves_raw_usage_and_home_visibility(
 	assert_eq!(
 		scope.events[0],
 		(
-			workspace,
+			thread,
 			"run.completed".into(),
-			json!({"run_id":scope.run.id,"task_id":scope.run.task_id,"workspace_id":scope.run.workspace_id,"agent_id":"agent","phase":"COMPLETED","step":7,"error":null,"context_usage":{"input_tokens":11,"output_tokens":4,"context_window":128000,"compactions":2}})
+			json!({"run_id":scope.run.id,"task_id":scope.run.task_id,"thread_id":scope.run.thread_id,"agent_id":"agent","phase":"COMPLETED","step":7,"error":null,"context_usage":{"input_tokens":11,"output_tokens":4,"context_window":128000,"compactions":2}})
 		)
 	);
 	assert_eq!(&scope.calls[..3], &["run", "complete_run", "event"]);

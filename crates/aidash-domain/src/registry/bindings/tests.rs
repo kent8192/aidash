@@ -217,18 +217,16 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	);
 	entry.version = "1.1.0".into();
 	entry.normalize_agent("aidash://node-a").unwrap();
+	// A new version binds today's defaults: the Thread tools (#1008).
 	let current = entry.normalized_bindings("aidash://node-a").unwrap();
 	assert!(
 		current
 			.iter()
-			.any(|b| b.binding.target.id == "aidash.workspace_search")
+			.any(|b| b.binding.target.id == "aidash.thread_search")
 	);
-	assert!(
-		current
-			.iter()
-			.any(|b| b.binding.target.id == "aidash.workspace_read"
-				&& b.binding.target.version == "1.1.0")
-	);
+	assert!(current.iter().any(
+		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.0.0"
+	));
 }
 
 #[test]
@@ -790,11 +788,12 @@ fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
 
 #[test]
 fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
-	// Arrange: today's defaults, schedule tools included, as stored before
-	// #745 moved file_read, file_search and attachment_copy to 1.0.1.
+	// Arrange: the defaults before #1008 (set 7), schedule tools included, as
+	// stored before #745 moved file_read, file_search and attachment_copy to
+	// 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();
-	let today = config.normalize(node).unwrap();
+	let today = config.normalize_mode(node, 7).unwrap();
 	let mut saved = today.clone();
 	for item in &mut saved {
 		if POD_FILE_TOOLS
@@ -834,10 +833,11 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 #[test]
 fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 	// Arrange: a normalization saved between image retrieval (#639) and
-	// Thread Attachment image search (#622 part 2), as it was stored then.
+	// Thread Attachment image search (#622 part 2), as it was stored then
+	// (the defaults before #1008, set 7).
 	let node = "aidash://node-a";
 	let config = agent();
-	let mut saved = config.normalize(node).unwrap();
+	let mut saved = config.normalize_mode(node, 7).unwrap();
 	for item in &mut saved {
 		match item.binding.target.id.as_str() {
 			"aidash.workspace_message" => item.binding.target.version = "1.0.1".into(),
@@ -879,7 +879,7 @@ fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 }
 
 #[test]
-fn an_agent_from_before_image_retrieval_binds_workspace_message_1_1_0() {
+fn an_agent_from_before_image_retrieval_binds_thread_message_1_1_0() {
 	// Arrange: the #640-era defaults (mode 2) with workspace_message 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();

@@ -18,10 +18,10 @@ pub struct MemoryBank {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "memory_bank_workspace",
+		db_constraint = "memory_bank_thread",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
@@ -47,10 +47,10 @@ pub struct MemoryParticipant {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "memory_participant_workspace",
+		db_constraint = "memory_participant_thread",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field(field_type = "text")]
 	pub principal: String,
 	#[field(field_type = "text")]

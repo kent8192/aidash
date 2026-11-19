@@ -1,6 +1,6 @@
 //! A Catalog Approval decides use, not who can read what Runs produced (#769, ADR 0122).
 //!
-//! Three Runs share a Workspace. `planner` runs `fixture-agent@1.0.0` and `reviewer` runs
+//! Three Runs share a Thread. `planner` runs `fixture-agent@1.0.0` and `reviewer` runs
 //! `listed-agent@1.0.0`; `reviewer` read the `planner` Run, as a Run reads the output of the Run
 //! it follows. `upgrader` runs `fixture-agent@2.0.0`. Withdrawing `fixture-agent@1.0.0` stops
 //! only what uses it.
@@ -37,9 +37,9 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let app = fixture.application.clone();
 	let alice = common::tenant_token(&f.store, "acme").await;
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&acme, "alice", "Upgrade", "Replace an Agent version")
+		.create_thread(&acme, "alice", "Upgrade")
 		.await
 		.unwrap();
 	let tenant = acme.tenant_name().unwrap();
@@ -86,7 +86,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 			.store
 			.create_task(
 				&acme,
-				workspace.id,
+				thread.id,
 				&aidash_server::domain::NewTask {
 					title: format!("Work {title}"),
 					description: "A Run in the upgrade".into(),
@@ -103,11 +103,11 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	}
 	// `reviewer` read `planner`, as a Run reads the Run it follows.
 	sqlx::query(
-		"INSERT INTO authorization_run_reads (run_id, tenant, workspace_id, resource_kind, resource_id) \
+		"INSERT INTO authorization_run_reads (run_id, tenant, thread_id, resource_kind, resource_id) \
 		 VALUES ($1, 'acme', $2, 'run', $3)",
 	)
 	.bind(runs[1].id)
-	.bind(workspace.id)
+	.bind(thread.id)
 	.bind(runs[0].id)
 	.execute(f.store.pool.fixture_driver())
 	.await
@@ -329,16 +329,16 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 
 	// A new Run of the restricted version is still refused to them.
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace =
+	let thread =
 		w.f.store
-			.create_workspace(&acme, "alice", "Another", "Start under a restriction")
+			.create_thread(&acme, "alice", "Another")
 			.await
 			.unwrap();
 	let task =
 		w.f.store
 			.create_task(
 				&acme,
-				workspace.id,
+				thread.id,
 				&aidash_server::domain::NewTask {
 					title: "Start".into(),
 					description: "Refused".into(),
@@ -680,21 +680,18 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
 	common::approve_agent_on(&f, "acme", &agent, &second).await;
-	let (status, workspace) = common::post(
+	let (status, thread) = common::post(
 		&app,
 		&token,
-		"/api/workspaces",
-		json!({"node":second.node,"title":"Second Node","goal":"Run elsewhere"}),
+		"/api/threads",
+		json!({"node":second.node,"title":"Second Node"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&app,
 		&token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Work","description":"On the second Node"}),
 	)
 	.await;
@@ -793,11 +790,11 @@ async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_it
 		.await
 		.unwrap();
 	let first = f.store.task(&TEST_FIXTURE, first).await.unwrap();
-	let workspace = first.workspace_id;
+	let thread = first.thread_id;
 	let (status, second) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Reader","description":"Reads the first Run"}),
 	)
 	.await;
@@ -813,11 +810,11 @@ async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_it
 	let planner = common::admitted_run(&f, "acme", &first, &research).await;
 	let reader = common::admitted_run(&f, "acme", &second, &other).await;
 	sqlx::query(
-		"INSERT INTO authorization_run_reads (run_id, tenant, workspace_id, resource_kind, resource_id) \
+		"INSERT INTO authorization_run_reads (run_id, tenant, thread_id, resource_kind, resource_id) \
 		 VALUES ($1, 'acme', $2, 'run', $3)",
 	)
 	.bind(reader.id)
-	.bind(workspace)
+	.bind(thread)
 	.bind(planner.id)
 	.execute(f.store.pool.fixture_driver())
 	.await

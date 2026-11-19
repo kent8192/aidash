@@ -42,7 +42,7 @@ On an open task, choose **Assign with policy** and record the reason. The genera
 
 ## Read APIs
 
-Read policy summaries at `GET /api/generation/{tenant}/policies`, requests at `GET /api/generation/{tenant}/requests`, and lifecycle history at `GET /api/generation/{tenant}/requests/{id}/history`. Read the request-time policy specification at `GET /api/generation/{tenant}/requests/{id}/spec` and token accounting at `GET /api/generation/{tenant}/requests/{id}/usage`. The usage query observes both counters and committed attempts in one database snapshot. Request collections, pinned specifications, usage and workspace events require generation read permission as well as workspace access. Credentials are never included in the response.
+Read policy summaries at `GET /api/generation/{tenant}/policies`, requests at `GET /api/generation/{tenant}/requests`, and lifecycle history at `GET /api/generation/{tenant}/requests/{id}/history`. Read the request-time policy specification at `GET /api/generation/{tenant}/requests/{id}/spec` and token accounting at `GET /api/generation/{tenant}/requests/{id}/usage`. The usage query observes both counters and committed attempts in one database snapshot. Request collections, pinned specifications, usage and thread events require generation read permission as well as thread access. Credentials are never included in the response.
 
 | Action               | Purpose                                                |
 | -------------------- | ------------------------------------------------------ |
@@ -53,7 +53,7 @@ Read policy summaries at `GET /api/generation/{tenant}/policies`, requests at `G
 | `generation.stop`    | Stop pending, queued or active generation              |
 | `generation.delete`  | Tombstone a terminal request                           |
 
-Ordinary workspace, task, Registry, model, tool and execution permissions are also required. Approval cannot supply a missing originating permission. Activation rechecks the original credential and current policy/catalog approvals. Revocation before activation records a failure; revocation during execution pauses it at the next boundary.
+Ordinary thread, task, Registry, model, tool and execution permissions are also required. Approval cannot supply a missing originating permission. Activation rechecks the original credential and current policy/catalog approvals. Revocation before activation records a failure; revocation during execution pauses it at the next boundary.
 
 ## Budget contract
 
@@ -73,7 +73,7 @@ Catalog Approval. The Run's Context Policy bounds Summary calls and output.
 
 ## Approved embeddings
 
-Register an `embedding` Registry entry and approve its exact version in the tenant catalog. The bilingual Registry form exposes the OpenAI-compatible API base endpoint, model, model version, vector dimensions and optional `AIDASH_SECRET_*` credential reference. This configuration must equal the workspace index's `embedding` configuration, including its endpoint, model/version, dimensions and credential reference. Matching just the display name or model is insufficient.
+Register an `embedding` Registry entry and approve its exact version in the tenant catalog. The bilingual Registry form exposes the OpenAI-compatible API base endpoint, model, model version, vector dimensions and optional `AIDASH_SECRET_*` credential reference. This configuration must equal the thread index's `embedding` configuration, including its endpoint, model/version, dimensions and credential reference. Matching just the display name or model is insufficient.
 
 Select that provider in the generation policy and set per-agent and total call allowances:
 
@@ -87,11 +87,11 @@ Select that provider in the generation policy and set per-agent and total call a
 }
 ```
 
-The request pins the provider and limits to its policy revision. Before a query or background indexing call, every generated ancestor must remain active, unexpired and enabled, and approve the same provider version. Current catalog approval, `registry.read` and `embedding.invoke` must allow all originating subjects. Background memory indexing restores the original credential and subject chain instead of borrowing Deployment Administrator authority. Changing a workspace index cannot expand that pinned approval.
+The request pins the provider and limits to its policy revision. Before a query or background indexing call, every generated ancestor must remain active, unexpired and enabled, and approve the same provider version. Current catalog approval, `registry.read` and `embedding.invoke` must allow all originating subjects. Background memory indexing restores the original credential and subject chain instead of borrowing Deployment Administrator authority. Changing a thread index cannot expand that pinned approval.
 
 One call and an input-token reservation of UTF-8 input bytes plus 1,024 framing tokens commit for every generated ancestor before HTTP. The call allowance is independent, while embedding tokens share the inference token budget. Valid, positive, equal `prompt_tokens` and `total_tokens` refund only unused reserved tokens. Missing or malformed usage keeps the full reservation. Usage above the reserved bound fails execution without a refund. Failed or interrupted calls remain charged; retries require new allowance. Concurrent indexers cannot fund the same attempt twice. Terminal generation releases unused allocation once while retaining consumed calls and tokens.
 
-`generation_embedding_usage` retains the attempt ID, request, workspace, optional run/source, provider version, input byte count, reservation and reported usage. It stores neither source text nor credentials. The dashboard displays pinned approval and charged embedding calls in each request and total allocated calls in its policy. Ordinary callers outside a generated chain keep the Deployment Administrator-configured workspace index behavior.
+`generation_embedding_usage` retains the attempt ID, request, thread, optional run/source, provider version, input byte count, reservation and reported usage. It stores neither source text nor credentials. The dashboard displays pinned approval and charged embedding calls in each request and total allocated calls in its policy. Ordinary callers outside a generated chain keep the Deployment Administrator-configured thread index behavior.
 
 ## Foreign Tasks and origin-owned allowances
 

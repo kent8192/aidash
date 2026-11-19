@@ -9,8 +9,8 @@ pub trait GenerationVisibility: Send {
 	fn inherited_lease(&self) -> bool;
 	fn context(&mut self, value: Value);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
-	async fn task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
+	async fn task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>>;
 	async fn task_visible(&mut self, task: &Task) -> Result<bool>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 }

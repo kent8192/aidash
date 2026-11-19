@@ -50,7 +50,7 @@ pub(crate) async fn write_as(
 
 /// The Sender of work that a Tenant's Node does as itself, naming no subject:
 /// a callback that a grant or a transaction authorizes. The Node is the
-/// Tenant's default Node until Runs, Workspaces and Tasks name theirs (#241
+/// Tenant's default Node until Runs, Threads and Tasks name theirs (#241
 /// step 3); this is the one place that changes then.
 pub(crate) fn node_sender(tenant: &str) -> Result<aidash_domain::federation::route::Sender> {
 	Ok(aidash_domain::federation::route::Sender {

@@ -163,7 +163,7 @@ test("stopped Duties become pending bell entries in their own scope", () => {
       stopped: [
         {
           id: "s1",
-          workspace_id: "w1",
+          thread_id: "w1",
           title: "Weekly",
           requester: "alice",
           halt: "requester_left",
@@ -180,7 +180,7 @@ test("stopped Duties become pending bell entries in their own scope", () => {
   assert.equal(entries.length, 1);
   assert.equal(entries[0].kind, "duty_stopped");
   assert.equal(entries[0].target.kind, "duty");
-  assert.equal(entries[0].workspaceTitle, "Ops");
+  assert.equal(entries[0].threadTitle, "Ops");
   assert.match(entries[0].detail, /Waiting for a successor/);
 });
 
@@ -215,7 +215,7 @@ test("a row offers only what the viewer may do", () => {
     dutyActions(row({ mine: true, may_edit: true, may_manage: true })),
     { edit: true, pause: true, resume: null, remove: true },
   );
-  // Someone else's, seen through the Workspace: nothing to change.
+  // Someone else's, seen through the Thread: nothing to change.
   assert.deepEqual(dutyActions(row({})), {
     edit: false,
     pause: false,

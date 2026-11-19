@@ -18,22 +18,22 @@ impl LocalOutputScope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		if let Some(producers) = self
 			.access
-			.state_producers(workspace, kind, id)
-			.or_else(|| self.access.read_lookups.producers(workspace, kind, id))
+			.state_producers(thread, kind, id)
+			.or_else(|| self.access.read_lookups.producers(thread, kind, id))
 		{
 			return self
 				.access
-				.producers_to_check(workspace, producers)
+				.producers_to_check(thread, producers)
 				.await
 				.map_err(Into::into);
 		}
 		let result: NativeResult<Vec<Uuid>> = async {
 			let this = &mut *self.access;
 			let producers: Vec<Uuid> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = kind;
 				let query_bind_3 = id;
 				crate::database::native::query_scalar(
@@ -43,8 +43,7 @@ impl LocalOutputScope for Reads<'_> {
 						))
 						.from(reinhardt::query::Alias::new("authorization_run_outputs"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND resource_kind = ? AND resource_id = ?)"
-								.to_owned(),
+							"(thread_id = ? AND resource_kind = ? AND resource_id = ?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -62,7 +61,7 @@ impl LocalOutputScope for Reads<'_> {
 				.scalar_all(&mut **this.tx)
 				.await?
 			};
-			this.producers_to_check(workspace, producers).await
+			this.producers_to_check(thread, producers).await
 		}
 		.await;
 		result.map_err(Into::into)
@@ -84,18 +83,18 @@ impl OutputScope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn remote_grants(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+	async fn remote_grants(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		if let Some(grants) = self
 			.access
-			.state_remote_outputs(workspace, kind, id)
-			.or_else(|| self.access.read_lookups.remote_grants(workspace, kind, id))
+			.state_remote_outputs(thread, kind, id)
+			.or_else(|| self.access.read_lookups.remote_grants(thread, kind, id))
 		{
 			return Ok(grants);
 		}
 		let result: NativeResult<Vec<Uuid>> = async {
 			let this = &mut *self.access;
 			let grants: Vec<Uuid> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = kind;
 				let query_bind_3 = id;
 				crate::database::native::query_scalar(
@@ -103,7 +102,7 @@ impl OutputScope for Reads<'_> {
 						.column(Alias::new("grant_id"))
 						.from(Alias::new("authorization_remote_outputs"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id=? AND resource_kind=? AND resource_id=?)".to_owned(),
+							"(thread_id=? AND resource_kind=? AND resource_id=?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -124,13 +123,13 @@ impl OutputScope for Reads<'_> {
 }
 #[async_trait]
 impl LocalOutputScope for NativeReads<'_> {
-	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
-		let producers = match self.access.read_lookups.producers(workspace, kind, id) {
+	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+		let producers = match self.access.read_lookups.producers(thread, kind, id) {
 			Some(producers) => producers,
 			None => {
 				crate::apps::identity::models::AuthorizationRunOutput::producers(
 					self.access.tx.as_mut(),
-					workspace,
+					thread,
 					kind,
 					id,
 				)
@@ -138,7 +137,7 @@ impl LocalOutputScope for NativeReads<'_> {
 			}
 		};
 		self.access
-			.producers_to_check(workspace, producers)
+			.producers_to_check(thread, producers)
 			.await
 			.map_err(Into::into)
 	}

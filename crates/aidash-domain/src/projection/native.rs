@@ -191,8 +191,8 @@ pub const STEP_STATE_KEYS: [&str; 8] = [
 	"run_message_read_instruction",
 	"deferred_run_message_reads",
 	"deferred_skill_read",
-	"deferred_workspace_observation",
-	"deferred_workspace_read",
+	"deferred_thread_observation",
+	"deferred_thread_read",
 	"journal_read_notice",
 ];
 
@@ -200,7 +200,7 @@ pub const STEP_STATE_KEYS: [&str; 8] = [
 /// item (#942). Semantic memory stays in the volatile part: its content is
 /// never journaled, and its per-step recheck fails the step instead of
 /// marking a revoked hit.
-pub const EVIDENCE_KEYS: [&str; 2] = ["workspace", "run_messages"];
+pub const EVIDENCE_KEYS: [&str; 2] = ["thread", "run_messages"];
 
 /// Evidence keys admitted whatever the quota: the Run bounds its run-directed
 /// input when it accepts it, and its required reads depend on every entry.

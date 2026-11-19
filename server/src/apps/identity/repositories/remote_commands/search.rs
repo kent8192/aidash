@@ -1,4 +1,4 @@
-//! A Workspace search the Home runs for a Run that a Remote Grant started (ADR 0139).
+//! A Thread search the Home runs for a Run that a Remote Grant started (ADR 0139).
 //!
 //! The Run has no Run row, Working Area or Reference documents on the Home, so the query is
 //! text only. The delegation chain must be allowed both to search and to have the results
@@ -7,19 +7,19 @@ use crate::{Error, Result, authorization::access::Access, store::Store};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub(super) async fn workspace_search(
+pub(super) async fn thread_search(
 	access: &mut Access,
 	store: &Store,
-	workspace: Uuid,
+	thread: Uuid,
 	input: &Value,
 ) -> Result<Value> {
 	let mut lease = crate::semantic::service::Lease::Inherited(access);
 	lease.durable();
 	lease.lists();
-	lease.workspace(workspace, "semantic.search").await?;
-	lease.workspace(workspace, "semantic.disclose").await?;
+	lease.thread(thread, "semantic.search").await?;
+	lease.thread(thread, "semantic.disclose").await?;
 	let index =
-		crate::apps::knowledge::models::SemanticIndexe::locked(&mut **lease.tx(), workspace, false)
+		crate::apps::knowledge::models::SemanticIndexe::locked(&mut **lease.tx(), thread, false)
 			.await?;
 	let spec: Option<aidash_domain::semantic::indexing::IndexingSpec> = index
 		.map(|index| serde_json::from_value(index.spec))
@@ -46,12 +46,12 @@ pub(super) async fn workspace_search(
 			}),
 		};
 		serde_json::to_value(
-			crate::semantic::service::search_in(store, &mut lease, workspace, search, None, None)
+			crate::semantic::service::search_in(store, &mut lease, thread, search, None, None)
 				.await?,
 		)?
 	} else {
-		let mut result = json!({"workspace_id":workspace, "matches":[], "estimated_tokens":0,
-			"truncated":false, "workspace":{"status":"unavailable", "cause":if spec.is_some() {"disabled"} else {"missing"}}});
+		let mut result = json!({"thread_id":thread, "matches":[], "estimated_tokens":0,
+			"truncated":false, "thread":{"status":"unavailable", "cause":if spec.is_some() {"disabled"} else {"missing"}}});
 		result["estimated_tokens"] =
 			json!(aidash_domain::context::estimated_tokens(&result.to_string()) + 16);
 		result

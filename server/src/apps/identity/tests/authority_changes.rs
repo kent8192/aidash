@@ -47,7 +47,7 @@ fn bundle(tenant: &str) -> Value {
 			"actions":["*"],"resources":{"kinds":["*"]}
 		}, {
 			"id":"read","effect":"allow","subjects":{"any":true},
-			"actions":["workspace.read"],"resources":{"kinds":["workspace"]}
+			"actions":["thread.read"],"resources":{"kinds":["thread"]}
 		}]
 	})
 }

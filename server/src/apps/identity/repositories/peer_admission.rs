@@ -777,7 +777,7 @@ impl PeerAdmissionScope for Owned {
 						[
 							"id",
 							"task_id",
-							"workspace_id",
+							"thread_id",
 							"home_node",
 							"node",
 							"agent_id",
@@ -805,7 +805,7 @@ impl PeerAdmissionScope for Owned {
 			))
 			.bind(id)
 			.bind(d.task.id)
-			.bind(d.task.workspace_id)
+			.bind(d.task.thread_id)
 			.bind(source)
 			.bind(&d.inspection.agent.id)
 			.bind(&d.inspection.agent.version)

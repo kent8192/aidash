@@ -1,7 +1,7 @@
 //! Memory tools of a Run that a Remote Grant started, served by its Home (ADR 0126, 0139).
 //!
 //! The banks come from the Home's saved binding of the grant, revalidated against the Home's
-//! current state, and never from the request. A recall reads the published Workspace bank and
+//! current state, and never from the request. A recall reads the published Thread bank and
 //! the Agent's participant bank; a write goes only to the participant bank. The operation id
 //! of a call is derived from the admission and the call's key, so a resumed Run asks the same
 //! operation again (ADR 0057).
@@ -45,7 +45,7 @@ async fn binding(store: &Store, lease: &mut Lease<'_>, grant: Uuid) -> Result<Na
 	let current = super::bind(
 		store.deployment.as_str(),
 		lease,
-		binding.participant.bank.workspace,
+		binding.participant.bank.thread,
 		&binding.selection,
 		binding.generation.as_ref(),
 	)
@@ -59,10 +59,7 @@ async fn binding(store: &Store, lease: &mut Lease<'_>, grant: Uuid) -> Result<Na
 fn operation_id(admission: Uuid, key: &str, bank: &aidash_domain::memory::Bank) -> Result<Uuid> {
 	memory::request_id(
 		admission,
-		&format!(
-			"remote-tool:{key}:{}:{:?}",
-			bank.workspace, bank.participant
-		),
+		&format!("remote-tool:{key}:{}:{:?}", bank.thread, bank.participant),
 	)
 }
 
@@ -187,7 +184,7 @@ pub(crate) async fn mutate(
 		bank: binding.write_bank().clone(),
 		changes: changes.to_vec(),
 	};
-	repository::lock_workspace(lease, mutation.bank.workspace, true).await?;
+	repository::lock_thread(lease, mutation.bank.thread, true).await?;
 	memory::scope(store, lease, &mutation.bank, "memory.write").await?;
 	memory::bank_provider(lease, &mutation.bank, &mutation.provider).await?;
 	let policy = memory::policy(lease, &mutation.bank.tenant, &mutation.provider).await?;

@@ -10,9 +10,6 @@ use aidash_domain::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub async fn bind_task(scope: &mut dyn SessionScope, task: Uuid, thread: Uuid) -> Result<()> {
-	scope.bind_task(task, thread).await
-}
 pub async fn load(scope: &mut dyn SessionScope, id: Uuid) -> Result<Area> {
 	let area = scope
 		.load(id)
@@ -25,8 +22,8 @@ pub async fn authorize(scope: &mut dyn SessionScope, area: &Area, action: &str) 
 	if area.is_remote_home() {
 		return authorize_remote(scope, area, action).await;
 	}
-	let workspace = scope.workspace(area.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
+	let thread = scope.thread(area.thread_id).await?;
+	scope.set_context(thread.attributes.clone());
 	if area.tenant != scope.tenant() || area.owner != scope.principal() {
 		return Err(Error::NotFound("working area unavailable".into()));
 	}
@@ -35,16 +32,16 @@ pub async fn authorize(scope: &mut dyn SessionScope, area: &Area, action: &str) 
 		area.id,
 		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
 	);
-	scope.require(&workspace, "workspace.read").await?;
+	scope.require(&thread, "thread.read").await?;
 	scope
 		.require(&resource, action)
 		.await
 		.map_err(|_| Error::NotFound("working area unavailable".into()))?;
-	authorize_sources(scope, area.workspace_id, &area.constraints).await
+	authorize_sources(scope, area.thread_id, &area.constraints).await
 }
-/// An Area this Node keeps for Runs executing here for another Home. The Home's Workspace is
-/// not on this Node, so there is no `workspace.read` to ask: the Run's admission, which every
-/// worker lease and recheck has just checked (the Home's `workspace.read` and `task.execute`,
+/// An Area this Node keeps for Runs executing here for another Home. The Home's Thread is
+/// not on this Node, so there is no `thread.read` to ask: the Run's admission, which every
+/// worker lease and recheck has just checked (the Home's `thread.read` and `task.execute`,
 /// the Peer Mapping, the grant's expiry), stands in for it. What remains is the Area's own:
 /// its Tenant, its owner (the Home person, who must be on the caller's chain) and the
 /// Tenant's policy on the Area. Another person's Run, or a local Run, never reaches it.
@@ -61,11 +58,11 @@ async fn authorize_remote(scope: &mut dyn SessionScope, area: &Area, action: &st
 		.require(&resource, action)
 		.await
 		.map_err(|_| Error::NotFound("working area unavailable".into()))?;
-	authorize_sources(scope, area.workspace_id, &area.constraints).await
+	authorize_sources(scope, area.thread_id, &area.constraints).await
 }
 pub async fn authorize_sources(
 	scope: &mut dyn SessionScope,
-	workspace: Uuid,
+	thread: Uuid,
 	constraints: &Value,
 ) -> Result<()> {
 	let mut references = Vec::new();
@@ -76,7 +73,7 @@ pub async fn authorize_sources(
 		match source["kind"].as_str() {
 			Some("message") => {
 				scope
-					.message(workspace, serde_json::from_value(source["id"].clone())?)
+					.message(thread, serde_json::from_value(source["id"].clone())?)
 					.await?
 			}
 			Some("reference_text") => {
@@ -113,7 +110,7 @@ pub async fn for_run(scope: &mut dyn SessionScope, run: &RunMetadata) -> Result<
 	let area = load(scope, id).await?;
 	if area.agent_id != run.agent_id
 		|| area.generation != generation
-		|| area.workspace_id != run.workspace_id
+		|| area.thread_id != run.thread_id
 		|| area.home_node != run.home_node
 	{
 		return Err(Error::Forbidden);
@@ -159,8 +156,8 @@ pub async fn prepare_admission(
 				.into(),
 		));
 	}
-	let explicit = scope.explicit_thread(task.id).await?;
-	let mut thread = explicit.unwrap_or(task.id);
+	// The Working Area is keyed on (home Node, Thread, Agent, owner)
+	// (#1008, ADR 0140): every Task of a Thread shares it.
 	let mut ancestor = task.parent_id;
 	for _ in 0..64 {
 		let Some(id) = ancestor else {
@@ -173,9 +170,6 @@ pub async fn prepare_admission(
 					"SESSION_DEPENDENCY_CYCLE: child would wait behind its parent".into(),
 				));
 			}
-			if explicit.is_none() {
-				thread = parent_area.thread_id;
-			}
 		}
 		ancestor = parent.parent_id;
 	}
@@ -184,8 +178,8 @@ pub async fn prepare_admission(
 			"SESSION_DEPENDENCY_CYCLE: ancestor limit exceeded".into(),
 		));
 	}
-	scope.lock_thread(thread, task.workspace_id).await?;
-	Ok(Some(thread))
+	scope.lock_thread(task.thread_id).await?;
+	Ok(Some(task.thread_id))
 }
 pub async fn admit(
 	scope: &mut dyn SessionScope,
@@ -198,7 +192,8 @@ pub async fn admit(
 	let Some(thread) = thread else {
 		return Ok(());
 	};
-	let mut area = scope.ensure_area(task, thread, agent_id).await?;
+	debug_assert_eq!(thread, task.thread_id);
+	let mut area = scope.ensure_area(task, agent_id).await?;
 	authorize(scope, &area, "file.read").await?;
 	if !matches!(area.state.as_str(), "active" | "running") {
 		return Err(Error::Conflict(
@@ -216,7 +211,7 @@ pub async fn admit(
 	scope.enqueue(run_id, &area, initialized).await?;
 	scope
 		.event(
-			task.workspace_id,
+			task.thread_id,
 			"capability.queued",
 			json!({"area_id":area.id,"run_id":run_id,"sequence":area.next_sequence}),
 		)
@@ -250,14 +245,13 @@ pub async fn initialize(
 	scope.mark_initialized(run.id).await
 }
 /// A receiving Node's Working Area for a Run executing here for another Home (ADR 0139): the Area
-/// per Home Workspace, `thread`, Agent and Home person, kept for follow-up Runs, with the Agent
+/// per Home Thread, Agent and Home person (#1008), kept for follow-up Runs, with the Agent
 /// version's Reference set pinned into it as for a local Run. The Run is queued behind the Runs
 /// that preceded it in the Area, exactly as a local Run is; a Run entered again finds itself
 /// initialized and does nothing.
 pub async fn initialize_remote(
 	scope: &mut dyn SessionScope,
 	run: &RunMetadata,
-	thread: Uuid,
 	owner: &str,
 	config: &AgentConfig,
 ) -> Result<()> {
@@ -265,7 +259,7 @@ pub async fn initialize_remote(
 		Some(true) => return Ok(()),
 		Some(false) => {}
 		None => {
-			let mut area = scope.ensure_remote_area(run, thread, owner).await?;
+			let mut area = scope.ensure_remote_area(run, owner).await?;
 			authorize(scope, &area, "file.read").await?;
 			if !matches!(area.state.as_str(), "active" | "running") {
 				return Err(Error::Conflict(

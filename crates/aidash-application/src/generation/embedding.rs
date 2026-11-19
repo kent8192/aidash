@@ -53,19 +53,19 @@ impl Reservation {
 pub async fn reserve(
 	scope: &mut dyn GenerationEmbeddingAuthority,
 	repository: Arc<dyn GenerationEmbeddingRepository>,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	text: &str,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
-	reserve_many(&mut [scope], repository, workspace, config, text, origin).await
+	reserve_many(&mut [scope], repository, thread, config, text, origin).await
 }
 
 /// Reserve a validated text or image input under the current authority.
 pub async fn reserve_input(
 	scope: &mut dyn GenerationEmbeddingAuthority,
 	repository: Arc<dyn GenerationEmbeddingRepository>,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	input: EmbeddingInput<'_>,
 	origin: Origin,
@@ -75,14 +75,14 @@ pub async fn reserve_input(
 		.await?
 		.into_iter()
 		.collect();
-	reserve_approved(approved, repository, workspace, input, origin).await
+	reserve_approved(approved, repository, thread, input, origin).await
 }
 
 /// Validate each contributing lease before atomically charging their ancestor union.
 pub async fn reserve_many(
 	scopes: &mut [&mut dyn GenerationEmbeddingAuthority],
 	repository: Arc<dyn GenerationEmbeddingRepository>,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	text: &str,
 	origin: Origin,
@@ -96,7 +96,7 @@ pub async fn reserve_many(
 	reserve_approved(
 		approved,
 		repository,
-		workspace,
+		thread,
 		EmbeddingInput::Text(text),
 		origin,
 	)
@@ -107,7 +107,7 @@ pub async fn reserve_many(
 pub async fn reserve_approved(
 	approved: Vec<Approved>,
 	repository: Arc<dyn GenerationEmbeddingRepository>,
-	workspace: Uuid,
+	thread: Uuid,
 	input: EmbeddingInput<'_>,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
@@ -140,7 +140,7 @@ pub async fn reserve_approved(
 		.map_err(|_| Error::Invalid("embedding input reservation overflow".into()))?;
 	let attempt = Attempt {
 		id: Uuid::new_v4(),
-		workspace,
+		thread,
 		origin,
 		provider: reference,
 		request_bytes,

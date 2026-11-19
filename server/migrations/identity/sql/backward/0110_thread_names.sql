@@ -1,0 +1,8 @@
+-- PostgreSQL renames constraints and indexes only with ALTER ... RENAME, which
+-- typed Reinhardt operations cannot express. Names follow the Thread (#1008).
+ALTER INDEX public.authorization_threads_tenant RENAME TO authorization_workspaces_tenant;
+ALTER TABLE public.authorization_threads RENAME CONSTRAINT authorization_threads_thread_id_fkey TO authorization_workspaces_workspace_id_fkey;
+ALTER TABLE public.authorization_threads RENAME CONSTRAINT authorization_threads_tenant_thread_id_key TO authorization_workspaces_tenant_workspace_id_key;
+ALTER TABLE public.authorization_threads RENAME CONSTRAINT authorization_threads_tenant_root_fkey TO authorization_workspaces_tenant_root_fkey;
+ALTER TABLE public.authorization_threads RENAME CONSTRAINT authorization_threads_tenant_fkey TO authorization_workspaces_tenant_fkey;
+ALTER TABLE public.authorization_threads RENAME CONSTRAINT authorization_threads_pkey TO authorization_workspaces_pkey;

@@ -30,11 +30,11 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 		("/api/marketplace/installations/{id}/activation", "post"),
 		("/api/marketplace/administration", "get"),
 		("/api/marketplace/publication-access", "post"),
-		("/api/workspaces/{id}/threads", "post"),
-		("/api/workspaces/{id}/thread-messages", "post"),
-		("/api/workspaces/{id}/message-history", "get"),
-		("/api/workspaces/{id}/attachments", "post"),
-		("/api/workspaces/{id}/attachments/{attachment_id}", "get"),
+		("/api/threads", "post"),
+		("/api/threads/{id}/channel-messages", "post"),
+		("/api/threads/{id}/message-history", "get"),
+		("/api/threads/{id}/attachments", "post"),
+		("/api/threads/{id}/attachments/{attachment_id}", "get"),
 		("/api/providers/openrouter/models", "get"),
 		("/api/agents/personal", "post"),
 		("/api/workbench/drafts", "post"),
@@ -141,7 +141,7 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 		"#/components/schemas/TransactionManifest"
 	);
 	assert!(schemas.get("PackageRecord").is_none());
-	let upload = &document["paths"]["/api/workspaces/{id}/attachments"]["post"];
+	let upload = &document["paths"]["/api/threads/{id}/attachments"]["post"];
 	assert_eq!(
 		upload["requestBody"]["content"]["application/octet-stream"]["schema"]["format"],
 		"binary"

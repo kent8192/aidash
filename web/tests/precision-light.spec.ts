@@ -13,7 +13,7 @@ for (const locale of ["ja-JP", "en-US"] as const) {
         locale,
         referenceLayout: true,
       });
-      await page.goto("/collaboration?channel=workspace-one");
+      await page.goto("/collaboration?channel=thread-one");
       await expect(
         page.getByRole("textbox", {
           name: ja ? "メッセージ" : "Message",
@@ -123,20 +123,20 @@ test("legacy contextual links retain channel and remove redundant settings entri
   page,
 }) => {
   const { errors } = await setup(page, { subject: true });
-  await page.goto("/settings?view=workingFiles&channel=workspace-two");
+  await page.goto("/settings?view=workingFiles&channel=thread-two");
   await expect(page).toHaveURL(
-    /\/collaboration\?channel=workspace-two&view=files$/,
+    /\/collaboration\?channel=thread-two&view=files$/,
   );
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.goto("/settings?view=semantic&channel=workspace-two");
+  await page.goto("/settings?view=semantic&channel=thread-two");
   await expect(page).toHaveURL(
-    /\/settings\?channel=workspace-two&focus=semantic&view=registry$/,
+    /\/settings\?channel=thread-two&focus=semantic&view=registry$/,
   );
   await expect(page.locator(".semantic-page")).toBeVisible();
   await expect(
-    page.locator(".semantic-page").getByLabel("Workspace", { exact: true }),
-  ).toHaveValue("workspace-two");
+    page.locator(".semantic-page").getByLabel("Thread", { exact: true }),
+  ).toHaveValue("thread-two");
   for (const view of [
     "workingFiles",
     "generation",
@@ -160,9 +160,9 @@ test("request progress keeps transactions available when ordinary data is blocke
   await page.route("**/api/transactions", (route) =>
     route.fulfill({ json: [] }),
   );
-  await page.goto("/settings?view=transactions&channel=workspace-one");
+  await page.goto("/settings?view=transactions&channel=thread-one");
   await expect(page).toHaveURL(
-    /\/collaboration\?channel=workspace-one&view=progress$/,
+    /\/collaboration\?channel=thread-one&view=progress$/,
   );
   await expect(
     page

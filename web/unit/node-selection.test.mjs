@@ -44,27 +44,27 @@ const state = () => ({
     key: null,
   },
   registry: [{ id: "agent" }],
-  workspaces: [
+  threads: [
     { id: "w1", node: "first" },
     { id: "w2", node: "second" },
   ],
   tasks: [
-    { id: "t1", workspace_id: "w1" },
-    { id: "t2", workspace_id: "w2" },
+    { id: "t1", thread_id: "w1" },
+    { id: "t2", thread_id: "w2" },
   ],
   runs: [
-    { id: "r1", node: "first", workspace_id: "w1" },
-    { id: "r2", node: "second", workspace_id: "w2" },
-    { id: "r3", node: "first", workspace_id: "w2" },
-    { id: "r4", node: "second", workspace_id: "remote-workspace" },
+    { id: "r1", node: "first", thread_id: "w1" },
+    { id: "r2", node: "second", thread_id: "w2" },
+    { id: "r3", node: "first", thread_id: "w2" },
+    { id: "r4", node: "second", thread_id: "remote-thread" },
   ],
   human_requests: [
-    { id: "h1", workspace_id: "w1" },
-    { id: "h2", workspace_id: "w2" },
+    { id: "h1", thread_id: "w1" },
+    { id: "h2", thread_id: "w2" },
   ],
   conversations: [
-    { id: "c1", workspace_id: "w1" },
-    { id: "c2", workspace_id: "w2" },
+    { id: "c1", thread_id: "w1" },
+    { id: "c2", thread_id: "w2" },
   ],
   events: [
     { id: "e1", node: "first" },
@@ -72,21 +72,21 @@ const state = () => ({
     { id: "e3", node: null },
   ],
   artifacts: [
-    { id: "a1", workspace_id: "w1" },
-    { id: "a2", workspace_id: "w2" },
+    { id: "a1", thread_id: "w1" },
+    { id: "a2", thread_id: "w2" },
   ],
   unconfirmed: [
-    { node: "aidash://home/other", kind: "task", workspace_id: "w1", count: 1 },
-    { node: "aidash://home/other", kind: "task", workspace_id: "w2", count: 3 },
+    { node: "aidash://home/other", kind: "task", thread_id: "w1", count: 1 },
+    { node: "aidash://home/other", kind: "task", thread_id: "w2", count: 3 },
   ],
 });
 
-test("a Node's view holds only what its Workspaces own, and names the Node", () => {
+test("a Node's view holds only what its Threads own, and names the Node", () => {
   const view = nodeView(state(), nodes[1]);
   assert.equal(view.node.id, "aidash://home/second");
   assert.equal(view.node.endpoint, "http://home");
   assert.deepEqual(
-    view.workspaces.map((value) => value.id),
+    view.threads.map((value) => value.id),
     ["w2"],
   );
   const expected = {
@@ -111,7 +111,7 @@ test("a Node's view holds only what its Workspaces own, and names the Node", () 
   assert.deepEqual(
     view.unconfirmed.map((entry) => entry.count),
     [3],
-    "items left out of another Node's Workspaces are not this view's",
+    "items left out of another Node's Threads are not this view's",
   );
 });
 
@@ -126,7 +126,7 @@ test("a Deployment Administrator has no Node, so State stays whole and names the
   const whole = state();
   const view = nodeView(whole, undefined);
   assert.deepEqual(view.node, { id: "aidash://home", endpoint: "http://home" });
-  assert.deepEqual(view.workspaces, whole.workspaces);
+  assert.deepEqual(view.threads, whole.threads);
   assert.deepEqual(view.runs, whole.runs);
 });
 

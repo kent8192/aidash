@@ -522,7 +522,7 @@ fn native_estimate_counts_the_complete_request_near_the_window(#[case] turns: u3
 	let pinned = json!({
 		"identity":{"node_id":"aidash://fixture","agent_id":"agent","agent_version":"1.0.0"},
 		"task":{"title":"Task","description":"x".repeat(4096)},
-		"workspace":{"workspace_id":Uuid::nil()},
+		"thread":{"thread_id":Uuid::nil()},
 		"agent_state":{"phase":"thinking","step":3},
 		"semantic_memory":{"fact":"observed"},
 	});
@@ -673,7 +673,7 @@ async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture:
 #[tokio::test]
 async fn evidence_offloaded_in_its_own_step_is_journaled_whole(mut fixture: Fixture) {
 	// Arrange: a Run over its window whose older turns hold nothing worth
-	// offloading, and a small protected tail, so this step's new workspace
+	// offloading, and a small protected tail, so this step's new thread
 	// evidence is the one item compaction offloads.
 	native(&mut fixture);
 	let large = "q".repeat(60_000);

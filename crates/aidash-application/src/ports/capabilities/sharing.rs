@@ -28,8 +28,8 @@ pub trait SharingScope: FileScopePort {
 	fn set_subjects(&mut self, subjects: Vec<String>);
 	async fn recipient(&mut self, source: &Area, recipient: &Recipient) -> Result<Option<Area>>;
 	async fn admitted(&mut self, area: &Area, version: &str) -> Result<Option<Uuid>>;
-	async fn workspace(&mut self, id: Uuid) -> Result<aidash_domain::policy::Resource>;
-	async fn source_authority(&mut self, workspace: Uuid, constraints: &Value) -> Result<()>;
+	async fn thread(&mut self, id: Uuid) -> Result<aidash_domain::policy::Resource>;
+	async fn source_authority(&mut self, thread: Uuid, constraints: &Value) -> Result<()>;
 	async fn begin_received(&mut self, area: Uuid, size: u64) -> Result<()>;
 	async fn collaboration(&mut self, id: Uuid, area: Uuid, result: Value) -> Result<()>;
 	async fn remote_view(&mut self, id: Uuid) -> Result<Value>;

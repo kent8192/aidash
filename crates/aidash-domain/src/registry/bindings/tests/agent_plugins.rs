@@ -167,11 +167,13 @@ fn refusal(snapshot: &BindingSnapshot) -> String {
 fn attachment_selection_requires_the_current_admitted_tool_and_arguments() {
 	let mut snapshot = snapshot_of(&agent(), vec![]);
 	assert!(snapshot.supports_thread_attachment_selection());
+	// A Workspace reader pinned before attachments (1.0.0) cannot select one.
 	let binding = snapshot
 		.bindings
 		.iter_mut()
-		.find(|item| item.identity.id == "aidash.workspace_read")
+		.find(|item| item.identity.id == "aidash.thread_read")
 		.unwrap();
+	binding.identity.id = "aidash.workspace_read".into();
 	binding.identity.version = "1.0.0".into();
 	assert!(!snapshot.supports_thread_attachment_selection());
 	let binding = snapshot
@@ -225,44 +227,47 @@ fn a_snapshot_without_plugins_keeps_its_bytes() {
 }
 
 #[test]
-fn implicit_workspace_source_uses_the_reader_version_in_the_snapshot() {
-	let snapshot = snapshot_of(&agent(), vec![]);
+fn implicit_thread_source_uses_the_reader_version_in_the_snapshot() {
+	let mut snapshot = snapshot_of(&agent(), vec![]);
 	let mut native = sources::NativeContext {
 		schema_version: BINDING_SCHEMA,
 		source: sources::NativeSource::WorkspaceObservation {},
 		context_source: None,
 	};
 	let source = qualified("aidash.workspace-observation");
+	let reads =
+		|declaration: &crate::context::source::SourceDeclaration, id: &str, version: &str| {
+			declaration
+				.tools
+				.read
+				.iter()
+				.any(|tool| tool.id == id && tool.version == version)
+		};
+	// Today's Agent reads through the Thread tool (#1008).
 	let declaration = native.declaration_for_snapshot(&source, &snapshot);
-	assert!(
-		declaration
-			.tools
-			.read
-			.iter()
-			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.1.0")
-	);
-	assert!(
-		!declaration
-			.tools
-			.read
-			.iter()
-			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
-	);
+	assert!(reads(&declaration, "aidash.thread_read", "1.0.0"));
+	// An Agent normalized before #1008 reads through the Workspace tool it pins.
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.thread_read")
+		.unwrap();
+	binding.identity.id = "aidash.workspace_read".into();
+	binding.identity.version = "1.1.0".into();
+	let declaration = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(reads(&declaration, "aidash.workspace_read", "1.1.0"));
+	assert!(!reads(&declaration, "aidash.thread_read", "1.0.0"));
+	// An explicit source policy stays exact.
 	let mut declared = native.declaration(&source);
 	for tool in &mut declared.tools.read {
-		if tool.id == "aidash.workspace_read" {
+		if tool.id == "aidash.thread_read" {
+			tool.id = "aidash.workspace_read".into();
 			tool.version = "1.0.0".into();
 		}
 	}
 	native.context_source = Some(declared);
 	let explicit = native.declaration_for_snapshot(&source, &snapshot);
-	assert!(
-		explicit
-			.tools
-			.read
-			.iter()
-			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
-	);
+	assert!(reads(&explicit, "aidash.workspace_read", "1.0.0"));
 }
 
 #[test]

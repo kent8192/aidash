@@ -27,10 +27,10 @@ pub struct Message {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "messages_workspace_id_fkey",
+		db_constraint = "messages_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field(field_type = "text")]
 	pub sender: String,
 	#[field(field_type = "text")]
@@ -47,7 +47,7 @@ pub struct Message {
 impl Message {
 	pub(crate) async fn append_in(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: &str,
@@ -57,7 +57,7 @@ impl Message {
 			.into_table(Alias::new("messages"))
 			.columns([
 				Alias::new("id"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("sender"),
 				Alias::new("content"),
 				Alias::new("idempotency_key"),
@@ -66,12 +66,12 @@ impl Message {
 			])
 			.values_expr(vec![
 				Expr::value(Uuid::new_v4()).into(),
-				Expr::value(workspace).into(),
+				Expr::value(thread).into(),
 				Expr::value(sender).into(),
 				Expr::value(content).into(),
 				Expr::value(key).into(),
 				Expr::value(run).into(),
-				crate::database::scope::tenant_of("workspaces", "id", workspace),
+				crate::database::scope::tenant_of("threads", "id", thread),
 			])
 			.expect("one value per column")
 			.on_conflict(
@@ -84,7 +84,7 @@ impl Message {
 		if let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? {
 			let message: MessageContract =
 				serde_json::from_value(QueryRow::from_backend_row(row).data)?;
-			event_records::append(tx, Some(workspace), "message.created", json!(message)).await?;
+			event_records::append(tx, Some(thread), "message.created", json!(message)).await?;
 			Ok(message)
 		} else {
 			let message = Self::objects()
@@ -96,7 +96,7 @@ impl Message {
 				.ok_or_else(|| Error::NotFound("message".into()))?;
 			// The publishing Run is part of the input: a replay that would bind
 			// another Run's citations, or none, is a reused key.
-			if message.workspace_id() != workspace
+			if message.thread_id() != thread
 				|| message.sender != sender
 				|| message.content != content
 				|| message.run_id != run
@@ -117,8 +117,8 @@ impl crate::database::Record for Message {
 		Ok(Self {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
-			workspace_id: row.try_get("workspace_id")?,
-			workspace: ForeignKeyField::new(),
+			thread_id: row.try_get("thread_id")?,
+			thread: ForeignKeyField::new(),
 			sender: row.try_get("sender")?,
 			content: row.try_get("content")?,
 			idempotency_key: row.try_get("idempotency_key")?,

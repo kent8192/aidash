@@ -16,11 +16,11 @@ pub struct ChannelAttachment {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "channel_attachments_workspace_id_fkey",
+		db_constraint = "channel_attachments_thread_id_fkey",
 		db_index = false,
 		on_delete = Cascade
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field(field_type = "text")]
 	pub uploaded_by: String,
 	#[field]
@@ -81,7 +81,7 @@ impl ChannelAttachment {
 	}
 	pub(crate) async fn attach_run_media_in(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 		principal: &str,
 		ids: &[Uuid],
@@ -93,7 +93,7 @@ impl ChannelAttachment {
 			return Err(Error::Invalid("attachment ids must be unique".into()));
 		}
 		let mut records = Self::objects()
-			.filter(Self::field_workspace_id().eq(workspace))
+			.filter(Self::field_thread_id().eq(thread))
 			.filter(Self::field_uploaded_by().eq(principal.to_owned()))
 			.filter(Self::field_id().is_in(ids.to_vec()))
 			.order_by(&["id"])
@@ -120,7 +120,7 @@ impl ChannelAttachment {
 			));
 		}
 		let saved = Self::objects()
-			.filter(Self::field_workspace_id().eq(workspace))
+			.filter(Self::field_thread_id().eq(thread))
 			.filter(Self::field_message_key().eq(Some(message)))
 			.order_by(&["position", "id"])
 			.all_with_executor(tx)
@@ -141,7 +141,7 @@ impl ChannelAttachment {
 						.map_err(|_| Error::Invalid("too many attachments".into()))?,
 				)
 				.and_where(Expr::col("id").eq(Expr::value(*id)))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.and_where(Expr::col("message_id").is_null())
 				.build(PostgresQueryBuilder);
 			tx.execute(&sql, convert_values(values)).await?;
@@ -163,8 +163,8 @@ impl crate::database::Record for ChannelAttachment {
 		Ok(Self {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
-			workspace_id: row.try_get("workspace_id")?,
-			workspace: ForeignKeyField::new(),
+			thread_id: row.try_get("thread_id")?,
+			thread: ForeignKeyField::new(),
 			uploaded_by: row.try_get("uploaded_by")?,
 			idempotency_key: row.try_get("idempotency_key")?,
 			filename: row.try_get("filename")?,
@@ -185,11 +185,11 @@ impl crate::database::Record for ChannelAttachment {
 		})
 	}
 }
-impl From<ChannelAttachment> for aidash_domain::workspaces::channels::AttachmentState {
+impl From<ChannelAttachment> for aidash_domain::threads::channels::AttachmentState {
 	fn from(row: ChannelAttachment) -> Self {
 		Self {
 			id: row.id,
-			workspace_id: row.workspace_id,
+			thread_id: row.thread_id,
 			uploaded_by: row.uploaded_by,
 			idempotency_key: row.idempotency_key,
 			filename: row.filename,

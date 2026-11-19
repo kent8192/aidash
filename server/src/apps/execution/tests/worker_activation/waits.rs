@@ -22,7 +22,7 @@ async fn waiting(f: &Federation, run: Uuid) {
 	let start = Instant::now();
 	loop {
 		let current = f.store.run(&TEST_FIXTURE, run).await.unwrap();
-		if matches!(current.state, aidash_server::domain::RunState::Waiting(ref w) if matches!(w.as_ref(), aidash_server::domain::WaitingState::Workspace { .. }))
+		if matches!(current.state, aidash_server::domain::RunState::Waiting(ref w) if matches!(w.as_ref(), aidash_server::domain::WaitingState::TaskWait { .. }))
 		{
 			return;
 		}
@@ -37,7 +37,7 @@ async fn waiting(f: &Federation, run: Uuid) {
 
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn workspace_wait_wakes_for_child_input_and_resume(
+async fn thread_wait_wakes_for_child_input_and_resume(
 	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 	#[from(wait_router)]
@@ -86,7 +86,7 @@ async fn workspace_wait_wakes_for_child_input_and_resume(
 			let child = post_json(
 				&f,
 				&token,
-				&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+				&format!("/api/threads/{}/tasks", parent.thread_id),
 				json!({"title":"Child","description":"Wait fixture","parent_id":task}),
 			)
 			.await;

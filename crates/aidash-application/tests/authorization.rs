@@ -34,15 +34,15 @@ fn bundle() -> PolicyBundle {
 		"tenant": "acme",
 		"subjects": {"worker": {"kind": "agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},
 		"policies": [{"id":"read", "effect":"allow", "subjects":{"any":true},
-			"actions":["workspace.read"], "resources":{"kinds":["workspace"]}}]
+			"actions":["thread.read"], "resources":{"kinds":["thread"]}}]
 	}))
 	.unwrap()
 }
 
 fn evaluation() -> Evaluation {
 	serde_json::from_value(json!({
-		"subject":"worker", "action":"workspace.read",
-		"resource":{"tenant":"acme", "kind":"workspace", "id":"workspace-1"},
+		"subject":"worker", "action":"thread.read",
+		"resource":{"tenant":"acme", "kind":"thread", "id":"thread-1"},
 		"environment":{}
 	}))
 	.unwrap()
@@ -178,8 +178,8 @@ async fn invalid_replacement_never_opens_a_transaction() {
 }
 
 #[rstest::rstest]
-#[case("workspace.read", true)]
-#[case("workspace.delete", false)]
+#[case("thread.read", true)]
+#[case("thread.delete", false)]
 #[tokio::test]
 async fn borrowed_authorization_leaves_commit_to_the_protected_effect(
 	#[case] action: &str,

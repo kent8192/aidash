@@ -6,7 +6,7 @@ use serde_json::json;
 fn binding() -> (Record, ExecutionPrincipal, Description) {
 	let task = crate::Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: String::new(),
 		status: crate::TaskStatus::Open,
@@ -143,7 +143,7 @@ fn the_admission_keeps_the_request_the_home_last_described(
 		serde_json::from_value::<Description>(record.description.clone()).unwrap()
 	};
 	// The Home answers an ask by adding `shell` and a host.
-	let widened = described(request(&["shell", "workspace_*"], &["example.com"]));
+	let widened = described(request(&["shell", "thread_*"], &["example.com"]));
 	record.description = record.with_tool_request(&widened).unwrap().unwrap();
 	assert_eq!(
 		stored(&record).authorization_details,
@@ -154,7 +154,7 @@ fn the_admission_keeps_the_request_the_home_last_described(
 	// Described again unchanged: nothing to write.
 	assert!(record.with_tool_request(&widened).unwrap().is_none());
 	// The Home narrows its tools and hosts.
-	let narrowed = described(request(&["workspace_*"], &[]));
+	let narrowed = described(request(&["thread_*"], &[]));
 	record.description = record.with_tool_request(&narrowed).unwrap().unwrap();
 	assert_eq!(
 		stored(&record).authorization_details,

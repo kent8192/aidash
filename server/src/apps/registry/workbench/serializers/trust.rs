@@ -25,7 +25,7 @@ crate::native_record!(EvidenceRow {
 	expired_at
 });
 
-pub use aidash_domain::registry::workbench::inspection::{Inspection, TestEvidence, WorkspaceUse};
+pub use aidash_domain::registry::workbench::inspection::{Inspection, TestEvidence, ThreadUse};
 
 pub use aidash_domain::registry::workbench::report::{Report, ReportQuery};
 

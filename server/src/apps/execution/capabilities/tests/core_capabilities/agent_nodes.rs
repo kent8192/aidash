@@ -299,7 +299,7 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 ) {
 	// Arrange: alice's chain creates a Node and sets up a Duty on its own
 	// Node; bob is a member who may read only the default Node, reads no
-	// Workspace of hers and administers nothing.
+	// Thread of hers and administers nothing.
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
 	let node = node_tool(
@@ -331,7 +331,7 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 			"node.administer",
 			"budget.manage",
 			"duty.administer",
-			"workspace.read",
+			"thread.read",
 		],
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({

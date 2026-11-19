@@ -44,7 +44,7 @@ pub enum Choice {
 }
 
 /// The single rule. Whether `approver` may have `approval` in `session` now,
-/// without a Run or workspace.
+/// without a Run or thread.
 pub fn standing(
 	bundle: &PolicyBundle,
 	approver: Option<&Approver>,

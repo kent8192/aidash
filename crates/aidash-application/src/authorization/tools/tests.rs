@@ -33,7 +33,7 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 		vec![
 			"lease".to_owned(),
 			"require:builtin:task_create:tool.invoke".to_owned(),
-			format!("require:{}:task.create", run.workspace_id),
+			format!("require:{}:task.create", run.thread_id),
 			"release".to_owned()
 		]
 	);
@@ -264,7 +264,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
-		workspace_id: id(3),
+		thread_id: id(3),
 		home_node: "aidash://home".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
@@ -517,7 +517,7 @@ impl AgentToolScope for Scope<'_> {
 		}
 		Ok(Task {
 			id: key,
-			workspace_id: id(3),
+			thread_id: id(3),
 			title: "saved".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
@@ -554,18 +554,18 @@ impl AgentToolScope for Scope<'_> {
 		Ok(resource(
 			"memory",
 			&run.agent_id,
-			json!({"workspace":run.workspace_id,"run":run.id}),
+			json!({"thread":run.thread_id,"run":run.id}),
 		))
 	}
 
 	async fn human_request(&mut self, run: &RunMetadata, id: Uuid) -> Result<Option<HumanRequest>> {
 		self.0
-			.record(format!("human:{}:{}:{id}", run.id, run.workspace_id));
+			.record(format!("human:{}:{}:{id}", run.id, run.thread_id));
 		self.0.check("human")?;
 		Ok((!self.0.missing_request).then(|| HumanRequest {
 			id,
 			run_id: run.id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			kind: "approval".into(),
 			prompt: "saved question".into(),
 			response: None,
@@ -580,7 +580,7 @@ impl AgentToolScope for Scope<'_> {
 		Ok(resource(
 			"human_request",
 			&request.id.to_string(),
-			json!({"run":request.run_id,"workspace":request.workspace_id,"prompt":request.prompt}),
+			json!({"run":request.run_id,"thread":request.thread_id,"prompt":request.prompt}),
 		))
 	}
 }
@@ -829,7 +829,7 @@ async fn a_read_only_registry_tool_refuses_an_explicit_policy_deny(
 
 #[rstest]
 #[tokio::test]
-async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
+async fn an_agent_plugin_requires_target_execution_and_thread_creation(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -845,13 +845,13 @@ async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
 			"lease".into(),
 			"catalog:configured:tool.invoke".into(),
 			"catalog:target:agent.execute".into(),
-			format!("require:{}:task.create", run.workspace_id),
+			format!("require:{}:task.create", run.thread_id),
 			"release".into()
 		]
 	);
 	let decisions = repository.decisions();
 	assert_eq!(decisions[0].0.attributes, json!({}));
-	assert_eq!(decisions[0].0.kind, "workspace");
+	assert_eq!(decisions[0].0.kind, "thread");
 }
 #[rstest]
 #[tokio::test]
@@ -994,8 +994,8 @@ async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	);
 }
 #[rstest]
-#[case::task("task_create", "workspace", "task.create")]
-#[case::message("workspace_message", "workspace", "message.create")]
+#[case::task("task_create", "thread", "task.create")]
+#[case::message("workspace_message", "thread", "message.create")]
 #[case::human("human_request", "run", "human.request")]
 #[case::generation("task_assign", "generation_policy", "generation.request")]
 #[case::memory("memory_mutate", "memory", "memory.write")]
@@ -1022,7 +1022,7 @@ async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	assert_eq!(decisions[1].1, action);
 	assert_eq!(decisions[1].0.kind, kind);
 	let expected = match kind {
-		"workspace" => run.workspace_id.to_string(),
+		"thread" => run.thread_id.to_string(),
 		"run" => run.id.to_string(),
 		"generation_policy" => "saved-policy".into(),
 		"memory" => run.agent_id.clone(),
@@ -1032,7 +1032,7 @@ async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	if kind == "memory" {
 		assert_eq!(
 			decisions[1].0.attributes,
-			json!({"workspace":run.workspace_id,"run":run.id})
+			json!({"thread":run.thread_id,"run":run.id})
 		);
 	} else {
 		assert_eq!(decisions[1].0.attributes, json!({}));
@@ -1356,7 +1356,7 @@ async fn a_remote_grant_run_hands_a_home_task_on_to_any_node_its_home_decides(
 	assert_ne!(decisions[1].0.attributes, repository.context);
 	assert_eq!(
 		decisions[1].0.attributes,
-		json!({"source_workspace_id":run.workspace_id,"source_task_id":id(9),"source_parent_task_id":run.task_id})
+		json!({"source_thread_id":run.thread_id,"source_task_id":id(9),"source_parent_task_id":run.task_id})
 	);
 }
 #[rstest]
@@ -1842,8 +1842,8 @@ async fn cancellation_releases_the_lease_held_during_tool_authorization(
 #[rstest]
 #[case::matching_task("task", 2, true)]
 #[case::foreign_task("task", 9, false)]
-#[case::matching_workspace("workspace", 3, true)]
-#[case::foreign_workspace("workspace", 9, false)]
+#[case::matching_thread("thread", 3, true)]
+#[case::foreign_thread("thread", 9, false)]
 #[case::memory("memory", 1, true)]
 #[case::run("run", 1, true)]
 #[case::foreign_run("run", 9, false)]
@@ -1903,7 +1903,7 @@ async fn invalid_explicit_task_id_is_forbidden_before_reading_a_task(
 }
 #[rstest]
 #[tokio::test]
-async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
+async fn explicit_remote_thread_actions_refresh_and_keep_current_context(
 	mut repository: Repository,
 	run: RunMetadata,
 ) {
@@ -1911,26 +1911,26 @@ async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
 	action(
 		&repository,
 		&run,
-		"workspace.read",
-		"workspace",
-		&run.workspace_id.to_string(),
+		"thread.read",
+		"thread",
+		&run.thread_id.to_string(),
 	)
 	.await
 	.unwrap();
 	let decision = &repository.decisions()[0];
 	assert_eq!(
 		decision.0.id,
-		format!("aidash://home/workspaces/{}", run.workspace_id)
+		format!("aidash://home/threads/{}", run.thread_id)
 	);
 	assert_eq!(decision.0.attributes, repository.context);
-	assert_eq!(decision.1, "workspace.read");
+	assert_eq!(decision.1, "thread.read");
 	assert_eq!(
 		repository.calls()[..5],
 		vec!["lease", "active", "suspend", "replace", "release"]
 	);
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::task("task")]
 #[case::run("run")]
 #[tokio::test]
@@ -1967,7 +1967,7 @@ async fn remote_human_reads_are_denied_before_acquiring_or_refreshing_authority(
 }
 #[rstest]
 #[tokio::test]
-async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
+async fn a_saved_human_request_is_authorized_under_its_run_and_thread(
 	repository: Repository,
 	run: RunMetadata,
 ) {
@@ -1976,7 +1976,7 @@ async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
 		repository.calls(),
 		vec![
 			"lease".into(),
-			format!("human:{}:{}:{}", run.id, run.workspace_id, id(9)),
+			format!("human:{}:{}:{}", run.id, run.thread_id, id(9)),
 			"human_resource".into(),
 			format!("require:{}:human.read", id(9)),
 			"release".into()
@@ -1986,7 +1986,7 @@ async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
 	assert_eq!(decision.0.kind, "human_request");
 	assert_eq!(
 		decision.0.attributes,
-		json!({"run":run.id,"workspace":run.workspace_id,"prompt":"saved question"})
+		json!({"run":run.id,"thread":run.thread_id,"prompt":"saved question"})
 	);
 	assert_eq!(decision.1, "human.read");
 }
@@ -2520,7 +2520,7 @@ async fn a_block_pattern_leaves_run_reach_tools_in_the_remote_tool_map(mut repos
 	// lists say (`RemoteToolLists::decide`), so the tool map must keep it as well.
 	repository.remote = true;
 	repository.lists = Some(lists(&["*"], &["*"], &["*"]));
-	let mut tools: BTreeMap<String, ToolContract> = ["journal_read", "workspace_read", "duty_list"]
+	let mut tools: BTreeMap<String, ToolContract> = ["journal_read", "thread_read", "duty_list"]
 		.into_iter()
 		.map(|name| {
 			(
@@ -2546,15 +2546,10 @@ async fn a_listed_tool_runs_in_a_remote_run(
 	agent: AgentConfig,
 ) {
 	repository.remote = true;
-	repository.lists = Some(lists(&["workspace_read"], &["workspace_*"], &[]));
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	repository.lists = Some(lists(&["thread_read"], &["thread_*"], &[]));
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 }
 
 #[rstest]
@@ -2566,48 +2561,32 @@ async fn a_subnode_member_answers_to_the_lists_of_its_remote_creating_run(
 ) {
 	// The member is a local Run, so the repository finds the creating Run's lists for it.
 	repository.subnode_allowance = Some(aidash_domain::subnodes::Allowance {
-		tools: ["workspace_read".to_owned(), "workspace_search".to_owned()].into(),
+		tools: ["thread_read".to_owned(), "thread_search".to_owned()].into(),
 		secrets: Default::default(),
 	});
 	repository.lists = Some(lists(
-		&["workspace_read", "workspace_search"],
-		&["workspace_read"],
+		&["thread_read", "thread_search"],
+		&["thread_read"],
 		&[],
 	));
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 	// The allowance names the tool but the receiver's list does not: refused, never a pause
 	// nobody could answer for the member.
 	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call("workspace_search", json!({})),
-		)
-		.await,
+		authorize(&repository, &run, &agent, &call("thread_search", json!({})),).await,
 		Err(Error::Refused(_))
 	));
 	// A Subnode member of a Run of the receiver's own Tenant has no lists.
 	repository.lists = None;
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 }
 
 #[rstest]
-#[case::blocked("workspace_read", lists(&["workspace_read"], &["workspace_read"], &["workspace_*"]))]
+#[case::blocked("thread_read", lists(&["thread_read"], &["thread_read"], &["thread_*"]))]
 #[case::never_reach("duty_list", lists(&["*"], &["*"], &[]))]
 #[tokio::test]
 async fn a_blocked_or_never_tool_answers_with_the_shared_text(
@@ -2628,8 +2607,8 @@ async fn a_blocked_or_never_tool_answers_with_the_shared_text(
 }
 
 #[rstest]
-#[case::home_lacks(lists(&[], &["workspace_read"], &[]), true, false)]
-#[case::receiver_lacks(lists(&["workspace_read"], &[], &[]), false, true)]
+#[case::home_lacks(lists(&[], &["thread_read"], &[]), true, false)]
+#[case::receiver_lacks(lists(&["thread_read"], &[], &[]), false, true)]
 #[case::both_lack(lists(&[], &[], &[]), true, true)]
 #[tokio::test]
 async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
@@ -2642,13 +2621,7 @@ async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
 ) {
 	repository.remote = true;
 	repository.lists = Some(owned);
-	let result = authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await;
+	let result = authorize(&repository, &run, &agent, &call("thread_read", json!({}))).await;
 	let Err(Error::AuthorityRefused(refusal)) = result else {
 		panic!("expected an authority pause, got {result:?}");
 	};
@@ -2657,10 +2630,10 @@ async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
 		RefusalCheck::FederationTools { home, receiver }
 	);
 	// The pause is answered by the key the lists matched.
-	assert_eq!(refusal.action.as_deref(), Some("workspace_read"));
+	assert_eq!(refusal.action.as_deref(), Some("thread_read"));
 }
 
-/// The defaults hold `workspace_message` without files (decision 6): a message that sends files
+/// The defaults hold `thread_message` without files (decision 6): a message that sends files
 /// is decided, and asked about, on its own key, and is never more permitted than a plain one.
 #[rstest]
 #[tokio::test]
@@ -2669,15 +2642,15 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 	run: RunMetadata,
 	agent: AgentConfig,
 ) {
-	use aidash_domain::federation::tool_lists::{DEFAULT_TOOLS, WORKSPACE_MESSAGE_FILES};
+	use aidash_domain::federation::tool_lists::{DEFAULT_TOOLS, THREAD_MESSAGE_FILES};
 	repository.remote = true;
 	repository.lists = Some(lists(DEFAULT_TOOLS, DEFAULT_TOOLS, &[]));
-	let plain = call("workspace_message", json!({"content":"done"}));
+	let plain = call("thread_message", json!({"content":"done"}));
 	authorize(&repository, &run, &agent, &plain).await.unwrap();
-	let empty = call("workspace_message", json!({"content":"done","files":[]}));
+	let empty = call("thread_message", json!({"content":"done","files":[]}));
 	authorize(&repository, &run, &agent, &empty).await.unwrap();
 	let with_files = call(
-		"workspace_message",
+		"thread_message",
 		json!({"content":"done","files":["out/report.pdf"]}),
 	);
 	let result = authorize(&repository, &run, &agent, &with_files).await;
@@ -2691,9 +2664,9 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 			receiver: true
 		}
 	);
-	assert_eq!(refusal.action.as_deref(), Some(WORKSPACE_MESSAGE_FILES));
-	// `workspace_message*` names both forms.
-	repository.lists = Some(lists(&["workspace_message*"], &["workspace_message*"], &[]));
+	assert_eq!(refusal.action.as_deref(), Some(THREAD_MESSAGE_FILES));
+	// `thread_message*` names both forms.
+	repository.lists = Some(lists(&["thread_message*"], &["thread_message*"], &[]));
 	authorize(&repository, &run, &agent, &with_files)
 		.await
 		.unwrap();
@@ -2703,9 +2676,9 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 	};
 	// A Block of the files form stops only messages with files.
 	repository.lists = Some(lists(
-		&["workspace_message*"],
-		&["workspace_message*"],
-		&[WORKSPACE_MESSAGE_FILES],
+		&["thread_message*"],
+		&["thread_message*"],
+		&[THREAD_MESSAGE_FILES],
 	));
 	authorize(&repository, &run, &agent, &plain).await.unwrap();
 	assert!(unavailable(
@@ -2713,25 +2686,21 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 	));
 	// A Block of the plain message stops both: files never make a message more permitted.
 	repository.lists = Some(lists(
-		&["workspace_message*"],
-		&["workspace_message*"],
-		&["workspace_message"],
+		&["thread_message*"],
+		&["thread_message*"],
+		&["thread_message"],
 	));
 	assert!(unavailable(
 		authorize(&repository, &run, &agent, &with_files).await
 	));
 	// Lacking the plain message, the pause asks about it first.
-	repository.lists = Some(lists(
-		&[WORKSPACE_MESSAGE_FILES],
-		&[WORKSPACE_MESSAGE_FILES],
-		&[],
-	));
+	repository.lists = Some(lists(&[THREAD_MESSAGE_FILES], &[THREAD_MESSAGE_FILES], &[]));
 	let Err(Error::AuthorityRefused(refusal)) =
 		authorize(&repository, &run, &agent, &with_files).await
 	else {
 		panic!("expected an authority pause");
 	};
-	assert_eq!(refusal.action.as_deref(), Some("workspace_message"));
+	assert_eq!(refusal.action.as_deref(), Some("thread_message"));
 }
 
 #[rstest]
@@ -2742,7 +2711,7 @@ async fn a_run_only_answer_of_each_side_lets_the_call_through(
 	agent: AgentConfig,
 ) {
 	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
-	let only = ToolList::new([ToolPattern::new("workspace_read").unwrap()]).unwrap();
+	let only = ToolList::new([ToolPattern::new("thread_read").unwrap()]).unwrap();
 	repository.remote = true;
 	repository.lists = Some(
 		aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
@@ -2751,14 +2720,9 @@ async fn a_run_only_answer_of_each_side_lets_the_call_through(
 			..Default::default()
 		},
 	);
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 }
 
 #[rstest]
@@ -2769,14 +2733,9 @@ async fn without_lists_only_reach_never_is_refused(
 	agent: AgentConfig,
 ) {
 	repository.remote = true;
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 	let result = authorize(&repository, &run, &agent, &call("duty_list", json!({}))).await;
 	assert!(
 		matches!(result, Err(Error::Invalid(ref message))

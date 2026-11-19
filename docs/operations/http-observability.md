@@ -34,7 +34,7 @@ Reinhardt Gateway shared by the public router.
 The native listener acquires an application admission permit before collecting a
 request body. It rejects bodies above 1 MiB by default, 6 MiB for core
 capability and scoped file-transfer routes carrying Base64-encoded chunks, or
-8 MiB for exactly `POST /api/workspaces/{id}/attachments` (the attachment size
+8 MiB for exactly `POST /api/threads/{id}/attachments` (the attachment size
 limit), and
 times out incomplete body reception. The permit remains held through handler
 completion or cancellation. The native transport hook is supplied by
@@ -92,7 +92,7 @@ OpenAPI document do not inherit this policy. CookieJar extracts cookies once per
 handler and serializes response deltas; cookie names and security attributes
 remain centrally defined.
 
-Workspace and conversation inputs share `ValidatedJson<T>`, backed by Reinhardt
+Thread and conversation inputs share `ValidatedJson<T>`, backed by Reinhardt
 JSON extraction and validators. Blank title/goal fields return 400 with a JSON `error` containing
 sorted field names, never submitted values. JSON extraction failures retain their
 400/413/415/422 status with the generic JSON error `invalid JSON request`.

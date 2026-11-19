@@ -17,8 +17,8 @@ import { useTaskPages } from "./task-picker-pages";
 
 function clearResource(mutation: TransactionMutation): TransactionMutation {
   switch (mutation.kind) {
-    case "workspace_state":
-      return { ...mutation, workspace_id: "", expected_revision: 0 };
+    case "thread_title":
+      return { ...mutation, thread_id: "", expected_revision: 0 };
     case "complete_task":
       return { ...mutation, task_id: "", expected_revision: 0 };
     case "finish_run":
@@ -40,36 +40,36 @@ export function TransactionComposer({
   // a local Node; a subject uses the Node selected in the dashboard.
   const local = value.coordinator;
   const localNode = parseNodeAddress(local)?.node;
-  const workspaces =
-    data?.workspaces.filter((workspace) => workspace.node === localNode) ?? [];
-  const workspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+  const threads =
+    data?.threads.filter((thread) => thread.node === localNode) ?? [];
+  const threadIds = new Set(threads.map((thread) => thread.id));
   // The Task window of `/api/state` holds 50 (#664); older local Tasks are
   // read on request. `GET /api/tasks` spans every Node, so only Tasks of the
-  // local Node's Workspaces are offered. The window wins for a Task both
+  // local Node's Threads are offered. The window wins for a Task both
   // hold: it is re-read on every event.
   const taskPages = useTaskPages(data, ["transaction", local]);
   const tasks = [
     ...new Map(
       [...taskPages.older, ...(data?.tasks ?? [])]
-        .filter((task) => workspaceIds.has(task.workspace_id))
+        .filter((task) => threadIds.has(task.thread_id))
         .map((task) => [task.id, task]),
     ).values(),
   ];
   const runs =
     data?.runs.filter(
-      (run) => workspaceIds.has(run.workspace_id) && run.home_node === local,
+      (run) => threadIds.has(run.thread_id) && run.home_node === local,
     ) ?? [];
   const { t, locale } = useI18n();
-  const workspaceLabels = disambiguateLabels(
-    workspaces,
-    (workspace) => workspace.id,
-    (workspace) => workspace.title,
+  const threadLabels = disambiguateLabels(
+    threads,
+    (thread) => thread.id,
+    (thread) => thread.title,
   );
   const taskLabels = disambiguateLabels(
     tasks,
     (task) => task.id,
     (task) =>
-      `${workspaceLabels.get(task.workspace_id) ?? t("unavailableEntity")} / ${task.title}`,
+      `${threadLabels.get(task.thread_id) ?? t("unavailableEntity")} / ${task.title}`,
   );
   const runLabels = disambiguateLabels(
     runs,
@@ -87,8 +87,8 @@ export function TransactionComposer({
   const nodes = deploymentAdministrator
     ? [
         ...new Set(
-          data?.workspaces.map(
-            (workspace) => `${registryDeployment(data)}/${workspace.node}`,
+          data?.threads.map(
+            (thread) => `${registryDeployment(data)}/${thread.node}`,
           ),
         ),
       ]
@@ -200,12 +200,12 @@ export function TransactionComposer({
                     value={mutation.kind}
                     onChange={(event) => {
                       const kind = event.target.value;
-                      if (kind === "workspace_state")
+                      if (kind === "thread_title")
                         setMutation({
                           kind,
-                          workspace_id: "",
+                          thread_id: "",
                           expected_revision: 0,
-                          state: {},
+                          title: "",
                         });
                       else if (kind === "complete_task")
                         setMutation({
@@ -223,7 +223,7 @@ export function TransactionComposer({
                         });
                     }}
                   >
-                    {["workspace_state", "complete_task", "finish_run"].map(
+                    {["thread_title", "complete_task", "finish_run"].map(
                       (kind) => (
                         <option key={kind} value={kind}>
                           {t(`transactionOperation_${kind}`)}
@@ -232,52 +232,57 @@ export function TransactionComposer({
                     )}
                   </NativeSelect>
                 </Field>
-                {mutation.kind === "workspace_state" && (
+                {mutation.kind === "thread_title" && (
                   <>
-                    <Field label={t("workspace")}>
+                    <Field label={t("thread")}>
                       {participant.node_id === local ? (
                         <NativeSelect
                           required
-                          value={mutation.workspace_id}
+                          value={mutation.thread_id}
                           onChange={(event) =>
                             setMutation({
                               ...mutation,
-                              workspace_id: event.target.value,
+                              thread_id: event.target.value,
                               expected_revision:
-                                workspaces.find(
-                                  (workspace) =>
-                                    workspace.id === event.target.value,
+                                threads.find(
+                                  (thread) => thread.id === event.target.value,
                                 )?.revision ?? 0,
                             })
                           }
                         >
                           <option value="">{t("choose")}</option>
-                          {workspaces.map((workspace) => (
-                            <option key={workspace.id} value={workspace.id}>
-                              {workspaceLabels.get(workspace.id)}
+                          {threads.map((thread) => (
+                            <option key={thread.id} value={thread.id}>
+                              {threadLabels.get(thread.id)}
                             </option>
                           ))}
                         </NativeSelect>
                       ) : (
                         <Input
                           required
-                          value={mutation.workspace_id}
+                          value={mutation.thread_id}
                           onChange={(event) =>
                             setMutation({
                               ...mutation,
-                              workspace_id: event.target.value,
+                              thread_id: event.target.value,
                               expected_revision: 0,
                             })
                           }
                         />
                       )}
                     </Field>
-                    <JsonInput
-                      objectOnly
-                      label={t("transactionState")}
-                      value={mutation.state}
-                      change={(state) => setMutation({ ...mutation, state })}
-                    />
+                    <Field label={t("title")}>
+                      <Input
+                        required
+                        value={mutation.title}
+                        onChange={(event) =>
+                          setMutation({
+                            ...mutation,
+                            title: event.target.value,
+                          })
+                        }
+                      />
+                    </Field>
                   </>
                 )}
                 {mutation.kind === "complete_task" && (
@@ -482,10 +487,10 @@ export function TransactionComposer({
                   mutations: [
                     ...participant.mutations,
                     {
-                      kind: "workspace_state",
-                      workspace_id: "",
+                      kind: "thread_title",
+                      thread_id: "",
                       expected_revision: 0,
-                      state: {},
+                      title: "",
                     },
                   ],
                 })

@@ -11,7 +11,7 @@ import { continuesAt, deadlineTime } from "../approval-settings-model";
 import { useI18n } from "../ui";
 import { cn } from "../lib/utils";
 import { collaborationCopy } from "./copy";
-import { workspaceCopy } from "./workspace-copy";
+import { threadCopy } from "./thread-copy";
 
 type PendingRequest = { request: HumanRequest; node: string };
 
@@ -29,7 +29,7 @@ export function ChannelRequests({
   className?: string;
 }) {
   const { locale, t } = useI18n();
-  const words = workspaceCopy[locale];
+  const words = threadCopy[locale];
   const copy = collaborationCopy[locale];
   const [busy, setBusy] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -46,7 +46,7 @@ export function ChannelRequests({
       await Promise.all([
         client.invalidateQueries({ queryKey: ["state"] }),
         client.invalidateQueries({ queryKey: ["mesh"] }),
-        client.invalidateQueries({ queryKey: ["workspace"] }),
+        client.invalidateQueries({ queryKey: ["thread"] }),
       ]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));

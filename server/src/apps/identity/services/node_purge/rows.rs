@@ -76,7 +76,7 @@ pub(super) async fn validate(tx: &mut dyn TransactionExecutor, owners: &Owners<'
 				.to_owned(),
 		));
 		// NULL owner predicates must count as surviving; IS NOT TRUE also covers
-		// nullable workspace/area links without weakening a cross-owner guard.
+		// nullable thread/area links without weakening a cross-owner guard.
 		query
 			.and_where(selectors::not_true(
 				owners.predicate_at(child, "node_purge_child")?,

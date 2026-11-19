@@ -46,7 +46,7 @@ impl NativeFlowGraph<'_> {
 		.await
 	}
 
-	/// The Root Task's Node: the Node of the Workspace it works in.
+	/// The Root Task's Node: the Node of the Thread it works in.
 	pub(crate) async fn task_node(&mut self, task: Uuid) -> Result<String> {
 		native::query_scalar(
 			&Query::select()
@@ -54,9 +54,9 @@ impl NativeFlowGraph<'_> {
 				.from_as(Alias::new("tasks"), Alias::new("t"))
 				.join(
 					JoinType::InnerJoin,
-					TableRef::table_alias(Alias::new("workspaces"), Alias::new("w")),
+					TableRef::table_alias(Alias::new("threads"), Alias::new("w")),
 					Expr::col((Alias::new("w"), Alias::new("id")))
-						.equals((Alias::new("t"), Alias::new("workspace_id")))
+						.equals((Alias::new("t"), Alias::new("thread_id")))
 						.and(
 							Expr::col((Alias::new("w"), Alias::new("tenant")))
 								.equals((Alias::new("t"), Alias::new("tenant"))),

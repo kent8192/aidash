@@ -238,7 +238,7 @@ async fn workers_filter_terminal_paused_retry_and_waiting_records(
 		let request = HumanRequest::build()
 			.tenant("acme")
 			.id(request_id)
-			.workspace_id(saved.workspace_id)
+			.thread_id(saved.thread_id)
 			.run(saved.id)
 			.kind(kind)
 			.prompt("Continue?")

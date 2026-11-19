@@ -20,4 +20,5 @@ pub(crate) mod duty_scripts;
 pub mod migration_backfill;
 pub(crate) mod scratch;
 
+pub(crate) mod thread_backfill;
 pub(crate) mod workspace_scratch_backfill;

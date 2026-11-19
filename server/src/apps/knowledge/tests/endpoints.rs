@@ -1,4 +1,4 @@
-use crate::endpoint::{EndpointFixture, assert_json, assert_json_rejection, endpoint, workspace};
+use crate::endpoint::{EndpointFixture, assert_json, assert_json_rejection, endpoint, thread};
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::knowledge::models::{
 	SemanticCollection, SemanticEntry, SemanticHistory, SemanticIndexe, SemanticPoint,
@@ -26,8 +26,8 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	};
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Legacy image ordering").await;
-	let workspace_id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+	let thread = thread(&member, "Legacy image ordering").await;
+	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
 	index_spec["max_images"] = json!(1);
 	let area = Uuid::new_v4();
 	let unknown = Uuid::new_v4();
@@ -47,7 +47,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 				"home_node",
 				"agent_id",
 				"owner",
-				"workspace_id",
+				"thread_id",
 				"thread_id",
 			]
 			.map(Alias::new),
@@ -58,7 +58,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			app.runtime.store.deployment.to_string().into(),
 			"fixture".into(),
 			"member".into(),
-			workspace_id.into(),
+			thread_id.into(),
 			Uuid::new_v4().into(),
 		])
 		.to_string(PostgresQueryBuilder);
@@ -144,7 +144,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	assert_json(
 		member
 			.post(
-				&format!("/api/workspaces/{workspace_id}/semantic/index"),
+				&format!("/api/threads/{thread_id}/semantic/index"),
 				&json!({"expected_revision":0,"spec":index_spec}),
 				"json",
 			)
@@ -156,7 +156,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	let sql = Query::select()
 		.columns(["slots", "waiting_authority"].map(Alias::new))
 		.from(Alias::new("semantic_image_ledgers"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
 		.to_string(PostgresQueryBuilder);
 	let row = sqlx::query_as::<_, (Value, bool)>(&sql)
 		.fetch_one(app.runtime.store.pool.fixture_driver())
@@ -172,7 +172,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	let sql = Query::select()
 		.columns(["state", "last_error"].map(Alias::new))
 		.from(Alias::new("semantic_entries"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
 		.to_string(PostgresQueryBuilder);
 	let row = sqlx::query_as::<_, (String, Option<String>)>(&sql)
 		.fetch_one(app.runtime.store.pool.fixture_driver())
@@ -185,7 +185,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	let task = assert_json(
 		member
 			.post(
-				&format!("/api/workspaces/{workspace_id}/tasks"),
+				&format!("/api/threads/{thread_id}/tasks"),
 				&json!({"title":"Owner run","description":"Resume legacy indexing"}),
 				"json",
 			)
@@ -216,7 +216,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			[
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -228,7 +228,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 		.values_panic::<_, reinhardt::query::Value>([
 			run.into(),
 			task_id.into(),
-			workspace_id.into(),
+			thread_id.into(),
 			home.to_string().into(),
 			node.to_string().into(),
 			"fixture".into(),
@@ -260,7 +260,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			[
 				"run_id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"tenant",
 				"credential_id",
 				"root_subject",
@@ -272,7 +272,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			Query::select()
 				.expr(Expr::value(run))
 				.expr(Expr::value(task_id))
-				.expr(Expr::value(workspace_id))
+				.expr(Expr::value(thread_id))
 				.expr(Expr::value("endpoint"))
 				.expr(Expr::value(credential))
 				.expr(Expr::value("member"))
@@ -287,7 +287,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	let sql = Query::update()
 		.table(Alias::new("semantic_image_ledgers"))
 		.value_expr("next_authority_check", Expr::cust("CLOCK_TIMESTAMP()"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)
 		.execute(app.runtime.store.pool.fixture_driver())
@@ -299,7 +299,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	let sql = Query::select()
 		.columns(["source", "state", "last_error"].map(Alias::new))
 		.from(Alias::new("semantic_entries"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace_id)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
 		.to_string(PostgresQueryBuilder);
 	let rows = sqlx::query_as::<_, (Value, String, Option<String>)>(&sql)
 		.fetch_all(app.runtime.store.pool.fixture_driver())
@@ -344,11 +344,8 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Semantic limits").await;
-	let base = format!(
-		"/api/workspaces/{}/semantic",
-		workspace["id"].as_str().unwrap()
-	);
+	let thread = thread(&member, "Semantic limits").await;
+	let base = format!("/api/threads/{}/semantic", thread["id"].as_str().unwrap());
 	let index_path = format!("{base}/index");
 	let entries_path = format!("{base}/entries");
 	assert_json(
@@ -408,10 +405,10 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Index contracts").await;
+	let thread = thread(&member, "Index contracts").await;
 	let path = format!(
-		"/api/workspaces/{}/semantic/index",
-		workspace["id"].as_str().unwrap()
+		"/api/threads/{}/semantic/index",
+		thread["id"].as_str().unwrap()
 	);
 	let mut invalid = vec![(json!({}), 422), (json!([]), 422), (Value::Null, 422)];
 	for field in index_spec.as_object().unwrap().keys() {
@@ -566,11 +563,8 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Source contracts").await;
-	let base = format!(
-		"/api/workspaces/{}/semantic",
-		workspace["id"].as_str().unwrap()
-	);
+	let thread = thread(&member, "Source contracts").await;
+	let base = format!("/api/threads/{}/semantic", thread["id"].as_str().unwrap());
 	assert_json(
 		member
 			.post(
@@ -655,11 +649,8 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	// Arrange two generations, including a superseded point in the active collection.
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Generation cleanup").await;
-	let base = format!(
-		"/api/workspaces/{}/semantic",
-		workspace["id"].as_str().unwrap()
-	);
+	let thread = thread(&member, "Generation cleanup").await;
+	let base = format!("/api/threads/{}/semantic", thread["id"].as_str().unwrap());
 	let index_path = format!("{base}/index");
 	let entries_path = format!("{base}/entries");
 	let cleanup_path = format!("{base}/cleanup");
@@ -719,19 +710,18 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	aidash_server::semantic::backend::ensure_collection(store, &vector, second_collection, 8)
 		.await
 		.unwrap();
-	let workspace_tenant: String =
-		sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id = $1")
-			.bind(workspace["id"].as_str().unwrap().parse::<Uuid>().unwrap())
-			.fetch_one(store.pool.fixture_driver())
-			.await
-			.unwrap();
+	let thread_tenant: String = sqlx::query_scalar("SELECT tenant FROM threads WHERE id = $1")
+		.bind(thread["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap();
 	aidash_server::semantic::backend::upsert(
 		store,
 		&vector,
 		second_collection,
 		point_id,
 		&[1., 0., 0., 0., 0., 0., 0., 0.],
-		json!({"workspace_id":workspace["id"],"tenant":workspace_tenant}),
+		json!({"thread_id":thread["id"],"tenant":thread_tenant}),
 	)
 	.await
 	.unwrap();
@@ -916,7 +906,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 
 /// The Ordered Retrieval Key pins this digest: an ordinary entry insert or
 /// edit must change it although the index revision stays the same, while an
-/// unchanged corpus or another Workspace's entries leave it as it was.
+/// unchanged corpus or another Thread's entries leave it as it was.
 #[rstest]
 #[tokio::test]
 async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
@@ -929,12 +919,12 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	let store = &app.runtime.store;
 	let mut ids = vec![];
 	for title in ["Corpus", "Other corpus"] {
-		let workspace = workspace(&member, title).await;
-		let id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+		let thread = thread(&member, title).await;
+		let id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
 		assert_json(
 			member
 				.post(
-					&format!("/api/workspaces/{id}/semantic/index"),
+					&format!("/api/threads/{id}/semantic/index"),
 					&json!({"expected_revision":0,"spec":index_spec}),
 					"json",
 				)
@@ -944,27 +934,22 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 		);
 		ids.push(id);
 	}
-	let (workspace, other) = (ids[0], ids[1]);
-	let entries = format!("/api/workspaces/{workspace}/semantic/entries");
-	let index = format!("/api/workspaces/{workspace}/semantic/index");
+	let (thread, other) = (ids[0], ids[1]);
+	let entries = format!("/api/threads/{thread}/semantic/entries");
+	let index = format!("/api/threads/{thread}/semantic/index");
 	let participant = Some(Uuid::new_v4());
 	let digest = || {
-		aidash_server::semantic::services::corpus_digest(
-			store,
-			&TEST_FIXTURE,
-			workspace,
-			participant,
-		)
+		aidash_server::semantic::services::corpus_digest(store, &TEST_FIXTURE, thread, participant)
 	};
 	let unbound =
-		|| aidash_server::semantic::services::corpus_digest(store, &TEST_FIXTURE, workspace, None);
+		|| aidash_server::semantic::services::corpus_digest(store, &TEST_FIXTURE, thread, None);
 	let empty = digest().await.unwrap();
 	// Act
 	assert_json(member.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
 	let inserted = digest().await.unwrap();
 	assert_json(member.post(&entries, &json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let edited = digest().await.unwrap();
-	assert_json(member.post(&format!("/api/workspaces/{other}/semantic/entries"), &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"elsewhere"},"metadata":{}}), "json").await.unwrap(), 200);
+	assert_json(member.post(&format!("/api/threads/{other}/semantic/entries"), &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"elsewhere"},"metadata":{}}), "json").await.unwrap(), 200);
 	let unchanged = digest().await.unwrap();
 	// A memory unit mutation bumps only its bank's revision.
 	use aidash_server::database::native;
@@ -975,15 +960,15 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_banks"))
-			.columns(["id", "home", "tenant", "workspace_id", "revision"].map(Alias::new))
+			.columns(["id", "home", "tenant", "thread_id", "revision"].map(Alias::new))
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(bank))
 					.expr(Expr::value(store.deployment.as_str()))
 					.expr(Expr::cust(format!(
-						"(SELECT tenant FROM workspaces WHERE id = '{workspace}')"
+						"(SELECT tenant FROM threads WHERE id = '{thread}')"
 					)))
-					.expr(Expr::value(workspace))
+					.expr(Expr::value(thread))
 					.expr(Expr::value(1_i64))
 					.to_owned(),
 			)
@@ -1053,9 +1038,9 @@ async fn members_configure_their_index_under_semantic_index_manage(
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Configured by a member").await;
-	let id = workspace["id"].as_str().unwrap();
-	let index = format!("/api/workspaces/{id}/semantic/index");
+	let thread = thread(&member, "Configured by a member").await;
+	let id = thread["id"].as_str().unwrap();
+	let index = format!("/api/threads/{id}/semantic/index");
 	assert_json(
 		member
 			.post(
@@ -1069,7 +1054,7 @@ async fn members_configure_their_index_under_semantic_index_manage(
 	);
 	assert_json(
 		member
-			.get(&format!("/api/workspaces/{id}/semantic/cleanup"))
+			.get(&format!("/api/threads/{id}/semantic/cleanup"))
 			.await
 			.unwrap(),
 		200,
@@ -1111,12 +1096,12 @@ async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_co
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Private embeddings").await;
+	let thread = thread(&member, "Private embeddings").await;
 	index_spec["embedding"]["endpoint"] = json!(address);
 	let body = json!({"expected_revision":0,"spec":index_spec});
 	let path = format!(
-		"/api/workspaces/{}/semantic/index",
-		workspace["id"].as_str().unwrap()
+		"/api/threads/{}/semantic/index",
+		thread["id"].as_str().unwrap()
 	);
 	assert_json(member.post(&path, &body, "json").await.unwrap(), 400);
 	// A Deployment Administrator holds no Tenant settings authority (#484), so
@@ -1139,11 +1124,8 @@ async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_semantic_
 	// Arrange: a member of the Tenant with a configured index and one stored entry.
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Administrator refusal").await;
-	let base = format!(
-		"/api/workspaces/{}/semantic",
-		workspace["id"].as_str().unwrap()
-	);
+	let thread = thread(&member, "Administrator refusal").await;
+	let base = format!("/api/threads/{}/semantic", thread["id"].as_str().unwrap());
 	let index_path = format!("{base}/index");
 	let entries_path = format!("{base}/entries");
 	let cleanup_path = format!("{base}/cleanup");

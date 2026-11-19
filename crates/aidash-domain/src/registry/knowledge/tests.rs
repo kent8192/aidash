@@ -34,7 +34,7 @@ fn reference_matches_are_ranked_and_limited_across_sources() {
 }
 
 #[test]
-fn reference_matches_use_only_tokens_remaining_after_workspace_results() {
+fn reference_matches_use_only_tokens_remaining_after_thread_results() {
 	let first = serde_json::json!({"name":"first.png"});
 	let second = serde_json::json!({"name":"second.png"});
 	let one_cost = crate::context::estimated_tokens(

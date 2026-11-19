@@ -85,8 +85,8 @@ async fn graph_custom(
 	overrides: Value,
 ) -> (u16, Value) {
 	let mut payload = json!({
-		"subject":subject,"scope_workspace":null,"mode":"mesh",
-		"kinds":["workspace","goal","task","agent","tool","model"],
+		"subject":subject,"scope_thread":null,"mode":"mesh",
+		"kinds":["thread","goal","task","agent","tool","model"],
 		"relations":["goal","contains","tool","model"],
 		"hours":0,"limit":80,"cursor":null,
 	});
@@ -114,8 +114,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let (status, created) = common::post(
 		&app,
 		&subject_token,
-		"/api/workspaces",
-		json!({"title":"Long Goal Workspace","goal":long_goal}),
+		"/api/threads",
+		json!({"title":"Long Goal Thread"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
@@ -137,8 +137,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			&f.config.api_token,
 			"/api/federation/graph",
 			json!({
-				"node_id":source.address(),"scope_workspace":null,"mode":"mesh",
-				"kinds":["workspace","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
+				"node_id":source.address(),"scope_thread":null,"mode":"mesh",
+				"kinds":["thread","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
 			})
 		)
 		.await
@@ -230,7 +230,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	let other_workspace = Uuid::new_v4();
+	let other_thread = Uuid::new_v4();
 	let other_space = fixture_scratch_space(
 		&f,
 		"other",
@@ -238,10 +238,10 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	{
-		let query_bind_1 = other_workspace;
+		let query_bind_1 = other_thread;
 		sqlx::query(
 			&Query::insert()
-				.into_table(Alias::new("workspaces"))
+				.into_table(Alias::new("threads"))
 				.columns([
 					Alias::new("id"),
 					Alias::new("title"),
@@ -274,12 +274,12 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	}
 	.unwrap();
 	{
-		let query_bind_1 = other_workspace;
+		let query_bind_1 = other_thread;
 		sqlx::query(
 			&Query::insert()
-				.into_table(Alias::new("authorization_workspaces"))
+				.into_table(Alias::new("authorization_threads"))
 				.columns([
-					Alias::new("workspace_id"),
+					Alias::new("thread_id"),
 					Alias::new("tenant"),
 					Alias::new("owner_subject"),
 				])
@@ -305,7 +305,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.columns([
 				Alias::new("id"),
 				Alias::new("node"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
 				Alias::new("tenant"),
@@ -313,8 +313,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.values_panic([
 				IntoValue::into_value(Uuid::new_v4()),
 				IntoValue::into_value(common::default_node(&f.store, "other").await.node.as_str()),
-				IntoValue::into_value(other_workspace),
-				IntoValue::into_value("workspace.updated"),
+				IntoValue::into_value(other_thread),
+				IntoValue::into_value("thread.updated"),
 				IntoValue::into_value(json!({})),
 				IntoValue::into_value("other"),
 			])
@@ -327,7 +327,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	assert_eq!(status, 200, "{after_other_tenant}");
 	assert_eq!(after_other_tenant["generation"], page["generation"]);
 	assert_eq!(graph(&app, &source, viewer, Some(cursor), 2).await.0, 200);
-	let workspace_id = f
+	let thread_id = f
 		.store
 		.tasks(&TEST_FIXTURE, None)
 		.await
@@ -335,9 +335,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.into_iter()
 		.find(|task| task.id == task_id)
 		.unwrap()
-		.workspace_id;
-	let tenant: String = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id = $1")
-		.bind(workspace_id)
+		.thread_id;
+	let tenant: String = sqlx::query_scalar("SELECT tenant FROM threads WHERE id = $1")
+		.bind(thread_id)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
@@ -345,7 +345,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	tasks.into_table(Alias::new("tasks")).columns(
 		[
 			"id",
-			"workspace_id",
+			"thread_id",
 			"title",
 			"description",
 			"created_by",
@@ -356,7 +356,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	for index in 1..=81_u128 {
 		tasks.values_panic([
 			IntoValue::into_value(Uuid::from_u128(index + 1000)),
-			IntoValue::into_value(workspace_id),
+			IntoValue::into_value(thread_id),
 			IntoValue::into_value(format!("Task {index}")),
 			IntoValue::into_value("Fixture"),
 			IntoValue::into_value("alice"),
@@ -372,7 +372,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		[
 			"id",
 			"task_id",
-			"workspace_id",
+			"thread_id",
 			"home_node",
 			"node",
 			"agent_id",
@@ -387,7 +387,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		runs.values_panic([
 			IntoValue::into_value(Uuid::from_u128(index)),
 			IntoValue::into_value(Uuid::from_u128(index + 1000)),
-			IntoValue::into_value(workspace_id),
+			IntoValue::into_value(thread_id),
 			IntoValue::into_value(common::default_node(&f.store, "acme").await.to_string()),
 			IntoValue::into_value(common::default_node(&f.store, "acme").await.node.as_str()),
 			IntoValue::into_value("research"),
@@ -558,8 +558,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.await
 	.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({
-		"id":"deny-workspace-graph","effect":"deny","subjects":{"any":true},
-		"actions":["workspace.read"],"resources":{"kinds":["workspace"]},
+		"id":"deny-thread-graph","effect":"deny","subjects":{"any":true},
+		"actions":["thread.read"],"resources":{"kinds":["thread"]},
 		"condition":{"op":"eq","left":{"source":"environment","path":"/source_scope"},
 			"right":{"source":"literal","value":"remote"}},
 	}));
@@ -671,8 +671,8 @@ async fn the_removed_administrator_token_and_grant_routes_admit_nothing(
 	let source = common::register_source(&f, &app, SOURCE, "acme").await;
 	let identity = Uuid::new_v4();
 	let payload = json!({
-		"subject":format!("oidc:{identity}"),"scope_workspace":null,"mode":"mesh",
-		"kinds":["workspace","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
+		"subject":format!("oidc:{identity}"),"scope_thread":null,"mode":"mesh",
+		"kinds":["thread","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
 	});
 	let response = common::peering::post_as(
 		&app.client(),
@@ -737,9 +737,9 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			{"id":"tenant-administration","effect":"allow","subjects":{"ids":["alice"]},
 			 "actions":["node_registration.read","node_registration.update","peer_mapping.read","peer_mapping.update","credential.create","credential.read","credential.revoke"],
 			 "resources":{"kinds":["node_registration","peer_mapping","credential"]}},
-			{"id":"final-workspace","effect":"allow","subjects":{"any":true},
-			 "actions":["workspace.read","workspace.events"],
-			 "resources":{"kinds":["workspace"],"ids":[final_id.to_string()]}}
+			{"id":"final-thread","effect":"allow","subjects":{"any":true},
+			 "actions":["thread.read","thread.events"],
+			 "resources":{"kinds":["thread"],"ids":[final_id.to_string()]}}
 		]
 	});
 	common::tenant_root(&f, "sparse").await;
@@ -762,8 +762,8 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	let scratch_space = fixture_scratch_space(&f, "sparse", source.receiver.node.as_str()).await;
 	let ids: Vec<Uuid> = (1..=4096).map(Uuid::from_u128).collect();
 	for chunk in ids.chunks(256) {
-		let mut workspaces = Query::insert();
-		workspaces.into_table(Alias::new("workspaces")).columns([
+		let mut threads = Query::insert();
+		threads.into_table(Alias::new("threads")).columns([
 			Alias::new("id"),
 			Alias::new("title"),
 			Alias::new("goal"),
@@ -774,14 +774,14 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		]);
 		let mut authorities = Query::insert();
 		authorities
-			.into_table(Alias::new("authorization_workspaces"))
+			.into_table(Alias::new("authorization_threads"))
 			.columns([
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("tenant"),
 				Alias::new("owner_subject"),
 			]);
 		for id in chunk {
-			workspaces.values_panic([
+			threads.values_panic([
 				IntoValue::into_value(*id),
 				IntoValue::into_value("Hidden"),
 				IntoValue::into_value("Hidden goal"),
@@ -796,7 +796,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				IntoValue::into_value("alice"),
 			]);
 		}
-		sqlx::query(&workspaces.to_string(PostgresQueryBuilder))
+		sqlx::query(&threads.to_string(PostgresQueryBuilder))
 			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -809,7 +809,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		let query_bind_1 = final_id;
 		sqlx::query(
 			&Query::insert()
-				.into_table(Alias::new("workspaces"))
+				.into_table(Alias::new("threads"))
 				.columns([
 					Alias::new("id"),
 					Alias::new("title"),
@@ -845,9 +845,9 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		let query_bind_1 = final_id;
 		sqlx::query(
 			&Query::insert()
-				.into_table(Alias::new("authorization_workspaces"))
+				.into_table(Alias::new("authorization_threads"))
 				.columns([
-					Alias::new("workspace_id"),
+					Alias::new("thread_id"),
 					Alias::new("tenant"),
 					Alias::new("owner_subject"),
 				])
@@ -872,14 +872,14 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	events.into_table(Alias::new("events")).columns([
 		Alias::new("id"),
 		Alias::new("node"),
-		Alias::new("workspace_id"),
+		Alias::new("thread_id"),
 		Alias::new("kind"),
 		Alias::new("data"),
 		Alias::new("created_at"),
 		Alias::new("tenant"),
 	]);
-	let samples = std::iter::once((final_id, "workspace.updated"))
-		.chain(std::iter::repeat_n((ids[0], "workspace.updated"), 600))
+	let samples = std::iter::once((final_id, "thread.updated"))
+		.chain(std::iter::repeat_n((ids[0], "thread.updated"), 600))
 		.chain(std::iter::repeat_n((final_id, "unrelated.event"), 600));
 	for (id, kind) in samples {
 		events.values_panic([
@@ -913,7 +913,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			.iter()
 			.any(|node| node["goal_body"] == "Reachable goal")
 	);
-	let options = json!({"kinds":["workspace","goal"],"relations":[],"limit":2});
+	let options = json!({"kinds":["thread","goal"],"relations":[],"limit":2});
 	let (status, first) = graph_custom(&app, &source, viewer, options.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["nodes"].as_array().unwrap().is_empty());
@@ -924,13 +924,12 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	let reference = json!([
 		"resource",
 		source.receiver.to_string(),
-		"workspace",
+		"thread",
 		final_id.to_string()
 	])
 	.to_string();
 	assert!(activity["activity"].as_array().unwrap().iter().any(|item| {
-		item["kind"] == "workspace.updated"
-			&& item["reference"].as_str() == Some(reference.as_str())
+		item["kind"] == "thread.updated" && item["reference"].as_str() == Some(reference.as_str())
 	}));
 	cleanup(f, &url, &schema).await;
 }

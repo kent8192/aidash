@@ -94,7 +94,7 @@ fn described(inspection: Inspection) -> serde_json::Value {
 		"target_node": "aidash://receiver",
 		"source_tenant": "acme",
 		"source_subject": "alice",
-		"task": {"id":Uuid::nil(),"workspace_id":Uuid::nil(),"title":"Task","description":"Describe","status":"OPEN","requirements":{},"owner":null,"created_by":"human","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-02T00:00:00Z"},
+		"task": {"id":Uuid::nil(),"thread_id":Uuid::nil(),"title":"Task","description":"Describe","status":"OPEN","requirements":{},"owner":null,"created_by":"human","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-02T00:00:00Z"},
 		"inspection": inspection,
 		"expires_at": "2026-10-02T00:00:00Z",
 	})

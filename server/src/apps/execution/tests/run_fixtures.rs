@@ -17,7 +17,7 @@ pub fn run() -> Run {
 		id: Uuid::new_v4(),
 		tenant: "acme".into(),
 		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		home_node: "aidash://remote-delivery".into(),
 		agent_id: "fixture".into(),
 		agent_version: "1.0.0".into(),

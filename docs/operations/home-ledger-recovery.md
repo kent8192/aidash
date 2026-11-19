@@ -164,7 +164,7 @@ joined to `memory_banks`, including shared banks whose participant is absent.
 Use stable pagination. Record the inventory cut and evaluate new banks against
 their first due schedule rather than claim that a run covered future banks.
 
-For each bank, acquire the existing workspace lock and re-read current bank
+For each bank, acquire the existing thread lock and re-read current bank
 settings and the pinned policy. Use the existing canonical-unit, fence, origin
 and authority checks to produce the archive. Re-check eligibility on retry.
 Continue processing other banks after a bank fails, and record each failure;
@@ -270,7 +270,7 @@ copied by its first due six-hour run; a policy change cannot keep counting an
 invalid older copy. Keep a durable first-failure/last-success observation so a
 restarted Job does not reset the clock. Missing executions must also be detected.
 
-Keep metric labels bounded to deployment/profile rather than Tenant, workspace
+Keep metric labels bounded to deployment/profile rather than Tenant, thread
 or unit. Put bank-level failures and object generations in restricted diagnostic
 reports, with no body or secret values. Archive failures do not gate routine
 updates; synchronous protection and production activation requirements still do.

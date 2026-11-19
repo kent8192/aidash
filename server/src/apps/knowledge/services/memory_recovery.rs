@@ -113,21 +113,21 @@ fn bypass(store: &Store) -> Store {
 	internal
 }
 
-/// The address of the Node a Workspace belongs to, which is the home of its banks.
-async fn workspace_home(store: &Store, workspace: Uuid) -> Result<String> {
+/// The address of the Node a Thread belongs to, which is the home of its banks.
+async fn thread_home(store: &Store, thread: Uuid) -> Result<String> {
 	let internal = bypass(store);
 	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
 		let node: Option<String> = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col("id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **lease.tx())
 		.await?;
-		let node = node.ok_or_else(|| Error::NotFound("workspace".into()))?;
+		let node = node.ok_or_else(|| Error::NotFound("thread".into()))?;
 		Ok(format!("{}/{node}", store.deployment))
 	}
 	.await;
@@ -243,7 +243,7 @@ async fn backup_to(
 	recovery.require_serving()?;
 	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
-		repository::lock_workspace(&mut lease, bank.workspace, false).await?;
+		repository::lock_thread(&mut lease, bank.thread, false).await?;
 		let (settings, policy) = configuration(&mut lease, &bank).await?;
 		let ledger = recovery.load()?;
 		let contents = selected(&mut lease, &bank, policy.retention.max_unit_records).await?;
@@ -385,7 +385,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 	let internal = bypass(store);
 	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
-		repository::lock_workspace(&mut lease, archive.bank.workspace, true).await?;
+		repository::lock_thread(&mut lease, archive.bank.thread, true).await?;
 		let (settings, policy) = configuration(&mut lease, &archive.bank).await?;
 		if settings.revision != archive.settings_revision
 			|| settings.provider != archive.provider
@@ -486,7 +486,7 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 		)
 		.fetch_one(store.pool.in_scope(&RECOVERY))
 		.await?;
-		if record.home_node != unit.bank.home || record.workspace_id != unit.bank.workspace {
+		if record.home_node != unit.bank.home || record.thread_id != unit.bank.thread {
 			return Err(Error::Forbidden);
 		}
 		let mut access = crate::authorization::execution::proof_for_run(store, &record.metadata())
@@ -508,14 +508,14 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 	let mut writer = Lease::restore_proof(
 		store,
 		serde_json::to_value(origin.authority)?,
-		unit.bank.workspace,
+		unit.bank.thread,
 	)
 	.await?;
 	let result = async {
 		units::authorize(&mut writer, &unit.bank, "memory.read").await?;
 		units::current(
 			&mut writer,
-			unit.bank.workspace,
+			unit.bank.thread,
 			&unit.content.evidence,
 			policy.bounds.max_graph_visits,
 		)
@@ -592,7 +592,7 @@ async fn finish(
 			recovery.advance_restore(epoch, &unit).await?;
 			ledger.observe(&unit)?;
 			let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
-			repository::lock_workspace(&mut lease, bank.workspace, true).await?;
+			repository::lock_thread(&mut lease, bank.thread, true).await?;
 			let bank_id = repository::bank_id(&mut lease, bank, false)
 				.await?
 				.ok_or(Error::Forbidden)?;
@@ -615,7 +615,7 @@ async fn finish(
 		}
 	}
 	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
-	repository::lock_workspace(&mut lease, bank.workspace, true).await?;
+	repository::lock_thread(&mut lease, bank.thread, true).await?;
 	let mut contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 	let bank_id = repository::bank_id(&mut lease, bank, false)
 		.await?
@@ -686,7 +686,7 @@ async fn finish(
 			let state: String = row.try_get("state")?;
 			if let Some(index) = crate::semantic::models::SemanticIndexe::locked(
 				&mut **lease.tx(),
-				bank.workspace,
+				bank.thread,
 				false,
 			)
 			.await?
@@ -807,10 +807,9 @@ async fn finish(
 			return Err(Error::SemanticUnavailable);
 		}
 		let mut tx = store.pool.begin(&RECOVERY).await?;
-		let index =
-			crate::semantic::models::SemanticIndexe::locked(&mut *tx, bank.workspace, false)
-				.await?
-				.ok_or(Error::SemanticUnavailable)?;
+		let index = crate::semantic::models::SemanticIndexe::locked(&mut *tx, bank.thread, false)
+			.await?
+			.ok_or(Error::SemanticUnavailable)?;
 		if index.revision != row.try_get::<i64>("index_revision")? {
 			return Err(Error::SemanticUnavailable);
 		}
@@ -905,8 +904,8 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					.required(true),
 			)
 			.arg(
-				clap::Arg::new("workspace")
-					.long("workspace")
+				clap::Arg::new("thread")
+					.long("thread")
 					.value_parser(clap::value_parser!(Uuid)),
 			)
 			.arg(clap::Arg::new("tenant").long("tenant"))
@@ -1021,16 +1020,16 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					println!("verified new-format memory ledger");
 				}
 				Some("backup") => {
-					let workspace = *matches
-						.get_one::<Uuid>("workspace")
+					let thread = *matches
+						.get_one::<Uuid>("thread")
 						.ok_or_else(|| Error::Invalid("backup requires --workspace".into()))?;
 					let bank = Bank {
-						home: workspace_home(&store, workspace).await?,
+						home: thread_home(&store, thread).await?,
 						tenant: matches
 							.get_one::<String>("tenant")
 							.ok_or_else(|| Error::Invalid("backup requires --tenant".into()))?
 							.clone(),
-						workspace,
+						thread,
 						participant: matches.get_one::<Uuid>("participant").copied(),
 					};
 					println!("{}", backup(&store, directory, bank).await?.display());

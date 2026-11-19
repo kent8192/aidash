@@ -199,7 +199,7 @@ impl RunInput {
 		tx.execute(&sql, convert_values(values)).await?;
 		if run.is_local(node) {
 			let message =
-				Message::append_in(tx, run.workspace_id, sender, content, key, publisher).await?;
+				Message::append_in(tx, run.thread_id, sender, content, key, publisher).await?;
 			Self::bind_message(tx, run_id, key, message.id).await?;
 		}
 		Ok(false)
@@ -217,7 +217,7 @@ impl RunInput {
 			.await
 			.map(|_| ())
 	}
-	/// Admit what another Run writes to `run`. Its copy in `run`'s Workspace names
+	/// Admit what another Run writes to `run`. Its copy in `run`'s Thread names
 	/// the writing Run, as that Run's own messages do.
 	pub(crate) async fn admit_from_run(
 		tx: &mut dyn TransactionExecutor,
@@ -231,7 +231,7 @@ impl RunInput {
 			.await
 			.map(|_| ())
 	}
-	/// The Workspace of `run` and the message bound to its input `key`, if the
+	/// The Thread of `run` and the message bound to its input `key`, if the
 	/// message was written locally.
 	pub(crate) async fn local_message_of(
 		tx: &mut dyn TransactionExecutor,
@@ -245,7 +245,7 @@ impl RunInput {
 			.find(|input| input.idempotency_key == key);
 		Ok(input
 			.and_then(|input| input.message_id)
-			.map(|message| (run.workspace_id, message)))
+			.map(|message| (run.thread_id, message)))
 	}
 	pub(crate) async fn admit_media(
 		tx: &mut dyn TransactionExecutor,

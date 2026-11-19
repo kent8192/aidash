@@ -68,7 +68,7 @@ pub fn is_managed_image_key(key: &str) -> bool {
 	key.starts_with(ATTACHMENT_IMAGE_KEY_PREFIX) || key.starts_with(WORKING_IMAGE_KEY_PREFIX)
 }
 
-/// The reason an image cannot currently enter its Workspace index.
+/// The reason an image cannot currently enter its Thread index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnsupportedReason {
@@ -196,7 +196,7 @@ pub fn image_changes(
 		.collect()
 }
 
-/// One current File version and its position in the Workspace image quota.
+/// One current File version and its position in the Thread image quota.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageSlot {
 	pub area_id: Uuid,
@@ -449,7 +449,7 @@ pub struct IndexingSpec {
 
 impl IndexingSpec {
 	/// The index a conversation creates for its target's memory provider
-	/// (#647): only what the memory bank needs, so no automatic Workspace
+	/// (#647): only what the memory bank needs, so no automatic Thread
 	/// context, and the limits the dashboard offers by default.
 	pub fn for_memory(embedding: EmbeddingConfig) -> Self {
 		Self {
@@ -474,7 +474,7 @@ impl IndexingSpec {
 #[derive(Debug, Clone)]
 pub struct IndexingEntry {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub source: Value,
 	pub revision: i64,
 	pub point_id: Uuid,

@@ -1,7 +1,7 @@
 //! Deployment and Node identity (ADR 0028, ADR 0064). A Deployment is one
 //! installation, `aidash://<name>`. A Node is an agent hub inside one Tenant,
 //! addressed as `aidash://<deployment>/<node name>`. Nothing else in the
-//! workspace parses or formats these forms.
+//! thread parses or formats these forms.
 use crate::identity::tenancy::{TenancyRules, assigned_name};
 use crate::tenancy::TenantName;
 use crate::{Error, Result};

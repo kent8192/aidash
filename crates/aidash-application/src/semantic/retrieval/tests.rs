@@ -40,7 +40,7 @@ fn spec() -> IndexingSpec {
 }
 fn index() -> Index {
 	Index {
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		tenant: "tenant".into(),
 		revision: 4,
 		spec: serde_json::to_value(spec()).unwrap(),
@@ -62,7 +62,7 @@ fn input() -> Search {
 fn entry() -> Entry {
 	Entry {
 		id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		key: "key".into(),
 		source: json!({"kind":"memory","text":"trusted content"}),
 		agent: None,
@@ -82,7 +82,7 @@ fn point() -> Point {
 	Point {
 		id: entry().point_id,
 		score: 0.5,
-		payload: json!({"entry_id":entry().id,"revision":1,"index_revision":4,"tenant":"tenant","workspace_id":index().workspace_id,
+		payload: json!({"entry_id":entry().id,"revision":1,"index_revision":4,"tenant":"tenant","thread_id":index().thread_id,
             "text":"untrusted provider content", "metadata":{"topic":"provider"},"source":{"kind":"artifact","id":Uuid::from_u128(99)}}),
 	}
 }
@@ -145,9 +145,9 @@ impl crate::ports::authorization::visibility::RowOutcome for Scope {
 }
 #[async_trait]
 impl SemanticRetrievalSession for Scope {
-	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		self.touch("workspace");
-		assert_eq!(workspace, index().workspace_id);
+	async fn thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
+		self.touch("thread");
+		assert_eq!(thread, index().thread_id);
 		assert_eq!(action, "semantic.search");
 		if self.denied {
 			Err(Error::Forbidden)
@@ -155,19 +155,19 @@ impl SemanticRetrievalSession for Scope {
 			Ok(())
 		}
 	}
-	async fn index(&mut self, workspace: Uuid) -> Result<Index> {
+	async fn index(&mut self, thread: Uuid) -> Result<Index> {
 		self.touch("index");
-		assert_eq!(workspace, index().workspace_id);
+		assert_eq!(thread, index().thread_id);
 		Ok(self.index.clone())
 	}
-	async fn configured(&mut self, workspace: Uuid) -> Result<Option<Index>> {
+	async fn configured(&mut self, thread: Uuid) -> Result<Option<Index>> {
 		self.touch("configured");
-		assert_eq!(workspace, index().workspace_id);
+		assert_eq!(thread, index().thread_id);
 		Ok(self.configured_exists.then(|| self.index.clone()))
 	}
-	async fn candidates(&mut self, workspace: Uuid) -> Result<Vec<Entry>> {
+	async fn candidates(&mut self, thread: Uuid) -> Result<Vec<Entry>> {
 		self.touch("candidates");
-		assert_eq!(workspace, index().workspace_id);
+		assert_eq!(thread, index().thread_id);
 		Ok(self.rows.clone())
 	}
 	async fn permits(&mut self, _: &Entry, action: &str) -> Result<bool> {
@@ -175,9 +175,9 @@ impl SemanticRetrievalSession for Scope {
 		assert_eq!(action, "semantic.read");
 		Ok(self.permitted.pop_front().unwrap_or(true))
 	}
-	async fn source(&mut self, workspace: Uuid, _: &Source) -> Result<Option<String>> {
+	async fn source(&mut self, thread: Uuid, _: &Source) -> Result<Option<String>> {
 		self.touch("source");
-		assert_eq!(workspace, index().workspace_id);
+		assert_eq!(thread, index().thread_id);
 		if self.silent_sources > 0 {
 			self.silent_sources -= 1;
 			self.silence = Some("aidash://other/silent".into());
@@ -188,9 +188,9 @@ impl SemanticRetrievalSession for Scope {
 			.pop_front()
 			.unwrap_or_else(|| Some("trusted content".into())))
 	}
-	async fn image_pointer(&mut self, workspace: Uuid, _: &Source) -> Result<Option<Value>> {
+	async fn image_pointer(&mut self, thread: Uuid, _: &Source) -> Result<Option<Value>> {
 		self.touch("image_pointer");
-		assert_eq!(workspace, index().workspace_id);
+		assert_eq!(thread, index().thread_id);
 		Ok(self.images.pop_front().unwrap_or(None))
 	}
 	async fn query_image(
@@ -251,13 +251,13 @@ impl SemanticRetrievalSession for Scope {
 	}
 	async fn embed(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		text: &str,
 		run: Option<Uuid>,
 	) -> Result<Vec<f32>> {
 		self.touch("embed");
-		self.embedded = Some((workspace, config.clone(), text.into(), run));
+		self.embedded = Some((thread, config.clone(), text.into(), run));
 		if let Some(failure) = self.embed_failure {
 			return Err(Error::RemoteSemantic(failure));
 		}
@@ -320,7 +320,7 @@ impl VectorIndex for Vector {
 		assert_eq!(collection, "collection");
 		assert_eq!(embedding, [0.25, 0.75]);
 		assert_eq!(filter.allowed, &[entry().point_id]);
-		assert_eq!(filter.workspace, index().workspace_id);
+		assert_eq!(filter.thread, index().thread_id);
 		assert_eq!(filter.tenant, "tenant");
 		assert_eq!(limit, 4);
 		if let Some(failure) = self.failure {
@@ -337,12 +337,12 @@ fn fixture() -> (Calls, Scope, Vector) {
 	let calls = Calls::default();
 	(calls.clone(), Scope::new(calls.clone()), Vector::new(calls))
 }
-fn controls(memory: bool, workspace: bool) -> AgentConfig {
+fn controls(memory: bool, thread: bool) -> AgentConfig {
 	let mut controls: AgentConfig =
 		serde_json::from_value(crate::test_support::agent("fixture").config).unwrap();
 	controls.conversation_memory = memory;
 	controls.semantic_memory = memory;
-	controls.workspace_context = workspace;
+	controls.thread_context = thread;
 	controls
 }
 
@@ -355,16 +355,9 @@ async fn image_match_returns_only_an_authorized_file_pointer_and_metadata() {
 	let pointer = json!({"file_id":file,"path":"pictures/chart.png","name":"chart.png","media_type":"image/png","size":12,"digest":"file-digest","bytes":"must-not-leak"});
 	scope.images = VecDeque::from([Some(pointer.clone()), Some(pointer)]);
 	scope.digest = "file-digest".into();
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
 	assert_eq!(result.matches.len(), 1);
 	let result = serde_json::to_value(&result.matches[0]).unwrap();
 	assert_eq!(result["source"]["file_id"], file.to_string());
@@ -395,16 +388,9 @@ async fn an_image_that_loses_file_authority_is_not_delivered() {
 		None,
 	]);
 	scope.digest = "file-digest".into();
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
 	assert!(result.matches.is_empty());
 }
 
@@ -420,16 +406,9 @@ async fn observed_image_context_rechecks_the_file_version_and_authority() {
 		None,
 	]);
 	scope.digest = "file-digest".into();
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
 	recheck(&mut scope, &result).await.unwrap();
 	assert!(matches!(
 		recheck(&mut scope, &result).await,
@@ -459,7 +438,7 @@ async fn image_queries_require_current_run_file_authority_before_embedding(#[cas
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&request,
 		Some(run_id),
 		None,
@@ -494,7 +473,7 @@ async fn a_run_cannot_query_another_runs_image(#[case] invoking_run: Option<Uuid
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&request,
 		invoking_run,
 		None,
@@ -525,7 +504,7 @@ async fn an_image_query_is_reauthorized_after_vector_search() {
 		search(
 			&mut scope,
 			&vector,
-			index().workspace_id,
+			index().thread_id,
 			&request,
 			Some(run_id),
 			None
@@ -538,14 +517,12 @@ async fn an_image_query_is_reauthorized_after_vector_search() {
 
 #[rstest]
 #[case::native_bank_only(false)]
-#[case::explicit_workspace_source(true)]
+#[case::explicit_thread_source(true)]
 #[tokio::test]
-async fn native_memory_does_not_implicitly_enable_ordinary_workspace_search(
-	#[case] workspace: bool,
-) {
+async fn native_memory_does_not_implicitly_enable_ordinary_thread_search(#[case] thread: bool) {
 	let (calls, mut scope, vector) = fixture();
 	scope.rows[0].source = json!({"kind":"artifact","id":Uuid::from_u128(90)});
-	let mut agent = controls(true, workspace);
+	let mut agent = controls(true, thread);
 	agent.memory = Some(aidash_domain::registry::EntityRef {
 		id: "native-memory".into(),
 		version: "1.0.0".into(),
@@ -553,9 +530,9 @@ async fn native_memory_does_not_implicitly_enable_ordinary_workspace_search(
 	let result = context(&mut scope, &vector, &run(), "query", 1024, &agent)
 		.await
 		.unwrap();
-	assert_eq!(result.is_some(), workspace);
-	assert_eq!(scope.embedded.is_some(), workspace);
-	if !workspace {
+	assert_eq!(result.is_some(), thread);
+	assert_eq!(scope.embedded.is_some(), thread);
+	if !thread {
 		assert!(calls.lock().unwrap().is_empty());
 	}
 }
@@ -586,37 +563,21 @@ async fn invalid_input_stops_before_candidate_or_provider_reads(
 	}
 	// Act / Assert
 	assert!(matches!(
-		search(
-			&mut scope,
-			&vector,
-			index().workspace_id,
-			&request,
-			None,
-			None
-		)
-		.await,
+		search(&mut scope, &vector, index().thread_id, &request, None, None).await,
 		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
-	assert_eq!(*calls.lock().unwrap(), ["workspace", "index"]);
+	assert_eq!(*calls.lock().unwrap(), ["thread", "index"]);
 }
 #[rstest]
 #[tokio::test]
-async fn denied_workspace_stops_before_configuration_or_external_effects() {
+async fn denied_thread_stops_before_configuration_or_external_effects() {
 	let (calls, mut scope, vector) = fixture();
 	scope.denied = true;
 	assert!(matches!(
-		search(
-			&mut scope,
-			&vector,
-			index().workspace_id,
-			&input(),
-			None,
-			None
-		)
-		.await,
+		search(&mut scope, &vector, index().thread_id, &input(), None, None).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(*calls.lock().unwrap(), ["workspace"]);
+	assert_eq!(*calls.lock().unwrap(), ["thread"]);
 }
 #[rstest]
 #[case::configuration(true)]
@@ -635,23 +596,15 @@ async fn malformed_persisted_json_is_not_hidden_by_filters(#[case] configuration
 		..input()
 	};
 	assert!(matches!(
-		search(
-			&mut scope,
-			&vector,
-			index().workspace_id,
-			&request,
-			None,
-			None
-		)
-		.await,
+		search(&mut scope, &vector, index().thread_id, &request, None, None).await,
 		Err(Error::Json(_))
 	));
 	assert_eq!(
 		*calls.lock().unwrap(),
 		if configuration {
-			vec!["workspace", "index"]
+			vec!["thread", "index"]
 		} else {
-			vec!["workspace", "index", "candidates"]
+			vec!["thread", "index", "candidates"]
 		}
 	);
 }
@@ -663,23 +616,23 @@ async fn malformed_persisted_json_is_not_hidden_by_filters(#[case] configuration
 async fn agent_controls_filter_before_reading_source_content(
 	#[case] source: Value,
 	#[case] memory: bool,
-	#[case] workspace: bool,
+	#[case] thread: bool,
 ) {
 	let (calls, mut scope, vector) = fixture();
 	scope.rows[0].source = source;
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&input(),
 		None,
-		Some(&controls(memory, workspace)),
+		Some(&controls(memory, thread)),
 	)
 	.await
 	.unwrap();
 	assert_eq!(result.matches.len(), 0);
 	assert_eq!(scope.embedded, None);
-	assert_eq!(*calls.lock().unwrap(), ["workspace", "index", "candidates"]);
+	assert_eq!(*calls.lock().unwrap(), ["thread", "index", "candidates"]);
 }
 #[tokio::test]
 async fn native_agent_never_unions_unconfigured_legacy_memory_sources() {
@@ -693,7 +646,7 @@ async fn native_agent_never_unions_unconfigured_legacy_memory_sources() {
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&input(),
 		None,
 		Some(&agent),
@@ -702,7 +655,7 @@ async fn native_agent_never_unions_unconfigured_legacy_memory_sources() {
 	.unwrap();
 	assert!(result.matches.is_empty());
 	assert_eq!(scope.embedded, None);
-	assert_eq!(*calls.lock().unwrap(), ["workspace", "index", "candidates"]);
+	assert_eq!(*calls.lock().unwrap(), ["thread", "index", "candidates"]);
 }
 #[rstest]
 #[case::agent(0)]
@@ -722,16 +675,9 @@ async fn inaccessible_candidates_do_not_consume_provider_allowance(#[case] rejec
 	}
 	// An inaccessible pending entry cannot make another authority's search incomplete.
 	scope.rows[0].state = "PENDING".into();
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&request,
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &request, None, None)
+		.await
+		.unwrap();
 	assert_eq!(result.matches.len(), 0);
 	assert_eq!(scope.embedded, None);
 	assert_eq!(
@@ -765,7 +711,7 @@ async fn incomplete_images_do_not_block_text_retrieval_or_use_text_source_quota(
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&input(),
 		Some(Uuid::new_v4()),
 		Some(&controls),
@@ -794,7 +740,7 @@ async fn incomplete_authorized_candidates_stop_before_provider_effects(
 	let error = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&input(),
 		run_context.then(Uuid::new_v4),
 		run_context.then_some(&controls),
@@ -815,7 +761,7 @@ async fn incomplete_authorized_candidates_stop_before_provider_effects(
 	assert_eq!(
 		*calls.lock().unwrap(),
 		[
-			"workspace",
+			"thread",
 			"index",
 			"candidates",
 			"permits",
@@ -844,16 +790,9 @@ async fn physical_point_check_precedes_embedding_allowance(
 	let (calls, mut scope, mut vector) = fixture();
 	vector.presence = presence;
 	// Act
-	let error = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap_err();
+	let error = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap_err();
 	// Assert
 	if let Some(expected) = expected {
 		assert!(
@@ -868,14 +807,14 @@ async fn physical_point_check_precedes_embedding_allowance(
 }
 
 #[tokio::test]
-async fn a_database_outage_does_not_degrade_optional_workspace_context() {
+async fn a_database_outage_does_not_degrade_optional_thread_context() {
 	let (_, mut scope, mut vector) = fixture();
 	vector.presence = || {
 		Err(Error::TemporaryDatabase(Box::new(std::io::Error::other(
 			"database unavailable",
 		))))
 	};
-	let result = workspace_context(
+	let result = thread_context(
 		&mut scope,
 		&vector,
 		&run(),
@@ -901,7 +840,7 @@ async fn authorized_search_uses_current_source_bytes_and_same_scope_for_embeddin
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&input(),
 		Some(run),
 		None,
@@ -912,7 +851,7 @@ async fn authorized_search_uses_current_source_bytes_and_same_scope_for_embeddin
 	assert_eq!(
 		scope.embedded,
 		Some((
-			index().workspace_id,
+			index().thread_id,
 			spec().embedding,
 			"query".into(),
 			Some(run)
@@ -927,7 +866,7 @@ async fn authorized_search_uses_current_source_bytes_and_same_scope_for_embeddin
 	assert_eq!(
 		*calls.lock().unwrap(),
 		[
-			"workspace",
+			"thread",
 			"index",
 			"candidates",
 			"permits",
@@ -948,7 +887,7 @@ async fn authorized_search_uses_current_source_bytes_and_same_scope_for_embeddin
 #[case::wrong_revision("revision")]
 #[case::wrong_index("index_revision")]
 #[case::wrong_tenant("tenant")]
-#[case::wrong_workspace("workspace_id")]
+#[case::wrong_thread("thread_id")]
 #[tokio::test]
 async fn strict_provider_contract_rejects_unapproved_or_mismatched_points(#[case] field: &str) {
 	let (_, mut scope, mut vector) = fixture();
@@ -957,7 +896,7 @@ async fn strict_provider_contract_rejects_unapproved_or_mismatched_points(#[case
 		"duplicate" => vector.points.push(point()),
 		field => vector.points[0].payload[field] = json!("wrong"),
 	}
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	assert!(matches!(
@@ -972,7 +911,7 @@ async fn strict_provider_contract_rejects_unapproved_or_mismatched_points(#[case
 #[case::wrong_revision("revision", 0)]
 #[case::wrong_index("index_revision", 0)]
 #[case::wrong_tenant("tenant", 0)]
-#[case::wrong_workspace("workspace_id", 0)]
+#[case::wrong_thread("thread_id", 0)]
 #[tokio::test]
 async fn local_search_skips_invalid_provider_points(#[case] field: &str, #[case] expected: usize) {
 	let (_, mut scope, mut vector) = fixture();
@@ -981,16 +920,9 @@ async fn local_search_skips_invalid_provider_points(#[case] field: &str, #[case]
 		"duplicate" => vector.points.push(point()),
 		field => vector.points[0].payload[field] = json!("wrong"),
 	}
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
 	assert_eq!(result.matches.len(), expected);
 }
 #[rstest]
@@ -1006,7 +938,7 @@ async fn source_and_authority_are_rechecked_at_delivery(
 	#[case] rejection: u8,
 ) {
 	let (_, mut scope, vector) = fixture();
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	match rejection {
@@ -1032,7 +964,7 @@ async fn source_and_authority_are_rechecked_at_delivery(
 async fn strict_search_preserves_safe_remote_provider_failure(#[case] strict: bool) {
 	let (_, mut scope, mut vector) = fixture();
 	vector.failure = Some(Failure::Allowance);
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	let result = finish(&vector, &mut scope, prepared, &[0.25, 0.75], strict).await;
@@ -1052,7 +984,7 @@ async fn strict_search_preserves_safe_remote_provider_failure(#[case] strict: bo
 async fn strict_search_requires_backend_response_for_authorized_candidates(#[case] strict: bool) {
 	let (_, mut scope, mut vector) = fixture();
 	vector.points.clear();
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	let result = finish(&vector, &mut scope, prepared, &[0.25, 0.75], strict).await;
@@ -1066,7 +998,7 @@ async fn strict_search_requires_backend_response_for_authorized_candidates(#[cas
 #[tokio::test]
 async fn token_budget_retains_empty_provenance_without_partial_match_content() {
 	let (_, mut scope, vector) = fixture();
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	let budget = prepared.result.estimated_tokens;
@@ -1074,16 +1006,9 @@ async fn token_budget_retains_empty_provenance_without_partial_match_content() {
 		max_tokens: budget,
 		..input()
 	};
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&request,
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &request, None, None)
+		.await
+		.unwrap();
 	assert_eq!(result.matches.len(), 0);
 	assert!(result.truncated);
 	assert_eq!(result.estimated_tokens, budget);
@@ -1092,7 +1017,7 @@ async fn token_budget_retains_empty_provenance_without_partial_match_content() {
 		..input()
 	};
 	assert_eq!(
-		prepare(&mut scope, index().workspace_id, &request, None)
+		prepare(&mut scope, index().thread_id, &request, None)
 			.await
 			.err()
 			.unwrap()
@@ -1104,12 +1029,12 @@ async fn token_budget_retains_empty_provenance_without_partial_match_content() {
 #[tokio::test]
 async fn candidate_receipt_changes_with_source_or_entry_revision() {
 	let (_, mut scope, _) = fixture();
-	let initial = prepare(&mut scope, index().workspace_id, &input(), None)
+	let initial = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap()
 		.candidate_digest();
 	assert_eq!(
-		prepare(&mut scope, index().workspace_id, &input(), None)
+		prepare(&mut scope, index().thread_id, &input(), None)
 			.await
 			.unwrap()
 			.candidate_digest(),
@@ -1117,7 +1042,7 @@ async fn candidate_receipt_changes_with_source_or_entry_revision() {
 	);
 	scope.rows[0].revision += 1;
 	assert_ne!(
-		prepare(&mut scope, index().workspace_id, &input(), None)
+		prepare(&mut scope, index().thread_id, &input(), None)
 			.await
 			.unwrap()
 			.candidate_digest(),
@@ -1127,7 +1052,7 @@ async fn candidate_receipt_changes_with_source_or_entry_revision() {
 	scope.digest = content_digest("new content");
 	scope.texts.push_back(Some("new content".into()));
 	assert_ne!(
-		prepare(&mut scope, index().workspace_id, &input(), None)
+		prepare(&mut scope, index().thread_id, &input(), None)
 			.await
 			.unwrap()
 			.candidate_digest(),
@@ -1139,7 +1064,7 @@ fn run() -> aidash_domain::Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(10),
 		task_id: Uuid::from_u128(11),
-		workspace_id: index().workspace_id,
+		thread_id: index().thread_id,
 		home_node: "aidash://home".into(),
 		agent_id: "agent".into(),
 		agent_version: "1".into(),
@@ -1234,7 +1159,7 @@ async fn automatic_context_truncates_query_at_utf8_boundary_and_keeps_run_origin
 	assert_eq!(
 		scope.embedded,
 		Some((
-			index().workspace_id,
+			index().thread_id,
 			spec().embedding,
 			expected.into(),
 			Some(run().id)
@@ -1277,7 +1202,7 @@ async fn disabled_auto_context_does_not_read_or_embed_ordinary_candidates() {
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&input(),
 		None,
 		Some(&agent),
@@ -1286,7 +1211,7 @@ async fn disabled_auto_context_does_not_read_or_embed_ordinary_candidates() {
 	.unwrap();
 	assert!(result.matches.is_empty());
 	assert_eq!(scope.embedded, None);
-	assert_eq!(*calls.lock().unwrap(), ["workspace", "index"]);
+	assert_eq!(*calls.lock().unwrap(), ["thread", "index"]);
 }
 /// Only an outage that waiting can fix is returned as a cause the caller may
 /// degrade (ADR 0059). Missing points and a key rejection stay errors.
@@ -1303,7 +1228,7 @@ async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
 ) {
 	let (_, mut scope, mut vector) = fixture();
 	fault(&mut scope, &mut vector);
-	let result = workspace_context(
+	let result = thread_context(
 		&mut scope,
 		&vector,
 		&run(),
@@ -1314,7 +1239,7 @@ async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
 	)
 	.await;
 	match (result, expected) {
-		(Ok(WorkspaceContext::Unavailable(cause)), Some(expected)) => assert_eq!(cause, expected),
+		(Ok(ThreadContext::Unavailable(cause)), Some(expected)) => assert_eq!(cause, expected),
 		(Err(Error::RemoteSemantic(_)), None) => {}
 		(other, _) => panic!("unexpected {other:?}"),
 	}
@@ -1344,16 +1269,9 @@ async fn an_attachment_match_points_at_its_message_with_text_and_description() {
 		aidash_domain::semantic::indexing::image_digest("bytes-digest", Some("A red shop front"));
 
 	// Act
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
 
 	// Assert
 	assert_eq!(result.matches.len(), 1);
@@ -1386,16 +1304,9 @@ async fn an_attachment_point_from_before_a_description_edit_is_not_delivered() {
 		aidash_domain::semantic::indexing::image_digest("bytes-digest", Some("A red shop front"));
 
 	// Act
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await
-	.unwrap();
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
 
 	// Assert
 	assert!(result.matches.is_empty());
@@ -1413,15 +1324,7 @@ async fn a_pending_attachment_image_does_not_fail_text_search() {
 	scope.rows.push(pending);
 
 	// Act
-	let result = search(
-		&mut scope,
-		&vector,
-		index().workspace_id,
-		&input(),
-		None,
-		None,
-	)
-	.await;
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None).await;
 
 	// Assert
 	assert_eq!(result.unwrap().matches.len(), 1);
@@ -1451,7 +1354,7 @@ async fn an_attachment_the_run_never_selected_is_refused_as_a_query() {
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&attachment_query(run_id),
 		Some(run_id),
 		None,
@@ -1483,7 +1386,7 @@ async fn a_run_cannot_query_with_another_runs_selection(#[case] invoking_run: Op
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&attachment_query(Uuid::from_u128(12)),
 		invoking_run,
 		None,
@@ -1508,7 +1411,7 @@ async fn a_selected_attachment_is_embedded_as_the_query() {
 	let result = search(
 		&mut scope,
 		&vector,
-		index().workspace_id,
+		index().thread_id,
 		&attachment_query(run_id),
 		Some(run_id),
 		None,
@@ -1533,7 +1436,7 @@ fn silent_entry() -> aidash_domain::unconfirmed::Unconfirmed {
 	aidash_domain::unconfirmed::Unconfirmed {
 		node: "aidash://other/silent".into(),
 		kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
-		workspace_id: index().workspace_id,
+		thread_id: index().thread_id,
 		count: 2,
 	}
 }
@@ -1551,7 +1454,7 @@ async fn candidates_whose_source_stops_at_a_silent_node_are_counted_and_refusals
 	scope.silent_sources = 2;
 	scope.permitted = VecDeque::from([true, true, false]);
 	// Act
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	// Assert
@@ -1563,7 +1466,7 @@ async fn candidates_whose_source_stops_at_a_silent_node_are_counted_and_refusals
 #[tokio::test]
 async fn a_source_that_a_node_stops_confirming_before_delivery_is_counted() {
 	let (_, mut scope, vector) = fixture();
-	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	assert!(prepared.result.unconfirmed.is_empty());
@@ -1585,7 +1488,7 @@ async fn a_source_that_a_node_stops_confirming_before_delivery_is_counted() {
 async fn a_count_added_at_delivery_keeps_the_result_within_its_budget() {
 	// Arrange: the budget holds the empty result exactly.
 	let (_, mut scope, vector) = fixture();
-	let mut prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+	let mut prepared = prepare(&mut scope, index().thread_id, &input(), None)
 		.await
 		.unwrap();
 	prepared.max_tokens = prepared.result.estimated_tokens;

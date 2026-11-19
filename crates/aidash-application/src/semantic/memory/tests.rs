@@ -41,7 +41,7 @@ fn spec() -> IndexingSpec {
 }
 fn index() -> Index {
 	Index {
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		tenant: "tenant".into(),
 		revision: 4,
 		spec: serde_json::to_value(spec()).unwrap(),
@@ -52,7 +52,7 @@ fn index() -> Index {
 fn entry() -> Entry {
 	Entry {
 		id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		key: "key".into(),
 		source: json!({"kind":"memory","text":"content"}),
 		agent: None,
@@ -111,14 +111,14 @@ impl Scope {
 impl crate::ports::authorization::visibility::RowOutcome for Scope {}
 #[async_trait]
 impl SemanticEntriesSession for Scope {
-	async fn workspace(&mut self, _workspace: Uuid, action: &str) -> Result<()> {
-		self.touch("workspace")?;
+	async fn thread(&mut self, _thread: Uuid, action: &str) -> Result<()> {
+		self.touch("thread")?;
 		if self.denied.contains(action) {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
 	}
-	async fn index(&mut self, _workspace: Uuid, exclusive: bool) -> Result<Index> {
+	async fn index(&mut self, _thread: Uuid, exclusive: bool) -> Result<Index> {
 		self.touch(if exclusive {
 			"index_update"
 		} else {
@@ -126,7 +126,7 @@ impl SemanticEntriesSession for Scope {
 		})?;
 		Ok(index())
 	}
-	async fn by_key(&mut self, _workspace: Uuid, _key: &str) -> Result<Option<Entry>> {
+	async fn by_key(&mut self, _thread: Uuid, _key: &str) -> Result<Option<Entry>> {
 		self.touch("by_key")?;
 		Ok(self.old.clone())
 	}
@@ -142,11 +142,11 @@ impl SemanticEntriesSession for Scope {
 		})?;
 		Ok(!self.denied.contains(action))
 	}
-	async fn source(&mut self, _workspace: Uuid, _source: &Source) -> Result<Option<String>> {
+	async fn source(&mut self, _thread: Uuid, _source: &Source) -> Result<Option<String>> {
 		self.touch("source")?;
 		Ok(self.text.clone())
 	}
-	async fn count(&mut self, _workspace: Uuid) -> Result<i64> {
+	async fn count(&mut self, _thread: Uuid) -> Result<i64> {
 		self.touch("count")?;
 		Ok(0)
 	}
@@ -160,7 +160,7 @@ impl SemanticEntriesSession for Scope {
 	}
 	async fn history(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_id: Uuid,
 		_revision: i64,
 		_state: &str,
@@ -168,10 +168,10 @@ impl SemanticEntriesSession for Scope {
 	) -> Result<()> {
 		self.touch("history")
 	}
-	async fn list(&mut self, _workspace: Uuid) -> Result<Vec<Entry>> {
+	async fn list(&mut self, _thread: Uuid) -> Result<Vec<Entry>> {
 		panic!("unexpected entry operation: list")
 	}
-	async fn lock_entry(&mut self, _workspace: Uuid, _id: Uuid) -> Result<Option<Entry>> {
+	async fn lock_entry(&mut self, _thread: Uuid, _id: Uuid) -> Result<Option<Entry>> {
 		panic!("unexpected entry operation: lock_entry")
 	}
 	async fn reindex_replay(&mut self, _id: Uuid, _revision: i64) -> Result<bool> {
@@ -179,7 +179,7 @@ impl SemanticEntriesSession for Scope {
 	}
 	async fn change(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_id: Uuid,
 		_point: Uuid,
 		_index_revision: i64,
@@ -188,7 +188,7 @@ impl SemanticEntriesSession for Scope {
 	) -> Result<Entry> {
 		panic!("unexpected entry operation: change")
 	}
-	async fn history_page(&mut self, _workspace: Uuid, _cursor: i64) -> Result<Vec<History>> {
+	async fn history_page(&mut self, _thread: Uuid, _cursor: i64) -> Result<Vec<History>> {
 		panic!("unexpected entry operation: history_page")
 	}
 	async fn history_entry(&mut self, _id: Uuid) -> Result<Entry> {
@@ -199,17 +199,17 @@ impl SemanticEntriesSession for Scope {
 impl SemanticMemoryReadSession for Scope {
 	async fn classified_output_source(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		source: &Source,
 		_: &mut Vec<Uuid>,
 	) -> Result<Option<String>> {
-		SemanticEntriesSession::source(self, workspace, source).await
+		SemanticEntriesSession::source(self, thread, source).await
 	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		SemanticEntriesSession::permits(self, entry, action).await
 	}
-	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
-		SemanticEntriesSession::source(self, workspace, source).await
+	async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
+		SemanticEntriesSession::source(self, thread, source).await
 	}
 	async fn source_invalidated(&mut self, _: Uuid, _: &Source) -> Result<bool> {
 		Ok(self.source_invalidated)

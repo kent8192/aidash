@@ -12,8 +12,12 @@ pub struct DutyRecord {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
+	/// The Duty's own Thread (#1008, ADR 0140).
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
+	/// The Thread it was registered from; None before #1008.
+	#[field(null = true)]
+	pub origin_thread_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
 	#[field(field_type = "text")]
 	pub requester: String,
@@ -34,9 +38,6 @@ pub struct DutyRecord {
 	/// The time trigger; None for a Duty that wakes only otherwise.
 	#[field(null = true)]
 	pub trigger: Option<Json<Value>>,
-	/// The Duty's own Thread, once its first Task opened it.
-	#[field(null = true)]
-	pub thread_id: Option<Uuid>,
 	#[field(field_type = "text", null = true)]
 	pub approval_mode: Option<String>,
 	#[field]
@@ -93,7 +94,7 @@ pub struct DutyTickRecord {
 	#[field]
 	pub duty_id: Uuid,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub scheduled_at: DateTime<Utc>,
 	#[field]
@@ -104,8 +105,6 @@ pub struct DutyTickRecord {
 	pub reason: Option<String>,
 	#[field(null = true)]
 	pub task_id: Option<Uuid>,
-	#[field(null = true)]
-	pub thread_id: Option<Uuid>,
 	/// The person who clicked "Run now"; None for a scheduled tick.
 	#[field(field_type = "text", null = true)]
 	pub started_by: Option<String>,
@@ -123,7 +122,7 @@ pub struct DutyTriggerRecord {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub duty_id: Uuid,
 	/// `webhook`, `duty_completed` or `node_event`.
@@ -152,7 +151,7 @@ pub struct DutyEventRecord {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub duty_id: Uuid,
 	#[field]
@@ -187,7 +186,7 @@ pub struct DutyBookingRecord {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub trigger_id: Uuid,
 	#[field]

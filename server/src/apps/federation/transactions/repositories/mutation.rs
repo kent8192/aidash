@@ -6,12 +6,12 @@ use crate::apps::{
 	},
 	federation::remote::models::Delegation,
 	identity::models::{AuthorizationExecution, AuthorizationRunOutput},
-	workspaces::models::{Task as TaskRecord, Workspace},
+	workspaces::models::{Task as TaskRecord, Thread},
 };
 use aidash_application::{Result, ports::transactions::mutation::MutationScope};
 use aidash_domain::{
-	Artifact, ArtifactInput, Task, Workspace as WorkspaceContract,
-	provider::progress::ProgressOutcome, run_state::RawRun,
+	Artifact, ArtifactInput, Task, Thread as ThreadContract, provider::progress::ProgressOutcome,
+	run_state::RawRun,
 };
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
@@ -28,15 +28,15 @@ pub(crate) struct Scope<'a>(
 
 #[async_trait]
 impl MutationScope for Scope<'_> {
-	async fn replace_workspace(
+	async fn replace_thread(
 		&mut self,
 		id: Uuid,
 		revision: i64,
-		state: Value,
-	) -> Result<WorkspaceContract> {
-		require_subnode_writable(self.0, "workspace", id).await?;
-		require_target_node(self.0, &self.2, "workspace", id).await?;
-		Workspace::replace_state(self.0, id, revision, state)
+		title: String,
+	) -> Result<ThreadContract> {
+		require_subnode_writable(self.0, "thread", id).await?;
+		require_target_node(self.0, &self.2, "thread", id).await?;
+		Thread::replace_title(self.0, id, revision, title)
 			.await
 			.map_err(Into::into)
 	}
@@ -73,14 +73,8 @@ impl MutationScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn record_output(
-		&mut self,
-		run: Uuid,
-		workspace: Uuid,
-		kind: &str,
-		id: Uuid,
-	) -> Result<()> {
-		AuthorizationRunOutput::record(self.0, run, workspace, kind, id)
+	async fn record_output(&mut self, run: Uuid, thread: Uuid, kind: &str, id: Uuid) -> Result<()> {
+		AuthorizationRunOutput::record(self.0, run, thread, kind, id)
 			.await
 			.map_err(Into::into)
 	}
@@ -114,20 +108,15 @@ impl MutationScope for Scope<'_> {
 		self.1.extend(closed);
 		Ok(())
 	}
-	async fn append_event(
-		&mut self,
-		workspace: Option<Uuid>,
-		kind: &str,
-		data: Value,
-	) -> Result<()> {
-		// An event with no Workspace is a Run's end on a Node that is not its Home,
+	async fn append_event(&mut self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<()> {
+		// An event with no Thread is a Run's end on a Node that is not its Home,
 		// and belongs to the Run's Tenant.
 		match (
-			workspace,
+			thread,
 			data.get("run_id").and_then(Value::as_str).map(str::parse),
 		) {
 			(None, Some(Ok(run))) => event_records::append_for_run(self.0, run, kind, data).await,
-			_ => event_records::append(self.0, workspace, kind, data).await,
+			_ => event_records::append(self.0, thread, kind, data).await,
 		}
 		.map_err(Into::into)
 	}
@@ -148,8 +137,8 @@ async fn require_subnode_writable(
 	query
 		.column(Alias::new("state"))
 		.from(Alias::new("subnodes"));
-	if kind == "workspace" {
-		query.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(id)));
+	if kind == "thread" {
+		query.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(id)));
 	} else {
 		let table = match kind {
 			"task" => "tasks",
@@ -157,11 +146,11 @@ async fn require_subnode_writable(
 			_ => return Err(aidash_application::Error::Forbidden),
 		};
 		let target = Query::select()
-			.column(Alias::new("workspace_id"))
+			.column(Alias::new("thread_id"))
 			.from(Alias::new(table))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 			.to_owned();
-		query.and_where(Expr::col(Alias::new("workspace_id")).in_subquery(target));
+		query.and_where(Expr::col(Alias::new("thread_id")).in_subquery(target));
 	}
 	let (sql, values) = query.lock(LockType::Share).build(PostgresQueryBuilder);
 	if let Some(row) = tx
@@ -195,7 +184,7 @@ pub(super) async fn require_target_node(
 	};
 	let node = aidash_domain::nodes::NodeAddress::parse(node)?;
 	let table = match kind {
-		"workspace" => "workspaces",
+		"thread" => "threads",
 		"task" => "tasks",
 		"run" => "runs",
 		_ => {
@@ -212,11 +201,9 @@ pub(super) async fn require_target_node(
 	let owner = if kind == "task" {
 		query.join(
 			JoinType::InnerJoin,
-			TableRef::table_alias(Alias::new("workspaces"), Alias::new("owner")),
-			Expr::col((Alias::new("owner"), Alias::new("id"))).eq(Expr::col((
-				Alias::new("target"),
-				Alias::new("workspace_id"),
-			))),
+			TableRef::table_alias(Alias::new("threads"), Alias::new("owner")),
+			Expr::col((Alias::new("owner"), Alias::new("id")))
+				.eq(Expr::col((Alias::new("target"), Alias::new("thread_id")))),
 		);
 		"owner"
 	} else {

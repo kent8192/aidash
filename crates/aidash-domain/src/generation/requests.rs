@@ -14,7 +14,7 @@ pub struct Request {
 	pub policy_id: String,
 	pub policy_revision: i64,
 	pub task_id: Uuid,
-	/// The Node of the requesting Workspace.
+	/// The Node of the requesting Thread.
 	pub node: crate::nodes::NodeName,
 	/// The address of the Node that owns the Task: this request's own Node for
 	/// a local request, the requesting Home for a foreign one.
@@ -24,7 +24,7 @@ pub struct Request {
 	pub prepared: bool,
 	pub grant_id: Option<Uuid>,
 	pub admission_id: Option<Uuid>,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[serde(skip_serializing)]
 	pub credential_id: Uuid,
 	pub root_subject: String,
@@ -44,7 +44,7 @@ pub struct Request {
 }
 
 impl Request {
-	/// Whether the Task belongs to a Workspace of this Deployment, as opposed to
+	/// Whether the Task belongs to a Thread of this Deployment, as opposed to
 	/// a Home that asked for the generation through a peer.
 	pub fn is_local(&self) -> bool {
 		self.foreign_intent.is_none()

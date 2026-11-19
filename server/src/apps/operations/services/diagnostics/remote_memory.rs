@@ -29,7 +29,7 @@ pub(super) fn document() -> serde_json::Value {
 	);
 	serde_json::json!({
 		"pgroonga_ready": super::acceptance::pgroonga_ready(),
-		"runs": rows("runs", &["id", "task_id", "workspace_id", "agent_id", "agent_version", "phase", "control", "pending", "lease_until"], "task_id=:'task'::uuid"),
+		"runs": rows("runs", &["id", "task_id", "thread_id", "agent_id", "agent_version", "phase", "control", "pending", "lease_until"], "task_id=:'task'::uuid"),
 		"origins": rows("authorization_task_origins", &["task_id", "source_run_id", "subject_chain"], "task_id=:'task'::uuid"),
 		"receipts": rows("semantic_remote_receipts", &["operation_id", "run_id", "digest", "receipt"], "run_id=:'run'::uuid"),
 		"operations": rows("semantic_remote_operations", &["id", "state", "cycle", "failures", "attempt_id", "fence", "error"], "admission_id=:'run'::uuid"),

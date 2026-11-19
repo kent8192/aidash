@@ -68,7 +68,7 @@ impl HumanRequest {
 
 	pub(crate) async fn admit(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		run: Uuid,
 		kind: &str,
 		prompt: &str,
@@ -76,7 +76,7 @@ impl HumanRequest {
 	) -> Result<(Contract, bool)> {
 		let request = Contract {
 			id: Uuid::new_v4(),
-			workspace_id: workspace,
+			thread_id: thread,
 			run_id: run,
 			kind: kind.into(),
 			prompt: prompt.into(),
@@ -94,7 +94,7 @@ impl HumanRequest {
 		request: &Contract,
 		key: &str,
 	) -> Result<(Contract, bool)> {
-		let workspace = request.workspace_id;
+		let thread = request.thread_id;
 		let run = request.run_id;
 		Self::require_active_run(tx, run).await?;
 		let kind = request.kind.as_str();
@@ -104,7 +104,7 @@ impl HumanRequest {
 			.columns(
 				[
 					"id",
-					"workspace_id",
+					"thread_id",
 					"run_id",
 					"kind",
 					"prompt",
@@ -116,7 +116,7 @@ impl HumanRequest {
 			)
 			.values_expr(vec![
 				IntoValue::into_value(request.id).into(),
-				IntoValue::into_value(workspace).into(),
+				IntoValue::into_value(thread).into(),
 				IntoValue::into_value(run).into(),
 				IntoValue::into_value(kind).into(),
 				IntoValue::into_value(prompt).into(),

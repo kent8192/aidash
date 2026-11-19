@@ -13,7 +13,7 @@ fn task_transitions_protect_terminal_states() {
 fn run_from_old_peer_defaults_observed_input_sequence() {
 	let id = Uuid::new_v4();
 	let wire = json!({
-		"id":id,"task_id":id,"workspace_id":id,"home_node":"aidash://old",
+		"id":id,"task_id":id,"thread_id":id,"home_node":"aidash://old",
 		"agent_id":"research","agent_version":"1.0.0","phase":"THINKING",
 		"control":"ACTIVE","context":{},"pending":{},"step":0,"revision":0,
 		"error":null,"lease_owner":null,"lease_until":null,"updated_at":Utc::now()

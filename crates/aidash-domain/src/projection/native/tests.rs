@@ -104,7 +104,7 @@ fn recording_an_unchanged_state_appends_nothing() {
 	// Evidence keys never reach the state.
 	assert!(!record_step_state(
 		&mut run,
-		&json!({"agent_state": {"phase": "thinking"}, "workspace": {"id": "w"}})
+		&json!({"agent_state": {"phase": "thinking"}, "thread": {"id": "w"}})
 	));
 }
 
@@ -183,7 +183,7 @@ fn the_step_limit_notice_changes_only_at_80_and_90_percent() {
 	assert_eq!(step_limit_notice(0, 0), None);
 }
 
-fn workspace(tasks: &[&str]) -> Value {
+fn thread(tasks: &[&str]) -> Value {
 	json!({
 		"view": "workspace_observation_v1",
 		"tasks": tasks.iter().map(|title| json!({"title": title})).collect::<Vec<_>>(),
@@ -206,11 +206,11 @@ fn evidence(context: &Context) -> Vec<Vec<Value>> {
 #[test]
 fn a_delta_appends_only_new_evidence() {
 	let mut run = context(vec![]);
-	let mut first = json!({"workspace": workspace(&["a", "b"])});
+	let mut first = json!({"thread": thread(&["a", "b"])});
 	assert_eq!(record_evidence(&mut run, &mut first, usize::MAX), 0);
 	run.push(assistant(1, "", &["x"]));
 	run.push(tool("x"));
-	let mut next = json!({"workspace": workspace(&["a", "b", "c"]), "run_messages": [{"seq": 1}]});
+	let mut next = json!({"thread": thread(&["a", "b", "c"]), "run_messages": [{"seq": 1}]});
 	record_evidence(&mut run, &mut next, usize::MAX);
 	assert_eq!(
 		evidence(&run),
@@ -247,7 +247,7 @@ fn evidence_history_already_holds_is_not_appended_again() {
 	assert_eq!(evidence(&run), [vec![json!({"seq": 1})]]);
 	run.push(assistant(1, "", &["x"]));
 	run.push(tool("x"));
-	let mut again = json!({"run_messages": [{"seq": 1}], "workspace": workspace(&[])});
+	let mut again = json!({"run_messages": [{"seq": 1}], "thread": thread(&[])});
 	record_evidence(&mut run, &mut again, usize::MAX);
 	assert_eq!(evidence(&run).len(), 2);
 	assert_eq!(evidence(&run)[1], [json!("workspace_observation_v1")]);
@@ -261,7 +261,7 @@ fn evidence_refused_at_admission_never_reaches_history_or_the_request() {
 	let mut run = context(vec![]);
 	let large = "x".repeat(400);
 	let mut pinned = json!({
-		"workspace": workspace(&["small", &large]),
+		"thread": thread(&["small", &large]),
 		"run_messages": [{"content": "y".repeat(400)}],
 	});
 	let refused = record_evidence(&mut run, &mut pinned, 100);
@@ -274,14 +274,14 @@ fn evidence_refused_at_admission_never_reaches_history_or_the_request() {
 	let messages = request_messages_unrecorded(&run, &pinned);
 	assert!(!serde_json::to_string(&messages).unwrap().contains(&large));
 	// A later step with room admits it.
-	let mut later = json!({"workspace": workspace(&["small", &large])});
+	let mut later = json!({"thread": thread(&["small", &large])});
 	assert_eq!(record_evidence(&mut run, &mut later, usize::MAX), 0);
 	assert_eq!(evidence(&run).last().unwrap(), &[json!({"title": large})]);
 }
 
-/// A workspace entry an explicit `context_source` declaration places in its
+/// A thread entry an explicit `context_source` declaration places in its
 /// own step envelope, at `pointer`.
-fn declared_workspace_entry(
+fn declared_thread_entry(
 	content: Value,
 	pointer: &str,
 ) -> crate::context::source::SourceContribution {
@@ -302,7 +302,7 @@ fn declared_workspace_entry(
 		mandatory: false,
 	});
 	contribution.placement = Some(SourcePlacement {
-		slot: "workspace".into(),
+		slot: "thread".into(),
 		pointer: pointer.into(),
 		volatility: Some(Volatility::Step),
 	});
@@ -317,11 +317,11 @@ fn declared_sources_are_not_recorded_as_evidence() {
 	// Arrange: `large` is refused, `placed` is placed by a declaration.
 	let large = "x".repeat(400);
 	let mut run = context(vec![]);
-	run.source_contributions = vec![declared_workspace_entry(
+	run.source_contributions = vec![declared_thread_entry(
 		json!({"title": "placed"}),
 		"/tasks/1",
 	)];
-	let mut pinned = json!({"workspace": workspace(&[&large, "placed", "kept"])});
+	let mut pinned = json!({"thread": thread(&[&large, "placed", "kept"])});
 	let before = request_messages_unrecorded(&run, &pinned);
 	// Act
 	let refused = record_evidence(&mut run, &mut pinned, 100);
@@ -347,7 +347,7 @@ fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
 	let mut run = context(vec![assistant(1, "", &["x"]), tool("x")]);
 	let mut pinned = json!({
 		"agent_state": {"phase": "thinking"},
-		"workspace": workspace(&["a"]),
+		"thread": thread(&["a"]),
 		"run_messages": [{"seq": 4, "content": "hi"}],
 	});
 	let pending = request_messages_unrecorded(&run, &pinned);
@@ -363,7 +363,7 @@ fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
 		envelope.content,
 		json!({
 			"run_messages": [{"seq": 4, "content": "hi"}],
-			"workspace": {"tasks": [{"title": "a"}], "view": "workspace_observation_v1"},
+			"thread": {"tasks": [{"title": "a"}], "view": "workspace_observation_v1"},
 		})
 	);
 }
@@ -371,14 +371,14 @@ fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
 #[test]
 fn delivered_evidence_leaves_out_offloaded_items() {
 	let mut run = context(vec![]);
-	let mut pinned = json!({"workspace": workspace(&["a", "b"])});
+	let mut pinned = json!({"thread": thread(&["a", "b"])});
 	record_evidence(&mut run, &mut pinned, usize::MAX);
 	let ContextEvent::Evidence { items } = &mut run.history[0].event else {
 		panic!("expected evidence")
 	};
 	items[1].content = ContextEvent::elided_result("evidence");
 	assert_eq!(
-		delivered_evidence(&run, &pinned, "workspace").unwrap()["tasks"],
+		delivered_evidence(&run, &pinned, "thread").unwrap()["tasks"],
 		json!([{"title": "a"}, null])
 	);
 }
@@ -415,7 +415,7 @@ fn run_start_memory_is_projected_as_data() {
 }
 
 #[test]
-fn reference_image_matches_remain_separate_from_workspace_matches() {
+fn reference_image_matches_remain_separate_from_thread_matches() {
 	let pinned = json!({
 		"reference_documents": [{"name":"chart.png"}],
 		"reference_images": [{"document":{"name":"chart.png","score":0.2}}],
@@ -828,7 +828,7 @@ fn stable_sources_become_enveloped_attachments_in_send_order() {
 	};
 	context.push(human("hello"));
 	let pinned = json!({
-		"workspace": {"workspace_id": "w"},
+		"thread": {"thread_id": "w"},
 		"task": {"id": "t", "revision": 7, "title": "Task"},
 		"identity": {"agent_id": "agent"},
 	});
@@ -845,7 +845,7 @@ fn stable_sources_become_enveloped_attachments_in_send_order() {
 	);
 	assert_eq!(native.attachments[1].revision, Some(7));
 	assert!(native.attachments.iter().all(|e| e.trust == Trust::Data));
-	// The workspace is evidence, appended to history (#942).
+	// The thread is evidence, appended to history (#942).
 	assert_eq!(native.volatile, "{}");
 	assert_eq!(shape(&native.history), ["human", "data:Evidence"]);
 }
@@ -1357,15 +1357,15 @@ fn events_for_other_readers_carry_no_reasoning() {
 	));
 }
 
-/// A Workspace whose events are the observing Run's own telemetry plus one
+/// A Thread whose events are the observing Run's own telemetry plus one
 /// foreign and one run-less event, which stay identical from step to step.
-fn workspace_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::WorkspaceSnapshot {
+fn thread_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::ThreadSnapshot {
 	let at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
 	let event = |sequence: u128, kind: &str, data: Value| crate::Event {
 		sequence: sequence as i64,
 		id: uuid::Uuid::from_u128(1000 + sequence),
 		node: None,
-		workspace_id: None,
+		thread_id: None,
 		kind: kind.into(),
 		data,
 		created_at: at,
@@ -1376,17 +1376,16 @@ fn workspace_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::Worksp
 			"task.created",
 			json!({"run_id": uuid::Uuid::from_u128(9)}),
 		),
-		event(2, "workspace.updated", json!({})),
+		event(2, "thread.updated", json!({})),
 	];
 	events.extend((0..own_events).map(|n| event(3 + n, "run.thinking", json!({"run_id": own}))));
-	crate::WorkspaceSnapshot {
-		workspace: crate::Workspace {
+	crate::ThreadSnapshot {
+		thread: crate::Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			id: uuid::Uuid::from_u128(5),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			title: "title".into(),
-			goal: "goal".into(),
-			state: json!({}),
+			created_by: "subject".into(),
 			revision: 1,
 			created_at: at,
 		},
@@ -1398,12 +1397,12 @@ fn workspace_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::Worksp
 	}
 }
 
-fn step_workspace(snapshot: &crate::WorkspaceSnapshot, own: Option<uuid::Uuid>) -> Value {
+fn step_thread(snapshot: &crate::ThreadSnapshot, own: Option<uuid::Uuid>) -> Value {
 	let mut snapshot = snapshot.clone();
 	if let Some(own) = own {
 		crate::context::observation::without_run_events(&mut snapshot, own);
 	}
-	json!({"workspace": crate::context::observation::project(
+	json!({"thread": crate::context::observation::project(
 		&snapshot,
 		0,
 		crate::context::observation::DEFAULT_LIMIT,
@@ -1414,17 +1413,17 @@ fn step_workspace(snapshot: &crate::WorkspaceSnapshot, own: Option<uuid::Uuid>) 
 fn a_runs_own_workspace_events_never_become_evidence() {
 	// Arrange: each step the Run mints new telemetry of its own (#942).
 	let own = uuid::Uuid::from_u128(1);
-	let first = workspace_with_own_events(own, 3);
-	let second = workspace_with_own_events(own, 6);
+	let first = thread_with_own_events(own, 3);
+	let second = thread_with_own_events(own, 6);
 	let mut run = context(vec![]);
 
 	// Act: two steps with the per-step view.
-	let mut pinned = step_workspace(&first, Some(own));
+	let mut pinned = step_thread(&first, Some(own));
 	record_evidence(&mut run, &mut pinned, usize::MAX);
 	let first_volatile = native_context(&run, &pinned).volatile;
 	run.push(assistant(1, "", &["x"]));
 	run.push(tool("x"));
-	let mut next = step_workspace(&second, Some(own));
+	let mut next = step_thread(&second, Some(own));
 	let appended = pending_evidence(&run, &next).len();
 	record_evidence(&mut run, &mut next, usize::MAX);
 
@@ -1441,12 +1440,12 @@ fn a_runs_own_workspace_events_never_become_evidence() {
 
 	// Control: the unfiltered view appends the new own events every step.
 	let mut unfiltered = context(vec![]);
-	let mut pinned = step_workspace(&first, None);
+	let mut pinned = step_thread(&first, None);
 	record_evidence(&mut unfiltered, &mut pinned, usize::MAX);
 	unfiltered.push(assistant(1, "", &["x"]));
 	unfiltered.push(tool("x"));
 	assert_eq!(
-		pending_evidence(&unfiltered, &step_workspace(&second, None)).len(),
+		pending_evidence(&unfiltered, &step_thread(&second, None)).len(),
 		3
 	);
 }
@@ -1457,9 +1456,9 @@ fn an_unchanged_step_sends_no_trailing_message() {
 	// Any trailing message drops out of the cached prefix at the next step,
 	// because the step's assistant turn takes its place (#942).
 	let own = uuid::Uuid::from_u128(1);
-	let workspace = workspace_with_own_events(own, 3);
+	let thread = thread_with_own_events(own, 3);
 	let mut run = context(vec![]);
-	let mut pinned = step_workspace(&workspace, Some(own));
+	let mut pinned = step_thread(&thread, Some(own));
 	pinned["memory"] = Value::Null;
 
 	// Act: one step, then the next with the same counts.
@@ -1487,7 +1486,7 @@ fn an_unchanged_step_sends_no_trailing_message() {
 		.collect::<Vec<_>>();
 	assert_eq!(states.len(), 1);
 	assert_eq!(
-		states[0]["workspace_pages"]["events"]["total"],
+		states[0]["thread_pages"]["events"]["total"],
 		json!(2),
 		"{states:?}"
 	);
@@ -1498,17 +1497,17 @@ fn changed_page_counts_record_a_new_step_state() {
 	// Arrange: a foreign event arrives between two steps.
 	let own = uuid::Uuid::from_u128(1);
 	let mut run = context(vec![]);
-	let mut pinned = step_workspace(&workspace_with_own_events(own, 3), Some(own));
+	let mut pinned = step_thread(&thread_with_own_events(own, 3), Some(own));
 	record_evidence(&mut run, &mut pinned, usize::MAX);
 	record_step_state(&mut run, &pinned);
 	run.push(assistant(1, "", &["x"]));
 	run.push(tool("x"));
-	let mut changed = workspace_with_own_events(own, 3);
+	let mut changed = thread_with_own_events(own, 3);
 	let mut arrived = changed.events[0].clone();
 	arrived.sequence = 99;
 	arrived.id = uuid::Uuid::from_u128(1099);
 	changed.events.push(arrived);
-	let mut next = step_workspace(&changed, Some(own));
+	let mut next = step_thread(&changed, Some(own));
 
 	// Act
 	record_evidence(&mut run, &mut next, usize::MAX);
@@ -1524,5 +1523,5 @@ fn changed_page_counts_record_a_new_step_state() {
 			_ => None,
 		})
 		.expect("a step state");
-	assert_eq!(last["workspace_pages"]["events"]["total"], json!(3));
+	assert_eq!(last["thread_pages"]["events"]["total"], json!(3));
 }

@@ -7,7 +7,7 @@ use crate::apps::knowledge::{
 	},
 };
 use crate::apps::{
-	identity::models::AuthorizationWorkspace, workspaces::models::Workspace as WorkspaceRecord,
+	identity::models::AuthorizationThread, workspaces::models::Thread as ThreadRecord,
 };
 use crate::authorization::identity::Actor;
 use crate::{Error, Result as NativeResult, store::Store};
@@ -26,7 +26,7 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// Configuring a Workspace's semantic index (#360).
+/// Configuring a Thread's semantic index (#360).
 pub(crate) const SEMANTIC_INDEX_MANAGE: &str = "semantic.index.manage";
 
 /// Validate an index specification against this node's runtime composition.
@@ -48,23 +48,23 @@ pub(crate) fn validate_index(store: &Store, spec: &IndexingSpec) -> Result<()> {
 	Ok(())
 }
 
-/// Create the first index generation of a Workspace that has none, in the
+/// Create the first index generation of a Thread that has none, in the
 /// caller's transaction, and return its revision. A conversation creates its
-/// new Workspace and this index in one admission (#647); the caller has
+/// new Thread and this index in one admission (#647); the caller has
 /// already authorized `semantic.index.manage`.
 pub(crate) async fn create_first_index(
 	store: &Store,
 	tx: &mut dyn TransactionExecutor,
-	workspace: Uuid,
+	thread: Uuid,
 	spec: &IndexingSpec,
 	reason: &str,
 ) -> Result<i64> {
 	validate_index(store, spec)?;
-	WorkspaceRecord::lock_existing(tx, workspace).await?;
-	let tenant = AuthorizationWorkspace::tenant_in(tx, workspace)
+	ThreadRecord::lock_existing(tx, thread).await?;
+	let tenant = AuthorizationThread::tenant_in(tx, thread)
 		.await?
 		.ok_or(aidash_application::Error::Forbidden)?;
-	if SemanticIndexe::locked(tx, workspace, true).await?.is_some() {
+	if SemanticIndexe::locked(tx, thread, true).await?.is_some() {
 		return Err(aidash_application::Error::Conflict(
 			"semantic index revision changed".into(),
 		));
@@ -72,7 +72,7 @@ pub(crate) async fn create_first_index(
 	let collection = format!("aidash_{}", Uuid::new_v4().simple());
 	let index = SemanticIndexe::replace_generation(
 		tx,
-		workspace,
+		thread,
 		&tenant,
 		1,
 		serde_json::to_value(spec)?,
@@ -82,19 +82,19 @@ pub(crate) async fn create_first_index(
 	SemanticCollection::record_generation(
 		tx,
 		&collection,
-		workspace,
+		thread,
 		serde_json::to_value(&spec.vector)?,
 	)
 	.await?;
-	SemanticHistory::append(tx, workspace, None, index.revision, "CONFIGURED", reason).await?;
+	SemanticHistory::append(tx, thread, None, index.revision, "CONFIGURED", reason).await?;
 	Ok(index.revision)
 }
 
 pub(crate) struct NativeConfiguration {
 	pub store: Store,
 	pub actor: Actor,
-	/// The Workspace whose index is configured.
-	pub workspace: Uuid,
+	/// The Thread whose index is configured.
+	pub thread: Uuid,
 }
 /// One configuration, decided and written under the caller's lease.
 struct Configuration {
@@ -122,7 +122,7 @@ impl SemanticConfigurationRepository for NativeConfiguration {
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {
 		Ok(Box::new(Configuration {
 			lease: Some(
-				Lease::begin(&self.store, &self.actor, self.workspace)
+				Lease::begin(&self.store, &self.actor, self.thread)
 					.await
 					.map_err(
 						crate::authorization::remote::deployment_administrator::application_error,
@@ -133,19 +133,19 @@ impl SemanticConfigurationRepository for NativeConfiguration {
 }
 #[async_trait]
 impl SemanticConfigurationSession for Configuration {
-	async fn lock_workspace(&mut self, workspace: Uuid) -> Result<()> {
-		WorkspaceRecord::lock_existing(self.tx()?, workspace)
+	async fn lock_thread(&mut self, thread: Uuid) -> Result<()> {
+		ThreadRecord::lock_existing(self.tx()?, thread)
 			.await
 			.map_err(Into::into)
 	}
-	/// A Subject needs `semantic.index.manage` on the Workspace; a denial is
+	/// A Subject needs `semantic.index.manage` on the Thread; a denial is
 	/// audited after this transaction rolls back.
-	async fn authorize(&mut self, workspace: Uuid) -> Result<()> {
+	async fn authorize(&mut self, thread: Uuid) -> Result<()> {
 		let mut lease = self
 			.lease
 			.take()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
-		match lease.workspace(workspace, SEMANTIC_INDEX_MANAGE).await {
+		match lease.thread(thread, SEMANTIC_INDEX_MANAGE).await {
 			Ok(()) => {
 				self.lease = Some(lease);
 				Ok(())
@@ -153,30 +153,30 @@ impl SemanticConfigurationSession for Configuration {
 			Err(error) => lease.finish(Err(error)).await.map_err(Into::into),
 		}
 	}
-	async fn tenant(&mut self, workspace: Uuid) -> Result<String> {
-		AuthorizationWorkspace::tenant_in(self.tx()?, workspace)
+	async fn tenant(&mut self, thread: Uuid) -> Result<String> {
+		AuthorizationThread::tenant_in(self.tx()?, thread)
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}
-	async fn index(&mut self, workspace: Uuid) -> Result<Option<Index>> {
-		Ok(SemanticIndexe::locked(self.tx()?, workspace, true)
+	async fn index(&mut self, thread: Uuid) -> Result<Option<Index>> {
+		Ok(SemanticIndexe::locked(self.tx()?, thread, true)
 			.await?
 			.map(Into::into))
 	}
-	async fn counts(&mut self, workspace: Uuid) -> Result<(i64, usize)> {
-		SemanticEntry::configuration_counts(self.tx()?, workspace)
+	async fn counts(&mut self, thread: Uuid) -> Result<(i64, usize)> {
+		SemanticEntry::configuration_counts(self.tx()?, thread)
 			.await
 			.map_err(Into::into)
 	}
 	async fn replace(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		tenant: &str,
 		revision: i64,
 		spec: Value,
 		collection: &str,
 	) -> Result<Index> {
-		// The Workspace lock serializes index generations with bank policy pins.
+		// The Thread lock serializes index generations with bank policy pins.
 		// Include empty banks: their next projection and recall must remain usable.
 		let proposed: IndexingSpec = serde_json::from_value(spec.clone())?;
 		let mut after = Uuid::nil();
@@ -195,9 +195,7 @@ impl SemanticConfigurationSession for Configuration {
 						Alias::new("memory_banks"),
 						Expr::col(("s", "bank_id")).equals(("memory_banks", "id")),
 					)
-					.and_where(
-						Expr::col(("memory_banks", "workspace_id")).eq(Expr::value(workspace)),
-					)
+					.and_where(Expr::col(("memory_banks", "thread_id")).eq(Expr::value(thread)))
 					.and_where(Expr::col(("s", "bank_id")).gt(Expr::value(after)))
 					.order_by(("s", "bank_id"), Order::Asc)
 					.limit(256)
@@ -232,7 +230,7 @@ impl SemanticConfigurationSession for Configuration {
 				};
 				if !proposed.enabled {
 					return Err(aidash_application::Error::Conflict(
-						"Workspace index must remain enabled for pinned memory banks".into(),
+						"Thread index must remain enabled for pinned memory banks".into(),
 					));
 				}
 				let embedding = crate::apps::registry::models::Definition::read_of(
@@ -246,14 +244,14 @@ impl SemanticConfigurationSession for Configuration {
 					serde_json::from_value(embedding.config)?;
 				if proposed.embedding != embedding {
 					return Err(aidash_application::Error::Conflict(
-						"Workspace index embedding differs from a pinned memory bank policy".into(),
+						"Thread index embedding differs from a pinned memory bank policy".into(),
 					));
 				}
 			}
 		}
 		Ok(SemanticIndexe::replace_generation(
 			self.tx()?,
-			workspace,
+			thread,
 			tenant,
 			revision,
 			spec,
@@ -262,23 +260,23 @@ impl SemanticConfigurationSession for Configuration {
 		.await?
 		.into())
 	}
-	async fn retire_collections(&mut self, workspace: Uuid) -> Result<()> {
-		SemanticCollection::retire_workspace(self.tx()?, workspace)
+	async fn retire_collections(&mut self, thread: Uuid) -> Result<()> {
+		SemanticCollection::retire_thread(self.tx()?, thread)
 			.await
 			.map_err(Into::into)
 	}
 	async fn record_collection(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		collection: &str,
 		vector: Value,
 	) -> Result<()> {
-		SemanticCollection::record_generation(self.tx()?, collection, workspace, vector)
+		SemanticCollection::record_generation(self.tx()?, collection, thread, vector)
 			.await
 			.map_err(Into::into)
 	}
-	async fn active(&mut self, workspace: Uuid) -> Result<Vec<Uuid>> {
-		Ok(SemanticEntry::lock_active(self.tx()?, workspace)
+	async fn active(&mut self, thread: Uuid) -> Result<Vec<Uuid>> {
+		Ok(SemanticEntry::lock_active(self.tx()?, thread)
 			.await?
 			.into_iter()
 			.map(|entry| entry.id)
@@ -294,25 +292,25 @@ impl SemanticConfigurationSession for Configuration {
 			.await
 			.map_err(Into::into)
 	}
-	async fn rebuild_images(&mut self, workspace: Uuid, max_images: usize) -> Result<()> {
+	async fn rebuild_images(&mut self, thread: Uuid, max_images: usize) -> Result<()> {
 		let lease = self
 			.lease
 			.as_mut()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
 		// Posted images first take back their places in posting order, so the
 		// ledger rebuilds Working Area images into the room they leave.
-		super::attachment_images::relimit(lease, workspace, max_images).await?;
-		super::image_publications::rebuild(lease, workspace, max_images).await?;
+		super::attachment_images::relimit(lease, thread, max_images).await?;
+		super::image_publications::rebuild(lease, thread, max_images).await?;
 		// Images posted before the index existed or was enabled enter it now,
 		// under the authority of the person configuring it (#622).
-		super::attachment_images::backfill(lease, workspace, max_images)
+		super::attachment_images::backfill(lease, thread, max_images)
 			.await
 			.map_err(Into::into)
 	}
-	async fn history(&mut self, workspace: Uuid, revision: i64) -> Result<()> {
+	async fn history(&mut self, thread: Uuid, revision: i64) -> Result<()> {
 		SemanticHistory::append(
 			self.tx()?,
-			workspace,
+			thread,
 			None,
 			revision,
 			"CONFIGURED",
@@ -343,14 +341,11 @@ impl aidash_application::ports::authorization::visibility::RowOutcome for Entrie
 }
 #[async_trait]
 impl SemanticEntriesSession for Entries<'_, '_> {
-	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		self.lease
-			.workspace(workspace, action)
-			.await
-			.map_err(Into::into)
+	async fn thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
+		self.lease.thread(thread, action).await.map_err(Into::into)
 	}
-	async fn index(&mut self, workspace: Uuid, exclusive: bool) -> Result<Index> {
-		Ok(service::index(self.lease.tx(), workspace, exclusive)
+	async fn index(&mut self, thread: Uuid, exclusive: bool) -> Result<Index> {
+		Ok(service::index(self.lease.tx(), thread, exclusive)
 			.await?
 			.into())
 	}
@@ -363,22 +358,19 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
-		self.lease
-			.source(workspace, source)
-			.await
-			.map_err(Into::into)
+	async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
+		self.lease.source(thread, source).await.map_err(Into::into)
 	}
-	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+	async fn image_visible(&mut self, thread: Uuid, source: &Source) -> Result<bool> {
 		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::visible(self.lease, workspace, source)
+			return super::attachment_images::visible(self.lease, thread, source)
 				.await
 				.map_err(Into::into);
 		}
 		let Some(access) = self.lease.access() else {
 			return Ok(false);
 		};
-		Ok(super::image_files::current(access, workspace, source)
+		Ok(super::image_files::current(access, thread, source)
 			.await?
 			.is_some())
 	}
@@ -393,37 +385,30 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 	}
 	async fn history(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 		revision: i64,
 		state: &str,
 		detail: &str,
 	) -> Result<()> {
-		service::history(
-			self.lease.tx(),
-			workspace,
-			Some(id),
-			revision,
-			state,
-			detail,
-		)
-		.await
-		.map_err(Into::into)
+		service::history(self.lease.tx(), thread, Some(id), revision, state, detail)
+			.await
+			.map_err(Into::into)
 	}
 
-	async fn by_key(&mut self, workspace: Uuid, key: &str) -> Result<Option<Entry>> {
+	async fn by_key(&mut self, thread: Uuid, key: &str) -> Result<Option<Entry>> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<Option<native::Entry>> = async {
 			let value: Option<native::Entry> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = key;
 				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND key = ?)".to_owned(),
+							"(thread_id = ? AND key = ?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -443,18 +428,18 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			.map_err(Into::into)
 	}
 
-	async fn count(&mut self, workspace: Uuid) -> Result<i64> {
+	async fn count(&mut self, thread: Uuid) -> Result<i64> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<i64> = async {
 			let value: i64 = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(Expr::cust("COUNT(*)"))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted AND source->>'kind' NOT IN ('working_image', 'attachment_image'))".to_owned(),
+							"(thread_id = ? AND NOT deleted AND source->>'kind' NOT IN ('working_image', 'attachment_image'))".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.to_string(PostgresQueryBuilder),
@@ -470,12 +455,12 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 
 	async fn put(&mut self, entry: Entry, authority: Value) -> Result<Entry> {
 		let lease = &mut *self.lease;
-		let workspace = entry.workspace_id;
+		let thread = entry.thread_id;
 		let saved = authority;
 		let result: NativeResult<native::Entry> = async {
 			let value: native::Entry = {
 				let query_bind_1 = entry.id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				let query_bind_3 = entry.key;
 				let query_bind_4 = entry.source;
 				let query_bind_5 = entry.agent;
@@ -490,7 +475,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						.into_table(Alias::new("semantic_entries"))
 						.columns([
 							Alias::new("id"),
-							Alias::new("workspace_id"),
+							Alias::new("thread_id"),
 							Alias::new("key"),
 							Alias::new("source"),
 							Alias::new("agent"),
@@ -553,7 +538,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 									vec![Expr::value(query_bind_11.to_owned()).into()],
 								))
 								.expr(crate::database::scope::tenant_of(
-									"workspaces",
+									"threads",
 									"id",
 									query_bind_2,
 								))
@@ -578,7 +563,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 				)
 				.columns(&[
 					"id",
-					"workspace_id",
+					"thread_id",
 					"key",
 					"source",
 					"agent",
@@ -600,18 +585,18 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		result.map(|value| value.into()).map_err(Into::into)
 	}
 
-	async fn list(&mut self, workspace: Uuid) -> Result<Vec<Entry>> {
+	async fn list(&mut self, thread: Uuid) -> Result<Vec<Entry>> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<Vec<native::Entry>> = async {
 			let value: Vec<native::Entry> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted)".to_owned(),
+							"(thread_id = ? AND NOT deleted)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.order_by_expr(SimpleExpr::from(Expr::col(Alias::new("id"))), Order::Asc)
@@ -628,19 +613,19 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			.map_err(Into::into)
 	}
 
-	async fn lock_entry(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Entry>> {
+	async fn lock_entry(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Entry>> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<Option<native::Entry>> = async {
 			let value: Option<native::Entry> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = id;
 				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND id = ?)".to_owned(),
+							"(thread_id = ? AND id = ?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -669,7 +654,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 
 	async fn change(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 		point: Uuid,
 		index_revision: i64,
@@ -678,23 +663,23 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 	) -> Result<Entry> {
 		let lease = &mut *self.lease;
 		let saved = authority;
-		let result: NativeResult<native::Entry>=async { let value: native::Entry={ let query_bind_1 = id; let query_bind_2 = workspace; let query_bind_3 = point; let query_bind_4 = index_revision; let query_bind_5 = delete; let query_bind_6 = if delete {"DELETED"} else {"PENDING"}; let query_bind_7 = saved; crate::database::native::query_as(&Query::update().table(Alias::new("semantic_entries")).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("point_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("index_revision"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.to_owned()).into()])).value_expr(Alias::new("deleted"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("state"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("source"), SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN JSONB_BUILD_OBJECT('kind', 'memory', 'text', '') ELSE source END)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("authority"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(Alias::new("attempts"), Expr::cust("0")).value_expr(Alias::new("last_error"), Expr::cust("NULL")).value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND workspace_id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_one(&mut **lease.tx()).await? }; Ok(value) }.await;
+		let result: NativeResult<native::Entry>=async { let value: native::Entry={ let query_bind_1 = id; let query_bind_2 = thread; let query_bind_3 = point; let query_bind_4 = index_revision; let query_bind_5 = delete; let query_bind_6 = if delete {"DELETED"} else {"PENDING"}; let query_bind_7 = saved; crate::database::native::query_as(&Query::update().table(Alias::new("semantic_entries")).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("point_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("index_revision"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.to_owned()).into()])).value_expr(Alias::new("deleted"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("state"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("source"), SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN JSONB_BUILD_OBJECT('kind', 'memory', 'text', '') ELSE source END)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("authority"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(Alias::new("attempts"), Expr::cust("0")).value_expr(Alias::new("last_error"), Expr::cust("NULL")).value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND thread_id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_one(&mut **lease.tx()).await? }; Ok(value) }.await;
 		result.map(|value| value.into()).map_err(Into::into)
 	}
 
-	async fn history_page(&mut self, workspace: Uuid, cursor: i64) -> Result<Vec<History>> {
+	async fn history_page(&mut self, thread: Uuid, cursor: i64) -> Result<Vec<History>> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<Vec<native::History>> = async {
 			let value: Vec<native::History> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = cursor;
 				crate::database::native::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("semantic_history"))
 						.and_where(
-							Expr::col(Alias::new("workspace_id"))
+							Expr::col(Alias::new("thread_id"))
 								.eq(Expr::value(query_bind_1.to_owned())),
 						)
 						.and_where(
@@ -745,7 +730,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 impl From<native::Index> for Index {
 	fn from(value: native::Index) -> Self {
 		Self {
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			tenant: value.tenant,
 			revision: value.revision,
 			spec: value.spec,
@@ -757,7 +742,7 @@ impl From<native::Index> for Index {
 impl From<Index> for native::Index {
 	fn from(value: Index) -> Self {
 		Self {
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			tenant: value.tenant,
 			revision: value.revision,
 			spec: value.spec,
@@ -770,7 +755,7 @@ impl From<native::Entry> for Entry {
 	fn from(value: native::Entry) -> Self {
 		Self {
 			id: value.id,
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			key: value.key,
 			source: value.source,
 			agent: value.agent,
@@ -791,7 +776,7 @@ impl From<Entry> for native::Entry {
 	fn from(value: Entry) -> Self {
 		Self {
 			id: value.id,
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			key: value.key,
 			source: value.source,
 			agent: value.agent,
@@ -812,7 +797,7 @@ impl From<native::History> for History {
 	fn from(value: native::History) -> Self {
 		Self {
 			sequence: value.sequence,
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			entry_id: value.entry_id,
 			revision: value.revision,
 			state: value.state,
@@ -825,7 +810,7 @@ impl From<History> for native::History {
 	fn from(value: History) -> Self {
 		Self {
 			sequence: value.sequence,
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			entry_id: value.entry_id,
 			revision: value.revision,
 			state: value.state,

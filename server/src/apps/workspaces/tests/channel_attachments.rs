@@ -7,12 +7,12 @@ use uuid::Uuid;
 async fn upload(
 	app: &EndpointFixture,
 	token: &str,
-	workspace: &str,
+	thread: &str,
 	key: Uuid,
 	bytes: &[u8],
 ) -> (u16, Value) {
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=evidence.txt&media_type=text%2Fplain&idempotency_key={key}"
+		"/api/threads/{thread}/attachments?filename=evidence.txt&media_type=text%2Fplain&idempotency_key={key}"
 	);
 	let client = client_for(&app.server.url, token).await;
 	decoded(
@@ -55,29 +55,27 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		app,
 		mut policy,
 		token: alice,
-		workspace,
+		thread,
 	} = Box::pin(scoped_channel).await;
 	let deployment_administrator = app.runtime.config.api_token.clone();
 	let key = Uuid::new_v4();
-	let (status, file) = upload(&app, &alice, &workspace, key, b"Source evidence").await;
+	let (status, file) = upload(&app, &alice, &thread, key, b"Source evidence").await;
 	assert_eq!(status, 200, "{file}");
-	let (status, replay) = upload(&app, &alice, &workspace, key, b"Source evidence").await;
+	let (status, replay) = upload(&app, &alice, &thread, key, b"Source evidence").await;
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(file["id"], replay["id"]);
 	assert_eq!(
-		upload(&app, &alice, &workspace, key, b"Changed bytes")
-			.await
-			.0,
+		upload(&app, &alice, &thread, key, b"Changed bytes").await.0,
 		409
 	);
 	let attachment = file["id"].as_str().unwrap();
 	let message_key = Uuid::new_v4();
-	let message_path = format!("/api/workspaces/{workspace}/thread-messages");
+	let message_path = format!("/api/threads/{thread}/channel-messages");
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"bob-post-only", "effect":"deny", "subjects":{"ids":["bob"]},
-		"actions":["workspace.read","message.read"],
-		"resources":{"kinds":["workspace","message"]}
+		"actions":["thread.read","message.read"],
+		"resources":{"kinds":["thread","message"]}
 	}));
 	let (status, changed) = request(
 		&app,
@@ -124,7 +122,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 			&app,
 			bob,
 			"GET",
-			&format!("/api/workspaces/{workspace}/message-history"),
+			&format!("/api/threads/{thread}/message-history"),
 			Value::Null
 		)
 		.await
@@ -132,7 +130,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		404
 	);
 	let body = json!({
-		"content":"Review this source", "thread_id":null,
+		"content":"Review this source",
 		"idempotency_key":message_key, "attachment_ids":[attachment]
 	});
 	let (status, message) = request(&app, &alice, "POST", &message_path, body.clone()).await;
@@ -142,15 +140,6 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	let (status, replay) = request(&app, &alice, "POST", &message_path, body).await;
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(message["message"]["id"], replay["message"]["id"]);
-	let (status, thread) = request(
-		&app,
-		&alice,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":message["message"]["id"]}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
 	policy["policies"]
 		.as_array_mut()
 		.unwrap()
@@ -171,21 +160,11 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		bob,
 		"POST",
 		&message_path,
-		json!({"content":"Read-only workspace post", "idempotency_key":Uuid::new_v4()}),
+		json!({"content":"Read-only thread post", "idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
 	assert_eq!(status, 200, "{posted_without_message_read}");
-	let (status, hidden_reply) = request(
-		&app,
-		bob,
-		"POST",
-		&message_path,
-		json!({"content":"Invisible root", "thread_id":thread["id"],
-			"idempotency_key":Uuid::new_v4()}),
-	)
-	.await;
-	assert_eq!(status, 404, "{hidden_reply}");
-	let download = format!("/api/workspaces/{workspace}/attachments/{attachment}");
+	let download = format!("/api/threads/{thread}/attachments/{attachment}");
 	let alice_client = client_for(&app.server.url, &alice).await;
 	let response = alice_client.get(&download).await.unwrap();
 	assert_eq!(response.status_code(), 200, "{}", response.text());
@@ -249,22 +228,8 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 ) {
 	let app = endpoint.await;
 	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
-	let (_, a) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/workspaces",
-		json!({"title":"A","goal":"A"}),
-	)
-	.await;
-	let (_, b) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/workspaces",
-		json!({"title":"B","goal":"B"}),
-	)
-	.await;
+	let (_, a) = request(&app, &token, "POST", "/api/threads", json!({"title":"A"})).await;
+	let (_, b) = request(&app, &token, "POST", "/api/threads", json!({"title":"B"})).await;
 	let a = a["id"].as_str().unwrap();
 	let b = b["id"].as_str().unwrap();
 	let (status, file) = upload(&app, &token, a, Uuid::new_v4(), b"one").await;
@@ -275,12 +240,12 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{b}/thread-messages"),
+		&format!("/api/threads/{b}/channel-messages"),
 		body(Uuid::new_v4()),
 	)
 	.await;
 	assert_eq!(other.0, 404);
-	let path = format!("/api/workspaces/{a}/thread-messages");
+	let path = format!("/api/threads/{a}/channel-messages");
 	assert_eq!(
 		request(&app, &token, "POST", &path, body(Uuid::new_v4()))
 			.await
@@ -306,24 +271,24 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 	let f = app.runtime.clone();
 	let token = crate::endpoint::tenant_token(&f.store, "acme").await;
 
-	let (_, workspace) = request(
+	let (_, thread) = request(
 		&app,
 		&token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Media","goal":"Inspect media"}),
+		"/api/threads",
+		json!({"title":"Media"}),
 	)
 	.await;
-	let workspace = workspace["id"].as_str().unwrap();
-	let (_, first) = upload(&app, &token, workspace, Uuid::new_v4(), b"first").await;
-	let (_, second) = upload(&app, &token, workspace, Uuid::new_v4(), b"second").await;
+	let thread = thread["id"].as_str().unwrap();
+	let (_, first) = upload(&app, &token, thread, Uuid::new_v4(), b"first").await;
+	let (_, second) = upload(&app, &token, thread, Uuid::new_v4(), b"second").await;
 	let mut ids = [
 		second["id"].as_str().unwrap(),
 		first["id"].as_str().unwrap(),
 	];
 	ids.sort_unstable();
 	ids.reverse();
-	let path = format!("/api/workspaces/{workspace}/thread-messages");
+	let path = format!("/api/threads/{thread}/channel-messages");
 	let key = Uuid::new_v4();
 	let body = json!({"content":"","idempotency_key":key,"attachment_ids":ids});
 	let (status, posted) = request(&app, &token, "POST", &path, body.clone()).await;
@@ -346,7 +311,7 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/message-history"),
+		&format!("/api/threads/{thread}/message-history"),
 		Value::Null,
 	)
 	.await;
@@ -437,22 +402,19 @@ async fn attachment_upload_accepts_large_files_and_rejects_over_limit(
 	#[future] scoped_channel: ScopedChannel,
 ) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
 	let (status, body) = upload(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		Uuid::new_v4(),
 		&vec![b'x'; 1_200_000],
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=evidence.txt&media_type=text%2Fplain&idempotency_key={}",
+		"/api/threads/{thread}/attachments?filename=evidence.txt&media_type=text%2Fplain&idempotency_key={}",
 		Uuid::new_v4()
 	);
 	let client = client_for(&app.server.url, &token).await;
@@ -473,13 +435,9 @@ async fn startup_backfills_legacy_bytes_and_replay_keeps_the_same_object(
 	#[future] scoped_channel: ScopedChannel,
 ) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
-	let (status, uploaded) =
-		upload(&app, &token, &workspace, Uuid::new_v4(), b"legacy bytes").await;
+	let (status, uploaded) = upload(&app, &token, &thread, Uuid::new_v4(), b"legacy bytes").await;
 	assert_eq!(status, 200, "{uploaded}");
 	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
 	// Restore the row to its pre-upgrade representation before restarting.
@@ -518,7 +476,7 @@ async fn startup_backfills_legacy_bytes_and_replay_keeps_the_same_object(
 	assert_eq!(first, second);
 
 	// A corrupt legacy digest fails startup without deleting its original bytes.
-	let (status, corrupt) = upload(&app, &token, &workspace, Uuid::new_v4(), b"legacy bad").await;
+	let (status, corrupt) = upload(&app, &token, &thread, Uuid::new_v4(), b"legacy bad").await;
 	assert_eq!(status, 200, "{corrupt}");
 	let corrupt_id: Uuid = corrupt["id"].as_str().unwrap().parse().unwrap();
 	sqlx::query(
@@ -550,12 +508,9 @@ async fn startup_backfills_legacy_bytes_and_replay_keeps_the_same_object(
 #[tokio::test]
 async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_channel: ScopedChannel) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
-	let (status, file) = upload(&app, &token, &workspace, Uuid::new_v4(), b"delete me").await;
+	let (status, file) = upload(&app, &token, &thread, Uuid::new_v4(), b"delete me").await;
 	assert_eq!(status, 200, "{file}");
 	let id: Uuid = file["id"].as_str().unwrap().parse().unwrap();
 	let (object_id,): (Uuid,) =
@@ -570,28 +525,16 @@ async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_chann
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":"root", "idempotency_key":Uuid::new_v4(), "attachment_ids":[id]}),
 	)
 	.await;
 	assert_eq!(status, 200, "{message}");
-	let (status, thread) = request(
-		&app,
-		&token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":message["message"]["id"]}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
 	let (status, deleted) = request(
 		&app,
 		&token,
 		"POST",
-		&format!(
-			"/api/workspaces/{workspace}/threads/{}/delete",
-			thread["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{thread}/delete"),
 		json!({"idempotency_key":Uuid::new_v4(), "files":[]}),
 	)
 	.await;
@@ -625,20 +568,17 @@ async fn media_upload_validates_decoded_content_and_records_measurements(
 	#[future] scoped_channel: ScopedChannel,
 ) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
 	let client = client_for(&app.server.url, &token).await;
 	async fn send(
 		client: &reinhardt::test::APIClient,
-		workspace: &str,
+		thread: &str,
 		mime: &str,
 		bytes: &[u8],
 	) -> (u16, Value) {
 		let path = format!(
-			"/api/workspaces/{workspace}/attachments?filename=sample&media_type={}&idempotency_key={}",
+			"/api/threads/{thread}/attachments?filename=sample&media_type={}&idempotency_key={}",
 			mime.replace('/', "%2F"),
 			Uuid::new_v4()
 		);
@@ -650,7 +590,7 @@ async fn media_upload_validates_decoded_content_and_records_measurements(
 		)
 	}
 	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
-	let (status, body) = send(&client, &workspace, "image/png", png).await;
+	let (status, body) = send(&client, &thread, "image/png", png).await;
 	assert_eq!(status, 200, "{body}");
 	let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
 	let dimensions: (Option<i32>, Option<i32>, Option<i64>) =
@@ -661,7 +601,7 @@ async fn media_upload_validates_decoded_content_and_records_measurements(
 			.unwrap();
 	assert_eq!(dimensions, (Some(1), Some(1), None));
 	let wav = include_bytes!("../../execution/tests/support/media/one-second.wav");
-	let (status, body) = send(&client, &workspace, "audio/wav", wav).await;
+	let (status, body) = send(&client, &thread, "audio/wav", wav).await;
 	assert_eq!(status, 200, "{body}");
 	let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
 	let (duration,): (Option<i64>,) =
@@ -676,19 +616,18 @@ async fn media_upload_validates_decoded_content_and_records_measurements(
 	let total = too_long.len() as u32;
 	too_long[4..8].copy_from_slice(&(total - 8).to_le_bytes());
 	too_long[40..44].copy_from_slice(&(total - 44).to_le_bytes());
-	let (status, refusal) = send(&client, &workspace, "audio/wav", &too_long).await;
+	let (status, refusal) = send(&client, &thread, "audio/wav", &too_long).await;
 	assert_eq!(status, 400);
 	assert_eq!(refusal["error"], "MEDIA_TOO_LARGE");
 
-	let (status, refusal) =
-		send(&client, &workspace, "image/png", b"\x89PNG\r\n\x1a\nbroken").await;
+	let (status, refusal) = send(&client, &thread, "image/png", b"\x89PNG\r\n\x1a\nbroken").await;
 	assert_eq!(status, 400);
 	assert_eq!(refusal["error"], "MEDIA_UNDECODABLE");
 	let oversized = include_bytes!("../../execution/tests/support/media/oversized.png");
-	let (status, refusal) = send(&client, &workspace, "image/png", oversized).await;
+	let (status, refusal) = send(&client, &thread, "image/png", oversized).await;
 	assert_eq!(status, 400);
 	assert_eq!(refusal["error"], "MEDIA_TOO_LARGE");
-	let (status, refusal) = send(&client, &workspace, "audio/wav", b"RIFF\0\0\0\0WAVEbroken").await;
+	let (status, refusal) = send(&client, &thread, "audio/wav", b"RIFF\0\0\0\0WAVEbroken").await;
 	assert_eq!(status, 400);
 	assert_eq!(refusal["error"], "MEDIA_UNDECODABLE");
 }
@@ -699,13 +638,10 @@ async fn attachment_upload_accepts_eight_mib_through_the_http_stack(
 	#[future] scoped_channel: ScopedChannel,
 ) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
 	let bytes = vec![b'x'; 8 * 1024 * 1024];
-	let (status, body) = upload(&app, &token, &workspace, Uuid::new_v4(), &bytes).await;
+	let (status, body) = upload(&app, &token, &thread, Uuid::new_v4(), &bytes).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["size_bytes"], 8 * 1024 * 1024);
 }
@@ -716,12 +652,9 @@ async fn startup_grandfathers_legacy_attachments_above_retained_limit(
 	#[future] scoped_channel: ScopedChannel,
 ) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
-	let (status, uploaded) = upload(&app, &token, &workspace, Uuid::new_v4(), b"original").await;
+	let (status, uploaded) = upload(&app, &token, &thread, Uuid::new_v4(), b"original").await;
 	assert_eq!(status, 200, "{uploaded}");
 	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
 	let legacy = b"legacy content over quota";
@@ -769,14 +702,11 @@ async fn metered_storage_counts_stored_attachments_once_and_inline_bytes_separat
 	#[future] scoped_channel: ScopedChannel,
 ) {
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
-	let workspace_id = Uuid::parse_str(&workspace).unwrap();
-	let tenant: String = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id=$1")
-		.bind(workspace_id)
+	let thread_id = Uuid::parse_str(&thread).unwrap();
+	let tenant: String = sqlx::query_scalar("SELECT tenant FROM threads WHERE id=$1")
+		.bind(thread_id)
 		.fetch_one(app.runtime.store.pool.fixture_driver())
 		.await
 		.unwrap();
@@ -794,12 +724,12 @@ async fn metered_storage_counts_stored_attachments_once_and_inline_bytes_separat
 	}
 	let before = sampled(&app, &tenant).await;
 	let bytes = b"stored and metered";
-	let (status, uploaded) = upload(&app, &token, &workspace, Uuid::new_v4(), bytes).await;
+	let (status, uploaded) = upload(&app, &token, &thread, Uuid::new_v4(), bytes).await;
 	assert_eq!(status, 200, "{uploaded}");
 	assert_eq!(sampled(&app, &tenant).await, before + bytes.len() as u64);
 	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
 	let inline = b"inline";
-	sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,content) SELECT $1,tenant,workspace_id,uploaded_by,$2,'inline','text/plain',$3,$4,$5 FROM channel_attachments WHERE id=$6")
+	sqlx::query("INSERT INTO channel_attachments (id,tenant,thread_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,content) SELECT $1,tenant,thread_id,uploaded_by,$2,'inline','text/plain',$3,$4,$5 FROM channel_attachments WHERE id=$6")
         .bind(Uuid::new_v4()).bind(Uuid::new_v4())
         .bind(aidash_server::capabilities::objects::digest(inline)).bind(inline.len() as i64)
         .bind(inline.as_slice()).bind(id).execute(app.runtime.store.pool.fixture_driver()).await.unwrap();
@@ -828,11 +758,11 @@ async fn image_entry(
 async fn upload_image(
 	app: &EndpointFixture,
 	token: &str,
-	workspace: &str,
+	thread: &str,
 	description: Option<&str>,
 ) -> (u16, Value) {
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}",
+		"/api/threads/{thread}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}",
 		Uuid::new_v4()
 	);
 	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
@@ -850,7 +780,7 @@ async fn upload_image(
 				app,
 				token,
 				"PUT",
-				&format!("/api/workspaces/{workspace}/attachments/{id}/description"),
+				&format!("/api/threads/{thread}/attachments/{id}/description"),
 				json!({"description":text}),
 			)
 			.await
@@ -864,16 +794,16 @@ async fn upload_image(
 async fn posted_images_enter_the_index_with_the_description_only_their_writer_edits(
 	#[future] scoped_channel: ScopedChannel,
 ) {
-	// Arrange: an image posted before the Workspace had an index, and a second
+	// Arrange: an image posted before the Thread had an index, and a second
 	// person who may read and post but did not post the image.
 	let ScopedChannel {
 		app,
 		mut policy,
 		token: alice,
-		workspace,
+		thread,
 	} = Box::pin(scoped_channel).await;
-	let message_path = format!("/api/workspaces/{workspace}/thread-messages");
-	let (status, early) = upload_image(&app, &alice, &workspace, Some("A red bicycle")).await;
+	let message_path = format!("/api/threads/{thread}/channel-messages");
+	let (status, early) = upload_image(&app, &alice, &thread, Some("A red bicycle")).await;
 	assert_eq!(status, 200, "{early}");
 	assert_eq!(early["description"], "A red bicycle");
 	let (status, first) = request(&app, &alice, "POST", &message_path,
@@ -901,13 +831,13 @@ async fn posted_images_enter_the_index_with_the_description_only_their_writer_ed
 		&app,
 		&alice,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");
 	let backfilled = image_entry(&app, early_id).await;
-	let (status, late) = upload_image(&app, &alice, &workspace, None).await;
+	let (status, late) = upload_image(&app, &alice, &thread, None).await;
 	assert_eq!(status, 200, "{late}");
 	let (status, second) = request(&app, &alice, "POST", &message_path,
 		json!({"content":"After the index", "idempotency_key":Uuid::new_v4(), "attachment_ids":[late["id"]]})).await;
@@ -921,11 +851,11 @@ async fn posted_images_enter_the_index_with_the_description_only_their_writer_ed
 		&app,
 		&alice,
 		"GET",
-		&format!("/api/workspaces/{workspace}/message-history"),
+		&format!("/api/threads/{thread}/message-history"),
 		Value::Null,
 	)
 	.await;
-	let description_path = format!("/api/workspaces/{workspace}/attachments/{late_id}/description");
+	let description_path = format!("/api/threads/{thread}/attachments/{late_id}/description");
 	let (foreign_status, _) = request(
 		&app,
 		&bob,
@@ -977,10 +907,7 @@ async fn posted_images_enter_the_index_with_the_description_only_their_writer_ed
 async fn an_image_leaves_the_index_with_its_thread(#[future] scoped_channel: ScopedChannel) {
 	// Arrange
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
 	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
@@ -989,31 +916,22 @@ async fn an_image_leaves_the_index_with_its_thread(#[future] scoped_channel: Sco
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");
-	let (status, image) = upload_image(&app, &token, &workspace, Some("A harbour at dusk")).await;
+	let (status, image) = upload_image(&app, &token, &thread, Some("A harbour at dusk")).await;
 	assert_eq!(status, 200, "{image}");
 	let (status, message) = request(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":"root", "idempotency_key":Uuid::new_v4(), "attachment_ids":[image["id"]]}),
 	)
 	.await;
 	assert_eq!(status, 200, "{message}");
-	let (status, thread) = request(
-		&app,
-		&token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":message["message"]["id"]}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
 	let id = image["id"].as_str().unwrap();
 	assert_eq!(
 		image_entry(&app, id).await.map(|entry| entry.3),
@@ -1025,10 +943,7 @@ async fn an_image_leaves_the_index_with_its_thread(#[future] scoped_channel: Sco
 		&app,
 		&token,
 		"POST",
-		&format!(
-			"/api/workspaces/{workspace}/threads/{}/delete",
-			thread["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{thread}/delete"),
 		json!({"idempotency_key":Uuid::new_v4(), "files":[]}),
 	)
 	.await;
@@ -1044,14 +959,11 @@ async fn an_image_leaves_the_index_with_its_thread(#[future] scoped_channel: Sco
 async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChannel) {
 	// Arrange
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
 	let client = client_for(&app.server.url, &token).await;
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=notes.txt&media_type=text%2Fplain&idempotency_key={}",
+		"/api/threads/{thread}/attachments?filename=notes.txt&media_type=text%2Fplain&idempotency_key={}",
 		Uuid::new_v4()
 	);
 	let (status, notes) = decoded(
@@ -1062,7 +974,7 @@ async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChann
 	);
 	assert_eq!(status, 200, "{notes}");
 	let in_url = format!(
-		"/api/workspaces/{workspace}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}&description=Words",
+		"/api/threads/{thread}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}&description=Words",
 		Uuid::new_v4()
 	);
 	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
@@ -1073,7 +985,7 @@ async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChann
 		&token,
 		"PUT",
 		&format!(
-			"/api/workspaces/{workspace}/attachments/{}/description",
+			"/api/threads/{thread}/attachments/{}/description",
 			notes["id"].as_str().unwrap()
 		),
 		json!({"description":"Notes"}),
@@ -1086,9 +998,8 @@ async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChann
 			.unwrap(),
 	);
 	let (long_status, long_refusal) =
-		upload_image(&app, &token, &workspace, Some(&"画".repeat(2001))).await;
-	let (full_status, full) =
-		upload_image(&app, &token, &workspace, Some(&"画".repeat(2000))).await;
+		upload_image(&app, &token, &thread, Some(&"画".repeat(2001))).await;
+	let (full_status, full) = upload_image(&app, &token, &thread, Some(&"画".repeat(2000))).await;
 
 	// Assert: only an image is described, never through the URL, and the
 	// limit is 2,000 characters however many bytes they take.
@@ -1098,14 +1009,14 @@ async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChann
 	assert_eq!(full_status, 200, "{full}");
 }
 
-async fn post_image(app: &EndpointFixture, token: &str, workspace: &str, content: &str) -> String {
-	let (status, image) = upload_image(app, token, workspace, None).await;
+async fn post_image(app: &EndpointFixture, token: &str, thread: &str, content: &str) -> String {
+	let (status, image) = upload_image(app, token, thread, None).await;
 	assert_eq!(status, 200, "{image}");
 	let (status, message) = request(
 		app,
 		token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":content, "idempotency_key":Uuid::new_v4(), "attachment_ids":[image["id"]]}),
 	)
 	.await;
@@ -1120,12 +1031,9 @@ async fn posted_images_use_the_image_limit_not_the_text_source_quota(
 ) {
 	// Arrange: room for one text source and one image.
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
-	let index_path = format!("/api/workspaces/{workspace}/semantic/index");
+	let index_path = format!("/api/threads/{thread}/semantic/index");
 	let mut spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
 		"max_sources":1,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
@@ -1138,11 +1046,11 @@ async fn posted_images_use_the_image_limit_not_the_text_source_quota(
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");
-	let first = post_image(&app, &token, &workspace, "First").await;
-	let second = post_image(&app, &token, &workspace, "Second").await;
+	let first = post_image(&app, &token, &thread, "First").await;
+	let second = post_image(&app, &token, &thread, "Second").await;
 
 	// Act: add the one text source, then reconfigure the index.
-	let (text_status, text) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"),
+	let (text_status, text) = request(&app, &token, "POST", &format!("/api/threads/{thread}/semantic/entries"),
 		json!({"key":"note","source":{"kind":"memory","text":"A note"},"expected_revision":0,"metadata":{}})).await;
 	spec["max_results"] = json!(4);
 	let (reconfigured, body) = request(
@@ -1177,7 +1085,7 @@ async fn backfill_pages_past_images_the_configuring_person_cannot_read(
 		app,
 		mut policy,
 		token: alice,
-		workspace,
+		thread,
 	} = Box::pin(scoped_channel).await;
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"hide-bob","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/sender"},"right":{"source":"literal","value":"bob"}}}));
@@ -1191,8 +1099,8 @@ async fn backfill_pages_past_images_the_configuring_person_cannot_read(
 	.await;
 	assert_eq!(status, 200, "{changed}");
 	let bob = crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
-	let hidden = post_image(&app, &bob, &workspace, "Bob's photo").await;
-	let visible = post_image(&app, &alice, &workspace, "Alice's photo").await;
+	let hidden = post_image(&app, &bob, &thread, "Bob's photo").await;
+	let visible = post_image(&app, &alice, &thread, "Alice's photo").await;
 	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
 		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
@@ -1202,7 +1110,7 @@ async fn backfill_pages_past_images_the_configuring_person_cannot_read(
 		&app,
 		&alice,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
@@ -1227,10 +1135,7 @@ async fn image_entry_keys_are_reserved_and_text_entries_hold_no_image_slot(
 	// Arrange: room for one image, and a text entry whose key looks like an
 	// image's, as one written before the prefix was reserved would.
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
 	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
@@ -1239,12 +1144,12 @@ async fn image_entry_keys_are_reserved_and_text_entries_hold_no_image_slot(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");
-	let entries_path = format!("/api/workspaces/{workspace}/semantic/entries");
+	let entries_path = format!("/api/threads/{thread}/semantic/entries");
 	let (text_status, text) = request(&app, &token, "POST", &entries_path,
 		json!({"key":"note","source":{"kind":"memory","text":"A note"},"expected_revision":0,"metadata":{}})).await;
 	assert_eq!(text_status, 200, "{text}");
@@ -1267,7 +1172,7 @@ async fn image_entry_keys_are_reserved_and_text_entries_hold_no_image_slot(
 			.0,
 		);
 	}
-	let image = post_image(&app, &token, &workspace, "Photo").await;
+	let image = post_image(&app, &token, &thread, "Photo").await;
 
 	// Assert: public writes cannot take an image key, and only image entries
 	// take image slots.
@@ -1289,12 +1194,9 @@ async fn backfill_admits_the_older_image_when_one_slot_remains(
 	// Arrange: two slots, one held by an image posted while the index was
 	// enabled; then two images posted while it was disabled.
 	let ScopedChannel {
-		app,
-		token,
-		workspace,
-		..
+		app, token, thread, ..
 	} = Box::pin(scoped_channel).await;
-	let index_path = format!("/api/workspaces/{workspace}/semantic/index");
+	let index_path = format!("/api/threads/{thread}/semantic/index");
 	let mut spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
 		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":2});
@@ -1307,7 +1209,7 @@ async fn backfill_admits_the_older_image_when_one_slot_remains(
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");
-	let held = post_image(&app, &token, &workspace, "Indexed").await;
+	let held = post_image(&app, &token, &thread, "Indexed").await;
 	spec["enabled"] = json!(false);
 	let (status, index) = request(
 		&app,
@@ -1322,7 +1224,7 @@ async fn backfill_admits_the_older_image_when_one_slot_remains(
 	// disagree.
 	let mut ids = vec![];
 	for _ in 0..2 {
-		let (status, image) = upload_image(&app, &token, &workspace, None).await;
+		let (status, image) = upload_image(&app, &token, &thread, None).await;
 		assert_eq!(status, 200, "{image}");
 		ids.push(image["id"].as_str().unwrap().to_owned());
 	}
@@ -1332,7 +1234,7 @@ async fn backfill_admits_the_older_image_when_one_slot_remains(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/workspaces/{workspace}/thread-messages"),
+			&format!("/api/threads/{thread}/channel-messages"),
 			json!({"content":content, "idempotency_key":Uuid::new_v4(), "attachment_ids":[id]}),
 		)
 		.await;
@@ -1372,7 +1274,7 @@ async fn a_description_edit_requeues_an_image_its_writer_could_not_index(
 		app,
 		mut policy,
 		token: alice,
-		workspace,
+		thread,
 	} = Box::pin(scoped_channel).await;
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"bob-cannot-index","effect":"deny","subjects":{"ids":["bob"]},"actions":["semantic.write"],"resources":{"kinds":["*"]}}));
@@ -1386,7 +1288,7 @@ async fn a_description_edit_requeues_an_image_its_writer_could_not_index(
 	.await;
 	assert_eq!(status, 200, "{changed}");
 	let bob = crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
-	let image = post_image(&app, &bob, &workspace, "Bob's photo").await;
+	let image = post_image(&app, &bob, &thread, "Bob's photo").await;
 	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
 		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256});
@@ -1394,7 +1296,7 @@ async fn a_description_edit_requeues_an_image_its_writer_could_not_index(
 		&app,
 		&alice,
 		"POST",
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
@@ -1406,7 +1308,7 @@ async fn a_description_edit_requeues_an_image_its_writer_could_not_index(
 		&app,
 		&bob,
 		"PUT",
-		&format!("/api/workspaces/{workspace}/attachments/{image}/description"),
+		&format!("/api/threads/{thread}/attachments/{image}/description"),
 		json!({"description":"A lighthouse"}),
 	)
 	.await;

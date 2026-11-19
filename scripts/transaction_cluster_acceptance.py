@@ -590,7 +590,7 @@ class Cluster:
         try:
             workspaces = []
             for node in range(count):
-                status, body = self.member(node, "/api/workspaces", {"title": "Transaction acceptance", "goal": "Fixed atomic state"})
+                status, body = self.member(node, "/api/workspaces", {"title": "Transaction acceptance", "request": "Fixed atomic state"})
                 assert status == 200, status
                 workspaces.append(body["id"])
             manifest = {"id": transaction, "coordinator": self.nodes[0]["address"], "isolation": "serializable",

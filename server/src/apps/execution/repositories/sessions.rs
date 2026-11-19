@@ -120,12 +120,11 @@ pub(crate) async fn areas(access: &mut Access, ids: &[Uuid]) -> NativeResult<Vec
 	.fetch_all(&mut **access.tx)
 	.await
 }
-/// The row of the Area keyed by `(tenant, home, workspace, thread, agent, owner)`, created empty
-/// with `constraints` when it does not exist and left as it is otherwise.
+/// The row of the Area keyed by `(tenant, home, thread, agent, owner)`, created empty with
+/// `constraints` when it does not exist and left as it is otherwise.
 async fn ensure_area_row(
 	access: &mut Access,
 	home: &str,
-	workspace: Uuid,
 	thread: Uuid,
 	agent_id: &str,
 	owner: &str,
@@ -140,7 +139,6 @@ async fn ensure_area_row(
 					"id",
 					"tenant",
 					"home_node",
-					"workspace_id",
 					"thread_id",
 					"agent_id",
 					"owner",
@@ -148,7 +146,7 @@ async fn ensure_area_row(
 				]
 				.map(Alias::new),
 			)
-			.from_subquery(((1..=8).map(|i| Expr::cust(format!("${i}")))).fold(
+			.from_subquery(((1..=7).map(|i| Expr::cust(format!("${i}")))).fold(
 				reinhardt::query::Query::select(),
 				|mut select, expr| {
 					select.expr(expr);
@@ -157,15 +155,7 @@ async fn ensure_area_row(
 			))
 			.on_conflict(
 				OnConflict::columns(
-					[
-						"tenant",
-						"home_node",
-						"workspace_id",
-						"thread_id",
-						"agent_id",
-						"owner",
-					]
-					.map(Alias::new),
+					["tenant", "home_node", "thread_id", "agent_id", "owner"].map(Alias::new),
 				)
 				.do_nothing()
 				.to_owned(),
@@ -175,7 +165,6 @@ async fn ensure_area_row(
 	.bind(new_area_id)
 	.bind(&access.identity.tenant)
 	.bind(home)
-	.bind(workspace)
 	.bind(thread)
 	.bind(agent_id)
 	.bind(owner)
@@ -206,7 +195,6 @@ async fn ensure_area_row(
 			.and_where(
 				Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.clone())),
 			)
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
 			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::value(agent_id.to_owned())))
 			.and_where(Expr::col(Alias::new("home_node")).eq(Expr::value(home.to_owned())))
@@ -237,8 +225,8 @@ impl SessionScope for Scope<'_> {
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -246,13 +234,13 @@ impl SessionScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()> {
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<()> {
 		// A walk only rechecks what is already recorded. It hands nothing over, so
 		// it needs the policy and not the record.
 		if self.access.read_lookups.walking() {
 			let readable = aidash_application::authorization::records::messages_readable(
 				&mut crate::bootstrap::run_visibility_scope(self.access),
-				workspace,
+				thread,
 				[id],
 			)
 			.await?;
@@ -263,7 +251,7 @@ impl SessionScope for Scope<'_> {
 			};
 		}
 		self.access
-			.workspace_record(workspace, "message", id)
+			.thread_record(thread, "message", id)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -293,43 +281,6 @@ impl SessionScope for Scope<'_> {
 				"reference unavailable".into(),
 			))
 		}
-	}
-	async fn bind_task(&mut self, task: Uuid, thread: Uuid) -> Result<()> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = task;
-				let query_bind_2 = thread;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("core_task_sessions"))
-						.columns(["task_id", "thread_id", "tenant"].map(Alias::new))
-						.from_subquery(
-							reinhardt::query::Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(crate::database::scope::tenant_of(
-									"tasks",
-									"id",
-									query_bind_1,
-								))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
 	}
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>> {
 		let result: NativeResult<_> = async {
@@ -477,32 +428,6 @@ impl SessionScope for Scope<'_> {
 			.map(|value| value.map(Into::into))
 			.map_err(Into::into)
 	}
-	async fn explicit_thread(&mut self, task_id: Uuid) -> Result<Option<Uuid>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let row = {
-				let query_bind_1 = task_id;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("thread_id"))
-						.from(Alias::new("core_task_sessions"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("task_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								)),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(row)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
 	async fn task(&mut self, id: Uuid) -> Result<Task> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
@@ -575,46 +500,18 @@ impl SessionScope for Scope<'_> {
 			.map(|rows| rows.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn lock_thread(&mut self, thread: Uuid, workspace: Uuid) -> Result<()> {
+	async fn lock_thread(&mut self, thread: Uuid) -> Result<()> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
-			let _channel: Option<Uuid> = {
-				let query_bind_1 = thread;
-				let query_bind_2 = workspace;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("id"))
-						.from(Alias::new("channel_threads"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **access.tx)
-				.await?
-			};
+			// Thread deletion takes this row lock before writing its tombstone.
+			crate::apps::workspaces::models::Thread::lock_existing(&mut *access.tx, thread).await?;
 			thread_lifecycle::visible(&mut access.tx, thread).await?;
 			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn ensure_area(&mut self, task: &Task, thread: Uuid, agent_id: &str) -> Result<Area> {
+	async fn ensure_area(&mut self, task: &Task, agent_id: &str) -> Result<Area> {
 		let result: NativeResult<_> = async {
 			let store = self
 				.store
@@ -622,14 +519,13 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let home = store
 				.deployment
-				.node(access.workspace_node(task.workspace_id).await?)
+				.node(access.thread_node(task.thread_id).await?)
 				.to_string();
 			let owner = access.identity.subject.clone();
 			ensure_area_row(
 				access,
 				&home,
-				task.workspace_id,
-				thread,
+				task.thread_id,
 				agent_id,
 				&owner,
 				serde_json::json!([]),
@@ -642,14 +538,12 @@ impl SessionScope for Scope<'_> {
 	async fn ensure_remote_area(
 		&mut self,
 		run: &aidash_domain::RunMetadata,
-		thread: Uuid,
 		owner: &str,
 	) -> Result<Area> {
 		let result: NativeResult<_> = ensure_area_row(
 			self.access,
 			&run.home_node,
-			run.workspace_id,
-			thread,
+			run.thread_id,
 			&run.agent_id,
 			owner,
 			serde_json::json!([
@@ -1008,10 +902,10 @@ impl SessionScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
 			.ok_or_else(|| Error::External("session repository scope invariant".into()))?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

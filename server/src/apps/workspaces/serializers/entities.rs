@@ -8,13 +8,13 @@ pub fn nonempty(value: &str, name: &str) -> Result<()> {
 }
 
 use crate::apps::workspaces::models::{
-	Artifact as ArtifactRecord, Task as TaskRecord, Workspace as WorkspaceRecord,
+	Artifact as ArtifactRecord, Task as TaskRecord, Thread as ThreadRecord,
 };
 impl From<TaskRecord> for Task {
 	fn from(record: TaskRecord) -> Self {
 		Self {
 			id: record.id,
-			workspace_id: record.workspace_id,
+			thread_id: record.thread_id,
 			title: record.title,
 			description: record.description,
 			status: serde_json::from_value(
@@ -32,15 +32,14 @@ impl From<TaskRecord> for Task {
 	}
 }
 
-impl From<WorkspaceRecord> for Workspace {
-	fn from(record: WorkspaceRecord) -> Self {
+impl From<ThreadRecord> for Thread {
+	fn from(record: ThreadRecord) -> Self {
 		Self {
 			id: record.id,
 			scratch_space_id: record.scratch_space_id,
 			node: aidash_domain::nodes::NodeName::parse(&record.node).expect("stored Node name"),
 			title: record.title,
-			goal: record.goal,
-			state: record.state.into_inner(),
+			created_by: record.created_by,
 			revision: record.revision,
 			created_at: record.created_at,
 		}
@@ -51,7 +50,7 @@ impl From<ArtifactRecord> for Artifact {
 	fn from(record: ArtifactRecord) -> Self {
 		Self {
 			id: record.id,
-			workspace_id: record.workspace_id(),
+			thread_id: record.thread_id(),
 			task_id: record.task_id(),
 			kind: match record.kind {
 				crate::apps::workspaces::models::states::ArtifactKind::Text => "text",

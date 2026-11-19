@@ -438,7 +438,7 @@ pub(crate) async fn remote_person(
 					.column(Alias::new("id"))
 					.from(Alias::new("runs"))
 					.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-					.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
+					.and_where(Expr::col("thread_id").eq(Expr::value(run.thread_id)))
 					.and_where(Expr::col("home_node").eq(Expr::value(run.home_node.clone())))
 					.to_owned(),
 			),
@@ -493,15 +493,15 @@ pub(crate) async fn remote_person(
 	Ok(person)
 }
 
-/// A receiving Node keeps one space per home Workspace and mapped person.
+/// A receiving Node keeps one space per home Thread and mapped person.
 pub(crate) fn remote_space_id(
 	tenant: &str,
 	node: &NodeName,
 	home: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	person: &str,
 ) -> Uuid {
-	remote_space_key(tenant, node.as_str(), home, workspace, person)
+	remote_space_key(tenant, node.as_str(), home, thread, person)
 }
 
 /// [`remote_space_id`] for a caller that holds the Node as text, such as a Run's row. The
@@ -511,7 +511,7 @@ pub(crate) fn remote_space_key(
 	tenant: &str,
 	node: &str,
 	home: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	person: &str,
 ) -> Uuid {
 	use sha2::{Digest, Sha256};
@@ -521,7 +521,7 @@ pub(crate) fn remote_space_key(
 		hash.update((value.len() as u64).to_be_bytes());
 		hash.update(value.as_bytes());
 	}
-	hash.update(workspace.as_bytes());
+	hash.update(thread.as_bytes());
 	let digest = hash.finalize();
 	let mut bytes = [0_u8; 16];
 	bytes.copy_from_slice(&digest[..16]);
@@ -890,13 +890,8 @@ impl NativeScratchServices<'_> {
 			let person = remote_person(access, run).await?;
 			// UUIDv8 is domain-separated from user-created UUIDv4 spaces and stable
 			// across retries. Existing spaces need no Node allocation lock.
-			let scratch_id = remote_space_id(
-				&tenant,
-				&run.node,
-				&run.home_node,
-				run.workspace_id,
-				&person,
-			);
+			let scratch_id =
+				remote_space_id(&tenant, &run.node, &run.home_node, run.thread_id, &person);
 			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, false)
 				.await
 				.map_err(aidash_application::Error::from)?
@@ -957,8 +952,8 @@ impl NativeScratchServices<'_> {
 		}
 		let (sql, values) = Query::select()
 			.columns([Alias::new("scratch_space_id"), Alias::new("created_by")])
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(run.thread_id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
 			.and_where(Expr::col("node").eq(Expr::value(run.node.as_str().to_owned())))
 			.build(PostgresQueryBuilder);

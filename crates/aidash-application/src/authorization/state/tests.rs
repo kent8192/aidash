@@ -10,14 +10,13 @@ use std::collections::BTreeSet;
 fn id(value: u128) -> Uuid {
 	Uuid::from_u128(value)
 }
-fn workspace() -> Workspace {
-	Workspace {
+fn thread() -> Thread {
+	Thread {
 		scratch_space_id: uuid::Uuid::nil(),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
-		title: "saved workspace".into(),
-		goal: "goal".into(),
-		state: json!({}),
+		title: "saved thread".into(),
+		created_by: "subject".into(),
 		revision: 4,
 		created_at: Utc::now(),
 	}
@@ -25,7 +24,7 @@ fn workspace() -> Workspace {
 fn task(value: u128) -> Task {
 	Task {
 		id: id(value),
-		workspace_id: id(1),
+		thread_id: id(1),
 		title: "task".into(),
 		description: "description".into(),
 		status: TaskStatus::Open,
@@ -44,7 +43,7 @@ fn run(value: u128, visible: bool) -> RawRun {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: id(value),
 			task_id: id(2),
-			workspace_id: id(1),
+			thread_id: id(1),
 			home_node: "aidash://home".into(),
 			agent_id: if visible { "saved-agent" } else { "hidden" }.into(),
 			agent_version: "1".into(),
@@ -68,7 +67,7 @@ fn run(value: u128, visible: bool) -> RawRun {
 fn human(value: u128, visible: bool) -> HumanRequest {
 	HumanRequest {
 		id: id(value),
-		workspace_id: id(1),
+		thread_id: id(1),
 		run_id: id(3),
 		kind: "question".into(),
 		prompt: if visible { "saved-author" } else { "hidden" }.into(),
@@ -107,15 +106,15 @@ impl crate::ports::authorization::visibility::RowOutcome for Scope {
 	}
 }
 #[async_trait]
-impl WorkspaceListingScope for Scope {
+impl ThreadListingScope for Scope {
 	async fn visible(&mut self, _: &str) -> Result<Vec<Uuid>> {
 		if self.listing_fails {
 			return Err(crate::Error::Forbidden);
 		}
 		Ok(vec![id(1)])
 	}
-	async fn task_page(&mut self, workspaces: &[Uuid], offset: u64) -> Result<TaskPage> {
-		assert_eq!(workspaces, [id(1)]);
+	async fn task_page(&mut self, threads: &[Uuid], offset: u64) -> Result<TaskPage> {
+		assert_eq!(threads, [id(1)]);
 		assert_eq!(offset, 400);
 		self.listing_called = true;
 		Ok(TaskPage {
@@ -126,28 +125,24 @@ impl WorkspaceListingScope for Scope {
 	}
 }
 #[async_trait]
-impl WorkspaceStateScope for Scope {
+impl ThreadStateScope for Scope {
 	async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
-		assert_eq!(action, "workspace.read");
+		assert_eq!(action, "thread.read");
 		self.calls.push(id);
 		Ok(id != Uuid::from_u128(99))
 	}
 	async fn registry(&mut self) -> Result<Vec<Entry>> {
 		Ok(vec![])
 	}
-	async fn workspace_candidates(
-		&mut self,
-		_: Option<&str>,
-		_: Option<Uuid>,
-	) -> Result<Vec<Uuid>> {
+	async fn thread_candidates(&mut self, _: Option<&str>, _: Option<Uuid>) -> Result<Vec<Uuid>> {
 		Ok(self.candidates.clone())
 	}
-	async fn workspace_rows(&mut self, ids: &[Uuid]) -> Result<Vec<Workspace>> {
+	async fn thread_rows(&mut self, ids: &[Uuid]) -> Result<Vec<Thread>> {
 		Ok(ids
 			.iter()
-			.map(|id| Workspace {
+			.map(|id| Thread {
 				id: *id,
-				..workspace()
+				..thread()
 			})
 			.collect())
 	}
@@ -218,26 +213,26 @@ impl WorkspaceStateScope for Scope {
 	}
 }
 #[tokio::test]
-async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspaces() {
+async fn full_candidate_window_advances_even_when_denied_and_unions_item_threads() {
 	let mut other = task(1000);
-	other.workspace_id = id(90);
+	other.thread_id = id(90);
 	let mut repeated = task(1001);
-	repeated.workspace_id = id(90);
+	repeated.thread_id = id(90);
 	let mut denied = task(1002);
-	denied.workspace_id = id(99);
+	denied.thread_id = id(99);
 	let mut scope = Scope {
 		candidates: (1..=49).map(id).chain(std::iter::once(id(99))).collect(),
 		tasks: vec![other, repeated, denied, task(1003)],
 		..Default::default()
 	};
 	let result = state(&mut scope, None).await.unwrap();
-	assert_eq!(result.next_cursors.workspaces, Some(id(99).to_string()));
+	assert_eq!(result.next_cursors.threads, Some(id(99).to_string()));
 	assert_eq!(result.next_cursors.tasks, None);
 	assert_eq!(
 		scope
 			.calls
 			.iter()
-			.filter(|&&workspace| workspace == id(90))
+			.filter(|&&thread| thread == id(90))
 			.count(),
 		1
 	);
@@ -245,22 +240,12 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 		scope
 			.calls
 			.iter()
-			.filter(|&&workspace| workspace == id(1))
+			.filter(|&&thread| thread == id(1))
 			.count(),
 		1
 	);
-	assert!(
-		result
-			.workspaces
-			.iter()
-			.any(|workspace| workspace.id == id(90))
-	);
-	assert!(
-		!result
-			.workspaces
-			.iter()
-			.any(|workspace| workspace.id == id(99))
-	);
+	assert!(result.threads.iter().any(|thread| thread.id == id(90)));
+	assert!(!result.threads.iter().any(|thread| thread.id == id(99)));
 	assert_eq!(result.tasks.len(), 3);
 }
 
@@ -279,7 +264,7 @@ async fn pending_requests_of_an_older_run_remain_visible_and_share_its_decision(
 	assert_eq!(output.human_requests[1].answer_by, None);
 	assert_eq!(scope.run_reads, 1);
 	assert_eq!(scope.calls, [id(1)]);
-	assert_eq!(output.workspaces[0].id, id(1));
+	assert_eq!(output.threads[0].id, id(1));
 	assert!(output.next_cursors.human_requests.is_none());
 }
 
@@ -302,7 +287,7 @@ async fn hidden_task_candidates_still_advance_the_page() {
 		tasks: (1..=50)
 			.map(|n| {
 				let mut row = task(n);
-				row.workspace_id = id(99);
+				row.thread_id = id(99);
 				row
 			})
 			.collect(),
@@ -378,7 +363,7 @@ async fn requests_of_a_run_left_out_for_a_silent_node_are_counted_after_human_re
 			(
 				entry.node.as_str(),
 				entry.kind,
-				entry.workspace_id,
+				entry.thread_id,
 				entry.count,
 			)
 		})
@@ -395,9 +380,9 @@ async fn requests_of_a_run_left_out_for_a_silent_node_are_counted_after_human_re
 			),
 		]
 	);
-	// The Workspace of the unconfirmed rows is returned, so the Web keeps the
+	// The Thread of the unconfirmed rows is returned, so the Web keeps the
 	// warning when it narrows by Node.
-	assert!(state.workspaces.iter().any(|row| row.id == id(1)));
+	assert!(state.threads.iter().any(|row| row.id == id(1)));
 }
 
 #[tokio::test]

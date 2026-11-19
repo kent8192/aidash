@@ -30,9 +30,8 @@ pub(super) fn declare_bank(
 
 /// Leave enough room for the combined envelope and a complete minimal status.
 /// Reserve both null placeholders conservatively before ordinary retrieval.
-pub(crate) fn workspace_budget(budget: usize) -> Result<usize> {
-	let framing =
-		serde_json::to_vec(&json!({"workspace":null,"memory":{"status":"no_space"}}))?.len();
+pub(crate) fn thread_budget(budget: usize) -> Result<usize> {
+	let framing = serde_json::to_vec(&json!({"thread":null,"memory":{"status":"no_space"}}))?.len();
 	Ok(budget.saturating_sub(framing))
 }
 
@@ -126,7 +125,7 @@ pub(crate) async fn retrieve(
 			));
 		}
 		let mut bank = binding.bank.clone();
-		if source.scope == SourceScope::Workspace {
+		if source.scope == SourceScope::Thread {
 			bank.participant = None;
 		}
 		declare_bank(&mut declared, bank, source.memory, source.max_tokens);
@@ -246,7 +245,7 @@ pub(crate) async fn complete(
 	Ok(output)
 }
 
-/// Preserve existing Workspace context and include all wrapper bytes in the cap.
+/// Preserve existing Thread context and include all wrapper bytes in the cap.
 pub(crate) fn combine(
 	semantic: Option<Value>,
 	memory: Option<Value>,
@@ -255,7 +254,7 @@ pub(crate) fn combine(
 	let Some(memory) = memory else {
 		return Ok(semantic);
 	};
-	let output = json!({"workspace":semantic,"memory":memory});
+	let output = json!({"thread":semantic,"memory":memory});
 	if serde_json::to_vec(&output)?.len() > budget {
 		// Degraded context stays visible when only memory runs out of space, so
 		// the step is still recorded as degraded and never cached (ADR 0059).
@@ -264,7 +263,7 @@ pub(crate) fn combine(
 			.and_then(aidash_domain::semantic::degraded::cause)
 			.is_some()
 		{
-			let output = json!({"workspace":semantic,"memory":{"status":"no_space"}});
+			let output = json!({"thread":semantic,"memory":{"status":"no_space"}});
 			if serde_json::to_vec(&output)?.len() <= budget {
 				return Ok(Some(output));
 			}
@@ -301,7 +300,7 @@ pub(crate) struct SourceRevisions {
 	pub corpus: String,
 }
 
-/// Semantic index, Workspace corpus and memory participant revisions an
+/// Semantic index, Thread corpus and memory participant revisions an
 /// Ordered Retrieval Key pins. Plain reads: the recheck before every reuse
 /// enforces authority.
 pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceRevisions> {
@@ -313,7 +312,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 		&Query::select()
 			.column(Alias::new("revision"))
 			.from(Alias::new("semantic_indexes"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(run.workspace_id)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(run.thread_id)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(store.pool.in_scope(&scope))
@@ -334,7 +333,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 		corpus: corpus_digest(
 			store,
 			&scope,
-			run.workspace_id,
+			run.thread_id,
 			binding.map(|(participant, _)| participant),
 		)
 		.await?,
@@ -359,7 +358,7 @@ impl<T: reinhardt::db::backends::TransactionExecutor + ?Sized> CorpusReads for &
 }
 
 /// The Home corpus a remote Run's semantic read draws from: the grant's
-/// Workspace and, with native memory, the Home participant's banks. The Home
+/// Thread and, with native memory, the Home participant's banks. The Home
 /// records it on every remote retrieval and compares it before admitting a
 /// step that reuses that retrieval (ADR 0020).
 pub(crate) async fn remote_corpus_digest(
@@ -370,27 +369,27 @@ pub(crate) async fn remote_corpus_digest(
 		.semantic
 		.native()
 		.and_then(|native| native.participant.bank.participant);
-	corpus_reads(reads, description.task.workspace_id, participant).await
+	corpus_reads(reads, description.task.thread_id, participant).await
 }
 
-/// Digest of the content a Run's semantic read draws from: the Workspace's
+/// Digest of the content a Run's semantic read draws from: the Thread's
 /// live semantic entries and, for a memory participant, its own and the
-/// Workspace-shared memory banks. `semantic_indexes.revision` changes only
+/// Thread-shared memory banks. `semantic_indexes.revision` changes only
 /// with the index configuration and `participant_revision` only with the
 /// participant; entry inserts, edits, deletions, indexing transitions and
 /// memory unit mutations (which bump their bank's revision) change this.
 pub async fn corpus_digest(
 	store: &Store,
 	scope: &aidash_application::tenancy::TenancyScope,
-	workspace: uuid::Uuid,
+	thread: uuid::Uuid,
 	participant: Option<uuid::Uuid>,
 ) -> Result<String> {
-	corpus_reads(store.pool.in_scope(scope), workspace, participant).await
+	corpus_reads(store.pool.in_scope(scope), thread, participant).await
 }
 
 async fn corpus_reads(
 	mut reads: impl CorpusReads,
-	workspace: uuid::Uuid,
+	thread: uuid::Uuid,
 	participant: Option<uuid::Uuid>,
 ) -> Result<String> {
 	use reinhardt::query::{
@@ -402,7 +401,7 @@ async fn corpus_reads(
 		&Query::select()
 			.columns(ENTRY.map(Alias::new))
 			.from(Alias::new("semantic_entries"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("deleted")).eq(false))
 			.order_by(Alias::new("id"), Order::Asc)
 			.to_string(PostgresQueryBuilder),
@@ -416,7 +415,7 @@ async fn corpus_reads(
 				&Query::select()
 					.columns(["id", "revision"].map(Alias::new))
 					.from(Alias::new("memory_banks"))
-					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 					.and_where(
 						Cond::any()
 							.add(Expr::col(Alias::new("participant_id")).is_null())
@@ -450,13 +449,13 @@ pub(crate) async fn recheck(
 	run: &Run,
 	observed: &Value,
 ) -> Result<()> {
-	let workspace = observed.get("workspace").unwrap_or(observed);
+	let thread = observed.get("thread").unwrap_or(observed);
 	// A partial result of an incomplete index carries real matches, so it is
 	// rechecked like a complete one; only the outage marker holds no reads.
-	if aidash_domain::semantic::degraded::holds_reads(workspace) {
+	if aidash_domain::semantic::degraded::holds_reads(thread) {
 		aidash_application::semantic::retrieval::recheck(
 			&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
-			&serde_json::from_value(workspace.clone())?,
+			&serde_json::from_value(thread.clone())?,
 		)
 		.await?;
 	}

@@ -48,9 +48,21 @@ pub async fn load(scope: &mut dyn CleanupScope, id: Uuid, action: &str) -> Resul
 	if area.owner != scope.principal() && !admin {
 		return Err(Error::NotFound("working area unavailable".into()));
 	}
-	let workspace = scope.workspace(area.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
-	scope.require(&workspace, "workspace.read").await?;
+	match scope.thread(area.thread_id).await {
+		Ok(thread) => {
+			scope.set_context(thread.attributes.clone());
+			scope.require(&thread, "thread.read").await?;
+		}
+		// The Working Areas a person kept when their Thread was deleted stay
+		// theirs to list, download and clean up (#1008); nothing is restored
+		// into a deleted Thread.
+		Err(Error::Forbidden)
+			if action != "file.restore" && scope.thread_deleted(area.thread_id).await? =>
+		{
+			scope.set_context(json!({"thread_id": area.thread_id}));
+		}
+		Err(error) => return Err(error),
+	}
 	scope
 		.require(
 			&scope.resource(
@@ -85,7 +97,6 @@ pub async fn inventory(
 		items.push(ManagedArea {
 			cleanup_operation_id,
 			area_id: area.id,
-			workspace_id: area.workspace_id,
 			thread_id: area.thread_id,
 			agent_id: area.agent_id,
 			owner: area.owner,
@@ -224,7 +235,7 @@ pub async fn prepare(
 		if !matches!(area.state.as_str(), "active" | "retained") {
 			return Err(Error::Conflict("AREA_UNAVAILABLE".into()));
 		}
-		scope.sources(area.workspace_id, &area.constraints).await?;
+		scope.sources(area.thread_id, &area.constraints).await?;
 		for file in files(&area)? {
 			if matches!(file.scope, FileScope::References) {
 				snapshot.push(file);
@@ -283,7 +294,7 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 	let digest = aidash_domain::registry::rules::digest(&json!(["restore", id, input]));
 	if let Some(cached) = scope.cached(input.idempotency_key, &digest).await? {
 		let restored: Area = serde_json::from_value(cached)?;
-		scope.sources(area.workspace_id, &area.constraints).await?;
+		scope.sources(area.thread_id, &area.constraints).await?;
 		if area.state != "active" || area.generation != restored.generation {
 			return Err(Error::Conflict("RESTORED_GENERATION_CHANGED".into()));
 		}
@@ -304,19 +315,12 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 		return Err(Error::Conflict("RECOVERY_UNAVAILABLE".into()));
 	}
 	scope
-		.sources(area.workspace_id, &record.data["constraints"])
+		.sources(area.thread_id, &record.data["constraints"])
 		.await?;
-	scope.visible_thread(input.thread_id).await?;
-	if input.thread_id != area.thread_id {
-		let root: Option<Uuid> = scope.thread_root(&area, input.thread_id).await?;
-		scope
-			.message(
-				area.workspace_id,
-				root.ok_or_else(|| Error::NotFound("restoration thread unavailable".into()))?,
-			)
-			.await?;
-	}
-	let occupied: Option<Uuid> = scope.occupied(&area, input.thread_id).await?;
+	// An Area is restored into its own Thread, which must still be there
+	// and hold no other active Area of the same Agent and owner.
+	scope.visible_thread(area.thread_id).await?;
+	let occupied: Option<Uuid> = scope.occupied(&area).await?;
 	if occupied.is_some() {
 		return Err(Error::Conflict("RESTORATION_THREAD_OCCUPIED".into()));
 	}
@@ -351,7 +355,6 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 	area.constraints = record.data["constraints"].clone();
 	area.generation += 1;
 	area.epoch += 1;
-	area.thread_id = input.thread_id;
 	area.state = "active".into();
 	scope.publish(&mut area).await?;
 	scope.persist(&area, true).await?;
@@ -449,7 +452,7 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 		scope.update_record(&mut record).await?;
 		scope
 			.event(
-				area.workspace_id,
+				area.thread_id,
 				"capability.cleanup_changed",
 				json!({"area_id":area.id,"operation_id":record.id,"status":record.state}),
 			)

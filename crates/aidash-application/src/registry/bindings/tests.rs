@@ -234,6 +234,22 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
 	let saved = agent.binding_normalization.as_mut().unwrap();
+	// Saved before #1008, it binds the Workspace tools the Thread tools replace.
+	for binding in &mut saved.bindings {
+		let former = binding
+			.binding
+			.target
+			.id
+			.strip_prefix("aidash.")
+			.and_then(aidash_domain::tool::thread_tools::former);
+		if let Some(former) = former {
+			binding.binding.target =
+				aidash_domain::registry::bindings::QualifiedRef::builtin(NODE, former);
+			if binding.binding.alias.is_some() {
+				binding.binding.alias = Some(former.into());
+			}
+		}
+	}
 	// A normalization saved before #640 and #639 has neither default, nor
 	// the Schedule tools #557 added later.
 	saved.bindings.retain(|binding| {
@@ -374,7 +390,7 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 		saved.bindings.len(),
 		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 2
 	);
-	// Model and workspace source dependencies remain pinned; the built-in
+	// Model and thread source dependencies remain pinned; the built-in
 	// memory's RRF and UTF-8 algorithms are internal implementation details.
 	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
@@ -388,7 +404,7 @@ async fn missing_required_and_tampered_definitions_fail_closed() {
 		.unwrap();
 	saved
 		.bindings
-		.retain(|binding| binding.alias.as_deref() != Some("workspace_read"));
+		.retain(|binding| binding.alias.as_deref() != Some("thread_read"));
 	assert!(saved.validate().is_err());
 	let mut saved = snapshot(&mut catalog, &agent_config(), false)
 		.await
@@ -518,7 +534,7 @@ async fn alias_collisions_are_checked_after_expansion() {
 	config.bindings = vec![a, b];
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	config.bindings.pop();
-	config.bindings[0].alias = Some("workspace_read".into());
+	config.bindings[0].alias = Some("thread_read".into());
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 #[test]
@@ -666,7 +682,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	// A remote Run hands work on through its Home, so these stay candidates (#1013).
 	assert!(tools.contains_key("agent_discover"));
 	assert!(tools.contains_key("task_delegate"));
-	assert!(tools.contains_key("workspace_read"));
+	assert!(tools.contains_key("thread_read"));
 	assert!(tools.contains_key("human_request"));
 
 	for mutation in 0..6 {
@@ -689,7 +705,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 				let read = altered
 					.bindings
 					.iter_mut()
-					.find(|binding| binding.alias.as_deref() == Some("workspace_read"))
+					.find(|binding| binding.alias.as_deref() == Some("thread_read"))
 					.unwrap();
 				read.provider_implementation = None;
 			}
@@ -1434,7 +1450,7 @@ async fn bound_run(config: &AgentBindings) -> Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
-		workspace_id: uuid::Uuid::new_v4(),
+		thread_id: uuid::Uuid::new_v4(),
 		home_node: format!("{NODE}/brave-otter-k3m9q2xa"),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -2111,7 +2127,7 @@ fn snapshot_run(saved: BindingSnapshot) -> Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
-		workspace_id: uuid::Uuid::new_v4(),
+		thread_id: uuid::Uuid::new_v4(),
 		home_node: format!("{NODE}/brave-otter-k3m9q2xa"),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -2253,15 +2269,12 @@ async fn sequential_narrowing_lowers_shared_read(#[case] descriptor: bool) {
 #[case::descriptor(true)]
 #[tokio::test]
 async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descriptor: bool) {
-	// Arrange: workspace_read's provider is Sequential.
+	// Arrange: thread_read's provider is Sequential.
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	let target = QualifiedRef::builtin(NODE, "workspace_read");
+	let target = QualifiedRef::builtin(NODE, "thread_read");
 	if descriptor {
-		let current = QualifiedRef {
-			version: "1.1.0".into(),
-			..target.clone()
-		};
+		let current = target.clone();
 		catalog.entries.get_mut(&current).unwrap().config["narrow"]["concurrency"] =
 			json!("shared_read");
 	} else {
@@ -2286,9 +2299,9 @@ async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descr
 #[case::default_pause(&["pause"], false, false)]
 #[case::one_source_without_opt_in(&["degrade", "pause"], false, false)]
 #[case::semantic_memory_shares_the_slot(&["degrade"], true, false)]
-#[case::no_workspace_source(&[], false, false)]
+#[case::no_thread_source(&[], false, false)]
 #[tokio::test]
-async fn the_workspace_slot_degrades_only_when_every_source_feeding_it_opted_in(
+async fn the_thread_slot_degrades_only_when_every_source_feeding_it_opted_in(
 	#[case] policies: &[&str],
 	#[case] semantic_memory: bool,
 	#[case] degrades: bool,
@@ -2317,7 +2330,7 @@ async fn the_workspace_slot_degrades_only_when_every_source_feeding_it_opted_in(
 	for (index, policy) in policies.iter().enumerate() {
 		bind(
 			BindingKind::Source,
-			format!("workspace-{index}"),
+			format!("thread-{index}"),
 			json!({"adapter":"workspace_retrieval","on_unavailable":policy}),
 		);
 	}
@@ -2330,8 +2343,8 @@ async fn the_workspace_slot_degrades_only_when_every_source_feeding_it_opted_in(
 	}
 	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
-	assert_eq!(settings.workspace_context, !policies.is_empty());
-	assert_eq!(settings.workspace_degrades, degrades);
+	assert_eq!(settings.thread_context, !policies.is_empty());
+	assert_eq!(settings.thread_degrades, degrades);
 }
 
 #[rstest::rstest]
@@ -2420,7 +2433,7 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 	None,
 	false
 )]
-#[case::workspace_only_correction_first(
+#[case::thread_only_correction_first(
 	None,
 	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
 	false
@@ -2433,7 +2446,7 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 #[tokio::test]
 async fn semantic_query_policy_agrees_including_implicit_defaults(
 	#[case] memory_query: Option<aidash_domain::context::source::QueryPolicy>,
-	#[case] workspace_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] thread_query: Option<aidash_domain::context::source::QueryPolicy>,
 	#[case] accepted: bool,
 	#[values("semantic_memory", "conversation_memory")] memory_adapter: &str,
 ) {
@@ -2451,12 +2464,12 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 			memory_query,
 		),
 		(
-			"query-workspace",
+			"query-thread",
 			"source",
 			NativeSource::WorkspaceRetrieval {
 				on_unavailable: OnUnavailable::Pause,
 			},
-			workspace_query,
+			thread_query,
 		),
 	] {
 		let mut native = NativeContext {
@@ -2515,14 +2528,14 @@ async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_polic
 		"omitted source policy keeps existing ProviderConfig bytes"
 	);
 	provider.config["context_source"] = json!(declaration);
-	catalog.insert(entry("workspace-bank-source","source",json!({"scope":"workspace","memory":{"id":"native","version":"1.0.0"},"max_tokens":512,"context_source":declaration})));
+	catalog.insert(entry("thread-bank-source","source",json!({"scope":"thread","memory":{"id":"native","version":"1.0.0"},"max_tokens":512,"context_source":declaration})));
 	let mut config = agent_config();
 	config.bindings.push(
 		serde_json::from_value(json!({"kind":"memory","target":identity,"narrow":{}})).unwrap(),
 	);
 	config.bindings.push(
 		serde_json::from_value(
-			json!({"kind":"source","target":reference("workspace-bank-source"),"narrow":{}}),
+			json!({"kind":"source","target":reference("thread-bank-source"),"narrow":{}}),
 		)
 		.unwrap(),
 	);
@@ -2533,7 +2546,7 @@ async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_polic
 	);
 	catalog
 		.entries
-		.get_mut(&reference("workspace-bank-source"))
+		.get_mut(&reference("thread-bank-source"))
 		.unwrap()
 		.config
 		.as_object_mut()

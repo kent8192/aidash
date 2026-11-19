@@ -1,4 +1,4 @@
-//! Degraded context (ADR 0059): a degraded workspace slot is recorded, emitted
+//! Degraded context (ADR 0059): a degraded thread slot is recorded, emitted
 //! and never cached, and only the last outage retry may degrade.
 use super::*;
 use aidash_domain::semantic::{
@@ -7,7 +7,7 @@ use aidash_domain::semantic::{
 };
 
 fn degraded_envelope() -> Value {
-	json!({"workspace":marker(OutageCause::EmbeddingProvider),"memory":{"status":"disabled"}})
+	json!({"thread":marker(OutageCause::EmbeddingProvider),"memory":{"status":"disabled"}})
 }
 
 fn saved(fixture: &Fixture, event: &str) -> Vec<Run> {
@@ -65,7 +65,7 @@ impl aidash_application::ports::ExecutionRecoveryStore for Backend {
 #[case::legacy(false)]
 #[case::ordered(true)]
 #[tokio::test]
-async fn a_workspace_success_is_durable_before_memory_failure_reloads_the_run(
+async fn a_thread_success_is_durable_before_memory_failure_reloads_the_run(
 	mut canonical: Fixture,
 	#[case] is_ordered: bool,
 ) {
@@ -88,7 +88,7 @@ async fn a_workspace_success_is_durable_before_memory_failure_reloads_the_run(
 		Err(Error::RemoteSemantic(SemanticFailure::Pending))
 	));
 	// Real worker recovery reloads the stored Run, rather than trusting the
-	// executor's mutated copy. The workspace success must already be durable.
+	// executor's mutated copy. The thread success must already be durable.
 	crate::recovery::recover(
 		&backend,
 		backend.0.token,

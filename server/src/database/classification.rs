@@ -159,7 +159,6 @@ pub const TABLES: &[Table] = &[
 	table("execution", "core_records", TenantOwned),
 	table("execution", "core_requests", TenantOwned),
 	table("execution", "core_runs", TenantOwned),
-	table("execution", "core_task_sessions", TenantOwned),
 	// Decision Evidence (#290) belongs to its Run, like the Context Journal.
 	table("execution", "approval_observer_settings", TenantOwned),
 	table("execution", "approval_observations", TenantOwned),
@@ -261,7 +260,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "authorization_run_registry_reads", TenantOwned),
 	table("identity", "authorization_run_remote_reads", TenantOwned),
 	table("identity", "authorization_task_origins", TenantOwned),
-	table("identity", "authorization_workspaces", TenantOwned),
+	table("identity", "authorization_threads", TenantOwned),
 	// the Master Key check
 	table("identity", "credential_store_keys", DeploymentWide),
 	table("identity", "credential_store_resources", TenantOwned),
@@ -435,7 +434,6 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "artifacts", TenantOwned),
 	table("workspaces", "channel_attachments", TenantOwned),
 	table("workspaces", "channel_message_context", TenantOwned),
-	table("workspaces", "channel_threads", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),
 	table("workspaces", "duties", TenantOwned),
 	table("workspaces", "duty_ticks", TenantOwned),
@@ -451,7 +449,7 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "message_file_versions", TenantOwned),
 	table("workspaces", "task_dependencies", TenantOwned),
 	table("workspaces", "tasks", TenantOwned),
-	table("workspaces", "workspaces", TenantOwned),
+	table("workspaces", "threads", TenantOwned),
 ];
 
 #[cfg(test)]

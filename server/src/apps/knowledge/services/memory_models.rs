@@ -54,14 +54,14 @@ pub(crate) enum Prepared<T> {
 	Cached(Produced<T>),
 	Reserved(Reservation),
 }
-/// A Run reads another Workspace's bank only through Built-in Memory, inside
+/// A Run reads another Thread's bank only through Built-in Memory, inside
 /// its own Tenant, while the Tenant shares memory per Agent (#852 decision 6).
 /// Which Units it may see is filtered afterwards by `sharing::agent_unit`.
 async fn tenant_agent_reader(
 	lease: &mut Lease<'_>,
 	provider: &EntityRef,
 	bank: &Bank,
-	run_workspace: Uuid,
+	run_thread: Uuid,
 ) -> Result<bool> {
 	use aidash_domain::registry::bindings::memory_defaults;
 	if provider.id != memory_defaults::MEMORY_ID || provider.version != memory_defaults::VERSION {
@@ -70,8 +70,8 @@ async fn tenant_agent_reader(
 	let tenant: Option<String> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("tenant"))
-			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(run_workspace)))
+			.from(Alias::new("authorization_threads"))
+			.and_where(Expr::col("thread_id").eq(Expr::value(run_thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **lease.tx())
@@ -240,8 +240,8 @@ impl Models {
 			.fetch_one(&mut **lease.tx())
 			.await?;
 			if record.home_node != bank.home
-				|| (record.workspace_id != bank.workspace
-					&& !tenant_agent_reader(lease, &provider, &bank, record.workspace_id).await?)
+				|| (record.thread_id != bank.thread
+					&& !tenant_agent_reader(lease, &provider, &bank, record.thread_id).await?)
 			{
 				return Err(Error::Forbidden);
 			}

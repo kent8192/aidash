@@ -107,18 +107,16 @@ async fn shared_authority_stops_buffered_frames_and_idle_streams(
 	)
 	.await;
 
-	let workspace = fixture.workspaces[0];
-	let first = fixture.emit(workspace, 1).await;
-	let buffered = fixture.emit(workspace, 2).await;
-	let mut frames = fixture
-		.stream(first.sequence - 1, Some(workspace), None)
-		.await;
+	let thread = fixture.threads[0];
+	let first = fixture.emit(thread, 1).await;
+	let buffered = fixture.emit(thread, 2).await;
+	let mut frames = fixture.stream(first.sequence - 1, Some(thread), None).await;
 	assert_eq!(frame(&mut frames).await.0, first.sequence);
 	// Consuming the first frame loads the page containing the second, without
 	// admitting that buffered event for transmission yet.
-	let mut idle = fixture.open(-1, Some(fixture.workspaces[1]), None).await;
+	let mut idle = fixture.open(-1, Some(fixture.threads[1]), None).await;
 	assert_eq!(idle.status, 200);
-	let later = fixture.emit(workspace, 3).await;
+	let later = fixture.emit(thread, 3).await;
 	// Switch immediately before polling the pending page; no new database read
 	// or notification is needed to reject that frame at its handoff boundary.
 	authority.state.store(stopped, Ordering::SeqCst);
@@ -148,7 +146,7 @@ async fn shared_authority_stops_buffered_frames_and_idle_streams(
 	assert!(!String::from_utf8_lossy(&idle_output).contains("event: mesh"));
 	assert_eq!(
 		fixture
-			.open(first.sequence, Some(workspace), None)
+			.open(first.sequence, Some(thread), None)
 			.await
 			.status,
 		reconnect_status
@@ -157,7 +155,7 @@ async fn shared_authority_stops_buffered_frames_and_idle_streams(
 	// Restoring only the remote response permits a newly checked connection and
 	// replays the unsent event: no local credential/policy mutation caused denial.
 	authority.state.store(0, Ordering::SeqCst);
-	let mut reconnected = fixture.stream(first.sequence, Some(workspace), None).await;
+	let mut reconnected = fixture.stream(first.sequence, Some(thread), None).await;
 	assert_eq!(frame(&mut reconnected).await.0, buffered.sequence);
 	assert_eq!(frame(&mut reconnected).await.0, later.sequence);
 	drop((frames, idle_frames, idle, reconnected));

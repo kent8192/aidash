@@ -186,15 +186,11 @@ pub fn assert_json_rejection(response: TestResponse, status: u16) {
 	assert!(response.text().starts_with(prefix), "{}", response.text());
 }
 
-#[allow(dead_code)] // Used by workspace-oriented endpoint suites.
-pub async fn workspace(client: &APIClient, title: &str) -> Value {
+#[allow(dead_code)] // Used by thread-oriented endpoint suites.
+pub async fn thread(client: &APIClient, title: &str) -> Value {
 	assert_json(
 		client
-			.post(
-				"/api/workspaces",
-				&json!({"title": title, "goal": "Endpoint integration test"}),
-				"json",
-			)
+			.post("/api/threads", &json!({"title": title}), "json")
 			.await
 			.unwrap(),
 		200,

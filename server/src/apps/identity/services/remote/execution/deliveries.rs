@@ -6,7 +6,7 @@
 //! and publication are the existing `file-transfer/1` receiver's, run under the live grant's own
 //! authority instead of a Peer Mapping; only where the bytes go is new: the Working Area of the
 //! Run that delegated for `file_share`, and the Thread Attachments of a message the Home posts
-//! for the Agent for `workspace_message`.
+//! for the Agent for `thread_message`.
 use super::*;
 use crate::apps::execution::repositories::{home_delivery, transfer::HomeDelivery};
 use crate::apps::identity::serializers::remote_execution_commands::{DeliveryChunk, DeliveryOpen};
@@ -27,14 +27,13 @@ use aidash_domain::{
 use serde_json::json;
 use std::collections::BTreeMap;
 
-const TOOLS: [&str; 2] = ["file_share", "workspace_message"];
+const TOOLS: [&str; 2] = ["file_share", "thread_message"];
 
 /// What the Home resolved from the live grant for one request of a delivery. None of it comes
 /// from the request.
 struct Admission {
 	/// Where the delivery lands: for a share, the Working Area of the Run that delegated; for a
-	/// message, which lands in no Area, this Node and the executing Agent, the grant's Task
-	/// standing in for the thread.
+	/// message, which lands in no Area, this Node, the executing Agent and the grant's Thread.
 	target: Recipient,
 	/// The grant's root subject, whose authority the delivery is made under.
 	subject: String,
@@ -43,7 +42,7 @@ struct Admission {
 	agent: EntityRef,
 	/// Who the Home names as the sender of a message: the executing Agent on its Node.
 	owner: String,
-	workspace: Uuid,
+	thread: Uuid,
 	limits: Limits,
 	staging_seconds: i64,
 }
@@ -56,7 +55,7 @@ fn mode(tool: &str) -> DeliveryMode {
 
 /// Admit one request: the live grant, its Binding, the tool the Run called and the task, then,
 /// for a share, the Working Area of the delegating Run. A message is posted in the grant's
-/// Workspace, so it needs no delegating Run and a grant a person made can send one (ADR 0139).
+/// Thread, so it needs no delegating Run and a grant a person made can send one (ADR 0139).
 /// Opens and closes its own transaction.
 async fn admit(
 	f: &Federation,
@@ -129,7 +128,7 @@ async fn admit(
 				node_id,
 				agent_id: agent.id.clone(),
 				agent_version: agent.version.clone(),
-				thread_id: task.id,
+				thread_id: task.thread_id,
 			}
 		};
 		let profile = &f.store.capabilities.0;
@@ -142,7 +141,7 @@ async fn admit(
 				id: agent.id.clone(),
 				version: agent.version.clone(),
 			},
-			workspace: task.workspace_id,
+			thread: task.thread_id,
 			limits: Limits {
 				files: profile.limits.share_files,
 				file_bytes: profile.limits.share_file_bytes,
@@ -350,7 +349,7 @@ pub(crate) async fn commit(
 }
 
 /// Store a message delivery's files as Thread Attachments and post the message for the Agent, as
-/// the local `workspace_message` does, in one transaction under the grant's authority. Every part
+/// the local `thread_message` does, in one transaction under the grant's authority. Every part
 /// has a key derived from the delivery, so a commit that is retried after this one committed
 /// finds the same attachments and the same message and posts nothing twice.
 #[allow(clippy::too_many_arguments)]
@@ -369,8 +368,8 @@ async fn post_message(
 	let (access, _) = super::super::delivery_lease(f, node, input.grant_id).await?;
 	let mut lease = crate::collaboration::access::Lease::from_access(access);
 	let result: Result<Value> = async {
-		let workspace = admission.workspace;
-		let resource = lease.access_mut().workspace(workspace).await?;
+		let thread = admission.thread;
+		let resource = lease.access_mut().thread(thread).await?;
 		lease
 			.access_mut()
 			.require(&resource, "message.create")
@@ -385,7 +384,7 @@ async fn post_message(
 				description: descriptions.get(&file.path).cloned(),
 			};
 			let attachment = crate::collaboration::attachments::upload_for_run(
-				&f.store, &mut lease, workspace, upload, bytes, None,
+				&f.store, &mut lease, thread, upload, bytes, None,
 			)
 			.await?;
 			attachments.push(attachment.id);
@@ -399,12 +398,11 @@ async fn post_message(
 		let message = {
 			let mut scope = crate::bootstrap::channel_scope(&f.store, &mut lease);
 			scope.agent = Some(admission.owner.clone());
-			aidash_application::workspaces::channels::post(
+			aidash_application::threads::channels::post(
 				&mut scope,
-				workspace,
-				aidash_application::workspaces::channels::MessageSubmission {
+				thread,
+				aidash_application::threads::channels::MessageSubmission {
 					content,
-					thread_id: None,
 					idempotency_key: delivery::part_key(id, files.len()),
 					attachment_ids: &attachments,
 					citations: &[],
@@ -417,11 +415,11 @@ async fn post_message(
 		// What the grant's Run wrote stays visible to its provenance after the lease closes.
 		let mut outputs = crate::bootstrap::remote_command_scope(f, lease.access_mut());
 		outputs
-			.record_output(input.grant_id, workspace, "message", message)
+			.record_output(input.grant_id, thread, "message", message)
 			.await?;
 		for attachment in &attachments {
 			outputs
-				.record_output(input.grant_id, workspace, "attachment", *attachment)
+				.record_output(input.grant_id, thread, "attachment", *attachment)
 				.await?;
 		}
 		Ok(json!({

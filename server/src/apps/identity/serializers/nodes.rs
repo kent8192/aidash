@@ -12,7 +12,7 @@ pub(crate) struct NodeRecord {
 	/// `aidash://<deployment>/<name>`, what other Nodes register.
 	pub(crate) address: String,
 	pub(crate) label: String,
-	/// The current default Node; Workspaces go there unless another is chosen.
+	/// The current default Node; Threads go there unless another is chosen.
 	pub(crate) default: bool,
 	pub(crate) created_at: DateTime<Utc>,
 	pub(crate) state: NodeState,

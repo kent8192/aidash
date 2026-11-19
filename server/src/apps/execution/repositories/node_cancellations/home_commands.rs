@@ -28,7 +28,7 @@ pub(crate) async fn require_in(
 	if raw.metadata.node != cached.node
 		|| raw.metadata.home_node != cached.home_node
 		|| raw.metadata.task_id != cached.task_id
-		|| raw.metadata.workspace_id != cached.workspace_id
+		|| raw.metadata.thread_id != cached.thread_id
 	{
 		return Err(Error::Forbidden);
 	}

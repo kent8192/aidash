@@ -285,7 +285,7 @@ pub async fn file_share(
 }
 
 #[post(
-	"/api/workspaces/{workspace}/threads/{thread}/agents/{agent}/runs",
+	"/api/threads/{thread}/agents/{agent}/runs",
 	name = "!core_thread_run",
 	auth = "protected"
 )]
@@ -298,11 +298,6 @@ pub async fn thread_run(
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	let workspace = request
-		.path_params
-		.get("workspace")
-		.and_then(|value| value.parse::<Uuid>().ok())
-		.ok_or_else(|| FrameworkError::Validation("invalid workspace path".into()))?;
 	let thread = request
 		.path_params
 		.get("thread")
@@ -314,15 +309,7 @@ pub async fn thread_run(
 		.map(str::to_owned)
 		.ok_or_else(|| FrameworkError::Validation("missing agent path".into()))?;
 
-	crate::http::json(
-		api::thread_run(
-			service.runtime.clone(),
-			actor,
-			(workspace, thread, agent),
-			input,
-		)
-		.await,
-	)
+	crate::http::json(api::thread_run(service.runtime.clone(), actor, (thread, agent), input).await)
 }
 
 #[post(
@@ -690,25 +677,6 @@ pub async fn restore(
 	crate::http::json(api::restore(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post(
-	"/api/workspaces/{workspace}/working-areas/{id}/restore/new-thread",
-	name = "!core_restore_new_thread",
-	auth = "protected"
-)]
-pub async fn restore_new_thread(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path((workspace, id)): Path<(Uuid, Uuid)>,
-	Json(input): Json<crate::capabilities::cleanup::RestoreNewThread>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(
-		api::restore_new_thread(service.runtime.clone(), actor, (workspace, id), input).await,
-	)
-}
-
 #[get(
 	"/api/file-transfers/{id}",
 	name = "!file_transfer_status",
@@ -786,22 +754,20 @@ pub async fn reference_list(
 }
 
 #[post(
-	"/api/workspaces/{workspace}/threads/{thread}/delete",
+	"/api/threads/{thread}/delete",
 	name = "!core_thread_delete",
 	auth = "protected"
 )]
 pub async fn thread_delete(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Path((workspace, thread)): Path<(Uuid, Uuid)>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<crate::capabilities::thread_lifecycle::DeleteThread>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(
-		api::thread_delete(service.runtime.clone(), actor, (workspace, thread), input).await,
-	)
+	crate::http::json(api::thread_delete(service.runtime.clone(), actor, thread, input).await)
 }
 
 use crate::authorization::identity::Actor;

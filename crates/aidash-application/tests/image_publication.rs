@@ -51,7 +51,7 @@ fn fixture(fail_store: bool) -> (Box<Session>, Arc<Mutex<Effects>>) {
 		..Default::default()
 	}));
 	let publication = ImagePublication {
-		workspace: Uuid::from_u128(1),
+		thread: Uuid::from_u128(1),
 		area: Uuid::from_u128(2),
 		generation: 1,
 		sequence: 1,

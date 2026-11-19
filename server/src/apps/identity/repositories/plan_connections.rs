@@ -216,7 +216,7 @@ impl NativeScope {
 		Ok(())
 	}
 	async fn event(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()> {
-		// No workspace stream includes these events; owners read the state
+		// No thread stream includes these events; owners read the state
 		// through their own connection's endpoint. Never tokens or the client.
 		crate::apps::execution::models::event_records::append(
 			self.tx.as_mut(),

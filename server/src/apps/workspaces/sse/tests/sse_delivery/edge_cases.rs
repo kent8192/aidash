@@ -12,7 +12,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 	root: Arc<Fixture>,
 ) {
 	let fixture = root;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	let event = fixture.emit(ws, 1).await;
 	let mut barrier = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
@@ -105,10 +105,10 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 	assert_eq!(
 		audits,
 		[
-			"workspace.read",
-			"workspace.events",
-			"workspace.read",
-			"workspace.events"
+			"thread.read",
+			"thread.events",
+			"thread.read",
+			"thread.events"
 		]
 		.into_iter()
 		.enumerate()
@@ -127,7 +127,7 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 	root: Arc<Fixture>,
 ) {
 	let fixture = root;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	fixture
 		.f
 		.store
@@ -146,7 +146,7 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 		&fixture.app,
 		&fixture.token,
 		"GET",
-		&format!("/api/events?workspace_id={ws}"),
+		&format!("/api/events?thread_id={ws}"),
 		Value::Null,
 	)
 	.await;
@@ -160,7 +160,7 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 				&& event["data"]["id"] == message.to_string())
 	);
 	let mut stream = fixture.stream(0, Some(ws), None).await;
-	assert_eq!(frame(&mut stream).await.1["type"], "workspace.created");
+	assert_eq!(frame(&mut stream).await.1["type"], "thread.created");
 	// The first frame proves the page containing the later message has been
 	// loaded. Revoke only that resource before polling the remaining page.
 	let mut denied = policy(fixture.f.config.deployment.as_str());
@@ -197,11 +197,11 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 ) {
 	let fixture = root.await;
 	let (stop, subscriber) = subscription;
-	let mut selected = fixture.stream(-1, Some(fixture.workspaces[0]), None).await;
-	let mut unrelated = fixture.stream(-1, Some(fixture.workspaces[1]), None).await;
+	let mut selected = fixture.stream(-1, Some(fixture.threads[0]), None).await;
+	let mut unrelated = fixture.stream(-1, Some(fixture.threads[1]), None).await;
 	until(|| fixture.service.snapshot().query_causes[0] == 4).await;
-	let first = fixture.emit(fixture.workspaces[0], 1).await;
-	let missed = fixture.emit(fixture.workspaces[1], 2).await;
+	let first = fixture.emit(fixture.threads[0], 1).await;
+	let missed = fixture.emit(fixture.threads[1], 2).await;
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
 		.unwrap();
@@ -289,13 +289,13 @@ async fn notification_during_initial_authority_read_is_retained(
 ) {
 	let fixture = root.await;
 	let (stop, subscriber) = subscription;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	let before = fixture.emit(ws, 1).await;
 	let mut ownership = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
-			.column(Alias::new("workspace_id"))
-			.from(Alias::new("authorization_workspaces"))
+			.column(Alias::new("thread_id"))
+			.from(Alias::new("authorization_threads"))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -485,13 +485,13 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		format!("mapping:acme:{mapping}")
 	};
 	let mut responses = Vec::new();
-	for (workspace, after) in [(fixture.workspaces[0], 0), (fixture.workspaces[1], -1)] {
+	for (thread, after) in [(fixture.threads[0], 0), (fixture.threads[1], -1)] {
 		let response = fixture
 			.app
 			.clone()
 			.native_oneshot(
 				Request::get(format!(
-					"/api/events/stream?after={after}&workspace_id={workspace}"
+					"/api/events/stream?after={after}&thread_id={thread}"
 				))
 				.header("cookie", "__Host-aidash-session=sse-browser-session")
 				.header("x-aidash-context", &selector)
@@ -500,7 +500,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 			)
 			.await
 			.unwrap();
-		// A Deployment Administrator context reads no Tenant Workspace, so it
+		// A Deployment Administrator context reads no Tenant Thread, so it
 		// never holds a stream for the grant removal to close (#484).
 		if change == "deployment_administrator" {
 			assert_eq!(response.status, 403);

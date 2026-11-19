@@ -48,7 +48,7 @@ pub enum State {
 	/// A refresh was rejected, or OpenAI confirmed that the grant ended. The
 	/// owner must connect again; the Plan Tokens are already discarded.
 	NeedsReconnection,
-	/// OpenAI reports that the owner's plan or workspace is not eligible.
+	/// OpenAI reports that the owner's plan or thread is not eligible.
 	/// Reconnecting does not help, so the owner is not asked to.
 	Ineligible,
 }
@@ -63,7 +63,7 @@ pub struct PlanConnection {
 	/// Another identity mapped to the same subject never uses it.
 	pub identity_id: Uuid,
 	pub provider: Provider,
-	/// OpenAI's issued client ID, bound to one ChatGPT account and workspace.
+	/// OpenAI's issued client ID, bound to one ChatGPT account and thread.
 	/// It is not secret, but it is reused only for this connection.
 	pub client_id: String,
 	/// The verified ChatGPT account (the ID token's `sub`) the grant was
@@ -197,13 +197,13 @@ pub enum Failure {
 		"the ChatGPT Plan Connection needs reconnection; reconnect your ChatGPT plan in personal settings"
 	)]
 	NeedsReconnection,
-	#[error("the ChatGPT plan or workspace is not eligible for use in Aidash")]
+	#[error("the ChatGPT plan or thread is not eligible for use in Aidash")]
 	Ineligible,
 	#[error(
 		"usage limit reached: review your plan or this app's limit in ChatGPT settings (https://chatgpt.com/settings/usage)"
 	)]
 	UsageLimit,
-	#[error("ChatGPT plan usage is restricted for this account, workspace or region")]
+	#[error("ChatGPT plan usage is restricted for this account, thread or region")]
 	Restricted,
 	#[error("ChatGPT plan usage does not support part of this request: {0}")]
 	Unsupported(Unsupported),

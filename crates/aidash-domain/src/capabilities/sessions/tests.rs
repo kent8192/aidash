@@ -41,7 +41,6 @@ fn area(constraints: Value) -> Area {
 		id: Uuid::nil(),
 		tenant: "tenant".into(),
 		home_node: "aidash://home/node".into(),
-		workspace_id: Uuid::nil(),
 		thread_id: Uuid::nil(),
 		agent_id: "agent".into(),
 		owner: "alice".into(),

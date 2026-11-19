@@ -28,8 +28,8 @@ test("review a real canonical Run candidate through the dashboard", async ({
   await page.goto("/semantic");
   await page
     .locator(".semantic-page")
-    .getByLabel(ja ? "ワークスペース" : "Workspace", { exact: true })
-    .selectOption(profile.workspace);
+    .getByLabel(ja ? "スレッド" : "Thread", { exact: true })
+    .selectOption(profile.thread);
   await page
     .getByLabel(ja ? "記憶の所有者" : "Memory bank", { exact: true })
     .selectOption(profile.bank.participant);

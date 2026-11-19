@@ -89,7 +89,7 @@ pub async fn due(
 	let retry_at = recovery.retry.map(|r| r.at).filter(|d| *d > now);
 	let due = match &state {
 		RunState::Waiting(wait) => {
-			if let WaitingState::Workspace {
+			if let WaitingState::TaskWait {
 				wake_at,
 				cursor,
 				resume,
@@ -107,7 +107,7 @@ pub async fn due(
 				} else {
 					Some(
 						scope
-							.workspace_event_after(m.id, *cursor)
+							.thread_event_after(m.id, *cursor)
 							.await?
 							.unwrap_or(*wake_at)
 							.min(*wake_at),

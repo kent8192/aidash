@@ -104,7 +104,7 @@ impl Scope<'_, '_> {
 			for unit in units {
 				match units::current_for_run(
 					self.lease,
-					bank.workspace,
+					bank.thread,
 					&unit.content.evidence,
 					self.models.policy.bounds.max_graph_visits,
 					Some(reader),
@@ -132,7 +132,7 @@ impl Scope<'_, '_> {
 			)
 			.fetch_one(&mut **self.lease.tx())
 			.await?;
-			if reader.workspace_id != bank.workspace {
+			if reader.thread_id != bank.thread {
 				if super::sharing::get(&mut **self.lease.tx(), &bank.tenant)
 					.await?
 					.0 != SharingScope::TenantAgent
@@ -183,7 +183,7 @@ impl Scope<'_, '_> {
 		}
 		let index = crate::semantic::models::SemanticIndexe::locked(
 			&mut **self.lease.tx(),
-			bank.workspace,
+			bank.thread,
 			false,
 		)
 		.await?
@@ -263,7 +263,7 @@ impl Scope<'_, '_> {
 				&index.collection,
 				&embedded.output,
 				VectorFilter {
-					workspace: bank.workspace,
+					thread: bank.thread,
 					tenant: &bank.tenant,
 					allowed: &points,
 				},
@@ -416,7 +416,7 @@ impl MemoryScope for Scope<'_, '_> {
 	) -> aidash_application::Result<()> {
 		units::current_for_run(
 			self.lease,
-			bank.workspace,
+			bank.thread,
 			evidence,
 			self.models.policy.bounds.max_graph_visits,
 			self.models.run,
@@ -549,7 +549,7 @@ impl MemoryScope for Scope<'_, '_> {
 			units::unexpired(self.lease, &unit).await?;
 			units::current_for_run(
 				self.lease,
-				bank.workspace,
+				bank.thread,
 				&unit.content.evidence,
 				self.models.policy.bounds.max_graph_visits,
 				self.models.run,

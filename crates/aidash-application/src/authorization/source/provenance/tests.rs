@@ -26,7 +26,7 @@ impl Scope {
 			visits: Default::default(),
 			entry: Some(Entry {
 				id: Uuid::from_u128(2),
-				workspace_id: Uuid::from_u128(3),
+				thread_id: Uuid::from_u128(3),
 				key: "memory".into(),
 				source: json!({"kind":"memory","text":"source text"}),
 				agent: None,
@@ -73,8 +73,8 @@ impl SemanticSourceScope for Scope {
 		}
 		Ok(self.permitted)
 	}
-	async fn source_text(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
-		assert_eq!(workspace, Uuid::from_u128(3));
+	async fn source_text(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
+		assert_eq!(thread, Uuid::from_u128(3));
 		assert_eq!(
 			*source,
 			Source::Memory {

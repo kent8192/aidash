@@ -129,12 +129,9 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Usage", "Record inference usage")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&ACME, "alice", "Usage").await.unwrap();
 	let task = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	common::local_run(&store, &ACME, &task, &agent).await;
@@ -272,12 +269,9 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 async fn leased_run(store: &Store, token: Uuid) -> Run {
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Usage", "Record inference usage")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&ACME, "alice", "Usage").await.unwrap();
 	let task = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	common::local_run(store, &ACME, &task, &agent).await;

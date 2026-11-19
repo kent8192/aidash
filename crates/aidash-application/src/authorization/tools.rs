@@ -43,18 +43,18 @@ pub async fn refresh(repository: &dyn AgentToolRepository) -> Result<()> {
 /// The model named a task the Run cannot address; it can clear this by naming another.
 fn task_not_found(id: &str) -> Error {
 	Error::Invalid(format!(
-		"task {id} was not found in this Workspace; use a task_id that task_create returned"
+		"task {id} was not found in this Thread; use a task_id that task_create returned"
 	))
 }
 
-/// Foreign execution can address only its admitted Task and Workspace.
+/// Foreign execution can address only its admitted Task and Thread.
 pub fn remote_identifier(run: &RunMetadata, kind: &str, id: &str) -> Result<String> {
 	// `memory` is no longer refused: a remote Run's memory tools are served by its Home (ADR 0126).
 	if kind == "run" && id != run.id.to_string() {
 		return Err(Error::Forbidden);
 	}
 	if (kind == "task" && id != run.task_id.to_string())
-		|| (kind == "workspace" && id != run.workspace_id.to_string())
+		|| (kind == "thread" && id != run.thread_id.to_string())
 	{
 		return Err(Error::Forbidden);
 	}
@@ -429,8 +429,7 @@ pub async fn authorize(
 					RefusalCheck::Catalog,
 					Some("agent.execute"),
 				)?;
-				let resource =
-					scope.resource("workspace", &run.workspace_id.to_string(), json!({}));
+				let resource = scope.resource("thread", &run.thread_id.to_string(), json!({}));
 				named(
 					scope.require(&resource, "task.create").await,
 					call,
@@ -543,7 +542,7 @@ pub async fn authorize(
 			} => {
 				let mut named_task = false;
 				let id = match target {
-					ResourceTarget::Workspace => run.workspace_id.to_string(),
+					ResourceTarget::Thread => run.thread_id.to_string(),
 					ResourceTarget::Task => run.task_id.to_string(),
 					ResourceTarget::Agent => run.agent_id.clone(),
 					ResourceTarget::Run => run.id.to_string(),
@@ -835,7 +834,7 @@ async fn protected_resource(
 				kind,
 				&format!("{}/tasks/{task}", run.home_node),
 				json!({
-					"source_workspace_id": run.workspace_id,
+					"source_thread_id": run.thread_id,
 					"source_task_id": task,
 					"source_parent_task_id": run.task_id,
 				}),
@@ -899,7 +898,7 @@ pub async fn action(
 	scope.require(&resource, action).await
 }
 
-/// A worker may disclose only a saved request for its own Run and Workspace.
+/// A worker may disclose only a saved request for its own Run and Thread.
 pub async fn human_read(
 	repository: &dyn AgentToolRepository,
 	run: &RunMetadata,

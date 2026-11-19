@@ -12,7 +12,7 @@ pub trait SemanticBindingScope: SourceAuthorityScope {
 	fn home_node_id(&self) -> &str;
 	fn binding_tenant(&self) -> &str;
 	/// Decode native defaults before crossing the boundary, retaining the exact stored specification digest.
-	async fn semantic_index(&mut self, workspace: Uuid) -> Result<(Index, IndexingSpec)>;
+	async fn semantic_index(&mut self, thread: Uuid) -> Result<(Index, IndexingSpec)>;
 	async fn embedding_entry(&mut self, entry: &EntityRef, action: &str) -> Result<Entry>;
 	async fn binding_lineage(&mut self) -> Result<Vec<Ancestor>>;
 	async fn native_binding(

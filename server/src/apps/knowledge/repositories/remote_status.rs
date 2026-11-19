@@ -66,14 +66,14 @@ impl GenerationVisibility for Scope<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		crate::bootstrap::generation_visibility_scope(self.access)
-			.workspace(id)
+			.thread(id)
 			.await
 	}
-	async fn task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
+	async fn task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
 		crate::bootstrap::generation_visibility_scope(self.access)
-			.task(id, workspace)
+			.task(id, thread)
 			.await
 	}
 	async fn task_visible(&mut self, task: &Task) -> Result<bool> {

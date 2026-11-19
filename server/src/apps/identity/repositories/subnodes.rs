@@ -262,22 +262,21 @@ impl CreateScope for Creation<'_> {
 	}
 	async fn insert(&mut self, run: &RunMetadata, key: &str, input: &Create) -> Result<Subnode> {
 		let tenant = self.access.identity.tenant.clone();
-		let workspace_id = Uuid::new_v4();
+		let thread_id = Uuid::new_v4();
 		let title = input.title.as_deref().unwrap_or("Subnode");
 		let (scratch_space_id, created_by) =
 			subnode_scratch_binding(self.access, run, &self.federation.config.scratch_policy)
 				.await?;
-		let workspace = self
+		let thread = self
 			.federation
 			.store
-			.create_workspace_in(
+			.create_thread_in(
 				&mut self.access.tx,
-				crate::apps::execution::repositories::store::WorkspaceInsert {
-					id: workspace_id,
+				crate::apps::execution::repositories::store::ThreadInsert {
+					id: thread_id,
 					tenant: &tenant,
 					node: &run.node,
 					title,
-					goal: title,
 					scratch_space_id,
 					created_by: &created_by,
 				},
@@ -285,9 +284,9 @@ impl CreateScope for Creation<'_> {
 			.await?;
 		self.federation
 			.store
-			.record_workspace_tenant_in(
+			.record_thread_tenant_in(
 				&mut self.access.tx,
-				workspace.id,
+				thread.id,
 				&tenant,
 				&self.access.identity.subject,
 			)
@@ -315,7 +314,7 @@ impl CreateScope for Creation<'_> {
 				})
 				.collect(),
 			allowance: input.allowance.clone(),
-			workspace_id,
+			thread_id,
 			title: input.title.clone(),
 			state: State::Active,
 			created_at: now,
@@ -329,7 +328,7 @@ impl CreateScope for Creation<'_> {
 			.store
 			.event(
 				&mut self.access.tx,
-				Some(workspace_id),
+				Some(thread_id),
 				"subnode.created",
 				json!({"subnode_id":value.id.0,"creator_run_id":run.id}),
 			)
@@ -435,7 +434,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("runs"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(subnode.workspace_id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(subnode.thread_id)))
 			.and_where(Expr::col("agent_id").eq(agent.id.clone()))
 			.and_where(Expr::col("agent_version").eq(agent.version.clone()))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
@@ -464,7 +463,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("tasks"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(subnode.workspace_id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(subnode.thread_id)))
 			.and_where(Expr::col("status").is_not_in([
 				"COMPLETED",
 				"FAILED",
@@ -511,7 +510,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			.store
 			.event(
 				&mut self.access.tx,
-				Some(subnode.workspace_id),
+				Some(subnode.thread_id),
 				"subnode.member_added",
 				json!({"subnode_id":subnode.id.0,"agent":agent}),
 			)
@@ -536,7 +535,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			.store
 			.event(
 				&mut self.access.tx,
-				Some(subnode.workspace_id),
+				Some(subnode.thread_id),
 				"subnode.member_removed",
 				json!({"subnode_id":subnode.id.0,"agent":agent}),
 			)
@@ -582,7 +581,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 				));
 			}
 		}
-		// tasks_parent_workspace requires a same-Workspace parent. Provenance
+		// tasks_parent_thread requires a same-Thread parent. Provenance
 		// instead records the creator Run in authorization_task_origins.
 		let input = aidash_domain::NewTask {
 			title: title.into(),
@@ -591,9 +590,9 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			dependencies: vec![],
 			parent_id: None,
 		};
-		self.access.context = json!({"workspace_id":subnode.workspace_id});
-		let workspace = self.access.workspace(subnode.workspace_id).await?;
-		self.access.require(&workspace, "task.create").await?;
+		self.access.context = json!({"thread_id":subnode.thread_id});
+		let thread = self.access.thread(subnode.thread_id).await?;
+		self.access.require(&thread, "task.create").await?;
 		let creator = self
 			.access
 			.subjects
@@ -605,7 +604,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			.store
 			.create_task_in(
 				&mut self.access.tx,
-				subnode.workspace_id,
+				subnode.thread_id,
 				&input,
 				&creator,
 				Some(key),
@@ -629,7 +628,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			crate::apps::identity::models::AuthorizationRunRead::record_sources(
 				self.access.tx.as_mut(),
 				run.id,
-				run.workspace_id,
+				run.thread_id,
 				&[("run".into(), run.id)],
 			)
 			.await?;
@@ -675,7 +674,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			.record_output_in(
 				&mut self.access.tx,
 				Some(run.id),
-				subnode.workspace_id,
+				subnode.thread_id,
 				"task",
 				task.id,
 			)
@@ -693,9 +692,9 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			tx: self.access.tx.native_mut(),
 		};
 		// Lock the Runs before `mark_ended` appends an event; see `lock_end`.
-		let runs = cascade.active_runs(subnode.workspace_id).await?;
+		let runs = cascade.active_runs(subnode.thread_id).await?;
 		cascade
-			.mark_ended(subnode.id, subnode.workspace_id, reason)
+			.mark_ended(subnode.id, subnode.thread_id, reason)
 			.await?;
 		for run in runs {
 			cascade
@@ -729,15 +728,15 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			.await?;
 		// The copy depends on what the member read, and so does the creating Run that
 		// received it (#793). Both inserts ignore a replay of the same key.
-		if let Some((workspace, message)) = written {
+		if let Some((thread, message)) = written {
 			self.federation
 				.store
-				.record_member_message_in(&mut self.access.tx, run.id, workspace, message)
+				.record_member_message_in(&mut self.access.tx, run.id, thread, message)
 				.await?;
 			crate::apps::identity::models::AuthorizationRunRead::record_sources(
 				self.access.tx.native_mut(),
 				subnode.creator_run_id,
-				workspace,
+				thread,
 				&[("message".to_owned(), message)],
 			)
 			.await?;
@@ -801,10 +800,7 @@ pub(crate) async fn creator_binding_authority(
 	let mut view = CreatorView {
 		subjects: std::mem::replace(&mut access.subjects, subjects),
 		approved: std::mem::replace(&mut access.approved_catalog, approved),
-		context: std::mem::replace(
-			&mut access.context,
-			json!({"workspace_id":creator.workspace_id}),
-		),
+		context: std::mem::replace(&mut access.context, json!({"thread_id":creator.thread_id})),
 		access,
 	};
 	let mut usable = (**snapshot).clone();
@@ -863,7 +859,7 @@ pub(crate) async fn require_admission(
 	let tenant = access.identity.tenant.clone();
 	let rows = SubnodeRecord::objects()
 		.filter(SubnodeRecord::field_tenant().eq(tenant.clone()))
-		.filter(SubnodeRecord::field_workspace_id().eq(task.workspace_id))
+		.filter(SubnodeRecord::field_thread_id().eq(task.thread_id))
 		.select_for_update()
 		.all_with_executor(access.tx.native_mut())
 		.await
@@ -906,7 +902,7 @@ pub(crate) async fn require_admission(
 		return Ok(());
 	}
 	let (sql, values) = Query::select()
-		.columns(["agent_id", "agent_version", "workspace_id"].map(Alias::new))
+		.columns(["agent_id", "agent_version", "thread_id"].map(Alias::new))
 		.from(Alias::new("runs"))
 		.and_where(Expr::col("id").eq(Expr::value(source)))
 		.build(PostgresQueryBuilder);
@@ -919,10 +915,10 @@ pub(crate) async fn require_admission(
 		return Err(crate::Error::Forbidden);
 	};
 	let row = reinhardt::db::orm::QueryRow::from_backend_row(row);
-	let workspace: Uuid = row.get("workspace_id").ok_or(crate::Error::Forbidden)?;
+	let thread: Uuid = row.get("thread_id").ok_or(crate::Error::Forbidden)?;
 	let id: String = row.get("agent_id").ok_or(crate::Error::Forbidden)?;
 	let version: String = row.get("agent_version").ok_or(crate::Error::Forbidden)?;
-	if workspace != subnode.workspace_id
+	if thread != subnode.thread_id
 		|| !members
 			.iter()
 			.any(|member| member.agent_id == id && member.agent_version == version)

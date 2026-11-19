@@ -371,7 +371,7 @@ async fn capture_capability(
 		frame,
 		"capability",
 		Some(run.id),
-		run.workspace_id,
+		run.thread_id,
 		initial_settlement(&record.state, &record.data),
 	)
 	.await
@@ -507,14 +507,14 @@ async fn capture_generation(
 		effect_class: Some("generation".into()),
 	};
 	frame.id = frame.identity();
-	insert(access, frame, "generation", None, job.workspace_id, class).await
+	insert(access, frame, "generation", None, job.thread_id, class).await
 }
 async fn insert(
 	access: &mut Access,
 	frame: ObservationFrame,
 	approval_type: &str,
 	run: Option<Uuid>,
-	workspace: Uuid,
+	thread: Uuid,
 	class: SettlementClass,
 ) -> Result<()> {
 	frame.validate()?;
@@ -527,7 +527,7 @@ async fn insert(
 				"approval",
 				"approval_type",
 				"run_id",
-				"workspace_id",
+				"thread_id",
 				"credential_id",
 				"subject",
 				"frame",
@@ -543,7 +543,7 @@ async fn insert(
 			frame.approval.into(),
 			approval_type.into(),
 			reinhardt::query::IntoValue::into_value(run),
-			workspace.into(),
+			thread.into(),
 			access.identity.credential_id.into(),
 			access.identity.subject.clone().into(),
 			json!(frame).into(),

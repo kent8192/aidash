@@ -430,7 +430,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
     try:
         try:
             title = f"{experiment.prefix} {task['id']} {planned['label']} r{repeat}"
-            workspace = bounded.post("/api/workspaces", {"title": title, "goal": task["title"]}, token)["id"]
+            workspace = bounded.post("/api/workspaces", {"title": title, "request": task["title"]}, token)["id"]
             observation["workspace"] = workspace
             created = bounded.post(f"/api/workspaces/{workspace}/tasks", {
                 "title": task["title"], "description": task_description(planned["corpus"], task), "requirements": {},

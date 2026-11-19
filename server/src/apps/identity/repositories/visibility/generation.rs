@@ -20,11 +20,11 @@ impl GenerationVisibility for NativeGeneration<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
-	async fn task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
-		crate::apps::workspaces::models::Task::read_in(self.access.tx.as_mut(), id, workspace)
+	async fn task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
+		crate::apps::workspaces::models::Task::read_in(self.access.tx.as_mut(), id, thread)
 			.await
 			.map_err(Into::into)
 	}

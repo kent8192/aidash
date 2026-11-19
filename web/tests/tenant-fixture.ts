@@ -74,7 +74,7 @@ export async function defaultNode(
 }
 
 /** The golden path's subject in Node A's research Tenant. Only Tenant
- *  subjects do Tenant work (#371), so live specs that create Workspaces or
+ *  subjects do Tenant work (#371), so live specs that create Threads or
  *  assign the golden path's agents act as it. golden_path.py issues the
  *  credential just before the browser run. */
 export function acceptanceSubject(): {

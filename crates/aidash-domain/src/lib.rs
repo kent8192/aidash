@@ -70,7 +70,7 @@ pub mod federation;
 
 pub mod configuration;
 
-pub mod workspaces;
+pub mod threads;
 
 pub mod marketplace;
 

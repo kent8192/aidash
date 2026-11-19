@@ -114,7 +114,7 @@ pub mod visibility;
 pub mod visits;
 
 pub mod lease;
-pub mod workspaces;
+pub mod threads;
 
 pub mod projection;
 

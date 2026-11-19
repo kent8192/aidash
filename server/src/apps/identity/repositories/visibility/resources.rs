@@ -20,8 +20,8 @@ impl ResourceVisibilityScope for Reads<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		self.access
@@ -29,9 +29,9 @@ impl ResourceVisibilityScope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.access
-			.output_visible(workspace, kind, id)
+			.output_visible(thread, kind, id)
 			.await
 			.map_err(Into::into)
 	}
@@ -44,14 +44,14 @@ impl ResourceVisibilityScope for Reads<'_> {
 	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
 		if let Some(task) = self
 			.access
-			.state_source_task(artifact.task_id, artifact.workspace_id)
+			.state_source_task(artifact.task_id, artifact.thread_id)
 		{
 			return Ok(task);
 		}
 		if let Some(task) = self
 			.access
 			.read_lookups
-			.task(artifact.task_id, artifact.workspace_id)
+			.task(artifact.task_id, artifact.thread_id)
 		{
 			return Ok(task);
 		}
@@ -59,7 +59,7 @@ impl ResourceVisibilityScope for Reads<'_> {
 			let this = &mut *self.access;
 			let task: Option<Task> = {
 				let query_bind_1 = artifact.task_id;
-				let query_bind_2 = artifact.workspace_id;
+				let query_bind_2 = artifact.thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -75,7 +75,7 @@ impl ResourceVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -93,15 +93,15 @@ impl ResourceVisibilityScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn humans(&mut self, workspace: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
-		if let Some(requests) = self.access.state_humans(workspace, run) {
+	async fn humans(&mut self, thread: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
+		if let Some(requests) = self.access.state_humans(thread, run) {
 			return Ok(requests);
 		}
 		let result: NativeResult<Vec<HumanRequest>> = async {
 			let this = &mut *self.access;
 			let requests: Vec<HumanRequest> = {
 				let query_bind_1 = run;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -119,7 +119,7 @@ impl ResourceVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -143,8 +143,8 @@ impl ResourceVisibilityScope for NativeReads<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		self.access
@@ -152,9 +152,9 @@ impl ResourceVisibilityScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.access
-			.output_visible(workspace, kind, id)
+			.output_visible(thread, kind, id)
 			.await
 			.map_err(Into::into)
 	}
@@ -168,26 +168,22 @@ impl ResourceVisibilityScope for NativeReads<'_> {
 		if let Some(task) = self
 			.access
 			.read_lookups
-			.task(artifact.task_id, artifact.workspace_id)
+			.task(artifact.task_id, artifact.thread_id)
 		{
 			return Ok(task);
 		}
 		crate::apps::workspaces::models::Task::read_in(
 			self.access.tx.as_mut(),
 			artifact.task_id,
-			artifact.workspace_id,
+			artifact.thread_id,
 		)
 		.await
 		.map_err(Into::into)
 	}
-	async fn humans(&mut self, workspace: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
-		crate::apps::execution::models::HumanRequest::for_run(
-			self.access.tx.as_mut(),
-			run,
-			workspace,
-		)
-		.await
-		.map_err(Into::into)
+	async fn humans(&mut self, thread: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
+		crate::apps::execution::models::HumanRequest::for_run(self.access.tx.as_mut(), run, thread)
+			.await
+			.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -222,15 +218,15 @@ impl ResourceAccessScope for Reads<'_> {
 }
 #[async_trait]
 impl ResourceEventScope for Reads<'_> {
-	async fn event_task(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Task>> {
-		if let Some(task) = workspace.and_then(|workspace| self.access.state_task(id, workspace)) {
+	async fn event_task(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Task>> {
+		if let Some(task) = thread.and_then(|thread| self.access.state_task(id, thread)) {
 			return Ok(Some(task));
 		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let task: Option<Task> = {
 				let query_bind_1 = id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -246,7 +242,7 @@ impl ResourceEventScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -264,12 +260,12 @@ impl ResourceEventScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn artifact(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Artifact>> {
+	async fn artifact(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Artifact>> {
 		let result: NativeResult<Option<Artifact>> = async {
 			let this = &mut *self.access;
 			let artifact: Option<Artifact> = {
 				let query_bind_1 = id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -285,7 +281,7 @@ impl ResourceEventScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -303,12 +299,12 @@ impl ResourceEventScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn messages_id(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Vec<Message>> {
+	async fn messages_id(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Vec<Message>> {
 		let result: NativeResult<Vec<Message>> = async {
 			let this = &mut *self.access;
 			let messages: Vec<Message> = {
 				let query_bind_1 = id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -324,7 +320,7 @@ impl ResourceEventScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -344,14 +340,14 @@ impl ResourceEventScope for Reads<'_> {
 	}
 	async fn messages_legacy(
 		&mut self,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		sender: Option<&str>,
 		content: Option<&str>,
 	) -> Result<Vec<Message>> {
 		let result: NativeResult<Vec<Message>> = async {
 			let this = &mut *self.access;
 			let messages: Vec<Message> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = sender;
 				let query_bind_3 = content;
 				aidash_server::database::query_as(
@@ -362,7 +358,7 @@ impl ResourceEventScope for Reads<'_> {
 							Condition::all()
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),

@@ -30,16 +30,16 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let app = fixture.application.clone();
 	let alice = common::tenant_token(&f.store, "acme").await;
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&acme, "alice", "Run Control", "Stop a Run")
+		.create_thread(&acme, "alice", "Run Control")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
 			&acme,
-			workspace.id,
+			thread.id,
 			&aidash_server::domain::NewTask {
 				title: "Work".into(),
 				description: "A Run whose owner stops it".into(),
@@ -153,7 +153,7 @@ impl World {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_condition_gives_the_screen_and_decline_route_the_same_decision(
+async fn thread_condition_gives_the_screen_and_decline_route_the_same_decision(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -164,7 +164,7 @@ async fn workspace_condition_gives_the_screen_and_decline_route_the_same_decisio
 	w.pause(true).await;
 	w.edit_policy(|bundle| {
 		bundle["policies"].as_array_mut().unwrap().push(json!({
-			"id":"workspace-owner-denial", "effect":"deny", "subjects":{"ids":["erin"]},
+			"id":"thread-owner-denial", "effect":"deny", "subjects":{"ids":["erin"]},
 			"actions":["run.decline_call"], "resources":{"kinds":["run"]},
 			"condition":{"op":"eq", "left":{"source":"resource","path":"/owner"},
 				"right":{"source":"literal","value":"alice"}}
@@ -183,7 +183,7 @@ async fn workspace_condition_gives_the_screen_and_decline_route_the_same_decisio
 		bundle["policies"]
 			.as_array_mut()
 			.unwrap()
-			.retain(|p| p["id"] != "workspace-owner-denial");
+			.retain(|p| p["id"] != "thread-owner-denial");
 	})
 	.await;
 	let (status, page) = w.get(&erin).await;
@@ -447,7 +447,7 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 		w.f.store
 			.create_task(
 				&scope,
-				w.task.workspace_id,
+				w.task.thread_id,
 				&aidash_domain::NewTask {
 					title: "Child".into(),
 					description: "Child task".into(),

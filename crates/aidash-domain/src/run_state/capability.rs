@@ -37,7 +37,7 @@ pub enum PersistedCapability {
 	McpSentRound,
 	/// Authentication waits retain the unexecuted call and once-per-resource history.
 	ConnectionWait,
-	/// A Run can suspend on a durable operation or workspace event.
+	/// A Run can suspend on a durable operation or thread event.
 	EventWait,
 	/// A saved completion names the Unassigned Tasks it abandons (#772).
 	UnassignedAbandonment,
@@ -123,7 +123,7 @@ impl RecoveryState {
 			.into_iter()
 			.chain((!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext))
 			.chain(
-				self.workspace_event_cursor
+				self.thread_event_cursor
 					.map(|_| PersistedCapability::EventWait),
 			)
 			.chain(
@@ -160,7 +160,7 @@ impl RunState {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
-				| WaitingState::Workspace {
+				| WaitingState::TaskWait {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
@@ -189,7 +189,7 @@ impl StateRequirements {
 			.flat_map(ToolCallState::required_capabilities)
 			.chain(recovery.required_capabilities())
 			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { .. })).then_some(PersistedCapability::OutageWait))
-			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { .. } | WaitingState::Workspace { .. })).then_some(PersistedCapability::EventWait))
+			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { .. } | WaitingState::TaskWait { .. })).then_some(PersistedCapability::EventWait))
 			.collect();
 		Self(needed.into_iter().map(|c| c.name().to_owned()).collect())
 	}

@@ -39,9 +39,9 @@ pub(crate) async fn bounding_run(
 			.column(Alias::new("creator_run_id"))
 			.from(Alias::new("subnodes"))
 			.and_where(
-				Expr::col("workspace_id").in_subquery(
+				Expr::col("thread_id").in_subquery(
 					Query::select()
-						.column(Alias::new("workspace_id"))
+						.column(Alias::new("thread_id"))
 						.from(Alias::new("runs"))
 						.and_where(Expr::col("id").eq(Expr::value(current)))
 						.to_owned(),

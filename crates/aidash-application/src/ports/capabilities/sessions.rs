@@ -17,31 +17,27 @@ pub trait SessionScope: Send {
 	fn admission(&self) -> Result<bool>;
 	fn set_context(&mut self, context: Value);
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()>;
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<()>;
 	async fn agent(&mut self, reference: &EntityRef) -> Result<()>;
 	/// Whether Reference files an Area was given can still be used (ADR 0114).
 	async fn references(&mut self, ids: &[Uuid]) -> Result<()>;
-	async fn bind_task(&mut self, task: Uuid, thread: Uuid) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>>;
 	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<(Uuid, i64)>>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>>;
-	async fn explicit_thread(&mut self, task_id: Uuid) -> Result<Option<Uuid>>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
 	async fn parent_areas(&mut self, id: Uuid) -> Result<Vec<Area>>;
-	async fn lock_thread(&mut self, thread: Uuid, workspace: Uuid) -> Result<()>;
-	async fn ensure_area(&mut self, task: &Task, thread: Uuid, agent_id: &str) -> Result<Area>;
+	/// Lock the Thread whose Working Area a Run is admitted to, refusing a
+	/// deleted one.
+	async fn lock_thread(&mut self, thread: Uuid) -> Result<()>;
+	/// The Working Area of (home Node, Thread, Agent, owner) for `task`.
+	async fn ensure_area(&mut self, task: &Task, agent_id: &str) -> Result<Area>;
 	/// The Area of a Run executing here for another Home, created empty when absent and kept
 	/// with its `remote_home` constraint. It is keyed by this Tenant, the Run's Home Node and
-	/// Workspace, `thread`, the Run's Agent and the Home person `owner` (ADR 0139).
-	async fn ensure_remote_area(
-		&mut self,
-		run: &RunMetadata,
-		thread: Uuid,
-		owner: &str,
-	) -> Result<Area>;
+	/// Home Thread, the Run's Agent and the Home person `owner` (ADR 0139, #1008).
+	async fn ensure_remote_area(&mut self, run: &RunMetadata, owner: &str) -> Result<Area>;
 	async fn initialized(&mut self, run_id: Uuid) -> Result<Option<bool>>;
 	async fn initialized_locked(&mut self, run_id: Uuid) -> Result<bool>;
 	async fn mark_initialized(&mut self, run_id: Uuid) -> Result<()>;
@@ -51,5 +47,5 @@ pub trait SessionScope: Send {
 	async fn last(&mut self, area: &Area) -> Result<Option<(Uuid, String)>>;
 	async fn previous(&mut self, key: Uuid) -> Result<Option<(String, Value)>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 }

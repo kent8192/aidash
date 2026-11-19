@@ -77,7 +77,7 @@ pub fn home_matches(
 		&& record.subject_chain == original
 		&& intent.target_node == node
 		&& intent.task.id == task.id
-		&& intent.task.workspace_id == task.workspace_id
+		&& intent.task.thread_id == task.thread_id
 		&& intent.expires_at > now
 }
 

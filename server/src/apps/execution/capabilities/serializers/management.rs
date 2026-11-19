@@ -168,7 +168,6 @@ pub struct FileRecipient {
 	pub agent_id: String,
 	pub agent_version: String,
 	pub thread_id: Uuid,
-	pub workspace_id: Uuid,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
