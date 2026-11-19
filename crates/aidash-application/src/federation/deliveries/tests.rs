@@ -214,6 +214,7 @@ async fn a_delivery_a_run_only_answer_allows_is_admitted(mut scope: Scope) {
 #[case::plain_key_only(&["thread_message"], false)]
 #[case::files_key_too(&["thread_message", "thread_message:files"], true)]
 #[case::pattern(&["thread_message*"], true)]
+#[case::pinned_name(&["workspace_message", "workspace_message:files"], true)]
 #[tokio::test]
 async fn a_message_delivery_needs_the_files_key_in_the_homes_request(
 	mut scope: Scope,
@@ -225,4 +226,27 @@ async fn a_message_delivery_needs_the_files_key_in_the_homes_request(
 	identity.request = Some(&request);
 	let result = verify(&mut scope, &identity, message().tool()).await;
 	assert_eq!(result.is_ok(), admitted, "{result:?}");
+}
+#[rstest]
+#[tokio::test]
+async fn a_delivery_named_by_a_pinned_workspace_tool_is_checked_as_its_thread_tool(
+	mut scope: Scope,
+) {
+	// A receiving Node whose Agent pins `workspace_message` (#1008).
+	let request = requesting(&["thread_message"]);
+	let mut identity = who(1);
+	identity.request = Some(&request);
+	// The plain key alone does not admit a message with files under either name.
+	assert!(
+		verify(&mut scope, &identity, "workspace_message")
+			.await
+			.is_err()
+	);
+	let request = requesting(&["thread_message*"]);
+	identity.request = Some(&request);
+	scope.calls.clear();
+	verify(&mut scope, &identity, "workspace_message")
+		.await
+		.unwrap();
+	assert_eq!(scope.calls, ["binding", "builtin:thread_message", "task"]);
 }

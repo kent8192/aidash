@@ -55,6 +55,20 @@ impl Area {
 	pub fn may_send_to(&self, recipient_node: &str) -> bool {
 		!self.is_remote_home() || recipient_node == self.home_node
 	}
+	/// Refuse an Area of the other kind than the Run needs. A receiving Area and a local one
+	/// share their key (Tenant, Home Node, Thread, Agent, owner) when the Home is a sibling Node
+	/// of this Deployment (#1008), so the row found for a key may be the other kind's; a Run
+	/// never works in it, and neither kind reaches the other's files.
+	pub fn require_kind(&self, receiving: bool) -> crate::Result<()> {
+		if self.is_remote_home() == receiving {
+			Ok(())
+		} else {
+			Err(crate::Error::Conflict(
+				"AREA_UNAVAILABLE: this Thread's Working Area for the Agent and person serves Runs of another Node"
+					.into(),
+			))
+		}
+	}
 }
 pub fn received_scope_matches(subjects: &[String], owner: &str, agent: &str) -> bool {
 	subjects.first().map(String::as_str) == Some(owner)

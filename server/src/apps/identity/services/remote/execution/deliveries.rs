@@ -254,7 +254,7 @@ pub(crate) async fn chunk(
 	input: DeliveryChunk,
 ) -> Result<Value> {
 	key(&input.key)?;
-	if !TOOLS.contains(&input.tool.as_str()) {
+	if !TOOLS.contains(&aidash_domain::tool::thread_tools::current(&input.tool)) {
 		return Err(crate::Error::Invalid("unknown delivery tool".into()));
 	}
 	admit(

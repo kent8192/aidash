@@ -39,6 +39,8 @@ pub async fn verify(
 	who: &Identity<'_>,
 	tool: &str,
 ) -> Result<Task> {
+	// A Workspace tool a saved Agent pins is its Thread tool here, as on the lists (#1008).
+	let tool = aidash_domain::tool::thread_tools::current(tool);
 	let bound = scope.binding(who.grant_id).await?.ok_or(Error::Forbidden)?;
 	if bound.admission_id != who.admission_id {
 		return Err(Error::Forbidden);

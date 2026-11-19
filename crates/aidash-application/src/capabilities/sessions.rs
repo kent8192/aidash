@@ -194,6 +194,7 @@ pub async fn admit(
 	};
 	debug_assert_eq!(thread, task.thread_id);
 	let mut area = scope.ensure_area(task, agent_id).await?;
+	area.require_kind(false)?;
 	authorize(scope, &area, "file.read").await?;
 	if !matches!(area.state.as_str(), "active" | "running") {
 		return Err(Error::Conflict(
@@ -260,6 +261,7 @@ pub async fn initialize_remote(
 		Some(false) => {}
 		None => {
 			let mut area = scope.ensure_remote_area(run, owner).await?;
+			area.require_kind(true)?;
 			authorize(scope, &area, "file.read").await?;
 			if !matches!(area.state.as_str(), "active" | "running") {
 				return Err(Error::Conflict(
