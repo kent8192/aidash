@@ -108,6 +108,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"workspaces.0024_workspace_scratch_space forward",
 	"workspaces.0033_duty_checks backward",
 	"workspaces.0033_duty_checks forward",
+	"workspaces.0049_threads backward",
 ];
 
 #[rstest::rstest]
@@ -116,9 +117,12 @@ async fn no_migration_writes_tenant_owned_rows_under_their_policy() {
 	// Arrange
 	let migrations = migrations().await;
 	// Act + Assert: the scan finds the known writers, and only them.
+	// A renamed table's history writes it under its former name.
+	let mut owned = tenant_owned(TABLES);
+	owned.extend(RENAMED.iter().map(|(former, _)| *former));
 	assert_no_migration_writes_tenant_owned_rows(
 		&migrations,
-		&tenant_owned(TABLES),
+		&owned,
 		&[BEFORE_POLICIES, IN_DEPLOYMENT_SCOPE].concat(),
 	);
 }

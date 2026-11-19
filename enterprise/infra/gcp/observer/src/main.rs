@@ -241,7 +241,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 			active_runs += 1;
 		}
 	}
-	busy.insert("task_executions", active_runs);
+	busy.insert("runs", active_runs);
 	for (name, table, column, states) in [
 		(
 			"verification",

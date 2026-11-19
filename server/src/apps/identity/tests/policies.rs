@@ -172,7 +172,7 @@ async fn subject_credentials_enforce_thread_isolation_and_live_revocation(
 			&app,
 			other,
 			"GET",
-			&format!("{path}/runs?live=true"),
+			&format!("{path}/executions?live=true"),
 			Value::Null
 		)
 		.await

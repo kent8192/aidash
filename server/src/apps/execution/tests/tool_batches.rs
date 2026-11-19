@@ -947,33 +947,28 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 			.iter()
 			.any(|binding| binding.definition.config["operation"] == "file_read")
 	);
-	let migrations = FilesystemSource::new(
+	let migration = FilesystemSource::new(
 		std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
 	)
 	.all_migrations()
 	.await
+	.unwrap()
+	.into_iter()
+	.find(|m| m.app_label == "registry" && m.name == "0021_tool_parallelism")
 	.unwrap();
-	let find = |app: &str, name: &str| {
-		migrations
-			.iter()
-			.find(|m| m.app_label == app && m.name == name)
-			.unwrap()
-			.clone()
-	};
-	let migration = find("registry", "0021_tool_parallelism");
-	// The guard reads the table by its name before #1009, so the rename is
-	// reversed first, as a dependency-ordered rollback would.
-	let renamed = [
-		find("execution", "0150_task_executions"),
-		find("execution", "0151_task_executions_state"),
-	];
 	// The rollback guard reads the Runs of every Tenant, which row-level security
 	// shows only to a login that bypasses it.
+	let admin = common::admin_pool(b.f.store.pool.fixture_driver()).await;
+	// The guard names the table as it was before #1009 (`runs`); a view under
+	// that name stands in for `task_executions` while it is checked.
+	sqlx::query("CREATE VIEW public.runs AS SELECT * FROM public.task_executions")
+		.execute(&admin)
+		.await
+		.unwrap();
 	let mut executor = DatabaseMigrationExecutor::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(common::admin_pool(b.f.store.pool.fixture_driver()).await),
+		PostgresBackend::new(admin.clone()),
 	)));
 	// Act / Assert: the unfinished Run refuses the rollback.
-	executor.rollback_migrations(&renamed).await.unwrap();
 	let error = executor
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
@@ -984,12 +979,14 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 			.contains("unfinished Runs pin shared-read tool contracts"),
 		"{error}"
 	);
-	executor.apply_migrations(&renamed).await.unwrap();
 	// Act / Assert: a finished Run never resolves its tools again.
 	complete(&b.f, run.id).await;
-	executor.rollback_migrations(&renamed).await.unwrap();
 	executor
 		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	sqlx::query("DROP VIEW public.runs")
+		.execute(&admin)
 		.await
 		.unwrap();
 	b.close().await;

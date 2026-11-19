@@ -1523,7 +1523,7 @@ def render():
             "remote-semantic-execution-provenance",
             "remote_execution_list",
             "federated_graph_peers",
-            "run_working_area",
+            "execution_working_area",
             "core_outbound_history",
             "core_operation_history",
             "generation-usage",

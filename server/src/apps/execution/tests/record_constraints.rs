@@ -579,7 +579,7 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 			Expr::value(-1),
 		)
 		.await,
-		"runs_counters",
+		"task_executions_counters",
 	);
 	check_rejected(
 		update(
@@ -589,7 +589,7 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 			Expr::cust("gen_random_uuid()"),
 		)
 		.await,
-		"runs_lease",
+		"task_executions_lease",
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -1445,7 +1445,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			Expr::value(i64::MAX),
 		)
 		.await,
-		"runs_counters",
+		"task_executions_counters",
 	);
 	let second_task = f
 		.store
@@ -1572,7 +1572,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 				.execute(f.store.pool.fixture_driver())
 				.await
 				.map(|_| ()),
-			"runs_lease",
+			"task_executions_lease",
 		);
 	}
 	sqlx::query(&lease_deadline_update("2030-01-01 00:00:00+00"))

@@ -137,20 +137,20 @@ fn assets() -> [(&'static str, String); 31] {
 			crate::apps::workspaces::services::thread_backfill::duplicate_areas(),
 		),
 		(
-			"execution/sql/forward/0150_execution_events.sql",
-			crate::apps::execution::services::execution_event_backfill::forward(),
-		),
-		(
-			"execution/sql/backward/0150_execution_events.sql",
-			crate::apps::execution::services::execution_event_backfill::backward(),
-		),
-		(
 			"workspaces/sql/forward/0033_duty_halts.sql",
 			crate::apps::workspaces::services::duty_halt_backfill::forward(),
 		),
 		(
 			"workspaces/sql/backward/0033_duty_halts.sql",
 			crate::apps::workspaces::services::duty_halt_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0150_execution_events.sql",
+			crate::apps::execution::services::execution_event_backfill::forward(),
+		),
+		(
+			"execution/sql/backward/0150_execution_events.sql",
+			crate::apps::execution::services::execution_event_backfill::backward(),
 		),
 	]
 }
@@ -282,7 +282,8 @@ mod tests {
 			("identity", "0085_remove_research_approvals", 18, None),
 			("execution", "0141_remove_research", 19, Some(20)),
 			("identity", "0098_duty_member_policy", 21, Some(22)),
-			("workspaces", "0033_duty_checks", 23, Some(24)),
+			("workspaces", "0033_duty_checks", 27, Some(28)),
+			("execution", "0150_task_executions", 29, Some(30)),
 		] {
 			let migration = FilesystemSource::new(&root)
 				.get_migration(app, name)

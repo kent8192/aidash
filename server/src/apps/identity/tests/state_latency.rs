@@ -95,7 +95,7 @@ fn report_runs(state: &Value) {
 		sizes[0].0,
 		sizes[49].0
 	);
-	breakdown("task_executions", &runs.iter().collect::<Vec<_>>(), 0);
+	breakdown("runs", &runs.iter().collect::<Vec<_>>(), 0);
 	breakdown("largest_run", &[sizes[49].1], 0);
 }
 
