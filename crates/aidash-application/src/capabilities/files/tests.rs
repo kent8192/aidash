@@ -957,6 +957,40 @@ async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 	.unwrap_err();
 	assert!(matches!(error, Error::Conflict(reason) if reason == "WORKING_QUOTA"));
 }
+
+/// A receiving Area cannot read its Home's message, so a copy of that message's attachment
+/// adds no message source, which would make every later check of the Area refuse (ADR 0139).
+#[tokio::test]
+async fn a_receiving_areas_attachment_copy_adds_no_home_message_source() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	scope.active_run = Some(run.id);
+	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
+	scope.area.as_mut().unwrap().constraints = json!([home]);
+	let area = scope.area.as_ref().unwrap().clone();
+	let message = Uuid::new_v4();
+	let attachment = Uuid::new_v4();
+	let output = copy_thread_attachment(
+		&mut scope,
+		&run,
+		Uuid::new_v4(),
+		area.revision,
+		"copied.png".into(),
+		message,
+		attachment,
+		"image/png".into(),
+		"digest".into(),
+		b"image",
+	)
+	.await
+	.unwrap();
+	// The file still says where it came from.
+	assert_eq!(output["file"]["provenance"]["message_id"], json!(message));
+	assert_eq!(
+		scope.persisted.as_ref().unwrap().constraints,
+		json!([home]),
+		"only the Home the Area serves"
+	);
+}
 #[rstest::rstest]
 #[case("outbound_get", json!({"allowed_hosts":["example.com"]}), json!({"url":"https://outside.example/data"}))]
 #[case("file_read", json!({"scope":{"representation":["text"]}}), json!({"representation":"model_input"}))]

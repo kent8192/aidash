@@ -1059,10 +1059,17 @@ pub async fn copy_thread_attachment(
 	};
 	entries.push(file.clone());
 	area.manifest = json!(entries);
-	let source = json!({"kind":"message", "id":message_id});
-	let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
-	if !constraints.contains(&source) {
-		constraints.push(source);
+	// A local Area stays usable only while its Workspace message may still be read. A receiving
+	// Area (ADR 0139) gets no such source: the message is the Home's, which this Node cannot
+	// read, so every later check of the Area would refuse. The Home checked the pull, the file
+	// keeps its provenance, the Area sends files to that Home only, and a copy into the Scratch
+	// Space above carries no source either.
+	if !area.is_remote_home() {
+		let source = json!({"kind":"message", "id":message_id});
+		let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
+		if !constraints.contains(&source) {
+			constraints.push(source);
+		}
 	}
 	publish(scope, &mut area).await?;
 	let result = json!({"area_id":area.id, "revision":area.revision, "file":file});
