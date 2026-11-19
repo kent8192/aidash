@@ -104,7 +104,6 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"workspaces.0024_workspace_scratch_space forward",
 	"workspaces.0033_duty_checks backward",
 	"workspaces.0033_duty_checks forward",
-	"workspaces.0049_threads backward",
 ];
 
 #[rstest::rstest]
