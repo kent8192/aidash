@@ -85,9 +85,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"file_save" | "file_remove" | "file_copy" => "core.scratch@1",
 		"process_list" | "process_log" | "process_stop" => "core.processes@1",
 		"mcp_stdio" => "core.mcp_stdio@1",
-		"schedule_create" | "schedule_list" | "schedule_update" | "schedule_delete" => {
-			"core.schedules@1"
-		}
+		"duty_create" | "duty_list" | "duty_update" | "duty_delete" => "core.duties@1",
 		_ => return None,
 	})
 }

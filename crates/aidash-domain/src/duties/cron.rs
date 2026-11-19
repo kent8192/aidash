@@ -11,10 +11,6 @@ pub const MAX_LENGTH: usize = 120;
 /// fires within it, such as 30 February, is refused.
 const SEARCH_DAYS: i64 = 366 * 8;
 
-/// Days in one cycle of the Gregorian calendar, after which dates and
-/// weekdays repeat.
-const CALENDAR_CYCLE_DAYS: i64 = 146_097;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cron {
 	minutes: u64,
@@ -124,51 +120,6 @@ impl Cron {
 			days_of_week,
 			either_day: dom_restricted && dow_restricted,
 		})
-	}
-
-	/// The shortest gap between two fire times in local time, in minutes:
-	/// between two times of one day, and from the last time of a matching day
-	/// to the first of the next matching day. The calendar repeats every 400
-	/// years, so one cycle of dates gives the exact bound. A daylight-saving
-	/// change can shorten a gap once; the scheduler then skips the tick that
-	/// comes sooner than the minimum interval after the previous one.
-	pub fn shortest_local_gap_minutes(&self) -> i64 {
-		let times: Vec<i64> = (0..24_i64)
-			.filter(|hour| self.hours & (1 << hour) != 0)
-			.flat_map(|hour| {
-				(0..60_i64)
-					.filter(|minute| self.minutes & (1 << minute) != 0)
-					.map(move |minute| hour * 60 + minute)
-			})
-			.collect();
-		let (Some(first), Some(last)) = (times.first(), times.last()) else {
-			return i64::MAX;
-		};
-		let within = times
-			.windows(2)
-			.map(|pair| pair[1] - pair[0])
-			.min()
-			.unwrap_or(i64::MAX);
-		let mut across = i64::MAX;
-		let mut previous: Option<NaiveDate> = None;
-		let start = NaiveDate::from_ymd_opt(2000, 1, 1).expect("a valid date");
-		// One extra year covers the pair that spans the end of the cycle.
-		for offset in 0..CALENDAR_CYCLE_DAYS + 366 {
-			let date = start + Duration::days(offset);
-			if !self.day_matches(date) {
-				continue;
-			}
-			if let Some(previous) = previous {
-				let days = (date - previous).num_days();
-				across = across.min(days * 24 * 60 + first - last);
-				// Consecutive days give the shortest gap there can be.
-				if days == 1 {
-					break;
-				}
-			}
-			previous = Some(date);
-		}
-		within.min(across)
 	}
 
 	fn day_matches(&self, date: NaiveDate) -> bool {

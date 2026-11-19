@@ -241,10 +241,10 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 			binding.binding.target.id.as_str(),
 			"aidash.attachment_copy"
 				| "aidash.workspace_search"
-				| "aidash.schedule_create"
-				| "aidash.schedule_list"
-				| "aidash.schedule_update"
-				| "aidash.schedule_delete"
+				| "aidash.duty_create"
+				| "aidash.duty_list"
+				| "aidash.duty_update"
+				| "aidash.duty_delete"
 		)
 	});
 	for binding in &mut saved.bindings {

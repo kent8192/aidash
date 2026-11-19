@@ -151,8 +151,8 @@ impl ToolOperations for Operations {
 		aidash_application::tools::connection_outcome(value, false)
 	}
 
-	async fn schedule(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
-		crate::apps::workspaces::services::schedules::agent_tool(
+	async fn duty(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
+		crate::apps::workspaces::services::duties::agent_tool(
 			&self.0.store,
 			&self.0.run,
 			key,

@@ -1866,8 +1866,8 @@ mod transfer_tests;
 #[path = "core_capabilities/lifecycle.rs"]
 mod lifecycle_tests;
 
-#[path = "core_capabilities/schedules.rs"]
-mod schedule_tests;
+#[path = "core_capabilities/duties.rs"]
+mod duty_tests;
 
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/runtime_faults.rs"]

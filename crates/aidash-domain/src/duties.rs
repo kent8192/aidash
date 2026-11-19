@@ -1,8 +1,12 @@
-//! Schedules: recurring triggers that start a Task for one Agent of the
-//! Tenant with a fixed request (#557, ADR 0134). A Schedule always acts as one
-//! person, its Registrant: every Run it starts has the Registrant at the root
-//! of its delegation chain. There are no Tenant-owned Schedules, and a
-//! Schedule whose Registrant leaves stops rather than changes hands silently.
+//! Duties: standing responsibilities a Node carries out for a person (#1011,
+//! ADR 0142). A Duty has a mission, a procedure, Duty Triggers and its own
+//! Thread, and one Agent carries it out. It absorbs the Schedules of #557: a
+//! time trigger is one kind of Duty Trigger.
+//!
+//! A Duty has no authority of its own. It always acts as one person, its
+//! Requester: every Run it starts has the Requester at the root of its
+//! delegation chain (ADR 0134). A Duty whose Requester leaves stops rather
+//! than changes hands silently.
 use crate::{Error, Result, approval_rules::ApprovalMode, registry::EntityRef};
 use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
@@ -11,31 +15,31 @@ use uuid::Uuid;
 
 pub mod cron;
 
-/// Registering Schedules, and changing, pausing and deleting your own. Judged
-/// on the Workspace the Schedule belongs to. Members hold it by default.
-pub const CREATE: &str = "schedule.create";
-/// Seeing, stopping and deleting anyone's Schedules, naming a successor for a
-/// Schedule whose Registrant left, and setting the Tenant's Schedule limits.
-/// Judged on the Tenant. Administrators hold it.
-pub const ADMINISTER: &str = "schedule.administer";
-/// Failed Runs in a row after which a Schedule pauses itself.
-pub const FAILURE_LIMIT: i32 = 3;
-/// The shortest gap between two fire times a Deployment allows by default.
-pub const DEFAULT_MIN_INTERVAL_SECONDS: i64 = 15 * 60;
+/// Registering Duties, and changing, pausing and deleting your own. Judged
+/// on the Workspace the Duty belongs to. Members hold it by default.
+pub const CREATE: &str = "duty.create";
+/// Seeing, stopping and deleting anyone's Duties and naming a successor for
+/// a Duty whose Requester left. Judged on the Tenant. Administrators hold it.
+pub const ADMINISTER: &str = "duty.administer";
+/// Failed Runs in a row after which a Duty pauses itself, unless its
+/// Requester chooses another number or 0, which never pauses it.
+pub const DEFAULT_PAUSE_AFTER_FAILURES: i32 = 3;
+pub const MAX_PAUSE_AFTER_FAILURES: i32 = 1_000;
 /// The longest fixed interval: one year.
 pub const MAX_INTERVAL_SECONDS: i64 = 366 * 24 * 60 * 60;
 /// How late a tick may still run by default, and the bounds a person may set.
 pub const DEFAULT_MAX_LATENESS_SECONDS: i64 = 60 * 60;
 pub const MAX_LATENESS_SECONDS: std::ops::RangeInclusive<i64> = 60..=7 * 24 * 60 * 60;
-/// The most a tick is delayed past its scheduled time, so many Schedules on
+/// The most a tick is delayed past its scheduled time, so many Duties on
 /// the same minute do not start at once. It is never shown.
 pub const MAX_JITTER_SECONDS: i64 = 30;
 pub const TITLE_MAX: usize = 200;
-pub const REQUEST_MAX: usize = 16_000;
+pub const MISSION_MAX: usize = 16_000;
+pub const PROCEDURE_MAX: usize = 16_000;
 /// Missed fire times walked while catching up after downtime.
 const CATCH_UP_LIMIT: usize = 100_000;
 
-/// When a Schedule fires.
+/// When a Duty fires.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Trigger {
@@ -45,22 +49,19 @@ pub enum Trigger {
 		expression: String,
 		time_zone: String,
 	},
-	/// A fixed gap, counted from when the Schedule was registered or resumed.
+	/// A fixed gap, counted from when the Duty was registered or resumed.
 	Interval { every_seconds: i64 },
 }
 
 impl Trigger {
-	/// Checks the trigger and that no two fire times are closer than
-	/// `min_interval_seconds` in local time.
-	pub fn validate(&self, min_interval_seconds: i64, now: DateTime<Utc>) -> Result<()> {
-		if !self.meets_minimum(min_interval_seconds)? {
-			return Err(too_frequent(min_interval_seconds));
-		}
+	/// Checks the trigger. There is no minimum gap between fire times
+	/// (#1012): a Budget, not a count, bounds what a Duty spends.
+	pub fn validate(&self, now: DateTime<Utc>) -> Result<()> {
 		match self {
 			Self::Interval { every_seconds } => {
-				if *every_seconds > MAX_INTERVAL_SECONDS {
+				if !(1..=MAX_INTERVAL_SECONDS).contains(every_seconds) {
 					return Err(Error::Invalid(
-						"a Schedule's interval may be at most one year".into(),
+						"a Duty's interval must be between one second and one year".into(),
 					));
 				}
 				Ok(())
@@ -77,22 +78,6 @@ impl Trigger {
 					})?;
 				Ok(())
 			}
-		}
-	}
-
-	/// Whether no two fire times are closer than `min_interval_seconds`, read
-	/// in local time. A daylight-saving change can bring one pair closer
-	/// (#557, owner decision 2026-11-13); that is not a breach of the
-	/// minimum, and the scheduler skips such a tick instead of stopping the
-	/// Schedule. It reads no clock, so a Schedule that met the minimum when it
-	/// was registered still meets it at every tick.
-	pub fn meets_minimum(&self, min_interval_seconds: i64) -> Result<bool> {
-		match self {
-			Self::Interval { every_seconds } => Ok(*every_seconds >= min_interval_seconds),
-			Self::Cron { expression, .. } => Ok(cron::Cron::parse(expression)?
-				.shortest_local_gap_minutes()
-				.saturating_mul(60)
-				>= min_interval_seconds),
 		}
 	}
 
@@ -123,45 +108,24 @@ impl Trigger {
 	}
 }
 
-fn too_frequent(min_interval_seconds: i64) -> Error {
-	Error::Invalid(format!(
-		"a Schedule may fire at most once every {} minutes",
-		min_interval_seconds / 60
-	))
-}
-
-/// Which Thread a tick's Run is started in.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ThreadMode {
-	/// A new Thread on every tick.
-	#[default]
-	New,
-	/// Always the same Thread of the Schedule's Workspace.
-	Fixed { thread_id: Uuid },
-}
-
-/// Why a Schedule does not run. Only its Registrant resumes it, except that a
-/// named successor resumes one whose Registrant left and so becomes its
-/// Registrant (ADR 0134).
+/// Why a Duty does not run. Only its Requester resumes it, except that a
+/// named successor resumes one whose Requester left and so becomes its
+/// Requester (ADR 0134).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Halt {
-	/// Its Registrant or an administrator paused it.
+	/// Its Requester or an administrator paused it.
 	Paused,
-	/// [`FAILURE_LIMIT`] Runs in a row failed.
+	/// As many Runs in a row failed as its Requester allows.
 	Failures,
-	/// The Registrant left the Tenant or lost access; it waits for a successor.
-	RegistrantLeft,
+	/// The Requester left the Tenant or lost access; it waits for a successor.
+	RequesterLeft,
 	/// The pinned Agent version can no longer be started.
 	AgentVersionUnusable,
-	/// Its fixed Thread was deleted.
+	/// Its Thread was deleted.
 	ThreadDeleted,
 	/// The Tenant was deleted. A restore leaves it stopped.
 	TenantDeleted,
-	/// The Tenant raised its minimum interval above the Schedule's; it runs
-	/// again once its Registrant changes the trigger and resumes it.
-	IntervalTooShort,
 }
 
 impl Halt {
@@ -169,11 +133,10 @@ impl Halt {
 		match self {
 			Self::Paused => "paused",
 			Self::Failures => "failures",
-			Self::RegistrantLeft => "registrant_left",
+			Self::RequesterLeft => "requester_left",
 			Self::AgentVersionUnusable => "agent_version_unusable",
 			Self::ThreadDeleted => "thread_deleted",
 			Self::TenantDeleted => "tenant_deleted",
-			Self::IntervalTooShort => "interval_too_short",
 		}
 	}
 
@@ -181,104 +144,131 @@ impl Halt {
 		Ok(match value {
 			"paused" => Self::Paused,
 			"failures" => Self::Failures,
-			"registrant_left" => Self::RegistrantLeft,
+			"requester_left" => Self::RequesterLeft,
 			"agent_version_unusable" => Self::AgentVersionUnusable,
 			"thread_deleted" => Self::ThreadDeleted,
 			"tenant_deleted" => Self::TenantDeleted,
-			"interval_too_short" => Self::IntervalTooShort,
-			other => return Err(Error::Invalid(format!("unknown Schedule halt {other}"))),
+			other => return Err(Error::Invalid(format!("unknown Duty halt {other}"))),
 		})
 	}
 
-	/// Whether the Registrant is told: every stop nobody chose, so a person
-	/// who paused a Schedule hears nothing about it.
+	/// Whether the Requester is told: every stop nobody chose, so a person
+	/// who paused a Duty hears nothing about it.
 	pub fn notifies(self) -> bool {
 		!matches!(self, Self::Paused | Self::TenantDeleted)
 	}
 }
 
-/// What a person registers.
+/// What a person, or an Agent for its root person, sets up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
 	pub title: String,
-	/// What the Agent is asked on every tick.
-	pub request: String,
-	/// The Agent of the Schedule's Tenant and the version it is pinned to.
-	pub agent: EntityRef,
-	pub trigger: Trigger,
+	/// What the Duty is for; every Task it starts is asked this.
+	pub mission: String,
+	/// How the Agent carries the mission out: the checklist it follows on
+	/// every Task (ranked after the Agent's own instructions, ADR 0142).
 	#[serde(default)]
-	pub thread: ThreadMode,
-	/// The Approval Mode of its Runs. None follows the Registrant's own default.
+	pub procedure: String,
+	/// The Agent of the Duty's Tenant and the version it is pinned to.
+	pub agent: EntityRef,
+	/// When the Duty wakes by the clock, if it does.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub trigger: Option<Trigger>,
+	/// The Approval Mode of its Runs. None follows the Requester's own default.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub approval_mode: Option<ApprovalMode>,
 	#[serde(default = "default_lateness")]
 	pub max_lateness_seconds: i64,
+	/// Failed Runs in a row after which the Duty pauses itself; 0 never
+	/// pauses it.
+	#[serde(default = "default_pause_after_failures")]
+	pub pause_after_failures: i32,
 }
 
 fn default_lateness() -> i64 {
 	DEFAULT_MAX_LATENESS_SECONDS
 }
 
+fn default_pause_after_failures() -> i32 {
+	DEFAULT_PAUSE_AFTER_FAILURES
+}
+
 impl Definition {
-	pub fn validate(&self, min_interval_seconds: i64, now: DateTime<Utc>) -> Result<()> {
+	pub fn validate(&self, now: DateTime<Utc>) -> Result<()> {
 		let title = self.title.trim();
 		if title.is_empty()
 			|| title.chars().count() > TITLE_MAX
 			|| title.chars().any(char::is_control)
 		{
 			return Err(Error::Invalid(format!(
-				"a Schedule's title needs 1 to {TITLE_MAX} characters without control characters"
+				"a Duty's title needs 1 to {TITLE_MAX} characters without control characters"
 			)));
 		}
-		if self.request.trim().is_empty() || self.request.chars().count() > REQUEST_MAX {
+		if self.mission.trim().is_empty() || self.mission.chars().count() > MISSION_MAX {
 			return Err(Error::Invalid(format!(
-				"a Schedule's request needs 1 to {REQUEST_MAX} characters"
+				"a Duty's mission needs 1 to {MISSION_MAX} characters"
+			)));
+		}
+		if self.procedure.chars().count() > PROCEDURE_MAX || self.procedure.contains('\0') {
+			return Err(Error::Invalid(format!(
+				"a Duty's procedure may have at most {PROCEDURE_MAX} characters and no NUL"
+			)));
+		}
+		if !(0..=MAX_PAUSE_AFTER_FAILURES).contains(&self.pause_after_failures) {
+			return Err(Error::Invalid(format!(
+				"pause_after_failures must be from 0 (never) to {MAX_PAUSE_AFTER_FAILURES}"
 			)));
 		}
 		if self.agent.id.trim().is_empty() || self.agent.version.trim().is_empty() {
 			return Err(Error::Invalid(
-				"a Schedule names one Agent and its version".into(),
+				"a Duty names one Agent and its version".into(),
 			));
 		}
 		if !MAX_LATENESS_SECONDS.contains(&self.max_lateness_seconds) {
 			return Err(Error::Invalid(
-				"a Schedule's maximum lateness must be between one minute and seven days".into(),
+				"a Duty's maximum lateness must be between one minute and seven days".into(),
 			));
 		}
-		self.trigger.validate(min_interval_seconds, now)
+		match &self.trigger {
+			Some(trigger) => trigger.validate(now),
+			None => Ok(()),
+		}
 	}
 }
 
-/// The hidden delay of every tick of one Schedule, from its id, so replicas
+/// The hidden delay of every tick of one Duty, from its id, so replicas
 /// and restarts agree on it.
 pub fn jitter_seconds(id: Uuid) -> i64 {
 	(id.as_u128() % (MAX_JITTER_SECONDS as u128 + 1)) as i64
 }
 
-/// The timing of one stored Schedule.
+/// The timing of one stored Duty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timing {
-	pub trigger: Trigger,
+	pub trigger: Option<Trigger>,
 	/// Where an interval counts from: registration or the last resume.
 	pub anchor: DateTime<Utc>,
 	pub max_lateness_seconds: i64,
 }
 
-/// A stored Schedule.
+/// A stored Duty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-pub struct Schedule {
+pub struct Duty {
 	pub id: Uuid,
 	pub workspace_id: Uuid,
-	/// The person every Run of the Schedule acts as.
-	pub registrant: String,
-	/// The Registrant's credential its Runs are admitted with. Revoking it, as
-	/// leaving the Tenant does, stops the Schedule.
+	/// The person every Run of the Duty acts as.
+	pub requester: String,
+	/// The Requester's credential its Runs are admitted with. Revoking it, as
+	/// leaving the Tenant does, stops the Duty.
 	#[serde(skip)]
 	#[schemars(skip)]
 	pub credential_id: Uuid,
 	#[serde(flatten)]
 	pub definition: Definition,
+	/// The Duty's own Thread, where its Tasks report and its Requester talks
+	/// to it. Opened by its first Task.
+	pub thread_id: Option<Uuid>,
 	/// Where an interval counts from: registration or the last resume.
 	pub anchor: DateTime<Utc>,
 	/// The next scheduled time, shown without its jitter. None once the
@@ -288,7 +278,7 @@ pub struct Schedule {
 	pub halted_at: Option<DateTime<Utc>>,
 	/// Why it stopped, in words, when the halt alone does not say it all.
 	pub halt_reason: Option<String>,
-	/// Who may take over a Schedule whose Registrant left.
+	/// Who may take over a Duty whose Requester left.
 	pub successor: Option<String>,
 	pub consecutive_failures: i32,
 	/// The Run whose Agent registered it, if an Agent did.
@@ -302,7 +292,7 @@ pub struct Schedule {
 	pub updated_at: DateTime<Utc>,
 }
 
-impl Schedule {
+impl Duty {
 	pub fn timing(&self) -> Timing {
 		Timing {
 			trigger: self.definition.trigger.clone(),
@@ -319,18 +309,21 @@ impl Schedule {
 
 	pub fn standing(&self) -> Standing<'_> {
 		Standing {
-			registrant: &self.registrant,
+			requester: &self.requester,
 			halt: self.halt,
 			successor: self.successor.as_deref(),
 		}
 	}
 
 	/// Starts counting again from `now`: on registration, on a change of its
-	/// trigger, and on every resume, so a resumed Schedule never fires for
+	/// trigger, and on every resume, so a resumed Duty never fires for
 	/// times it was not running.
 	pub fn restart(&mut self, now: DateTime<Utc>) -> Result<()> {
 		self.anchor = now;
-		self.next_scheduled_at = self.definition.trigger.next_after(now, now)?;
+		self.next_scheduled_at = match &self.definition.trigger {
+			Some(trigger) => trigger.next_after(now, now)?,
+			None => None,
+		};
 		Ok(())
 	}
 
@@ -343,7 +336,7 @@ impl Schedule {
 		self.halt = Some(halt);
 		self.halted_at = Some(now);
 		self.halt_reason = reason;
-		if halt != Halt::RegistrantLeft {
+		if halt != Halt::RequesterLeft {
 			self.successor = None;
 		}
 	}
@@ -365,29 +358,47 @@ impl Schedule {
 	}
 }
 
-/// A change to some of a Schedule's settings; absent fields stay.
+/// A change to some of a Duty's settings; absent fields stay.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Patch {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub title: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub request: Option<String>,
+	pub mission: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub procedure: Option<String>,
 	/// Move to another version of the same Agent, or another Agent.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub agent: Option<EntityRef>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub trigger: Option<Trigger>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub thread: Option<ThreadMode>,
-	/// `"default"` returns to the Registrant's own default mode.
+	pub trigger: Option<TriggerChoice>,
+	/// `"default"` returns to the Requester's own default mode.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub approval_mode: Option<ModeChoice>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub max_lateness_seconds: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub pause_after_failures: Option<i32>,
 }
 
-/// An Approval Mode for a Schedule's Runs, or the Registrant's default.
+/// A new time trigger, or none: the Duty then wakes only by its other Duty
+/// Triggers and "Run now".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum TriggerChoice {
+	Set(Trigger),
+	Remove(NoTrigger),
+}
+
+/// `{"kind": "none"}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NoTrigger {
+	None,
+}
+
+/// An Approval Mode for a Duty's Runs, or the Requester's default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModeChoice {
@@ -416,23 +427,28 @@ impl Patch {
 	}
 
 	/// The definition after this change. Whether the trigger changed, so the
-	/// Schedule counts again from now.
+	/// Duty counts again from now.
 	pub fn apply(&self, definition: &Definition) -> (Definition, bool) {
 		let mut next = definition.clone();
 		if let Some(title) = &self.title {
 			next.title = title.clone();
 		}
-		if let Some(request) = &self.request {
-			next.request = request.clone();
+		if let Some(mission) = &self.mission {
+			next.mission = mission.clone();
+		}
+		if let Some(procedure) = &self.procedure {
+			next.procedure = procedure.clone();
 		}
 		if let Some(agent) = &self.agent {
 			next.agent = agent.clone();
 		}
-		if let Some(trigger) = &self.trigger {
-			next.trigger = trigger.clone();
+		match &self.trigger {
+			Some(TriggerChoice::Set(trigger)) => next.trigger = Some(trigger.clone()),
+			Some(TriggerChoice::Remove(_)) => next.trigger = None,
+			None => {}
 		}
-		if let Some(thread) = self.thread {
-			next.thread = thread;
+		if let Some(count) = self.pause_after_failures {
+			next.pause_after_failures = count;
 		}
 		if let Some(choice) = self.approval_mode {
 			next.approval_mode = choice.mode();
@@ -445,11 +461,11 @@ impl Patch {
 	}
 }
 
-/// One tick of a Schedule, as its history shows it.
+/// One tick of a Duty, as its history shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Tick {
 	pub id: Uuid,
-	pub schedule_id: Uuid,
+	pub duty_id: Uuid,
 	/// The time it was scheduled for, without jitter. For "Run now", when it
 	/// was clicked.
 	pub scheduled_at: DateTime<Utc>,
@@ -463,11 +479,11 @@ pub struct Tick {
 	pub started_by: Option<String>,
 }
 
-/// What the scheduler does with a Schedule whose next tick is due.
+/// What the scheduler does with a Duty whose next tick is due.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
 	/// The tick handled: the latest scheduled time not after `now`. Earlier
-	/// ticks missed while Aidash was down are folded into it, so a Schedule
+	/// ticks missed while Aidash was down are folded into it, so a Duty
 	/// runs once, late, rather than once per missed tick.
 	pub scheduled_at: DateTime<Utc>,
 	/// Too late to run: it is recorded as skipped.
@@ -483,19 +499,22 @@ impl Timing {
 		if due > now {
 			return Ok(None);
 		}
+		let Some(trigger) = &self.trigger else {
+			return Ok(None);
+		};
 		let mut scheduled_at = due;
-		let mut next = self.trigger.next_after(self.anchor, scheduled_at)?;
+		let mut next = trigger.next_after(self.anchor, scheduled_at)?;
 		let mut walked = 0;
 		while let Some(candidate) = next.filter(|candidate| *candidate <= now) {
 			walked += 1;
 			if walked > CATCH_UP_LIMIT {
 				// Never loop without bound on a corrupt row: jump to now.
-				next = self.trigger.next_after(self.anchor, now)?;
+				next = trigger.next_after(self.anchor, now)?;
 				scheduled_at = now;
 				break;
 			}
 			scheduled_at = candidate;
-			next = self.trigger.next_after(self.anchor, candidate)?;
+			next = trigger.next_after(self.anchor, candidate)?;
 		}
 		Ok(Some(Claim {
 			scheduled_at,
@@ -505,139 +524,26 @@ impl Timing {
 	}
 }
 
-/// The Tenant's Schedule limits as its administrators set them (#557
-/// decision 16), always within the Deployment's ceilings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Limits {
-	/// Schedules in the whole Tenant.
-	pub max_schedules: i32,
-	/// Schedules one person is the Registrant of.
-	pub max_per_person: i32,
-	/// The shortest gap between two fire times, at least the Deployment's.
-	pub min_interval_seconds: i64,
-}
-
-impl Default for Limits {
-	fn default() -> Self {
-		Self {
-			max_schedules: 50,
-			max_per_person: 10,
-			min_interval_seconds: DEFAULT_MIN_INTERVAL_SECONDS,
-		}
+/// Refuses one more Duty when a Cloud Tier caps the Tenant's total. There is
+/// no other count limit (#1012): a Budget bounds what Duties spend.
+pub fn admit_within_tier(total: i64, tier: Option<u32>) -> Result<()> {
+	match tier {
+		Some(cap) if total >= i64::from(cap) => Err(Error::Conflict(format!(
+			"DUTY_LIMIT: the Tenant's plan allows {cap} Duties"
+		))),
+		_ => Ok(()),
 	}
 }
 
-/// What a Deployment allows every Tenant: the most Schedules a Tenant and a
-/// person may have, and the shortest interval, which a Tenant may only raise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Ceilings {
-	pub max_schedules: i32,
-	pub max_per_person: i32,
-	pub min_interval_seconds: i64,
-}
-
-impl Default for Ceilings {
-	fn default() -> Self {
-		Self {
-			max_schedules: 1_000,
-			max_per_person: 100,
-			min_interval_seconds: DEFAULT_MIN_INTERVAL_SECONDS,
-		}
-	}
-}
-
-impl Ceilings {
-	pub fn validate(&self) -> Result<()> {
-		if self.max_schedules < 1 || self.max_per_person < 1 {
-			return Err(Error::Invalid(
-				"the Schedule ceilings must allow at least one Schedule".into(),
-			));
-		}
-		if !(60..=MAX_INTERVAL_SECONDS).contains(&self.min_interval_seconds) {
-			return Err(Error::Invalid(
-				"the minimum Schedule interval must be between one minute and one year".into(),
-			));
-		}
-		Ok(())
-	}
-
-	/// Refuses Tenant limits beyond the ceilings.
-	pub fn permits(&self, limits: &Limits) -> Result<()> {
-		if limits.max_schedules < 1 || limits.max_per_person < 1 {
-			return Err(Error::Invalid(
-				"the Schedule limits must allow at least one Schedule".into(),
-			));
-		}
-		if limits.max_schedules > self.max_schedules {
-			return Err(Error::Invalid(format!(
-				"max_schedules exceeds the Deployment's ceiling of {}",
-				self.max_schedules
-			)));
-		}
-		if limits.max_per_person > self.max_per_person {
-			return Err(Error::Invalid(format!(
-				"max_per_person exceeds the Deployment's ceiling of {}",
-				self.max_per_person
-			)));
-		}
-		if limits.min_interval_seconds < self.min_interval_seconds {
-			return Err(Error::Invalid(format!(
-				"min_interval_seconds may only raise the Deployment's minimum of {}",
-				self.min_interval_seconds
-			)));
-		}
-		if limits.min_interval_seconds > MAX_INTERVAL_SECONDS {
-			return Err(Error::Invalid(
-				"min_interval_seconds may be at most one year".into(),
-			));
-		}
-		Ok(())
-	}
-
-	/// The limits that apply: stored ones clamped to the current ceilings, so
-	/// lowering a ceiling takes effect without rewriting every Tenant. A
-	/// Tier limit, on Cloud, lowers the Tenant total further.
-	pub fn effective(&self, limits: Limits, tier: Option<u32>) -> Limits {
-		let tier = tier.map_or(i32::MAX, |tier| i32::try_from(tier).unwrap_or(i32::MAX));
-		Limits {
-			max_schedules: limits.max_schedules.min(self.max_schedules).min(tier),
-			max_per_person: limits.max_per_person.min(self.max_per_person),
-			min_interval_seconds: limits.min_interval_seconds.max(self.min_interval_seconds),
-		}
-	}
-}
-
-impl Limits {
-	/// Refuses one more Schedule for a person who already has `mine` of the
-	/// Tenant's `total`.
-	pub fn admit(&self, total: i64, mine: i64) -> Result<()> {
-		if total >= i64::from(self.max_schedules) {
-			return Err(Error::Conflict(format!(
-				"SCHEDULE_LIMIT: the Tenant has its limit of {} Schedules",
-				self.max_schedules
-			)));
-		}
-		if mine >= i64::from(self.max_per_person) {
-			return Err(Error::Conflict(format!(
-				"SCHEDULE_LIMIT: you have your limit of {} Schedules",
-				self.max_per_person
-			)));
-		}
-		Ok(())
-	}
-}
-
-/// Who asks to change a Schedule.
+/// Who asks to change a Duty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Requester<'a> {
+pub struct Actor<'a> {
 	pub subject: &'a str,
 	/// The Tenant's policy allows them [`ADMINISTER`].
 	pub administers: bool,
 }
 
-/// Something a person may do to a Schedule.
+/// Something a person may do to a Duty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
 	/// Change what it asks, of whom, when or where.
@@ -645,14 +551,14 @@ pub enum Change {
 	Pause,
 	Delete,
 	Resume,
-	/// Name who may take over a Schedule whose Registrant left.
+	/// Name who may take over a Duty whose Requester left.
 	NameSuccessor,
 }
 
-/// The state of a Schedule a change is judged on.
+/// The state of a Duty a change is judged on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Standing<'a> {
-	pub registrant: &'a str,
+	pub requester: &'a str,
 	pub halt: Option<Halt>,
 	pub successor: Option<&'a str>,
 }
@@ -660,24 +566,22 @@ pub struct Standing<'a> {
 /// What a permitted resume does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resumption {
-	/// The Registrant resumes their own Schedule.
-	Registrant,
-	/// The named successor takes the Schedule over and becomes its Registrant.
+	/// The Requester resumes their own Duty.
+	Requester,
+	/// The named successor takes the Duty over and becomes its Requester.
 	Successor,
 }
 
-/// Whether `requester` may make `change` to a Schedule. Nobody can make a
-/// Schedule run in another person's name: only its Registrant resumes or
+/// Whether `actor` may make `change` to a Duty. Nobody can make a
+/// Duty run in another person's name: only its Requester resumes or
 /// edits it, and a successor resumes it only as their own (ADR 0134).
-pub fn permit(requester: Requester<'_>, standing: Standing<'_>, change: Change) -> Result<()> {
-	let own = requester.subject == standing.registrant;
+pub fn permit(actor: Actor<'_>, standing: Standing<'_>, change: Change) -> Result<()> {
+	let own = actor.subject == standing.requester;
 	let allowed = match change {
-		Change::Edit => own && standing.halt != Some(Halt::RegistrantLeft),
-		Change::Pause | Change::Delete => own || requester.administers,
-		Change::NameSuccessor => {
-			requester.administers && standing.halt == Some(Halt::RegistrantLeft)
-		}
-		Change::Resume => return resumption(requester, standing).map(|_| ()),
+		Change::Edit => own && standing.halt != Some(Halt::RequesterLeft),
+		Change::Pause | Change::Delete => own || actor.administers,
+		Change::NameSuccessor => actor.administers && standing.halt == Some(Halt::RequesterLeft),
+		Change::Resume => return resumption(actor, standing).map(|_| ()),
 	};
 	if allowed {
 		Ok(())
@@ -689,62 +593,54 @@ pub fn permit(requester: Requester<'_>, standing: Standing<'_>, change: Change) 
 fn refusal(change: Change) -> &'static str {
 	match change {
 		Change::Edit => {
-			"only the Schedule's Registrant can change it, and not while it waits for a successor"
+			"only the Duty's Requester can change it, and not while it waits for a successor"
 		}
 		Change::Pause | Change::Delete => {
-			"only the Schedule's Registrant or a holder of schedule.administer can do that"
+			"only the Duty's Requester or a holder of duty.administer can do that"
 		}
 		Change::NameSuccessor => {
-			"a successor is named by a holder of schedule.administer, for a Schedule whose Registrant left"
+			"a successor is named by a holder of duty.administer, for a Duty whose Requester left"
 		}
-		Change::Resume => {
-			"only the Schedule's Registrant, or the successor named for it, can resume it"
-		}
+		Change::Resume => "only the Duty's Requester, or the successor named for it, can resume it",
 	}
 }
 
-/// How `requester` may resume a Schedule, if at all.
-pub fn resumption(requester: Requester<'_>, standing: Standing<'_>) -> Result<Resumption> {
+/// How `actor` may resume a Duty, if at all.
+pub fn resumption(actor: Actor<'_>, standing: Standing<'_>) -> Result<Resumption> {
 	match standing.halt {
-		None => Err(Error::Conflict("the Schedule is already running".into())),
-		Some(Halt::RegistrantLeft) if standing.successor == Some(requester.subject) => {
+		None => Err(Error::Conflict("the Duty is already running".into())),
+		Some(Halt::RequesterLeft) if standing.successor == Some(actor.subject) => {
 			Ok(Resumption::Successor)
 		}
-		Some(Halt::RegistrantLeft) => Err(Error::Invalid(refusal(Change::Resume).into())),
-		Some(_) if requester.subject == standing.registrant => Ok(Resumption::Registrant),
+		Some(Halt::RequesterLeft) => Err(Error::Invalid(refusal(Change::Resume).into())),
+		Some(_) if actor.subject == standing.requester => Ok(Resumption::Requester),
 		Some(_) => Err(Error::Invalid(refusal(Change::Resume).into())),
 	}
 }
 
-/// What the Run calling a Schedule tool is, for the rules on Agents
-/// registering Schedules (#557 decisions 6 and 7).
+/// What the Run calling a Duty tool is, for the rules on Agents setting up
+/// Duties. A Run a Duty started may set up Duties too (#1012): only the
+/// root person's authority and Budget bound what a chain creates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller<'a> {
 	/// The person at the root of the Run's delegation chain, if it is one.
 	pub root_person: Option<&'a str>,
-	/// The Run arrived through Federation.
+	/// The Run arrived through Federation. A Duty never runs on another
+	/// Tenant's Node, so such a Run sets up none here (#1013).
 	pub federated: bool,
-	/// The Run, or a Run whose Task it descends from, was started by a Schedule.
-	pub scheduled: bool,
 }
 
-/// Refuses a Schedule tool call by an Agent that may not register or change
-/// Schedules, and returns the person it acts for otherwise.
-pub fn agent_registrant<'a>(caller: Caller<'a>, changes: bool) -> Result<&'a str> {
+/// Refuses a Duty tool call by an Agent that may not set up or change
+/// Duties, and returns the person it acts for otherwise.
+pub fn agent_requester<'a>(caller: Caller<'a>) -> Result<&'a str> {
 	if caller.federated {
 		return Err(Error::Invalid(
-			"a Run that arrived through Federation cannot use Schedules".into(),
-		));
-	}
-	if changes && caller.scheduled {
-		return Err(Error::Invalid(
-			"a Run started by a Schedule, and anything it delegates to, cannot register or change Schedules".into(),
+			"a Run that arrived through Federation cannot use Duties".into(),
 		));
 	}
 	caller.root_person.ok_or_else(|| {
 		Error::Invalid(
-			"Schedules act as a person, and this Run's delegation chain does not start at one"
-				.into(),
+			"Duties act as a person, and this Run's delegation chain does not start at one".into(),
 		)
 	})
 }
@@ -803,34 +699,22 @@ impl TickStatus {
 pub mod skip {
 	/// The previous tick's Run had not finished.
 	pub const OVERLAP: &str = "overlap";
-	/// Aidash was down past the Schedule's maximum lateness.
+	/// Aidash was down past the Duty's maximum lateness.
 	pub const LATE: &str = "late";
 	/// The usage gate refused the Run; `limit: <code>` carries its code.
 	pub const LIMIT: &str = "limit";
-	/// It came sooner than the minimum interval after the previous tick, as a
-	/// daylight-saving change can make it.
-	pub const INTERVAL: &str = "interval";
 }
 
-/// Whether a tick at `scheduled_at` comes sooner than the minimum interval
-/// after the previous scheduled tick, which then refuses it.
-pub fn too_soon(
-	previous: Option<DateTime<Utc>>,
-	scheduled_at: DateTime<Utc>,
-	min_interval_seconds: i64,
-) -> bool {
-	previous.is_some_and(|previous| (scheduled_at - previous).num_seconds() < min_interval_seconds)
-}
-
-/// Consecutive failures after one more settled tick, and whether the
-/// Schedule now pauses itself (#557 decision 18). Skipped ticks never reach
-/// here; a cancelled Run leaves the count as it was.
-pub fn after_settled(failures: i32, status: TickStatus) -> (i32, bool) {
+/// Consecutive failures after one more settled tick, and whether the Duty
+/// now pauses itself after `pause_after` failures in a row; 0 never pauses
+/// it. Skipped ticks never reach here; a cancelled Run leaves the count as
+/// it was.
+pub fn after_settled(failures: i32, status: TickStatus, pause_after: i32) -> (i32, bool) {
 	match status {
 		TickStatus::Completed => (0, false),
 		TickStatus::Failed => {
 			let failures = failures.saturating_add(1);
-			(failures, failures >= FAILURE_LIMIT)
+			(failures, pause_after > 0 && failures >= pause_after)
 		}
 		TickStatus::Started | TickStatus::Cancelled | TickStatus::Skipped => (failures, false),
 	}

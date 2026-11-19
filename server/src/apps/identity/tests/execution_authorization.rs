@@ -2923,7 +2923,7 @@ struct ToolCallApprovals {
 	script: Arc<AtomicUsize>,
 	/// When set, the model's first call is `human_request`, a question for a person.
 	question: Arc<AtomicBool>,
-	/// When set, the model's first call is `schedule_create` (#557).
+	/// When set, the model's first call is `duty_create` (#557).
 	schedule: Arc<AtomicBool>,
 	judge: Arc<Judge>,
 }
@@ -3057,7 +3057,7 @@ fn tool_call_router(
 						let name = if asks {
 							"human_request"
 						} else if schedules {
-							"schedule_create"
+							"duty_create"
 						} else if reads_first {
 							"plugin_1"
 						} else {
@@ -3066,7 +3066,7 @@ fn tool_call_router(
 						let arguments = if asks {
 							json!({"kind":"QUESTION","prompt":"Which one?"})
 						} else if schedules {
-							json!({"title":"Weekly digest","request":"Summarize the week.","trigger":{"kind":"cron","expression":"0 9 * * 1","time_zone":"UTC"}})
+							json!({"title":"Weekly digest","mission":"Summarize the week.","trigger":{"kind":"cron","expression":"0 9 * * 1","time_zone":"UTC"}})
 						} else {
 							json!({"call":called + 1})
 						};
@@ -10043,7 +10043,7 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 		federation: f.clone(),
 	};
 	let count = || async {
-		sqlx::query_scalar::<_, i64>("SELECT count(*) FROM schedules")
+		sqlx::query_scalar::<_, i64>("SELECT count(*) FROM duties")
 			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap()
@@ -10052,7 +10052,7 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
 	let (approval, call) = awaited_tool_call(&waiting).unwrap();
 	// Assert: nothing is registered before the decision.
-	assert_eq!(call.name, "schedule_create");
+	assert_eq!(call.name, "duty_create");
 	assert_eq!(count().await, 0);
 	let pending = approval_cards(
 		&t.application.application,
@@ -10081,7 +10081,7 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 		finished.error
 	);
 	let (registrant, registered_by, title): (String, Option<Uuid>, String) =
-		sqlx::query_as("SELECT registrant, created_by_run_id, title FROM schedules")
+		sqlx::query_as("SELECT requester, created_by_run_id, title FROM duties")
 			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -10118,7 +10118,7 @@ async fn a_denied_schedule_tool_call_registers_nothing(
 	})
 	.await;
 	// Assert
-	let registered: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules")
+	let registered: i64 = sqlx::query_scalar("SELECT count(*) FROM duties")
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
@@ -10174,6 +10174,7 @@ async fn a_claim_pins_tenant_and_node_instructions(
 	let pinned = aidash_domain::standing_instructions::StandingInstructions {
 		tenant: "Reply in Japanese.".into(),
 		node: "Open pull requests as drafts.".into(),
+		duty: String::new(),
 	};
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.context.standing_instructions.as_ref(), Some(&pinned));

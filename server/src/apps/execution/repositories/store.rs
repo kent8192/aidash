@@ -101,10 +101,9 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
-	/// The Deployment's Schedule ceilings from `[schedules]` (#557).
-	pub schedule_ceilings: aidash_domain::schedules::Ceilings,
-	/// How often each replica looks for due Schedules.
-	pub schedule_poll: std::time::Duration,
+	/// How often each replica looks for Duties whose time trigger is due,
+	/// from `[duties]`.
+	pub duty_poll: std::time::Duration,
 	/// The build's Tier limits, which may lower a Tenant's Schedule total.
 	pub schedule_tier: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
 	/// The Deployment's ceilings on Live preview lifetimes from
@@ -535,8 +534,7 @@ impl Store {
 			egress: Default::default(),
 			data_protection_floor: aidash_domain::data_protection::Level::LOWEST,
 			test_limit_ceilings: Default::default(),
-			schedule_ceilings: Default::default(),
-			schedule_poll: std::time::Duration::from_secs(15),
+			duty_poll: std::time::Duration::from_secs(15),
 			schedule_tier: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview_limits: aidash_domain::preview::live::Limits::default(),
 			preview_domain: None,
@@ -597,13 +595,8 @@ impl Store {
 		self
 	}
 
-	pub fn with_schedules(
-		mut self,
-		ceilings: aidash_domain::schedules::Ceilings,
-		poll: std::time::Duration,
-	) -> Self {
-		self.schedule_ceilings = ceilings;
-		self.schedule_poll = poll;
+	pub fn with_duties(mut self, poll: std::time::Duration) -> Self {
+		self.duty_poll = poll;
 		self
 	}
 	pub fn with_test_limit_ceilings(
@@ -688,8 +681,7 @@ impl Store {
 			egress: self.egress.clone(),
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
-			schedule_ceilings: self.schedule_ceilings,
-			schedule_poll: self.schedule_poll,
+			duty_poll: self.duty_poll,
 			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -752,8 +744,7 @@ impl Store {
 			egress: self.egress.clone(),
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
-			schedule_ceilings: self.schedule_ceilings,
-			schedule_poll: self.schedule_poll,
+			duty_poll: self.duty_poll,
 			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -1450,10 +1441,19 @@ impl Store {
 			.await?;
 			// The Tenant and Node Instructions of the Node that executes are pinned
 			// with the claim, so later edits never change this Run (#1010).
-			let standing = crate::apps::identity::repositories::standing_instructions::standing(
-				&mut **tx, &tenant, &node_name,
-			)
-			.await?;
+			let mut standing =
+				crate::apps::identity::repositories::standing_instructions::standing(
+					&mut **tx, &tenant, &node_name,
+				)
+				.await?;
+			// A Task a Duty started works under the Duty's mission and
+			// procedure, pinned the same way (#1011).
+			if let Some(duty) =
+				crate::apps::workspaces::repositories::duties::brief_of_task(&mut **tx, &tenant, id)
+					.await?
+			{
+				standing.duty = duty;
+			}
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				standing_instructions: Some(standing).filter(|standing| !standing.is_empty()),

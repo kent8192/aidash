@@ -5,9 +5,9 @@ export type NoticeKind =
   | "completed"
   | "failed"
   | "joined"
-  | "schedule_stopped";
+  | "duty_stopped";
 export type NoticeTarget = {
-  kind: "human" | "task" | "approval" | "administration" | "schedule";
+  kind: "human" | "task" | "approval" | "administration" | "duty";
   node: string;
   id: string;
   workspace: string;
@@ -150,11 +150,11 @@ export class NoticeStore {
       if (!item) continue;
       current.set(item.id, item);
       const before = this.previous.get(entry.key);
-      // A stopped Schedule waits on a person as an approval does (#557).
+      // A stopped Duty waits on a person as an approval does (#557).
       const input =
         item.kind === "approval" ||
         item.kind === "input" ||
-        item.kind === "schedule_stopped";
+        item.kind === "duty_stopped";
       const newInput = input && !this.announcedInputs.has(entry.key);
       const taskStatusRevision = JSON.stringify([item.id, entry.signature]);
       // First snapshots, newly granted workspaces and new remote nodes are quiet.
@@ -237,7 +237,7 @@ export class NoticeStore {
         (item) =>
           item.target.kind === "human" ||
           item.target.kind === "approval" ||
-          item.target.kind === "schedule",
+          item.target.kind === "duty",
       ),
       this.recent,
     );

@@ -29,46 +29,43 @@ use crate::{Result, config::openapi::Contracts};
 use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
-	// Schedules (#557).
+	// Duties (#1011, from the Schedules of #557).
 	{
-		use super::schedules::{
-			DeletedView, DetailView, LimitsView, NoticesView, RunNowView, ScheduleListQuery,
-			ScheduleView, SuccessorInput,
+		use super::duties::{
+			DeletedView, DetailView, DutyListQuery, DutyView, NoticesView, RunNowView,
+			SuccessorInput,
 		};
-		use aidash_domain::schedules::{Definition, Limits, Patch};
+		use aidash_domain::duties::{Definition, Patch};
 		let json = "application/json";
-		contracts.path(document, views::schedules::workspace_list, &["Uuid"])?;
-		contracts.response::<_, Vec<ScheduleView>>(
+		contracts.path(document, views::duties::workspace_list, &["Uuid"])?;
+		contracts.response::<_, Vec<DutyView>>(
 			document,
-			views::schedules::workspace_list,
+			views::duties::workspace_list,
 			200,
 			json,
 		)?;
-		contracts.path(document, views::schedules::create, &["Uuid"])?;
-		contracts.request::<_, Definition>(document, views::schedules::create)?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::create, 200, json)?;
-		contracts.query::<_, ScheduleListQuery>(document, views::schedules::list)?;
-		contracts.response::<_, Vec<ScheduleView>>(document, views::schedules::list, 200, json)?;
-		contracts.response::<_, NoticesView>(document, views::schedules::notices, 200, json)?;
-		contracts.response::<_, LimitsView>(document, views::schedules::limits, 200, json)?;
-		contracts.request::<_, Limits>(document, views::schedules::set_limits)?;
-		contracts.response::<_, LimitsView>(document, views::schedules::set_limits, 200, json)?;
-		contracts.path(document, views::schedules::read, &["Uuid"])?;
-		contracts.response::<_, DetailView>(document, views::schedules::read, 200, json)?;
-		contracts.path(document, views::schedules::update, &["Uuid"])?;
-		contracts.request::<_, Patch>(document, views::schedules::update)?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::update, 200, json)?;
-		contracts.path(document, views::schedules::pause, &["Uuid"])?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::pause, 200, json)?;
-		contracts.path(document, views::schedules::resume, &["Uuid"])?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::resume, 200, json)?;
-		contracts.path(document, views::schedules::successor, &["Uuid"])?;
-		contracts.request::<_, SuccessorInput>(document, views::schedules::successor)?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::successor, 200, json)?;
-		contracts.path(document, views::schedules::run_now, &["Uuid"])?;
-		contracts.response::<_, RunNowView>(document, views::schedules::run_now, 200, json)?;
-		contracts.path(document, views::schedules::remove, &["Uuid"])?;
-		contracts.response::<_, DeletedView>(document, views::schedules::remove, 200, json)?;
+		contracts.path(document, views::duties::create, &["Uuid"])?;
+		contracts.request::<_, Definition>(document, views::duties::create)?;
+		contracts.response::<_, DutyView>(document, views::duties::create, 200, json)?;
+		contracts.query::<_, DutyListQuery>(document, views::duties::list)?;
+		contracts.response::<_, Vec<DutyView>>(document, views::duties::list, 200, json)?;
+		contracts.response::<_, NoticesView>(document, views::duties::notices, 200, json)?;
+		contracts.path(document, views::duties::read, &["Uuid"])?;
+		contracts.response::<_, DetailView>(document, views::duties::read, 200, json)?;
+		contracts.path(document, views::duties::update, &["Uuid"])?;
+		contracts.request::<_, Patch>(document, views::duties::update)?;
+		contracts.response::<_, DutyView>(document, views::duties::update, 200, json)?;
+		contracts.path(document, views::duties::pause, &["Uuid"])?;
+		contracts.response::<_, DutyView>(document, views::duties::pause, 200, json)?;
+		contracts.path(document, views::duties::resume, &["Uuid"])?;
+		contracts.response::<_, DutyView>(document, views::duties::resume, 200, json)?;
+		contracts.path(document, views::duties::successor, &["Uuid"])?;
+		contracts.request::<_, SuccessorInput>(document, views::duties::successor)?;
+		contracts.response::<_, DutyView>(document, views::duties::successor, 200, json)?;
+		contracts.path(document, views::duties::run_now, &["Uuid"])?;
+		contracts.response::<_, RunNowView>(document, views::duties::run_now, 200, json)?;
+		contracts.path(document, views::duties::remove, &["Uuid"])?;
+		contracts.response::<_, DeletedView>(document, views::duties::remove, 200, json)?;
 	}
 	contracts.request::<_, ScratchCreate>(document, views::scratch::create)?;
 	contracts.response::<_, ScratchView>(

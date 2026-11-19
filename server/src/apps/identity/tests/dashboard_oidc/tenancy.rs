@@ -963,7 +963,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		"approval.read",
 		"connection.scopes.update",
 		"connection.administer",
-		"schedule.administer",
+		"duty.administer",
 		"secret.manage",
 		"secret.use",
 		"tenant.delete",

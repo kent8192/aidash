@@ -1,10 +1,10 @@
-//! Schedule persistence on a caller-owned Tenant transaction (#557).
+//! Duty persistence on a caller-owned Tenant transaction (#557).
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{
 	TaskStatus,
 	approval_rules::ApprovalMode,
+	duties::{Definition, Duty, Halt, Tick, TickStatus},
 	registry::EntityRef,
-	schedules::{Definition, Halt, Limits, Schedule, ThreadMode, Tick, TickStatus},
 };
 use chrono::{DateTime, Utc};
 use reinhardt::db::{backends::TransactionExecutor, orm::Model};
@@ -15,12 +15,12 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::apps::workspaces::models::{ScheduleLimitRecord, ScheduleRecord, ScheduleTickRecord};
+use crate::apps::workspaces::models::{DutyRecord, DutyTickRecord};
 use crate::database::native::{self, Pool};
 use crate::{Error, Result};
 
 /// The seed of the advisory lock that serializes a Tenant's registrations.
-const SCHEDULE_LOCK: i64 = 557;
+const DUTY_LOCK: i64 = 557;
 
 fn framework(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 	Error::from(error.into())
@@ -33,29 +33,32 @@ fn mode_text(mode: ApprovalMode) -> Result<String> {
 		.ok_or_else(|| Error::Invalid("invalid Approval Mode".into()))
 }
 
-pub(crate) fn domain(row: ScheduleRecord) -> Result<Schedule> {
-	Ok(Schedule {
+pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
+	Ok(Duty {
 		id: row.id,
 		workspace_id: row.workspace_id,
-		registrant: row.registrant,
+		requester: row.requester,
 		credential_id: row.credential_id,
 		definition: Definition {
 			title: row.title,
-			request: row.request,
+			mission: row.mission,
+			procedure: row.procedure,
 			agent: EntityRef {
 				id: row.agent_id,
 				version: row.agent_version,
 			},
-			trigger: serde_json::from_value(row.trigger.0)?,
-			thread: row
-				.thread_id
-				.map_or(ThreadMode::New, |thread_id| ThreadMode::Fixed { thread_id }),
+			trigger: row
+				.trigger
+				.map(|trigger| serde_json::from_value(trigger.0))
+				.transpose()?,
 			approval_mode: row
 				.approval_mode
 				.map(|mode| serde_json::from_value(Value::String(mode)))
 				.transpose()?,
 			max_lateness_seconds: row.max_lateness_seconds,
+			pause_after_failures: row.pause_after_failures,
 		},
+		thread_id: row.thread_id,
 		anchor: row.anchor,
 		next_scheduled_at: row.next_scheduled_at,
 		halt: row.halt.as_deref().map(Halt::parse).transpose()?,
@@ -71,58 +74,63 @@ pub(crate) fn domain(row: ScheduleRecord) -> Result<Schedule> {
 	})
 }
 
-/// Writes every field of `schedule` onto `row`; the caller sets the revision.
-fn write(row: &mut ScheduleRecord, schedule: &Schedule) -> Result<()> {
-	let definition = &schedule.definition;
-	row.workspace_id = schedule.workspace_id;
-	row.registrant = schedule.registrant.clone();
-	row.credential_id = schedule.credential_id;
+/// Writes every field of `duty` onto `row`; the caller sets the revision.
+fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
+	let definition = &duty.definition;
+	row.workspace_id = duty.workspace_id;
+	row.requester = duty.requester.clone();
+	row.credential_id = duty.credential_id;
 	row.title = definition.title.trim().to_owned();
-	row.request = definition.request.clone();
+	row.mission = definition.mission.clone();
+	row.procedure = definition.procedure.clone();
 	row.agent_id = definition.agent.id.clone();
 	row.agent_version = definition.agent.version.clone();
-	row.trigger = reinhardt::db::orm::Json(serde_json::to_value(&definition.trigger)?);
-	row.thread_id = match definition.thread {
-		ThreadMode::New => None,
-		ThreadMode::Fixed { thread_id } => Some(thread_id),
-	};
+	row.trigger = definition
+		.trigger
+		.as_ref()
+		.map(|trigger| serde_json::to_value(trigger).map(reinhardt::db::orm::Json))
+		.transpose()?;
+	row.thread_id = duty.thread_id;
 	row.approval_mode = definition.approval_mode.map(mode_text).transpose()?;
 	row.max_lateness_seconds = definition.max_lateness_seconds;
-	row.anchor = schedule.anchor;
-	row.next_scheduled_at = schedule.next_scheduled_at;
-	row.next_fire_at = schedule.next_fire_at();
-	row.halt = schedule.halt.map(|halt| halt.as_str().to_owned());
-	row.halted_at = schedule.halted_at;
-	row.halt_reason = schedule.halt_reason.clone();
-	row.successor = schedule.successor.clone();
-	row.consecutive_failures = schedule.consecutive_failures;
-	row.created_by_run_id = schedule.created_by_run_id;
-	row.creation_key = schedule.creation_key.clone();
-	row.created_at = schedule.created_at;
-	row.updated_at = schedule.updated_at;
+	row.pause_after_failures = definition.pause_after_failures;
+	row.anchor = duty.anchor;
+	row.next_scheduled_at = duty.next_scheduled_at;
+	row.next_fire_at = duty.next_fire_at();
+	row.halt = duty.halt.map(|halt| halt.as_str().to_owned());
+	row.halted_at = duty.halted_at;
+	row.halt_reason = duty.halt_reason.clone();
+	row.successor = duty.successor.clone();
+	row.consecutive_failures = duty.consecutive_failures;
+	row.created_by_run_id = duty.created_by_run_id;
+	row.creation_key = duty.creation_key.clone();
+	row.created_at = duty.created_at;
+	row.updated_at = duty.updated_at;
 	Ok(())
 }
 
 pub(crate) async fn insert(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	schedule: &Schedule,
+	duty: &Duty,
 ) -> Result<()> {
-	let mut row = ScheduleRecord::build()
-		.id(schedule.id)
+	let mut row = DutyRecord::build()
+		.id(duty.id)
 		.tenant(tenant.to_owned())
-		.workspace_id(schedule.workspace_id)
-		.registrant(schedule.registrant.clone())
-		.credential_id(schedule.credential_id)
+		.workspace_id(duty.workspace_id)
+		.requester(duty.requester.clone())
+		.credential_id(duty.credential_id)
 		.title(String::new())
-		.request(String::new())
+		.mission(String::new())
+		.procedure(String::new())
 		.agent_id(String::new())
 		.agent_version(String::new())
-		.trigger(reinhardt::db::orm::Json(Value::Null))
+		.trigger(None)
 		.thread_id(None)
 		.approval_mode(None)
 		.max_lateness_seconds(0)
-		.anchor(schedule.anchor)
+		.pause_after_failures(0)
+		.anchor(duty.anchor)
 		.next_scheduled_at(None)
 		.next_fire_at(None)
 		.halt(None)
@@ -133,11 +141,11 @@ pub(crate) async fn insert(
 		.created_by_run_id(None)
 		.creation_key(None)
 		.revision(0)
-		.created_at(schedule.created_at)
-		.updated_at(schedule.updated_at)
+		.created_at(duty.created_at)
+		.updated_at(duty.updated_at)
 		.finish();
-	write(&mut row, schedule)?;
-	ScheduleRecord::objects()
+	write(&mut row, duty)?;
+	DutyRecord::objects()
 		.insert_with_executor(tx, &row)
 		.await
 		.map_err(framework)?;
@@ -149,10 +157,10 @@ async fn record(
 	tenant: &str,
 	id: Uuid,
 	lock: bool,
-) -> Result<Option<ScheduleRecord>> {
-	let query = ScheduleRecord::objects()
-		.filter(ScheduleRecord::field_tenant().eq(tenant.to_owned()))
-		.filter(ScheduleRecord::field_id().eq(id));
+) -> Result<Option<DutyRecord>> {
+	let query = DutyRecord::objects()
+		.filter(DutyRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyRecord::field_id().eq(id));
 	let rows = if lock {
 		query.select_for_update().all_with_executor(tx).await
 	} else {
@@ -166,25 +174,25 @@ pub(crate) async fn load(
 	tenant: &str,
 	id: Uuid,
 	lock: bool,
-) -> Result<Option<Schedule>> {
+) -> Result<Option<Duty>> {
 	record(tx, tenant, id, lock).await?.map(domain).transpose()
 }
 
-/// Saves a loaded Schedule at the revision it was read at, and raises it.
+/// Saves a loaded Duty at the revision it was read at, and raises it.
 pub(crate) async fn save(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	schedule: &Schedule,
-) -> Result<Schedule> {
-	let mut row = record(tx, tenant, schedule.id, true)
+	duty: &Duty,
+) -> Result<Duty> {
+	let mut row = record(tx, tenant, duty.id, true)
 		.await?
-		.ok_or_else(|| Error::NotFound("schedule not found".into()))?;
-	if row.revision != schedule.revision {
-		return Err(Error::Conflict("schedule revision changed".into()));
+		.ok_or_else(|| Error::NotFound("duty not found".into()))?;
+	if row.revision != duty.revision {
+		return Err(Error::Conflict("duty revision changed".into()));
 	}
-	write(&mut row, schedule)?;
+	write(&mut row, duty)?;
 	row.revision += 1;
-	ScheduleRecord::objects()
+	DutyRecord::objects()
 		.save_with_executor(tx, &row)
 		.await
 		.map_err(framework)?;
@@ -193,20 +201,20 @@ pub(crate) async fn save(
 
 pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: Uuid) -> Result<()> {
 	let Some(row) = record(tx, tenant, id, true).await? else {
-		return Err(Error::NotFound("schedule not found".into()));
+		return Err(Error::NotFound("duty not found".into()));
 	};
-	// Ticks go with their Schedule through the cascading key.
-	ScheduleRecord::objects()
+	// Ticks go with their Duty through the cascading key.
+	DutyRecord::objects()
 		.delete_with_executor(tx, row.id)
 		.await
 		.map_err(framework)?;
 	Ok(())
 }
 
-/// Which Schedules a list reads.
+/// Which Duties a list reads.
 pub(crate) enum Filter<'a> {
 	Workspace(Uuid),
-	/// The person's own Schedules, and those waiting for them to take over
+	/// The person's own Duties, and those waiting for them to take over
 	/// as the named successor.
 	Mine(&'a str),
 	Tenant,
@@ -216,17 +224,16 @@ pub(crate) async fn list(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	filter: Filter<'_>,
-) -> Result<Vec<Schedule>> {
-	let query =
-		ScheduleRecord::objects().filter(ScheduleRecord::field_tenant().eq(tenant.to_owned()));
+) -> Result<Vec<Duty>> {
+	let query = DutyRecord::objects().filter(DutyRecord::field_tenant().eq(tenant.to_owned()));
 	let query = match filter {
 		Filter::Workspace(workspace) => {
-			query.filter(ScheduleRecord::field_workspace_id().eq(workspace))
+			query.filter(DutyRecord::field_workspace_id().eq(workspace))
 		}
 		Filter::Mine(subject) => query.filter(
-			ScheduleRecord::field_registrant()
+			DutyRecord::field_requester()
 				.eq(subject.to_owned())
-				.or(ScheduleRecord::field_successor().eq(Some(subject.to_owned()))),
+				.or(DutyRecord::field_successor().eq(Some(subject.to_owned()))),
 		),
 		Filter::Tenant => query,
 	};
@@ -240,14 +247,10 @@ pub(crate) async fn list(
 		.collect()
 }
 
-/// The Tenant's Schedules and how many `registrant` holds. A transaction
-/// lock per Tenant serializes registrations, so two cannot both take the
-/// last place; it is advisory, so no Run's lease on the Tenant waits for it.
-pub(crate) async fn counts(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	registrant: &str,
-) -> Result<(i64, i64)> {
+/// The Tenant's Duties. A transaction lock per Tenant serializes
+/// registrations, so two cannot both take the last place a plan allows; it is
+/// advisory, so no Run's lease on the Tenant waits for it.
+pub(crate) async fn count(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<i64> {
 	use reinhardt::db::orm::execution::convert_values;
 	use reinhardt::query::{IntoIden, SimpleExpr};
 	let (sql, values) = Query::select()
@@ -257,36 +260,92 @@ pub(crate) async fn counts(
 				"hashtextextended".into_iden(),
 				vec![
 					Expr::value(tenant.to_owned()).into(),
-					Expr::value(SCHEDULE_LOCK).into(),
+					Expr::value(DUTY_LOCK).into(),
 				],
 			)],
 		))
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
-	let count = |mine: bool| {
-		let mut query = Query::select();
-		query
+	native::query_scalar::<i64>(
+		&Query::select()
 			.expr(reinhardt::query::Func::count(Expr::col("id").into()))
-			.from(Alias::new("schedules"))
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()));
-		if mine {
-			query.and_where(Expr::col("registrant").eq(registrant.to_owned()));
-		}
-		query.to_string(PostgresQueryBuilder)
-	};
-	let total = native::query_scalar::<i64>(&count(false))
-		.scalar_one(&mut *tx)
-		.await?;
-	let mine = native::query_scalar::<i64>(&count(true))
-		.scalar_one(&mut *tx)
-		.await?;
-	Ok((total, mine))
+			.from(Alias::new("duties"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *tx)
+	.await
 }
 
-fn tick_of(row: ScheduleTickRecord) -> Result<Tick> {
+/// The mission and procedure of the Duty whose tick started `task`, if one
+/// did; its Run works under them (#1011).
+pub(crate) async fn brief_of_task(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	task: Uuid,
+) -> Result<Option<String>> {
+	let duties = Alias::new("duties");
+	let ticks = Alias::new("duty_ticks");
+	let row = native::query(
+		&Query::select()
+			.column((duties.clone(), Alias::new("mission")))
+			.column((duties.clone(), Alias::new("procedure")))
+			.from(ticks.clone())
+			.inner_join(
+				duties.clone(),
+				Condition::all()
+					.add(
+						Expr::col((duties.clone(), Alias::new("id")))
+							.equals((ticks.clone(), Alias::new("duty_id"))),
+					)
+					.add(
+						Expr::col((duties.clone(), Alias::new("tenant")))
+							.equals((ticks.clone(), Alias::new("tenant"))),
+					),
+			)
+			.and_where(Expr::col((ticks.clone(), Alias::new("tenant"))).eq(tenant.to_owned()))
+			.and_where(Expr::col((ticks, Alias::new("task_id"))).eq(Expr::value(task)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut *tx)
+	.await?;
+	Ok(match row {
+		Some(row) => Some(
+			aidash_domain::standing_instructions::StandingInstructions::duty_text(
+				&row.try_get::<String>("mission")?,
+				&row.try_get::<String>("procedure")?,
+			),
+		),
+		None => None,
+	})
+}
+
+/// Records the Duty's own Thread, which its first Task opened.
+pub(crate) async fn open_thread(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+	thread: Uuid,
+) -> Result<()> {
+	native::query(
+		&Query::update()
+			.table(Alias::new("duties"))
+			.value(Alias::new("thread_id"), thread)
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(duty)))
+			.and_where(Expr::col("thread_id").is_null())
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}
+
+fn tick_of(row: DutyTickRecord) -> Result<Tick> {
 	Ok(Tick {
 		id: row.id,
-		schedule_id: row.schedule_id,
+		duty_id: row.duty_id,
 		scheduled_at: row.scheduled_at,
 		recorded_at: row.recorded_at,
 		status: TickStatus::parse(&row.status)?,
@@ -300,12 +359,12 @@ fn tick_of(row: ScheduleTickRecord) -> Result<Tick> {
 pub(crate) async fn ticks(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	schedule: Uuid,
+	duty: Uuid,
 	limit: u32,
 ) -> Result<Vec<Tick>> {
-	ScheduleTickRecord::objects()
-		.filter(ScheduleTickRecord::field_tenant().eq(tenant.to_owned()))
-		.filter(ScheduleTickRecord::field_schedule_id().eq(schedule))
+	DutyTickRecord::objects()
+		.filter(DutyTickRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyTickRecord::field_duty_id().eq(duty))
 		.order_by(&["-scheduled_at", "-recorded_at"])
 		.limit(limit as usize)
 		.all_with_executor(tx)
@@ -322,10 +381,10 @@ pub(crate) async fn insert_tick(
 	workspace: Uuid,
 	tick: &Tick,
 ) -> Result<()> {
-	let row = ScheduleTickRecord::build()
+	let row = DutyTickRecord::build()
 		.id(tick.id)
 		.tenant(tenant.to_owned())
-		.schedule_id(tick.schedule_id)
+		.duty_id(tick.duty_id)
 		.workspace_id(workspace)
 		.scheduled_at(tick.scheduled_at)
 		.recorded_at(tick.recorded_at)
@@ -336,7 +395,7 @@ pub(crate) async fn insert_tick(
 		.started_by(tick.started_by.clone())
 		.settled_at(None)
 		.finish();
-	ScheduleTickRecord::objects()
+	DutyTickRecord::objects()
 		.insert_with_executor(tx, &row)
 		.await
 		.map_err(framework)?;
@@ -349,10 +408,10 @@ fn tick_tasks() -> reinhardt::query::SelectStatement {
 	Query::select()
 		.column((Alias::new("k"), Alias::new("tenant")))
 		.column((Alias::new("k"), Alias::new("id")))
-		.column((Alias::new("k"), Alias::new("schedule_id")))
+		.column((Alias::new("k"), Alias::new("duty_id")))
 		.column((Alias::new("t"), Alias::new("status")))
 		.column((Alias::new("k"), Alias::new("started_by")))
-		.from_as(Alias::new("schedule_ticks"), Alias::new("k"))
+		.from_as(Alias::new("duty_ticks"), Alias::new("k"))
 		.join(
 			JoinType::InnerJoin,
 			TableRef::table_alias(Alias::new("tasks"), Alias::new("t")),
@@ -365,24 +424,22 @@ fn tick_tasks() -> reinhardt::query::SelectStatement {
 }
 
 type TickTask = (String, Uuid, Uuid, String, Option<String>);
-const TICK_TASK: [&str; 5] = ["tenant", "id", "schedule_id", "status", "started_by"];
+const TICK_TASK: [&str; 5] = ["tenant", "id", "duty_id", "status", "started_by"];
 
 fn task_status(status: &str) -> Option<TaskStatus> {
 	serde_json::from_value(Value::String(status.to_owned())).ok()
 }
 
-/// Whether a scheduled tick of the Schedule still has a Run under way.
+/// Whether a scheduled tick of the Duty still has a Run under way.
 pub(crate) async fn running(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	schedule: Uuid,
+	duty: Uuid,
 ) -> Result<bool> {
 	let open: Vec<TickTask> = native::query_as(
 		&tick_tasks()
 			.and_where(Expr::col((Alias::new("k"), Alias::new("tenant"))).eq(tenant.to_owned()))
-			.and_where(
-				Expr::col((Alias::new("k"), Alias::new("schedule_id"))).eq(Expr::value(schedule)),
-			)
+			.and_where(Expr::col((Alias::new("k"), Alias::new("duty_id"))).eq(Expr::value(duty)))
 			.and_where(Expr::col((Alias::new("k"), Alias::new("started_by"))).is_null())
 			.to_string(PostgresQueryBuilder),
 	)
@@ -399,15 +456,15 @@ pub(crate) async fn running(
 pub(crate) struct Ended {
 	pub tenant: String,
 	pub tick: Uuid,
-	pub schedule: Uuid,
+	pub duty: Uuid,
 	pub status: TickStatus,
-	/// A "Run now" tick never counts toward the Schedule's failures.
+	/// A "Run now" tick never counts toward the Duty's failures.
 	pub manual: bool,
 }
 
 /// Started ticks whose Tasks have ended, across Tenants.
 pub(crate) async fn ended(pool: &Pool, limit: u64) -> Result<Vec<Ended>> {
-	let scope = TenancyScope::Deployment(DeploymentScopeReason::ScheduleTicks);
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::DutyTicks);
 	let rows: Vec<TickTask> = native::query_as(
 		&tick_tasks()
 			.and_where(
@@ -423,11 +480,11 @@ pub(crate) async fn ended(pool: &Pool, limit: u64) -> Result<Vec<Ended>> {
 	.await?;
 	Ok(rows
 		.into_iter()
-		.filter_map(|(tenant, tick, schedule, status, started_by)| {
+		.filter_map(|(tenant, tick, duty, status, started_by)| {
 			Some(Ended {
 				tenant,
 				tick,
-				schedule,
+				duty,
 				status: TickStatus::of_task(task_status(&status)?)?,
 				manual: started_by.is_some(),
 			})
@@ -444,9 +501,9 @@ pub(crate) async fn settle_tick(
 	status: TickStatus,
 	now: DateTime<Utc>,
 ) -> Result<bool> {
-	let Some(mut row) = ScheduleTickRecord::objects()
-		.filter(ScheduleTickRecord::field_tenant().eq(tenant.to_owned()))
-		.filter(ScheduleTickRecord::field_id().eq(tick))
+	let Some(mut row) = DutyTickRecord::objects()
+		.filter(DutyTickRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyTickRecord::field_id().eq(tick))
 		.select_for_update()
 		.all_with_executor(tx)
 		.await
@@ -460,23 +517,23 @@ pub(crate) async fn settle_tick(
 	}
 	row.status = status.as_str().to_owned();
 	row.settled_at = Some(now);
-	ScheduleTickRecord::objects()
+	DutyTickRecord::objects()
 		.save_with_executor(tx, &row)
 		.await
 		.map_err(framework)?;
 	Ok(true)
 }
 
-/// Due Schedules across Tenants, oldest first, after the `(next_fire_at,
+/// Due Duties across Tenants, oldest first, after the `(next_fire_at,
 /// id)` a previous page ended at. Each is claimed again, with `SKIP LOCKED`,
-/// in its Registrant's own transaction.
+/// in its Requester's own transaction.
 pub(crate) async fn due(
 	pool: &Pool,
 	now: DateTime<Utc>,
 	after: Option<(DateTime<Utc>, Uuid)>,
 	limit: u64,
 ) -> Result<Vec<(String, Uuid, DateTime<Utc>)>> {
-	let scope = TenancyScope::Deployment(DeploymentScopeReason::ScheduleTicks);
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::DutyTicks);
 	let rows: Vec<(String, Uuid, DateTime<Utc>)> = native::query_as(&due_query(now, after, limit))
 		.columns(&["tenant", "id", "next_fire_at"])
 		.fetch_all(pool.in_scope(&scope))
@@ -493,10 +550,10 @@ fn due_query(now: DateTime<Utc>, after: Option<(DateTime<Utc>, Uuid)>, limit: u6
 			Alias::new("id"),
 			Alias::new("next_fire_at"),
 		])
-		.from(Alias::new("schedules"))
+		.from(Alias::new("duties"))
 		.and_where(Expr::col("halt").is_null())
 		.and_where(Expr::col("next_fire_at").lte(Expr::value(now)))
-		// A deleted Tenant's Schedules are stopped with it; never start one
+		// A deleted Tenant's Duties are stopped with it; never start one
 		// in the moment between the deletion and that stop.
 		.and_where(
 			Expr::exists(
@@ -505,7 +562,7 @@ fn due_query(now: DateTime<Utc>, after: Option<(DateTime<Utc>, Uuid)>, limit: u6
 					.from(Alias::new("tenant_deletions"))
 					.and_where(
 						Expr::col((Alias::new("tenant_deletions"), Alias::new("tenant")))
-							.equals((Alias::new("schedules"), Alias::new("tenant"))),
+							.equals((Alias::new("duties"), Alias::new("tenant"))),
 					)
 					.and_where(Expr::col("restored_at").is_null())
 					.to_owned(),
@@ -530,18 +587,18 @@ fn due_query(now: DateTime<Utc>, after: Option<(DateTime<Utc>, Uuid)>, limit: u6
 		.to_string(PostgresQueryBuilder)
 }
 
-/// Claims a due Schedule for this transaction, or None when another replica
+/// Claims a due Duty for this transaction, or None when another replica
 /// holds it or already moved it on. The lock lasts until the transaction ends.
 pub(crate) async fn claim(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	id: Uuid,
 	now: DateTime<Utc>,
-) -> Result<Option<Schedule>> {
+) -> Result<Option<Duty>> {
 	let ids: Vec<Uuid> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("schedules"))
+			.from(Alias::new("duties"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("halt").is_null())
@@ -558,48 +615,47 @@ pub(crate) async fn claim(
 	load(tx, tenant, id, false).await
 }
 
-/// What stops Schedules besides a person.
+/// What stops Duties besides a person.
 #[derive(Clone, Copy)]
 pub(crate) enum Stop<'a> {
-	/// Their Registrant left the Tenant or lost access.
-	Registrant(&'a str),
+	/// Their Requester left the Tenant or lost access.
+	Requester(&'a str),
 	/// Their fixed Thread was deleted.
 	Thread(Uuid),
 	/// The Tenant was deleted.
 	Tenant,
 }
 
-/// Stops the Schedules `stop` reaches and returns them. A Schedule already
+/// Stops the Duties `stop` reaches and returns them. A Duty already
 /// waiting for a successor, or stopped with the Tenant, keeps that reason, and
-/// Tenant Deletion leaves every stopped Schedule's reason as it was.
+/// Tenant Deletion leaves every stopped Duty's reason as it was.
 pub(crate) async fn stop(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	stop: Stop<'_>,
 	now: DateTime<Utc>,
-) -> Result<Vec<Schedule>> {
-	let query =
-		ScheduleRecord::objects().filter(ScheduleRecord::field_tenant().eq(tenant.to_owned()));
+) -> Result<Vec<Duty>> {
+	let query = DutyRecord::objects().filter(DutyRecord::field_tenant().eq(tenant.to_owned()));
 	let (query, halt) = match stop {
-		Stop::Registrant(subject) => (
-			query.filter(ScheduleRecord::field_registrant().eq(subject.to_owned())),
-			Halt::RegistrantLeft,
+		Stop::Requester(subject) => (
+			query.filter(DutyRecord::field_requester().eq(subject.to_owned())),
+			Halt::RequesterLeft,
 		),
 		Stop::Thread(thread) => (
-			query.filter(ScheduleRecord::field_thread_id().eq(thread)),
+			query.filter(DutyRecord::field_thread_id().eq(thread)),
 			Halt::ThreadDeleted,
 		),
 		Stop::Tenant => (query, Halt::TenantDeleted),
 	};
-	// Deleting a Thread holds its channel row, and a tick holds its Schedule
-	// while it reads that row: waiting here could deadlock. A Schedule a tick
+	// Deleting a Thread holds its channel row, and a tick holds its Duty
+	// while it reads that row: waiting here could deadlock. A Duty a tick
 	// holds is skipped; that tick then finds the Thread deleted and stops it.
 	let query = match stop {
 		Stop::Thread(thread) => {
 			let held: Vec<Uuid> = native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("schedules"))
+					.from(Alias::new("duties"))
 					.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 					.lock(LockType::Update)
@@ -611,9 +667,9 @@ pub(crate) async fn stop(
 			if held.is_empty() {
 				return Ok(vec![]);
 			}
-			query.filter(ScheduleRecord::field_id().is_in(held))
+			query.filter(DutyRecord::field_id().is_in(held))
 		}
-		Stop::Registrant(_) | Stop::Tenant => query,
+		Stop::Requester(_) | Stop::Tenant => query,
 	};
 	let rows = query
 		.select_for_update()
@@ -622,106 +678,44 @@ pub(crate) async fn stop(
 		.map_err(framework)?;
 	let mut stopped = vec![];
 	for row in rows {
-		let mut schedule = domain(row)?;
+		let mut duty = domain(row)?;
 		let keep = match halt {
-			// A paused Schedule stays paused when its Thread goes; resuming
+			// A paused Duty stays paused when its Thread goes; resuming
 			// it then refuses until the Thread is changed.
-			Halt::ThreadDeleted => schedule.halt.is_some(),
-			Halt::RegistrantLeft => matches!(
-				schedule.halt,
-				Some(Halt::RegistrantLeft | Halt::TenantDeleted)
-			),
-			// A Schedule already stopped keeps its reason through a Tenant
+			Halt::ThreadDeleted => duty.halt.is_some(),
+			Halt::RequesterLeft => {
+				matches!(duty.halt, Some(Halt::RequesterLeft | Halt::TenantDeleted))
+			}
+			// A Duty already stopped keeps its reason through a Tenant
 			// Deletion and its restore, such as one waiting for a successor.
-			_ => schedule.halt.is_some(),
+			_ => duty.halt.is_some(),
 		};
 		if keep {
 			continue;
 		}
-		schedule.stop(halt, now);
-		schedule.updated_at = now;
-		stopped.push(save(tx, tenant, &schedule).await?);
+		duty.stop(halt, now);
+		duty.updated_at = now;
+		stopped.push(save(tx, tenant, &duty).await?);
 	}
 	Ok(stopped)
 }
 
-pub(crate) async fn limits(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Limits> {
-	Ok(ScheduleLimitRecord::objects()
-		.filter(ScheduleLimitRecord::field_tenant().eq(tenant.to_owned()))
-		.all_with_executor(tx)
-		.await
-		.map_err(framework)?
-		.pop()
-		.map_or_else(Limits::default, |row| Limits {
-			max_schedules: row.max_schedules,
-			max_per_person: row.max_per_person,
-			min_interval_seconds: row.min_interval_seconds,
-		}))
-}
-
-pub(crate) async fn put_limits(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	updated_by: &str,
-	limits: &Limits,
-	now: DateTime<Utc>,
-) -> Result<()> {
-	let existing = ScheduleLimitRecord::objects()
-		.filter(ScheduleLimitRecord::field_tenant().eq(tenant.to_owned()))
-		.select_for_update()
-		.all_with_executor(tx)
-		.await
-		.map_err(framework)?
-		.pop();
-	let objects = ScheduleLimitRecord::objects();
-	match existing {
-		Some(mut row) => {
-			row.max_schedules = limits.max_schedules;
-			row.max_per_person = limits.max_per_person;
-			row.min_interval_seconds = limits.min_interval_seconds;
-			row.revision += 1;
-			row.updated_at = now;
-			row.updated_by = updated_by.to_owned();
-			objects
-				.save_with_executor(tx, &row)
-				.await
-				.map_err(framework)?;
-		}
-		None => {
-			let row = ScheduleLimitRecord::build()
-				.tenant(tenant.to_owned())
-				.max_schedules(limits.max_schedules)
-				.max_per_person(limits.max_per_person)
-				.min_interval_seconds(limits.min_interval_seconds)
-				.revision(0)
-				.updated_at(now)
-				.updated_by(updated_by.to_owned())
-				.finish();
-			objects
-				.insert_with_executor(tx, &row)
-				.await
-				.map_err(framework)?;
-		}
-	}
-	Ok(())
-}
-
-/// Tasks Schedules started in the last week, of the given Schedules' ticks.
+/// Tasks Duties started in the last week, of the given Duties' ticks.
 pub(crate) async fn recent_tasks(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	schedules: &[Uuid],
+	duties: &[Uuid],
 	since: DateTime<Utc>,
 ) -> Result<Vec<Uuid>> {
-	if schedules.is_empty() {
+	if duties.is_empty() {
 		return Ok(vec![]);
 	}
-	Ok(ScheduleTickRecord::objects()
-		.filter(ScheduleTickRecord::field_tenant().eq(tenant.to_owned()))
-		.filter(ScheduleTickRecord::field_schedule_id().is_in(schedules.to_vec()))
-		.filter(ScheduleTickRecord::field_recorded_at().gte(since))
-		.filter(ScheduleTickRecord::field_task_id().is_not_null())
-		.filter(ScheduleTickRecord::field_started_by().is_null())
+	Ok(DutyTickRecord::objects()
+		.filter(DutyTickRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyTickRecord::field_duty_id().is_in(duties.to_vec()))
+		.filter(DutyTickRecord::field_recorded_at().gte(since))
+		.filter(DutyTickRecord::field_task_id().is_not_null())
+		.filter(DutyTickRecord::field_started_by().is_null())
 		.all_with_executor(tx)
 		.await
 		.map_err(framework)?
@@ -730,150 +724,17 @@ pub(crate) async fn recent_tasks(
 		.collect())
 }
 
-/// Whether `task` is a Schedule's tick, or descends from one through its
-/// parents (#557 decision 7).
-pub(crate) async fn scheduled_chain(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	task: Uuid,
-) -> Result<bool> {
-	let mut current = Some(task);
-	// The parent chain is bounded by the delegation depth; stop well past it.
-	for _ in 0..64 {
-		let Some(id) = current else {
-			return Ok(false);
-		};
-		let ticked: Option<Uuid> = native::query_scalar(
-			&Query::select()
-				.column(Alias::new("id"))
-				.from(Alias::new("schedule_ticks"))
-				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-				.and_where(Expr::col("task_id").eq(Expr::value(id)))
-				// "Run now" starts an ordinary Run of the person who clicked it.
-				.and_where(Expr::col("started_by").is_null())
-				.limit(1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut *tx)
-		.await?;
-		if ticked.is_some() {
-			return Ok(true);
-		}
-		current = native::query_scalar::<Option<Uuid>>(
-			&Query::select()
-				.column(Alias::new("parent_id"))
-				.from(Alias::new("tasks"))
-				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-				.and_where(Expr::col("id").eq(Expr::value(id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut *tx)
-		.await?
-		.flatten();
-	}
-	Ok(true)
-}
-
-/// The Thread a Task's Run works in, if it is bound to one.
-pub(crate) async fn task_thread(
-	tx: &mut dyn TransactionExecutor,
-	task: Uuid,
-) -> Result<Option<Uuid>> {
-	native::query_scalar::<Uuid>(
-		&Query::select()
-			.column(Alias::new("thread_id"))
-			.from(Alias::new("core_task_sessions"))
-			.and_where(Expr::col("task_id").eq(Expr::value(task)))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await
-}
-
-/// When the Schedule's latest tick that started a Run was due; skipped and
-/// refused ticks, and "Run now", do not count.
-pub(crate) async fn last_started(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	schedule: Uuid,
-) -> Result<Option<DateTime<Utc>>> {
-	native::query_scalar::<DateTime<Utc>>(
-		&Query::select()
-			.column(Alias::new("scheduled_at"))
-			.from(Alias::new("schedule_ticks"))
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("schedule_id").eq(Expr::value(schedule)))
-			.and_where(Expr::col("started_by").is_null())
-			.and_where(Expr::col("task_id").is_not_null())
-			.order_by(Alias::new("scheduled_at"), Order::Desc)
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await
-}
-
-/// Marks the Run a scheduled tick started for `task` (#557 decision 7).
-pub(crate) async fn mark_scheduled(tx: &mut dyn TransactionExecutor, task: Uuid) -> Result<()> {
-	native::query(
-		&Query::update()
-			.table(Alias::new("authorization_execution"))
-			.value(Alias::new("scheduled"), true)
-			.and_where(Expr::col("task_id").eq(Expr::value(task)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await?;
-	Ok(())
-}
-
-/// Carries the mark of a delegating Run over to the Run it admitted.
-pub(crate) async fn inherit_scheduled(
-	tx: &mut dyn TransactionExecutor,
-	from: Uuid,
-	to: Uuid,
-) -> Result<()> {
-	if !run_scheduled(&mut *tx, from).await? {
-		return Ok(());
-	}
-	native::query(
-		&Query::update()
-			.table(Alias::new("authorization_execution"))
-			.value(Alias::new("scheduled"), true)
-			.and_where(Expr::col("run_id").eq(Expr::value(to)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await?;
-	Ok(())
-}
-
-/// Whether a Schedule started the Run, or a Run it descends from by delegation.
-pub(crate) async fn run_scheduled(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<bool> {
-	Ok(native::query_scalar::<bool>(
-		&Query::select()
-			.column(Alias::new("scheduled"))
-			.from(Alias::new("authorization_execution"))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await?
-	.unwrap_or(false))
-}
-
-/// The Schedule an Agent's tool call with this invocation key registered.
+/// The Duty an Agent's tool call with this invocation key registered.
 pub(crate) async fn created_by(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	run: Uuid,
 	key: &str,
-) -> Result<Option<Schedule>> {
-	ScheduleRecord::objects()
-		.filter(ScheduleRecord::field_tenant().eq(tenant.to_owned()))
-		.filter(ScheduleRecord::field_created_by_run_id().eq(Some(run)))
-		.filter(ScheduleRecord::field_creation_key().eq(Some(key.to_owned())))
+) -> Result<Option<Duty>> {
+	DutyRecord::objects()
+		.filter(DutyRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyRecord::field_created_by_run_id().eq(Some(run)))
+		.filter(DutyRecord::field_creation_key().eq(Some(key.to_owned())))
 		.all_with_executor(tx)
 		.await
 		.map_err(framework)?
@@ -900,50 +761,6 @@ pub(crate) async fn mapping_credential(
 	)
 	.scalar_optional(&mut *tx)
 	.await
-}
-
-/// Marks a generation request a Run a Schedule started made.
-pub(crate) async fn mark_generation(
-	tx: &mut dyn TransactionExecutor,
-	run: Uuid,
-	generation: Uuid,
-) -> Result<()> {
-	if !run_scheduled(&mut *tx, run).await? {
-		return Ok(());
-	}
-	native::query(
-		&Query::update()
-			.table(Alias::new("generation_requests"))
-			.value(Alias::new("scheduled"), true)
-			.and_where(Expr::col("id").eq(Expr::value(generation)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await?;
-	Ok(())
-}
-
-/// Carries a marked generation request's mark over to the Run its generated
-/// Agent was delegated for `task`.
-pub(crate) async fn inherit_generation(
-	tx: &mut dyn TransactionExecutor,
-	generation: Uuid,
-	task: Uuid,
-) -> Result<()> {
-	let scheduled = native::query_scalar::<bool>(
-		&Query::select()
-			.column(Alias::new("scheduled"))
-			.from(Alias::new("generation_requests"))
-			.and_where(Expr::col("id").eq(Expr::value(generation)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await?
-	.unwrap_or(false);
-	if scheduled {
-		mark_scheduled(&mut *tx, task).await?;
-	}
-	Ok(())
 }
 
 #[cfg(test)]

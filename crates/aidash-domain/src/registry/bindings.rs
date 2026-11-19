@@ -50,19 +50,14 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
-	"schedule_create",
-	"schedule_list",
-	"schedule_update",
-	"schedule_delete",
+	"duty_create",
+	"duty_list",
+	"duty_update",
+	"duty_delete",
 ];
 /// The core capability `schedules` (#557): on by default, so its tools are
 /// default tools an Agent definition removes with `remove_default`.
-pub const SCHEDULE_TOOLS: &[&str] = &[
-	"schedule_create",
-	"schedule_list",
-	"schedule_update",
-	"schedule_delete",
-];
+pub const SCHEDULE_TOOLS: &[&str] = &["duty_create", "duty_list", "duty_update", "duty_delete"];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
 /// offering them (#600, #617). Binding resolution gives an Agent that binds
@@ -1049,7 +1044,7 @@ impl BindingSnapshot {
 					.config
 					.get("provider")
 					.and_then(Value::as_str)
-					== Some("core.schedules@1")
+					== Some("core.duties@1")
 			{
 				binding.excluded_reason = Some(WORKBENCH_SCHEDULE_EXCLUSION.into());
 				// An excluded tool carries no Provider implementation.

@@ -16,6 +16,8 @@ pub const ADDITIONAL_INSTRUCTIONS_LABEL: &str = "\nAdditional user instructions:
 pub const TENANT_INSTRUCTIONS_LABEL: &str = "\nTenant instructions:\n";
 /// The label legacy text uses before the Node Instructions (#1010).
 pub const NODE_INSTRUCTIONS_LABEL: &str = "\nNode instructions:\n";
+/// The label legacy text uses before a Duty's mission and procedure (#1011).
+pub const DUTY_LABEL: &str = "\nDuty:\n";
 
 #[derive(
 	Debug,
@@ -146,6 +148,10 @@ pub fn system_text(
 		}
 		text.push_str(ADDITIONAL_INSTRUCTIONS_LABEL);
 		text.push_str(instructions);
+		if !standing.duty.trim().is_empty() {
+			text.push_str(DUTY_LABEL);
+			text.push_str(&standing.duty);
+		}
 		return text;
 	}
 	let mut text = contract.text().to_owned();
@@ -160,6 +166,11 @@ pub fn system_text(
 	if !instructions.trim().is_empty() {
 		text.push_str("\n\n# Agent instructions\n\n");
 		text.push_str(instructions);
+	}
+	// Before the fragments, so `fragments_start` counts it (#1011).
+	if !standing.duty.trim().is_empty() {
+		text.push_str("\n\n# Duty\n\n");
+		text.push_str(&standing.duty);
 	}
 	for (slot, fragment) in fragments {
 		if *slot != "resident_skills" {

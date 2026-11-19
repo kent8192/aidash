@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 21] {
+fn assets() -> [(&'static str, String); 25] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -74,12 +74,12 @@ fn assets() -> [(&'static str, String); 21] {
 			"identity/sql/forward/0080_schedule_member_policy.sql",
 			format!(
 				"SET LOCAL aidash.scope = 'deployment';\n{};\n",
-				crate::apps::identity::services::schedule_policy_backfill::forward()
+				crate::apps::identity::services::duty_policy_backfill::forward()
 			),
 		),
 		(
 			"identity/sql/backward/0080_schedule_member_policy.sql",
-			crate::apps::identity::services::schedule_policy_backfill::backward(),
+			crate::apps::identity::services::duty_policy_backfill::backward(),
 		),
 		(
 			"identity/sql/forward/0082_remove_package_index_approvals.sql",
@@ -111,6 +111,22 @@ fn assets() -> [(&'static str, String); 21] {
 		(
 			"execution/sql/backward/0141_remove_research_records.sql",
 			crate::apps::execution::services::research_record_cleanup::backward(),
+		),
+		(
+			"identity/sql/forward/0098_duty_member_policy.sql",
+			crate::apps::identity::services::duty_actions_backfill::forward(),
+		),
+		(
+			"identity/sql/backward/0098_duty_member_policy.sql",
+			crate::apps::identity::services::duty_actions_backfill::backward(),
+		),
+		(
+			"workspaces/sql/forward/0033_duty_halts.sql",
+			crate::apps::workspaces::services::duty_halt_backfill::forward(),
+		),
+		(
+			"workspaces/sql/backward/0033_duty_halts.sql",
+			crate::apps::workspaces::services::duty_halt_backfill::backward(),
 		),
 	]
 }
@@ -241,6 +257,8 @@ mod tests {
 			("identity", "0083_data_protection_switches", 16, Some(17)),
 			("identity", "0085_remove_research_approvals", 18, None),
 			("execution", "0141_remove_research", 19, Some(20)),
+			("identity", "0098_duty_member_policy", 21, Some(22)),
+			("workspaces", "0033_duty_checks", 23, Some(24)),
 		] {
 			let migration = FilesystemSource::new(&root)
 				.get_migration(app, name)

@@ -240,6 +240,7 @@ async fn pinned_standing_instructions_shrink_the_headroom(mut scope: Scope, run:
 	scope.standing = aidash_domain::standing_instructions::StandingInstructions {
 		tenant: "t".repeat(4_000),
 		node: "n".repeat(4_000),
+		duty: String::new(),
 	};
 	let with = request(&scope, &run).await.unwrap();
 	assert!(without > 0);

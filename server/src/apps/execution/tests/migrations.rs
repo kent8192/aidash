@@ -93,6 +93,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0075_harness_contract_structured4"),
 	("registry", "0076_delete_subnode_tool"),
 	("registry", "0077_tool_parallelism_64"),
+	("registry", "0078_duty_tools"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -160,6 +161,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0144_subnode_caps_removed_state"),
 	("execution", "0145_stints"),
 	("execution", "0146_stints_row_level_security"),
+	("execution", "0147_unscheduled_generations"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -202,6 +204,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0144_subnode_caps_removed_state"),
 	("execution", "0145_stints"),
 	("execution", "0146_stints_row_level_security"),
+	("execution", "0147_unscheduled_generations"),
 ];
 
 async fn history_size() -> usize {
@@ -244,10 +247,10 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0077_tool_parallelism_64");
+	assert_eq!(registry[0].name, "0078_duty_tools");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0146_stints_row_level_security");
+	assert_eq!(execution[0].name, "0147_unscheduled_generations");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(
@@ -265,7 +268,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		125
+		126
 	);
 	let tables = migrations
 		.iter()
@@ -531,14 +534,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0147_policy_probe")
+		.get_migration("execution", "0148_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0146_stints_row_level_security".to_owned()
+			"0147_unscheduled_generations".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -614,6 +617,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0144_subnode_caps_removed_state"),
 			("execution", "0145_stints"),
 			("execution", "0146_stints_row_level_security"),
+			("execution", "0147_unscheduled_generations"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -784,15 +788,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0032_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0035_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"workspaces".to_owned(),
-			"0031_schedules_model_state".to_owned()
-		)]
+		vec![("workspaces".to_owned(), "0034_duties_state".to_owned())]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -1082,7 +1083,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		125
+		126
 	);
 }
 
@@ -2214,6 +2215,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0075_harness_contract_structured4"),
 			("registry", "0076_delete_subnode_tool"),
 			("registry", "0077_tool_parallelism_64"),
+			("registry", "0078_duty_tools"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5404,6 +5406,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0029_schedules"),
 			("workspaces", "0030_schedules_row_level_security"),
 			("workspaces", "0031_schedules_model_state"),
+			("workspaces", "0032_duties"),
+			("workspaces", "0033_duty_checks"),
+			("workspaces", "0034_duties_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5465,6 +5470,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0029_schedules"),
 			("workspaces", "0030_schedules_row_level_security"),
 			("workspaces", "0031_schedules_model_state"),
+			("workspaces", "0032_duties"),
+			("workspaces", "0033_duty_checks"),
+			("workspaces", "0034_duties_state"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5534,6 +5542,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0029_schedules"),
 			("workspaces", "0030_schedules_row_level_security"),
 			("workspaces", "0031_schedules_model_state"),
+			("workspaces", "0032_duties"),
+			("workspaces", "0033_duty_checks"),
+			("workspaces", "0034_duties_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

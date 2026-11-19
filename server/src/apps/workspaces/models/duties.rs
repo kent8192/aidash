@@ -1,46 +1,54 @@
-//! Tenant-owned Schedule records (#557, ADR 0134).
+//! Tenant-owned Duty records (#1011, ADR 0142; from the Schedules of #557).
 use chrono::{DateTime, Utc};
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[model(app_label = "workspaces", table_name = "schedules")]
+#[model(app_label = "workspaces", table_name = "duties")]
 #[derive(Serialize, Deserialize)]
-pub struct ScheduleRecord {
+pub struct DutyRecord {
 	#[field(primary_key = true)]
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
 	pub workspace_id: Uuid,
-	/// The person every Run of the Schedule acts as.
+	/// The person every Run of the Duty acts as.
 	#[field(field_type = "text")]
-	pub registrant: String,
+	pub requester: String,
 	#[field]
 	pub credential_id: Uuid,
 	#[field(field_type = "text")]
 	pub title: String,
+	/// What the Duty is for.
 	#[field(field_type = "text")]
-	pub request: String,
+	pub mission: String,
+	/// The checklist its Agent follows on every Task.
+	#[field(field_type = "text")]
+	pub procedure: String,
 	#[field(field_type = "text")]
 	pub agent_id: String,
 	#[field(field_type = "text")]
 	pub agent_version: String,
-	#[field]
-	pub trigger: Json<Value>,
-	/// The fixed Thread; None opens a new Thread on every tick.
+	/// The time trigger; None for a Duty that wakes only otherwise.
+	#[field(null = true)]
+	pub trigger: Option<Json<Value>>,
+	/// The Duty's own Thread, once its first Task opened it.
 	#[field(null = true)]
 	pub thread_id: Option<Uuid>,
 	#[field(field_type = "text", null = true)]
 	pub approval_mode: Option<String>,
 	#[field]
 	pub max_lateness_seconds: i64,
+	/// Failed Tasks in a row after which it pauses itself; 0 never does.
+	#[field]
+	pub pause_after_failures: i32,
 	#[field]
 	pub anchor: DateTime<Utc>,
 	#[field(null = true)]
 	pub next_scheduled_at: Option<DateTime<Utc>>,
-	/// The next scheduled time plus the Schedule's hidden jitter.
+	/// The next scheduled time plus the Duty's hidden jitter.
 	#[field(null = true)]
 	pub next_fire_at: Option<DateTime<Utc>>,
 	#[field(field_type = "text", null = true)]
@@ -66,15 +74,15 @@ pub struct ScheduleRecord {
 	pub updated_at: DateTime<Utc>,
 }
 
-#[model(app_label = "workspaces", table_name = "schedule_ticks")]
+#[model(app_label = "workspaces", table_name = "duty_ticks")]
 #[derive(Serialize, Deserialize)]
-pub struct ScheduleTickRecord {
+pub struct DutyTickRecord {
 	#[field(primary_key = true)]
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub schedule_id: Uuid,
+	pub duty_id: Uuid,
 	#[field]
 	pub workspace_id: Uuid,
 	#[field]
@@ -94,23 +102,4 @@ pub struct ScheduleTickRecord {
 	pub started_by: Option<String>,
 	#[field(null = true)]
 	pub settled_at: Option<DateTime<Utc>>,
-}
-
-#[model(app_label = "workspaces", table_name = "schedule_limits")]
-#[derive(Serialize, Deserialize)]
-pub struct ScheduleLimitRecord {
-	#[field(primary_key = true, field_type = "text")]
-	pub tenant: String,
-	#[field]
-	pub max_schedules: i32,
-	#[field]
-	pub max_per_person: i32,
-	#[field]
-	pub min_interval_seconds: i64,
-	#[field(default = 0)]
-	pub revision: i64,
-	#[field]
-	pub updated_at: DateTime<Utc>,
-	#[field(field_type = "text")]
-	pub updated_by: String,
 }

@@ -25,6 +25,7 @@ async fn every_policy_migration_runs_the_rendered_template() {
 		&migrations,
 		&tenant_owned(TABLES),
 		RETIRED,
+		RENAMED,
 	);
 	assert!(policies > 0);
 }
@@ -50,7 +51,13 @@ const RETIRED: &[&str] = &[
 	"research_sources",
 	"tenant_retention_rule_history",
 	"tenant_retention_rules",
+	// The Tenant Duty limits (#1012).
+	"schedule_limits",
 ];
+
+/// Tables renamed after their policy migration ran: Schedules became Duties
+/// (#1011).
+const RENAMED: &[(&str, &str)] = &[("schedules", "duties"), ("schedule_ticks", "duty_ticks")];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
 /// their tables' policies. They run while no policy exists: forward before the
@@ -75,12 +82,16 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"identity.0083_data_protection_switches backward",
 	"identity.0083_data_protection_switches forward",
 	"identity.0085_remove_research_approvals forward",
+	"identity.0098_duty_member_policy backward",
+	"identity.0098_duty_member_policy forward",
 	"registry.0054_remove_agent_cluster forward",
 	"registry.0070_remove_package_index_draft_bindings forward",
 	"registry.0072_remove_agent_external_service_draft_bindings forward",
 	"registry.0074_remove_research_providers forward",
 	"workspaces.0021_conversation_scratch_space forward",
 	"workspaces.0024_workspace_scratch_space forward",
+	"workspaces.0033_duty_checks backward",
+	"workspaces.0033_duty_checks forward",
 ];
 
 #[rstest::rstest]

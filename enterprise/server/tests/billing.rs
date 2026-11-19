@@ -3500,14 +3500,11 @@ async fn the_covering_tier_caps_schedules_on_cloud_only(
 	};
 	// Act + Assert: Free's cap before any Subscription.
 	assert_eq!(
-		gate(Offering::Cloud, None).schedules(&name).await.unwrap(),
+		gate(Offering::Cloud, None).duties(&name).await.unwrap(),
 		Some(5)
 	);
 	assert_eq!(
-		gate(Offering::Dedicated, None)
-			.schedules(&name)
-			.await
-			.unwrap(),
+		gate(Offering::Dedicated, None).duties(&name).await.unwrap(),
 		None
 	);
 	// The attached Tier's cap once a Subscription covers the Tenant.
@@ -3528,7 +3525,7 @@ async fn the_covering_tier_caps_schedules_on_cloud_only(
 	};
 	assert_eq!(
 		gate(Offering::Cloud, Some(team))
-			.schedules(&name)
+			.duties(&name)
 			.await
 			.unwrap(),
 		Some(100)
@@ -3550,6 +3547,6 @@ async fn the_covering_tier_caps_schedules_on_cloud_only(
 		.execute(d.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	assert_eq!(gate.schedules(&name).await.unwrap(), None);
+	assert_eq!(gate.duties(&name).await.unwrap(), None);
 	d.finish().await;
 }

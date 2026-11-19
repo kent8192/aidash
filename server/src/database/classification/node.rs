@@ -104,8 +104,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
 		"tasks"
-		| "schedules"
-		| "schedule_ticks"
+		| "duties"
+		| "duty_ticks"
 		| "artifacts"
 		| "messages"
 		| "conversations"
@@ -277,7 +277,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "agent_incidents"
 		| "agent_knowledge_images"
 		| "subnode_limits"
-		| "schedule_limits"
 		| "tenant_data_protection_history"
 		| "tenant_data_protection"
 		| "tenant_instructions"

@@ -334,15 +334,15 @@ test("connection notifications carry the complete resource and consent scopes in
 test("a stopped Schedule waits in the pending section and announces once", () => {
   const store = new NoticeStore();
   const stopped = {
-    ...entry("weekly", "schedule_stopped", "home:schedules", "failures:t1"),
-    target: { kind: "schedule", node: "home", id: "weekly", workspace: "one" },
+    ...entry("weekly", "duty_stopped", "home:duties", "failures:t1"),
+    target: { kind: "duty", node: "home", id: "weekly", workspace: "one" },
   };
-  store.observe(frame([], ["home:schedules"]));
-  store.observe(frame([stopped], ["home:schedules"]));
+  store.observe(frame([], ["home:duties"]));
+  store.observe(frame([stopped], ["home:duties"]));
   assert.equal(store.getSnapshot().pending.length, 1);
-  assert.equal(store.getSnapshot().pending[0].kind, "schedule_stopped");
+  assert.equal(store.getSnapshot().pending[0].kind, "duty_stopped");
   assert.equal(store.takeBatch(0).length, 1);
-  store.observe(frame([stopped], ["home:schedules"]));
+  store.observe(frame([stopped], ["home:duties"]));
   assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), []);
   assert.equal(store.getSnapshot().recent.length, 0);
 });

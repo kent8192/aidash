@@ -1,36 +1,32 @@
 //! Application endpoint registration and access policies.
-use super::views::{channels, management, schedules, scratch};
+use super::views::{channels, duties, management, scratch};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
-			.endpoint(schedules::workspace_list)
+			.endpoint(duties::workspace_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::create)
+			.endpoint(duties::create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::list)
+			.endpoint(duties::list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::notices)
+			.endpoint(duties::notices)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::limits)
+			.endpoint(duties::read)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::set_limits)
+			.endpoint(duties::update)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::read)
+			.endpoint(duties::pause)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::update)
+			.endpoint(duties::resume)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::pause)
+			.endpoint(duties::successor)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::resume)
+			.endpoint(duties::run_now)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::successor)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::run_now)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(schedules::remove)
+			.endpoint(duties::remove)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())

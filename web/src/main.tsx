@@ -109,7 +109,7 @@ import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { NotificationProvider } from "./notifications";
 import { useApprovalInbox } from "./capabilities/inbox";
-import type { ScheduleNotices } from "./schedules-model";
+import type { DutyNotices } from "./duties-model";
 import type { NoticeTarget } from "./notifications/model";
 import {
   storedThemePreference,
@@ -629,9 +629,9 @@ function Dashboard({
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   // Stopped Schedules and the Tasks Schedules started, for the bell (#557).
-  const scheduleNotices = useQuery({
+  const dutyNotices = useQuery({
     queryKey: ["schedule-notices"],
-    queryFn: () => apiFetch<ScheduleNotices>("/api/schedules/notices"),
+    queryFn: () => apiFetch<DutyNotices>("/api/schedules/notices"),
     refetchInterval: 15000,
     retry: false,
     enabled: connected && subjectTenant !== null,
@@ -1155,7 +1155,7 @@ function Dashboard({
     if (target.kind === "administration")
       return window.location.assign("/trust?view=authorization");
     // A stopped Schedule is resumed or handed over among the person's Schedules.
-    if (target.kind === "schedule")
+    if (target.kind === "duty")
       return go("settings", { settings: "schedules" });
     const item =
       target.kind === "human"
@@ -1224,7 +1224,7 @@ function Dashboard({
         data={everything}
         node={remembered.selected?.name ?? ""}
         approvals={inbox.pending}
-        schedules={scheduleNotices.data}
+        schedules={dutyNotices.data}
         locale={locale}
         theme={theme}
         onSelect={visit}

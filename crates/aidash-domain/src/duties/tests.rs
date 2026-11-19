@@ -17,15 +17,16 @@ fn cron(expression: &str, zone: &str) -> Trigger {
 fn definition(trigger: Trigger) -> Definition {
 	Definition {
 		title: "Daily report".into(),
-		request: "Summarize yesterday's merged pull requests.".into(),
+		mission: "Summarize yesterday's merged pull requests.".into(),
+		procedure: String::new(),
 		agent: EntityRef {
 			id: "reporter".into(),
 			version: "1.0.0".into(),
 		},
-		trigger,
-		thread: ThreadMode::New,
+		trigger: Some(trigger),
 		approval_mode: None,
 		max_lateness_seconds: DEFAULT_MAX_LATENESS_SECONDS,
+		pause_after_failures: DEFAULT_PAUSE_AFTER_FAILURES,
 	}
 }
 
@@ -121,70 +122,28 @@ fn a_time_repeated_by_fall_back_runs_once() {
 #[case("0 0 30 feb *")]
 fn bad_cron_expressions_are_refused(#[case] expression: &str) {
 	// Act
-	let result = cron(expression, "UTC").validate(60, at("2026-11-13T00:00:00Z"));
+	let result = cron(expression, "UTC").validate(at("2026-11-13T00:00:00Z"));
 	// Assert
 	assert!(matches!(result, Err(Error::Invalid(_))), "{expression}");
 }
 
+/// There is no minimum gap between fire times (#1012): a Budget, not a
+/// count, bounds what a Duty spends.
 #[rstest]
-#[case(cron("*/5 * * * *", "UTC"), false)]
-#[case(cron("0,10 9 * * *", "UTC"), false)]
-#[case(cron("*/15 * * * *", "UTC"), true)]
-// A close pair that occurs once a year is found without waiting for it.
-#[case(cron("0,5 9 1 1 *", "UTC"), false)]
-#[case(cron("55 23,0 * * *", "UTC"), true)]
-#[case(cron("50,58 23 * * *", "UTC"), false)]
-// Across midnight between two matching days.
-#[case(cron("58,2 23,0 * * *", "UTC"), false)]
-// The 31st never follows a 31st, so its late and early times never meet.
-#[case(cron("58,2 23,0 31 * *", "UTC"), true)]
-#[case(cron("0 9 * * *", "Europe/Berlin"), true)]
-#[case(Trigger::Interval { every_seconds: 600 }, false)]
-#[case(Trigger::Interval { every_seconds: 900 }, true)]
-fn the_minimum_interval_bounds_every_gap(#[case] trigger: Trigger, #[case] accepted: bool) {
+#[case(cron("* * * * *", "UTC"))]
+#[case(cron("0,1 9 * * *", "UTC"))]
+#[case(Trigger::Interval { every_seconds: 1 })]
+fn any_frequency_is_accepted(#[case] trigger: Trigger) {
 	// Act
-	let result = trigger.validate(DEFAULT_MIN_INTERVAL_SECONDS, at("2026-11-13T00:00:00Z"));
+	let result = trigger.validate(at("2026-11-13T00:00:00Z"));
 	// Assert
-	assert_eq!(result.is_ok(), accepted, "{result:?}");
-}
-
-#[rstest]
-fn a_daylight_saving_gap_ahead_does_not_breach_the_minimum() {
-	// Arrange: New York skips 02:00-03:00 on 2027-03-14, so 01:50 EST is
-	// followed by 03:00 EDT, ten minutes later. The gap is five weeks away.
-	let hourly = cron("50 * * * *", "America/New_York");
-	let now = at("2027-02-10T00:00:00Z");
-	// Act
-	let registered = hourly.validate(DEFAULT_MIN_INTERVAL_SECONDS, now);
-	let at_fire_time = hourly.meets_minimum(DEFAULT_MIN_INTERVAL_SECONDS);
-	// Assert: the scheduler skips the close tick; the Schedule stays valid.
-	assert!(registered.is_ok(), "{registered:?}");
-	assert!(at_fire_time.unwrap());
-}
-
-#[rstest]
-#[case(cron("0 9 * * 1", "UTC"), true)]
-#[case(cron("0 9 1 * *", "UTC"), true)]
-#[case(cron("0 9 * * 1,2", "UTC"), false)]
-#[case(cron("0 9 * * *", "UTC"), false)]
-// A Monday or the 1st: a Monday 31st is followed by the 1st.
-#[case(cron("0 9 1 * 1", "UTC"), false)]
-fn a_minimum_longer_than_a_day_counts_the_days_that_match(
-	#[case] trigger: Trigger,
-	#[case] accepted: bool,
-) {
-	// Arrange: a Tenant minimum of two days.
-	let minimum = 2 * 24 * 60 * 60;
-	// Act
-	let result = trigger.validate(minimum, at("2026-11-13T00:00:00Z"));
-	// Assert
-	assert_eq!(result.is_ok(), accepted, "{result:?}");
+	assert!(result.is_ok(), "{result:?}");
 }
 
 #[rstest]
 fn an_unknown_time_zone_is_refused() {
 	// Act
-	let result = cron("0 9 * * *", "Mars/Olympus").validate(900, at("2026-11-13T00:00:00Z"));
+	let result = cron("0 9 * * *", "Mars/Olympus").validate(at("2026-11-13T00:00:00Z"));
 	// Assert
 	assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("time zone")));
 }
@@ -219,7 +178,7 @@ fn an_interval_counts_from_its_anchor() {
 fn ticks_missed_while_down_run_once_late_at_the_latest_missed_time() {
 	// Arrange: hourly, down from 01:00 to 03:20; the stored next tick is 01:00.
 	let timing = Timing {
-		trigger: cron("0 * * * *", "UTC"),
+		trigger: Some(cron("0 * * * *", "UTC")),
 		anchor: at("2026-11-13T00:00:00Z"),
 		max_lateness_seconds: 3600,
 	};
@@ -243,7 +202,7 @@ fn ticks_missed_while_down_run_once_late_at_the_latest_missed_time() {
 fn a_tick_later_than_the_maximum_lateness_is_skipped() {
 	// Arrange
 	let timing = Timing {
-		trigger: cron("0 9 * * *", "UTC"),
+		trigger: Some(cron("0 9 * * *", "UTC")),
 		anchor: at("2026-11-13T00:00:00Z"),
 		max_lateness_seconds: 600,
 	};
@@ -262,7 +221,7 @@ fn a_tick_later_than_the_maximum_lateness_is_skipped() {
 fn nothing_is_claimed_before_the_tick() {
 	// Arrange
 	let timing = Timing {
-		trigger: Trigger::Interval { every_seconds: 900 },
+		trigger: Some(Trigger::Interval { every_seconds: 900 }),
 		anchor: at("2026-11-13T00:00:00Z"),
 		max_lateness_seconds: 600,
 	};
@@ -296,104 +255,102 @@ fn a_definition_is_checked_whole() {
 	late.max_lateness_seconds = 10;
 	let mut agentless = definition(cron("0 9 * * *", "UTC"));
 	agentless.agent.version = String::new();
+	let mut negative = definition(cron("0 9 * * *", "UTC"));
+	negative.pause_after_failures = -1;
+	let mut nul = definition(cron("0 9 * * *", "UTC"));
+	nul.procedure = "check\0".into();
 	// Act + Assert
 	assert!(
 		definition(cron("0 9 * * *", "UTC"))
-			.validate(900, Utc::now())
+			.validate(Utc::now())
 			.is_ok()
 	);
-	for invalid in [long, late, agentless] {
+	for invalid in [long, late, agentless, negative, nul] {
 		assert!(matches!(
-			invalid.validate(900, Utc::now()),
+			invalid.validate(Utc::now()),
 			Err(Error::Invalid(_))
 		));
 	}
 }
 
 #[rstest]
-fn a_definition_defaults_to_a_new_thread_and_the_registrants_mode() {
+fn a_definition_defaults_to_the_requesters_mode_and_three_failures() {
 	// Act
 	let parsed: Definition = serde_json::from_value(serde_json::json!({
-		"title": "t", "request": "r", "agent": {"id": "a", "version": "1.0.0"},
+		"title": "t", "mission": "r", "agent": {"id": "a", "version": "1.0.0"},
 		"trigger": {"kind": "interval", "every_seconds": 3600}
 	}))
 	.unwrap();
+	let untimed: Definition = serde_json::from_value(serde_json::json!({
+		"title": "t", "mission": "r", "agent": {"id": "a", "version": "1.0.0"}
+	}))
+	.unwrap();
 	// Assert
-	assert_eq!(parsed.thread, ThreadMode::New);
+	assert_eq!(parsed.procedure, "");
 	assert_eq!(parsed.approval_mode, None);
 	assert_eq!(parsed.max_lateness_seconds, DEFAULT_MAX_LATENESS_SECONDS);
+	assert_eq!(parsed.pause_after_failures, DEFAULT_PAUSE_AFTER_FAILURES);
+	assert_eq!(untimed.trigger, None);
+	assert!(untimed.validate(Utc::now()).is_ok());
 }
 
 #[rstest]
-fn limits_stay_within_the_ceilings_and_the_tier() {
+fn a_patch_sets_or_removes_the_time_trigger() {
 	// Arrange
-	let ceilings = Ceilings {
-		max_schedules: 40,
-		max_per_person: 5,
-		min_interval_seconds: 1800,
-	};
-	// Act + Assert
-	assert!(ceilings.permits(&Limits::default()).is_err());
-	assert!(
-		ceilings
-			.permits(&Limits {
-				max_schedules: 40,
-				max_per_person: 5,
-				min_interval_seconds: 1800,
-			})
-			.is_ok()
-	);
-	assert!(
-		ceilings
-			.permits(&Limits {
-				max_schedules: 10,
-				max_per_person: 5,
-				min_interval_seconds: 900,
-			})
-			.is_err()
-	);
+	let current = definition(cron("0 9 * * *", "UTC"));
+	let removal: Patch =
+		serde_json::from_value(serde_json::json!({"trigger": {"kind": "none"}})).unwrap();
+	let hourly: Patch = serde_json::from_value(
+		serde_json::json!({"trigger": {"kind": "interval", "every_seconds": 3600}}),
+	)
+	.unwrap();
+	// Act
+	let (removed, retimed) = removal.apply(&current);
+	let (set, _) = hourly.apply(&current);
+	// Assert
+	assert_eq!(removed.trigger, None);
+	assert!(retimed);
 	assert_eq!(
-		ceilings.effective(Limits::default(), Some(12)),
-		Limits {
-			max_schedules: 12,
-			max_per_person: 5,
-			min_interval_seconds: 1800,
-		}
+		set.trigger,
+		Some(Trigger::Interval {
+			every_seconds: 3600
+		})
 	);
 }
 
 #[rstest]
-#[case(49, 9, true)]
-#[case(50, 0, false)]
-#[case(10, 10, false)]
-fn the_tenant_total_and_the_per_person_count_both_bound(
+#[case(49, None, true)]
+#[case(1_000_000, None, true)]
+#[case(11, Some(12), true)]
+#[case(12, Some(12), false)]
+fn only_a_plan_caps_how_many_duties_a_tenant_has(
 	#[case] total: i64,
-	#[case] mine: i64,
+	#[case] tier: Option<u32>,
 	#[case] admitted: bool,
 ) {
 	// Act
-	let result = Limits::default().admit(total, mine);
+	let result = admit_within_tier(total, tier);
 	// Assert
 	assert_eq!(result.is_ok(), admitted);
 }
 
 fn standing<'a>(halt: Option<Halt>, successor: Option<&'a str>) -> Standing<'a> {
 	Standing {
-		registrant: "alice",
+		requester: "alice",
 		halt,
 		successor,
 	}
 }
 
-fn person(subject: &str, administers: bool) -> Requester<'_> {
-	Requester {
+fn person(subject: &str, administers: bool) -> Actor<'_> {
+	Actor {
 		subject,
 		administers,
 	}
 }
 
 #[rstest]
-fn only_the_registrant_edits_and_resumes_their_schedule() {
+fn only_the_requester_edits_and_resumes_their_duty() {
 	// Act + Assert
 	assert!(permit(person("alice", false), standing(None, None), Change::Edit).is_ok());
 	assert!(permit(person("admin", true), standing(None, None), Change::Edit).is_err());
@@ -402,21 +359,21 @@ fn only_the_registrant_edits_and_resumes_their_schedule() {
 	assert!(permit(person("admin", true), standing(None, None), Change::Delete).is_ok());
 	assert_eq!(
 		resumption(person("alice", false), standing(Some(Halt::Failures), None)).unwrap(),
-		Resumption::Registrant
+		Resumption::Requester
 	);
 	assert!(resumption(person("admin", true), standing(Some(Halt::Paused), None)).is_err());
 	assert!(resumption(person("alice", false), standing(None, None)).is_err());
 }
 
 #[rstest]
-fn a_schedule_whose_registrant_left_runs_again_only_as_its_successors_own() {
+fn a_duty_whose_requester_left_runs_again_only_as_its_successors_own() {
 	// Arrange
-	let waiting = standing(Some(Halt::RegistrantLeft), Some("carol"));
+	let waiting = standing(Some(Halt::RequesterLeft), Some("carol"));
 	// Act + Assert
 	assert!(
 		permit(
 			person("admin", true),
-			standing(Some(Halt::RegistrantLeft), None),
+			standing(Some(Halt::RequesterLeft), None),
 			Change::NameSuccessor
 		)
 		.is_ok()
@@ -432,7 +389,7 @@ fn a_schedule_whose_registrant_left_runs_again_only_as_its_successors_own() {
 	assert!(
 		permit(
 			person("carol", false),
-			standing(Some(Halt::RegistrantLeft), None),
+			standing(Some(Halt::RequesterLeft), None),
 			Change::NameSuccessor
 		)
 		.is_err()
@@ -446,30 +403,32 @@ fn a_schedule_whose_registrant_left_runs_again_only_as_its_successors_own() {
 	assert!(permit(person("alice", false), waiting, Change::Edit).is_err());
 }
 
+/// A Run a Duty started may set up Duties too (#1012); a federated Run and
+/// a chain without a person at its root may not.
 #[rstest]
-#[case(Caller { root_person: Some("alice"), federated: false, scheduled: false }, true, Ok("alice"))]
-#[case(Caller { root_person: Some("alice"), federated: false, scheduled: true }, false, Ok("alice"))]
-#[case(Caller { root_person: Some("alice"), federated: false, scheduled: true }, true, Err(()))]
-#[case(Caller { root_person: Some("alice"), federated: true, scheduled: false }, false, Err(()))]
-#[case(Caller { root_person: None, federated: false, scheduled: false }, true, Err(()))]
-fn agents_register_schedules_only_for_a_person_and_never_from_a_scheduled_chain(
+#[case(Caller { root_person: Some("alice"), federated: false }, Ok("alice"))]
+#[case(Caller { root_person: Some("alice"), federated: true }, Err(()))]
+#[case(Caller { root_person: None, federated: false }, Err(()))]
+fn agents_set_up_duties_for_the_person_at_their_root(
 	#[case] caller: Caller<'static>,
-	#[case] changes: bool,
 	#[case] expected: std::result::Result<&str, ()>,
 ) {
 	// Act
-	let result = agent_registrant(caller, changes).map_err(|_| ());
+	let result = agent_requester(caller).map_err(|_| ());
 	// Assert
 	assert_eq!(result, expected);
 }
 
 #[rstest]
-fn three_failed_runs_in_a_row_pause_and_a_completion_resets() {
+fn failed_runs_in_a_row_pause_at_the_chosen_count_and_a_completion_resets() {
 	// Act + Assert
-	assert_eq!(after_settled(0, TickStatus::Failed), (1, false));
-	assert_eq!(after_settled(2, TickStatus::Failed), (3, true));
-	assert_eq!(after_settled(2, TickStatus::Cancelled), (2, false));
-	assert_eq!(after_settled(2, TickStatus::Completed), (0, false));
+	assert_eq!(after_settled(0, TickStatus::Failed, 3), (1, false));
+	assert_eq!(after_settled(2, TickStatus::Failed, 3), (3, true));
+	assert_eq!(after_settled(2, TickStatus::Cancelled, 3), (2, false));
+	assert_eq!(after_settled(2, TickStatus::Completed, 3), (0, false));
+	assert_eq!(after_settled(0, TickStatus::Failed, 1), (1, true));
+	// 0 never pauses.
+	assert_eq!(after_settled(99, TickStatus::Failed, 0), (100, false));
 }
 
 #[rstest]
@@ -477,11 +436,10 @@ fn halts_and_tick_statuses_round_trip() {
 	for halt in [
 		Halt::Paused,
 		Halt::Failures,
-		Halt::RegistrantLeft,
+		Halt::RequesterLeft,
 		Halt::AgentVersionUnusable,
 		Halt::ThreadDeleted,
 		Halt::TenantDeleted,
-		Halt::IntervalTooShort,
 	] {
 		assert_eq!(Halt::parse(halt.as_str()).unwrap(), halt);
 		assert_eq!(serde_json::to_value(halt).unwrap(), halt.as_str());
@@ -496,21 +454,7 @@ fn halts_and_tick_statuses_round_trip() {
 		assert_eq!(TickStatus::parse(status.as_str()).unwrap(), status);
 	}
 	assert!(!Halt::Paused.notifies());
-	assert!(Halt::RegistrantLeft.notifies());
-}
-
-#[rstest]
-fn a_tick_sooner_than_the_minimum_interval_after_the_last_is_too_soon() {
-	// Arrange: a daylight-saving change brought two times an hour apart within a minute.
-	let previous = at("2026-03-08T06:59:00Z");
-	// Act + Assert
-	assert!(too_soon(Some(previous), at("2026-03-08T07:00:00Z"), 900));
-	assert!(!too_soon(
-		Some(previous),
-		at("2026-03-08T07:14:00Z") + Duration::minutes(1),
-		900
-	));
-	assert!(!too_soon(None, at("2026-03-08T07:00:00Z"), 900));
+	assert!(Halt::RequesterLeft.notifies());
 }
 
 #[rstest]

@@ -1,10 +1,9 @@
-//! Schedules (#557, ADR 0134): authorized operations for people and Agents,
-//! the scheduler pass every replica runs, and the notices the bell shows.
+//! Duties (#1011, ADR 0142; from the Schedules of #557, ADR 0134):
+//! authorized operations for people and Agents, the pass every replica runs
+//! for Duties whose time trigger is due, and the notices the bell shows.
 use super::access::Lease;
-use crate::apps::workspaces::repositories::schedules::{self as repository, Filter, Stop};
-use crate::apps::workspaces::serializers::schedules::{
-	DetailView, LimitsView, NoticesView, ScheduleNotice, ScheduleView,
-};
+use crate::apps::workspaces::repositories::duties::{self as repository, Filter, Stop};
+use crate::apps::workspaces::serializers::duties::{DetailView, DutyNotice, DutyView, NoticesView};
 use crate::{
 	Error, Result,
 	authorization::{
@@ -14,22 +13,19 @@ use crate::{
 	federation::Federation,
 	store::Store,
 };
-use aidash_application::schedules::{self as app, Listing, Origin, ScheduleScope};
+use aidash_application::duties::{self as app, DutyScope, Listing, Origin};
 use aidash_domain::{
 	approval_rules::{ApprovalMode, MODE_RESOURCE},
+	duties::{self, Claim, Definition, Duty, Halt, Patch, Tick, TickStatus},
 	policy::SubjectKind,
 	registry::{EntityRef, Search},
-	schedules::{
-		self, Ceilings, Claim, Definition, Halt, Limits, Patch, Schedule, ThreadMode, Tick,
-		TickStatus,
-	},
 	tenancy::TenantName,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// The person acting in one Schedule transaction.
+/// The person acting in one Duty transaction.
 pub(crate) struct Adapter<'a> {
 	pub access: &'a mut Access,
 	pub store: &'a Store,
@@ -41,11 +37,11 @@ fn tenant(access: &Access) -> String {
 }
 
 #[async_trait::async_trait]
-impl ScheduleScope for Adapter<'_> {
+impl DutyScope for Adapter<'_> {
 	fn subject(&self) -> &str {
 		&self.access.identity.subject
 	}
-	async fn registrant_credential(&mut self) -> aidash_application::Result<Uuid> {
+	async fn requester_credential(&mut self) -> aidash_application::Result<Uuid> {
 		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
 		Ok(
 			repository::mapping_credential(&mut *self.access.tx, &tenant, &subject)
@@ -57,7 +53,7 @@ impl ScheduleScope for Adapter<'_> {
 		&mut self,
 		run: Uuid,
 		key: &str,
-	) -> aidash_application::Result<Option<Schedule>> {
+	) -> aidash_application::Result<Option<Duty>> {
 		let tenant = tenant(self.access);
 		Ok(repository::created_by(&mut *self.access.tx, &tenant, run, key).await?)
 	}
@@ -85,7 +81,7 @@ impl ScheduleScope for Adapter<'_> {
 		let resource = self
 			.access
 			.resource("tenant", tenant(self.access), json!({}));
-		Ok(self.access.decide(&resource, schedules::ADMINISTER).await?)
+		Ok(self.access.decide(&resource, duties::ADMINISTER).await?)
 	}
 	async fn mode_allowed(&mut self, mode: ApprovalMode) -> aidash_application::Result<bool> {
 		if let Some((action, id)) = mode.policy_requirement() {
@@ -135,23 +131,6 @@ impl ScheduleScope for Adapter<'_> {
 			.max()
 			.map(|version| version.to_string()))
 	}
-	async fn thread_in_workspace(
-		&mut self,
-		workspace: Uuid,
-		thread: Uuid,
-	) -> aidash_application::Result<bool> {
-		match crate::apps::execution::capabilities::services::endpoints::readable_thread(
-			self.access,
-			workspace,
-			thread,
-		)
-		.await
-		{
-			Ok(()) => Ok(true),
-			Err(Error::NotFound(_) | Error::Forbidden) => Ok(false),
-			Err(error) => Err(error.into()),
-		}
-	}
 	async fn is_person(&mut self, subject: &str) -> aidash_application::Result<bool> {
 		Ok(self
 			.access
@@ -161,51 +140,44 @@ impl ScheduleScope for Adapter<'_> {
 			.get(subject)
 			.is_some_and(|subject| subject.enabled && subject.kind == SubjectKind::User))
 	}
-	async fn limits(&mut self) -> aidash_application::Result<(Limits, Ceilings, Option<u32>)> {
+	async fn tier_cap(&mut self) -> aidash_application::Result<Option<u32>> {
 		let tenant = tenant(self.access);
-		let limits = repository::limits(&mut *self.access.tx, &tenant).await?;
-		let tier = self
+		Ok(self
 			.store
 			.schedule_tier
-			.schedules(&TenantName::new(&tenant)?)
-			.await?;
-		Ok((limits, self.store.schedule_ceilings, tier))
+			.duties(&TenantName::new(&tenant)?)
+			.await?)
 	}
-	async fn save_limits(&mut self, limits: &Limits) -> aidash_application::Result<()> {
-		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
-		repository::put_limits(&mut *self.access.tx, &tenant, &subject, limits, self.now).await?;
-		Ok(())
-	}
-	async fn counts(&mut self, registrant: &str) -> aidash_application::Result<(i64, i64)> {
+	async fn count(&mut self) -> aidash_application::Result<i64> {
 		let tenant = tenant(self.access);
-		Ok(repository::counts(&mut *self.access.tx, &tenant, registrant).await?)
+		Ok(repository::count(&mut *self.access.tx, &tenant).await?)
 	}
-	async fn insert(&mut self, schedule: &Schedule) -> aidash_application::Result<()> {
+	async fn insert(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
-		Ok(repository::insert(&mut *self.access.tx, &tenant, schedule).await?)
+		Ok(repository::insert(&mut *self.access.tx, &tenant, duty).await?)
 	}
-	async fn load_for_update(&mut self, id: Uuid) -> aidash_application::Result<Schedule> {
+	async fn load_for_update(&mut self, id: Uuid) -> aidash_application::Result<Duty> {
 		let tenant = tenant(self.access);
 		repository::load(&mut *self.access.tx, &tenant, id, true)
 			.await?
-			.ok_or_else(|| aidash_application::Error::NotFound("schedule not found".into()))
+			.ok_or_else(|| aidash_application::Error::NotFound("duty not found".into()))
 	}
-	async fn load(&mut self, id: Uuid) -> aidash_application::Result<Schedule> {
+	async fn load(&mut self, id: Uuid) -> aidash_application::Result<Duty> {
 		let tenant = tenant(self.access);
 		repository::load(&mut *self.access.tx, &tenant, id, false)
 			.await?
-			.ok_or_else(|| aidash_application::Error::NotFound("schedule not found".into()))
+			.ok_or_else(|| aidash_application::Error::NotFound("duty not found".into()))
 	}
-	async fn save(&mut self, schedule: &Schedule) -> aidash_application::Result<()> {
+	async fn save(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
-		repository::save(&mut *self.access.tx, &tenant, schedule).await?;
+		repository::save(&mut *self.access.tx, &tenant, duty).await?;
 		Ok(())
 	}
 	async fn delete(&mut self, id: Uuid) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
 		Ok(repository::delete(&mut *self.access.tx, &tenant, id).await?)
 	}
-	async fn list(&mut self, listing: Listing) -> aidash_application::Result<Vec<Schedule>> {
+	async fn list(&mut self, listing: Listing) -> aidash_application::Result<Vec<Duty>> {
 		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
 		let filter = match listing {
 			Listing::Workspace(workspace) => Filter::Workspace(workspace),
@@ -220,7 +192,7 @@ impl ScheduleScope for Adapter<'_> {
 	}
 }
 
-/// What a person asks of the Schedules API.
+/// What a person asks of the Duties API.
 pub(crate) enum Operation {
 	Create(Uuid, Definition),
 	List(Listing),
@@ -231,8 +203,6 @@ pub(crate) enum Operation {
 	Delete(Uuid),
 	Successor(Uuid, String),
 	RunNow(Uuid),
-	Limits,
-	SetLimits(Limits),
 	Notices,
 }
 
@@ -254,7 +224,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		};
 		let mine = scope.subject().to_owned();
 		let administers = scope.administers().await?;
-		let view = |schedule: Schedule| ScheduleView::new(schedule, &mine, administers);
+		let view = |duty: Duty| DutyView::new(duty, &mine, administers);
 		Ok(match op {
 			Operation::Create(workspace, definition) => serde_json::to_value(view(
 				app::register(&mut scope, workspace, definition, Origin::Person).await?,
@@ -283,23 +253,6 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 			Operation::Successor(id, successor) => {
 				serde_json::to_value(view(app::name_successor(&mut scope, id, &successor).await?))?
 			}
-			Operation::Limits => {
-				let (limits, ceilings, effective) = app::limits(&mut scope).await?;
-				serde_json::to_value(LimitsView {
-					limits,
-					ceilings,
-					effective,
-				})?
-			}
-			Operation::SetLimits(limits) => {
-				app::set_limits(&mut scope, limits).await?;
-				let (limits, ceilings, effective) = app::limits(&mut scope).await?;
-				serde_json::to_value(LimitsView {
-					limits,
-					ceilings,
-					effective,
-				})?
-			}
 			Operation::Notices => serde_json::to_value(notices(&mut scope).await?)?,
 			Operation::RunNow(_) => unreachable!("handled above"),
 		})
@@ -308,10 +261,10 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 	access.finish(result).await
 }
 
-/// The Schedules the bell tells this person about (#557 decision 25): their
+/// The Duties the bell tells this person about (#557 decision 25): their
 /// own that stopped without anyone choosing it, those waiting for them as a
-/// named successor, and, for holders of `schedule.administer`, those waiting
-/// for a successor. Also the Tasks their Schedules started this week, whose
+/// named successor, and, for holders of `duty.administer`, those waiting
+/// for a successor. Also the Tasks their Duties started this week, whose
 /// completion the bell shows without a toast (decision 26).
 async fn notices(scope: &mut Adapter<'_>) -> Result<NoticesView> {
 	let administers = scope.administers().await?;
@@ -324,20 +277,20 @@ async fn notices(scope: &mut Adapter<'_>) -> Result<NoticesView> {
 	};
 	let stopped = all
 		.iter()
-		.filter(|schedule| {
-			schedule.halt.is_some_and(|halt| {
+		.filter(|duty| {
+			duty.halt.is_some_and(|halt| {
 				halt.notifies()
-					&& (schedule.registrant == subject
-						|| schedule.successor.as_deref() == Some(subject.as_str())
-						|| (administers && halt == Halt::RegistrantLeft))
+					&& (duty.requester == subject
+						|| duty.successor.as_deref() == Some(subject.as_str())
+						|| (administers && halt == Halt::RequesterLeft))
 			})
 		})
-		.map(ScheduleNotice::of)
+		.map(DutyNotice::of)
 		.collect();
 	let own: Vec<Uuid> = all
 		.iter()
-		.filter(|schedule| schedule.registrant == subject)
-		.map(|schedule| schedule.id)
+		.filter(|duty| duty.requester == subject)
+		.map(|duty| duty.id)
 		.collect();
 	let scheduled_tasks = repository::recent_tasks(
 		&mut *scope.access.tx,
@@ -353,8 +306,8 @@ async fn notices(scope: &mut Adapter<'_>) -> Result<NoticesView> {
 }
 
 /// A stable key for a tick, so a retried start reuses its message and Run.
-fn tick_key(schedule: Uuid, scheduled_at: DateTime<Utc>, part: &str) -> Uuid {
-	let digest = crate::registry::digest(&json!(["schedule_tick", schedule, scheduled_at, part]));
+fn tick_key(duty: Uuid, scheduled_at: DateTime<Utc>, part: &str) -> Uuid {
+	let digest = crate::registry::digest(&json!(["duty_tick", duty, scheduled_at, part]));
 	let mut bytes = [0_u8; 16];
 	for (index, byte) in bytes.iter_mut().enumerate() {
 		*byte = u8::from_str_radix(&digest[index * 2..index * 2 + 2], 16).unwrap_or_default();
@@ -362,20 +315,21 @@ fn tick_key(schedule: Uuid, scheduled_at: DateTime<Utc>, part: &str) -> Uuid {
 	uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
-/// Starts one Run of `schedule` as the lease's subject: in a new Thread whose
-/// first message is the request, or in its fixed Thread. Returns the Task and
-/// the Thread.
+/// Starts one Task of `duty` as the lease's subject, in the Duty's own
+/// Thread. Its first Task opens that Thread with the mission as its first
+/// message and records it on the Duty (#1011). Returns the Task and the
+/// Thread.
 async fn start(
 	f: &Federation,
 	lease: &mut Lease,
-	schedule: &Schedule,
+	duty: &Duty,
 	key: (DateTime<Utc>, &str),
 ) -> Result<(Uuid, Uuid)> {
-	let workspace = schedule.workspace_id;
-	let definition = &schedule.definition;
-	let thread = match definition.thread {
-		ThreadMode::Fixed { thread_id } => thread_id,
-		ThreadMode::New => {
+	let workspace = duty.workspace_id;
+	let definition = &duty.definition;
+	let thread = match duty.thread_id {
+		Some(thread_id) => thread_id,
+		None => {
 			let resource = lease.access_mut().workspace(workspace).await?;
 			lease
 				.access_mut()
@@ -387,29 +341,30 @@ async fn start(
 				lease,
 				workspace,
 				crate::apps::workspaces::serializers::channels::ChannelMessageInput {
-					content: definition.request.clone(),
+					content: format!("{}\n\n{}", definition.title, definition.mission),
 					thread_id: None,
-					idempotency_key: tick_key(schedule.id, key.0, &format!("{}:message", key.1)),
+					idempotency_key: tick_key(duty.id, key.0, &format!("{}:message", key.1)),
 					attachment_ids: vec![],
 					file_versions: vec![],
 				},
 			)
 			.await?;
-			super::threads::create(&f.store, lease, workspace, message.message.id)
+			let thread = super::threads::create(&f.store, lease, workspace, message.message.id)
 				.await?
-				.id
+				.id;
+			let tenant = tenant(lease.access_mut());
+			repository::open_thread(lease.tx(), &tenant, duty.id, thread).await?;
+			thread
 		}
 	};
 	// "Run now" is an ordinary Run of the person who clicked it, in their own
-	// mode; only a scheduled tick carries the Schedule's.
+	// mode; only a Task the Duty started carries the Duty's. The Duty's mode
+	// is its Thread's mode for its Requester, so a Duty set back to the
+	// default clears it (#557 decision 4).
 	let scheduled = key.1.is_empty();
-	// A new Thread starts without a mode of its own, so only a chosen mode is
-	// written there. A fixed Thread keeps the mode an earlier tick wrote, so a
-	// Schedule set back to the default clears it (#557 decision 4).
-	let fixed = matches!(definition.thread, ThreadMode::Fixed { .. });
-	if scheduled && (definition.approval_mode.is_some() || fixed) {
+	if scheduled {
 		let mode = definition.approval_mode;
-		// The Schedule's Approval Mode is its Thread's mode for the person
+		// The Duty's Approval Mode is its Thread's mode for the person
 		// its Runs act as (#557 decision 4).
 		let access = lease.access_mut();
 		let (tenant, subject) = (tenant(access), access.identity.subject.clone());
@@ -433,10 +388,10 @@ async fn start(
 		lease.access_mut(),
 		(workspace, thread, definition.agent.id.clone()),
 		crate::apps::execution::capabilities::serializers::contracts::Enqueue {
-			idempotency_key: tick_key(schedule.id, key.0, &format!("{}:run", key.1)),
+			idempotency_key: tick_key(duty.id, key.0, &format!("{}:run", key.1)),
 			agent_version: definition.agent.version.clone(),
 			title: definition.title.clone(),
-			description: definition.request.clone(),
+			description: definition.mission.clone(),
 			read_pages: vec![],
 		},
 	)
@@ -445,7 +400,7 @@ async fn start(
 	Ok((task, thread))
 }
 
-/// "Run now": an ordinary Run of the Schedule as the person who clicked it,
+/// "Run now": an ordinary Run of the Duty as the person who clicked it,
 /// recorded in its history (#557 decision 24).
 async fn run_now(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result<Value> {
 	let access = Access::begin(&f.store, identity).await?;
@@ -453,25 +408,25 @@ async fn run_now(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result
 	let now = Utc::now();
 	let result: Result<Value> = async {
 		let tenant = identity.tenant.clone();
-		let schedule = repository::load(lease.tx(), &tenant, id, false)
+		let duty = repository::load(lease.tx(), &tenant, id, false)
 			.await?
-			.ok_or_else(|| Error::NotFound("schedule not found".into()))?;
-		let resource = lease.access_mut().workspace(schedule.workspace_id).await?;
+			.ok_or_else(|| Error::NotFound("duty not found".into()))?;
+		let resource = lease.access_mut().workspace(duty.workspace_id).await?;
 		if !lease
 			.access_mut()
 			.decide(&resource, "workspace.read")
 			.await?
 		{
-			return Err(Error::NotFound("schedule not found".into()));
+			return Err(Error::NotFound("duty not found".into()));
 		}
-		let (task, thread) = start(f, &mut lease, &schedule, (now, &identity.subject)).await?;
+		let (task, thread) = start(f, &mut lease, &duty, (now, &identity.subject)).await?;
 		repository::insert_tick(
 			lease.tx(),
 			&tenant,
-			schedule.workspace_id,
+			duty.workspace_id,
 			&Tick {
 				id: Uuid::new_v4(),
-				schedule_id: schedule.id,
+				duty_id: duty.id,
 				scheduled_at: now,
 				recorded_at: now,
 				status: TickStatus::Started,
@@ -507,11 +462,11 @@ impl Pass {
 	}
 }
 
-/// Due Schedules handled per pass; the rest wait for the next one.
+/// Due Duties handled per pass; the rest wait for the next one.
 const BATCH: usize = 32;
 
 /// One pass of the scheduler on this replica: settle the ticks whose Runs
-/// ended, then handle the due Schedules no other replica holds. Every replica
+/// ended, then handle the due Duties no other replica holds. Every replica
 /// runs it; `SKIP LOCKED` and the tick key keep a tick to one Task.
 pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 	let mut report = Pass::default();
@@ -520,12 +475,12 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 			Ok(true) => report.settled += 1,
 			Ok(false) => {}
 			Err(error) => {
-				tracing::warn!(%error, tick = %ended.tick, "a Schedule tick could not be settled");
+				tracing::warn!(%error, tick = %ended.tick, "a Duty tick could not be settled");
 			}
 		}
 	}
 	// A tick that failed transiently stays due, oldest first. Paging past it
-	// tries each due Schedule at most once per pass, so a few that keep
+	// tries each due Duty at most once per pass, so a few that keep
 	// failing cannot hold back the rest of the Deployment; only ticks that
 	// did something count toward the batch.
 	let mut handled = 0;
@@ -537,7 +492,7 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 			after = Some((fire_at, id));
 			let before = report.handled();
 			if let Err(error) = fire(f, &tenant, id, now, &mut report).await {
-				tracing::warn!(%error, schedule = %id, "a due Schedule could not be handled");
+				tracing::warn!(%error, duty = %id, "a due Duty could not be handled");
 			}
 			if report.handled() > before {
 				handled += 1;
@@ -556,7 +511,7 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 	Ok(report)
 }
 
-/// Settles one ended tick and counts a failure toward the Schedule's pause.
+/// Settles one ended tick and counts a failure toward the Duty's pause.
 async fn settle(f: &Federation, ended: &repository::Ended, now: DateTime<Utc>) -> Result<bool> {
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&ended.tenant)?;
 	let mut tx = f.store.pool.begin(&scope).await?;
@@ -567,22 +522,24 @@ async fn settle(f: &Federation, ended: &repository::Ended, now: DateTime<Utc>) -
 		if ended.manual {
 			return Ok(true);
 		}
-		let Some(mut schedule) =
-			repository::load(&mut tx, &ended.tenant, ended.schedule, true).await?
+		let Some(mut duty) = repository::load(&mut tx, &ended.tenant, ended.duty, true).await?
 		else {
 			return Ok(true);
 		};
-		let (failures, pause) =
-			schedules::after_settled(schedule.consecutive_failures, ended.status);
-		if failures == schedule.consecutive_failures && !pause {
+		let (failures, pause) = duties::after_settled(
+			duty.consecutive_failures,
+			ended.status,
+			duty.definition.pause_after_failures,
+		);
+		if failures == duty.consecutive_failures && !pause {
 			return Ok(true);
 		}
-		schedule.consecutive_failures = failures;
-		if pause && schedule.halt.is_none() {
-			schedule.stop(Halt::Failures, now);
+		duty.consecutive_failures = failures;
+		if pause && duty.halt.is_none() {
+			duty.stop(Halt::Failures, now);
 		}
-		schedule.updated_at = now;
-		repository::save(&mut tx, &ended.tenant, &schedule).await?;
+		duty.updated_at = now;
+		repository::save(&mut tx, &ended.tenant, &duty).await?;
 		Ok(true)
 	}
 	.await;
@@ -603,7 +560,7 @@ async fn settle(f: &Federation, ended: &repository::Ended, now: DateTime<Utc>) -
 enum Miss {
 	/// Recorded as failed; it counts toward the pause.
 	Fail(String),
-	/// The Schedule stops for this reason, and the tick is recorded with this
+	/// The Duty stops for this reason, and the tick is recorded with this
 	/// status: failed when its start was refused, skipped when it never tried.
 	Stop(Halt, String, TickStatus),
 }
@@ -640,7 +597,7 @@ fn classify(error: &Error) -> Option<Miss> {
 	}
 }
 
-/// What a claimed tick did in its Registrant's transaction.
+/// What a claimed tick did in its Requester's transaction.
 enum Fired {
 	/// Another replica held it, or it was no longer due.
 	Nothing,
@@ -648,7 +605,7 @@ enum Fired {
 	Started(Uuid),
 }
 
-/// Handles one due Schedule as its Registrant: claim, then start, skip or stop.
+/// Handles one due Duty as its Requester: claim, then start, skip or stop.
 async fn fire(
 	f: &Federation,
 	tenant: &str,
@@ -658,7 +615,7 @@ async fn fire(
 ) -> Result<()> {
 	// Read who it acts as, then act as them; the claim below rechecks the row.
 	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-	let Some(schedule) = f
+	let Some(duty) = f
 		.store
 		.pool
 		.scoped(&scope, async |tx| {
@@ -670,13 +627,13 @@ async fn fire(
 	};
 	let identity = SubjectIdentity {
 		http_session: None,
-		credential_id: schedule.credential_id,
+		credential_id: duty.credential_id,
 		tenant: tenant.to_owned(),
-		subject: schedule.registrant.clone(),
+		subject: duty.requester.clone(),
 	};
 	let access = match Access::begin(&f.store, &identity).await {
 		Ok(access) => access,
-		// The Registrant left the Tenant or lost the credential it acts with.
+		// The Requester left the Tenant or lost the credential it acts with.
 		// A refused credential says why since #876; any reason stops it.
 		Err(
 			Error::Unauthorized
@@ -687,12 +644,12 @@ async fn fire(
 			return record_miss(
 				f,
 				tenant,
-				(&schedule, schedule.revision),
+				(&duty, duty.revision),
 				None,
 				now,
 				Miss::Stop(
-					Halt::RegistrantLeft,
-					"the Registrant lost access".into(),
+					Halt::RequesterLeft,
+					"the Requester lost access".into(),
 					TickStatus::Failed,
 				),
 				report,
@@ -704,79 +661,52 @@ async fn fire(
 	let mut lease = Lease::from_access(access);
 	// The claimed tick and the revision it was judged on.
 	let mut claimed: Option<(Claim, i64)> = None;
-	// Set when the tick shows the Schedule must stop, before the start rolls back.
+	// Set when the tick shows the Duty must stop, before the start rolls back.
 	let mut stopping: Option<(Halt, String, TickStatus)> = None;
 	let result: Result<Fired> = async {
-		let Some(schedule) = repository::claim(lease.tx(), tenant, id, now).await? else {
+		let Some(duty) = repository::claim(lease.tx(), tenant, id, now).await? else {
 			return Ok(Fired::Nothing);
 		};
-		let Some(due) = schedule.next_scheduled_at else {
+		let Some(due) = duty.next_scheduled_at else {
 			return Ok(Fired::Nothing);
 		};
-		let Some(claim) = schedule.timing().claim(due, now)? else {
+		let Some(claim) = duty.timing().claim(due, now)? else {
 			return Ok(Fired::Nothing);
 		};
-		claimed = Some((claim.clone(), schedule.revision));
-		let limits = repository::limits(lease.tx(), tenant).await?;
-		let min_interval = f
-			.store
-			.schedule_ceilings
-			.effective(limits, None)
-			.min_interval_seconds;
-		// A Tenant that raised its minimum above this Schedule's interval
-		// stops it, saying so, rather than skipping every tick. Only the
-		// interval itself is compared: a daylight-saving gap that brings one
-		// tick closer is skipped below, never a reason to stop (#557).
-		if matches!(
-			schedule.definition.trigger.meets_minimum(min_interval),
-			Ok(false)
-		) {
-			stopping = Some((
-				Halt::IntervalTooShort,
-				format!(
-					"the Tenant's minimum interval is now {} minutes",
-					min_interval / 60
-				),
-				TickStatus::Skipped,
-			));
-			return Err(Error::Forbidden);
-		}
+		claimed = Some((claim.clone(), duty.revision));
+		// While the previous Task is open the tick is skipped: the default
+		// a Router may later replace (#1011).
 		let skip = if claim.late {
-			Some(schedules::skip::LATE.to_owned())
+			Some(duties::skip::LATE.to_owned())
 		} else if repository::running(lease.tx(), tenant, id).await? {
-			Some(schedules::skip::OVERLAP.to_owned())
+			Some(duties::skip::OVERLAP.to_owned())
 		} else {
-			// The minimum interval holds at run time too: a daylight-saving
-			// change can bring two scheduled times closer than registration
-			// saw. Only a tick that started a Run counts as the previous one.
-			let previous = repository::last_started(lease.tx(), tenant, id).await?;
-			schedules::too_soon(previous, claim.scheduled_at, min_interval)
-				.then(|| schedules::skip::INTERVAL.to_owned())
+			None
 		};
 		if let Some(reason) = skip {
-			advance(lease.tx(), tenant, &schedule, &claim, now).await?;
-			skipped_tick(lease.tx(), tenant, &schedule, &claim, &reason, now).await?;
+			advance(lease.tx(), tenant, &duty, &claim, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
-		// The Registrant must still be able to register it and start Tasks
+		// The Requester must still be able to register it and start Tasks
 		// in its Workspace; otherwise they lost access there.
-		let resource = lease.access_mut().workspace(schedule.workspace_id).await?;
-		for action in ["workspace.read", "task.create", schedules::CREATE] {
+		let resource = lease.access_mut().workspace(duty.workspace_id).await?;
+		for action in ["workspace.read", "task.create", duties::CREATE] {
 			if !lease.access_mut().decide(&resource, action).await? {
 				stopping = Some((
-					Halt::RegistrantLeft,
-					format!("the Registrant may no longer {action} in this Workspace"),
+					Halt::RequesterLeft,
+					format!("the Requester may no longer {action} in this Workspace"),
 					TickStatus::Failed,
 				));
 				return Err(Error::Forbidden);
 			}
 		}
-		// Only a refusal stops the Schedule; any other error, such as a
+		// Only a refusal stops the Duty; any other error, such as a
 		// database outage, leaves the tick to the next pass.
-		if let ThreadMode::Fixed { thread_id } = schedule.definition.thread {
+		if let Some(thread_id) = duty.thread_id {
 			match crate::apps::execution::capabilities::services::endpoints::readable_thread(
 				lease.access_mut(),
-				schedule.workspace_id,
+				duty.workspace_id,
 				thread_id,
 			)
 			.await
@@ -785,7 +715,7 @@ async fn fire(
 				Err(error @ (Error::NotFound(_) | Error::Forbidden)) => {
 					stopping = Some((
 						Halt::ThreadDeleted,
-						"the Schedule's Thread was deleted".into(),
+						"the Duty's Thread was deleted".into(),
 						TickStatus::Failed,
 					));
 					return Err(error);
@@ -795,7 +725,7 @@ async fn fire(
 		}
 		match crate::apps::identity::services::catalog::entry(
 			lease.access_mut(),
-			&schedule.definition.agent,
+			&duty.definition.agent,
 			"agent.execute",
 		)
 		.await
@@ -804,7 +734,7 @@ async fn fire(
 			Err(error @ (Error::NotFound(_) | Error::Forbidden)) => {
 				let reason = format!(
 					"Agent {}@{} can no longer be started",
-					schedule.definition.agent.id, schedule.definition.agent.version
+					duty.definition.agent.id, duty.definition.agent.version
 				);
 				stopping = Some((Halt::AgentVersionUnusable, reason, TickStatus::Failed));
 				return Err(error);
@@ -819,21 +749,25 @@ async fn fire(
 			.admit(tenant, aidash_application::usage::Work::Run)
 			.await?
 		{
-			let reason = format!("{}: {}", schedules::skip::LIMIT, refusal.code);
-			advance(lease.tx(), tenant, &schedule, &claim, now).await?;
-			skipped_tick(lease.tx(), tenant, &schedule, &claim, &reason, now).await?;
+			let reason = format!("{}: {}", duties::skip::LIMIT, refusal.code);
+			advance(lease.tx(), tenant, &duty, &claim, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
-		let (task, thread) = start(f, &mut lease, &schedule, (claim.scheduled_at, "")).await?;
-		repository::mark_scheduled(lease.tx(), task).await?;
-		advance(lease.tx(), tenant, &schedule, &claim, now).await?;
+		let (task, thread) = start(f, &mut lease, &duty, (claim.scheduled_at, "")).await?;
+		// Saving the Duty past this tick keeps the Thread its first Task opened.
+		let duty = Duty {
+			thread_id: Some(thread),
+			..duty
+		};
+		advance(lease.tx(), tenant, &duty, &claim, now).await?;
 		repository::insert_tick(
 			lease.tx(),
 			tenant,
-			schedule.workspace_id,
+			duty.workspace_id,
 			&Tick {
 				id: Uuid::new_v4(),
-				schedule_id: schedule.id,
+				duty_id: duty.id,
 				scheduled_at: claim.scheduled_at,
 				recorded_at: now,
 				status: TickStatus::Started,
@@ -873,7 +807,7 @@ async fn fire(
 	record_miss(
 		f,
 		tenant,
-		(&schedule, revision),
+		(&duty, revision),
 		Some(&claim),
 		now,
 		miss,
@@ -882,15 +816,15 @@ async fn fire(
 	.await
 }
 
-/// Moves a claimed Schedule past the tick it handled.
+/// Moves a claimed Duty past the tick it handled.
 async fn advance(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
-	schedule: &Schedule,
+	duty: &Duty,
 	claim: &Claim,
 	now: DateTime<Utc>,
 ) -> Result<()> {
-	let mut next = schedule.clone();
+	let mut next = duty.clone();
 	next.next_scheduled_at = claim.next;
 	next.updated_at = now;
 	repository::save(&mut *tx, tenant, &next).await?;
@@ -900,7 +834,7 @@ async fn advance(
 async fn skipped_tick(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
-	schedule: &Schedule,
+	duty: &Duty,
 	claim: &Claim,
 	reason: &str,
 	now: DateTime<Utc>,
@@ -908,10 +842,10 @@ async fn skipped_tick(
 	repository::insert_tick(
 		&mut *tx,
 		tenant,
-		schedule.workspace_id,
+		duty.workspace_id,
 		&Tick {
 			id: Uuid::new_v4(),
-			schedule_id: schedule.id,
+			duty_id: duty.id,
 			scheduled_at: claim.scheduled_at,
 			recorded_at: now,
 			status: TickStatus::Skipped,
@@ -930,7 +864,7 @@ async fn skipped_tick(
 async fn record_miss(
 	f: &Federation,
 	tenant: &str,
-	(read, revision): (&Schedule, i64),
+	(read, revision): (&Duty, i64),
 	claim: Option<&Claim>,
 	now: DateTime<Utc>,
 	miss: Miss,
@@ -939,14 +873,14 @@ async fn record_miss(
 	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
 	let mut tx = f.store.pool.begin(&scope).await?;
 	let result: Result<()> = async {
-		let Some(mut schedule) = repository::load(&mut tx, tenant, read.id, true).await? else {
+		let Some(mut duty) = repository::load(&mut tx, tenant, read.id, true).await? else {
 			return Ok(());
 		};
 		// Another replica handled this tick meanwhile, or a person changed the
-		// Schedule after the failed start was judged, such as moving it to a
+		// Duty after the failed start was judged, such as moving it to a
 		// usable Agent version: the outcome no longer applies, and the next
-		// pass judges the Schedule as it is now.
-		if schedule.halt.is_some() || schedule.revision != revision {
+		// pass judges the Duty as it is now.
+		if duty.halt.is_some() || duty.revision != revision {
 			return Ok(());
 		}
 		let scheduled_at = claim.map_or(now, |claim| claim.scheduled_at);
@@ -955,34 +889,37 @@ async fn record_miss(
 			Miss::Stop(_, reason, status) => (*status, reason.clone()),
 		};
 		if let Some(claim) = claim {
-			schedule.next_scheduled_at = claim.next;
+			duty.next_scheduled_at = claim.next;
 		}
 		match miss {
 			Miss::Fail(reason) => {
-				let (failures, pause) =
-					schedules::after_settled(schedule.consecutive_failures, TickStatus::Failed);
-				schedule.consecutive_failures = failures;
+				let (failures, pause) = duties::after_settled(
+					duty.consecutive_failures,
+					TickStatus::Failed,
+					duty.definition.pause_after_failures,
+				);
+				duty.consecutive_failures = failures;
 				if pause {
-					schedule.stop(Halt::Failures, now);
-					report.stopped.push((schedule.id, Halt::Failures));
+					duty.stop(Halt::Failures, now);
+					report.stopped.push((duty.id, Halt::Failures));
 				}
-				report.failed.push((schedule.id, reason));
+				report.failed.push((duty.id, reason));
 			}
 			Miss::Stop(halt, reason, _) => {
-				schedule.stop_because(halt, Some(reason), now);
-				report.stopped.push((schedule.id, halt));
+				duty.stop_because(halt, Some(reason), now);
+				report.stopped.push((duty.id, halt));
 			}
 		}
-		schedule.updated_at = now;
-		repository::save(&mut tx, tenant, &schedule).await?;
+		duty.updated_at = now;
+		repository::save(&mut tx, tenant, &duty).await?;
 		if claim.is_some() {
 			repository::insert_tick(
 				&mut tx,
 				tenant,
-				schedule.workspace_id,
+				duty.workspace_id,
 				&Tick {
 					id: Uuid::new_v4(),
-					schedule_id: schedule.id,
+					duty_id: duty.id,
 					scheduled_at,
 					recorded_at: now,
 					status,
@@ -1006,21 +943,21 @@ async fn record_miss(
 	}
 }
 
-/// Stops the Schedules of a person who left the Tenant, in the transaction
+/// Stops the Duties of a person who left the Tenant, in the transaction
 /// that disables their Mapping (#557 decision 3).
-pub(crate) async fn stop_for_registrant(
+pub(crate) async fn stop_for_requester(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
 	subject: &str,
 ) -> Result<usize> {
 	Ok(
-		repository::stop(tx, tenant, Stop::Registrant(subject), Utc::now())
+		repository::stop(tx, tenant, Stop::Requester(subject), Utc::now())
 			.await?
 			.len(),
 	)
 }
 
-/// Stops the Schedules whose fixed Thread is deleted (#557 decision 21).
+/// Stops the Duties whose fixed Thread is deleted (#557 decision 21).
 pub(crate) async fn stop_for_thread(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
@@ -1033,7 +970,7 @@ pub(crate) async fn stop_for_thread(
 	)
 }
 
-/// Stops every Schedule of a deleted Tenant; a restore leaves them stopped
+/// Stops every Duty of a deleted Tenant; a restore leaves them stopped
 /// (#557 decision 22).
 pub(crate) async fn stop_for_tenant(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
@@ -1044,10 +981,11 @@ pub(crate) async fn stop_for_tenant(
 		.len())
 }
 
-/// A Schedule tool call by an Agent (#557 decisions 5 to 7). It acts for the
-/// person at the root of the Run's chain, with the credential the Run was
-/// admitted with, in the Run's Workspace. Its approval was already decided by
-/// that person's Approval Mode and Approval Rules before the call ran.
+/// A Duty tool call by an Agent (#557 decisions 5 to 7, #1011). It acts for
+/// the person at the root of the Run's chain, with the credential the Run
+/// was admitted with, in the Run's Workspace. A Run a Duty started may set
+/// up Duties too (#1012). Its approval was already decided by that person's
+/// Approval Mode and Approval Rules before the call ran.
 pub async fn agent_tool(
 	store: &Store,
 	run: &aidash_domain::Run,
@@ -1055,8 +993,8 @@ pub async fn agent_tool(
 	operation: &str,
 	input: Value,
 ) -> Result<Value> {
+	use aidash_application::duties::tool;
 	use aidash_application::ports::authorization::ExecutionGrantRepository;
-	use aidash_application::schedules::tool;
 	let federated = !run.is_local(store.deployment.as_str());
 	let grant = if federated {
 		None
@@ -1072,96 +1010,69 @@ pub async fn agent_tool(
 		Some(grant) => (grant.tenant.clone(), grant.credential_id),
 		None => (String::new(), Uuid::nil()),
 	};
-	let scheduled = match &grant {
-		Some(_) => {
-			let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant)?;
-			store
-				.pool
-				.scoped(&scope, async |tx| {
-					// The mark on the Run's authority follows every delegation;
-					// the Task chain also covers a Run admitted before it.
-					Ok(repository::run_scheduled(&mut **tx, run.id).await?
-						|| repository::scheduled_chain(&mut **tx, &tenant, run.task_id).await?)
-				})
-				.await?
-		}
-		None => false,
-	};
-	let changes = operation != "schedule_list";
-	let registrant = schedules::agent_registrant(
-		schedules::Caller {
-			root_person: person.as_deref(),
-			federated,
-			scheduled,
-		},
-		changes,
-	)?
+	let requester = duties::agent_requester(duties::Caller {
+		root_person: person.as_deref(),
+		federated,
+	})?
 	.to_owned();
 	let identity = SubjectIdentity {
 		http_session: None,
 		credential_id: credential,
 		tenant: tenant.clone(),
-		subject: registrant.clone(),
+		subject: requester.clone(),
 	};
 	let mut access = Access::begin(store, &identity).await?;
 	let result: Result<Value> = async {
-		let thread_of_run = repository::task_thread(&mut *access.tx, run.task_id).await?;
-		let this_thread = |choice: tool::Thread| -> Result<ThreadMode> {
-			Ok(match choice {
-				tool::Thread::New => ThreadMode::New,
-				tool::Thread::This => ThreadMode::Fixed {
-					thread_id: thread_of_run.ok_or_else(|| {
-						Error::Invalid("this Run works in no Thread to keep".into())
-					})?,
-				},
-			})
-		};
 		let mut scope = Adapter {
 			access: &mut access,
 			store,
 			now: Utc::now(),
 		};
-		let summary = |schedule: &Schedule| {
+		let summary = |duty: &Duty| {
 			json!({
-				"schedule_id": schedule.id,
-				"title": schedule.definition.title,
-				"status": schedule.status(),
-				"next_scheduled_at": schedule.next_scheduled_at,
-				"trigger": schedule.definition.trigger,
-				"agent": schedule.definition.agent,
-				"acts_as_you": schedule.registrant == registrant,
+				"duty_id": duty.id,
+				"title": duty.definition.title,
+				"status": duty.status(),
+				"next_scheduled_at": duty.next_scheduled_at,
+				"trigger": duty.definition.trigger,
+				"thread_id": duty.thread_id,
+				"agent": duty.definition.agent,
+				"acts_as_you": duty.requester == requester,
 			})
 		};
-		// An Agent changes only its person's own Schedules (#557 decision 7),
+		// An Agent changes only its person's own Duties (#557 decision 7),
 		// and only in its Run's Workspace, the one it lists and registers in.
-		let own = |schedule: &Schedule| -> Result<()> {
-			if schedule.registrant == registrant && schedule.workspace_id == run.workspace_id {
+		let own = |duty: &Duty| -> Result<()> {
+			if duty.requester == requester && duty.workspace_id == run.workspace_id {
 				Ok(())
 			} else {
 				Err(Error::Invalid(
-					"an Agent may change only Schedules of this Workspace that act as the person who started this conversation".into(),
+					"an Agent may change only Duties of this Workspace that act as the person who started this conversation".into(),
 				))
 			}
 		};
 		Ok(match operation {
-			"schedule_create" => {
+			"duty_create" => {
 				let input: tool::Create =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
 				let definition = Definition {
 					title: input.title,
-					request: input.request,
+					mission: input.mission,
+					procedure: input.procedure.unwrap_or_default(),
 					agent: input.agent.unwrap_or_else(|| EntityRef {
 						id: run.agent_id.clone(),
 						version: run.agent_version.clone(),
 					}),
 					trigger: input.trigger,
-					thread: this_thread(input.thread)?,
 					approval_mode: input.approval_mode,
 					max_lateness_seconds: input
 						.max_lateness_seconds
-						.unwrap_or(schedules::DEFAULT_MAX_LATENESS_SECONDS),
+						.unwrap_or(duties::DEFAULT_MAX_LATENESS_SECONDS),
+					pause_after_failures: input
+						.pause_after_failures
+						.unwrap_or(duties::DEFAULT_PAUSE_AFTER_FAILURES),
 				};
-				let schedule = app::register(
+				let duty = app::register(
 					&mut scope,
 					run.workspace_id,
 					definition,
@@ -1171,45 +1082,46 @@ pub async fn agent_tool(
 					},
 				)
 				.await?;
-				summary(&schedule)
+				summary(&duty)
 			}
-			"schedule_list" => json!({
-				"schedules": app::list(&mut scope, Listing::Workspace(run.workspace_id))
+			"duty_list" => json!({
+				"duties": app::list(&mut scope, Listing::Workspace(run.workspace_id))
 					.await?
 					.iter()
 					.map(summary)
 					.collect::<Vec<_>>()
 			}),
-			"schedule_update" => {
+			"duty_update" => {
 				let input: tool::Update =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
-				own(&scope.load(input.schedule_id).await?)?;
+				own(&scope.load(input.duty_id).await?)?;
 				let patch = Patch {
 					title: input.title,
-					request: input.request,
+					mission: input.mission,
+					procedure: input.procedure,
 					agent: input.agent,
 					trigger: input.trigger,
-					thread: input.thread.map(this_thread).transpose()?,
 					approval_mode: input.approval_mode,
 					max_lateness_seconds: input.max_lateness_seconds,
+					pause_after_failures: input.pause_after_failures,
 				};
-				summary(&app::update(&mut scope, input.schedule_id, patch).await?)
+				summary(&app::update(&mut scope, input.duty_id, patch).await?)
 			}
-			"schedule_delete" => {
+			"duty_delete" => {
 				let input: tool::Delete =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
-				own(&scope.load(input.schedule_id).await?)?;
+				own(&scope.load(input.duty_id).await?)?;
 				match input.action {
 					tool::Removal::Delete => {
-						app::delete(&mut scope, input.schedule_id).await?;
-						json!({"deleted": input.schedule_id})
+						app::delete(&mut scope, input.duty_id).await?;
+						json!({"deleted": input.duty_id})
 					}
 					tool::Removal::Pause => {
-						summary(&app::pause(&mut scope, input.schedule_id).await?)
+						summary(&app::pause(&mut scope, input.duty_id).await?)
 					}
 				}
 			}
-			_ => return Err(Error::Invalid("unknown Schedule tool".into())),
+			_ => return Err(Error::Invalid("unknown Duty tool".into())),
 		})
 	}
 	.await;

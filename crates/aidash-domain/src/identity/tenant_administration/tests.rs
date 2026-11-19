@@ -119,7 +119,7 @@ fn schedule_administration_is_a_tenant_administrator_action() {
 	assert!(!ADMINISTRATION_ACTIONS.contains(&SCHEDULE_ADMINISTER));
 	assert_eq!(resource_kind(SCHEDULE_ADMINISTER), "tenant");
 	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&SCHEDULE_ADMINISTER));
-	assert!(crate::identity::tenancy::MEMBER_ACTIONS.contains(&crate::schedules::CREATE));
+	assert!(crate::identity::tenancy::MEMBER_ACTIONS.contains(&crate::duties::CREATE));
 }
 
 #[test]

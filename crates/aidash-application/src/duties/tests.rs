@@ -1,5 +1,5 @@
 use super::*;
-use aidash_domain::schedules::{ModeChoice, Trigger};
+use aidash_domain::duties::{ModeChoice, Trigger, TriggerChoice};
 use rstest::rstest;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,11 +14,9 @@ struct Fake {
 	administers: bool,
 	bypass: bool,
 	agents: BTreeMap<String, Vec<String>>,
-	threads: BTreeSet<(Uuid, Uuid)>,
 	people: BTreeSet<String>,
-	limits: Limits,
-	ceilings: Ceilings,
-	schedules: BTreeMap<Uuid, Schedule>,
+	tier: Option<u32>,
+	duties: BTreeMap<Uuid, Duty>,
 	ticks: Vec<Tick>,
 }
 
@@ -36,11 +34,9 @@ impl Fake {
 				"reporter".to_owned(),
 				vec!["1.0.0".to_owned(), "1.2.0".to_owned()],
 			)]),
-			threads: BTreeSet::new(),
 			people: ["alice", "bob", "carol"].map(str::to_owned).into(),
-			limits: Limits::default(),
-			ceilings: Ceilings::default(),
-			schedules: BTreeMap::new(),
+			tier: None,
+			duties: BTreeMap::new(),
 			ticks: vec![],
 		}
 	}
@@ -53,20 +49,19 @@ impl Fake {
 }
 
 #[async_trait]
-impl ScheduleScope for Fake {
+impl DutyScope for Fake {
 	fn subject(&self) -> &str {
 		&self.subject
 	}
-	async fn registrant_credential(&mut self) -> Result<Uuid> {
+	async fn requester_credential(&mut self) -> Result<Uuid> {
 		Ok(self.credential)
 	}
-	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Schedule>> {
+	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Duty>> {
 		Ok(self
-			.schedules
+			.duties
 			.values()
-			.find(|schedule| {
-				schedule.created_by_run_id == Some(run)
-					&& schedule.creation_key.as_deref() == Some(key)
+			.find(|duty| {
+				duty.created_by_run_id == Some(run) && duty.creation_key.as_deref() == Some(key)
 			})
 			.cloned())
 	}
@@ -108,58 +103,45 @@ impl ScheduleScope for Fake {
 			.filter(|newest| **newest != agent.version)
 			.cloned())
 	}
-	async fn thread_in_workspace(&mut self, workspace: Uuid, thread: Uuid) -> Result<bool> {
-		Ok(self.threads.contains(&(workspace, thread)))
-	}
 	async fn is_person(&mut self, subject: &str) -> Result<bool> {
 		Ok(self.people.contains(subject))
 	}
-	async fn limits(&mut self) -> Result<(Limits, Ceilings, Option<u32>)> {
-		Ok((self.limits, self.ceilings, None))
+	async fn tier_cap(&mut self) -> Result<Option<u32>> {
+		Ok(self.tier)
 	}
-	async fn save_limits(&mut self, limits: &Limits) -> Result<()> {
-		self.limits = *limits;
+	async fn count(&mut self) -> Result<i64> {
+		Ok(self.duties.len() as i64)
+	}
+	async fn insert(&mut self, duty: &Duty) -> Result<()> {
+		self.duties.insert(duty.id, duty.clone());
 		Ok(())
 	}
-	async fn counts(&mut self, registrant: &str) -> Result<(i64, i64)> {
-		Ok((
-			self.schedules.len() as i64,
-			self.schedules
-				.values()
-				.filter(|schedule| schedule.registrant == registrant)
-				.count() as i64,
-		))
-	}
-	async fn insert(&mut self, schedule: &Schedule) -> Result<()> {
-		self.schedules.insert(schedule.id, schedule.clone());
-		Ok(())
-	}
-	async fn load_for_update(&mut self, id: Uuid) -> Result<Schedule> {
+	async fn load_for_update(&mut self, id: Uuid) -> Result<Duty> {
 		self.load(id).await
 	}
-	async fn load(&mut self, id: Uuid) -> Result<Schedule> {
-		self.schedules
+	async fn load(&mut self, id: Uuid) -> Result<Duty> {
+		self.duties
 			.get(&id)
 			.cloned()
-			.ok_or_else(|| Error::NotFound("schedule not found".into()))
+			.ok_or_else(|| Error::NotFound("duty not found".into()))
 	}
-	async fn save(&mut self, schedule: &Schedule) -> Result<()> {
-		let mut saved = schedule.clone();
+	async fn save(&mut self, duty: &Duty) -> Result<()> {
+		let mut saved = duty.clone();
 		saved.revision += 1;
-		self.schedules.insert(schedule.id, saved);
+		self.duties.insert(duty.id, saved);
 		Ok(())
 	}
 	async fn delete(&mut self, id: Uuid) -> Result<()> {
-		self.schedules.remove(&id);
+		self.duties.remove(&id);
 		Ok(())
 	}
-	async fn list(&mut self, listing: Listing) -> Result<Vec<Schedule>> {
+	async fn list(&mut self, listing: Listing) -> Result<Vec<Duty>> {
 		Ok(self
-			.schedules
+			.duties
 			.values()
-			.filter(|schedule| match listing {
-				Listing::Workspace(workspace) => schedule.workspace_id == workspace,
-				Listing::Mine => schedule.registrant == self.subject,
+			.filter(|duty| match listing {
+				Listing::Workspace(workspace) => duty.workspace_id == workspace,
+				Listing::Mine => duty.requester == self.subject,
 				Listing::Tenant => true,
 			})
 			.cloned()
@@ -169,7 +151,7 @@ impl ScheduleScope for Fake {
 		Ok(self
 			.ticks
 			.iter()
-			.filter(|tick| tick.schedule_id == id)
+			.filter(|tick| tick.duty_id == id)
 			.cloned()
 			.collect())
 	}
@@ -178,18 +160,19 @@ impl ScheduleScope for Fake {
 fn definition() -> Definition {
 	Definition {
 		title: "Weekly dependency check".into(),
-		request: "List outdated dependencies.".into(),
+		mission: "List outdated dependencies.".into(),
+		procedure: "1. Check every manifest.".into(),
 		agent: EntityRef {
 			id: "reporter".into(),
 			version: "1.0.0".into(),
 		},
-		trigger: Trigger::Cron {
+		trigger: Some(Trigger::Cron {
 			expression: "0 9 * * mon".into(),
 			time_zone: "Asia/Tokyo".into(),
-		},
-		thread: ThreadMode::New,
+		}),
 		approval_mode: None,
 		max_lateness_seconds: 3600,
+		pause_after_failures: 3,
 	}
 }
 
@@ -201,29 +184,29 @@ fn alice_in(workspace: Uuid) -> Fake {
 
 #[rstest]
 #[tokio::test]
-async fn a_registered_schedule_acts_as_its_registrant_and_knows_its_next_time() {
+async fn a_registered_duty_acts_as_its_requester_and_knows_its_next_time() {
 	// Arrange
 	let workspace = Uuid::new_v4();
 	let mut scope = alice_in(workspace);
 	// Act
-	let schedule = register(&mut scope, workspace, definition(), Origin::Person)
+	let duty = register(&mut scope, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
 	// Assert: Monday 09:00 in Tokyo after Friday 2026-11-13 00:00 UTC.
-	assert_eq!(schedule.registrant, "alice");
-	assert_eq!(schedule.credential_id, scope.credential);
+	assert_eq!(duty.requester, "alice");
+	assert_eq!(duty.credential_id, scope.credential);
 	assert_eq!(
-		schedule.next_scheduled_at,
+		duty.next_scheduled_at,
 		Some("2026-11-16T00:00:00Z".parse().unwrap())
 	);
-	assert_eq!(schedule.halt, None);
-	assert!(scope.schedules.contains_key(&schedule.id));
+	assert_eq!(duty.halt, None);
+	assert!(scope.duties.contains_key(&duty.id));
 }
 
 #[rstest]
 #[tokio::test]
-async fn registering_needs_schedule_create_and_task_create_in_the_workspace() {
-	for action in [schedules::CREATE, "task.create", "workspace.read"] {
+async fn registering_needs_duty_create_and_task_create_in_the_workspace() {
+	for action in [duties::CREATE, "task.create", "workspace.read"] {
 		// Arrange
 		let workspace = Uuid::new_v4();
 		let mut scope = alice_in(workspace);
@@ -232,13 +215,13 @@ async fn registering_needs_schedule_create_and_task_create_in_the_workspace() {
 		let result = register(&mut scope, workspace, definition(), Origin::Person).await;
 		// Assert
 		assert!(matches!(result, Err(Error::Forbidden)), "{action}");
-		assert!(scope.schedules.is_empty());
+		assert!(scope.duties.is_empty());
 	}
 }
 
 #[rstest]
 #[tokio::test]
-async fn only_a_person_registers_a_schedule() {
+async fn only_a_person_registers_a_duty() {
 	// Arrange: a service subject holding every action in the Workspace.
 	let workspace = Uuid::new_v4();
 	let mut scope = Fake::new("nightly-service");
@@ -247,29 +230,20 @@ async fn only_a_person_registers_a_schedule() {
 	let result = register(&mut scope, workspace, definition(), Origin::Person).await;
 	// Assert
 	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
-	assert!(scope.schedules.is_empty());
+	assert!(scope.duties.is_empty());
 }
 
 #[rstest]
 #[tokio::test]
-async fn a_schedule_names_only_what_its_registrant_may_use() {
+async fn a_duty_names_only_what_its_requester_may_use() {
 	let workspace = Uuid::new_v4();
 	let mut unknown_agent = definition();
 	unknown_agent.agent.version = "9.9.9".into();
-	let mut foreign_thread = definition();
-	foreign_thread.thread = ThreadMode::Fixed {
-		thread_id: Uuid::new_v4(),
-	};
 	let mut bypass = definition();
 	bypass.approval_mode = Some(ApprovalMode::Bypass);
-	let mut frequent = definition();
-	frequent.trigger = Trigger::Interval { every_seconds: 60 };
-	for (case, expect_forbidden) in [
-		(unknown_agent, true),
-		(foreign_thread, false),
-		(bypass, false),
-		(frequent, false),
-	] {
+	let mut negative = definition();
+	negative.pause_after_failures = -1;
+	for (case, expect_forbidden) in [(unknown_agent, true), (bypass, false), (negative, false)] {
 		// Arrange
 		let mut scope = alice_in(workspace);
 		// Act
@@ -280,65 +254,33 @@ async fn a_schedule_names_only_what_its_registrant_may_use() {
 			Err(Error::Invalid(_) | Error::Domain(_)) => assert!(!expect_forbidden),
 			other => panic!("unexpected {other:?}"),
 		}
-		assert!(scope.schedules.is_empty());
+		assert!(scope.duties.is_empty());
 	}
 }
 
+/// There is no minimum interval and no count limit but a plan's (#1012).
 #[rstest]
 #[tokio::test]
-async fn the_tenant_raises_the_minimum_interval_and_bounds_the_counts() {
+async fn any_frequency_and_any_number_of_duties_unless_a_plan_caps_them() {
 	// Arrange
 	let workspace = Uuid::new_v4();
 	let mut scope = alice_in(workspace);
-	scope.limits = Limits {
-		max_schedules: 50,
-		max_per_person: 1,
-		min_interval_seconds: 7200,
-	};
-	let mut hourly = definition();
-	hourly.trigger = Trigger::Interval {
-		every_seconds: 3600,
-	};
+	let mut every_second = definition();
+	every_second.trigger = Some(Trigger::Interval { every_seconds: 1 });
 	// Act
-	let too_frequent = register(&mut scope, workspace, hourly, Origin::Person).await;
-	register(&mut scope, workspace, definition(), Origin::Person)
-		.await
-		.unwrap();
-	let over_limit = register(&mut scope, workspace, definition(), Origin::Person).await;
+	let frequent = register(&mut scope, workspace, every_second, Origin::Person).await;
+	for _ in 0..20 {
+		register(&mut scope, workspace, definition(), Origin::Person)
+			.await
+			.unwrap();
+	}
+	scope.tier = Some(21);
+	let over_plan = register(&mut scope, workspace, definition(), Origin::Person).await;
 	// Assert
-	assert!(too_frequent.is_err());
+	assert!(frequent.is_ok(), "{frequent:?}");
+	assert_eq!(scope.duties.len(), 21);
 	assert!(
-		matches!(over_limit, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message.starts_with("SCHEDULE_LIMIT"))
-	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn limits_stay_within_the_deployment_ceilings_and_need_administer() {
-	// Arrange
-	let mut scope = Fake::new("admin");
-	let wanted = Limits {
-		max_schedules: 20,
-		max_per_person: 2,
-		min_interval_seconds: 3600,
-	};
-	// Act + Assert
-	assert!(matches!(
-		set_limits(&mut scope, wanted).await,
-		Err(Error::Forbidden)
-	));
-	scope.administers = true;
-	assert_eq!(set_limits(&mut scope, wanted).await.unwrap(), wanted);
-	assert!(
-		set_limits(
-			&mut scope,
-			Limits {
-				min_interval_seconds: 60,
-				..wanted
-			}
-		)
-		.await
-		.is_err()
+		matches!(over_plan, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message.starts_with("DUTY_LIMIT"))
 	);
 }
 
@@ -350,7 +292,7 @@ async fn an_agent_registers_for_the_person_at_its_root_and_the_run_is_kept() {
 	let run_id = Uuid::new_v4();
 	let mut scope = alice_in(workspace);
 	// Act
-	let schedule = register(
+	let duty = register(
 		&mut scope,
 		workspace,
 		definition(),
@@ -362,32 +304,32 @@ async fn an_agent_registers_for_the_person_at_its_root_and_the_run_is_kept() {
 	.await
 	.unwrap();
 	// Assert
-	assert_eq!(schedule.registrant, "alice");
-	assert_eq!(schedule.created_by_run_id, Some(run_id));
+	assert_eq!(duty.requester, "alice");
+	assert_eq!(duty.created_by_run_id, Some(run_id));
 }
 
 #[rstest]
 #[tokio::test]
-async fn only_the_registrant_changes_it_and_a_new_trigger_counts_from_now() {
+async fn only_the_requester_changes_it_and_a_new_trigger_counts_from_now() {
 	// Arrange
 	let workspace = Uuid::new_v4();
 	let mut alice = alice_in(workspace);
-	let schedule = register(&mut alice, workspace, definition(), Origin::Person)
+	let duty = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
 	let mut bob = alice_in(workspace).acting_as("bob");
-	bob.schedules = alice.schedules.clone();
+	bob.duties = alice.duties.clone();
 	bob.administers = true;
 	let patch = Patch {
-		trigger: Some(Trigger::Interval {
+		trigger: Some(TriggerChoice::Set(Trigger::Interval {
 			every_seconds: 86_400,
-		}),
+		})),
 		approval_mode: Some(ModeChoice::DontAsk),
 		..Patch::default()
 	};
 	// Act
-	let refused = update(&mut bob, schedule.id, patch.clone()).await;
-	let changed = update(&mut alice, schedule.id, patch).await.unwrap();
+	let refused = update(&mut bob, duty.id, patch.clone()).await;
+	let changed = update(&mut alice, duty.id, patch).await.unwrap();
 	// Assert
 	assert!(refused.is_err());
 	assert_eq!(
@@ -403,66 +345,64 @@ async fn only_the_registrant_changes_it_and_a_new_trigger_counts_from_now() {
 
 #[rstest]
 #[tokio::test]
-async fn an_administrator_pauses_but_only_the_registrant_resumes() {
+async fn an_administrator_pauses_but_only_the_requester_resumes() {
 	// Arrange
 	let workspace = Uuid::new_v4();
 	let mut alice = alice_in(workspace);
-	let schedule = register(&mut alice, workspace, definition(), Origin::Person)
+	let duty = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
 	// The administrator can see the Workspace and register there too, so
 	// nothing but the resume rule refuses them.
 	let mut admin = alice_in(workspace).acting_as("admin");
 	admin.administers = true;
-	admin.schedules = alice.schedules.clone();
+	admin.duties = alice.duties.clone();
 	// Act
-	let paused = pause(&mut admin, schedule.id).await.unwrap();
-	let refused = resume(&mut admin, schedule.id).await;
-	alice.schedules = admin.schedules.clone();
-	let resumed = resume(&mut alice, schedule.id).await.unwrap();
+	let paused = pause(&mut admin, duty.id).await.unwrap();
+	let refused = resume(&mut admin, duty.id).await;
+	alice.duties = admin.duties.clone();
+	let resumed = resume(&mut alice, duty.id).await.unwrap();
 	// Assert
 	assert_eq!(paused.halt, Some(Halt::Paused));
 	assert!(
 		matches!(&refused, Err(Error::Domain(aidash_domain::Error::Invalid(message)))
-			if message.starts_with("only the Schedule's Registrant, or the successor named for it")),
+			if message.starts_with("only the Duty's Requester, or the successor named for it")),
 		"{refused:?}"
 	);
 	assert_eq!(resumed.halt, None);
-	assert_eq!(resumed.registrant, "alice");
+	assert_eq!(resumed.requester, "alice");
 }
 
 #[rstest]
 #[tokio::test]
-async fn a_successor_resumes_a_departed_registrants_schedule_as_their_own() {
-	// Arrange: Alice left; the Schedule stopped.
+async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
+	// Arrange: Alice left; the Duty stopped.
 	let workspace = Uuid::new_v4();
 	let mut alice = alice_in(workspace);
-	let mut schedule = register(&mut alice, workspace, definition(), Origin::Person)
+	let mut duty = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
-	schedule.stop(Halt::RegistrantLeft, alice.now);
+	duty.stop(Halt::RequesterLeft, alice.now);
 	let mut admin = Fake::new("admin");
 	admin.administers = true;
-	admin.schedules.insert(schedule.id, schedule.clone());
+	admin.duties.insert(duty.id, duty.clone());
 	// Act
-	let named = name_successor(&mut admin, schedule.id, "carol")
-		.await
-		.unwrap();
+	let named = name_successor(&mut admin, duty.id, "carol").await.unwrap();
 	let mut carol = alice_in(workspace).acting_as("carol");
-	carol.schedules = admin.schedules.clone();
+	carol.duties = admin.duties.clone();
 	let mut bob = alice_in(workspace).acting_as("bob");
-	bob.schedules = admin.schedules.clone();
-	let refused = resume(&mut bob, schedule.id).await;
-	let taken = resume(&mut carol, schedule.id).await.unwrap();
+	bob.duties = admin.duties.clone();
+	let refused = resume(&mut bob, duty.id).await;
+	let taken = resume(&mut carol, duty.id).await.unwrap();
 	// Assert
 	assert_eq!(named.successor.as_deref(), Some("carol"));
 	assert!(refused.is_err());
-	assert_eq!(taken.registrant, "carol");
+	assert_eq!(taken.requester, "carol");
 	assert_eq!(taken.credential_id, carol.credential);
 	assert_eq!(taken.halt, None);
 	assert_eq!(taken.successor, None);
 	assert!(
-		name_successor(&mut admin, schedule.id, "mallory")
+		name_successor(&mut admin, duty.id, "mallory")
 			.await
 			.is_err()
 	);
@@ -470,22 +410,22 @@ async fn a_successor_resumes_a_departed_registrants_schedule_as_their_own() {
 
 #[rstest]
 #[tokio::test]
-async fn the_named_successor_sees_the_schedule_without_its_workspace() {
+async fn the_named_successor_sees_the_duty_without_its_workspace() {
 	// Arrange: Alice left, and Carol, who cannot see the Workspace, is named.
 	let workspace = Uuid::new_v4();
 	let mut alice = alice_in(workspace);
-	let mut schedule = register(&mut alice, workspace, definition(), Origin::Person)
+	let mut duty = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
-	schedule.stop(Halt::RegistrantLeft, alice.now);
-	schedule.successor = Some("carol".into());
+	duty.stop(Halt::RequesterLeft, alice.now);
+	duty.successor = Some("carol".into());
 	let mut carol = Fake::new("carol");
-	carol.schedules.insert(schedule.id, schedule.clone());
+	carol.duties.insert(duty.id, duty.clone());
 	let mut bob = Fake::new("bob");
-	bob.schedules = carol.schedules.clone();
+	bob.duties = carol.duties.clone();
 	// Act
-	let shown = detail(&mut carol, schedule.id).await.unwrap();
-	let hidden = detail(&mut bob, schedule.id).await;
+	let shown = detail(&mut carol, duty.id).await.unwrap();
+	let hidden = detail(&mut bob, duty.id).await;
 	// Assert: she may take it over; nobody else outside the Workspace sees it.
 	assert!(!shown.may_edit);
 	assert!(matches!(hidden, Err(Error::NotFound(_))));
@@ -493,21 +433,21 @@ async fn the_named_successor_sees_the_schedule_without_its_workspace() {
 
 #[rstest]
 #[tokio::test]
-async fn others_see_a_schedule_only_through_its_workspace() {
+async fn others_see_a_duty_only_through_its_workspace() {
 	// Arrange
 	let workspace = Uuid::new_v4();
 	let mut alice = alice_in(workspace);
-	let schedule = register(&mut alice, workspace, definition(), Origin::Person)
+	let duty = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
 	let mut outsider = Fake::new("bob");
-	outsider.schedules = alice.schedules.clone();
+	outsider.duties = alice.duties.clone();
 	// Act + Assert
 	assert!(matches!(
-		detail(&mut outsider, schedule.id).await,
+		detail(&mut outsider, duty.id).await,
 		Err(Error::NotFound(_))
 	));
-	let shown = detail(&mut alice, schedule.id).await.unwrap();
+	let shown = detail(&mut alice, duty.id).await.unwrap();
 	assert!(shown.may_edit);
 	assert_eq!(shown.newer_agent_version.as_deref(), Some("1.2.0"));
 	assert!(matches!(
@@ -518,7 +458,7 @@ async fn others_see_a_schedule_only_through_its_workspace() {
 
 #[rstest]
 #[tokio::test]
-async fn a_retried_agent_call_returns_the_schedule_it_registered() {
+async fn a_retried_agent_call_returns_the_duty_it_registered() {
 	// Arrange
 	let workspace = Uuid::new_v4();
 	let run_id = Uuid::new_v4();
@@ -548,5 +488,5 @@ async fn a_retried_agent_call_returns_the_schedule_it_registered() {
 	// Assert
 	assert_eq!(again.id, first.id);
 	assert_ne!(another.id, first.id);
-	assert_eq!(scope.schedules.len(), 2);
+	assert_eq!(scope.duties.len(), 2);
 }

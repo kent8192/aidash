@@ -1,4 +1,4 @@
-//! Upgrade the default member policy so members may register Schedules (#557).
+//! Upgrade the default member policy so members may register Duties (#557).
 
 pub(crate) fn forward() -> String {
 	use reinhardt::query::{
@@ -12,7 +12,7 @@ pub(crate) fn forward() -> String {
 		.find(|policy| policy.id == "members")
 		.expect("the initial member policy exists");
 	let mut previous = current.clone();
-	previous.actions.remove(aidash_domain::schedules::CREATE);
+	previous.actions.remove(aidash_domain::duties::CREATE);
 	let previous = serde_json::to_value(previous).expect("the member policy serializes");
 	let current = serde_json::to_value(current).expect("the member policy serializes");
 	// Reinhardt Query has no builder for PostgreSQL's JSONB array transformation.
@@ -62,7 +62,7 @@ mod tests {
 		// Arrange: one Tenant keeps the default member policy as it was before
 		// #557; another narrowed it.
 		let database = database.await;
-		for tenant in ["schedule-default-policy", "schedule-custom-policy"] {
+		for tenant in ["duty-default-policy", "duty-custom-policy"] {
 			let scope = database.tenant(tenant).await;
 			let mut bundle =
 				aidash_domain::identity::tenancy::initial_policy(tenant, false).unwrap();
@@ -71,8 +71,8 @@ mod tests {
 				.iter_mut()
 				.find(|policy| policy.id == "members")
 				.unwrap();
-			policy.actions.remove(aidash_domain::schedules::CREATE);
-			if tenant == "schedule-custom-policy" {
+			policy.actions.remove(aidash_domain::duties::CREATE);
+			if tenant == "duty-custom-policy" {
 				policy.actions.remove("workspace.create");
 			}
 			let mut tx = database.begin_in(&scope).await;
@@ -92,10 +92,7 @@ mod tests {
 		let mut tx = database.begin_fixture().await;
 		tx.execute(&super::forward(), vec![]).await.unwrap();
 		// Assert
-		for (tenant, expected) in [
-			("schedule-default-policy", true),
-			("schedule-custom-policy", false),
-		] {
+		for (tenant, expected) in [("duty-default-policy", true), ("duty-custom-policy", false)] {
 			let (sql, values) = Query::select()
 				.column(Alias::new("document"))
 				.from(Alias::new("authorization_bundles"))
@@ -116,7 +113,7 @@ mod tests {
 				.find(|policy| policy.id == "members")
 				.unwrap();
 			assert_eq!(
-				policy.actions.contains(aidash_domain::schedules::CREATE),
+				policy.actions.contains(aidash_domain::duties::CREATE),
 				expected
 			);
 			assert_eq!(policy.actions.contains("workspace.create"), expected);

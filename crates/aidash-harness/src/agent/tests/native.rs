@@ -1054,6 +1054,7 @@ async fn pinned_standing_instructions_reach_the_system_text(mut canonical: Fixtu
 	let standing = aidash_domain::standing_instructions::StandingInstructions {
 		tenant: "Reply in Japanese.".into(),
 		node: "Open pull requests as drafts.".into(),
+		duty: String::new(),
 	};
 	canonical.run.context.standing_instructions = Some(standing.clone());
 	// Act

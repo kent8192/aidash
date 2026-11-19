@@ -37300,8 +37300,12 @@
           },
           "StandingInstructions": {
             "additionalProperties": false,
-            "description": "The Tenant and Node Instructions one Run works under.",
+            "description": "The Tenant and Node Instructions one Run works under, and the mission and\nprocedure of the Duty that started its Task, if one did (#1011).",
             "properties": {
+              "duty": {
+                "description": "The Duty's mission and procedure, ranked after the Agent's own\ninstructions and Skills and above the task (ADR 0142).",
+                "type": "string"
+              },
               "node": {
                 "type": "string"
               },
@@ -52697,8 +52701,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "workspace-schedules",
-    "path": "/api/workspaces/{workspace}/schedules",
+    "name": "workspace-duties",
+    "path": "/api/workspaces/{workspace}/duties",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -52728,60 +52732,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -52795,7 +52747,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -52841,27 +52793,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -52875,14 +52837,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -52896,15 +52868,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -52922,41 +52896,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -52978,7 +52966,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -52997,20 +52985,20 @@
         },
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/ScheduleView"
+            "$ref": "#/components/schemas/DutyView"
           },
           "type": "array"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["workspace"]
   },
   {
     "json": true,
     "method": "POST",
-    "name": "schedule-create",
-    "path": "/api/workspaces/{workspace}/schedules",
+    "name": "duty-create",
+    "path": "/api/workspaces/{workspace}/duties",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -53040,60 +53028,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -53107,7 +53043,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -53153,27 +53089,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -53187,14 +53133,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -53208,15 +53164,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -53234,41 +53192,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -53290,7 +53262,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -53308,18 +53280,18 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/ScheduleView"
+          "$ref": "#/components/schemas/DutyView"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["workspace"]
   },
   {
     "json": false,
     "method": "GET",
-    "name": "schedule-list",
-    "path": "/api/schedules",
+    "name": "duty-list",
+    "path": "/api/duties",
     "query_parameters": ["scope"],
     "responses": {
       "200": {
@@ -53349,60 +53321,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -53416,7 +53336,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -53462,27 +53382,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -53496,14 +53426,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -53517,15 +53457,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -53543,41 +53485,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -53599,7 +53555,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -53618,86 +53574,26 @@
         },
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/ScheduleView"
+            "$ref": "#/components/schemas/DutyView"
           },
           "type": "array"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": []
   },
   {
     "json": false,
     "method": "GET",
-    "name": "schedule-notices",
-    "path": "/api/schedules/notices",
+    "name": "duty-notices",
+    "path": "/api/duties/notices",
     "query_parameters": [],
     "responses": {
       "200": {
         "definitions": {
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "NoticesView": {
-            "properties": {
-              "scheduled_tasks": {
-                "description": "Tasks the viewer's Schedules started in the last week. The bell shows\ntheir completion without a toast (#557 decision 26).",
-                "items": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "stopped": {
-                "items": {
-                  "$ref": "#/components/schemas/ScheduleNotice"
-                },
-                "type": "array"
-              }
-            },
-            "required": ["stopped", "scheduled_tasks"],
-            "type": "object"
-          },
-          "ScheduleNotice": {
-            "description": "A Schedule that stopped without anyone choosing it (#557 decision 25).",
+          "DutyNotice": {
+            "description": "A Duty that stopped without anyone choosing it (#557 decision 25).",
             "properties": {
               "halt": {
                 "$ref": "#/components/schemas/Halt"
@@ -53713,7 +53609,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "registrant": {
+              "requester": {
                 "type": "string"
               },
               "successor": {
@@ -53731,12 +53627,67 @@
               "id",
               "workspace_id",
               "title",
-              "registrant",
+              "requester",
               "halt",
               "halted_at",
               "halt_reason",
               "successor"
             ],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              }
+            ]
+          },
+          "NoticesView": {
+            "properties": {
+              "scheduled_tasks": {
+                "description": "Tasks the viewer's Duties started in the last week. The bell shows\ntheir completion without a toast (#557 decision 26).",
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "stopped": {
+                "items": {
+                  "$ref": "#/components/schemas/DutyNotice"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["stopped", "scheduled_tasks"],
             "type": "object"
           }
         },
@@ -53745,186 +53696,14 @@
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": []
   },
   {
     "json": false,
     "method": "GET",
-    "name": "schedule-limits",
-    "path": "/api/schedules/limits",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "Ceilings": {
-            "additionalProperties": false,
-            "description": "What a Deployment allows every Tenant: the most Schedules a Tenant and a\nperson may have, and the shortest interval, which a Tenant may only raise.",
-            "properties": {
-              "max_per_person": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "max_schedules": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "min_interval_seconds": {
-                "format": "int64",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "max_schedules",
-              "max_per_person",
-              "min_interval_seconds"
-            ],
-            "type": "object"
-          },
-          "Limits": {
-            "additionalProperties": false,
-            "description": "The Tenant's Schedule limits as its administrators set them (#557\ndecision 16), always within the Deployment's ceilings.",
-            "properties": {
-              "max_per_person": {
-                "description": "Schedules one person is the Registrant of.",
-                "format": "int32",
-                "type": "integer"
-              },
-              "max_schedules": {
-                "description": "Schedules in the whole Tenant.",
-                "format": "int32",
-                "type": "integer"
-              },
-              "min_interval_seconds": {
-                "description": "The shortest gap between two fire times, at least the Deployment's.",
-                "format": "int64",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "max_schedules",
-              "max_per_person",
-              "min_interval_seconds"
-            ],
-            "type": "object"
-          },
-          "LimitsView": {
-            "properties": {
-              "ceilings": {
-                "$ref": "#/components/schemas/Ceilings"
-              },
-              "effective": {
-                "$ref": "#/components/schemas/Limits",
-                "description": "The limits that apply now, after the ceilings and any Tier."
-              },
-              "limits": {
-                "$ref": "#/components/schemas/Limits",
-                "description": "The Tenant's limits as its administrators set them."
-              }
-            },
-            "required": ["limits", "ceilings", "effective"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/LimitsView"
-        }
-      }
-    },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": true,
-    "method": "PUT",
-    "name": "schedule-limits-update",
-    "path": "/api/schedules/limits",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "Ceilings": {
-            "additionalProperties": false,
-            "description": "What a Deployment allows every Tenant: the most Schedules a Tenant and a\nperson may have, and the shortest interval, which a Tenant may only raise.",
-            "properties": {
-              "max_per_person": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "max_schedules": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "min_interval_seconds": {
-                "format": "int64",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "max_schedules",
-              "max_per_person",
-              "min_interval_seconds"
-            ],
-            "type": "object"
-          },
-          "Limits": {
-            "additionalProperties": false,
-            "description": "The Tenant's Schedule limits as its administrators set them (#557\ndecision 16), always within the Deployment's ceilings.",
-            "properties": {
-              "max_per_person": {
-                "description": "Schedules one person is the Registrant of.",
-                "format": "int32",
-                "type": "integer"
-              },
-              "max_schedules": {
-                "description": "Schedules in the whole Tenant.",
-                "format": "int32",
-                "type": "integer"
-              },
-              "min_interval_seconds": {
-                "description": "The shortest gap between two fire times, at least the Deployment's.",
-                "format": "int64",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "max_schedules",
-              "max_per_person",
-              "min_interval_seconds"
-            ],
-            "type": "object"
-          },
-          "LimitsView": {
-            "properties": {
-              "ceilings": {
-                "$ref": "#/components/schemas/Ceilings"
-              },
-              "effective": {
-                "$ref": "#/components/schemas/Limits",
-                "description": "The limits that apply now, after the ceilings and any Tier."
-              },
-              "limits": {
-                "$ref": "#/components/schemas/Limits",
-                "description": "The Tenant's limits as its administrators set them."
-              }
-            },
-            "required": ["limits", "ceilings", "effective"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/LimitsView"
-        }
-      }
-    },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "schedule-read",
-    "path": "/api/schedules/{id}",
+    "name": "duty-read",
+    "path": "/api/duties/{id}",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -53955,8 +53734,11 @@
             ]
           },
           "DetailView": {
-            "description": "A Schedule with its history and what the viewer may do.",
+            "description": "A Duty with its history and what the viewer may do.",
             "properties": {
+              "duty": {
+                "$ref": "#/components/schemas/DutyView"
+              },
               "may_administer": {
                 "type": "boolean"
               },
@@ -53964,11 +53746,8 @@
                 "type": "boolean"
               },
               "newer_agent_version": {
-                "description": "A newer version of its Agent the Registrant could move it to.",
+                "description": "A newer version of its Agent the Requester could move it to.",
                 "type": ["string", "null"]
-              },
-              "schedule": {
-                "$ref": "#/components/schemas/ScheduleView"
               },
               "ticks": {
                 "description": "Started, skipped (with the reason) and failed ticks, newest first.",
@@ -53979,7 +53758,7 @@
               }
             },
             "required": [
-              "schedule",
+              "duty",
               "ticks",
               "newer_agent_version",
               "may_edit",
@@ -53987,60 +53766,8 @@
             ],
             "type": "object"
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -54054,7 +53781,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -54100,27 +53827,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -54134,14 +53871,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -54155,15 +53902,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -54181,42 +53930,60 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Tick": {
-            "description": "One tick of a Schedule, as its history shows it.",
+            "description": "One tick of a Duty, as its history shows it.",
             "properties": {
+              "duty_id": {
+                "format": "uuid",
+                "type": "string"
+              },
               "id": {
                 "format": "uuid",
                 "type": "string"
@@ -54227,10 +53994,6 @@
               },
               "recorded_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "schedule_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "scheduled_at": {
@@ -54256,7 +54019,7 @@
             },
             "required": [
               "id",
-              "schedule_id",
+              "duty_id",
               "scheduled_at",
               "recorded_at",
               "status",
@@ -54297,7 +54060,7 @@
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -54319,7 +54082,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -54341,14 +54104,14 @@
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {
     "json": true,
     "method": "PATCH",
-    "name": "schedule-update",
-    "path": "/api/schedules/{id}",
+    "name": "duty-update",
+    "path": "/api/duties/{id}",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -54378,60 +54141,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -54445,7 +54156,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -54491,27 +54202,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -54525,14 +54246,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -54546,15 +54277,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -54572,41 +54305,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -54628,7 +54375,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -54646,18 +54393,18 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/ScheduleView"
+          "$ref": "#/components/schemas/DutyView"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {
     "json": false,
     "method": "POST",
-    "name": "schedule-pause",
-    "path": "/api/schedules/{id}/pause",
+    "name": "duty-pause",
+    "path": "/api/duties/{id}/pause",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -54687,60 +54434,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -54754,7 +54449,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -54800,27 +54495,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -54834,14 +54539,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -54855,15 +54570,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -54881,41 +54598,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -54937,7 +54668,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -54955,18 +54686,18 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/ScheduleView"
+          "$ref": "#/components/schemas/DutyView"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {
     "json": false,
     "method": "POST",
-    "name": "schedule-resume",
-    "path": "/api/schedules/{id}/resume",
+    "name": "duty-resume",
+    "path": "/api/duties/{id}/resume",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -54996,60 +54727,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -55063,7 +54742,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -55109,27 +54788,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -55143,14 +54832,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -55164,15 +54863,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -55190,41 +54891,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -55246,7 +54961,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -55264,18 +54979,18 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/ScheduleView"
+          "$ref": "#/components/schemas/DutyView"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {
     "json": true,
     "method": "POST",
-    "name": "schedule-successor",
-    "path": "/api/schedules/{id}/successor",
+    "name": "duty-successor",
+    "path": "/api/duties/{id}/successor",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -55305,60 +55020,8 @@
               }
             ]
           },
-          "EntityRef": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "Halt": {
-            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
-            "oneOf": [
-              {
-                "description": "Its Registrant or an administrator paused it.",
-                "enum": ["paused"],
-                "type": "string"
-              },
-              {
-                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
-                "enum": ["failures"],
-                "type": "string"
-              },
-              {
-                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
-                "enum": ["registrant_left"],
-                "type": "string"
-              },
-              {
-                "description": "The pinned Agent version can no longer be started.",
-                "enum": ["agent_version_unusable"],
-                "type": "string"
-              },
-              {
-                "description": "Its fixed Thread was deleted.",
-                "enum": ["thread_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant was deleted. A restore leaves it stopped.",
-                "enum": ["tenant_deleted"],
-                "type": "string"
-              },
-              {
-                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
-                "enum": ["interval_too_short"],
-                "type": "string"
-              }
-            ]
-          },
-          "ScheduleView": {
-            "description": "A Schedule as its list and page show it.",
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
             "properties": {
               "agent": {
                 "$ref": "#/components/schemas/EntityRef"
@@ -55372,7 +55035,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "None follows the Registrant's own default mode."
+                "description": "None follows the Requester's own default mode."
               },
               "consecutive_failures": {
                 "format": "int32",
@@ -55418,27 +55081,37 @@
                 "type": "boolean"
               },
               "may_manage": {
-                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Registrant, or the successor named for it.",
+                "description": "Resume it: its Requester, or the successor named for it.",
                 "type": "boolean"
               },
               "mine": {
-                "description": "The viewer is its Registrant.",
+                "description": "The viewer is its Requester.",
                 "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
               },
               "next_scheduled_at": {
                 "description": "The next scheduled time; the viewer's time zone renders it.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "registrant": {
-                "description": "The person every Run of the Schedule acts as.",
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
                 "type": "string"
               },
-              "request": {
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
                 "type": "string"
               },
               "revision": {
@@ -55452,14 +55125,24 @@
               "successor": {
                 "type": ["string", "null"]
               },
-              "thread": {
-                "$ref": "#/components/schemas/ThreadMode"
+              "thread_id": {
+                "description": "The Duty's own Thread, once its first Task opened it.",
+                "format": "uuid",
+                "type": ["string", "null"]
               },
               "title": {
                 "type": "string"
               },
               "trigger": {
-                "$ref": "#/components/schemas/Trigger"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
               },
               "updated_at": {
                 "format": "date-time",
@@ -55473,15 +55156,17 @@
             "required": [
               "id",
               "workspace_id",
-              "registrant",
+              "requester",
               "mine",
               "title",
-              "request",
+              "mission",
+              "procedure",
               "agent",
               "trigger",
-              "thread",
+              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
+              "pause_after_failures",
               "status",
               "halt",
               "halted_at",
@@ -55499,41 +55184,55 @@
             ],
             "type": "object"
           },
-          "ThreadMode": {
-            "description": "Which Thread a tick's Run is started in.",
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A new Thread on every tick.",
-                "properties": {
-                  "kind": {
-                    "enum": ["new"],
-                    "type": "string"
-                  }
-                },
-                "required": ["kind"],
-                "type": "object"
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
               },
               {
-                "additionalProperties": false,
-                "description": "Always the same Thread of the Schedule's Workspace.",
-                "properties": {
-                  "kind": {
-                    "enum": ["fixed"],
-                    "type": "string"
-                  },
-                  "thread_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  }
-                },
-                "required": ["kind", "thread_id"],
-                "type": "object"
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
               }
             ]
           },
           "Trigger": {
-            "description": "When a Schedule fires.",
+            "description": "When a Duty fires.",
             "oneOf": [
               {
                 "additionalProperties": false,
@@ -55555,7 +55254,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
                 "properties": {
                   "every_seconds": {
                     "format": "int64",
@@ -55573,18 +55272,18 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/ScheduleView"
+          "$ref": "#/components/schemas/DutyView"
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {
     "json": false,
     "method": "POST",
-    "name": "schedule-run-now",
-    "path": "/api/schedules/{id}/run-now",
+    "name": "duty-run-now",
+    "path": "/api/duties/{id}/run-now",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -55609,14 +55308,14 @@
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {
     "json": false,
     "method": "DELETE",
-    "name": "schedule-delete",
-    "path": "/api/schedules/{id}",
+    "name": "duty-delete",
+    "path": "/api/duties/{id}",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -55637,7 +55336,7 @@
         }
       }
     },
-    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
   },
   {

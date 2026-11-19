@@ -73,9 +73,9 @@ impl aidash_application::ports::nodes::TierLimits for Gate {
 		Ok(self.tier(tenant).await?.map(|tier| tier.nodes))
 	}
 
-	/// The covering Tier's Schedule cap lowers the Tenant's own limit (#557
-	/// decision 16).
-	async fn schedules(
+	/// The covering Tier's Duty cap, the only count limit on Duties (#557
+	/// decision 16, #1012).
+	async fn duties(
 		&self,
 		tenant: &aidash_domain::tenancy::TenantName,
 	) -> aidash_application::Result<Option<u32>> {

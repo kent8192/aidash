@@ -57,9 +57,9 @@ import {
 } from "./notifications/model";
 import {
   quietCompletion,
-  scheduleNoticeEntries,
-  type ScheduleNotices,
-} from "./schedules-model";
+  dutyNoticeEntries,
+  type DutyNotices,
+} from "./duties-model";
 
 const copy = {
   "ja-JP": {
@@ -73,7 +73,7 @@ const copy = {
     input: "回答が必要です",
     completed: "タスクが完了しました",
     failed: "タスクが失敗しました",
-    schedule_stopped: "スケジュールが止まりました",
+    duty_stopped: "職務が止まりました",
     joined: "招待による参加",
     updates: (count: number) => `${count}件の更新があります`,
     view: "通知を確認",
@@ -90,7 +90,7 @@ const copy = {
     input: "Your response is needed",
     completed: "Task completed",
     failed: "Task failed",
-    schedule_stopped: "Schedule stopped",
+    duty_stopped: "Duty stopped",
     joined: "Invitation accepted",
     updates: (count: number) => `${count} updates`,
     view: "View notifications",
@@ -102,7 +102,7 @@ const icons = {
   input: CircleHelp,
   completed: CheckCircle2,
   failed: TriangleAlert,
-  schedule_stopped: CalendarX2,
+  duty_stopped: CalendarX2,
   joined: CheckCircle2,
 };
 const iconTone = {
@@ -110,7 +110,7 @@ const iconTone = {
   input: "text-warning",
   completed: "text-success",
   failed: "text-destructive",
-  schedule_stopped: "text-warning",
+  duty_stopped: "text-warning",
   joined: "text-success",
 };
 type InvitationApprovalNotice = {
@@ -123,7 +123,7 @@ function frame(
   data: TenantState | undefined,
   node: string,
   approvals: ApprovalCard[] | undefined,
-  schedules: ScheduleNotices | undefined,
+  schedules: DutyNotices | undefined,
   administration: TenantAdministration | undefined,
   joins: InvitationApprovalNotice[] | undefined,
   ja: boolean,
@@ -274,10 +274,10 @@ function frame(
         },
       });
   }
-  // Stopped Schedules wait in the pending section (#557). Their scope appears
-  // once the list has loaded, so Schedules already stopped stay quiet.
+  // Stopped Duties wait in the pending section (#557). Their scope appears
+  // once the list has loaded, so Duties already stopped stay quiet.
   if (schedules) {
-    const stopped = scheduleNoticeEntries(
+    const stopped = dutyNoticeEntries(
       data.deployment.id,
       schedules,
       (id) =>
@@ -376,8 +376,8 @@ export function NotificationProvider({
   node: string;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
-  /** Stopped Schedules and the Tasks Schedules started (#557). */
-  schedules?: ScheduleNotices;
+  /** Stopped Duties and the Tasks Duties started (#557). */
+  schedules?: DutyNotices;
   locale: Locale;
   theme: "light" | "dark";
   onSelect: (target: NoticeTarget) => void;

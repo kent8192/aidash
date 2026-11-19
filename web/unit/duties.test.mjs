@@ -7,53 +7,58 @@ import {
   formProblems,
   haltText,
   patchOf,
-  scheduleActions,
+  dutyActions,
   quietCompletion,
-  scheduleNoticeEntries,
+  dutyNoticeEntries,
   tickLabel,
   triggerSummary,
-} from "../src/schedules-model.ts";
+} from "../src/duties-model.ts";
 
 function filled() {
   return {
     ...emptyForm("Asia/Tokyo"),
     title: " Daily report ",
-    request: "Summarize yesterday.",
+    mission: "Summarize yesterday.",
+    procedure: "1. Read every merged pull request.",
     agentId: "reporter",
     agentVersion: "1.0.0",
   };
 }
 
-test("a filled form becomes the registration body, defaulting to a new Thread and the person's mode", () => {
+test("a filled form becomes the registration body, defaulting to the person's mode and three failures", () => {
   const body = definitionOf(filled());
   assert.deepEqual(body, {
     title: "Daily report",
-    request: "Summarize yesterday.",
+    mission: "Summarize yesterday.",
+    procedure: "1. Read every merged pull request.",
     agent: { id: "reporter", version: "1.0.0" },
     trigger: {
       kind: "cron",
       expression: "0 9 * * 1-5",
       time_zone: "Asia/Tokyo",
     },
-    thread: { kind: "new" },
     max_lateness_seconds: 3600,
+    pause_after_failures: 3,
   });
 });
 
-test("a fixed Thread, an interval and a chosen mode reach the body", () => {
+test("an interval, a chosen mode and never pausing reach the body", () => {
   const body = definitionOf({
     ...filled(),
     timing: "interval",
     everyMinutes: "120",
-    thread: "11111111-1111-4111-8111-111111111111",
     approvalMode: "dont_ask",
+    pauseAfterFailures: "0",
   });
   assert.deepEqual(body.trigger, { kind: "interval", every_seconds: 7200 });
-  assert.deepEqual(body.thread, {
-    kind: "fixed",
-    thread_id: "11111111-1111-4111-8111-111111111111",
-  });
   assert.equal(body.approval_mode, "dont_ask");
+  assert.equal(body.pause_after_failures, 0);
+});
+
+test("a Duty without a time trigger sends none and an edit removes it", () => {
+  const form = { ...filled(), timing: "none" };
+  assert.equal("trigger" in definitionOf(form), false);
+  assert.deepEqual(patchOf(form).trigger, { kind: "none" });
 });
 
 test("an edit names the person's default mode explicitly", () => {
@@ -65,55 +70,64 @@ test("an edit names the person's default mode explicitly", () => {
 });
 
 test("the form refuses what the browser can tell is wrong", () => {
-  assert.deepEqual(formProblems(filled(), 900), []);
+  assert.deepEqual(formProblems(filled()), []);
   assert.deepEqual(
-    formProblems({ ...emptyForm("UTC"), expression: "0 9 * *" }, 900),
-    ["title", "request", "agent", "expression"],
+    formProblems({ ...emptyForm("UTC"), expression: "0 9 * *" }),
+    ["title", "mission", "agent", "expression"],
+  );
+  // Any interval of a minute or more is fine: there is no minimum (#1012).
+  assert.deepEqual(
+    formProblems({ ...filled(), timing: "interval", everyMinutes: "1" }),
+    [],
   );
   assert.deepEqual(
-    formProblems({ ...filled(), timing: "interval", everyMinutes: "10" }, 900),
+    formProblems({ ...filled(), timing: "interval", everyMinutes: "0" }),
     ["interval"],
   );
-  assert.deepEqual(
-    formProblems({ ...filled(), maxLatenessMinutes: "0" }, 900),
-    ["lateness"],
-  );
+  assert.deepEqual(formProblems({ ...filled(), maxLatenessMinutes: "0" }), [
+    "lateness",
+  ]);
+  assert.deepEqual(formProblems({ ...filled(), pauseAfterFailures: "-1" }), [
+    "failures",
+  ]);
 });
 
-test("a stored Schedule round-trips through the form", () => {
-  const schedule = {
+test("a stored Duty round-trips through the form", () => {
+  const duty = {
     title: "Weekly",
-    request: "Check dependencies.",
+    mission: "Check dependencies.",
+    procedure: "",
     agent: { id: "reporter", version: "1.2.0" },
     trigger: { kind: "interval", every_seconds: 86400 },
-    thread: { kind: "new" },
     approval_mode: null,
     max_lateness_seconds: 600,
+    pause_after_failures: 3,
   };
-  const form = formOf(schedule);
+  const form = formOf(duty);
   assert.equal(form.everyMinutes, "1440");
   assert.equal(form.approvalMode, "default");
-  assert.deepEqual(definitionOf(form).trigger, schedule.trigger);
-  assert.equal(triggerSummary(schedule.trigger, false), "every 1 d");
-  assert.equal(triggerSummary(schedule.trigger, true), "1日ごと");
+  assert.deepEqual(definitionOf(form).trigger, duty.trigger);
+  assert.equal(triggerSummary(duty.trigger, false), "every 1 d");
+  assert.equal(triggerSummary(duty.trigger, true), "1日ごと");
 });
 
-test("saving a Schedule kept in seconds does not round its timing", () => {
-  const schedule = {
+test("saving a Duty kept in seconds does not round its timing", () => {
+  const duty = {
     title: "Probe",
-    request: "Check the probe.",
+    mission: "Check the probe.",
+    procedure: "",
     agent: { id: "reporter", version: "1.2.0" },
     trigger: { kind: "interval", every_seconds: 930 },
-    thread: { kind: "new" },
     approval_mode: null,
     max_lateness_seconds: 90,
+    pause_after_failures: 3,
   };
-  const renamed = { ...formOf(schedule), title: "Probe 2" };
-  const patch = patchOf(renamed, schedule);
-  assert.deepEqual(patch.trigger, schedule.trigger);
+  const renamed = { ...formOf(duty), title: "Probe 2" };
+  const patch = patchOf(renamed, duty);
+  assert.deepEqual(patch.trigger, duty.trigger);
   assert.equal(patch.max_lateness_seconds, 90);
   assert.equal(patch.title, "Probe 2");
-  const retimed = patchOf({ ...renamed, everyMinutes: "30" }, schedule);
+  const retimed = patchOf({ ...renamed, everyMinutes: "30" }, duty);
   assert.deepEqual(retimed.trigger, { kind: "interval", every_seconds: 1800 });
 });
 
@@ -141,8 +155,8 @@ test("tick labels give the skip reason and who ran it now", () => {
   );
 });
 
-test("stopped Schedules become pending bell entries in their own scope", () => {
-  const { scope, entries } = scheduleNoticeEntries(
+test("stopped Duties become pending bell entries in their own scope", () => {
+  const { scope, entries } = dutyNoticeEntries(
     "home",
     {
       stopped: [
@@ -150,8 +164,8 @@ test("stopped Schedules become pending bell entries in their own scope", () => {
           id: "s1",
           workspace_id: "w1",
           title: "Weekly",
-          registrant: "alice",
-          halt: "registrant_left",
+          requester: "alice",
+          halt: "requester_left",
           halted_at: "2026-11-13T00:00:00Z",
           successor: null,
         },
@@ -161,17 +175,17 @@ test("stopped Schedules become pending bell entries in their own scope", () => {
     () => "Ops",
     false,
   );
-  assert.equal(scope, JSON.stringify(["home", "schedules"]));
+  assert.equal(scope, JSON.stringify(["home", "duties"]));
   assert.equal(entries.length, 1);
-  assert.equal(entries[0].kind, "schedule_stopped");
-  assert.equal(entries[0].target.kind, "schedule");
+  assert.equal(entries[0].kind, "duty_stopped");
+  assert.equal(entries[0].target.kind, "duty");
   assert.equal(entries[0].workspaceTitle, "Ops");
   assert.match(entries[0].detail, /Waiting for a successor/);
 });
 
 test("a notices answer without a stopped list yields no entries instead of throwing", () => {
   for (const answer of [[], {}, null]) {
-    const { entries } = scheduleNoticeEntries("home", answer, () => "", false);
+    const { entries } = dutyNoticeEntries("home", answer, () => "", false);
     assert.deepEqual(entries, []);
   }
 });
@@ -195,30 +209,32 @@ function row(overrides) {
 }
 
 test("a row offers only what the viewer may do", () => {
-  // The Registrant's own active Schedule.
+  // The Requester's own active Duty.
   assert.deepEqual(
-    scheduleActions(row({ mine: true, may_edit: true, may_manage: true })),
+    dutyActions(row({ mine: true, may_edit: true, may_manage: true })),
     { edit: true, pause: true, resume: null, remove: true },
   );
   // Someone else's, seen through the Workspace: nothing to change.
-  assert.deepEqual(scheduleActions(row({})), {
+  assert.deepEqual(dutyActions(row({})), {
     edit: false,
     pause: false,
     resume: null,
     remove: false,
   });
   // An administrator pauses and deletes but never resumes it.
-  assert.deepEqual(
-    scheduleActions(row({ status: "paused", may_manage: true })),
-    { edit: false, pause: false, resume: null, remove: true },
-  );
+  assert.deepEqual(dutyActions(row({ status: "paused", may_manage: true })), {
+    edit: false,
+    pause: false,
+    resume: null,
+    remove: true,
+  });
   // Waiting for a successor: only the named successor takes it over.
   assert.equal(
-    scheduleActions(row({ status: "stopped", may_resume: true })).resume,
+    dutyActions(row({ status: "stopped", may_resume: true })).resume,
     "takeOver",
   );
   assert.equal(
-    scheduleActions(row({ status: "stopped", mine: true, may_resume: false }))
+    dutyActions(row({ status: "stopped", mine: true, may_resume: false }))
       .resume,
     null,
   );
@@ -227,11 +243,11 @@ test("a row offers only what the viewer may do", () => {
 test("a stop names the server's reason when it gave one", () => {
   assert.equal(
     haltText(
-      "interval_too_short",
-      "the Tenant's minimum interval is now 120 minutes",
+      "agent_version_unusable",
+      "Agent reporter@1.0.0 can no longer be started",
       false,
     ),
-    "Stopped: shorter than the Tenant's minimum interval. Change it and resume (the Tenant's minimum interval is now 120 minutes)",
+    "Stopped: its Agent version can no longer be started (Agent reporter@1.0.0 can no longer be started)",
   );
   assert.equal(haltText("paused", null, false), "Paused");
 });

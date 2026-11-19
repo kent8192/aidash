@@ -170,5 +170,6 @@ pub(crate) async fn standing(
 	Ok(StandingInstructions {
 		tenant: read(tx, tenant, Target::Tenant).await?.text,
 		node: read(tx, tenant, Target::Node(node)).await?.text,
+		duty: String::new(),
 	})
 }

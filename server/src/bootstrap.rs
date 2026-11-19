@@ -156,7 +156,7 @@ pub async fn initialize_as(
 		})
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
-		.with_schedules(settings.schedules.ceilings()?, settings.schedules.poll()?)
+		.with_duties(settings.duties.poll()?)
 		.with_preview_limits(settings.preview_limits.limits()?)
 		.with_preview(
 			config
@@ -535,18 +535,18 @@ impl RuntimeTasks {
 				)),
 			);
 		}
-		// Every replica runs the scheduler; SKIP LOCKED and the tick key keep a
-		// scheduled time to one Task (#557).
+		// Every replica runs the Duty time triggers; SKIP LOCKED and the tick
+		// key keep a scheduled time to one Task (#557, #1011).
 		let scheduler = federation.clone();
 		tasks.spawn_service(
-			"schedules",
+			"duties",
 			runtime_task(watched_loop::run(
-				"schedules",
-				federation.store.schedule_poll,
+				"duties",
+				federation.store.duty_poll,
 				move |_| {
 					let scheduler = scheduler.clone();
 					async move {
-						match crate::apps::workspaces::services::schedules::pass(
+						match crate::apps::workspaces::services::duties::pass(
 							&scheduler,
 							chrono::Utc::now(),
 						)

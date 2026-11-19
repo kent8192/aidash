@@ -1,51 +1,49 @@
-//! Schedule use cases (#557, ADR 0134). The scope owns one transaction and
-//! acts for one person: a person managing Schedules in the dashboard, or the
-//! person at the root of an Agent's Run when an Agent calls a Schedule tool.
-//! A Schedule registered here acts as that person, its Registrant.
+//! Duty use cases (#1011, ADR 0142; from the Schedules of #557, ADR 0134).
+//! The scope owns one transaction and acts for one person: a person managing
+//! Duties in the dashboard, or the person at the root of an Agent's Run when
+//! an Agent calls a Duty tool. A Duty set up here acts as that person, its
+//! Requester.
 use crate::{Error, Result};
 use aidash_domain::{
 	approval_rules::ApprovalMode,
+	duties::{self, Actor, Change, Definition, Duty, Halt, Patch, Resumption, Tick},
 	registry::EntityRef,
-	schedules::{
-		self, Ceilings, Change, Definition, Halt, Limits, Patch, Requester, Resumption, Schedule,
-		ThreadMode, Tick,
-	},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// Which Schedules a list shows.
+/// Which Duties a list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Listing {
-	/// Every Schedule of one Workspace the person can see.
+	/// Every Duty of one Workspace the person can see.
 	Workspace(Uuid),
-	/// The person's own Schedules, in every Workspace, and those waiting for
+	/// The person's own Duties, in every Workspace, and those waiting for
 	/// them to take over as the named successor.
 	Mine,
-	/// Every Schedule of the Tenant, for holders of `schedule.administer`.
+	/// Every Duty of the Tenant, for holders of `duty.administer`.
 	Tenant,
 }
 
-/// Persistence and policy for one person's Schedule transaction.
+/// Persistence and policy for one person's Duty transaction.
 #[async_trait]
-pub trait ScheduleScope: Send {
+pub trait DutyScope: Send {
 	/// The person acting.
 	fn subject(&self) -> &str;
-	/// The credential the person's Schedules are admitted with: their
+	/// The credential the person's Duties are admitted with: their
 	/// Mapping's own long-lived credential, whichever credential they act
-	/// with now, so a Schedule outlives an API token and stops only when the
+	/// with now, so a Duty outlives an API token and stops only when the
 	/// Mapping does (ADR 0134). A subject without a Mapping keeps the
 	/// credential it acts with.
-	async fn registrant_credential(&mut self) -> Result<Uuid>;
-	/// The Schedule an Agent's tool call with this key already registered.
-	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Schedule>>;
+	async fn requester_credential(&mut self) -> Result<Uuid>;
+	/// The Duty an Agent's tool call with this key already registered.
+	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Duty>>;
 	fn now(&self) -> DateTime<Utc>;
 	/// Refuses unless the Tenant's policy allows `action` on the Workspace.
 	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
 	/// Whether the person may see the Workspace.
 	async fn sees_workspace(&mut self, workspace: Uuid) -> Result<bool>;
-	/// Whether the Tenant's policy allows the person `schedule.administer`.
+	/// Whether the Tenant's policy allows the person `duty.administer`.
 	async fn administers(&mut self) -> Result<bool>;
 	/// Whether the Tenant's policy lets the person use the mode.
 	async fn mode_allowed(&mut self, mode: ApprovalMode) -> Result<bool>;
@@ -53,79 +51,63 @@ pub trait ScheduleScope: Send {
 	async fn require_agent(&mut self, agent: &EntityRef) -> Result<()>;
 	/// The newest version of the Agent the person could start, if newer.
 	async fn newer_agent_version(&mut self, agent: &EntityRef) -> Result<Option<String>>;
-	/// Whether the Thread exists, is not deleted and belongs to the Workspace.
-	async fn thread_in_workspace(&mut self, workspace: Uuid, thread: Uuid) -> Result<bool>;
 	/// Whether `subject` names an enabled person of the Tenant.
 	async fn is_person(&mut self, subject: &str) -> Result<bool>;
-	/// The Tenant's limits as stored, the Deployment's ceilings and the
-	/// Tier's cap on the Tenant total, if any.
-	async fn limits(&mut self) -> Result<(Limits, Ceilings, Option<u32>)>;
-	async fn save_limits(&mut self, limits: &Limits) -> Result<()>;
-	/// The Tenant's Schedules and how many `registrant` holds. The adapter
-	/// serializes registrations of one Tenant so two cannot pass together.
-	async fn counts(&mut self, registrant: &str) -> Result<(i64, i64)>;
-	async fn insert(&mut self, schedule: &Schedule) -> Result<()>;
-	/// Loads and locks a Schedule for change.
-	async fn load_for_update(&mut self, id: Uuid) -> Result<Schedule>;
-	async fn load(&mut self, id: Uuid) -> Result<Schedule>;
-	/// Saves a loaded Schedule; the adapter raises its revision.
-	async fn save(&mut self, schedule: &Schedule) -> Result<()>;
+	/// The Cloud Tier's cap on the Tenant's Duties, if any. There is no
+	/// other count limit (#1012).
+	async fn tier_cap(&mut self) -> Result<Option<u32>>;
+	/// The Tenant's Duties. The adapter serializes registrations of one
+	/// Tenant so two cannot pass a Tier cap together.
+	async fn count(&mut self) -> Result<i64>;
+	async fn insert(&mut self, duty: &Duty) -> Result<()>;
+	/// Loads and locks a Duty for change.
+	async fn load_for_update(&mut self, id: Uuid) -> Result<Duty>;
+	async fn load(&mut self, id: Uuid) -> Result<Duty>;
+	/// Saves a loaded Duty; the adapter raises its revision.
+	async fn save(&mut self, duty: &Duty) -> Result<()>;
 	async fn delete(&mut self, id: Uuid) -> Result<()>;
-	async fn list(&mut self, listing: Listing) -> Result<Vec<Schedule>>;
-	/// The latest ticks of a Schedule, newest first.
+	async fn list(&mut self, listing: Listing) -> Result<Vec<Duty>>;
+	/// The latest ticks of a Duty, newest first.
 	async fn ticks(&mut self, id: Uuid, limit: u32) -> Result<Vec<Tick>>;
 }
 
-/// Who registers a Schedule.
+/// Who registers a Duty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
 	/// A person in the dashboard.
 	Person,
 	/// An Agent, for the person at the root of this Run's chain (#557 decision
 	/// 6), in the tool call with this invocation key; a retried call returns
-	/// the Schedule the first one registered.
+	/// the Duty the first one registered.
 	Agent { run_id: Uuid, key: String },
 }
 
-/// A Schedule with what its page shows beside it.
+/// A Duty with what its page shows beside it.
 #[derive(Debug, Clone)]
 pub struct Detail {
-	pub schedule: Schedule,
+	pub duty: Duty,
 	pub ticks: Vec<Tick>,
-	/// A newer version of its Agent the Registrant could move it to.
+	/// A newer version of its Agent the Requester could move it to.
 	pub newer_agent_version: Option<String>,
 	/// What the person viewing it may do.
 	pub may_edit: bool,
 	pub may_administer: bool,
 }
 
-/// The most ticks a Schedule's page shows.
+/// The most ticks a Duty's page shows.
 pub const HISTORY_LIMIT: u32 = 50;
 
-async fn effective_limits(scope: &mut dyn ScheduleScope) -> Result<Limits> {
-	let (limits, ceilings, tier) = scope.limits().await?;
-	Ok(ceilings.effective(limits, tier))
-}
-
 /// Checks everything a definition names as the person who will be its
-/// Registrant: the Workspace, the Agent version, the Thread and the mode.
+/// Requester: the Workspace, the Agent version and the mode.
 async fn check_definition(
-	scope: &mut dyn ScheduleScope,
+	scope: &mut dyn DutyScope,
 	workspace: Uuid,
 	definition: &Definition,
 ) -> Result<()> {
-	let limits = effective_limits(scope).await?;
-	definition.validate(limits.min_interval_seconds, scope.now())?;
-	// Its Runs start Tasks here, so the Registrant must be able to.
+	definition.validate(scope.now())?;
+	// Its Runs start Tasks here, so the Requester must be able to.
 	scope.require_workspace(workspace, "task.create").await?;
 	scope.require_agent(&definition.agent).await?;
-	if let ThreadMode::Fixed { thread_id } = definition.thread
-		&& !scope.thread_in_workspace(workspace, thread_id).await?
-	{
-		return Err(Error::Invalid(
-			"the Schedule's Thread is not a Thread of its Workspace".into(),
-		));
-	}
 	if let Some(mode) = definition.approval_mode
 		&& !scope.mode_allowed(mode).await?
 	{
@@ -136,40 +118,39 @@ async fn check_definition(
 	Ok(())
 }
 
-/// Registers a Schedule in `workspace` acting as the scope's person.
+/// Registers a Duty in `workspace` acting as the scope's person.
 pub async fn register(
-	scope: &mut dyn ScheduleScope,
+	scope: &mut dyn DutyScope,
 	workspace: Uuid,
 	definition: Definition,
 	origin: Origin,
-) -> Result<Schedule> {
+) -> Result<Duty> {
 	scope.require_workspace(workspace, "workspace.read").await?;
 	if let Origin::Agent { run_id, key } = &origin
 		&& let Some(existing) = scope.created_by(*run_id, key).await?
 	{
 		return Ok(existing);
 	}
-	scope
-		.require_workspace(workspace, schedules::CREATE)
-		.await?;
-	let registrant = scope.subject().to_owned();
-	// A Schedule always acts as one person (ADR 0134): a service or Agent
-	// subject cannot be a Registrant, however it authenticated.
-	if !scope.is_person(&registrant).await? {
+	scope.require_workspace(workspace, duties::CREATE).await?;
+	let requester = scope.subject().to_owned();
+	// A Duty always acts as one person (ADR 0134): a service or Agent
+	// subject cannot be a Requester, however it authenticated.
+	if !scope.is_person(&requester).await? {
 		return Err(Error::Invalid(
-			"a Schedule acts as a person, and only a person of the Tenant can register one".into(),
+			"a Duty acts as a person, and only a person of the Tenant can register one".into(),
 		));
 	}
 	check_definition(scope, workspace, &definition).await?;
-	let (total, mine) = scope.counts(&registrant).await?;
-	effective_limits(scope).await?.admit(total, mine)?;
+	let total = scope.count().await?;
+	duties::admit_within_tier(total, scope.tier_cap().await?)?;
 	let now = scope.now();
-	let mut schedule = Schedule {
+	let mut duty = Duty {
 		id: Uuid::new_v4(),
 		workspace_id: workspace,
-		registrant,
-		credential_id: scope.registrant_credential().await?,
+		requester,
+		credential_id: scope.requester_credential().await?,
 		definition,
+		thread_id: None,
 		anchor: now,
 		next_scheduled_at: None,
 		halt: None,
@@ -189,153 +170,142 @@ pub async fn register(
 		created_at: now,
 		updated_at: now,
 	};
-	schedule.restart(now)?;
-	scope.insert(&schedule).await?;
-	Ok(schedule)
+	duty.restart(now)?;
+	scope.insert(&duty).await?;
+	Ok(duty)
 }
 
-async fn requester(scope: &mut dyn ScheduleScope) -> Result<(String, bool)> {
+async fn actor(scope: &mut dyn DutyScope) -> Result<(String, bool)> {
 	let administers = scope.administers().await?;
 	Ok((scope.subject().to_owned(), administers))
 }
 
-/// Loads a Schedule the person can see, or reports it missing.
-async fn visible(scope: &mut dyn ScheduleScope, id: Uuid, lock: bool) -> Result<Schedule> {
-	let schedule = if lock {
+/// Loads a Duty the person can see, or reports it missing.
+async fn visible(scope: &mut dyn DutyScope, id: Uuid, lock: bool) -> Result<Duty> {
+	let duty = if lock {
 		scope.load_for_update(id).await?
 	} else {
 		scope.load(id).await?
 	};
-	// The named successor sees the Schedule they are asked to take over,
+	// The named successor sees the Duty they are asked to take over,
 	// even without the Workspace, so they can review and resume it.
-	if schedule.registrant == scope.subject()
-		|| schedule.successor.as_deref() == Some(scope.subject())
-		|| scope.sees_workspace(schedule.workspace_id).await?
+	if duty.requester == scope.subject()
+		|| duty.successor.as_deref() == Some(scope.subject())
+		|| scope.sees_workspace(duty.workspace_id).await?
 		|| scope.administers().await?
 	{
-		Ok(schedule)
+		Ok(duty)
 	} else {
-		Err(Error::NotFound("schedule not found".into()))
+		Err(Error::NotFound("duty not found".into()))
 	}
 }
 
-async fn permitted(
-	scope: &mut dyn ScheduleScope,
-	schedule: &Schedule,
-	change: Change,
-) -> Result<()> {
-	let (subject, administers) = requester(scope).await?;
-	schedules::permit(
-		Requester {
+async fn permitted(scope: &mut dyn DutyScope, duty: &Duty, change: Change) -> Result<()> {
+	let (subject, administers) = actor(scope).await?;
+	duties::permit(
+		Actor {
 			subject: &subject,
 			administers,
 		},
-		schedule.standing(),
+		duty.standing(),
 		change,
 	)?;
 	Ok(())
 }
 
-/// Changes a Schedule's settings. Only its Registrant may, and only while it
-/// holds `schedule.create` there.
-pub async fn update(scope: &mut dyn ScheduleScope, id: Uuid, patch: Patch) -> Result<Schedule> {
-	let mut schedule = visible(scope, id, true).await?;
-	permitted(scope, &schedule, Change::Edit).await?;
+/// Changes a Duty's settings. Only its Requester may, and only while it
+/// holds `duty.create` there.
+pub async fn update(scope: &mut dyn DutyScope, id: Uuid, patch: Patch) -> Result<Duty> {
+	let mut duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::Edit).await?;
 	if patch.is_empty() {
-		return Ok(schedule);
+		return Ok(duty);
 	}
 	scope
-		.require_workspace(schedule.workspace_id, schedules::CREATE)
+		.require_workspace(duty.workspace_id, duties::CREATE)
 		.await?;
-	let (definition, retimed) = patch.apply(&schedule.definition);
-	check_definition(scope, schedule.workspace_id, &definition).await?;
-	schedule.definition = definition;
+	let (definition, retimed) = patch.apply(&duty.definition);
+	check_definition(scope, duty.workspace_id, &definition).await?;
+	duty.definition = definition;
 	let now = scope.now();
-	if retimed && schedule.halt.is_none() {
-		schedule.restart(now)?;
+	if retimed && duty.halt.is_none() {
+		duty.restart(now)?;
 	}
-	schedule.updated_at = now;
-	scope.save(&schedule).await?;
-	Ok(schedule)
+	duty.updated_at = now;
+	scope.save(&duty).await?;
+	Ok(duty)
 }
 
-pub async fn pause(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<Schedule> {
-	let mut schedule = visible(scope, id, true).await?;
-	permitted(scope, &schedule, Change::Pause).await?;
-	if schedule.halt.is_some() {
-		return Ok(schedule);
+pub async fn pause(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
+	let mut duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::Pause).await?;
+	if duty.halt.is_some() {
+		return Ok(duty);
 	}
 	let now = scope.now();
-	schedule.stop(Halt::Paused, now);
-	schedule.updated_at = now;
-	scope.save(&schedule).await?;
-	Ok(schedule)
+	duty.stop(Halt::Paused, now);
+	duty.updated_at = now;
+	scope.save(&duty).await?;
+	Ok(duty)
 }
 
-/// Resumes a Schedule as the person's own action. A named successor takes
-/// it over and becomes its Registrant; nobody else resumes one whose
-/// Registrant left (ADR 0134).
-pub async fn resume(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<Schedule> {
-	let mut schedule = visible(scope, id, true).await?;
-	let (subject, administers) = requester(scope).await?;
-	let resumption = schedules::resumption(
-		Requester {
+/// Resumes a Duty as the person's own action. A named successor takes
+/// it over and becomes its Requester; nobody else resumes one whose
+/// Requester left (ADR 0134).
+pub async fn resume(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
+	let mut duty = visible(scope, id, true).await?;
+	let (subject, administers) = actor(scope).await?;
+	let resumption = duties::resumption(
+		Actor {
 			subject: &subject,
 			administers,
 		},
-		schedule.standing(),
+		duty.standing(),
 	)?;
 	// Resuming is registering again: the person must still be allowed to,
-	// within the limits, with what the Schedule names.
+	// within the limits, with what the Duty names.
 	scope
-		.require_workspace(schedule.workspace_id, schedules::CREATE)
+		.require_workspace(duty.workspace_id, duties::CREATE)
 		.await?;
-	check_definition(scope, schedule.workspace_id, &schedule.definition).await?;
+	check_definition(scope, duty.workspace_id, &duty.definition).await?;
 	if resumption == Resumption::Successor {
-		let (total, mine) = scope.counts(&subject).await?;
-		// The Schedule is already counted in the Tenant's total.
-		effective_limits(scope).await?.admit(total - 1, mine)?;
-		schedule.registrant = subject;
-		schedule.created_by_run_id = None;
+		duty.requester = subject;
+		duty.created_by_run_id = None;
 	}
 	let now = scope.now();
 	// The person resumes it as their own action, with their Mapping's
 	// credential as it stands now (ADR 0134).
-	schedule.credential_id = scope.registrant_credential().await?;
-	schedule.clear_halt();
-	schedule.consecutive_failures = 0;
-	schedule.restart(now)?;
-	schedule.updated_at = now;
-	scope.save(&schedule).await?;
-	Ok(schedule)
+	duty.credential_id = scope.requester_credential().await?;
+	duty.clear_halt();
+	duty.consecutive_failures = 0;
+	duty.restart(now)?;
+	duty.updated_at = now;
+	scope.save(&duty).await?;
+	Ok(duty)
 }
 
-pub async fn delete(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<()> {
-	let schedule = visible(scope, id, true).await?;
-	permitted(scope, &schedule, Change::Delete).await?;
+pub async fn delete(scope: &mut dyn DutyScope, id: Uuid) -> Result<()> {
+	let duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::Delete).await?;
 	scope.delete(id).await
 }
 
-/// Names who may take over a Schedule whose Registrant left.
-pub async fn name_successor(
-	scope: &mut dyn ScheduleScope,
-	id: Uuid,
-	successor: &str,
-) -> Result<Schedule> {
-	let mut schedule = visible(scope, id, true).await?;
-	permitted(scope, &schedule, Change::NameSuccessor).await?;
+/// Names who may take over a Duty whose Requester left.
+pub async fn name_successor(scope: &mut dyn DutyScope, id: Uuid, successor: &str) -> Result<Duty> {
+	let mut duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::NameSuccessor).await?;
 	if !scope.is_person(successor).await? {
 		return Err(Error::Invalid(
 			"a successor must be a person of the Tenant".into(),
 		));
 	}
-	schedule.successor = Some(successor.to_owned());
-	schedule.updated_at = scope.now();
-	scope.save(&schedule).await?;
-	Ok(schedule)
+	duty.successor = Some(successor.to_owned());
+	duty.updated_at = scope.now();
+	scope.save(&duty).await?;
+	Ok(duty)
 }
 
-pub async fn list(scope: &mut dyn ScheduleScope, listing: Listing) -> Result<Vec<Schedule>> {
+pub async fn list(scope: &mut dyn DutyScope, listing: Listing) -> Result<Vec<Duty>> {
 	match listing {
 		Listing::Workspace(workspace) => {
 			scope.require_workspace(workspace, "workspace.read").await?;
@@ -350,24 +320,22 @@ pub async fn list(scope: &mut dyn ScheduleScope, listing: Listing) -> Result<Vec
 	scope.list(listing).await
 }
 
-pub async fn detail(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<Detail> {
-	let schedule = visible(scope, id, false).await?;
+pub async fn detail(scope: &mut dyn DutyScope, id: Uuid) -> Result<Detail> {
+	let duty = visible(scope, id, false).await?;
 	let ticks = scope.ticks(id, HISTORY_LIMIT).await?;
-	let newer_agent_version = scope
-		.newer_agent_version(&schedule.definition.agent)
-		.await?;
-	let (subject, administers) = requester(scope).await?;
-	let may_edit = schedules::permit(
-		Requester {
+	let newer_agent_version = scope.newer_agent_version(&duty.definition.agent).await?;
+	let (subject, administers) = actor(scope).await?;
+	let may_edit = duties::permit(
+		Actor {
 			subject: &subject,
 			administers,
 		},
-		schedule.standing(),
+		duty.standing(),
 		Change::Edit,
 	)
 	.is_ok();
 	Ok(Detail {
-		schedule,
+		duty,
 		ticks,
 		newer_agent_version,
 		may_edit,
@@ -375,69 +343,49 @@ pub async fn detail(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<Detail> {
 	})
 }
 
-/// The Tenant's limits as set, the ceilings they must stay within, and the
-/// limits that apply now as well: after the ceilings and any Tier.
-pub async fn limits(scope: &mut dyn ScheduleScope) -> Result<(Limits, Ceilings, Limits)> {
-	let (limits, ceilings, tier) = scope.limits().await?;
-	Ok((limits, ceilings, ceilings.effective(limits, tier)))
-}
-
-pub async fn set_limits(scope: &mut dyn ScheduleScope, limits: Limits) -> Result<Limits> {
-	if !scope.administers().await? {
-		return Err(Error::Forbidden);
-	}
-	let (_, ceilings, _) = scope.limits().await?;
-	ceilings.permits(&limits)?;
-	scope.save_limits(&limits).await?;
-	Ok(limits)
-}
-
-/// What an Agent sends to the Schedule tools (#557 decision 5). The Schedule
-/// is registered for the person at the root of the Run's chain, in the Run's
-/// Workspace.
+/// What an Agent sends to the Duty tools. The Duty is set up for the person
+/// at the root of the Run's chain, in the Run's Workspace.
 pub mod tool {
 	use aidash_domain::{
 		approval_rules::ApprovalMode,
+		duties::{ModeChoice, Trigger, TriggerChoice},
 		registry::EntityRef,
-		schedules::{ModeChoice, Trigger},
 	};
 	use schemars::JsonSchema;
 	use serde::Deserialize;
 	use uuid::Uuid;
 
-	/// Where a Schedule's Runs are started.
-	#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
-	#[serde(rename_all = "snake_case")]
-	pub enum Thread {
-		/// A new Thread on every tick.
-		#[default]
-		New,
-		/// Always the Thread this Run works in.
-		This,
-	}
-
 	#[derive(Debug, Clone, Deserialize, JsonSchema)]
 	#[serde(deny_unknown_fields)]
 	pub struct Create {
-		/// A short name people see in the Schedule list.
+		/// A short name people see in the Duty list.
 		pub title: String,
-		/// What the Agent is asked on every tick, written as a person would ask it.
-		pub request: String,
+		/// What the Duty is for, written as a person would ask it; every Task
+		/// it starts is asked this.
+		pub mission: String,
+		/// The checklist the Agent follows on every Task, if any.
+		#[serde(default)]
+		pub procedure: Option<String>,
 		/// The Agent version to start; this Run's own Agent when omitted.
 		#[serde(default)]
 		pub agent: Option<EntityRef>,
+		/// When it wakes by the clock:
 		/// `{"kind":"cron","expression":"0 9 * * 1-5","time_zone":"Asia/Tokyo"}`
 		/// (minute hour day-of-month month day-of-week) or
-		/// `{"kind":"interval","every_seconds":3600}`.
-		pub trigger: Trigger,
+		/// `{"kind":"interval","every_seconds":3600}`. Omit it for a Duty that
+		/// wakes only on its other triggers.
 		#[serde(default)]
-		pub thread: Thread,
+		pub trigger: Option<Trigger>,
 		/// The Approval Mode of its Runs; the person's own default when omitted.
 		#[serde(default)]
 		pub approval_mode: Option<ApprovalMode>,
 		/// How late, in seconds, a tick missed while Aidash was down may still run.
 		#[serde(default)]
 		pub max_lateness_seconds: Option<i64>,
+		/// Failed Tasks in a row after which the Duty pauses itself; 0 never
+		/// pauses it. 3 when omitted.
+		#[serde(default)]
+		pub pause_after_failures: Option<i32>,
 	}
 
 	#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -447,38 +395,41 @@ pub mod tool {
 	#[derive(Debug, Clone, Deserialize, JsonSchema)]
 	#[serde(deny_unknown_fields)]
 	pub struct Update {
-		pub schedule_id: Uuid,
+		pub duty_id: Uuid,
 		#[serde(default)]
 		pub title: Option<String>,
 		#[serde(default)]
-		pub request: Option<String>,
+		pub mission: Option<String>,
+		#[serde(default)]
+		pub procedure: Option<String>,
 		#[serde(default)]
 		pub agent: Option<EntityRef>,
+		/// A new time trigger, or `{"kind":"none"}` to remove it.
 		#[serde(default)]
-		pub trigger: Option<Trigger>,
-		#[serde(default)]
-		pub thread: Option<Thread>,
+		pub trigger: Option<TriggerChoice>,
 		/// `default` returns to the person's own default mode.
 		#[serde(default)]
 		pub approval_mode: Option<ModeChoice>,
 		#[serde(default)]
 		pub max_lateness_seconds: Option<i64>,
+		#[serde(default)]
+		pub pause_after_failures: Option<i32>,
 	}
 
-	/// What `schedule_delete` does.
+	/// What `duty_delete` does.
 	#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 	#[serde(rename_all = "snake_case")]
 	pub enum Removal {
 		#[default]
 		Delete,
-		/// Keep the Schedule but stop it firing until the person resumes it.
+		/// Keep the Duty but stop it firing until the person resumes it.
 		Pause,
 	}
 
 	#[derive(Debug, Clone, Deserialize, JsonSchema)]
 	#[serde(deny_unknown_fields)]
 	pub struct Delete {
-		pub schedule_id: Uuid,
+		pub duty_id: Uuid,
 		#[serde(default)]
 		pub action: Removal,
 	}

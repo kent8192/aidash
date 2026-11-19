@@ -46,12 +46,14 @@ fn enabled(sql: &str) -> Vec<String> {
 }
 
 /// Every policy migration runs the rendered template. Together they enable
-/// the `owned` tables and the `retired` ones, which a later migration drops.
+/// the `owned` tables and the `retired` ones, which a later migration drops;
+/// a `renamed` table keeps the policy enabled under its former name.
 /// Returns how many operations enable tables.
 pub fn assert_policy_migrations_run_the_rendered_template(
 	migrations: &[Migration],
 	owned: &BTreeSet<&str>,
 	retired: &[&str],
+	renamed: &[(&str, &str)],
 ) -> usize {
 	let mut covered = BTreeSet::new();
 	let mut policies = 0;
@@ -85,6 +87,24 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 				}
 			}
 		}
+	}
+	// A renamed table keeps its policy: it is covered under its new name.
+	for &(former, current) in renamed {
+		assert!(
+			covered.remove(former),
+			"renamed table has no historical policy: {former}"
+		);
+		assert!(
+			migrations
+				.iter()
+				.flat_map(|migration| &migration.operations)
+				.any(
+					|operation| matches!(operation, Operation::RenameTable { old_name, new_name }
+					if old_name.as_str() == former && new_name.as_str() == current)
+				),
+			"renamed table has no rename migration: {former} -> {current}"
+		);
+		covered.insert(current.to_owned());
 	}
 	// Retired tables were removed after their policy migration ran. Validate
 	// their historical templates above but do not require them in today's

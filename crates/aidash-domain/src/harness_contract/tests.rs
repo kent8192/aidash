@@ -201,7 +201,47 @@ fn standing(tenant: &str, node: &str) -> StandingInstructions {
 	StandingInstructions {
 		tenant: tenant.into(),
 		node: node.into(),
+		duty: String::new(),
 	}
+}
+
+/// A Duty's mission and procedure follow the Agent's instructions and come
+/// before the fragments, which `fragments_start` still finds (#1011).
+#[test]
+fn a_duty_block_follows_the_agent_instructions_and_precedes_the_fragments() {
+	let mut duty = standing("T-RULE", "N-RULE");
+	duty.duty = StandingInstructions::duty_text("Watch CI.", "1. Merge when green.");
+	let fragments = [("registry_skills", "\nSkill reg@1:\nbody")];
+	let text = system_text(
+		HarnessContract::Structured4,
+		ProjectionVersion::Native,
+		&duty,
+		"A-RULE",
+		&fragments,
+		"",
+	);
+	let agent = text.find("# Agent instructions\n\nA-RULE").unwrap();
+	let block = text
+		.find("# Duty\n\nMission:\nWatch CI.\n\nProcedure:\n1. Merge when green.")
+		.unwrap();
+	let skill = text.find("Skill reg@1:").unwrap();
+	assert!(agent < block && block < skill);
+	let start = fragments_start(
+		HarnessContract::Structured4,
+		ProjectionVersion::Native,
+		&duty,
+		"A-RULE",
+	);
+	assert!(start > block && text[start..].contains("Skill reg@1:"));
+	let legacy = system_text(
+		HarnessContract::Legacy,
+		ProjectionVersion::Native,
+		&duty,
+		"A-RULE",
+		&[],
+		"",
+	);
+	assert!(legacy.ends_with("\nDuty:\nMission:\nWatch CI.\n\nProcedure:\n1. Merge when green."));
 }
 
 #[test]

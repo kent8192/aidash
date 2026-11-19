@@ -67,7 +67,7 @@ import { FileCitationProvider } from "./file-citations";
 import { corePreviewAvailability } from "../generated/aidash";
 import type { PreviewAvailability } from "../generated/models";
 import { TimelineStrip } from "./request/timeline";
-import { SchedulesPanel } from "../schedules";
+import { DutiesPanel } from "../duties";
 import { Phase, SegmentedProgress } from "./request/progress";
 import { parseOwner, runDisplayStatus } from "./request/canvas-model";
 import { Button } from "../components/ui/button";
@@ -98,7 +98,7 @@ const requestCopy = {
     files: "ファイル",
     viewProgress: "進捗を見る",
     progressTitle: "依頼の進捗",
-    schedules: "スケジュール",
+    schedules: "職務",
     overview: "概要",
     recovery: "整合性と復旧",
     details: "依頼の詳細",
@@ -133,7 +133,7 @@ const requestCopy = {
     files: "Files",
     viewProgress: "View progress",
     progressTitle: "Request progress",
-    schedules: "Schedules",
+    schedules: "Duties",
     overview: "Overview",
     recovery: "Consistency and recovery",
     details: "Request details",
@@ -918,7 +918,7 @@ export function Channel({
                 value="schedules"
                 className="flex min-h-0 flex-1 flex-col overflow-y-auto"
               >
-                <SchedulesPanel
+                <DutiesPanel
                   scope={{ kind: "workspace", workspace: workspace.id }}
                 />
               </TabsContent>

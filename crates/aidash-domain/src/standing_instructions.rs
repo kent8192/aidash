@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 /// against every request's context window and its Stable Prefix.
 pub const MAX_STANDING_INSTRUCTIONS_BYTES: usize = 16_384;
 
-/// The Tenant and Node Instructions one Run works under.
+/// The Tenant and Node Instructions one Run works under, and the mission and
+/// procedure of the Duty that started its Task, if one did (#1011).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StandingInstructions {
@@ -19,12 +20,25 @@ pub struct StandingInstructions {
 	pub tenant: String,
 	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub node: String,
+	/// The Duty's mission and procedure, ranked after the Agent's own
+	/// instructions and Skills and above the task (ADR 0142).
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub duty: String,
 }
 
 impl StandingInstructions {
-	/// Whether neither text says anything.
+	/// Whether no text says anything.
 	pub fn is_empty(&self) -> bool {
-		self.tenant.trim().is_empty() && self.node.trim().is_empty()
+		self.tenant.trim().is_empty() && self.node.trim().is_empty() && self.duty.trim().is_empty()
+	}
+
+	/// The text a Duty's Task works under: its mission, then its procedure.
+	pub fn duty_text(mission: &str, procedure: &str) -> String {
+		if procedure.trim().is_empty() {
+			format!("Mission:\n{mission}")
+		} else {
+			format!("Mission:\n{mission}\n\nProcedure:\n{procedure}")
+		}
 	}
 }
 

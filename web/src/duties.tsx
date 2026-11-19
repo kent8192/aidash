@@ -1,6 +1,6 @@
-/** Schedules (#557): a Workspace's Schedules, "my Schedules", and for holders
- *  of `schedule.administer` every Schedule of the Tenant. A Schedule always
- *  acts as its Registrant (ADR 0134), so only they edit or resume it. */
+/** Duties (#557): a Workspace's Duties, "my Duties", and for holders
+ *  of `duty.administer` every Duty of the Tenant. A Duty always
+ *  acts as its Requester (ADR 0134), so only they edit or resume it. */
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "./transport";
@@ -19,24 +19,23 @@ import {
   formatTime,
   haltText,
   patchOf,
-  scheduleActions,
+  dutyActions,
   tickLabel,
   triggerSummary,
   type FormProblem,
-  type LimitsView,
-  type Schedule,
-  type ScheduleDetail,
-  type ScheduleForm,
-} from "./schedules-model";
+  type Duty,
+  type DutyDetail,
+  type DutyForm,
+} from "./duties-model";
 
 const copy = {
   "ja-JP": {
-    title: "スケジュール",
-    mine: "自分のスケジュール",
-    tenant: "Tenant のすべてのスケジュール",
-    hint: "スケジュールは登録した人として実行されます。その人の承認モード・承認ルール・接続が適用されます。",
-    empty: "スケジュールはありません。",
-    create: "スケジュールを登録",
+    title: "職務",
+    mine: "自分の職務",
+    tenant: "Tenant のすべての職務",
+    hint: "職務は、設定した人（依頼者）として実行されます。その人の承認モード・承認ルール・接続が適用されます。職務の仕事は職務専用のスレッドで行われます。",
+    empty: "職務はありません。",
+    create: "職務を設定",
     edit: "変更",
     save: "保存",
     cancel: "キャンセル",
@@ -47,47 +46,50 @@ const copy = {
     runNow: "今すぐ実行",
     history: "履歴",
     next: "次回",
-    registrant: "登録者",
+    requester: "依頼者",
     agent: "Agent",
     agentId: "Agent ID",
     agentVersion: "バージョン",
     newer: (version: string) => `新しいバージョン ${version} があります`,
-    request: "依頼内容",
+    mission: "使命（毎回の仕事で依頼する内容）",
+    procedure: "手順書（毎回の仕事で守るチェックリスト）",
     name: "名前",
     timing: "タイミング",
     cron: "cron 式",
     interval: "一定間隔",
+    noTiming: "時刻では起動しない",
     expression: "cron 式（分 時 日 月 曜日）",
     timeZone: "タイムゾーン",
     everyMinutes: "間隔（分）",
-    thread: "固定スレッド ID（空欄なら毎回新しいスレッド）",
+    pauseAfterFailures: "何回続けて失敗したら一時停止するか（0 なら止めない）",
+    thread: "職務のスレッド",
     mode: "承認モード",
     defaultMode: "自分の既定",
     lateness: "許容する遅れ（分）",
     successor: "後継者のサブジェクト",
     nameSuccessor: "後継者を指名",
-    confirmDelete: "このスケジュールを削除しますか？",
+    confirmDelete: "この職務を削除しますか？",
     problems: {
       title: "名前を入力してください（200文字以内）",
-      request: "依頼内容を入力してください",
+      mission: "使命を入力してください",
+      procedure: "手順書は16,000文字以内です",
       agent: "Agent とバージョンを入力してください",
       expression: "cron 式は5つのフィールドで書いてください",
       time_zone: "タイムゾーンを入力してください",
-      interval: "間隔が短すぎるか長すぎます",
+      interval: "間隔は1分から1年までです",
       lateness: "許容する遅れは1分から7日までです",
+      failures: "一時停止までの失敗回数は0から1000までです",
     } satisfies Record<FormProblem, string>,
     status: { active: "有効", paused: "一時停止", stopped: "停止" },
     byAgent: "Agent が登録",
-    limits: (limits: LimitsView["limits"]) =>
-      `上限: Tenant ${limits.max_schedules}件・1人 ${limits.max_per_person}件・最短 ${limits.min_interval_seconds / 60}分`,
   },
   "en-US": {
-    title: "Schedules",
-    mine: "My Schedules",
-    tenant: "All Schedules of the Tenant",
-    hint: "A Schedule runs as the person who registered it, with their Approval Mode, Approval Rules and connections.",
-    empty: "No Schedules.",
-    create: "Register a Schedule",
+    title: "Duties",
+    mine: "My Duties",
+    tenant: "All Duties of the Tenant",
+    hint: "A Duty runs as the person who set it up, its Requester, with their Approval Mode, Approval Rules and connections. Its Tasks work in the Duty's own Thread.",
+    empty: "No Duties.",
+    create: "Register a Duty",
     edit: "Edit",
     save: "Save",
     cancel: "Cancel",
@@ -98,39 +100,43 @@ const copy = {
     runNow: "Run now",
     history: "History",
     next: "Next",
-    registrant: "Registrant",
+    requester: "Requester",
     agent: "Agent",
     agentId: "Agent ID",
     agentVersion: "Version",
     newer: (version: string) => `Version ${version} is available`,
-    request: "Request",
+    mission: "Mission (asked of every Task)",
+    procedure: "Procedure (the checklist every Task follows)",
     name: "Name",
     timing: "Timing",
     cron: "Cron expression",
     interval: "Fixed interval",
+    noTiming: "No time trigger",
     expression: "Cron expression (minute hour day month weekday)",
     timeZone: "Time zone",
     everyMinutes: "Every (minutes)",
-    thread: "Fixed Thread ID (empty: a new Thread every time)",
+    pauseAfterFailures:
+      "Pause after this many failed Tasks in a row (0: never)",
+    thread: "The Duty's Thread",
     mode: "Approval Mode",
     defaultMode: "My default",
     lateness: "Maximum lateness (minutes)",
     successor: "Successor subject",
     nameSuccessor: "Name successor",
-    confirmDelete: "Delete this Schedule?",
+    confirmDelete: "Delete this Duty?",
     problems: {
       title: "Enter a name of up to 200 characters",
-      request: "Enter the request",
+      mission: "Enter the mission",
+      procedure: "A procedure has at most 16,000 characters",
       agent: "Enter the Agent and its version",
       expression: "A cron expression has five fields",
       time_zone: "Enter a time zone",
-      interval: "The interval is too short or too long",
+      interval: "The interval is between 1 minute and 1 year",
       lateness: "Lateness is between 1 minute and 7 days",
+      failures: "The failures before a pause are 0 to 1000",
     } satisfies Record<FormProblem, string>,
     status: { active: "Active", paused: "Paused", stopped: "Stopped" },
     byAgent: "Registered by an Agent",
-    limits: (limits: LimitsView["limits"]) =>
-      `Limits: ${limits.max_schedules} per Tenant, ${limits.max_per_person} per person, every ${limits.min_interval_seconds / 60} min at most`,
   },
 };
 
@@ -145,21 +151,21 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-/** How often a mounted Schedule list and history refresh. */
-const SCHEDULE_REFRESH_MS = 15_000;
+/** How often a mounted Duty list and history refresh. */
+const DUTY_REFRESH_MS = 15_000;
 
 function listUrl(scope: Scope): string {
   if (scope.kind === "workspace")
-    return `/api/workspaces/${encodeURIComponent(scope.workspace)}/schedules`;
-  return `/api/schedules?scope=${scope.kind}`;
+    return `/api/workspaces/${encodeURIComponent(scope.workspace)}/duties`;
+  return `/api/duties?scope=${scope.kind}`;
 }
 
-export function SchedulesPanel({
+export function DutiesPanel({
   scope,
   administrator = false,
 }: {
   scope: Scope;
-  /** The viewer holds `schedule.administer` and may list the whole Tenant. */
+  /** The viewer holds `duty.administer` and may list the whole Tenant. */
   administrator?: boolean;
 }) {
   const { locale } = useI18n();
@@ -169,22 +175,17 @@ export function SchedulesPanel({
   const [all, setAll] = useState(false);
   const shown: Scope =
     scope.kind === "mine" && all ? { kind: "tenant" } : scope;
-  const key = ["schedules", shown];
+  const key = ["duties", shown];
   // The scheduler changes next times, history and stops on its own, so a
   // mounted list follows it as the bell's notices do.
   const list = useQuery({
     queryKey: key,
-    queryFn: () => apiFetch<Schedule[]>(listUrl(shown)),
+    queryFn: () => apiFetch<Duty[]>(listUrl(shown)),
     retry: false,
-    refetchInterval: SCHEDULE_REFRESH_MS,
-  });
-  const limits = useQuery({
-    queryKey: ["schedule-limits"],
-    queryFn: () => apiFetch<LimitsView>("/api/schedules/limits"),
-    retry: false,
+    refetchInterval: DUTY_REFRESH_MS,
   });
   const [selected, setSelected] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Schedule | "new" | null>(null);
+  const [editing, setEditing] = useState<Duty | "new" | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const timeZone = useMemo(
@@ -197,20 +198,18 @@ export function SchedulesPanel({
     setError("");
     try {
       await run();
-      await client.invalidateQueries({ queryKey: ["schedules"] });
-      await client.invalidateQueries({ queryKey: ["schedule"] });
-      await client.invalidateQueries({ queryKey: ["schedule-notices"] });
+      await client.invalidateQueries({ queryKey: ["duties"] });
+      await client.invalidateQueries({ queryKey: ["duty"] });
+      await client.invalidateQueries({ queryKey: ["duty-notices"] });
     } catch (reason) {
       setError(String(reason));
     } finally {
       setBusy(false);
     }
   }
-  const minInterval = limits.data?.effective.min_interval_seconds ?? 900;
   return (
     <Panel title={scope.kind === "workspace" ? words.title : words.mine}>
       <Hint>{words.hint}</Hint>
-      {limits.data && <Hint>{words.limits(limits.data.effective)}</Hint>}
       {scope.kind === "mine" && administrator && (
         <label className="flex items-center gap-2 text-sm">
           <input
@@ -226,77 +225,73 @@ export function SchedulesPanel({
       {list.isLoading && <Loading />}
       {list.data?.length === 0 && <Hint>{words.empty}</Hint>}
       <ul className="divide-y divide-border">
-        {list.data?.map((schedule) => (
-          <li key={schedule.id} className="grid gap-2 py-3">
+        {list.data?.map((duty) => (
+          <li key={duty.id} className="grid gap-2 py-3">
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 className="text-left text-sm font-medium underline-offset-2 hover:underline"
                 onClick={() =>
-                  setSelected(selected === schedule.id ? null : schedule.id)
+                  setSelected(selected === duty.id ? null : duty.id)
                 }
               >
-                {schedule.title}
+                {duty.title}
               </button>
               <Badge
-                variant={schedule.status === "active" ? "secondary" : "outline"}
+                variant={duty.status === "active" ? "secondary" : "outline"}
               >
-                {words.status[schedule.status]}
+                {words.status[duty.status]}
               </Badge>
-              {schedule.created_by_run_id && (
+              {duty.created_by_run_id && (
                 <Badge variant="outline">{words.byAgent}</Badge>
               )}
             </div>
             <div className="text-xs text-muted-foreground">
-              {triggerSummary(schedule.trigger, ja)} · {words.next}:{" "}
-              {formatTime(schedule.next_scheduled_at, locale, timeZone)} ·{" "}
-              {words.agent}: {schedule.agent.id}@{schedule.agent.version}
-              {!schedule.mine &&
-                ` · ${words.registrant}: ${schedule.registrant}`}
+              {triggerSummary(duty.trigger, ja)} · {words.next}:{" "}
+              {formatTime(duty.next_scheduled_at, locale, timeZone)} ·{" "}
+              {words.agent}: {duty.agent.id}@{duty.agent.version}
+              {!duty.mine && ` · ${words.requester}: ${duty.requester}`}
             </div>
-            {schedule.halt && schedule.halt !== "paused" && (
-              <Hint>{haltText(schedule.halt, schedule.halt_reason, ja)}</Hint>
+            {duty.halt && duty.halt !== "paused" && (
+              <Hint>{haltText(duty.halt, duty.halt_reason, ja)}</Hint>
             )}
             <div className="flex flex-wrap gap-2">
-              {scheduleActions(schedule).edit && (
+              {dutyActions(duty).edit && (
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={busy}
-                  onClick={() => setEditing(schedule)}
+                  onClick={() => setEditing(duty)}
                 >
                   {words.edit}
                 </Button>
               )}
-              {scheduleActions(schedule).pause && (
+              {dutyActions(duty).pause && (
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={busy}
                   onClick={() =>
                     void act(() =>
-                      apiFetch(`/api/schedules/${schedule.id}/pause`, json({})),
+                      apiFetch(`/api/duties/${duty.id}/pause`, json({})),
                     )
                   }
                 >
                   {words.pause}
                 </Button>
               )}
-              {scheduleActions(schedule).resume && (
+              {dutyActions(duty).resume && (
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={busy}
                   onClick={() =>
                     void act(() =>
-                      apiFetch(
-                        `/api/schedules/${schedule.id}/resume`,
-                        json({}),
-                      ),
+                      apiFetch(`/api/duties/${duty.id}/resume`, json({})),
                     )
                   }
                 >
-                  {scheduleActions(schedule).resume === "resume"
+                  {dutyActions(duty).resume === "resume"
                     ? words.resume
                     : words.takeOver}
                 </Button>
@@ -307,13 +302,13 @@ export function SchedulesPanel({
                 disabled={busy}
                 onClick={() =>
                   void act(() =>
-                    apiFetch(`/api/schedules/${schedule.id}/run-now`, json({})),
+                    apiFetch(`/api/duties/${duty.id}/run-now`, json({})),
                   )
                 }
               >
                 {words.runNow}
               </Button>
-              {scheduleActions(schedule).remove && (
+              {dutyActions(duty).remove && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -321,7 +316,7 @@ export function SchedulesPanel({
                   onClick={() => {
                     if (window.confirm(words.confirmDelete))
                       void act(() =>
-                        apiFetch(`/api/schedules/${schedule.id}`, {
+                        apiFetch(`/api/duties/${duty.id}`, {
                           method: "DELETE",
                         }),
                       );
@@ -331,14 +326,14 @@ export function SchedulesPanel({
                 </Button>
               )}
             </div>
-            {selected === schedule.id && (
-              <ScheduleHistory
-                id={schedule.id}
+            {selected === duty.id && (
+              <DutyHistory
+                id={duty.id}
                 timeZone={timeZone}
                 onSuccessor={(subject) =>
                   void act(() =>
                     apiFetch(
-                      `/api/schedules/${schedule.id}/successor`,
+                      `/api/duties/${duty.id}/successor`,
                       json({ subject }),
                     ),
                   )
@@ -349,10 +344,9 @@ export function SchedulesPanel({
         ))}
       </ul>
       {editing ? (
-        <ScheduleEditor
+        <DutyEditor
           key={editing === "new" ? "new" : editing.id}
           initial={editing === "new" ? emptyForm(timeZone) : formOf(editing)}
-          minInterval={minInterval}
           busy={busy}
           onCancel={() => setEditing(null)}
           onSave={(form) =>
@@ -361,7 +355,7 @@ export function SchedulesPanel({
                 if (scope.kind !== "workspace") return;
                 await apiFetch(listUrl(scope), json(definitionOf(form)));
               } else {
-                await apiFetch(`/api/schedules/${editing.id}`, {
+                await apiFetch(`/api/duties/${editing.id}`, {
                   method: "PATCH",
                   headers: { "content-type": "application/json" },
                   body: JSON.stringify(patchOf(form, editing)),
@@ -386,7 +380,7 @@ export function SchedulesPanel({
   );
 }
 
-function ScheduleHistory({
+function DutyHistory({
   id,
   timeZone,
   onSuccessor,
@@ -400,21 +394,31 @@ function ScheduleHistory({
   const ja = locale === "ja-JP";
   const [successor, setSuccessor] = useState("");
   const detail = useQuery({
-    queryKey: ["schedule", id],
-    queryFn: () => apiFetch<ScheduleDetail>(`/api/schedules/${id}`),
+    queryKey: ["duty", id],
+    queryFn: () => apiFetch<DutyDetail>(`/api/duties/${id}`),
     retry: false,
-    refetchInterval: SCHEDULE_REFRESH_MS,
+    refetchInterval: DUTY_REFRESH_MS,
   });
   if (detail.isError) return <Alert>{String(detail.error)}</Alert>;
   if (!detail.data) return <Loading />;
-  const { schedule, ticks, newer_agent_version, may_administer } = detail.data;
+  const { duty, ticks, newer_agent_version, may_administer } = detail.data;
   return (
     <div className="grid gap-2 rounded-md border border-border p-3">
-      <p className="whitespace-pre-wrap text-sm">{schedule.request}</p>
-      {newer_agent_version && schedule.mine && (
+      <p className="whitespace-pre-wrap text-sm">{duty.mission}</p>
+      {duty.procedure && (
+        <p className="whitespace-pre-wrap text-xs text-faint">
+          {duty.procedure}
+        </p>
+      )}
+      {duty.thread_id && (
+        <Hint>
+          {words.thread}: <span className="font-mono">{duty.thread_id}</span>
+        </Hint>
+      )}
+      {newer_agent_version && duty.mine && (
         <Hint>{words.newer(newer_agent_version)}</Hint>
       )}
-      {may_administer && schedule.halt === "registrant_left" && (
+      {may_administer && duty.halt === "requester_left" && (
         <form
           className="flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
@@ -448,25 +452,23 @@ function ScheduleHistory({
   );
 }
 
-function ScheduleEditor({
+function DutyEditor({
   initial,
-  minInterval,
   busy,
   onCancel,
   onSave,
 }: {
-  initial: ScheduleForm;
-  minInterval: number;
+  initial: DutyForm;
   busy: boolean;
   onCancel: () => void;
-  onSave: (form: ScheduleForm) => void;
+  onSave: (form: DutyForm) => void;
 }) {
   const { locale } = useI18n();
   const words = copy[locale];
   const [form, setForm] = useState(initial);
   const [tried, setTried] = useState(false);
-  const problems = formProblems(form, minInterval);
-  const set = <K extends keyof ScheduleForm>(key: K, value: ScheduleForm[K]) =>
+  const problems = formProblems(form);
+  const set = <K extends keyof DutyForm>(key: K, value: DutyForm[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
   return (
     <form
@@ -483,10 +485,17 @@ function ScheduleEditor({
           onChange={(event) => set("title", event.target.value)}
         />
       </Field>
-      <Field label={words.request}>
+      <Field label={words.mission}>
         <Textarea
-          value={form.request}
-          onChange={(event) => set("request", event.target.value)}
+          value={form.mission}
+          onChange={(event) => set("mission", event.target.value)}
+        />
+      </Field>
+      <Field label={words.procedure}>
+        <Textarea
+          rows={4}
+          value={form.procedure}
+          onChange={(event) => set("procedure", event.target.value)}
         />
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -507,14 +516,15 @@ function ScheduleEditor({
         <NativeSelect
           value={form.timing}
           onChange={(event) =>
-            set("timing", event.target.value as ScheduleForm["timing"])
+            set("timing", event.target.value as DutyForm["timing"])
           }
         >
           <option value="cron">{words.cron}</option>
           <option value="interval">{words.interval}</option>
+          <option value="none">{words.noTiming}</option>
         </NativeSelect>
       </Field>
-      {form.timing === "cron" ? (
+      {form.timing === "none" ? null : form.timing === "cron" ? (
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={words.expression}>
             <Input
@@ -539,11 +549,11 @@ function ScheduleEditor({
           />
         </Field>
       )}
-      <Field label={words.thread}>
+      <Field label={words.pauseAfterFailures}>
         <Input
-          className="font-mono"
-          value={form.thread}
-          onChange={(event) => set("thread", event.target.value)}
+          inputMode="numeric"
+          value={form.pauseAfterFailures}
+          onChange={(event) => set("pauseAfterFailures", event.target.value)}
         />
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -553,7 +563,7 @@ function ScheduleEditor({
             onChange={(event) =>
               set(
                 "approvalMode",
-                event.target.value as ScheduleForm["approvalMode"],
+                event.target.value as DutyForm["approvalMode"],
               )
             }
           >

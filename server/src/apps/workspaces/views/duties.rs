@@ -1,18 +1,18 @@
-//! Schedule HTTP endpoints (#557).
+//! Duty HTTP endpoints (#1011, from the Schedules of #557).
 use super::super::{
-	serializers::schedules::{ListScope, ScheduleListQuery, SuccessorInput},
-	services::schedules::{Operation, execute},
+	serializers::duties::{DutyListQuery, ListScope, SuccessorInput},
+	services::duties::{Operation, execute},
 };
 use crate::{authorization::identity::Actor, federation::Federation, http::json::Json};
-use aidash_application::schedules::Listing;
-use aidash_domain::schedules::{Definition, Limits, Patch};
+use aidash_application::duties::Listing;
+use aidash_domain::duties::{Definition, Patch};
 use reinhardt::http::ViewResult;
-use reinhardt::{Path, Query, Response, delete, get, patch, post, put};
+use reinhardt::{Path, Query, Response, delete, get, patch, post};
 use uuid::Uuid;
 
 #[get(
-	"/api/workspaces/{workspace}/schedules",
-	name = "workspace-schedules",
+	"/api/workspaces/{workspace}/duties",
+	name = "workspace-duties",
 	auth = "protected"
 )]
 pub async fn workspace_list(
@@ -30,8 +30,8 @@ pub async fn workspace_list(
 	)
 }
 #[post(
-	"/api/workspaces/{workspace}/schedules",
-	name = "schedule-create",
+	"/api/workspaces/{workspace}/duties",
+	name = "duty-create",
 	auth = "protected"
 )]
 pub async fn create(
@@ -42,11 +42,11 @@ pub async fn create(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Create(workspace, input)).await)
 }
-#[get("/api/schedules", name = "schedule-list", auth = "protected")]
+#[get("/api/duties", name = "duty-list", auth = "protected")]
 pub async fn list(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
-	Query(input): Query<ScheduleListQuery>,
+	Query(input): Query<DutyListQuery>,
 ) -> ViewResult<Response> {
 	let listing = match input.scope {
 		ListScope::Mine => Listing::Mine,
@@ -54,34 +54,14 @@ pub async fn list(
 	};
 	crate::http::json(execute(&runtime, actor, Operation::List(listing)).await)
 }
-#[get(
-	"/api/schedules/notices",
-	name = "schedule-notices",
-	auth = "protected"
-)]
+#[get("/api/duties/notices", name = "duty-notices", auth = "protected")]
 pub async fn notices(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Notices).await)
 }
-#[get("/api/schedules/limits", name = "schedule-limits", auth = "protected")]
-pub async fn limits(#[inject] runtime: Federation, #[inject] actor: Actor) -> ViewResult<Response> {
-	crate::http::json(execute(&runtime, actor, Operation::Limits).await)
-}
-#[put(
-	"/api/schedules/limits",
-	name = "schedule-limits-update",
-	auth = "protected"
-)]
-pub async fn set_limits(
-	#[inject] runtime: Federation,
-	#[inject] actor: Actor,
-	Json(input): Json<Limits>,
-) -> ViewResult<Response> {
-	crate::http::json(execute(&runtime, actor, Operation::SetLimits(input)).await)
-}
-#[get("/api/schedules/{id}", name = "schedule-read", auth = "protected")]
+#[get("/api/duties/{id}", name = "duty-read", auth = "protected")]
 pub async fn read(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
@@ -89,7 +69,7 @@ pub async fn read(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Read(id)).await)
 }
-#[patch("/api/schedules/{id}", name = "schedule-update", auth = "protected")]
+#[patch("/api/duties/{id}", name = "duty-update", auth = "protected")]
 pub async fn update(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
@@ -98,11 +78,7 @@ pub async fn update(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Update(id, input)).await)
 }
-#[post(
-	"/api/schedules/{id}/pause",
-	name = "schedule-pause",
-	auth = "protected"
-)]
+#[post("/api/duties/{id}/pause", name = "duty-pause", auth = "protected")]
 pub async fn pause(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
@@ -110,11 +86,7 @@ pub async fn pause(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Pause(id)).await)
 }
-#[post(
-	"/api/schedules/{id}/resume",
-	name = "schedule-resume",
-	auth = "protected"
-)]
+#[post("/api/duties/{id}/resume", name = "duty-resume", auth = "protected")]
 pub async fn resume(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
@@ -123,8 +95,8 @@ pub async fn resume(
 	crate::http::json(execute(&runtime, actor, Operation::Resume(id)).await)
 }
 #[post(
-	"/api/schedules/{id}/successor",
-	name = "schedule-successor",
+	"/api/duties/{id}/successor",
+	name = "duty-successor",
 	auth = "protected"
 )]
 pub async fn successor(
@@ -135,11 +107,7 @@ pub async fn successor(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Successor(id, input.subject)).await)
 }
-#[post(
-	"/api/schedules/{id}/run-now",
-	name = "schedule-run-now",
-	auth = "protected"
-)]
+#[post("/api/duties/{id}/run-now", name = "duty-run-now", auth = "protected")]
 pub async fn run_now(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
@@ -147,7 +115,7 @@ pub async fn run_now(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::RunNow(id)).await)
 }
-#[delete("/api/schedules/{id}", name = "schedule-delete", auth = "protected")]
+#[delete("/api/duties/{id}", name = "duty-delete", auth = "protected")]
 pub async fn remove(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,

@@ -72,9 +72,9 @@ pub const CONNECTION_SCOPES_UPDATE: &str = "connection.scopes.update";
 /// Force-disconnecting another subject's MCP OAuth Connection. The
 /// administrator sees metadata only, never a token.
 pub const CONNECTION_ADMINISTER: &str = "connection.administer";
-/// Seeing, stopping and deleting anyone's Schedules, naming a successor and
+/// Seeing, stopping and deleting anyone's Duties, naming a successor and
 /// setting the Tenant's Schedule limits (#557).
-pub const SCHEDULE_ADMINISTER: &str = crate::schedules::ADMINISTER;
+pub const SCHEDULE_ADMINISTER: &str = crate::duties::ADMINISTER;
 /// Writing the Tenant Instructions every Agent of the Tenant works under
 /// (#1010). Agents never hold it: only a person's browser session writes them.
 pub const TENANT_INSTRUCTIONS_UPDATE: &str = "tenant.instructions.update";

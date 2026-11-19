@@ -1032,8 +1032,8 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 		async move {
 			let id = Uuid::new_v4();
 			sqlx::query(
-				"INSERT INTO schedules (id, tenant, workspace_id, registrant, credential_id, title, request, agent_id, agent_version, trigger, max_lateness_seconds, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
-				 VALUES ($1, $2, $3, $4, $5, 'Weekly', 'Report', 'reporter', '1.0.0', '{\"kind\":\"interval\",\"every_seconds\":3600}', 3600, now(), now() + interval '1 hour', now() + interval '1 hour', 0, 0, now(), now())",
+				"INSERT INTO duties (id, tenant, workspace_id, requester, credential_id, title, mission, procedure, agent_id, agent_version, trigger, max_lateness_seconds, pause_after_failures, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
+				 VALUES ($1, $2, $3, $4, $5, 'Weekly', 'Report', '', 'reporter', '1.0.0', '{\"kind\":\"interval\",\"every_seconds\":3600}', 3600, 3, now(), now() + interval '1 hour', now() + interval '1 hour', 0, 0, now(), now())",
 			)
 			.bind(id)
 			.bind(&tenant)
@@ -1051,7 +1051,7 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 	let halt = |id: Uuid| {
 		let pool = d.federation.store.pool.fixture_driver().clone();
 		async move {
-			sqlx::query_scalar::<_, Option<String>>("SELECT halt FROM schedules WHERE id = $1")
+			sqlx::query_scalar::<_, Option<String>>("SELECT halt FROM duties WHERE id = $1")
 				.bind(id)
 				.fetch_one(&pool)
 				.await
@@ -1070,18 +1070,18 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 		.await;
 	// Assert: his Schedule waits for a successor at once; Alice's runs on.
 	assert_eq!(status, 204, "{body}");
-	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("requester_left"));
 	assert_eq!(halt(alices).await, None);
 	// Act: the Tenant is deleted, then restored.
 	let (status, body) = d.delete(&alice, &context, &tenant).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(halt(alices).await.as_deref(), Some("tenant_deleted"));
-	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("requester_left"));
 	let (status, body) = d.restore(&alice, &context, &tenant).await;
 	assert_eq!(status, 200, "{body}");
 	// Assert: nothing resumes with the restore.
 	assert_eq!(halt(alices).await.as_deref(), Some("tenant_deleted"));
-	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("requester_left"));
 	d.finish().await;
 }
 
@@ -1094,7 +1094,7 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_was_registered_with(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	use aidash_server::apps::workspaces::services::schedules::pass;
+	use aidash_server::apps::workspaces::services::duties::pass;
 	// Arrange: Bob, a member, can start an Agent of the Tenant.
 	let d = Deployment::new(runtime, open_rules()).await;
 	let alice = d.person("alice").await;
@@ -1175,18 +1175,18 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 	let (status, schedule, _) = d
 		.send(
 			"POST",
-			&format!("/api/workspaces/{workspace}/schedules"),
+			&format!("/api/workspaces/{workspace}/duties"),
 			None,
 			None,
 			Some(&token),
-			json!({"title":"Weekly","request":"Report","agent":{"id":"reporter","version":"1.0.0"},"trigger":{"kind":"interval","every_seconds":3600}}),
+			json!({"title":"Weekly","mission":"Report","agent":{"id":"reporter","version":"1.0.0"},"trigger":{"kind":"interval","every_seconds":3600}}),
 		)
 		.await;
 	assert_eq!(status, 200, "{schedule}");
 	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
 	let pool = d.federation.store.pool.fixture_driver().clone();
 	let (credential, mapping_credential): (Uuid, Uuid) = sqlx::query_as(
-		"SELECT s.credential_id, m.credential_id FROM schedules s JOIN dashboard_mappings m ON m.tenant = s.tenant AND m.subject = s.registrant WHERE s.id = $1",
+		"SELECT s.credential_id, m.credential_id FROM duties s JOIN dashboard_mappings m ON m.tenant = s.tenant AND m.subject = s.requester WHERE s.id = $1",
 	)
 	.bind(id)
 	.fetch_one(&pool)
@@ -1199,7 +1199,7 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 		let pool = pool.clone();
 		async move {
 			sqlx::query(
-				"UPDATE schedules SET anchor = now() - interval '1 day' - interval '90 seconds', next_scheduled_at = now() - interval '90 seconds', next_fire_at = now() - interval '90 seconds' WHERE id = $1",
+				"UPDATE duties SET anchor = now() - interval '1 day' - interval '90 seconds', next_scheduled_at = now() - interval '90 seconds', next_fire_at = now() - interval '90 seconds' WHERE id = $1",
 			)
 			.bind(id)
 			.execute(&pool)
@@ -1250,11 +1250,11 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 		.await;
 	assert!((200..300).contains(&status), "{status}: {body}");
 	// Assert: the Schedule waits for a successor.
-	let halt: Option<String> = sqlx::query_scalar("SELECT halt FROM schedules WHERE id = $1")
+	let halt: Option<String> = sqlx::query_scalar("SELECT halt FROM duties WHERE id = $1")
 		.bind(id)
 		.fetch_one(&pool)
 		.await
 		.unwrap();
-	assert_eq!(halt.as_deref(), Some("registrant_left"));
+	assert_eq!(halt.as_deref(), Some("requester_left"));
 	d.finish().await;
 }

@@ -363,7 +363,7 @@ impl BindingSnapshot {
 				// A Workbench test may also exclude a Schedule tool
 				// (`for_workbench_test`); excluding only takes a tool away.
 				if excluded_reason.is_none()
-					&& descriptor.provider == "core.schedules@1"
+					&& descriptor.provider == "core.duties@1"
 					&& saved.excluded_reason.as_deref() == Some(super::WORKBENCH_SCHEDULE_EXCLUSION)
 				{
 					excluded_reason = saved.excluded_reason.clone();

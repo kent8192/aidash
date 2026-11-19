@@ -657,14 +657,14 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::Unsafe;
 			contract.disclosure = DisclosureBoundary::Local;
 		}
-		// Schedules act as the person at the root of the Run's chain (ADR 0134).
+		// Duties act as the person at the root of the Run's chain (ADR 0134).
 		// A change passes that person's Approval Mode and Approval Rules as a
 		// Tool call approval; the use case checks `schedule.create` as them.
-		"schedule_create" | "schedule_update" | "schedule_delete" => {
+		"duty_create" | "duty_update" | "duty_delete" => {
 			behavior.effect = ToolEffect::Unsafe;
 			behavior.tool_call_approval = true;
 		}
-		"schedule_list" => {
+		"duty_list" => {
 			behavior.effect = ToolEffect::ReadOnly;
 		}
 		_ => return None,
@@ -727,10 +727,10 @@ mod tests {
 	#[test]
 	fn schedule_changes_need_a_tool_call_approval_and_stay_at_home() {
 		for (name, approval, effect) in [
-			("schedule_create", true, ToolEffect::Unsafe),
-			("schedule_update", true, ToolEffect::Unsafe),
-			("schedule_delete", true, ToolEffect::Unsafe),
-			("schedule_list", false, ToolEffect::ReadOnly),
+			("duty_create", true, ToolEffect::Unsafe),
+			("duty_update", true, ToolEffect::Unsafe),
+			("duty_delete", true, ToolEffect::Unsafe),
+			("duty_list", false, ToolEffect::ReadOnly),
 		] {
 			let contract = builtin_contract(name).unwrap();
 			assert_eq!(contract.behavior.tool_call_approval, approval, "{name}");
@@ -740,7 +740,7 @@ mod tests {
 			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
 			assert_eq!(
 				crate::tool::providers::core_provider(name),
-				Some("core.schedules@1")
+				Some("core.duties@1")
 			);
 		}
 	}

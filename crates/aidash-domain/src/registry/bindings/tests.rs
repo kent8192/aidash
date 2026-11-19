@@ -727,7 +727,7 @@ fn a_workbench_test_excludes_only_the_schedule_tools() {
 			version: "1.0.0".into(),
 		},
 		remote: false,
-		bindings: vec![bound("schedule_create"), bound("task_create")],
+		bindings: vec![bound("duty_create"), bound("task_create")],
 		definitions: vec![],
 		agent_plugins: vec![],
 	};

@@ -25,6 +25,7 @@ fn blank_texts_are_empty() {
 	let standing = StandingInstructions {
 		tenant: "  \n".into(),
 		node: String::new(),
+		duty: String::new(),
 	};
 	assert!(standing.is_empty());
 }

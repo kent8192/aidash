@@ -180,7 +180,7 @@ impl ThreadScope for Scope<'_> {
 	}
 	async fn stop_schedules(&mut self, thread: Uuid) -> Result<()> {
 		let tenant = self.access.identity.tenant.clone();
-		crate::apps::workspaces::services::schedules::stop_for_thread(
+		crate::apps::workspaces::services::duties::stop_for_thread(
 			&mut **self.access.tx,
 			&tenant,
 			thread,

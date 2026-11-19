@@ -229,7 +229,7 @@ pub(crate) async fn record(
 	tx.execute(&sql, convert_values(values)).await?;
 	stop_runs(tx, tenant).await?;
 	// A restore leaves them stopped, as it leaves stopped Runs (#557).
-	crate::apps::workspaces::services::schedules::stop_for_tenant(tx, tenant).await?;
+	crate::apps::workspaces::services::duties::stop_for_tenant(tx, tenant).await?;
 	Ok(row)
 }
 

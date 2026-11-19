@@ -56,6 +56,7 @@ async fn enterprise_policy_migrations_run_the_template_and_write_no_tenant_owned
 		&migrations,
 		&policy_checks::tenant_owned(TABLES),
 		&[],
+		&[],
 	);
 	policy_checks::assert_no_migration_writes_tenant_owned_rows(
 		&migrations,
