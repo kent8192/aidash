@@ -8,7 +8,10 @@
 use crate::{Error, Result, ports::authorization::commands::RemoteCommandScope};
 use aidash_domain::{
 	Task, TaskStatus,
-	federation::delivery::{File, Limits, Purpose, validate},
+	federation::{
+		delivery::{File, Limits, Purpose, validate},
+		tool_lists::FederationToolRequest,
+	},
 };
 use uuid::Uuid;
 
@@ -21,12 +24,16 @@ pub struct Identity<'a> {
 	/// The Agent version the grant admitted.
 	pub agent: &'a str,
 	pub version: &'a str,
+	/// The Home's current Federation Tool Request for the receiving Node, with this grant's
+	/// Run-only answers; `None` for a receiver of the Home's own Tenant (ADR 0139).
+	pub request: Option<&'a FederationToolRequest>,
 }
 
 /// Admit one request of a delivery, in the order a Home command is admitted: the live grant's
-/// Binding must be this admission's, the Run's Binding must hold the tool the Run called, and
-/// the grant's task must still be the executing Agent's and not finished. Returns the task,
-/// whose Workspace and delegation the Home's records resolve the target from.
+/// Binding must be this admission's, the Home's own Request and the Run's Binding must hold the
+/// tool the Run called, and the grant's task must still be the executing Agent's and not
+/// finished. Returns the task, whose Workspace and delegation the Home's records resolve the
+/// target from.
 pub async fn verify(
 	scope: &mut dyn RemoteCommandScope,
 	who: &Identity<'_>,
@@ -35,6 +42,18 @@ pub async fn verify(
 	let bound = scope.binding(who.grant_id).await?.ok_or(Error::Forbidden)?;
 	if bound.admission_id != who.admission_id {
 		return Err(Error::Forbidden);
+	}
+	// The Home stores what a delivery carries itself, so its own Request must name the tool the
+	// Run called, whatever the receiving Node checked (ADR 0139, decision 1).
+	crate::authorization::peer::tool_request::require_requested(who.request, tool)?;
+	if tool == "workspace_message" {
+		// A delivered message always carries files, which the lists name with a key of their own
+		// besides the plain one: the default `workspace_message` sends no files (decision 6).
+		crate::authorization::peer::tool_request::require_requested_key(
+			who.request,
+			aidash_domain::tool::ToolReach::HomeWorkspace,
+			aidash_domain::federation::tool_lists::WORKSPACE_MESSAGE_FILES,
+		)?;
 	}
 	scope.require_builtin(tool).await?;
 	let task = scope.task(bound.task_id).await?;

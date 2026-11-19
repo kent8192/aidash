@@ -10,6 +10,14 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 	access.worker();
 	access.read_grant = Some(input.grant_id);
 	let agent = &description.inspection.agent;
+	// The Request this Home asks of the sender now, with the grant's Run-only answers: the
+	// Description was rebuilt for this command, so a change to either reaches it at once.
+	let request = match aidash_application::authorization::peer::tool_request::requested_tools(
+		&description,
+	) {
+		Ok(request) => request,
+		Err(error) => return access.finish(Err(error.into())).await,
+	};
 	let mut command_scope = crate::bootstrap::remote_command_scope(&f, &mut access);
 	command_scope.bindings = Some(&description.inspection.binding_snapshot);
 	let result = aidash_application::authorization::commands::effects::execute(
@@ -22,6 +30,7 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 			node,
 			agent: &agent.id,
 			version: &agent.version,
+			request: request.as_ref(),
 		},
 		agent,
 	)

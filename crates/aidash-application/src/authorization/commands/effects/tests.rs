@@ -354,6 +354,7 @@ fn input<'a>(operation: &'a str, data: &'a Value) -> Command<'a> {
 		node: "aidash://peer",
 		agent: "agent",
 		version: "1",
+		request: None,
 	}
 }
 fn agent() -> Entry {
@@ -1170,4 +1171,101 @@ async fn an_outbound_read_returns_only_the_question_this_tool_asked(mut scope: S
 		run(&mut scope, "outbound_read", &data).await,
 		Err(Error::Forbidden)
 	));
+}
+fn home_request(tools: &[&str]) -> aidash_domain::federation::tool_lists::FederationToolRequest {
+	use aidash_domain::federation::tool_lists::{FederationToolRequest, ToolList, ToolPattern};
+	FederationToolRequest {
+		tools: ToolList::new(tools.iter().map(|tool| ToolPattern::new(*tool).unwrap())).unwrap(),
+		hosts: vec![],
+	}
+}
+async fn run_requested(
+	scope: &mut Scope,
+	operation: &str,
+	data: &Value,
+	request: &aidash_domain::federation::tool_lists::FederationToolRequest,
+) -> Result<Value> {
+	let mut command = input(operation, data);
+	command.request = Some(request);
+	execute(scope, command, &agent()).await
+}
+fn forwarded_calls() -> Vec<(&'static str, Value)> {
+	vec![
+		(
+			"workspace_search",
+			json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}}),
+		),
+		("task_assign", assign_data()),
+		(
+			"memory_recall",
+			json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}}),
+		),
+		(
+			"memory_reflect",
+			json!({"key":"reflect","query":{"text":"what","kinds":[],"max_tokens":100}}),
+		),
+		("memory_mutate", json!({"key":"write","changes":[]})),
+		(
+			"connection_request",
+			json!({"run_id":Uuid::from_u128(1),"key":"ask","prompt":connection_prompt()}),
+		),
+		(
+			"outbound_request",
+			json!({"run_id":Uuid::from_u128(1),"key":"ask","prompt":outbound_prompt()}),
+		),
+	]
+}
+#[rstest]
+#[tokio::test]
+async fn the_home_refuses_a_forwarded_tool_its_own_request_does_not_name(mut scope: Scope) {
+	// The receiving Node skipped its gate: the Home's Request names only the defaults it kept.
+	let request = home_request(&["workspace_message", "human_request"]);
+	for (operation, data) in forwarded_calls() {
+		let refused = run_requested(&mut scope, operation, &data, &request).await;
+		assert!(
+			matches!(&refused, Err(Error::Invalid(message)) if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL),
+			"{operation}: {refused:?}"
+		);
+		assert!(scope.applied.is_empty(), "{operation} took effect");
+		assert!(scope.journal.is_empty(), "{operation} was journaled");
+		assert!(
+			!scope.calls.iter().any(|call| call.starts_with("builtin:")),
+			"{operation} reached the Binding check"
+		);
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn the_home_serves_a_forwarded_tool_its_request_or_a_run_only_answer_names(mut scope: Scope) {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let listed = home_request(&["workspace_search", "memory_*"]);
+	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
+	run_requested(&mut scope, "workspace_search", &data, &listed)
+		.await
+		.unwrap();
+	let recall = json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}});
+	run_requested(&mut scope, "memory_recall", &recall, &listed)
+		.await
+		.unwrap();
+	// The Home's "this Run only" answer travels inside the Request it describes.
+	let run_only = ToolList::new([ToolPattern::new("task_assign").unwrap()]).unwrap();
+	let answered = home_request(&["workspace_message"])
+		.with_run_tools(&run_only)
+		.unwrap();
+	let child = scope.child();
+	scope.additional.insert(child.id, child);
+	run_requested(&mut scope, "task_assign", &assign_data(), &answered)
+		.await
+		.unwrap();
+}
+#[rstest]
+#[tokio::test]
+async fn older_operations_keep_only_the_binding_check_under_a_request(mut scope: Scope) {
+	// A Run's own traffic (here, a record read for its context) names no list.
+	let request = home_request(&[]);
+	let data = json!({"kind":"message","id":Uuid::from_u128(6)});
+	run_requested(&mut scope, "workspace_record", &data, &request)
+		.await
+		.unwrap();
+	assert!(scope.calls.contains(&"builtin:workspace_read".to_string()));
 }

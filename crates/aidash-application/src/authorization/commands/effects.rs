@@ -29,6 +29,7 @@ pub async fn execute(
 		node: input.node,
 		agent: input.agent,
 		version: input.version,
+		request: input.request,
 	};
 	if matches!(
 		input.operation,

@@ -72,7 +72,8 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"create_task" => Some("task_create"),
 		"delegate" => Some("task_delegate"),
 		// Home-forwarded tools (ADR 0139): each op is named as its tool so the
-		// tool lists and the Binding are checked for the tool the Run called.
+		// Binding and the Home's own Request ([`requested`]) are checked for the
+		// tool the Run called.
 		"task_assign" => Some("task_assign"),
 		"workspace_search" => Some("workspace_search"),
 		"connection_request" => Some("connection_request"),
@@ -84,6 +85,24 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"memory_mutate" => Some("memory_mutate"),
 		_ => None,
 	}
+}
+/// Whether the Home checks its own Federation Tool Request for `operation` before it serves it
+/// (ADR 0139, decision 1): the Home-forwarded tools, whose ops a receiving Node sends only when
+/// the Run called that tool. The older ops also carry traffic of the Run itself that no list
+/// names (a person asked about a tool approval or a Completion Review, records read for the
+/// Run's context, tasks an Agent tool creates), so only the Binding is checked for them.
+pub fn requested(operation: &str) -> bool {
+	matches!(
+		operation,
+		"task_assign"
+			| "workspace_search"
+			| "connection_request"
+			| "outbound_request"
+			| "outbound_read"
+			| "memory_recall"
+			| "memory_reflect"
+			| "memory_mutate"
+	)
 }
 pub fn require_input_key(key: &str, run: Uuid) -> Result<()> {
 	if key.len() > 512

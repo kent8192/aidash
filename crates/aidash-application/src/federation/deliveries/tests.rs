@@ -64,6 +64,7 @@ fn who(admission: u128) -> Identity<'static> {
 		node: "aidash://peer",
 		agent: "agent",
 		version: "1",
+		request: None,
 	}
 }
 fn message() -> Purpose {
@@ -175,4 +176,57 @@ fn only_the_home_may_receive() {
 		require_home("aidash://home/node", "aidash://home/another"),
 		Err(Error::Forbidden)
 	));
+}
+fn requesting(tools: &[&str]) -> FederationToolRequest {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	FederationToolRequest {
+		tools: ToolList::new(tools.iter().map(|tool| ToolPattern::new(*tool).unwrap())).unwrap(),
+		hosts: vec![],
+	}
+}
+#[rstest]
+#[case::share("file_share")]
+#[case::message("workspace_message")]
+#[tokio::test]
+async fn a_delivery_the_homes_own_request_does_not_name_is_refused_before_the_binding(
+	mut scope: Scope,
+	#[case] tool: &str,
+) {
+	let request = requesting(&["task_create"]);
+	let mut identity = who(1);
+	identity.request = Some(&request);
+	assert!(matches!(
+		verify(&mut scope, &identity, tool).await,
+		Err(Error::Invalid(message)) if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL
+	));
+	assert_eq!(scope.calls, ["binding"], "neither Binding nor task is read");
+}
+#[rstest]
+#[tokio::test]
+async fn a_delivery_a_run_only_answer_allows_is_admitted(mut scope: Scope) {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let run_only = ToolList::new([ToolPattern::new("file_share").unwrap()]).unwrap();
+	let request = requesting(&["workspace_message"])
+		.with_run_tools(&run_only)
+		.unwrap();
+	let mut identity = who(1);
+	identity.request = Some(&request);
+	verify(&mut scope, &identity, "file_share").await.unwrap();
+	assert_eq!(scope.calls, ["binding", "builtin:file_share", "task"]);
+}
+#[rstest]
+#[case::plain_key_only(&["workspace_message"], false)]
+#[case::files_key_too(&["workspace_message", "workspace_message:files"], true)]
+#[case::pattern(&["workspace_message*"], true)]
+#[tokio::test]
+async fn a_message_delivery_needs_the_files_key_in_the_homes_request(
+	mut scope: Scope,
+	#[case] tools: &[&str],
+	#[case] admitted: bool,
+) {
+	let request = requesting(tools);
+	let mut identity = who(1);
+	identity.request = Some(&request);
+	let result = verify(&mut scope, &identity, message().tool()).await;
+	assert_eq!(result.is_ok(), admitted, "{result:?}");
 }

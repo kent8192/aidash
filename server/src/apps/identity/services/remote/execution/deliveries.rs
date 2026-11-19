@@ -66,6 +66,8 @@ async fn admit(
 	let (mut access, description) = super::super::delivery_lease(f, &node, grant).await?;
 	let agent = description.inspection.agent.clone();
 	let result: Result<Admission> = async {
+		let request =
+			aidash_application::authorization::peer::tool_request::requested_tools(&description)?;
 		let task = {
 			let mut scope = crate::bootstrap::remote_command_scope(f, &mut access);
 			scope.bindings = Some(&description.inspection.binding_snapshot);
@@ -77,6 +79,7 @@ async fn admit(
 					node: &node,
 					agent: &agent.id,
 					version: &agent.version,
+					request: request.as_ref(),
 				},
 				tool,
 			)
