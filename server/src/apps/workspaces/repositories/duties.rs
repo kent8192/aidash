@@ -37,6 +37,7 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 	Ok(Duty {
 		id: row.id,
 		workspace_id: row.workspace_id,
+		origin_workspace_id: row.origin_workspace_id,
 		requester: row.requester,
 		credential_id: row.credential_id,
 		definition: Definition {
@@ -66,7 +67,6 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 				.map(|watcher| serde_json::from_value(watcher.0))
 				.transpose()?,
 		},
-		thread_id: row.thread_id,
 		anchor: row.anchor,
 		next_scheduled_at: row.next_scheduled_at,
 		watcher_next_at: row.watcher_next_at,
@@ -87,6 +87,7 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 	let definition = &duty.definition;
 	row.workspace_id = duty.workspace_id;
+	row.origin_workspace_id = duty.origin_workspace_id;
 	row.requester = duty.requester.clone();
 	row.credential_id = duty.credential_id;
 	row.title = definition.title.trim().to_owned();
@@ -99,7 +100,6 @@ fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 		.as_ref()
 		.map(|trigger| serde_json::to_value(trigger).map(reinhardt::db::orm::Json))
 		.transpose()?;
-	row.thread_id = duty.thread_id;
 	row.approval_mode = definition.approval_mode.map(mode_text).transpose()?;
 	row.max_lateness_seconds = definition.max_lateness_seconds;
 	row.pause_after_failures = definition.pause_after_failures;
@@ -138,6 +138,7 @@ pub(crate) async fn insert(
 		.id(duty.id)
 		.tenant(tenant.to_owned())
 		.workspace_id(duty.workspace_id)
+		.origin_workspace_id(duty.origin_workspace_id)
 		.requester(duty.requester.clone())
 		.credential_id(duty.credential_id)
 		.title(String::new())
@@ -146,7 +147,6 @@ pub(crate) async fn insert(
 		.agent_id(String::new())
 		.agent_version(String::new())
 		.trigger(None)
-		.thread_id(None)
 		.approval_mode(None)
 		.max_lateness_seconds(0)
 		.pause_after_failures(0)
@@ -336,9 +336,11 @@ pub(crate) async fn list(
 ) -> Result<Vec<Duty>> {
 	let query = DutyRecord::objects().filter(DutyRecord::field_tenant().eq(tenant.to_owned()));
 	let query = match filter {
-		Filter::Workspace(workspace) => {
-			query.filter(DutyRecord::field_workspace_id().eq(workspace))
-		}
+		Filter::Workspace(workspace) => query.filter(
+			DutyRecord::field_workspace_id()
+				.eq(workspace)
+				.or(DutyRecord::field_origin_workspace_id().eq(Some(workspace))),
+		),
 		Filter::Mine(subject) => query.filter(
 			DutyRecord::field_requester()
 				.eq(subject.to_owned())
@@ -430,27 +432,6 @@ pub(crate) async fn brief_of_task(
 	})
 }
 
-/// Records the Duty's own Thread, which its first Task opened.
-pub(crate) async fn open_thread(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	duty: Uuid,
-	thread: Uuid,
-) -> Result<()> {
-	native::query(
-		&Query::update()
-			.table(Alias::new("duties"))
-			.value(Alias::new("thread_id"), thread)
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(Expr::value(duty)))
-			.and_where(Expr::col("thread_id").is_null())
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await?;
-	Ok(())
-}
-
 fn tick_of(row: DutyTickRecord) -> Result<Tick> {
 	Ok(Tick {
 		id: row.id,
@@ -460,7 +441,6 @@ fn tick_of(row: DutyTickRecord) -> Result<Tick> {
 		status: TickStatus::parse(&row.status)?,
 		reason: row.reason,
 		task_id: row.task_id,
-		thread_id: row.thread_id,
 		started_by: row.started_by,
 	})
 }
@@ -500,7 +480,6 @@ pub(crate) async fn insert_tick(
 		.status(tick.status.as_str().to_owned())
 		.reason(tick.reason.clone())
 		.task_id(tick.task_id)
-		.thread_id(tick.thread_id)
 		.started_by(tick.started_by.clone())
 		.settled_at(None)
 		.finish();
@@ -757,7 +736,7 @@ pub(crate) async fn stop(
 			Halt::RequesterLeft,
 		),
 		Stop::Thread(thread) => (
-			query.filter(DutyRecord::field_thread_id().eq(thread)),
+			query.filter(DutyRecord::field_workspace_id().eq(thread)),
 			Halt::ThreadDeleted,
 		),
 		Stop::Tenant => (query, Halt::TenantDeleted),
@@ -766,9 +745,9 @@ pub(crate) async fn stop(
 			Halt::Paused,
 		),
 	};
-	// Deleting a Thread holds its channel row, and a tick holds its Duty
-	// while it reads that row: waiting here could deadlock. A Duty a tick
-	// holds is skipped; that tick then finds the Thread deleted and stops it.
+	// Deleting a Workspace holds its row, and a tick holds its Duty while it
+	// reads that row: waiting here could deadlock. A Duty a tick holds is
+	// skipped; that tick then finds the Workspace deleted and stops it.
 	let query = match stop {
 		Stop::Thread(thread) => {
 			let held: Vec<Uuid> = native::query_scalar(
@@ -776,7 +755,7 @@ pub(crate) async fn stop(
 					.column(Alias::new("id"))
 					.from(Alias::new("duties"))
 					.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+					.and_where(Expr::col("workspace_id").eq(Expr::value(thread)))
 					.lock(LockType::Update)
 					.lock_behavior(LockBehavior::SkipLocked)
 					.to_string(PostgresQueryBuilder),

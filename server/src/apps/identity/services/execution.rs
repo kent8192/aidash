@@ -816,7 +816,6 @@ impl WorkerAuthority {
 				run.workspace_id,
 				aidash_application::workspaces::channels::MessageSubmission {
 					content,
-					thread_id: None,
 					idempotency_key: operation_id(run.id, key, 8),
 					attachment_ids: &ids,
 					citations: &[],

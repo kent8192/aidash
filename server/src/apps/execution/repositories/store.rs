@@ -45,7 +45,6 @@ pub(crate) struct WorkspaceInsert<'a> {
 	pub tenant: &'a str,
 	pub node: &'a aidash_domain::nodes::NodeName,
 	pub title: &'a str,
-	pub goal: &'a str,
 	pub scratch_space_id: Uuid,
 	pub created_by: &'a str,
 }
@@ -868,11 +867,9 @@ impl Store {
 		scope: &TenancyScope,
 		owner: &str,
 		title: &str,
-		goal: &str,
 	) -> Result<Workspace> {
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		nonempty(title, "title")?;
-		nonempty(goal, "goal")?;
 		let mut tx = self.pool.begin(scope).await?;
 		let node: String = crate::database::native::query_scalar(
 			&Query::select()
@@ -908,7 +905,6 @@ impl Store {
 					tenant,
 					node: &node,
 					title,
-					goal,
 					scratch_space_id: space.id,
 					created_by: owner,
 				},
@@ -955,16 +951,13 @@ impl Store {
 			tenant,
 			node,
 			title,
-			goal,
 			scratch_space_id,
 			created_by,
 		} = input;
 		nonempty(title, "title")?;
-		nonempty(goal, "goal")?;
 		let w: Workspace = {
 			let query_bind_1 = id;
 			let query_bind_2 = title;
-			let query_bind_3 = goal;
 			aidash_server::database::query_as(
 				&Query::insert()
 					.into_table(Alias::new("workspaces"))
@@ -972,7 +965,6 @@ impl Store {
 						Alias::new("id"),
 						Alias::new("node"),
 						Alias::new("title"),
-						Alias::new("goal"),
 						Alias::new("tenant"),
 						Alias::new("scratch_space_id"),
 						Alias::new("created_by"),
@@ -987,10 +979,6 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
 							))
 							.expr(Expr::value(tenant.to_owned()))
 							.expr(Expr::value(scratch_space_id))
@@ -1023,37 +1011,35 @@ impl Store {
 			.await?
 			.into())
 	}
-	pub async fn update_state(
+	pub async fn update_title(
 		&self,
 		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
-		state: Value,
+		title: &str,
 	) -> Result<Workspace> {
 		let mut tx = self.pool.begin(scope).await?;
-		let workspace = self.update_state_in(&mut tx, id, revision, state).await?;
+		let workspace = self.update_title_in(&mut tx, id, revision, title).await?;
 		tx.commit().await?;
 		Ok(workspace)
 	}
-	pub(crate) async fn update_state_in(
+	pub(crate) async fn update_title_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		revision: i64,
-		state: Value,
+		title: &str,
 	) -> Result<Workspace> {
-		if !state.is_object() {
-			return Err(Error::Invalid("workspace state must be an object".into()));
-		}
+		nonempty(title, "title")?;
 		let w = {
 			let query_bind_1 = id;
 			let query_bind_2 = revision;
-			let query_bind_3 = state;
+			let query_bind_3 = title;
 			aidash_server::database::query_as(
 				&Query::update()
 					.table(Alias::new("workspaces"))
 					.value_expr(
-						Alias::new("state"),
+						Alias::new("title"),
 						SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_3.to_owned()).into()],

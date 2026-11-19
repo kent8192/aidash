@@ -4,7 +4,7 @@ use crate::{
 		access::Lease,
 		models::{
 			ChannelAttachment as AttachmentRecord, ChannelMessageContext as ContextRecord,
-			ChannelThread as ThreadRecord, Message as MessageRecord,
+			Message as MessageRecord,
 		},
 	},
 	store::Store,
@@ -14,8 +14,8 @@ use aidash_domain::{Message, workspaces::channels::*};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Condition, Expr, ExprTrait, IntoIden, JoinType, LockType, OnConflict, Order,
-	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr, TableRef,
+	Alias, ColumnRef, Condition, Expr, ExprTrait, IntoIden, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -81,15 +81,11 @@ fn index_state() -> SimpleExpr {
 
 struct HistoryRecord {
 	message: MessageRecord,
-	reply_thread_id: Option<Uuid>,
-	root_thread_id: Option<Uuid>,
 }
 impl crate::database::Record for HistoryRecord {
 	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			message: MessageRecord::decode(row)?,
-			reply_thread_id: row.try_get("reply_thread_id")?,
-			root_thread_id: row.try_get("root_thread_id")?,
 		})
 	}
 }
@@ -142,165 +138,6 @@ impl ChannelScope for NativeChannels<'_> {
 	async fn visible(&mut self, message: &Message) -> Result<bool> {
 		self.lease.visible(message).await.map_err(Into::into)
 	}
-	async fn thread_visible(&mut self, id: Uuid) -> Result<()> {
-		crate::capabilities::thread_lifecycle::visible(self.lease.tx(), id)
-			.await
-			.map_err(Into::into)
-	}
-	async fn thread(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<ChannelThread>> {
-		let thread: Option<ThreadRecord> = {
-			let query_bind_1 = workspace;
-			let query_bind_2 = id;
-			crate::database::query_as(
-				&Query::select()
-					.column(ColumnRef::Asterisk)
-					.from(Alias::new("channel_threads"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **self.lease.tx())
-			.await?
-		};
-		Ok(thread.map(Into::into))
-	}
-	async fn reply_thread(&mut self, message: Uuid) -> Result<Option<Uuid>> {
-		let thread: Option<Option<Uuid>> = {
-			let query_bind_1 = message;
-			crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("thread_id"))
-					.from(Alias::new("channel_message_context"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("message_id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **self.lease.tx())
-			.await?
-		};
-		Ok(thread.flatten())
-	}
-	async fn insert_thread(
-		&mut self,
-		workspace: Uuid,
-		root: Uuid,
-		sender: &str,
-	) -> Result<Option<ChannelThread>> {
-		let inserted: Option<ThreadRecord> = {
-			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = workspace;
-			let query_bind_3 = root;
-			let query_bind_4 = sender;
-			crate::database::query_as(
-				&Query::insert()
-					.into_table(Alias::new("channel_threads"))
-					.columns([
-						Alias::new("id"),
-						Alias::new("workspace_id"),
-						Alias::new("root_message_id"),
-						Alias::new("created_by"),
-						Alias::new("tenant"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"workspaces",
-								"id",
-								query_bind_2,
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::column(Alias::new("root_message_id"))
-							.do_nothing()
-							.to_owned(),
-					)
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **self.lease.tx())
-			.await?
-		};
-		Ok(inserted.map(Into::into))
-	}
-	async fn existing_thread(&mut self, workspace: Uuid, root: Uuid) -> Result<ChannelThread> {
-		let existing: ThreadRecord = {
-			let query_bind_1 = workspace;
-			let query_bind_2 = root;
-			crate::database::query_as(
-				&Query::select()
-					.column(ColumnRef::Asterisk)
-					.from(Alias::new("channel_threads"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-							"root_message_id",
-						)))
-						.eq(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						)),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **self.lease.tx())
-			.await?
-		};
-		Ok(existing.into())
-	}
-	async fn thread_event(&mut self, workspace: Uuid, root: Uuid, thread: Uuid) -> Result<()> {
-		self.store
-			.event(
-				self.lease.tx(),
-				Some(workspace),
-				"message.thread_opened",
-				json!({"id":root,"thread_id":thread}),
-			)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
 	async fn append_message(
 		&mut self,
 		workspace: Uuid,
@@ -332,13 +169,11 @@ impl ChannelScope for NativeChannels<'_> {
 		&mut self,
 		workspace: Uuid,
 		message: Uuid,
-		thread: Option<Uuid>,
 		digest: &str,
 	) -> Result<MessageContext> {
 		{
 			let query_bind_1 = message;
 			let query_bind_2 = workspace;
-			let query_bind_3 = thread;
 			let query_bind_4 = digest;
 			crate::database::native::query(
 				&Query::insert()
@@ -346,7 +181,6 @@ impl ChannelScope for NativeChannels<'_> {
 					.columns([
 						Alias::new("message_id"),
 						Alias::new("workspace_id"),
-						Alias::new("thread_id"),
 						Alias::new("attachment_digest"),
 						Alias::new("tenant"),
 					])
@@ -359,10 +193,6 @@ impl ChannelScope for NativeChannels<'_> {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
 							))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
@@ -413,32 +243,8 @@ impl ChannelScope for NativeChannels<'_> {
 			.await?
 		};
 		Ok(MessageContext {
-			thread_id: context.thread_key,
 			attachment_digest: context.attachment_digest,
 		})
-	}
-	async fn root_thread(&mut self, message: Uuid) -> Result<Option<Uuid>> {
-		let root_thread: Option<Uuid> = {
-			let query_bind_1 = message;
-			crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("id"))
-					.from(Alias::new("channel_threads"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-							"root_message_id",
-						)))
-						.eq(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						)),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **self.lease.tx())
-			.await?
-		};
-		Ok(root_thread)
 	}
 	async fn legacy_attachment_positions(
 		&mut self,
@@ -720,47 +526,12 @@ impl ChannelScope for NativeChannels<'_> {
 	async fn history_rows(
 		&mut self,
 		workspace: Uuid,
-		thread: Option<&ChannelThread>,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<HistoryRow>> {
 		let mut query = Query::select();
 		query
 			.column(ColumnRef::table_asterisk(Alias::new("m")))
-			.expr_as(
-				Expr::col((Alias::new("c"), Alias::new("thread_id"))),
-				Alias::new("reply_thread_id"),
-			)
-			.expr_as(
-				Expr::col((Alias::new("t"), Alias::new("id"))),
-				Alias::new("root_thread_id"),
-			)
 			.from_as(Alias::new("messages"), Alias::new("m"))
-			.and_where(
-				Expr::exists(
-					Query::select()
-						.expr(Expr::val(1))
-						.from_as(Alias::new("core_records"), Alias::new("d"))
-						.and_where(
-							Expr::col((Alias::new("d"), Alias::new("kind")))
-								.eq(reinhardt::query::Expr::value("thread_tombstone")),
-						)
-						.and_where(Expr::cust("d.data->>'root_message_id' = m.id::text"))
-						.to_owned(),
-				)
-				.not(),
-			)
-			.join(
-				JoinType::LeftJoin,
-				TableRef::table_alias(Alias::new("channel_message_context"), Alias::new("c")),
-				Expr::col((Alias::new("c"), Alias::new("message_id")))
-					.equals((Alias::new("m"), Alias::new("id"))),
-			)
-			.join(
-				JoinType::LeftJoin,
-				TableRef::table_alias(Alias::new("channel_threads"), Alias::new("t")),
-				Expr::col((Alias::new("t"), Alias::new("root_message_id")))
-					.equals((Alias::new("m"), Alias::new("id"))),
-			)
 			.and_where(
 				Expr::col((Alias::new("m"), Alias::new("workspace_id"))).eq(Expr::value(workspace)),
 			)
@@ -786,21 +557,6 @@ impl ChannelScope for NativeChannels<'_> {
 					),
 			);
 		}
-		if let Some(thread) = thread {
-			query.and_where(
-				Condition::any()
-					.add(
-						Expr::col((Alias::new("c"), Alias::new("thread_id")))
-							.eq(Expr::value(thread.id)),
-					)
-					.add(
-						Expr::col((Alias::new("m"), Alias::new("id")))
-							.eq(Expr::value(thread.root_message_id)),
-					),
-			);
-		} else {
-			query.and_where(Expr::col((Alias::new("c"), Alias::new("thread_id"))).is_null());
-		}
 		let sql = query.to_string(PostgresQueryBuilder);
 		let rows = aidash_server::database::query_as::<HistoryRecord>(&sql)
 			.fetch_all(&mut **self.lease.tx())
@@ -809,8 +565,6 @@ impl ChannelScope for NativeChannels<'_> {
 			.into_iter()
 			.map(|r| HistoryRow {
 				message: r.message.into(),
-				reply_thread_id: r.reply_thread_id,
-				root_thread_id: r.root_thread_id,
 			})
 			.collect())
 	}

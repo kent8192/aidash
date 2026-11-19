@@ -25,7 +25,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace = f
 		.store
-		.create_workspace(&acme, "alice", "Safety Stop", "Stop a runaway Run")
+		.create_workspace(&acme, "alice", "Safety Stop")
 		.await
 		.unwrap();
 	let new_task = |title: &str| aidash_server::domain::NewTask {

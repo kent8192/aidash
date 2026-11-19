@@ -40,7 +40,7 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 			&token,
 			"POST",
 			"/api/workspaces",
-			json!({"title":"Replica startup", "goal":"Use the migrated schema"}),
+			json!({"title":"Replica startup", "request":"Use the migrated schema"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");

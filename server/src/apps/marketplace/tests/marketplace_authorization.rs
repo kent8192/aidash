@@ -1412,7 +1412,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&a,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Pinned","goal":"Test pinned definitions"}),
+		json!({"title":"Pinned","request":"Test pinned definitions"}),
 	)
 	.await;
 	assert_eq!(workspace.0, 200, "{workspace:?}");
@@ -3301,7 +3301,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 		&a,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Cursor", "goal":"Bound replay"}),
+		json!({"title":"Cursor", "request":"Bound replay"}),
 	)
 	.await;
 	assert_eq!(workspace.0, 200);

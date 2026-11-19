@@ -115,7 +115,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		&app,
 		&subject_token,
 		"/api/workspaces",
-		json!({"title":"Long Goal Workspace","goal":long_goal}),
+		json!({"title":"Long Goal Workspace","request":long_goal}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");

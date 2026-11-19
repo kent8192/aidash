@@ -33,16 +33,16 @@ impl Workspace {
 		Ok(())
 	}
 
-	/// The use case validates the state contract before attempting this CAS.
-	pub(crate) async fn replace_state(
+	/// The use case validates the title before attempting this CAS.
+	pub(crate) async fn replace_title(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
 		revision: i64,
-		state: Value,
+		title: String,
 	) -> Result<WorkspaceContract> {
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
-			.value_expr(Alias::new("state"), Expr::value(state))
+			.value_expr(Alias::new("title"), Expr::value(title))
 			.value_expr(
 				Alias::new("revision"),
 				Expr::col("revision").add(reinhardt::query::Expr::value(1_i64)),

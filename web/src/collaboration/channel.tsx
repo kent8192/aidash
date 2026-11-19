@@ -1,3 +1,4 @@
+import { ThreadCapabilities } from "../capabilities/thread";
 import { ReferenceName, RecordView } from "../record-view";
 import { skippedServers } from "../agent-plugins";
 import { WorkspaceScratchSpace } from "../scratch-spaces";
@@ -42,7 +43,6 @@ import { isLocalRun } from "../node-selection";
 import { answeredAtDeadline } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
-import { threadCopy } from "./thread-copy";
 import { taskProgress } from "./model";
 import { entityKey } from "../agent-graph/model";
 import type { Selection } from "./details";
@@ -285,7 +285,6 @@ export function Channel({
   requests,
   open,
   graph,
-  threadList = false,
   tools,
 }: {
   discovery?: Discovery;
@@ -295,7 +294,6 @@ export function Channel({
   requests: { request: HumanRequest; node: string }[];
   open: (selection: Selection) => void;
   graph: (focus?: string) => void;
-  threadList?: boolean;
   tools: (view: "files" | "progress") => void;
 }) {
   const { locale, t } = useI18n();
@@ -305,10 +303,6 @@ export function Channel({
   const view = requestCopy[locale];
   const navigate = useNavigate();
   const desktop = useDesktop();
-  const [thread, setThread] = useState<string | null>(null);
-  const [threadContainer, setThreadContainer] = useState<HTMLElement | null>(
-    null,
-  );
   const [tab, setTab] = useState<
     "conversation" | "canvas" | "tasks" | "results" | "schedules"
   >("conversation");
@@ -630,6 +624,18 @@ export function Channel({
         hasOlder={data.next_cursors.artifacts !== null}
       />
       <ChannelFiles workspace={workspace.id} />
+      {data.access.kind === "subject" && (
+        <ThreadCapabilities
+          workspace={workspace.id}
+          data={data}
+          onDeleted={() =>
+            void navigate({
+              to: "/$section",
+              params: { section: "collaboration" },
+            })
+          }
+        />
+      )}
     </div>
   );
   const conversation = query.isError ? null : (
@@ -640,10 +646,6 @@ export function Channel({
       data={data}
       discovery={discovery}
       visible={shownTab === "conversation"}
-      threadList={threadList}
-      thread={thread}
-      selectThread={setThread}
-      threadContainer={threadContainer}
       system={system}
       requests={desktop ? undefined : decisions}
     />
@@ -750,20 +752,6 @@ export function Channel({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onSelect={() => {
-                  void navigate({
-                    to: "/$section",
-                    params: { section: "collaboration" },
-                    search: {
-                      channel: workspace.id,
-                      view: threadList ? undefined : "threads",
-                    },
-                  });
-                }}
-              >
-                {threadList ? copy.conversation : words.threads}
-              </DropdownMenuItem>
-              <DropdownMenuItem
                 onSelect={() => open({ kind: "task", workspace })}
               >
                 {copy.newTask}
@@ -838,12 +826,6 @@ export function Channel({
                 {canvas}
               </TabsContent>
             )}
-            <aside
-              ref={setThreadContainer}
-              aria-label={threadCopy[locale].thread}
-              hidden={!thread || query.isError || shownTab !== "conversation"}
-              className="absolute inset-0 z-40 flex min-h-0 flex-col bg-surface md:static md:z-auto md:w-[360px] md:shrink-0 md:border-l md:border-border"
-            />
             {preview?.kind === "file" && shownTab === "conversation" && (
               <FilePreviewPane
                 key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}

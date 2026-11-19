@@ -13,9 +13,6 @@ pub struct ChannelMessageContext {
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(db_column = "workspace_id")]
 	pub workspace_key: uuid::Uuid,
-	/// Denormalized business reference; the typed relation is authoritative.
-	#[field(db_column = "thread_id", null = true)]
-	pub thread_key: Option<uuid::Uuid>,
 	#[field(field_type = "text")]
 	pub attachment_digest: String,
 }
@@ -26,7 +23,6 @@ impl crate::database::Record for ChannelMessageContext {
 			message_id: row.try_get("message_id")?,
 			tenant: row.try_get("tenant")?,
 			workspace_key: row.try_get("workspace_id")?,
-			thread_key: row.try_get("thread_id")?,
 			attachment_digest: row.try_get("attachment_digest")?,
 		})
 	}

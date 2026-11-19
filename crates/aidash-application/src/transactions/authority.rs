@@ -16,7 +16,7 @@ pub fn request(manifest: &Manifest, origin: &Origin, node: &str) -> Result<Prefl
 		.iter()
 		.map(|mutation| {
 			Ok(match mutation {
-				Mutation::WorkspaceState { workspace_id, .. } => Target {
+				Mutation::WorkspaceTitle { workspace_id, .. } => Target {
 					kind: "workspace".into(),
 					id: *workspace_id,
 					task_id: None,

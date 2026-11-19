@@ -1387,7 +1387,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&app,
 			&token,
 			"/api/workspaces",
-			json!({"node":node.node,"title":"Named Node discovery","goal":"Retain discovered metadata"}),
+			json!({"node":node.node,"title":"Named Node discovery","request":"Retain discovered metadata"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");

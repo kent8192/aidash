@@ -216,18 +216,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(document, views::management::file_share, &["Uuid"])?;
 	contracts.response::<_, crate::apps::execution::capabilities::serializers::contracts::Area>(
 		document,
-		views::management::thread_run,
+		views::management::workspace_run,
 		200,
 		"application/json",
 	)?;
 	contracts.request::<_, crate::apps::execution::capabilities::serializers::contracts::Enqueue>(
 		document,
-		views::management::thread_run,
+		views::management::workspace_run,
 	)?;
 	contracts.path(
 		document,
-		views::management::thread_run,
-		&["Uuid", "Uuid", "String"],
+		views::management::workspace_run,
+		&["Uuid", "String"],
 	)?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::contracts::Envelope>(
@@ -597,22 +597,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::restore,
 	)?;
 	contracts.path(document, views::management::restore, &["Uuid"])?;
-	contracts.response::<_, serde_json::Value>(
-		document,
-		views::management::restore_new_thread,
-		200,
-		"application/json",
-	)?;
-	contracts
-		.request::<_, crate::apps::execution::capabilities::serializers::cleanup::RestoreNewThread>(
-			document,
-			views::management::restore_new_thread,
-		)?;
-	contracts.path(
-		document,
-		views::management::restore_new_thread,
-		&["Uuid", "Uuid"],
-	)?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::management::TransferStatus>(
 			document,
@@ -688,10 +672,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			document,
 			views::management::thread_delete,
 		)?;
-	contracts.path(
-		document,
-		views::management::thread_delete,
-		&["Uuid", "Uuid"],
-	)?;
+	contracts.path(document, views::management::thread_delete, &["Uuid"])?;
 	Ok(())
 }

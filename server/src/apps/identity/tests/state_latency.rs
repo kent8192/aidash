@@ -156,7 +156,7 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 			&token,
 			"POST",
 			"/api/conversations",
-			json!({"title":format!("Conversation {index}"),"goal":"Measure","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+			json!({"title":format!("Conversation {index}"),"request":"Measure","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -176,7 +176,7 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 			&token,
 			"POST",
 			"/api/workspaces",
-			json!({"title":"Measured", "goal":"Bounded state"}),
+			json!({"title":"Measured", "request":"Bounded state"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");

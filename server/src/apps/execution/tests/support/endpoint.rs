@@ -192,7 +192,7 @@ pub async fn workspace(client: &APIClient, title: &str) -> Value {
 		client
 			.post(
 				"/api/workspaces",
-				&json!({"title": title, "goal": "Endpoint integration test"}),
+				&json!({"title": title, "request": "Endpoint integration test"}),
 				"json",
 			)
 			.await

@@ -197,43 +197,6 @@ impl SessionScope for Scope<'_> {
 			))
 		}
 	}
-	async fn bind_task(&mut self, task: Uuid, thread: Uuid) -> Result<()> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = task;
-				let query_bind_2 = thread;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("core_task_sessions"))
-						.columns(["task_id", "thread_id", "tenant"].map(Alias::new))
-						.from_subquery(
-							reinhardt::query::Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(crate::database::scope::tenant_of(
-									"tasks",
-									"id",
-									query_bind_1,
-								))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
@@ -380,32 +343,6 @@ impl SessionScope for Scope<'_> {
 			.map(|value| value.map(Into::into))
 			.map_err(Into::into)
 	}
-	async fn explicit_thread(&mut self, task_id: Uuid) -> Result<Option<Uuid>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let row = {
-				let query_bind_1 = task_id;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("thread_id"))
-						.from(Alias::new("core_task_sessions"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("task_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								)),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(row)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
 	async fn task(&mut self, id: Uuid) -> Result<Task> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
@@ -478,46 +415,19 @@ impl SessionScope for Scope<'_> {
 			.map(|rows| rows.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn lock_thread(&mut self, thread: Uuid, workspace: Uuid) -> Result<()> {
+	async fn lock_thread(&mut self, workspace: Uuid) -> Result<()> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
-			let _channel: Option<Uuid> = {
-				let query_bind_1 = thread;
-				let query_bind_2 = workspace;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("id"))
-						.from(Alias::new("channel_threads"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **access.tx)
-				.await?
-			};
-			thread_lifecycle::visible(&mut access.tx, thread).await?;
+			// Workspace deletion takes this row lock before writing its tombstone.
+			crate::apps::workspaces::models::Workspace::lock_existing(&mut *access.tx, workspace)
+				.await?;
+			thread_lifecycle::visible(&mut access.tx, workspace).await?;
 			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn ensure_area(&mut self, task: &Task, thread: Uuid, agent_id: &str) -> Result<Area> {
+	async fn ensure_area(&mut self, task: &Task, agent_id: &str) -> Result<Area> {
 		let result: NativeResult<_> = async {
 			let store = self
 				.store
@@ -537,13 +447,12 @@ impl SessionScope for Scope<'_> {
 							"tenant",
 							"home_node",
 							"workspace_id",
-							"thread_id",
 							"agent_id",
 							"owner",
 						]
 						.map(Alias::new),
 					)
-					.from_subquery(((1..=7).map(|i| Expr::cust(format!("${i}")))).fold(
+					.from_subquery(((1..=6).map(|i| Expr::cust(format!("${i}")))).fold(
 						reinhardt::query::Query::select(),
 						|mut select, expr| {
 							select.expr(expr);
@@ -552,15 +461,8 @@ impl SessionScope for Scope<'_> {
 					))
 					.on_conflict(
 						OnConflict::columns(
-							[
-								"tenant",
-								"home_node",
-								"workspace_id",
-								"thread_id",
-								"agent_id",
-								"owner",
-							]
-							.map(Alias::new),
+							["tenant", "home_node", "workspace_id", "agent_id", "owner"]
+								.map(Alias::new),
 						)
 						.do_nothing()
 						.to_owned(),
@@ -571,7 +473,6 @@ impl SessionScope for Scope<'_> {
 			.bind(&access.identity.tenant)
 			.bind(&home)
 			.bind(task.workspace_id)
-			.bind(thread)
 			.bind(agent_id)
 			.bind(&access.identity.subject)
 			.execute(&mut **access.tx)
@@ -597,7 +498,6 @@ impl SessionScope for Scope<'_> {
 			let area: NativeArea = {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = task.workspace_id;
-				let query_bind_3 = thread;
 				let query_bind_4 = agent_id;
 				let query_bind_5 = home.as_str();
 				let query_bind_6 = &access.identity.subject;
@@ -620,13 +520,6 @@ impl SessionScope for Scope<'_> {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							)),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								)),
 						)
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("agent_id")))

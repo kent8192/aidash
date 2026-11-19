@@ -23,7 +23,6 @@ import {
 
 const message = (id, content = id) => ({
   message: { id, content, created_at: `2026-09-23T00:00:0${id}Z` },
-  thread_id: null,
 });
 
 test("unreadable attachments warn before posting and a changed set warns again", () => {
@@ -61,22 +60,18 @@ test("history is chronological and refreshed messages win over older pages", () 
   );
 });
 
-test("identical retry keeps its key and a different thread cannot reuse it", () => {
+test("identical retry keeps its key and another Workspace cannot reuse it", () => {
   let n = 0;
   const key = () => String(++n);
-  const first = submissionFor(null, "channel", null, "  hello  ", key);
+  const first = submissionFor(null, "channel", "  hello  ", key);
   assert.equal(first.content, "hello");
-  assert.equal(
-    submissionFor(first, "channel", null, "hello", key).key,
-    first.key,
-  );
-  for (const [workspace, thread, content] of [
-    ["channel", "thread", "hello"],
-    ["other-channel", null, "hello"],
-    ["channel", null, "changed"],
+  assert.equal(submissionFor(first, "channel", "hello", key).key, first.key);
+  for (const [workspace, content] of [
+    ["other-channel", "hello"],
+    ["channel", "changed"],
   ]) {
     assert.notEqual(
-      submissionFor(first, workspace, thread, content, key).key,
+      submissionFor(first, workspace, content, key).key,
       first.key,
     );
   }
@@ -89,24 +84,21 @@ test("empty page list remains empty without inventing conversation data", () => 
 test("message retry identity includes attachment order", () => {
   let n = 0;
   const key = () => String(++n);
-  const first = submissionFor(null, "workspace", null, "source", key, [
-    "b",
-    "a",
-  ]);
+  const first = submissionFor(null, "workspace", "source", key, ["b", "a"]);
   assert.notEqual(
-    submissionFor(first, "workspace", null, "source", key, ["a", "b"]).key,
+    submissionFor(first, "workspace", "source", key, ["a", "b"]).key,
     first.key,
   );
   assert.equal(
-    submissionFor(first, "workspace", null, "source", key, ["b", "a"]).key,
+    submissionFor(first, "workspace", "source", key, ["b", "a"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", null, "source", key, ["b"]).key,
+    submissionFor(first, "workspace", "source", key, ["b"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", null, "source", key, []).key,
+    submissionFor(first, "workspace", "source", key, []).key,
     first.key,
   );
 });
@@ -202,17 +194,15 @@ test("message retry identity includes cited File versions", () => {
     ["area:one"],
   );
   assert.equal(
-    submissionFor(first, "workspace", null, "source", key, [], ["area:one"])
-      .key,
+    submissionFor(first, "workspace", "source", key, [], ["area:one"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", null, "source", key, [], ["area:two"])
-      .key,
+    submissionFor(first, "workspace", "source", key, [], ["area:two"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", null, "source", key, [], []).key,
+    submissionFor(first, "workspace", "source", key, [], []).key,
     first.key,
   );
 });

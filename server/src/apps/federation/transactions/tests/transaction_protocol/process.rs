@@ -573,7 +573,7 @@ async fn cut_fixture(
 ) -> CutFixture {
 	let (mut a, mut b, mut manifest, wa, wb) = isolated_pair;
 	if abort {
-		let aidash_server::transactions::Mutation::WorkspaceState {
+		let aidash_server::transactions::Mutation::WorkspaceTitle {
 			expected_revision, ..
 		} = &mut manifest.participants[1].mutations[0]
 		else {

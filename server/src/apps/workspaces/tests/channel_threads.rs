@@ -11,7 +11,7 @@ async fn workspace(app: &EndpointFixture, token: &str, title: &str) -> String {
 		token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":title,"goal":"Discuss and investigate"}),
+		json!({"title":title,"request":"Discuss and investigate"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");

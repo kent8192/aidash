@@ -67,7 +67,7 @@ type Recipient = {
   node_id: string;
   agent_id: string;
   agent_version: string;
-  thread_id: string;
+  workspace_id: string;
 };
 function OperationCard({
   run,
@@ -117,7 +117,7 @@ function OperationCard({
           file={file}
           files={area.manifest}
           revision={area.revision}
-          thread={area.thread_id}
+          thread={area.workspace_id}
         />
       ))}
       {(query.error || error || value.error) && (
@@ -514,7 +514,7 @@ function FileOperations({
                           file: f,
                           files: area.manifest,
                           revision: area.revision,
-                          thread: area.thread_id,
+                          thread: area.workspace_id,
                         })
                       }
                     >
@@ -628,8 +628,7 @@ function FileOperations({
                     (r) =>
                       shareNode !== sourceAddress ||
                       (r.workspace_id === area.workspace_id &&
-                        (r.agent_id !== area.agent_id ||
-                          r.thread_id !== area.thread_id)),
+                        r.agent_id !== area.agent_id),
                   )
                   .map((r, i) => (
                     <option
@@ -638,10 +637,10 @@ function FileOperations({
                         node_id: r.node_id,
                         agent_id: r.agent_id,
                         agent_version: r.agent_version,
-                        thread_id: r.thread_id,
+                        workspace_id: r.workspace_id,
                       })}
                     >
-                      {r.agent_id}@{r.agent_version} · {r.thread_id}
+                      {r.agent_id}@{r.agent_version} · {r.workspace_id}
                     </option>
                   ))}
               </NativeSelect>
@@ -865,7 +864,7 @@ function FileOperations({
         area={area.id}
         revision={area.revision}
         files={area.manifest}
-        thread={area.thread_id}
+        thread={area.workspace_id}
       />
       <CapabilityApprovals area={area.id} inlineIds={inlineIds} />
       {error && <Alert>{error}</Alert>}
@@ -874,12 +873,10 @@ function FileOperations({
 }
 export function ThreadCapabilities({
   workspace,
-  thread,
   data,
   onDeleted,
 }: {
   workspace: string;
-  thread: string;
   data: State;
   onDeleted: () => void;
 }) {
@@ -900,14 +897,14 @@ export function ThreadCapabilities({
     undefined,
   );
   const query = useQuery({
-    queryKey: ["core-areas", workspace, thread],
+    queryKey: ["core-areas", workspace],
     queryFn: async ({ signal }) => {
       const items: Area[] = [];
       let cursor: string | null = null;
       do {
         const page: { items: Area[]; next_cursor: string | null } =
           await apiFetch(
-            `/api/working-areas?workspace_id=${workspace}&thread_id=${thread}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+            `/api/working-areas?workspace_id=${workspace}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
             { signal },
           );
         items.push(...page.items);
@@ -1130,7 +1127,7 @@ export function ThreadCapabilities({
                 });
               } else if (target)
                 await enqueueRun(
-                  `/workspaces/${workspace}/threads/${thread}/agents/${encodeURIComponent(target.id)}/runs`,
+                  `/workspaces/${workspace}/agents/${encodeURIComponent(target.id)}/runs`,
                   {
                     agent_version: target.version,
                     title: prompt.slice(0, 80),
@@ -1228,7 +1225,6 @@ export function ThreadCapabilities({
       )}
       <ThreadDeletion
         workspace={workspace}
-        thread={thread}
         areas={query.data?.items ?? []}
         loaded={query.isSuccess}
         onDeleted={onDeleted}
@@ -1260,13 +1256,11 @@ export function ThreadCapabilities({
 
 function ThreadDeletion({
   workspace,
-  thread,
   areas,
   loaded,
   onDeleted,
 }: {
   workspace: string;
-  thread: string;
   areas: Area[];
   loaded: boolean;
   onDeleted: () => void;
@@ -1370,21 +1364,18 @@ function ThreadDeletion({
               setBusy(true);
               setError("");
               try {
-                await post(
-                  `/workspaces/${workspace}/threads/${thread}/delete`,
-                  {
-                    idempotency_key: crypto.randomUUID(),
-                    files: areas.map((a) => ({
-                      area_id: a.id,
-                      expected_revision: a.revision,
-                      choice,
-                      confirmation_id:
-                        choice === "irreversible"
-                          ? confirmations?.[a.id]?.confirmation_id
-                          : null,
-                    })),
-                  },
-                );
+                await post(`/workspaces/${workspace}/delete`, {
+                  idempotency_key: crypto.randomUUID(),
+                  files: areas.map((a) => ({
+                    area_id: a.id,
+                    expected_revision: a.revision,
+                    choice,
+                    confirmation_id:
+                      choice === "irreversible"
+                        ? confirmations?.[a.id]?.confirmation_id
+                        : null,
+                  })),
+                });
                 onDeleted();
               } catch (e) {
                 setError(String(e));

@@ -42,8 +42,7 @@ pub trait CleanupScope: Send {
 	async fn cleanup_operation(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn recoverable(&mut self, area: &Area) -> Result<Option<Record>>;
 	async fn record_area(&mut self, id: Uuid) -> Result<Option<Option<Uuid>>>;
-	async fn thread_root(&mut self, area: &Area, thread: Uuid) -> Result<Option<Uuid>>;
-	async fn occupied(&mut self, area: &Area, thread: Uuid) -> Result<Option<Uuid>>;
+	async fn occupied(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn reattach_working(&mut self, area: &Area, file: Uuid) -> Result<()>;
 	async fn load_record(&mut self, id: Uuid, kind: &str) -> Result<Record>;
 	async fn create(&mut self, record: Creation) -> Result<Record>;

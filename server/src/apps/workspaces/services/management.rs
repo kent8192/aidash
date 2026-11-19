@@ -2,7 +2,6 @@
 use crate::{
 	Error, Result,
 	apps::federation::remote::serializers::actions::SentResponse,
-	apps::workspaces::serializers::tasks::ConversationResponse,
 	apps::workspaces::serializers::tasks::PageQuery,
 	apps::workspaces::serializers::tasks::TaskPage,
 	authorization::{identity::Actor, interaction},
@@ -14,9 +13,8 @@ use reinhardt::injectable;
 use uuid::Uuid;
 
 use crate::apps::workspaces::serializers::management::AbandonInput;
-use crate::apps::workspaces::serializers::management::ConversationInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
-use crate::apps::workspaces::serializers::management::StateInput;
+use crate::apps::workspaces::serializers::management::TitleInput;
 use crate::apps::workspaces::serializers::management::WorkspaceInput;
 
 use crate::apps::identity::services::http_auth::scoped;
@@ -38,25 +36,66 @@ impl CollaborationManagement {
 		};
 		scope.task_page(page.offset).await
 	}
+	/// Open a Workspace (#1008, ADR 0140): a person's request to an Agent or
+	/// cluster opens it with its Root Task; without a target it opens empty.
 	pub(crate) async fn workspace_create(
 		&self,
 		actor: Actor,
 		input: WorkspaceInput,
-	) -> Result<Workspace> {
+	) -> Result<aidash_domain::workspaces::WorkspaceOpened> {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
-		let Some(scope) = scoped(&f, actor) else {
-			return Err(Error::Forbidden);
-		};
-		scope
-			.create(
-				&input.title,
-				&input.goal,
-				input.node.as_ref(),
-				input.scratch_space_id,
-				&f.config.scratch_policy,
-			)
-			.await
+		match (&input.target, &input.target_kind) {
+			(Some(target), Some(target_kind)) => {
+				let request = input.request.as_deref().ok_or_else(|| {
+					Error::Invalid("a request to an Agent needs its request text".into())
+				})?;
+				let Actor::Subject(identity) = actor else {
+					return Err(Error::Forbidden);
+				};
+				Ok(interaction::conversation(
+					&f,
+					&identity,
+					aidash_application::workspaces::ConversationRequest {
+						title: &input.title,
+						request,
+						target,
+						target_kind,
+						node: input.node.as_ref(),
+						scratch_space_id: input.scratch_space_id,
+					},
+				)
+				.await?
+				.into())
+			}
+			(None, None) => {
+				let Some(scope) = scoped(&f, actor) else {
+					return Err(Error::Forbidden);
+				};
+				let workspace = scope
+					.create(
+						&input.title,
+						input.node.as_ref(),
+						input.scratch_space_id,
+						&f.config.scratch_policy,
+					)
+					.await?;
+				if let Some(request) = &input.request {
+					scope
+						.message_keyed(workspace.id, request, Some(Uuid::new_v4()))
+						.await?;
+				}
+				Ok(aidash_domain::workspaces::WorkspaceOpened {
+					workspace,
+					conversation: None,
+					task: None,
+					delegation: None,
+				})
+			}
+			_ => Err(Error::Invalid(
+				"target and target_kind are given together".into(),
+			)),
+		}
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let f = self.runtime.clone();
@@ -69,13 +108,13 @@ impl CollaborationManagement {
 		&self,
 		actor: Actor,
 		id: Uuid,
-		input: StateInput,
+		input: TitleInput,
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		scope.update(id, input.revision, input.state).await
+		scope.update(id, input.revision, &input.title).await
 	}
 	pub(crate) async fn task_create(
 		&self,
@@ -127,29 +166,5 @@ impl CollaborationManagement {
 			return Err(Error::Forbidden);
 		};
 		interaction::abandon(&f, &identity, id, input.revision, &input.reason).await
-	}
-	pub(crate) async fn conversation_create(
-		&self,
-		actor: Actor,
-		input: ConversationInput,
-	) -> Result<ConversationResponse> {
-		crate::http::validate(&input)?;
-		let f = self.runtime.clone();
-		let Actor::Subject(identity) = actor else {
-			return Err(Error::Forbidden);
-		};
-		interaction::conversation(
-			&f,
-			&identity,
-			aidash_application::workspaces::ConversationRequest {
-				title: &input.title,
-				goal: &input.goal,
-				target: &input.target,
-				target_kind: &input.target_kind,
-				node: input.node.as_ref(),
-				scratch_space_id: input.scratch_space_id,
-			},
-		)
-		.await
 	}
 }

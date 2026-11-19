@@ -1962,7 +1962,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let other_tenant = common::tenant_scope(&f.store, "other").await;
 	let other = f
 		.store
-		.create_workspace(&other_tenant, "bob", "Other", "Isolation")
+		.create_workspace(&other_tenant, "bob", "Other")
 		.await
 		.unwrap();
 	assert_eq!(

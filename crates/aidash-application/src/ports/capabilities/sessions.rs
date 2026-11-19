@@ -23,16 +23,17 @@ pub trait SessionScope: Send {
 	async fn agent(&mut self, reference: &EntityRef) -> Result<()>;
 	/// Whether Reference files an Area was given can still be used (ADR 0114).
 	async fn references(&mut self, ids: &[Uuid]) -> Result<()>;
-	async fn bind_task(&mut self, task: Uuid, thread: Uuid) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>>;
 	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<(Uuid, i64)>>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>>;
-	async fn explicit_thread(&mut self, task_id: Uuid) -> Result<Option<Uuid>>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
 	async fn parent_areas(&mut self, id: Uuid) -> Result<Vec<Area>>;
-	async fn lock_thread(&mut self, thread: Uuid, workspace: Uuid) -> Result<()>;
-	async fn ensure_area(&mut self, task: &Task, thread: Uuid, agent_id: &str) -> Result<Area>;
+	/// Lock the Workspace whose Working Area a Run is admitted to, refusing a
+	/// deleted one.
+	async fn lock_thread(&mut self, workspace: Uuid) -> Result<()>;
+	/// The Working Area of (home Node, Workspace, Agent, owner) for `task`.
+	async fn ensure_area(&mut self, task: &Task, agent_id: &str) -> Result<Area>;
 	async fn initialized(&mut self, run_id: Uuid) -> Result<Option<bool>>;
 	async fn initialized_locked(&mut self, run_id: Uuid) -> Result<bool>;
 	async fn mark_initialized(&mut self, run_id: Uuid) -> Result<()>;

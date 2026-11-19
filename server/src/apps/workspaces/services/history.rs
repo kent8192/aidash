@@ -12,7 +12,6 @@ pub(crate) async fn page(
 		&mut crate::bootstrap::channel_scope(store, lease),
 		workspace,
 		aidash_application::workspaces::channels::HistoryRequest {
-			thread_id: input.thread_id,
 			before: input.before,
 			limit: input.limit,
 		},

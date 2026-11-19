@@ -100,7 +100,7 @@ async fn verify_audio_batches(
 	member: &str,
 	case: AudioBatchCase<'_>,
 ) {
-	let (status, audio_created) = common::post(app, member, "/api/conversations", json!({"title":"Audio batching", "goal":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, audio_created) = common::post(app, member, "/api/conversations", json!({"title":"Audio batching", "request":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{audio_created}");
 	let audio_workspace = audio_created["workspace"]["id"].as_str().unwrap();
@@ -233,7 +233,7 @@ async fn verify_attachment_labels_count_toward_admission(
 	f: &Federation,
 	member: &str,
 ) {
-	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Media label budget", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Media label budget", "request":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
@@ -344,7 +344,7 @@ async fn verify_expired_route_retry(
 	let (status, body) = common::post(app, member, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.2"},"expected_revision":0,"enabled":true}))
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Retry after route expiry", "goal":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}))
+	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Retry after route expiry", "request":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
@@ -436,7 +436,7 @@ async fn verify_separate_format_routes(
 	let (status, body) = common::post(app, member, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.3"},"expected_revision":0,"enabled":true}))
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Separate media routes", "goal":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}))
+	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Separate media routes", "request":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
@@ -595,7 +595,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true,"carry_over":false}))
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media input","goal":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media input","request":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let workspace = run.workspace_id.to_string();
@@ -837,7 +837,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		"COMPLETED"
 	);
 	let member = token.clone();
-	let (status, created) = common::post(&app, &member, "/api/conversations", json!({"title":"Subject media", "goal":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &member, "/api/conversations", json!({"title":"Subject media", "request":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let member_workspace = created["workspace"]["id"].as_str().unwrap();
@@ -1011,7 +1011,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	))
 	.await;
 	// A route which only accepts WAV gets one immutable cached rendition of an MP3.
-	let (status, created) = common::post(&app, &member, "/api/conversations", json!({"title":"Audio rendition", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &member, "/api/conversations", json!({"title":"Audio rendition", "request":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
 	let run = f
@@ -1275,7 +1275,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Thread image", "goal":"Inspect the image", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Thread image", "request":"Inspect the image", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f
 		.store
@@ -1519,7 +1519,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		"{}",
 		requests[10]
 	);
-	let (status, text_conversation) = common::post(&app, &token, "/api/conversations", json!({"title":"Text only", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	let (status, text_conversation) = common::post(&app, &token, "/api/conversations", json!({"title":"Text only", "request":"Inspect", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{text_conversation}");
 	let text_workspace = text_conversation["workspace"]["id"].as_str().unwrap();
 	let text_image = upload(
@@ -1706,7 +1706,7 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 	assert_eq!(status, 200, "{body}");
 	let bob = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = bob["token"].as_str().unwrap();
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Report", "goal":"Report with a file", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Report", "request":"Report with a file", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
 	let run = f
@@ -2013,7 +2013,7 @@ async fn live_openrouter_thread_attachment(
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Live attachment", "goal":"Inspect the attached media using workspace_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Live attachment", "request":"Inspect the attached media using workspace_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
 	let bytes = if mime.starts_with("image/") {
@@ -2164,7 +2164,7 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Street", "goal":"Find the photo", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Street", "request":"Find the photo", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
 	let run = f

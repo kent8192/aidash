@@ -306,7 +306,7 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Plugin work","goal":"Use the docs server"}),
+		json!({"title":"Plugin work","request":"Use the docs server"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
@@ -1727,7 +1727,7 @@ async fn workspace_api_binds_a_selected_existing_scratch_space(
 		&world.token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Reuse","goal":"Use existing space","scratch_space_id":selected}),
+		json!({"title":"Reuse","request":"Use existing space","scratch_space_id":selected}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");

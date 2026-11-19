@@ -32,7 +32,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,
-		"mutations":[{"kind":"workspace_state","workspace_id":created["id"],"expected_revision":0,"state":{"result":"committed"}}]}]});
+		"mutations":[{"kind":"workspace_title","workspace_id":created["id"],"expected_revision":0,"title":"Committed"}]}]});
 	// Act / Assert
 	let session = assert_json(subject.get("/api/session").await.unwrap(), 200);
 	assert_eq!(
@@ -115,7 +115,7 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let workspace = workspace(&member, "Atomic mutation").await;
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace["id"],"expected_revision":0,"title":"Committed"}]}]});
 	let path = format!("/api/transactions/{id}");
 	// Act
 	let admitted = member
@@ -184,8 +184,8 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	let id = Uuid::new_v4();
 	let first = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state",
-            "workspace_id":workspace["id"],"expected_revision":0,"state":{"literal":"'$1 $2'"}}]}]});
+        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_title",
+            "workspace_id":workspace["id"],"expected_revision":0,"title":"Committed"}]}]});
 	let mut second = first.clone();
 	if conflicting {
 		second["participants"][0]["mutations"][0]["state"] = json!({"other":true});
@@ -250,8 +250,8 @@ async fn tenant_subject_abort_is_durable_while_recovery_owns_the_lease(
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&app).await,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_state",
-            "workspace_id":workspace["id"],"expected_revision":0,"state":{"never": "applied"}}]}]});
+        "participants":[{"node_id":node(&app).await,"mutations":[{"kind":"workspace_title",
+            "workspace_id":workspace["id"],"expected_revision":0,"title":"Committed"}]}]});
 	assert_json(
 		member
 			.post("/api/transactions", &manifest, "json")

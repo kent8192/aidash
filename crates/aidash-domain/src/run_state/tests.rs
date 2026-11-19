@@ -45,7 +45,7 @@ fn current_storage_covers_every_phase_and_wait_continuation() {
 		));
 		cases.push((
 			RunPhase::Waiting,
-			json!({"reason":"workspace","wake_at":date,"cursor":42,"resume":resume}),
+			json!({"reason":"task_wait","wake_at":date,"cursor":42,"resume":resume}),
 		));
 	}
 	cases.extend([
@@ -57,7 +57,7 @@ fn current_storage_covers_every_phase_and_wait_continuation() {
 		(RunPhase::Waiting,json!({"reason":"failure_delivery","target":"FAILED","wake_at":date,"last_delivery_error":null}))
 	]);
 	for (phase, data) in cases {
-		let event_wait = matches!(data["reason"].as_str(), Some("workspace" | "operation"));
+		let event_wait = matches!(data["reason"].as_str(), Some("task_wait" | "operation"));
 		let mut input = envelope(data);
 		if event_wait {
 			input["requires"] = json!(["event_wait"]);

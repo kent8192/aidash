@@ -28,8 +28,7 @@ fn workspace(n: u128) -> Candidate {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(n),
 		title: format!("workspace {n}"),
-		goal: String::new(),
-		state: json!({}),
+		created_by: "subject".into(),
 		revision: 0,
 		created_at: now(),
 	})

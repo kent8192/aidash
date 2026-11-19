@@ -19,7 +19,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		workspaces.push(
 			node.f
 				.store
-				.create_workspace(&scope, "alice", "Atomic tier", "Independent participant")
+				.create_workspace(&scope, "alice", "Atomic tier")
 				.await
 				.unwrap()
 				.id,
@@ -37,7 +37,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":nodes[0].address,
             "isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
             "participants":nodes.iter().zip(&workspaces).map(|(node,workspace)|json!({"node_id":node.address,
-                "mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":if abort {0}else{repetition},"state":{"repetition":repetition}}]})).collect::<Vec<_>>() })).unwrap();
+                "mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":if abort {0}else{repetition},"title":"Committed"}]})).collect::<Vec<_>>() })).unwrap();
 		coordinator::submit(&nodes[0].f, &manifest).await.unwrap();
 		steps(&nodes[0], manifest.id, count * 2).await;
 		if abort {

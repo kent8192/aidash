@@ -640,7 +640,7 @@ fn sse_fixture(
 				&token,
 				"POST",
 				"/api/workspaces",
-				json!({"title":format!("SSE fixture {n}"),"goal":"delivery"}),
+				json!({"title":format!("SSE fixture {n}"),"request":"delivery"}),
 			)
 			.await;
 			assert_eq!(status, 200, "{workspace}");

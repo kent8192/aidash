@@ -105,7 +105,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace(&ACME, "alice", "Research", "Compare frameworks")
+		.create_workspace(&ACME, "alice", "Research")
 		.await
 		.unwrap();
 	let task = store
@@ -214,7 +214,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 			.is_ok()
 	);
 	let w2 = store
-		.create_workspace(&ACME, "alice", "Other", "Other goal")
+		.create_workspace(&ACME, "alice", "Other")
 		.await
 		.unwrap();
 	assert!(
@@ -246,7 +246,7 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 	registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
 	let agent = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Research", "Compare frameworks")
+		.create_workspace(&ACME, "alice", "Research")
 		.await
 		.unwrap();
 	let task = store
@@ -310,7 +310,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace(&ACME, "alice", "Journal", "Recover safely")
+		.create_workspace(&ACME, "alice", "Journal")
 		.await
 		.unwrap();
 	let task = store
@@ -644,7 +644,7 @@ async fn a_refused_invocation_is_accepted_and_resume_starts_it_again(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace(&ACME, "alice", "Refusals", "Resume refused calls")
+		.create_workspace(&ACME, "alice", "Refusals")
 		.await
 		.unwrap();
 	let task = store
@@ -819,7 +819,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Controls", "Keep human decisions durable")
+		.create_workspace(&ACME, "alice", "Controls")
 		.await
 		.unwrap();
 	let task = store
@@ -1108,12 +1108,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	let token = common::tenant_token(&store, "acme").await;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace(
-			&ACME,
-			"alice",
-			"Partial results",
-			"Resolve terminal children",
-		)
+		.create_workspace(&ACME, "alice", "Partial results")
 		.await
 		.unwrap();
 	let parent = running_task(&f, &agent, workspace.id, None).await;
@@ -1287,7 +1282,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.unwrap();
 	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Retries", "Independent budgets")
+		.create_workspace(&ACME, "alice", "Retries")
 		.await
 		.unwrap();
 	let task = running_task(&f, &agent, workspace.id, None).await;
@@ -1414,7 +1409,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.unwrap();
 	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Web research", "Use available evidence")
+		.create_workspace(&ACME, "alice", "Web research")
 		.await
 		.unwrap();
 	let task = running_task(&federation, &agent, workspace.id, None).await;
@@ -1511,7 +1506,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		.unwrap();
 	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Waits", "Use available evidence")
+		.create_workspace(&ACME, "alice", "Waits")
 		.await
 		.unwrap();
 	// The first artifact of this test fails the way a fired statement limit does.
@@ -1579,7 +1574,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Children", "Atomic completion")
+		.create_workspace(&ACME, "alice", "Children")
 		.await
 		.unwrap();
 	let parent = running_task(&f, &agent, workspace.id, None).await;
@@ -1678,7 +1673,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 		.await
 		.unwrap();
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Skill read", "Read a bundled guide")
+		.create_workspace(&ACME, "alice", "Skill read")
 		.await
 		.unwrap();
 	let task = running_task(&f, &agent, workspace.id, None).await;
@@ -1752,7 +1747,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Recovery", "Repair model errors")
+		.create_workspace(&ACME, "alice", "Recovery")
 		.await
 		.unwrap();
 	let parent = running_task(&f, &agent, workspace.id, None).await;
@@ -1914,7 +1909,7 @@ async fn an_agent_runs_only_on_a_node_that_approved_it(
 	assert_ne!(first, second);
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Build", "Run on another Node")
+		.create_workspace(&ACME, "alice", "Build")
 		.await
 		.unwrap();
 	sqlx::query("UPDATE workspaces SET node = $1 WHERE id = $2")
@@ -2023,7 +2018,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	let response=http_client.request(Method::POST, app.url("/api/conversations"))
 		.header("authorization", format!("Bearer {token}"))
 		.header("content-type","application/json")
-		.body(json!({"title":"Atomic","goal":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())
+		.body(json!({"title":"Atomic","request":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())
 		.send().await.unwrap();
 	assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 	assert!(store.workspaces(&ACME).await.unwrap().is_empty());
@@ -2161,12 +2156,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		.await
 		.unwrap();
 	let workspace = store
-		.create_workspace(
-			&ACME,
-			"alice",
-			"Reconcile",
-			"Never expose an incomplete request",
-		)
+		.create_workspace(&ACME, "alice", "Reconcile")
 		.await
 		.unwrap();
 	let task = running_task(&f, &agent, workspace.id, None).await;
@@ -2312,7 +2302,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		.unwrap();
 	common::approve_agent(&f, "acme", &agent).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Agent tool", "Await delegated results")
+		.create_workspace(&ACME, "alice", "Agent tool")
 		.await
 		.unwrap();
 	let task = running_task(&f, &delegating, workspace.id, None).await;

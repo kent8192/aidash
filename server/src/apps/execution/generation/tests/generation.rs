@@ -68,7 +68,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Missing agent","goal":"Specialist research"}),
+		json!({"title":"Missing agent","request":"Specialist research"}),
 	)
 	.await;
 	let (_,task)=request(&app,&token,"POST",&format!("/api/workspaces/{}/tasks",workspace["id"].as_str().unwrap()),json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
@@ -156,7 +156,7 @@ async fn missing_task(app: &common::TestApplication, token: &str) -> String {
 		token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Generated work","goal":"Special research"}),
+		json!({"title":"Generated work","request":"Special research"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{ws}");

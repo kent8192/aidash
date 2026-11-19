@@ -33,7 +33,7 @@ fn event(n: u64) -> ContextEvent {
 /// from a pre-journal projection.
 async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uuid) {
 	let (status, created) = request(app, token, "POST", "/api/conversations", json!({
-		"title":"Journal", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+		"title":"Journal", "request":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	}))
 	.await;
 	assert_eq!(status, 200, "{created}");

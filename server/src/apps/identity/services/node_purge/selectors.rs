@@ -43,7 +43,6 @@ impl Owners<'_> {
 			MemoryOperation => ("memory_model_operations", "id"),
 			SemanticOperation => ("semantic_remote_operations", "id"),
 			RemoteUsage => ("generation_remote_usage", "attempt_id"),
-			Thread => ("channel_threads", "id"),
 			Observation => ("approval_observations", "id"),
 			Message => ("messages", "id"),
 			RetentionHold => ("core_retention_holds", "id"),

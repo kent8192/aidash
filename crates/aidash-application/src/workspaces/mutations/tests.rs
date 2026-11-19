@@ -4,6 +4,7 @@ use aidash_domain::{TaskStatus, policy::Resource};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
+use serde_json::Value;
 struct Scope {
 	tenant: String,
 	subject: String,
@@ -14,7 +15,7 @@ struct Scope {
 	task_keys: Vec<Option<String>>,
 	task_inputs: Vec<(Value, String)>,
 	messages: Vec<(String, String, String)>,
-	state_writes: Vec<(i64, Value)>,
+	title_writes: Vec<(i64, String)>,
 	denied: Option<&'static str>,
 	fail: Option<&'static str>,
 }
@@ -29,8 +30,7 @@ fn scope() -> Scope {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			title: "saved".into(),
-			goal: "goal".into(),
-			state: json!({}),
+			created_by: "subject".into(),
 			revision: 1,
 			created_at: now,
 		},
@@ -53,7 +53,7 @@ fn scope() -> Scope {
 		task_keys: vec![],
 		task_inputs: vec![],
 		messages: vec![],
-		state_writes: vec![],
+		title_writes: vec![],
 		denied: None,
 		fail: None,
 	}
@@ -126,11 +126,9 @@ impl WorkspaceMutations for Scope {
 		id: Uuid,
 		_: &aidash_domain::nodes::NodeName,
 		title: &str,
-		goal: &str,
 	) -> Result<Workspace> {
 		assert_eq!(id, self.workspace.id);
 		assert_eq!(title, "title");
-		assert_eq!(goal, "goal");
 		self.touch("workspace_insert")?;
 		Ok(self.workspace.clone())
 	}
@@ -138,10 +136,10 @@ impl WorkspaceMutations for Scope {
 		assert_eq!(id, self.workspace.id);
 		self.touch("owner_record")
 	}
-	async fn update_state(&mut self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
+	async fn update_title(&mut self, id: Uuid, revision: i64, title: &str) -> Result<Workspace> {
 		assert_eq!(id, self.workspace.id);
-		self.touch("state_update")?;
-		self.state_writes.push((revision, state));
+		self.touch("title_update")?;
+		self.title_writes.push((revision, title.to_owned()));
 		Ok(self.workspace.clone())
 	}
 	async fn related_tasks(&mut self, id: Uuid, input: &NewTask) -> Result<()> {
@@ -191,7 +189,7 @@ impl WorkspaceMutations for Scope {
 async fn workspace_creation_authorizes_the_saved_primary_owner_before_atomic_writes(
 	mut scope: Scope,
 ) {
-	let value = create(&mut scope, Uuid::from_u128(1), "title", "goal", None)
+	let value = create(&mut scope, Uuid::from_u128(1), "title", None)
 		.await
 		.unwrap();
 	assert_eq!(value.id, scope.workspace.id);
@@ -215,7 +213,7 @@ async fn workspace_creation_authorizes_the_saved_primary_owner_before_atomic_wri
 async fn workspace_creation_denial_prevents_the_workspace_and_ownership_writes(mut scope: Scope) {
 	scope.denied = Some("workspace.create");
 	assert!(matches!(
-		create(&mut scope, Uuid::from_u128(1), "title", "goal", None).await,
+		create(&mut scope, Uuid::from_u128(1), "title", None).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls, vec!["workspace.create"]);
@@ -231,7 +229,7 @@ async fn creation_errors_preserve_their_identity_at_the_original_transaction_bou
 	#[case] fail: &'static str,
 ) {
 	scope.fail = Some(fail);
-	let Error::Port(error) = create(&mut scope, Uuid::from_u128(1), "title", "goal", None)
+	let Error::Port(error) = create(&mut scope, Uuid::from_u128(1), "title", None)
 		.await
 		.unwrap_err()
 	else {
@@ -242,52 +240,52 @@ async fn creation_errors_preserve_their_identity_at_the_original_transaction_bou
 }
 #[rstest]
 #[tokio::test]
-async fn state_update_requires_read_before_update_and_keeps_revision_and_json(mut scope: Scope) {
-	let state = json!({"saved":"日本語","nested":[1,2]});
-	let value = update(&mut scope, Uuid::from_u128(1), 19, state.clone())
+async fn title_update_requires_read_before_update_and_keeps_revision_and_text(mut scope: Scope) {
+	let title = "日本語の題名";
+	let value = update(&mut scope, Uuid::from_u128(1), 19, title)
 		.await
 		.unwrap();
 	assert_eq!(value.id, scope.workspace.id);
 	assert_eq!(
 		scope.calls,
-		vec!["workspace.read", "workspace.update", "state_update"]
+		vec!["workspace.read", "workspace.update", "title_update"]
 	);
-	assert_eq!(scope.state_writes, vec![(19, state)]);
+	assert_eq!(scope.title_writes, vec![(19, title.to_owned())]);
 }
 #[rstest]
 #[case::read("workspace.read")]
 #[case::update("workspace.update")]
 #[tokio::test]
-async fn state_update_denial_prevents_the_atomic_write(
+async fn title_update_denial_prevents_the_atomic_write(
 	mut scope: Scope,
 	#[case] action: &'static str,
 ) {
 	scope.denied = Some(action);
 	assert!(matches!(
-		update(&mut scope, Uuid::from_u128(1), 1, json!({})).await,
+		update(&mut scope, Uuid::from_u128(1), 1, "Renamed").await,
 		Err(Error::Forbidden)
 	));
-	assert!(scope.state_writes.is_empty());
+	assert!(scope.title_writes.is_empty());
 	assert_eq!(scope.calls.last().unwrap(), action);
 }
 #[rstest]
 #[case::read("workspace.read")]
 #[case::permission("workspace.update")]
-#[case::write("state_update")]
+#[case::write("title_update")]
 #[tokio::test]
-async fn state_update_errors_keep_their_opaque_identity(
+async fn title_update_errors_keep_their_opaque_identity(
 	mut scope: Scope,
 	#[case] fail: &'static str,
 ) {
 	scope.fail = Some(fail);
-	let Error::Port(error) = update(&mut scope, Uuid::from_u128(1), 1, json!({}))
+	let Error::Port(error) = update(&mut scope, Uuid::from_u128(1), 1, "Renamed")
 		.await
 		.unwrap_err()
 	else {
 		panic!("expected opaque error");
 	};
 	assert!(error.is::<std::io::Error>());
-	assert!(scope.state_writes.is_empty());
+	assert!(scope.title_writes.is_empty());
 }
 #[rstest]
 #[case::unkeyed(None)]
@@ -344,7 +342,7 @@ async fn idempotency_keys_remain_partitioned_by_tenant_subject_and_workspace(sco
 			task_keys: vec![],
 			task_inputs: vec![],
 			messages: vec![],
-			state_writes: vec![],
+			title_writes: vec![],
 			denied: None,
 			fail: None,
 		};

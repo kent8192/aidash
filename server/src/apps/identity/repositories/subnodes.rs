@@ -251,7 +251,6 @@ impl CreateScope for Creation<'_> {
 					tenant: &tenant,
 					node: &run.node,
 					title,
-					goal: title,
 					scratch_space_id,
 					created_by: &created_by,
 				},

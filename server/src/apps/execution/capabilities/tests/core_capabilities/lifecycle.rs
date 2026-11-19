@@ -299,7 +299,6 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 					"tenant",
 					"home_node",
 					"workspace_id",
-					"thread_id",
 					"agent_id",
 					"owner",
 					"generation",
@@ -312,7 +311,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 				.map(Alias::new),
 			)
 			.from_subquery(
-				((1..=13).map(|index| Expr::cust(format!("${index}")))).fold(
+				((1..=12).map(|index| Expr::cust(format!("${index}")))).fold(
 					reinhardt::query::Query::select(),
 					|mut select, expr| {
 						select.expr(expr);
@@ -326,7 +325,6 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 			.bind(extra.tenant)
 			.bind(extra.home_node)
 			.bind(extra.workspace_id)
-			.bind(extra.thread_id)
 			.bind(extra.agent_id)
 			.bind(extra.owner)
 			.bind(extra.generation)

@@ -20,11 +20,11 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 	let scratch: Uuid = serde_json::from_value(created["scratch_space_id"].clone()).unwrap();
 	// Act
 	let updated = member
-		.patch(&path, &json!({"revision":0,"state":{"step":1}}), "json")
+		.patch(&path, &json!({"revision":0,"title":"Step"}), "json")
 		.await
 		.unwrap();
 	let stale = member
-		.patch(&path, &json!({"revision":0,"state":{"step":2}}), "json")
+		.patch(&path, &json!({"revision":0,"title":"Second step"}), "json")
 		.await
 		.unwrap();
 	let snapshot = member.get(&path).await.unwrap();
@@ -32,7 +32,7 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 	assert_eq!(assert_json(updated, 200)["revision"], 1);
 	assert_json(stale, 409);
 	let snapshot = assert_json(snapshot, 200);
-	assert_eq!(snapshot["workspace"]["state"], json!({"step":1}));
+	assert_eq!(snapshot["workspace"]["title"], "Step");
 	assert_eq!(snapshot["workspace"]["scratch_space_id"], json!(scratch));
 	let saved = Workspace::objects()
 		.filter(Workspace::field_id().eq(id))
@@ -41,7 +41,7 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 		.unwrap();
 	assert_eq!(saved.scratch_space_id, scratch);
 	assert_eq!(saved.revision, 1);
-	assert_eq!(*saved.state, json!({"step":1}));
+	assert_eq!(saved.title, "Step");
 }
 
 #[rstest]
@@ -127,7 +127,7 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 	let unknown = member
 		.post(
 			"/api/workspaces",
-			&json!({"title":"Rejected","goal":"Contract","unexpected":true}),
+			&json!({"title":"Rejected","request":"Contract","unexpected":true}),
 			"json",
 		)
 		.await
@@ -164,7 +164,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 	blanks.extend([whitespace.iter().collect(), String::new()]);
 	for blank in blanks {
 		for field in ["title", "goal"] {
-			let mut input = json!({"title":"Workspace", "goal":"Goal"});
+			let mut input = json!({"title":"Workspace", "request":"Goal"});
 			input[field] = json!(blank);
 			let response = member
 				.post("/api/workspaces", &input, "json")

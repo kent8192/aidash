@@ -254,7 +254,7 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"A","goal":"A"}),
+		json!({"title":"A","request":"A"}),
 	)
 	.await;
 	let (_, b) = request(
@@ -262,7 +262,7 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"B","goal":"B"}),
+		json!({"title":"B","request":"B"}),
 	)
 	.await;
 	let a = a["id"].as_str().unwrap();
@@ -311,7 +311,7 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Media","goal":"Inspect media"}),
+		json!({"title":"Media","request":"Inspect media"}),
 	)
 	.await;
 	let workspace = workspace["id"].as_str().unwrap();

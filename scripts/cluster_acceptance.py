@@ -170,7 +170,7 @@ def main():
 
         approval_thread = threading.Thread(target=approve_calls, daemon=True)
         approval_thread.start()
-        goal = api_request(base_a, "/api/conversations", {"title": "Cluster recovery acceptance", "goal": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=token)
+        goal = api_request(base_a, "/api/conversations", {"title": "Cluster recovery acceptance", "request": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=token)
         workspace = goal["workspace"]["id"]
         # Poll the fixture independently of subject state reads: those can take
         # longer than the held HTTP result, so kill before looking up the Run.

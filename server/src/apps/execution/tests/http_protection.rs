@@ -217,13 +217,13 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let refused = deployment_administrator
 		.post(
 			"/api/workspaces",
-			&json!({"title":"Administrator workspace","goal":"valid"}),
+			&json!({"title":"Administrator workspace","request":"valid"}),
 			"json",
 		)
 		.await
 		.unwrap();
 	assert_eq!(refused.status_code(), 403);
-	let invalid_conversation = member.post("/api/conversations", &json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
+	let invalid_conversation = member.post("/api/conversations", &json!({"title":" ", "request":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
 	assert_eq!(invalid_conversation.status_code(), 400);
 	assert_eq!(
 		invalid_conversation.json_value().unwrap()["error"],
@@ -247,7 +247,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let invalid = member
 		.post(
 			"/api/workspaces",
-			&json!({"title":"   ","goal":"valid"}),
+			&json!({"title":"   ","request":"valid"}),
 			"json",
 		)
 		.await
@@ -260,7 +260,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let scope = common::tenant_scope(&federation.store, "acme").await;
 	federation
 		.store
-		.create_workspace(&scope, "alice", "first", "valid")
+		.create_workspace(&scope, "alice", "first")
 		.await
 		.unwrap();
 	let before = federation
@@ -273,7 +273,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.sequence;
 	federation
 		.store
-		.create_workspace(&scope, "alice", "second", "valid")
+		.create_workspace(&scope, "alice", "second")
 		.await
 		.unwrap();
 	let after = federation

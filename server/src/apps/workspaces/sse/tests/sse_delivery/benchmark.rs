@@ -192,7 +192,7 @@ async fn accepted_load_and_idle_reduction(
 			let mutation = client
 				.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
 				.bearer_auth(&fixture.token)
-				.json(&json!({"revision": sample / 10,"state":{"sample":sample}}));
+				.json(&json!({"revision": sample / 10,"title":"Sample"}));
 			let operation = tokio::spawn(async move { mutation.send().await.unwrap() });
 			// Wait until writer A is actually at its durable event/commit boundary.
 			tokio::time::timeout(Duration::from_secs(3), async {

@@ -1,4 +1,5 @@
-//! Authorized conversation admission, initial task creation, and delegation.
+//! A person's request opens a Workspace with its Root Task: authorized
+//! admission, the Root Task, and its delegation (#1008, ADR 0140).
 use crate::{Result, ports::workspaces::ConversationScope};
 use aidash_domain::{
 	NewTask,
@@ -11,7 +12,8 @@ use serde_json::json;
 
 pub struct ConversationRequest<'a> {
 	pub title: &'a str,
-	pub goal: &'a str,
+	/// The person's request: the first message and the Root Task's description.
+	pub request: &'a str,
 	pub target: &'a EntityRef,
 	pub target_kind: &'a str,
 	/// The Node the Workspace goes to; the Tenant's default Node when absent.
@@ -24,7 +26,7 @@ pub async fn conversation(
 	input: ConversationRequest<'_>,
 ) -> Result<ConversationResponse> {
 	let workspace = scope
-		.create_workspace(input.title, input.goal, input.node, input.scratch_space_id)
+		.create_workspace(input.title, input.node, input.scratch_space_id)
 		.await?;
 	scope.workspace_context(workspace.id).await?;
 	scope.require_workspace("workspace.read").await?;
@@ -55,14 +57,14 @@ pub async fn conversation(
 		.await?;
 	scope.conversation_event(&conversation).await?;
 	scope.require_workspace("message.create").await?;
-	scope.message(workspace.id, input.goal).await?;
+	scope.message(workspace.id, input.request).await?;
 	scope.require_workspace("task.create").await?;
 	let task = scope
 		.create_task(
 			workspace.id,
 			&NewTask {
 				title: input.title.into(),
-				description: input.goal.into(),
+				description: input.request.into(),
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -70,7 +72,6 @@ pub async fn conversation(
 		)
 		.await?;
 	scope.require_task(&task, "task.read").await?;
-	scope.bind_task(task.id, conversation.id).await?;
 	// The Workspace exists only from this request on, so nothing else could
 	// give it the index the agent's memory bank requires (#647).
 	if let Some(memory) = scope.memory_embedding(&agent).await? {

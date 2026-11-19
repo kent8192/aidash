@@ -717,7 +717,7 @@ impl<'a> Executor<'a> {
 				}));
 			}
 			_ => {
-				run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+				run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 					wake_at: chrono::Utc::now() + children_ceiling(store, home, run).await?,
 					cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
 					resume: ResumeState::Thinking(ThinkingState::default()),
@@ -3669,7 +3669,7 @@ connection: None,
 						};
 						if pending { 3600 } else { 300 }
 					} else { seconds.clamp(1, aidash_domain::run_state::MAX_WAIT_SECONDS as i64) };
-					run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+					run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
 						cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
 						resume: ResumeState::ToolCall(Box::new(run.state.tool()?.clone())),
@@ -3865,7 +3865,7 @@ connection: None,
 				}
 				run.state = match waiting {
 					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
-					WaitingState::Workspace { wake_at, cursor, mut resume } => {
+					WaitingState::TaskWait { wake_at, cursor, mut resume } => {
 						let inputs = store.run_inputs(run.id).await?;
 						let observed = match &resume { ResumeState::ToolCall(state) => state.included_input_seq, _ => run.observed_input_seq };
 						let input = inputs.last().is_some_and(|input| input.seq > observed);
@@ -3874,7 +3874,7 @@ connection: None,
 						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
 							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
-							run.state = RunState::Waiting(Box::new(WaitingState::Workspace { wake_at, cursor, resume }));
+							run.state = RunState::Waiting(Box::new(WaitingState::TaskWait { wake_at, cursor, resume }));
 							store.save_run(run, token, "run.waiting_for_workspace").await?;
 							return Ok(());
 						}
@@ -3892,7 +3892,7 @@ connection: None,
 								)
 							{
 								if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
-								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+								run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
 									cursor,
 									resume,

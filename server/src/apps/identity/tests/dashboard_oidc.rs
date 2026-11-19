@@ -793,12 +793,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace = federation
 		.store
-		.create_workspace(
-			&acme,
-			"alice",
-			"Browser management",
-			"Pause and cancel an admitted run",
-		)
+		.create_workspace(&acme, "alice", "Browser management")
 		.await
 		.unwrap();
 	let task = federation
@@ -1831,7 +1826,7 @@ async fn google_session_provisions_private_access_without_registration(
 		true,
 		Some(&context),
 		false,
-		json!({"title":"Personal work","goal":"Use the private tenant"}),
+		json!({"title":"Personal work","request":"Use the private tenant"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{own_workspace}");
@@ -1879,7 +1874,7 @@ async fn google_session_provisions_private_access_without_registration(
 		true,
 		Some(&shared_context),
 		false,
-		json!({"title":"Shared work","goal":"Keep shared data separate"}),
+		json!({"title":"Shared work","request":"Keep shared data separate"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{shared_workspace}");

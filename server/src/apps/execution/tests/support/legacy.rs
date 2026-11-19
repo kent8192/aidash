@@ -850,7 +850,7 @@ async fn bootstrap_with_policy(
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Approved task","goal":"Use exactly one tool"}),
+		json!({"title":"Approved task","request":"Use exactly one tool"}),
 	)
 	.await;
 	assert_eq!(status, 200);

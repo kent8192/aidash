@@ -179,8 +179,8 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 		"id": Uuid::new_v4(), "coordinator":node(&f).await,
 		"isolation": "serializable", "deadline": Utc::now() + Duration::minutes(5),
 		"participants": [{"node_id":node(&f).await, "mutations": [{
-			"kind": "workspace_state", "workspace_id": workspace,
-			"expected_revision": 0, "state": {"accepted": true}
+			"kind": "workspace_title", "workspace_id": workspace,
+			"expected_revision": 0, "title":"Committed"
 		}]}]
 	}))
 	.unwrap();
@@ -278,12 +278,11 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"Atomic",
-			"Commit together",
 		)
 		.await
 		.unwrap();
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace.id,"expected_revision":0,"title":"Committed"}]}]});
 	let (status, response) =
 		common::post(&app, &subject, "/api/transactions", manifest.clone()).await;
 	assert_eq!(status, 202, "{response}");
@@ -343,8 +342,8 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 			.workspace(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
-			.state,
-		json!({})
+			.revision,
+		0
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -384,7 +383,7 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 		.workspace_id;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"private":"do not disclose"}}]}]});
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]});
 	let (status, body) = common::post(&app, &token, "/api/transactions", manifest).await;
 	assert_eq!(status, 403, "{body}");
 	assert!(matches!(
@@ -421,7 +420,7 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 		.workspace_id;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]});
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]});
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", manifest.clone())
 			.await
@@ -514,7 +513,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 		.unwrap()
 		.workspace_id;
 	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]})).unwrap();
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]})).unwrap();
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", json!(manifest))
 			.await
@@ -548,7 +547,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 			&token,
 			"PATCH",
 			&format!("/api/workspaces/{workspace}"),
-			json!({"revision":0,"state":{"escape":true}})
+			json!({"revision":0,"title":"Escape"})
 		)
 		.await
 		.0,
@@ -556,7 +555,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	);
 	assert!(
 		f.store
-			.update_state(&TEST_FIXTURE, workspace, 0, json!({"escape":true}))
+			.update_title(&TEST_FIXTURE, workspace, 0, "escape")
 			.await
 			.is_err()
 	);

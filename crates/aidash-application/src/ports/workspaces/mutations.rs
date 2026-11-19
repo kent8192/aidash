@@ -18,10 +18,9 @@ pub trait WorkspaceMutations: Send {
 		id: Uuid,
 		node: &NodeName,
 		title: &str,
-		goal: &str,
 	) -> Result<Workspace>;
 	async fn record_owner(&mut self, id: Uuid) -> Result<()>;
-	async fn update_state(&mut self, id: Uuid, revision: i64, state: Value) -> Result<Workspace>;
+	async fn update_title(&mut self, id: Uuid, revision: i64, title: &str) -> Result<Workspace>;
 	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()>;
 	async fn insert_task(
 		&mut self,

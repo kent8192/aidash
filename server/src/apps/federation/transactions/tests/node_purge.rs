@@ -81,7 +81,6 @@ async fn keeper(node: &Node) -> (String, Uuid) {
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"Keeper",
-			"Must survive",
 		)
 		.await
 		.unwrap();

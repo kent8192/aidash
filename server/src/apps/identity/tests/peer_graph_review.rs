@@ -429,7 +429,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Unrelated same-tenant activity","goal":"Do not reset the remote cursor"}),
+		json!({"title":"Unrelated same-tenant activity","request":"Do not reset the remote cursor"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");

@@ -342,7 +342,7 @@ impl Batching {
 			&self.app,
 			&self.token,
 			"/api/workspaces",
-			json!({"title":"Batch","goal":"Read files in one response"}),
+			json!({"title":"Batch","request":"Read files in one response"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");
@@ -1283,7 +1283,7 @@ async fn task_in_new_workspace(b: &Batching, description: &str) -> Uuid {
 		&b.app,
 		&b.token,
 		"/api/workspaces",
-		json!({"title":"Memory","goal":description}),
+		json!({"title":"Memory","request":description}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");

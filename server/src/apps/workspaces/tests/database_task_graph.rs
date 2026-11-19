@@ -31,7 +31,7 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Graph", "Cycle validation")
+		.create_workspace(&scope, "alice", "Graph")
 		.await
 		.unwrap();
 	let ancestor = store
@@ -97,7 +97,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Graph", "Reference projection")
+		.create_workspace(&scope, "alice", "Graph")
 		.await
 		.unwrap();
 	let dependency = store
@@ -142,7 +142,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	assert_eq!(links[0].workspace_key, workspace.id);
 
 	let other = store
-		.create_workspace(&scope, "alice", "Other", "Keep dependencies local")
+		.create_workspace(&scope, "alice", "Other")
 		.await
 		.unwrap();
 	let rejected = store
@@ -173,11 +173,11 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Graph", "Reverse relations")
+		.create_workspace(&scope, "alice", "Graph")
 		.await
 		.unwrap();
 	let other = store
-		.create_workspace(&scope, "alice", "Other", "Keep references local")
+		.create_workspace(&scope, "alice", "Other")
 		.await
 		.unwrap();
 	let target = store
@@ -253,7 +253,7 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Graph", "Concurrent references")
+		.create_workspace(&scope, "alice", "Graph")
 		.await
 		.unwrap();
 	let target = store

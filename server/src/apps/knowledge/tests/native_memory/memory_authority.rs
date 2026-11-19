@@ -140,7 +140,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		identity,
 		aidash_application::workspaces::ConversationRequest {
 			title: "Conversation",
-			goal: "Delegate research",
+			request: "Delegate research",
 			target: &reference("coordinator"),
 			target_kind: "agent",
 			node: None,

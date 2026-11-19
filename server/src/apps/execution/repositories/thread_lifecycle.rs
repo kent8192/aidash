@@ -8,18 +8,15 @@ use crate::apps::execution::capabilities::{
 };
 use crate::{Error as NativeError, Result as NativeResult};
 use aidash_application::{Error, Result, ports::capabilities::thread_lifecycle::ThreadScope};
-use aidash_domain::{
-	capabilities::{
-		cleanup::Choice,
-		sessions::Area,
-		thread_lifecycle::{DeleteThread, FileChoice},
-	},
-	workspaces::channels::ChannelThread,
+use aidash_domain::capabilities::{
+	cleanup::Choice,
+	sessions::Area,
+	thread_lifecycle::{DeleteThread, FileChoice},
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder as _, SimpleExpr,
+	Alias, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -62,59 +59,21 @@ impl From<NativeDeleteThread> for DeleteThread {
 }
 #[async_trait]
 impl ThreadScope for Scope<'_> {
-	async fn channel(&mut self, workspace: Uuid, thread: Uuid) -> Result<Option<ChannelThread>> {
-		let result: NativeResult<Option<ChannelThread>> = async {
-			let access = &mut *self.access;
-			let row: Option<crate::apps::workspaces::models::ChannelThread> = {
-				let query_bind_1 = thread;
-				let query_bind_2 = workspace;
-				crate::database::query_as(
-					&sessions::select("channel_threads")
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(row.map(crate::collaboration::ChannelThread::from))
-		}
-		.await;
-		result.map_err(Into::into)
+	async fn lock_for_deletion(&mut self, workspace: Uuid) -> Result<()> {
+		crate::apps::workspaces::models::Workspace::lock_existing(&mut *self.access.tx, workspace)
+			.await
+			.map_err(Into::into)
 	}
-	async fn owned_areas(
-		&mut self,
-		workspace: Uuid,
-		thread: Uuid,
-		offset: u64,
-	) -> Result<Vec<Area>> {
+	async fn owned_areas(&mut self, workspace: Uuid, offset: u64) -> Result<Vec<Area>> {
 		let result: NativeResult<Vec<NativeArea>> = async {
 			let access = &mut *self.access;
 			Ok({
 				let query_bind_1 = workspace;
-				let query_bind_2 = thread;
 				let query_bind_3 = &access.identity.subject;
 				crate::database::native::query_as(
 					&sessions::select("core_areas")
 				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(query_bind_1.to_owned())))
-				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_2.to_owned())))
-				// Deleting a shared conversation never grants management of another
+				// Deleting a shared Workspace never grants management of another
 				// subject's private files. Their areas remain available in settings.
 				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_3.to_owned())))
 				.order_by(Alias::new("id"), Order::Asc)
@@ -131,21 +90,7 @@ impl ThreadScope for Scope<'_> {
 			.map(|areas| areas.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn delete_attachments(
-		&mut self,
-		workspace: Uuid,
-		thread: Uuid,
-		root: Uuid,
-	) -> Result<()> {
-		let replies = Query::select()
-			.column(Alias::new("message_id"))
-			.from(Alias::new("channel_message_context"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
-			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
-			.to_owned();
-		let in_thread = Condition::any()
-			.add(Expr::col(Alias::new("message_id")).eq(Expr::value(root)))
-			.add(Expr::col(Alias::new("message_id")).in_subquery(replies));
+	async fn delete_attachments(&mut self, workspace: Uuid) -> Result<()> {
 		// Indexed images leave the Workspace index with their attachments
 		// (#622 decision 11); the cleanup sweep removes their vectors.
 		let images = Query::select()
@@ -153,7 +98,6 @@ impl ThreadScope for Scope<'_> {
 			.from(Alias::new("channel_attachments"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
 			.and_where(Expr::col(Alias::new("media_type")).like("image/%"))
-			.cond_where(in_thread.clone())
 			.to_string(PostgresQueryBuilder);
 		let images: Vec<Uuid> = crate::database::native::query_scalar(&images)
 			.scalar_all(&mut **self.access.tx)
@@ -171,7 +115,6 @@ impl ThreadScope for Scope<'_> {
 		let query = Query::delete()
 			.from_table(Alias::new("channel_attachments"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
-			.cond_where(in_thread)
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&query)
 			.execute(&mut **self.access.tx)

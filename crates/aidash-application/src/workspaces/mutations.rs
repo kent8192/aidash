@@ -1,13 +1,12 @@
 //! Creation and mutations share authorization with worker and conversation callers.
 use crate::{Result, ports::workspaces::mutations::WorkspaceMutations};
 use aidash_domain::{NewTask, Task, Workspace, nodes::NodeName};
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 pub async fn create(
 	scope: &mut dyn WorkspaceMutations,
 	id: Uuid,
 	title: &str,
-	goal: &str,
 	node: Option<&NodeName>,
 ) -> Result<Workspace> {
 	let resource = scope.resource(
@@ -17,19 +16,20 @@ pub async fn create(
 	);
 	scope.require(&resource, "workspace.create").await?;
 	let node = scope.use_node(node).await?;
-	let workspace = scope.insert_workspace(id, &node, title, goal).await?;
+	let workspace = scope.insert_workspace(id, &node, title).await?;
 	scope.record_owner(id).await?;
 	Ok(workspace)
 }
+/// Rename a Workspace; its title is the only attribute that changes.
 pub async fn update(
 	scope: &mut dyn WorkspaceMutations,
 	id: Uuid,
 	revision: i64,
-	state: Value,
+	title: &str,
 ) -> Result<Workspace> {
 	scope.require_workspace(id, "workspace.read").await?;
 	scope.require_workspace(id, "workspace.update").await?;
-	scope.update_state(id, revision, state).await
+	scope.update_title(id, revision, title).await
 }
 pub async fn create_task(
 	scope: &mut dyn WorkspaceMutations,

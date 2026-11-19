@@ -1,4 +1,3 @@
-import { Input } from "../components/ui/input";
 import { panelClass } from "./display";
 import {
   Alert,
@@ -20,7 +19,6 @@ import { AgentCapabilities } from "./agent";
 type Managed = {
   area_id: string;
   workspace_id: string;
-  thread_id: string;
   agent_id: string;
   owner: string;
   state: string;
@@ -42,7 +40,6 @@ export function AreaLifecycle({ area }: { area: Managed }) {
     confirmation_id: string;
     revision: number;
   }>();
-  const [thread, setThread] = useState(area.thread_id);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const act = async (action: () => Promise<unknown>, clear = true) => {
@@ -66,7 +63,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
         {(area.bytes / 1024).toFixed(1)} KiB · {area.state}
       </p>
       <Hint>
-        {ja ? "スレッド" : "Thread"}: {area.thread_id} ·{" "}
+        {ja ? "スレッド" : "Thread"}: {area.workspace_id} ·{" "}
         {ja ? "所有者" : "Owner"}: {area.owner}
       </Hint>
       {area.recovery_expires_at && (
@@ -84,38 +81,11 @@ export function AreaLifecycle({ area }: { area: Managed }) {
             type="button"
             disabled={busy}
             onClick={() =>
-              void act(async () => {
-                const restored = await post<{ thread: { id: string } }>(
-                  `/workspaces/${area.workspace_id}/working-areas/${area.area_id}/restore/new-thread`,
-                  {
-                    idempotency_key: crypto.randomUUID(),
-                    expected_revision: area.revision,
-                    snapshot_id: area.snapshot_id,
-                    content: ja
-                      ? "保存済み作業ファイルの復元"
-                      : "Restore retained working files",
-                  },
-                );
-                setThread(restored.thread.id);
-              })
-            }
-          >
-            {ja ? "新しいスレッドへ復元" : "Restore into a new thread"}
-          </Button>
-          <Field label={ja ? "復元先スレッド ID" : "Destination thread ID"}>
-            <Input value={thread} onChange={(e) => setThread(e.target.value)} />
-          </Field>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy || !thread.trim()}
-            onClick={() =>
               void act(() =>
                 post(`/working-areas/${area.area_id}/restore`, {
                   idempotency_key: crypto.randomUUID(),
                   expected_revision: area.revision,
                   snapshot_id: area.snapshot_id,
-                  thread_id: thread,
                 }),
               )
             }

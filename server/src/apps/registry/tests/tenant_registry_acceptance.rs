@@ -189,7 +189,7 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 	let response = owner
 		.post(
 			"/api/conversations",
-			&json!({"title":"Mine","goal":"Use my agent","target":{"id":"helper","version":"1.1.0"},"target_kind":"agent"}),
+			&json!({"title":"Mine","request":"Use my agent","target":{"id":"helper","version":"1.1.0"},"target_kind":"agent"}),
 			"json",
 		)
 		.await
@@ -1403,7 +1403,7 @@ async fn marketplace_copy_is_local_and_recall_survives_disconnect(
 	let scope = TenancyScope::tenant("acme").unwrap();
 	let workspace = runtime
 		.store
-		.create_workspace(&scope, "owner", "Marketplace", "Recall acceptance")
+		.create_workspace(&scope, "owner", "Marketplace")
 		.await
 		.unwrap();
 	let task_input: aidash_domain::NewTask = serde_json::from_value(

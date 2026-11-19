@@ -869,7 +869,7 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 			"POST",
 			"/api/workspaces",
 			Some(&context),
-			json!({"title":"Retained receiver", "goal":"Real atomic obligation", "node":node}),
+			json!({"title":"Retained receiver", "request":"Real atomic obligation", "node":node}),
 		)
 		.await;
 	assert_eq!(status, 200, "{workspace}");
@@ -880,13 +880,12 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"Retained counterpart",
-			"Real atomic obligation",
 		)
 		.await
 		.unwrap();
 	let mut participants = vec![
-		json!({"node_id":local_address,"mutations":[{"kind":"workspace_state","workspace_id":workspace_id,"expected_revision":0,"state":{"committed":true}}]}),
-		json!({"node_id":retained_source,"mutations":[{"kind":"workspace_state","workspace_id":remote_workspace.id,"expected_revision":0,"state":{"committed":true}}]}),
+		json!({"node_id":local_address,"mutations":[{"kind":"workspace_title","workspace_id":workspace_id,"expected_revision":0,"title":"Committed"}]}),
+		json!({"node_id":retained_source,"mutations":[{"kind":"workspace_title","workspace_id":remote_workspace.id,"expected_revision":0,"title":"Committed"}]}),
 	];
 	participants.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
 	let manifest: aidash_domain::transactions::Manifest = serde_json::from_value(json!({

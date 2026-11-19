@@ -286,7 +286,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             catalog({"id": entry["id"], "version": entry["version"]}, True, 0)
 
         def create_task(title):
-            workspace = api_request(base_a, "/api/workspaces", {"title": title, "goal": "Verify scoped remote process recovery"}, token=token)
+            workspace = api_request(base_a, "/api/workspaces", {"title": title, "request": "Verify scoped remote process recovery"}, token=token)
             task = api_request(base_a, f"/api/workspaces/{workspace['id']}/tasks", {"title": title, "description": "Use the admitted remote Agent"}, token=token)
             return workspace, task
 

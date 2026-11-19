@@ -136,7 +136,7 @@ pub async fn share(
 		let resource = scope.resource(
 			"working_area",
 			&recipient.id.to_string(),
-			json!({"owner":recipient.owner,"agent_id":recipient.agent_id,"thread_id":recipient.thread_id}),
+			json!({"owner":recipient.owner,"agent_id":recipient.agent_id,"workspace_id":recipient.workspace_id}),
 		);
 		scope.require(&resource, "file.receive").await?;
 		// Both the existing recipient data and the incoming source constraints

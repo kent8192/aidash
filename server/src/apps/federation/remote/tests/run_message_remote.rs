@@ -24,7 +24,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 		&token,
 		"POST",
 		"/api/conversations",
-		json!({"title":"Atomic terminal transition","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+		json!({"title":"Atomic terminal transition","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
@@ -150,12 +150,7 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 	let scope = common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(
-			&scope,
-			"alice",
-			"Remote output fence",
-			"No executor run exists at home",
-		)
+		.create_workspace(&scope, "alice", "Remote output fence")
 		.await
 		.unwrap();
 	let task = f
@@ -230,7 +225,7 @@ async fn remote_history_references_can_span_multiple_inference_pages(
 		&token,
 		"POST",
 		"/api/conversations",
-		json!({"title":"Paged remote history","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+		json!({"title":"Paged remote history","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");

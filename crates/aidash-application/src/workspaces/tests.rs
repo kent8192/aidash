@@ -47,7 +47,6 @@ impl ConversationScope for Fixture {
 	async fn create_workspace(
 		&mut self,
 		title: &str,
-		goal: &str,
 		_: Option<&aidash_domain::nodes::NodeName>,
 		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace> {
@@ -58,8 +57,7 @@ impl ConversationScope for Fixture {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			title: title.into(),
-			goal: goal.into(),
-			state: json!({}),
+			created_by: "subject".into(),
 			revision: 0,
 			created_at: chrono::Utc::now(),
 		})
@@ -130,11 +128,6 @@ impl ConversationScope for Fixture {
 	async fn require_task(&mut self, _task: &Task, action: &str) -> Result<()> {
 		self.require(action)
 	}
-	async fn bind_task(&mut self, task: Uuid, conversation: Uuid) -> Result<()> {
-		assert_eq!((task, conversation), (self.task.id, Uuid::from_u128(2)));
-		self.operations.push("bind.session".into());
-		Ok(())
-	}
 	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
 		self.operations.push(format!("memory.{}", agent.id));
 		Ok(self.memory.clone())
@@ -172,7 +165,7 @@ impl ConversationScope for Fixture {
 fn request<'a>(reference: &'a EntityRef, kind: &'a str) -> ConversationRequest<'a> {
 	ConversationRequest {
 		title: "Title",
-		goal: "Goal",
+		request: "Goal",
 		target: reference,
 		target_kind: kind,
 		node: None,
@@ -212,8 +205,7 @@ async fn authorized_admission_binds_the_session_and_returns_the_delegated_revisi
 	assert!(before("conversation.read", "event.conversation"));
 	assert!(before("message.create", "insert.message"));
 	assert!(before("task.create", "insert.task"));
-	assert!(before("task.read", "bind.session"));
-	assert!(before("bind.session", "delegate"));
+	assert!(before("task.read", "delegate"));
 	assert!(before("delegate", "reload.task"));
 	assert_eq!(
 		scope
@@ -243,7 +235,7 @@ async fn conversation_retains_the_selected_scratch_space() {
 #[rstest::rstest]
 #[case("conversation.read", "event.conversation")]
 #[case("message.create", "insert.message")]
-#[case("task.read", "bind.session")]
+#[case("task.read", "delegate")]
 #[tokio::test]
 async fn denial_stops_before_the_protected_effect_and_delegation(
 	#[case] denied: &'static str,

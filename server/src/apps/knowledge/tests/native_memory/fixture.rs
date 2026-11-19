@@ -346,7 +346,6 @@ async fn setup_endpoint_policy_with_window(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			workspace_owner,
 			"Memory",
-			"Keep current evidence",
 		)
 		.await
 		.unwrap();

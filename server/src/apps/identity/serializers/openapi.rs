@@ -735,7 +735,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-		contracts.path(document, v::thread_mode, &["Uuid", "Uuid"])?;
+		contracts.path(document, v::thread_mode, &["Uuid"])?;
 		contracts.request::<_, approval::ThreadModeUpdate>(document, v::set_thread_mode)?;
 		contracts.response::<_, approval::ThreadMode>(
 			document,
@@ -743,7 +743,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-		contracts.path(document, v::set_thread_mode, &["Uuid", "Uuid"])?;
+		contracts.path(document, v::set_thread_mode, &["Uuid"])?;
 	}
 
 	contracts.response::<_, desktop::Started>(

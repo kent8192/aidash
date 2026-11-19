@@ -635,8 +635,6 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 		.tenant("acme")
 		.node(node.clone())
 		.title("Migration")
-		.goal("Preserve creation time")
-		.state(json!({}).into())
 		.revision(0)
 		.finish();
 	Workspace::objects()
@@ -1276,8 +1274,6 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title("After native migration")
-		.goal("Preserve on replay")
-		.state(json!({"keep":true}).into())
 		.revision(0)
 		.finish();
 	Workspace::objects()
@@ -1304,7 +1300,7 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.await
 		.unwrap();
 	assert_eq!(loaded.title, "After native migration");
-	assert_eq!(loaded.state.0, json!({"keep":true}));
+	assert_eq!(loaded.revision, 0);
 }
 
 async fn assert_image_policies(pool: &PgPool) {
@@ -1756,8 +1752,6 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title("Retained")
-		.goal("Refuse unsafe reversal")
-		.state(json!({"keep": true}).into())
 		.revision(0)
 		.finish();
 	Workspace::objects()
@@ -1786,7 +1780,7 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 		.await
 		.unwrap();
 	assert_eq!(retained.title, "Retained");
-	assert_eq!(retained.state.0, json!({"keep": true}));
+	assert_eq!(retained.revision, 0);
 }
 
 #[rstest]
@@ -1944,8 +1938,6 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
 		.title(whitespace)
-		.goal("Valid goal")
-		.state(json!({}).into())
 		.revision(0)
 		.finish();
 	// Act

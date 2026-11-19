@@ -5456,7 +5456,7 @@ async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut f
 	);
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(
-		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Workspace { .. }))
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::TaskWait { .. }))
 	);
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
@@ -5544,7 +5544,7 @@ async fn workspace_wait_defaults_and_clamps_its_ceiling(
 	let RunState::Waiting(wait) = &fixture.run.state else {
 		panic!("Run did not wait")
 	};
-	let WaitingState::Workspace { wake_at, .. } = wait.as_ref() else {
+	let WaitingState::TaskWait { wake_at, .. } = wait.as_ref() else {
 		panic!("wrong wait")
 	};
 	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
@@ -5575,7 +5575,7 @@ async fn workspace_wait_defaults_to_an_hour_for_an_unfinished_owned_nonchild_tas
 	let before = chrono::Utc::now();
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(
-		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Workspace { wake_at, .. } if *wake_at >= before + chrono::Duration::hours(1)))
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::TaskWait { wake_at, .. } if *wake_at >= before + chrono::Duration::hours(1)))
 	);
 }
 
@@ -5613,7 +5613,7 @@ async fn an_answer_with_children_pending_sleeps_only_as_long_as_something_can_wa
 	let RunState::Waiting(wait) = &fixture.run.state else {
 		panic!("Run did not wait: {:?}", fixture.run.state)
 	};
-	let WaitingState::Workspace { wake_at, .. } = wait.as_ref() else {
+	let WaitingState::TaskWait { wake_at, .. } = wait.as_ref() else {
 		panic!("wrong wait")
 	};
 	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
@@ -5649,7 +5649,7 @@ async fn a_completion_refused_for_children_sleeps_only_as_long_as_something_can_
 	let RunState::Waiting(wait) = &fixture.run.state else {
 		panic!("Run did not wait: {:?}", fixture.run.state)
 	};
-	let WaitingState::Workspace { wake_at, .. } = wait.as_ref() else {
+	let WaitingState::TaskWait { wake_at, .. } = wait.as_ref() else {
 		panic!("wrong wait")
 	};
 	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
@@ -5695,7 +5695,7 @@ async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: 
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
 	fixture.run.recovery.remote_task_fingerprint = Some(ChildTaskSummary::default().fingerprint());
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
 		cursor: 0,
 		resume: ResumeState::Thinking(ThinkingState::default()),
@@ -5765,7 +5765,7 @@ async fn remote_child_resuming_changes_the_fingerprint_and_wakes_the_waiter(mut 
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(running);
 	fixture.run.recovery.remote_task_fingerprint = Some(before.fingerprint());
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
 		cursor: 0,
 		resume: ResumeState::Thinking(ThinkingState::default()),
@@ -5786,7 +5786,7 @@ async fn remote_child_reentering_blocked_wakes_the_waiter(mut fixture: Fixture) 
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(after);
 	fixture.run.recovery.remote_task_fingerprint = Some(before.fingerprint());
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
 		cursor: 0,
 		resume: ResumeState::Thinking(ThinkingState::default()),

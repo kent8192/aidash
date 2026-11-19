@@ -1232,7 +1232,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
 	let store = &t.d.federation.store;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Confidential plan", "Tenant content")
+		.create_workspace(&scope, "alice", "Confidential plan")
 		.await
 		.unwrap();
 	let task = store

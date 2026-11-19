@@ -12,8 +12,7 @@ fn workspace() -> Workspace {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		title: "workspace".into(),
-		goal: "goal".into(),
-		state: json!({}),
+		created_by: "subject".into(),
 		revision: 1,
 		created_at: Utc::now(),
 	}

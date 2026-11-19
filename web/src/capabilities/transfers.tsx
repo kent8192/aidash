@@ -11,7 +11,7 @@ type Transfer = Operation & {
     node_id: string;
     agent_id: string;
     agent_version: string;
-    thread_id: string;
+    workspace_id: string;
   };
   manifest_digest: string;
 };
@@ -45,7 +45,7 @@ export function TransferHistory({ area }: { area: string }) {
               {item.status}
             </strong>
             <p>
-              {item.recipient.node_id} · {item.recipient.thread_id}
+              {item.recipient.node_id} · {item.recipient.workspace_id}
             </p>
             <Hint>
               {ja ? "転送番号" : "Transfer"}: {item.operation_id}

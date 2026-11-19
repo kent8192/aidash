@@ -93,30 +93,12 @@ pub(crate) async fn object_digest(
 pub(crate) async fn remote_for_thread(
 	access: &mut Access,
 	workspace: Uuid,
-	thread: Uuid,
 ) -> Result<Vec<(Uuid, Uuid, Uuid)>> {
-	let root: Option<Uuid> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("root_message_id"))
-			.from(Alias::new("channel_threads"))
-			.and_where(Expr::col("id").eq(Expr::value(thread)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **access.tx)
-	.await?;
-	let Some(root) = root else { return Ok(vec![]) };
-	let mut ids: Vec<Uuid> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("message_id"))
-			.from(Alias::new("channel_message_context"))
-			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_all(&mut **access.tx)
-	.await?;
-	ids.push(root);
+	let ids = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("messages"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.to_owned();
 	let rows: Vec<(Uuid, Uuid, Uuid)> = crate::database::native::query_as(
 		&Query::select()
 			.column(Alias::new("message_id"))
@@ -124,7 +106,7 @@ pub(crate) async fn remote_for_thread(
 			.column(Alias::new("file_id"))
 			.from(Alias::new("message_file_versions"))
 			.and_where(Expr::col("remote_run_id").is_not_null())
-			.and_where(Expr::col("message_id").is_in(ids.iter().copied().map(Expr::value)))
+			.and_where(Expr::col("message_id").in_subquery(ids))
 			.to_string(PostgresQueryBuilder),
 	)
 	.columns(&["message_id", "remote_run_id", "file_id"])

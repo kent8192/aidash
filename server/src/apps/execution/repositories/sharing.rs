@@ -51,7 +51,7 @@ impl From<NativeRecipient> for Recipient {
 			node_id: v.node_id,
 			agent_id: v.agent_id,
 			agent_version: v.agent_version,
-			thread_id: v.thread_id,
+			workspace_id: v.workspace_id,
 		}
 	}
 }
@@ -61,7 +61,7 @@ impl From<Recipient> for NativeRecipient {
 			node_id: v.node_id,
 			agent_id: v.agent_id,
 			agent_version: v.agent_version,
-			thread_id: v.thread_id,
+			workspace_id: v.workspace_id,
 		}
 	}
 }
@@ -122,7 +122,7 @@ impl SharingScope for Scope<'_> {
 			Ok({
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = area.workspace_id;
-				let query_bind_3 = target.thread_id;
+				let query_bind_3 = target.workspace_id;
 				let query_bind_4 = &target.agent_id;
 				let query_bind_5 = store.deployment.as_str();
 				let query_bind_6 = &access.identity.subject;
@@ -147,11 +147,13 @@ impl SharingScope for Scope<'_> {
 							)),
 						)
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
+								"workspace_id",
+							)))
+							.eq(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_3.to_owned()).into()],
+							)),
 						)
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("agent_id")))

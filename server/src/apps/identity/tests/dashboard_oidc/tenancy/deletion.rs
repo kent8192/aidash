@@ -81,7 +81,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 	let workspace = d
 		.federation
 		.store
-		.create_workspace(&scope, "alice", "Private workspace", "Keep data private")
+		.create_workspace(&scope, "alice", "Private workspace")
 		.await
 		.unwrap();
 	let task = d
@@ -231,7 +231,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				method,
 				&path,
 				Some(&context),
-				json!({"revision":workspace.revision,"state":{}}),
+				json!({"revision":workspace.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 410, "{method}: {body}");
@@ -240,7 +240,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			.as_deployment_administrator(
 				method,
 				&path,
-				json!({"revision":workspace.revision,"state":{}}),
+				json!({"revision":workspace.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 403, "{method}: {body}");
@@ -250,7 +250,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				method,
 				&path,
 				Some("deployment_administrator"),
-				json!({"revision":workspace.revision,"state":{}}),
+				json!({"revision":workspace.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 403, "browser {method}: {body}");
@@ -792,7 +792,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 			"POST",
 			"/api/workspaces",
 			Some(&context),
-			json!({"title":"Work","goal":"Run something"}),
+			json!({"title":"Work","request":"Run something"}),
 		)
 		.await;
 	assert_eq!(status, 200, "{workspace}");
@@ -1021,7 +1021,7 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 	let workspace = d
 		.federation
 		.store
-		.create_workspace(&scope, "alice", "Reports", "Weekly reports")
+		.create_workspace(&scope, "alice", "Reports")
 		.await
 		.unwrap();
 	let schedule = |registrant: &'static str| {
@@ -1163,7 +1163,7 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 			None,
 			None,
 			Some(&token),
-			json!({"title":"Reports","goal":"Weekly reports"}),
+			json!({"title":"Reports","request":"Weekly reports"}),
 		)
 		.await;
 	assert_eq!(status, 200, "{workspace}");

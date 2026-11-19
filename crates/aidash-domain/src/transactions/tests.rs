@@ -1,6 +1,5 @@
 use super::*;
 use rstest::{fixture, rstest};
-use serde_json::json;
 
 #[fixture]
 fn manifest() -> Manifest {
@@ -73,21 +72,21 @@ fn ordering_unique_nodes_and_per_participant_mutation_capacity_remain_strict(
 	);
 }
 #[rstest]
-#[case::revision(-1,json!({}))]
-#[case::array(0,json!([]))]
-#[case::scalar(0,json!("state"))]
-fn workspace_mutations_retain_revision_and_object_requirements(
+#[case::revision(-1, "Title")]
+#[case::blank(0, " ")]
+#[case::empty(0, "")]
+fn workspace_mutations_retain_revision_and_title_requirements(
 	mut manifest: Manifest,
 	#[case] revision: i64,
-	#[case] state: Value,
+	#[case] title: &str,
 ) {
-	manifest.participants[0].mutations = vec![Mutation::WorkspaceState {
+	manifest.participants[0].mutations = vec![Mutation::WorkspaceTitle {
 		workspace_id: Uuid::from_u128(2),
 		expected_revision: revision,
-		state,
+		title: title.into(),
 	}];
 	assert!(
-		matches!(check(&manifest),Err(Error::Invalid(message)) if message=="workspace mutation requires a revision and object state")
+		matches!(check(&manifest),Err(Error::Invalid(message)) if message=="workspace mutation requires a revision and a title")
 	);
 }
 #[rstest]
@@ -117,10 +116,10 @@ fn manifests_keep_the_original_completeness_and_size_gate(
 		"effects" => manifest.participants[0].mutations.clear(),
 		"coordinator" => manifest.coordinator = "aidash://beta/airy-hawk-2lu4as22".into(),
 		"size" => {
-			manifest.participants[0].mutations = vec![Mutation::WorkspaceState {
+			manifest.participants[0].mutations = vec![Mutation::WorkspaceTitle {
 				workspace_id: Uuid::from_u128(2),
 				expected_revision: 0,
-				state: json!({"body":"a".repeat(524_288)}),
+				title: "a".repeat(524_288),
 			}]
 		}
 		_ => unreachable!(),
@@ -222,7 +221,7 @@ fn aborted_decisions_can_complete_without_publishing_visible_effects() {
 	assert_eq!(CoordinatorTransition::Publish.phase(), "VISIBLE");
 	assert_eq!(CoordinatorTransition::Complete.phase(), "COMPLETE");
 }
-const GOLDEN: &str = r#"{"id":"00000000-0000-0000-0000-000000000001","coordinator":"aidash://alpha/airy-hawk-2lu4as22","isolation":"serializable","deadline":"2030-01-01T00:00:00Z","participants":[{"node_id":"aidash://alpha/airy-hawk-2lu4as22","mutations":[{"kind":"workspace_state","workspace_id":"00000000-0000-0000-0000-000000000002","expected_revision":0,"state":{"count":1}}]}]}"#;
+const GOLDEN: &str = r#"{"id":"00000000-0000-0000-0000-000000000001","coordinator":"aidash://alpha/airy-hawk-2lu4as22","isolation":"serializable","deadline":"2030-01-01T00:00:00Z","participants":[{"node_id":"aidash://alpha/airy-hawk-2lu4as22","mutations":[{"kind":"workspace_title","workspace_id":"00000000-0000-0000-0000-000000000002","expected_revision":0,"title":"Count"}]}]}"#;
 const GOLDEN_DIGEST: &str = "517ef332f3744542f78960651a8b8b89e238c86d320e391db76a60535044b064";
 
 #[rstest]

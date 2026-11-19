@@ -1089,7 +1089,7 @@ async fn materialize_plan_run(f: &Federation, run: Uuid) {
 	let scope = TenancyScope::tenant("alpha").unwrap();
 	let workspace = f
 		.store
-		.create_workspace(&scope, "alice", "Plan Run", "Exemption audit")
+		.create_workspace(&scope, "alice", "Plan Run")
 		.await
 		.unwrap();
 	let task = f

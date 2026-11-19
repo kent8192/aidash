@@ -349,12 +349,12 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let other = f
 		.store
-		.create_workspace(&ACME, "alice", "Other", "Goal")
+		.create_workspace(&ACME, "alice", "Other")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -615,7 +615,7 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 	.unwrap();
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	f.store
@@ -1214,7 +1214,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let task = f
@@ -1612,7 +1612,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let spec = index_spec();
@@ -2023,7 +2023,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2106,7 +2106,7 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2160,7 +2160,7 @@ async fn task_dependency_cycles_include_parent_edges(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2237,7 +2237,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2298,7 +2298,7 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2422,12 +2422,12 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	common::tenant_scope(&f.store, "acme").await;
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Main", "Goal")
+		.create_workspace(&ACME, "alice", "Main")
 		.await
 		.unwrap();
 	let other = f
 		.store
-		.create_workspace(&ACME, "alice", "Other", "Goal")
+		.create_workspace(&ACME, "alice", "Other")
 		.await
 		.unwrap();
 	let input = NewTask {

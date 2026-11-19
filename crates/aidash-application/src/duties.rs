@@ -16,7 +16,8 @@ use uuid::Uuid;
 /// Which Duties a list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Listing {
-	/// Every Duty of one Workspace the person can see.
+	/// Every Duty of one Workspace the person can see: the Duty whose own
+	/// Workspace it is and those registered from it.
 	Workspace(Uuid),
 	/// The person's own Duties, in every Workspace, and those waiting for
 	/// them to take over as the named successor.
@@ -59,6 +60,10 @@ pub trait DutyScope: Send {
 	/// The Tenant's Duties. The adapter serializes registrations of one
 	/// Tenant so two cannot pass a Tier cap together.
 	async fn count(&mut self) -> Result<i64>;
+	/// Opens the Duty's own Workspace in the Node and Scratch Space of
+	/// `from`, created by the Requester, with the Duty's title and its
+	/// mission as the first message (#1008, ADR 0140).
+	async fn open_workspace(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid>;
 	async fn insert(&mut self, duty: &Duty) -> Result<()>;
 	/// Loads and locks a Duty for change.
 	async fn load_for_update(&mut self, id: Uuid) -> Result<Duty>;
@@ -118,7 +123,8 @@ async fn check_definition(
 	Ok(())
 }
 
-/// Registers a Duty in `workspace` acting as the scope's person.
+/// Registers a Duty from `workspace` acting as the scope's person. The Duty
+/// opens its own Workspace beside it (#1008, ADR 0140).
 pub async fn register(
 	scope: &mut dyn DutyScope,
 	workspace: Uuid,
@@ -144,13 +150,14 @@ pub async fn register(
 	let total = scope.count().await?;
 	duties::admit_within_tier(total, scope.tier_cap().await?)?;
 	let now = scope.now();
+	let own = scope.open_workspace(workspace, &definition).await?;
 	let mut duty = Duty {
 		id: Uuid::new_v4(),
-		workspace_id: workspace,
+		workspace_id: own,
+		origin_workspace_id: Some(workspace),
 		requester,
 		credential_id: scope.requester_credential().await?,
 		definition,
-		thread_id: None,
 		anchor: now,
 		next_scheduled_at: None,
 		watcher_next_at: None,
@@ -193,7 +200,10 @@ async fn visible(scope: &mut dyn DutyScope, id: Uuid, lock: bool) -> Result<Duty
 	if duty.requester == scope.subject()
 		|| duty.successor.as_deref() == Some(scope.subject())
 		|| scope.sees_workspace(duty.workspace_id).await?
-		|| scope.administers().await?
+		|| match duty.origin_workspace_id {
+			Some(origin) => scope.sees_workspace(origin).await?,
+			None => false,
+		} || scope.administers().await?
 	{
 		Ok(duty)
 	} else {

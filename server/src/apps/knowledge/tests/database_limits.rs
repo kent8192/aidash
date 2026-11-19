@@ -26,7 +26,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Constraints", "Persisted authority")
+		.create_workspace(&scope, "alice", "Constraints")
 		.await
 		.unwrap();
 	service::configure(
@@ -163,7 +163,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Limits", "Verify memory limits")
+		.create_workspace(&scope, "alice", "Limits")
 		.await
 		.unwrap();
 	service::configure(
@@ -258,7 +258,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(&scope, "alice", "Race", "Serialize limit changes")
+		.create_workspace(&scope, "alice", "Race")
 		.await
 		.unwrap();
 	service::configure(
@@ -324,12 +324,7 @@ async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
 	let workspace = store
-		.create_workspace(
-			&scope,
-			"alice",
-			"Deployment Administrator vectors",
-			"Workspace scope is kept",
-		)
+		.create_workspace(&scope, "alice", "Deployment Administrator vectors")
 		.await
 		.unwrap();
 	let transport = aidash_server::bootstrap::semantic_transport(&store);

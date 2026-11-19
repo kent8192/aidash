@@ -16,8 +16,7 @@ fn workspace() -> Workspace {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		title: "saved workspace".into(),
-		goal: "goal".into(),
-		state: json!({}),
+		created_by: "subject".into(),
 		revision: 4,
 		created_at: Utc::now(),
 	}

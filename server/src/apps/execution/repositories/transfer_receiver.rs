@@ -180,7 +180,7 @@ impl ReceiverScope for Scope<'_> {
 			Ok({
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = &access.identity.subject;
-				let query_bind_3 = description.target.thread_id;
+				let query_bind_3 = description.target.workspace_id;
 				let query_bind_4 = &description.target.agent_id;
 				let node = aidash_domain::nodes::NodeAddress::parse(node_id)?.node;
 				sessions::locked_area(
@@ -203,11 +203,13 @@ impl ReceiverScope for Scope<'_> {
 							),
 						)
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
+								"workspace_id",
+							)))
+							.eq(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_3.to_owned()).into()],
+							)),
 						)
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("agent_id")))

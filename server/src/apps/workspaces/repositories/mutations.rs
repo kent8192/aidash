@@ -64,7 +64,6 @@ impl WorkspaceMutations for NativeMutations<'_> {
 		id: Uuid,
 		node: &NodeName,
 		title: &str,
-		goal: &str,
 	) -> Result<Workspace> {
 		let policy = self.scratch_policy.ok_or_else(|| {
 			aidash_application::Error::Invalid(
@@ -94,7 +93,6 @@ impl WorkspaceMutations for NativeMutations<'_> {
 					tenant: &self.access.identity.tenant,
 					node,
 					title,
-					goal,
 					scratch_space_id: scratch_id,
 					created_by: &creator,
 				},
@@ -102,9 +100,9 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn update_state(&mut self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
+	async fn update_title(&mut self, id: Uuid, revision: i64, title: &str) -> Result<Workspace> {
 		self.store
-			.update_state_in(&mut self.access.tx, id, revision, state)
+			.update_title_in(&mut self.access.tx, id, revision, title)
 			.await
 			.map_err(Into::into)
 	}

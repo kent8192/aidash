@@ -196,12 +196,9 @@ pub fn build_edges(
 	};
 	for record in records {
 		match record {
-			Candidate::Workspace(workspace) => add(
-				resource_key(node, "workspace", workspace.id),
-				resource_key(node, "goal", workspace.id),
-				"goal",
-				"configuration",
-			),
+			// A Workspace has no goal of its own (#1008, ADR 0140): its Root
+			// Tasks hang below it.
+			Candidate::Workspace(_) => {}
 			Candidate::Task(task) => {
 				let id = resource_key(node, "task", task.id);
 				add(
@@ -213,13 +210,6 @@ pub fn build_edges(
 				if let Some(parent) = task.parent_id {
 					add(
 						resource_key(node, "task", parent),
-						id.clone(),
-						"contains",
-						"activity",
-					);
-				} else {
-					add(
-						resource_key(node, "goal", task.workspace_id),
 						id.clone(),
 						"contains",
 						"activity",
@@ -380,25 +370,6 @@ impl Candidate {
 						workspace_id: Some(workspace.id),
 						status: None,
 						goal_body: None,
-						at: Some(workspace.created_at),
-					});
-				}
-				if !workspace.goal.trim().is_empty() && kind_allowed("goal", options) {
-					let label = workspace
-						.goal
-						.lines()
-						.find(|line| !line.trim().is_empty())
-						.unwrap_or("Goal");
-					nodes.push(GraphNode {
-						id: resource_key(node_id, "goal", workspace.id),
-						node_id: node_id.to_owned(),
-						kind: "goal".into(),
-						name: name(&label.chars().take(100).collect::<String>()),
-						resource_id: Some(workspace.id.to_string()),
-						version: None,
-						workspace_id: Some(workspace.id),
-						status: None,
-						goal_body: Some(workspace.goal.clone()),
 						at: Some(workspace.created_at),
 					});
 				}

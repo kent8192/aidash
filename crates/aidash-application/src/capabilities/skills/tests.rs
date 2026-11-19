@@ -510,7 +510,7 @@ mod exposure {
 		config.skill_attachments = vec![attachment.clone()];
 		let area: Area = serde_json::from_value(json!({
 			"id": Uuid::new_v4(), "tenant": "tenant", "home_node": NODE,
-			"workspace_id": Uuid::new_v4(), "thread_id": Uuid::new_v4(), "agent_id": "agent",
+			"workspace_id": Uuid::new_v4(), "agent_id": "agent",
 			"owner": "owner", "generation": 0, "revision": 0, "epoch": 0, "state": "ready",
 			"manifest": [], "constraints": {}, "next_sequence": 0,
 		}))

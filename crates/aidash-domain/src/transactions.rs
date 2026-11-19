@@ -3,7 +3,6 @@ use crate::{ArtifactInput, Error, nodes::NodeAddress};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -17,10 +16,11 @@ pub enum Isolation {
 #[schemars(rename = "TransactionMutation")]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mutation {
-	WorkspaceState {
+	/// Rename a Workspace (its only mutable attribute).
+	WorkspaceTitle {
 		workspace_id: Uuid,
 		expected_revision: i64,
-		state: Value,
+		title: String,
 	},
 	CompleteTask {
 		task_id: Uuid,
@@ -97,14 +97,14 @@ impl Manifest {
 			let mut keys = std::collections::BTreeSet::new();
 			for mutation in &participant.mutations {
 				let key = match mutation {
-					Mutation::WorkspaceState {
+					Mutation::WorkspaceTitle {
 						workspace_id,
 						expected_revision,
-						state,
+						title,
 					} => {
-						if *expected_revision < 0 || !state.is_object() {
+						if *expected_revision < 0 || title.trim().is_empty() {
 							return Err(Error::Invalid(
-								"workspace mutation requires a revision and object state".into(),
+								"workspace mutation requires a revision and a title".into(),
 							)
 							.into());
 						}

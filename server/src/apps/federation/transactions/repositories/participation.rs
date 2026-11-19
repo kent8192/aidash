@@ -77,7 +77,7 @@ pub(crate) async fn require_live_participant_in(
 			aidash_domain::transactions::Mutation::CompleteTask { task_id, .. } => {
 				node_cancellations::require_fresh_task(tx, &tenant, *task_id).await?
 			}
-			aidash_domain::transactions::Mutation::WorkspaceState { .. } => {}
+			aidash_domain::transactions::Mutation::WorkspaceTitle { .. } => {}
 		}
 	}
 	Ok(())
@@ -197,7 +197,7 @@ impl ParticipantScope for Scope {
 		let tx = self.transaction.executor();
 		for mutation in &participant.mutations {
 			let (kind, id) = match mutation {
-				aidash_domain::transactions::Mutation::WorkspaceState { workspace_id, .. } => {
+				aidash_domain::transactions::Mutation::WorkspaceTitle { workspace_id, .. } => {
 					("workspace", *workspace_id)
 				}
 				aidash_domain::transactions::Mutation::CompleteTask { task_id, .. } => {

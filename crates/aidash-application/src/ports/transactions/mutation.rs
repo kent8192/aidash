@@ -11,7 +11,7 @@ pub trait MutationScope: Send {
 		&mut self,
 		id: Uuid,
 		revision: i64,
-		state: Value,
+		title: String,
 	) -> Result<Workspace>;
 	/// Retain the row lock until the caller settles its transaction.
 	async fn lock_task(&mut self, id: Uuid) -> Result<Task>;

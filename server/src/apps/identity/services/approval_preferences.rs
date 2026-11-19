@@ -796,14 +796,12 @@ impl ApprovalPreferences {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		workspace: Uuid,
-		thread: Uuid,
 	) -> Result<ThreadMode> {
 		let mut access = self.session(actor, origin).await?;
 		let result = async {
-			crate::apps::execution::capabilities::services::endpoints::readable_thread(
+			crate::apps::execution::capabilities::services::endpoints::readable_workspace(
 				&mut access,
 				workspace,
-				thread,
 			)
 			.await?;
 			let (tenant, subject) = (
@@ -814,7 +812,8 @@ impl ApprovalPreferences {
 			let node = access.workspace_node(workspace).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
-				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
+				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, workspace)
+					.await?,
 				default_mode: repository::default_mode(row.as_ref())?,
 				modes: modes(
 					&access.snapshot.bundle,
@@ -836,15 +835,13 @@ impl ApprovalPreferences {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		workspace: Uuid,
-		thread: Uuid,
 		input: ThreadModeUpdate,
 	) -> Result<ThreadMode> {
 		let mut access = self.session(actor, origin).await?;
 		let result = async {
-			crate::apps::execution::capabilities::services::endpoints::readable_thread(
+			crate::apps::execution::capabilities::services::endpoints::readable_workspace(
 				&mut access,
 				workspace,
-				thread,
 			)
 			.await?;
 			let (tenant, subject) = (
@@ -868,7 +865,7 @@ impl ApprovalPreferences {
 					));
 				}
 			}
-			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, thread, input.mode)
+			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, workspace, input.mode)
 				.await?;
 			let node = access.workspace_node(workspace).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;

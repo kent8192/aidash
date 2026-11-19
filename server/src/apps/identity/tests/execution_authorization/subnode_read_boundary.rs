@@ -22,7 +22,7 @@ impl SubnodeRig {
 			&token,
 			"POST",
 			"/api/conversations",
-			json!({"title":"Coordinate","goal":"Coordinate the work","target":{"id":"subnode-creator","version":"1.0.0"},"target_kind":"agent"}),
+			json!({"title":"Coordinate","request":"Coordinate the work","target":{"id":"subnode-creator","version":"1.0.0"},"target_kind":"agent"}),
 		)
 		.await;
 		assert_eq!(status, 200, "conversation: {created}");

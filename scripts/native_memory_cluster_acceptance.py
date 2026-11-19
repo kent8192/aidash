@@ -144,7 +144,7 @@ class NativeMemory(RemoteMemory):
             "operation_id": str(uuid.uuid4()), "provider": self.memory, "bank": bank, "changes": changes}))
 
     def workspace(self):
-        workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Native memory {self.language}", "goal": "Read attributed Home memory / 出典付き記憶を参照"}))["id"]
+        workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Native memory {self.language}", "request": "Read attributed Home memory / 出典付き記憶を参照"}))["id"]
         self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None}, "enabled": True,
             "auto_context": False, "max_sources": 100, "max_results": 4, "max_result_tokens": 32768, "max_input_bytes": 32768}}))
@@ -259,7 +259,7 @@ class NativeMemory(RemoteMemory):
         """Registry, real inference/journal, opted-in extraction and human CAS review."""
         record = {"language": language, "generated": generated, "home": "aidash://tx-00", "started_at": now()}
         self.evidence.setdefault("run_learning", []).append(record)
-        workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Learning {language}", "goal": "Review attributed failure observations"}))["id"]
+        workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Learning {language}", "request": "Review attributed failure observations"}))["id"]
         self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None}, "enabled": True,
             "auto_context": False, "max_sources": 100, "max_results": 4, "max_result_tokens": 32768, "max_input_bytes": 32768}}))

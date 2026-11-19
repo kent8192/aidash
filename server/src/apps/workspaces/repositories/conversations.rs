@@ -44,7 +44,6 @@ impl ConversationScope for NativeConversation<'_> {
 	async fn create_workspace(
 		&mut self,
 		title: &str,
-		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
 		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace> {
@@ -52,7 +51,6 @@ impl ConversationScope for NativeConversation<'_> {
 			.create_workspace(
 				&self.federation.store,
 				title,
-				goal,
 				node,
 				scratch_space_id,
 				&self.federation.config.scratch_policy,
@@ -229,11 +227,6 @@ impl ConversationScope for NativeConversation<'_> {
 		let resource = self.access.task_resource(task).await?;
 		self.access
 			.require(&resource, action)
-			.await
-			.map_err(Into::into)
-	}
-	async fn bind_task(&mut self, task: Uuid, conversation: Uuid) -> Result<()> {
-		crate::capabilities::sessions::bind_task(self.access, task, conversation)
 			.await
 			.map_err(Into::into)
 	}

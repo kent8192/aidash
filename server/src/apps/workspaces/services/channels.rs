@@ -1,5 +1,5 @@
 //! Channel use cases resolved through the request DI context.
-use crate::apps::workspaces::{access::Lease, attachments, history, serializers::*, threads};
+use crate::apps::workspaces::{access::Lease, attachments, history, posting, serializers::*};
 use crate::{Result, authorization::identity::Actor, federation::Federation};
 use reinhardt::injectable;
 use uuid::Uuid;
@@ -16,45 +16,15 @@ pub async fn channels(#[inject] runtime: Federation, #[inject] actor: Actor) -> 
 }
 
 impl Channels {
-	pub async fn create_thread(
-		&self,
-		workspace: Uuid,
-		input: ChannelThreadInput,
-	) -> Result<ChannelThread> {
-		let mut lease = Lease::begin(
-			&self.runtime.store,
-			self.actor.clone(),
-			workspace,
-			"message.create",
-		)
-		.await?;
-		let result = threads::create(
-			&self.runtime.store,
-			&mut lease,
-			workspace,
-			input.root_message_id,
-		)
-		.await;
-		lease.finish(result).await
-	}
 	pub async fn post_message(
 		&self,
 		workspace: Uuid,
 		input: ChannelMessageInput,
 	) -> Result<ChannelMessage> {
 		crate::http::validate(&input)?;
-		let mut lease = if input.thread_id.is_some() {
-			Lease::begin(
-				&self.runtime.store,
-				self.actor.clone(),
-				workspace,
-				"message.create",
-			)
-			.await?
-		} else {
-			Lease::begin_message_create(&self.runtime.store, self.actor.clone(), workspace).await?
-		};
-		let result = threads::post(
+		let mut lease =
+			Lease::begin_message_create(&self.runtime.store, self.actor.clone(), workspace).await?;
+		let result = posting::post(
 			&self.runtime.store,
 			Some(&self.runtime),
 			&mut lease,

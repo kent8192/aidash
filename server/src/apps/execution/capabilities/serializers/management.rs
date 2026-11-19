@@ -167,7 +167,6 @@ pub struct FileRecipient {
 	pub node_id: String,
 	pub agent_id: String,
 	pub agent_version: String,
-	pub thread_id: Uuid,
 	pub workspace_id: Uuid,
 }
 
@@ -193,7 +192,7 @@ pub struct OperationPage {
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct DeletedThread {
-	pub thread_id: Uuid,
+	pub workspace_id: Uuid,
 	pub state: String,
 	pub file_operations: Vec<super::cleanup::CleanupResult>,
 }

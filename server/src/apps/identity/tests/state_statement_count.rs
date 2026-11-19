@@ -27,7 +27,7 @@ async fn state_statement_count_does_not_grow_with_runs(
 				&token,
 				"POST",
 				"/api/workspaces",
-				json!({"title":"Measured", "goal":"Bounded state"}),
+				json!({"title":"Measured", "request":"Bounded state"}),
 			)
 			.await;
 			assert_eq!(status, 200, "{workspace}");

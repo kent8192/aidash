@@ -21,15 +21,6 @@ fn message(id: u128) -> Message {
 		run_id: None,
 	}
 }
-fn thread_record() -> ChannelThread {
-	ChannelThread {
-		id: Uuid::from_u128(9),
-		workspace_id: workspace(),
-		root_message_id: Uuid::from_u128(2),
-		created_by: "fixture".into(),
-		created_at: Utc::now(),
-	}
-}
 fn metadata(id: u128) -> ChannelAttachment {
 	ChannelAttachment {
 		id: Uuid::from_u128(id),
@@ -64,8 +55,6 @@ struct Fixture {
 	context: Option<MessageContext>,
 	links: Vec<AttachmentLink>,
 	bind_order: Vec<(Uuid, i32)>,
-	inserted: bool,
-	reply: Option<Uuid>,
 	history: VecDeque<Vec<HistoryRow>>,
 	hidden: HashSet<Uuid>,
 	/// Messages whose check stops at a Node that did not answer (#770).
@@ -129,49 +118,16 @@ impl ChannelScope for Fixture {
 		}
 		Ok(!self.hidden.contains(&message.id))
 	}
-	async fn thread_visible(&mut self, _: Uuid) -> Result<()> {
-		self.record("thread.visible")
-	}
-	async fn thread(&mut self, _: Uuid, _: Uuid) -> Result<Option<ChannelThread>> {
-		self.record("thread.read")?;
-		Ok(Some(thread_record()))
-	}
-	async fn reply_thread(&mut self, _: Uuid) -> Result<Option<Uuid>> {
-		self.record("reply.read")?;
-		Ok(self.reply)
-	}
-	async fn insert_thread(&mut self, _: Uuid, _: Uuid, _: &str) -> Result<Option<ChannelThread>> {
-		self.record("thread.insert")?;
-		Ok(self.inserted.then(thread_record))
-	}
-	async fn existing_thread(&mut self, _: Uuid, _: Uuid) -> Result<ChannelThread> {
-		self.record("thread.existing")?;
-		Ok(thread_record())
-	}
-	async fn thread_event(&mut self, _: Uuid, _: Uuid, _: Uuid) -> Result<()> {
-		self.record("thread.event")
-	}
 	async fn append_message(&mut self, _: Uuid, _: &str, _: &str, key: &str) -> Result<Message> {
 		self.record("message.insert")?;
 		self.key = Some(key.into());
 		Ok(message(2))
 	}
-	async fn record_context(
-		&mut self,
-		_: Uuid,
-		_: Uuid,
-		thread: Option<Uuid>,
-		digest: &str,
-	) -> Result<MessageContext> {
+	async fn record_context(&mut self, _: Uuid, _: Uuid, digest: &str) -> Result<MessageContext> {
 		self.record("message.context")?;
 		Ok(self.context.clone().unwrap_or(MessageContext {
-			thread_id: thread,
 			attachment_digest: digest.into(),
 		}))
-	}
-	async fn root_thread(&mut self, _: Uuid) -> Result<Option<Uuid>> {
-		self.record("root.read")?;
-		Ok(None)
 	}
 	async fn legacy_attachment_positions(&mut self, _: Uuid, _: Uuid) -> Result<Vec<(Uuid, i32)>> {
 		self.record("attachment.legacy")?;
@@ -220,7 +176,6 @@ impl ChannelScope for Fixture {
 	async fn history_rows(
 		&mut self,
 		_: Uuid,
-		_: Option<&ChannelThread>,
 		_: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<HistoryRow>> {
 		self.record("history.read")?;
@@ -292,66 +247,12 @@ impl ChannelScope for Fixture {
 fn submission<'a>(ids: &'a [Uuid]) -> MessageSubmission<'a> {
 	MessageSubmission {
 		content: "content",
-		thread_id: None,
 		idempotency_key: Uuid::from_u128(100),
 		attachment_ids: ids,
 		citations: &[],
 	}
 }
 
-#[rstest]
-#[tokio::test]
-async fn denied_root_visibility_prevents_thread_and_event_creation() {
-	let mut scope = Fixture {
-		denied: Some("message.read"),
-		inserted: true,
-		..Default::default()
-	};
-	let result = create_thread(&mut scope, workspace(), Uuid::from_u128(2)).await;
-	assert!(matches!(result, Err(Error::Forbidden)));
-	assert_eq!(scope.calls, vec!["message.read"]);
-}
-#[rstest]
-#[case(true,vec!["message.read","reply.read","thread.insert","thread.event"])]
-#[case(false,vec!["message.read","reply.read","thread.insert","thread.existing","thread.visible"])]
-#[tokio::test]
-async fn thread_replays_do_not_duplicate_events(
-	#[case] inserted: bool,
-	#[case] expected: Vec<&str>,
-) {
-	let mut scope = Fixture {
-		inserted,
-		..Default::default()
-	};
-	assert_eq!(
-		create_thread(&mut scope, workspace(), Uuid::from_u128(2))
-			.await
-			.unwrap()
-			.id,
-		thread_record().id
-	);
-	assert_eq!(scope.calls, expected);
-}
-#[rstest]
-#[tokio::test]
-async fn thread_replay_conflict_stops_before_attachment_binding() {
-	let mut scope = Fixture {
-		context: Some(MessageContext {
-			thread_id: Some(Uuid::from_u128(9)),
-			attachment_digest: String::new(),
-		}),
-		..Default::default()
-	};
-	let result = post(&mut scope, workspace(), submission(&[Uuid::from_u128(10)])).await;
-	assert!(
-		matches!(result,Err(Error::Conflict(ref value)) if value=="message idempotency key reused for a different thread")
-	);
-	assert_eq!(scope.calls, vec!["message.insert", "message.context"]);
-	assert_eq!(
-		scope.key.unwrap(),
-		format!("channel:{}:principal:{}", workspace(), Uuid::from_u128(100))
-	);
-}
 #[rstest]
 #[tokio::test]
 async fn attachment_order_is_returned_and_bound_in_request_order() {
@@ -384,8 +285,7 @@ async fn attachment_order_is_returned_and_bound_in_request_order() {
 			"message.context",
 			"attachment.lock",
 			"attachment.bind",
-			"attachment.bind",
-			"root.read"
+			"attachment.bind"
 		]
 	);
 }
@@ -457,8 +357,6 @@ async fn history_cursor_uses_only_visible_messages_and_pages_are_chronological()
 		.rev()
 		.map(|id| HistoryRow {
 			message: message(id),
-			reply_thread_id: None,
-			root_thread_id: None,
 		})
 		.collect();
 	let mut scope = Fixture {
@@ -470,7 +368,6 @@ async fn history_cursor_uses_only_visible_messages_and_pages_are_chronological()
 		&mut scope,
 		workspace(),
 		HistoryRequest {
-			thread_id: None,
 			before: None,
 			limit: 2,
 		},
@@ -494,8 +391,6 @@ async fn history_counts_the_messages_a_silent_node_left_out_and_not_the_refused_
 		.rev()
 		.map(|id| HistoryRow {
 			message: message(id),
-			reply_thread_id: None,
-			root_thread_id: None,
 		})
 		.collect();
 	let mut scope = Fixture {
@@ -508,7 +403,6 @@ async fn history_counts_the_messages_a_silent_node_left_out_and_not_the_refused_
 		&mut scope,
 		workspace(),
 		HistoryRequest {
-			thread_id: None,
 			before: None,
 			limit: 100,
 		},
@@ -541,8 +435,6 @@ async fn an_unconfirmed_message_is_counted_on_one_page_only() {
 		ids.iter()
 			.map(|id| HistoryRow {
 				message: message(*id),
-				reply_thread_id: None,
-				root_thread_id: None,
 			})
 			.collect::<Vec<_>>()
 	};
@@ -552,11 +444,7 @@ async fn an_unconfirmed_message_is_counted_on_one_page_only() {
 		silent,
 		..Default::default()
 	};
-	let request = |before| HistoryRequest {
-		thread_id: None,
-		before,
-		limit: 2,
-	};
+	let request = |before| HistoryRequest { before, limit: 2 };
 	// Act
 	let first = history(&mut scope, workspace(), request(None))
 		.await
@@ -569,27 +457,6 @@ async fn an_unconfirmed_message_is_counted_on_one_page_only() {
 	assert_eq!(first.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
 	assert_eq!(second.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
 }
-#[rstest]
-#[tokio::test]
-async fn foreign_thread_cursor_is_rejected_before_scanning_history() {
-	let mut scope = Fixture {
-		reply: Some(Uuid::from_u128(9)),
-		..Default::default()
-	};
-	let result = history(
-		&mut scope,
-		workspace(),
-		HistoryRequest {
-			thread_id: None,
-			before: Some(Uuid::from_u128(2)),
-			limit: 2,
-		},
-	)
-	.await;
-	assert!(matches!(result,Err(Error::NotFound(ref value)) if value=="message unavailable"));
-	assert_eq!(scope.calls, vec!["message.read", "reply.read"]);
-}
-
 #[rstest]
 #[tokio::test]
 async fn cited_versions_are_recorded_before_attachments() {
@@ -611,7 +478,6 @@ async fn cited_versions_are_recorded_before_attachments() {
 		workspace(),
 		MessageSubmission {
 			content: "correct the page",
-			thread_id: None,
 			idempotency_key: Uuid::from_u128(100),
 			attachment_ids: &[],
 			citations: &citations,
@@ -623,12 +489,7 @@ async fn cited_versions_are_recorded_before_attachments() {
 	assert_eq!(result.citations[0].file_id, citations[0].file_id);
 	assert_eq!(
 		scope.calls,
-		vec![
-			"message.insert",
-			"message.context",
-			"citations.record",
-			"root.read"
-		]
+		vec!["message.insert", "message.context", "citations.record"]
 	);
 }
 
@@ -653,7 +514,6 @@ async fn a_denied_citation_stops_before_any_attachment_write() {
 		workspace(),
 		MessageSubmission {
 			content: "cite",
-			thread_id: None,
 			idempotency_key: Uuid::from_u128(100),
 			attachment_ids: &[Uuid::from_u128(10)],
 			citations: &citations,

@@ -10,9 +10,6 @@ use aidash_domain::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub async fn bind_task(scope: &mut dyn SessionScope, task: Uuid, thread: Uuid) -> Result<()> {
-	scope.bind_task(task, thread).await
-}
 pub async fn load(scope: &mut dyn SessionScope, id: Uuid) -> Result<Area> {
 	let area = scope
 		.load(id)
@@ -30,7 +27,7 @@ pub async fn authorize(scope: &mut dyn SessionScope, area: &Area, action: &str) 
 	let resource = scope.resource(
 		"working_area",
 		area.id,
-		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
+		json!({"owner":area.owner,"agent_id":area.agent_id,"workspace_id":area.workspace_id}),
 	);
 	scope.require(&workspace, "workspace.read").await?;
 	scope
@@ -133,8 +130,8 @@ pub async fn prepare_admission(
 				.into(),
 		));
 	}
-	let explicit = scope.explicit_thread(task.id).await?;
-	let mut thread = explicit.unwrap_or(task.id);
+	// The Working Area is keyed on (home Node, Workspace, Agent, owner)
+	// (#1008, ADR 0140): every Task of a Workspace shares it.
 	let mut ancestor = task.parent_id;
 	for _ in 0..64 {
 		let Some(id) = ancestor else {
@@ -147,9 +144,6 @@ pub async fn prepare_admission(
 					"SESSION_DEPENDENCY_CYCLE: child would wait behind its parent".into(),
 				));
 			}
-			if explicit.is_none() {
-				thread = parent_area.thread_id;
-			}
 		}
 		ancestor = parent.parent_id;
 	}
@@ -158,8 +152,8 @@ pub async fn prepare_admission(
 			"SESSION_DEPENDENCY_CYCLE: ancestor limit exceeded".into(),
 		));
 	}
-	scope.lock_thread(thread, task.workspace_id).await?;
-	Ok(Some(thread))
+	scope.lock_thread(task.workspace_id).await?;
+	Ok(Some(task.workspace_id))
 }
 pub async fn admit(
 	scope: &mut dyn SessionScope,
@@ -172,7 +166,8 @@ pub async fn admit(
 	let Some(thread) = thread else {
 		return Ok(());
 	};
-	let mut area = scope.ensure_area(task, thread, agent_id).await?;
+	debug_assert_eq!(thread, task.workspace_id);
+	let mut area = scope.ensure_area(task, agent_id).await?;
 	authorize(scope, &area, "file.read").await?;
 	if !matches!(area.state.as_str(), "active" | "running") {
 		return Err(Error::Conflict(

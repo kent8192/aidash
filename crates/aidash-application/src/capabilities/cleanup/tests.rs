@@ -118,7 +118,6 @@ fn fixture(state: &str) -> Repository {
 		tenant: "tenant".into(),
 		home_node: "home".into(),
 		workspace_id: Uuid::new_v4(),
-		thread_id: Uuid::new_v4(),
 		agent_id: "agent".into(),
 		owner: "alice".into(),
 		generation: 7,

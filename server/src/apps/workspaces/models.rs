@@ -10,8 +10,6 @@ mod channel_attachments;
 pub use channel_attachments::ChannelAttachment;
 mod channel_message_context;
 pub use channel_message_context::ChannelMessageContext;
-mod channel_threads;
-pub use channel_threads::ChannelThread;
 mod conversations;
 pub use conversations::Conversation;
 mod messages;

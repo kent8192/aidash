@@ -159,7 +159,6 @@ pub const TABLES: &[Table] = &[
 	table("execution", "core_records", TenantOwned),
 	table("execution", "core_requests", TenantOwned),
 	table("execution", "core_runs", TenantOwned),
-	table("execution", "core_task_sessions", TenantOwned),
 	// Decision Evidence (#290) belongs to its Run, like the Context Journal.
 	table("execution", "approval_observer_settings", TenantOwned),
 	table("execution", "approval_observations", TenantOwned),
@@ -433,7 +432,6 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "artifacts", TenantOwned),
 	table("workspaces", "channel_attachments", TenantOwned),
 	table("workspaces", "channel_message_context", TenantOwned),
-	table("workspaces", "channel_threads", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),
 	table("workspaces", "duties", TenantOwned),
 	table("workspaces", "duty_ticks", TenantOwned),

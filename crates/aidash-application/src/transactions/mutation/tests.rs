@@ -118,16 +118,15 @@ impl MutationScope for Scope {
 		&mut self,
 		id: Uuid,
 		revision: i64,
-		state: Value,
+		title: String,
 	) -> Result<Workspace> {
 		self.call("workspace")?;
 		Ok(Workspace {
 			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
-			title: "Workspace".into(),
-			goal: "Goal".into(),
-			state,
+			title,
+			created_by: "subject".into(),
 			revision: revision + 1,
 			created_at: self.task.created_at,
 		})

@@ -9,7 +9,6 @@ use schemars::JsonSchema;
 pub struct ChannelMessageInput {
 	#[validate(length(max = 64000))]
 	pub content: String,
-	pub thread_id: Option<Uuid>,
 	pub idempotency_key: Uuid,
 	#[serde(default)]
 	pub attachment_ids: Vec<Uuid>,
@@ -20,14 +19,7 @@ pub struct ChannelMessageInput {
 
 #[derive(Debug, Deserialize, Validate, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ChannelThreadInput {
-	pub root_message_id: Uuid,
-}
-
-#[derive(Debug, Deserialize, Validate, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ChannelHistoryQuery {
-	pub thread_id: Option<Uuid>,
 	pub before: Option<Uuid>,
 	#[serde(default = "default_limit")]
 	#[validate(range(min = 1, max = 100))]
@@ -66,6 +58,5 @@ pub(crate) fn default_limit() -> u16 {
 use uuid::Uuid;
 
 pub use aidash_domain::workspaces::channels::{
-	ChannelAttachment, ChannelCitation, ChannelMessage, ChannelMessagePage, ChannelThread,
-	CitedFileVersion,
+	ChannelAttachment, ChannelCitation, ChannelMessage, ChannelMessagePage, CitedFileVersion,
 };

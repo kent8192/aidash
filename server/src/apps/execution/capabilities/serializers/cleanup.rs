@@ -25,23 +25,12 @@ pub struct Restore {
 	pub idempotency_key: Uuid,
 	pub expected_revision: i64,
 	pub snapshot_id: Uuid,
-	pub thread_id: Uuid,
-}
-
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-#[serde(deny_unknown_fields)]
-pub struct RestoreNewThread {
-	pub idempotency_key: Uuid,
-	pub expected_revision: i64,
-	pub snapshot_id: Uuid,
-	pub content: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ManagedArea {
 	pub area_id: Uuid,
 	pub workspace_id: Uuid,
-	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub owner: String,
 	pub state: String,

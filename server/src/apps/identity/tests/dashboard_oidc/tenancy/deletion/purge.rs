@@ -17,7 +17,7 @@ impl Deployment {
 				"POST",
 				"/api/workspaces",
 				Some(&context),
-				json!({"title":"Work","goal":"Keep working"}),
+				json!({"title":"Work","request":"Keep working"}),
 			)
 			.await;
 		assert_eq!(status, 200, "{workspace}");

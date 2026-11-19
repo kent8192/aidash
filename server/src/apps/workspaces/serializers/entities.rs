@@ -39,8 +39,7 @@ impl From<WorkspaceRecord> for Workspace {
 			scratch_space_id: record.scratch_space_id,
 			node: aidash_domain::nodes::NodeName::parse(&record.node).expect("stored Node name"),
 			title: record.title,
-			goal: record.goal,
-			state: record.state.into_inner(),
+			created_by: record.created_by,
 			revision: record.revision,
 			created_at: record.created_at,
 		}

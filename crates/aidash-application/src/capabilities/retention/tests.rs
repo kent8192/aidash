@@ -26,7 +26,6 @@ fn area(manifest: Vec<MountedFile>) -> Area {
 		tenant: "acme".into(),
 		home_node: "node".into(),
 		workspace_id: Uuid::from_u128(2),
-		thread_id: Uuid::from_u128(3),
 		agent_id: "research".into(),
 		owner: "alice".into(),
 		generation: 1,

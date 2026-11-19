@@ -380,7 +380,7 @@ pub async fn recipient_list(
 			.await;
 			scope.set_subjects(subjects);
 			match allowed {
-                    Ok(()) => items.push(json!({"node_id":node,"agent_id":area.agent_id,"agent_version":version,"thread_id":area.thread_id,"workspace_id":area.workspace_id})),
+                    Ok(()) => items.push(json!({"node_id":node,"agent_id":area.agent_id,"agent_version":version,"workspace_id":area.workspace_id})),
                     Err(Error::Forbidden | Error::NotFound(_)) => {}, Err(error) => return Err(error),
                 }
 		}

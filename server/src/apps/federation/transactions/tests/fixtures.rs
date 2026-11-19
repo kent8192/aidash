@@ -70,7 +70,7 @@ pub fn pair(
 			workspaces.push(
 				node.f
 					.store
-					.create_workspace(&scope, "alice", title, "Atomic state")
+					.create_workspace(&scope, "alice", title)
 					.await
 					.unwrap()
 					.id,
@@ -81,10 +81,10 @@ pub fn pair(
 			"id":Uuid::new_v4(), "coordinator":a.address,
 			"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
 			"participants":[
-				{"node_id":a.address,"mutations":[{"kind":"workspace_state",
-					"workspace_id":wa,"expected_revision":0,"state":{"value":"new-a"}}]},
-				{"node_id":b.address,"mutations":[{"kind":"workspace_state",
-					"workspace_id":wb,"expected_revision":0,"state":{"value":"new-b"}}]}
+				{"node_id":a.address,"mutations":[{"kind":"workspace_title",
+					"workspace_id":wa,"expected_revision":0,"title":"new-a"}]},
+				{"node_id":b.address,"mutations":[{"kind":"workspace_title",
+					"workspace_id":wb,"expected_revision":0,"title":"new-b"}]}
 			]
 		}))
 		.unwrap();

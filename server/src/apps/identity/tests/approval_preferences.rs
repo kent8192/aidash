@@ -1173,7 +1173,7 @@ async fn a_thread_mode_is_the_callers_own_and_needs_read_access_to_the_thread(
 		&people.member,
 		"POST",
 		"/api/workspaces",
-		json!({"title": "Approvals", "goal": "Thread modes"}),
+		json!({"title": "Approvals", "request": "Thread modes"}),
 	)
 	.await;
 	let workspace = json_body(&created)["id"].as_str().unwrap().to_owned();

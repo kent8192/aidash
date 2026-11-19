@@ -20,20 +20,14 @@ const message = (reason: unknown) =>
  * Thread's mode. A running Run of theirs in the Thread follows it at its next
  * approval.
  */
-export function ThreadApprovalMode({
-  workspace,
-  thread,
-}: {
-  workspace: string;
-  thread: string;
-}) {
+export function ThreadApprovalMode({ workspace }: { workspace: string }) {
   const { locale } = useI18n();
   const copy = approvalCopy[locale];
   const client = useQueryClient();
-  const key = ["thread-approval-mode", workspace, thread] as const;
+  const key = ["thread-approval-mode", workspace] as const;
   const view = useQuery({
     queryKey: key,
-    queryFn: ({ signal }) => threadApprovalMode(workspace, thread, { signal }),
+    queryFn: ({ signal }) => threadApprovalMode(workspace, { signal }),
     retry: false,
   });
   const [busy, setBusy] = useState(false);
@@ -62,11 +56,7 @@ export function ThreadApprovalMode({
     try {
       client.setQueryData(
         key,
-        await threadApprovalModeUpdate(
-          workspace,
-          thread,
-          threadModeUpdate(value),
-        ),
+        await threadApprovalModeUpdate(workspace, threadModeUpdate(value)),
       );
     } catch (reason) {
       setError(message(reason));

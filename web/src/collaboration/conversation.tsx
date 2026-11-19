@@ -1,5 +1,4 @@
 import { Button } from "../components/ui/button";
-import { ThreadCapabilities } from "../capabilities/thread";
 import { ThreadApprovalMode } from "../thread-approval-mode";
 import {
   Fragment,
@@ -10,7 +9,6 @@ import {
   type ReactNode,
 } from "react";
 import { Alert, Loading, Notice } from "../components/patterns";
-import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDown,
@@ -30,7 +28,6 @@ import {
   channelAttachmentUpload,
   channelMessageCreate,
   channelMessageHistory,
-  channelThreadCreate,
 } from "../generated/aidash";
 import type {
   ChannelAttachment,
@@ -50,7 +47,6 @@ import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { senderLabel } from "./model";
-import { threadCopy } from "./thread-copy";
 import {
   mergeMessagePages,
   attachmentWarningKey,
@@ -133,13 +129,7 @@ export function MessageText({ text }: { text: string }) {
 }
 
 /** Cited File versions under a message. Unavailable ones never become links. */
-function MessageCitations({
-  citations,
-  thread,
-}: {
-  citations: ChannelCitation[];
-  thread: string | null;
-}) {
+function MessageCitations({ citations }: { citations: ChannelCitation[] }) {
   const { t } = useI18n();
   const preview = useFilePreview();
   if (citations.length === 0) return null;
@@ -198,7 +188,6 @@ function MessageCitations({
                     files: citation.run_id
                       ? undefined
                       : preview.manifestFor(citation.area_id),
-                    thread,
                     cited: true,
                   })
                 }
@@ -227,49 +216,20 @@ type ConversationProps = {
   workspace: string;
   title: string;
   visible: boolean;
-  threadList?: boolean;
   /** Rendered after the channel messages (pending decisions on narrow screens). */
   requests?: ReactNode;
   system?: SystemLine[];
-  thread: string | null;
-  selectThread: (id: string | null) => void;
 };
-export function ChannelConversation({
-  threadContainer,
-  ...props
-}: ConversationProps & { threadContainer: HTMLElement | null }) {
+export function ChannelConversation(props: ConversationProps) {
   const [drafts, setDrafts] = useState<Drafts>({});
   const [pending] = useState(() => new Map<string, MessageSubmission>());
-  const shared = { ...props, drafts, setDrafts, pending };
   return (
-    <>
-      <ConversationFeed {...shared} thread={null} />
-      {props.thread &&
-        threadContainer &&
-        createPortal(
-          <>
-            <ConversationFeed
-              key={props.thread}
-              {...shared}
-              requests={undefined}
-              system={undefined}
-              threadList={false}
-            />
-            {props.data.access.kind === "subject" && (
-              <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border px-4 py-3">
-                <ThreadCapabilities
-                  key={props.thread}
-                  workspace={props.workspace}
-                  thread={props.thread}
-                  data={props.data}
-                  onDeleted={() => props.selectThread(null)}
-                />
-              </div>
-            )}
-          </>,
-          threadContainer,
-        )}
-    </>
+    <ConversationFeed
+      {...props}
+      drafts={drafts}
+      setDrafts={setDrafts}
+      pending={pending}
+    />
   );
 }
 
@@ -282,11 +242,8 @@ function ConversationFeed({
   visible,
   data,
   discovery,
-  threadList = false,
   requests,
   system,
-  thread,
-  selectThread,
   drafts,
   setDrafts,
   pending,
@@ -298,15 +255,12 @@ function ConversationFeed({
   const { locale, t } = useI18n();
   const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale],
-    words = workspaceCopy[locale],
-    threads = threadCopy[locale];
-  const client = useQueryClient();
-  const target = thread ?? "channel",
+    words = workspaceCopy[locale];
+  const target = "channel",
     draft = drafts[target] ?? emptyDraft;
-  // A person in a Thread sets their Approval Mode beside the composer, which
-  // takes the room of the Enter-to-send hint in the narrow Thread panel.
+  // A person sets their Approval Mode for the Workspace beside the composer.
   const approvalTenant =
-    thread && data.access.kind === "subject" ? data.access.tenant : null;
+    data.access.kind === "subject" ? data.access.tenant : null;
   const updateDraft = (update: (draft: Draft) => Draft) =>
     setDrafts((current) => ({
       ...current,
@@ -315,7 +269,6 @@ function ConversationFeed({
   const inFlight = useRef(false);
   const warnedAttachments = useRef<string | null>(null);
   const [sending, setSending] = useState(false),
-    [opening, setOpening] = useState(false),
     [uploading, setUploading] = useState(false),
     [mentioning, setMentioning] = useState(false),
     [quota, setQuota] = useState("");
@@ -331,12 +284,12 @@ function ConversationFeed({
   const follow = useRef(true);
   const [nearBottom, setNearBottom] = useState(true);
   const query = useInfiniteQuery({
-    queryKey: ["channel-history", workspace, thread],
+    queryKey: ["channel-history", workspace],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       channelMessageHistory(
         workspace,
-        { thread_id: thread ?? undefined, before: pageParam, limit: 40 },
+        { before: pageParam, limit: 40 },
         { signal },
       ),
     getNextPageParam: (page) => page.next_before ?? undefined,
@@ -354,10 +307,7 @@ function ConversationFeed({
         ["message"],
         [workspace],
       );
-  const messages =
-    threadList && !thread
-      ? allMessages.filter((message) => message.thread_id !== null)
-      : allMessages;
+  const messages = allMessages;
   const latestMessageId = messages.at(-1)?.message.id;
   const scrollToLatest = useCallback(() => {
     const element = scroll.current;
@@ -365,32 +315,8 @@ function ConversationFeed({
   }, []);
   useEffect(() => {
     if (visible && follow.current) scrollToLatest();
-  }, [latestMessageId, thread, visible, scrollToLatest]);
+  }, [latestMessageId, visible, scrollToLatest]);
 
-  async function openThread(message: ChannelMessage) {
-    if (inFlight.current) return;
-    if (message.thread_id) {
-      selectThread(message.thread_id);
-      return;
-    }
-    inFlight.current = true;
-    setOpening(true);
-    setError("");
-    try {
-      const opened = await channelThreadCreate(workspace, {
-        root_message_id: message.message.id,
-      });
-      selectThread(opened.id);
-      await client.invalidateQueries({
-        queryKey: ["channel-history", workspace],
-      });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setOpening(false);
-      inFlight.current = false;
-    }
-  }
   async function send(omitCitations = false) {
     if (
       (!draft.text.trim() && draft.files.length === 0) ||
@@ -467,7 +393,6 @@ function ConversationFeed({
       const submission = submissionFor(
         pending.get(target) ?? null,
         workspace,
-        thread,
         draft.text,
         () => crypto.randomUUID(),
         attachmentIds,
@@ -476,7 +401,6 @@ function ConversationFeed({
       pending.set(target, submission);
       await channelMessageCreate(workspace, {
         content: submission.content,
-        thread_id: submission.thread,
         idempotency_key: submission.key,
         attachment_ids: submission.attachments,
         ...(cited.length > 0
@@ -557,7 +481,7 @@ function ConversationFeed({
       input.setSelectionRange(start + prefix.length, end + prefix.length);
     });
   }
-  const busy = sending || opening || query.isPending;
+  const busy = sending || query.isPending;
   const day = (value: string) =>
     new Date(value).toLocaleDateString(locale, {
       year: "numeric",
@@ -570,10 +494,9 @@ function ConversationFeed({
       minute: "2-digit",
     });
   const firstShown = messages[0]?.message.created_at;
-  const systemLines =
-    !thread && !threadList && firstShown
-      ? (system ?? []).filter((line) => line.created_at >= firstShown)
-      : [];
+  const systemLines = firstShown
+    ? (system ?? []).filter((line) => line.created_at >= firstShown)
+    : [];
   const feed = [
     ...messages.map((entry) => ({
       kind: "message" as const,
@@ -588,35 +511,6 @@ function ConversationFeed({
   ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return (
     <div hidden={!visible} className="relative flex min-h-0 flex-1 flex-col">
-      {thread ? (
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
-          <MessagesSquare aria-hidden className="size-4 text-faint" />
-          <div className="grid min-w-0 flex-1">
-            <h3 className="text-[13px] font-semibold leading-tight text-foreground">
-              {threads.thread}
-            </h3>
-            <small className="truncate font-mono text-[11px] text-faint">
-              # {title}
-            </small>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            type="button"
-            disabled={sending || opening}
-            aria-label={threads.back}
-            onClick={() => selectThread(null)}
-          >
-            <X />
-          </Button>
-        </div>
-      ) : (
-        threadList && (
-          <h3 className="shrink-0 border-b border-border px-4 py-2.5 text-xs font-semibold text-foreground">
-            {words.threads}
-          </h3>
-        )
-      )}
       {query.isError ? (
         <Alert
           className="m-4"
@@ -634,7 +528,7 @@ function ConversationFeed({
             ref={scroll}
             role="region"
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3"
-            aria-label={thread ? threads.thread : copy.conversation}
+            aria-label={copy.conversation}
             onScroll={() => {
               const element = scroll.current;
               if (element) {
@@ -657,7 +551,7 @@ function ConversationFeed({
                 disabled={query.isFetchingNextPage}
                 onClick={() => void loadOlder()}
               >
-                {threads.older}
+                {copy.older}
               </Button>
             )}
             {query.isPending && (
@@ -671,13 +565,9 @@ function ConversationFeed({
                     <MessageSquare aria-hidden className="size-4" />
                   </span>
                   <p className="text-[13px] font-medium text-foreground">
-                    {threadList ? words.noThreads : copy.noMessages}
+                    {copy.noMessages}
                   </p>
-                  {!threadList && (
-                    <p className="text-xs text-muted-foreground">
-                      {words.scope}
-                    </p>
-                  )}
+                  <p className="text-xs text-muted-foreground">{words.scope}</p>
                 </div>
               )}
             {feed.map((item, index) => {
@@ -731,7 +621,7 @@ function ConversationFeed({
                   <article
                     ref={message.id === latestMessageId ? latest : undefined}
                     className="group grid grid-cols-[24px_1fr] gap-x-2.5 rounded-md py-2"
-                    id={`${thread ? "thread-" : ""}message-${message.id}`}
+                    id={`message-${message.id}`}
                   >
                     <Avatar
                       name={sender.name}
@@ -765,10 +655,7 @@ function ConversationFeed({
                         <MessageText text={message.content} />
                       </p>
                       {entry.citations && entry.citations.length > 0 && (
-                        <MessageCitations
-                          citations={entry.citations}
-                          thread={thread}
-                        />
+                        <MessageCitations citations={entry.citations} />
                       )}
                       {entry.attachments.length > 0 && (
                         <ul className="mt-1.5 flex flex-wrap gap-1.5">
@@ -782,27 +669,12 @@ function ConversationFeed({
                           ))}
                         </ul>
                       )}
-                      {!thread && (
-                        <button
-                          className={cn(
-                            "mt-1.5 inline-flex h-6 items-center gap-1.5 rounded-md border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground disabled:opacity-50",
-                            !entry.thread_id &&
-                              "md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
-                          )}
-                          type="button"
-                          disabled={sending || opening}
-                          onClick={() => void openThread(entry)}
-                        >
-                          <MessagesSquare aria-hidden className="size-3" />
-                          {entry.thread_id ? threads.open : threads.reply}
-                        </button>
-                      )}
                     </div>
                   </article>
                 </Fragment>
               );
             })}
-            {!thread && !threadList && requests}
+            {requests}
           </div>
           {!nearBottom && (
             <Button
@@ -819,9 +691,6 @@ function ConversationFeed({
               <ArrowDown />
               {copy.newMessages}
             </Button>
-          )}
-          {opening && (
-            <Loading className="px-4 pt-0 pb-1">{threads.opening}</Loading>
           )}
           {quota && (
             <Alert className="mx-4 mb-2">
@@ -846,7 +715,7 @@ function ConversationFeed({
               {words.attachmentSendAnyway}
             </Notice>
           )}
-          {(!threadList || thread) && (
+          {
             <form
               className="shrink-0 border-t border-border p-3"
               onSubmit={(event) => {
@@ -859,7 +728,7 @@ function ConversationFeed({
                   className="sr-only"
                   htmlFor={`channel-message-${target}`}
                 >
-                  {thread ? threads.replyMessage : copy.message}
+                  {copy.message}
                 </label>
                 <Textarea
                   ref={textarea}
@@ -869,11 +738,9 @@ function ConversationFeed({
                   maxLength={64000}
                   rows={2}
                   placeholder={
-                    thread
-                      ? threads.replyMessage
-                      : locale === "ja-JP"
-                        ? "やりたいことや、続けてほしいことを入力…"
-                        : "Describe what you want to do or continue…"
+                    locale === "ja-JP"
+                      ? "やりたいことや、続けてほしいことを入力…"
+                      : "Describe what you want to do or continue…"
                   }
                   disabled={busy}
                   onChange={(event) => {
@@ -1096,8 +963,8 @@ function ConversationFeed({
                   >
                     <Code2 />
                   </Button>
-                  {thread && approvalTenant !== null && (
-                    <ThreadApprovalMode workspace={workspace} thread={thread} />
+                  {approvalTenant !== null && (
+                    <ThreadApprovalMode workspace={workspace} />
                   )}
                   {approvalTenant === null && (
                     <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-faint lg:flex">
@@ -1111,7 +978,7 @@ function ConversationFeed({
                       "ml-auto",
                       approvalTenant === null && "lg:ml-1",
                     )}
-                    aria-label={thread ? threads.sendReply : copy.send}
+                    aria-label={copy.send}
                     title={words.enterHint}
                     disabled={
                       busy || (!draft.text.trim() && draft.files.length === 0)
@@ -1126,7 +993,7 @@ function ConversationFeed({
                 </div>
               </div>
             </form>
-          )}
+          }
         </>
       )}
       {sent && (

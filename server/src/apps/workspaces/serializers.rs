@@ -5,8 +5,7 @@ pub mod entities;
 
 pub use channels::{
 	ChannelAttachment, ChannelAttachmentDescription, ChannelAttachmentUploadQuery,
-	ChannelHistoryQuery, ChannelMessage, ChannelMessageInput, ChannelMessagePage, ChannelThread,
-	ChannelThreadInput,
+	ChannelHistoryQuery, ChannelMessage, ChannelMessageInput, ChannelMessagePage,
 };
 
 pub mod channels;

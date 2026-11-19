@@ -142,7 +142,7 @@ pub async fn prepare(
 		files: chosen,
 		expires_at,
 	};
-	scope.insert(id,Some(area.id),"transfer_out","pending",json!({"description":description,"credential_id":scope.credential(),"subjects":scope.subjects(),"workspace_id":area.workspace_id,"thread_id":area.thread_id,"constraints":area.constraints,"run_id":run.id,"offsets":{}}),Some(expires_at)).await?;
+	scope.insert(id,Some(area.id),"transfer_out","pending",json!({"description":description,"credential_id":scope.credential(),"subjects":scope.subjects(),"workspace_id":area.workspace_id,"constraints":area.constraints,"run_id":run.id,"offsets":{}}),Some(expires_at)).await?;
 	scope
 		.cache(
 			input.idempotency_key,
@@ -185,7 +185,7 @@ pub async fn authority<'a>(
 				&scope.resource(
 					"working_area",
 					&area.to_string(),
-					json!({"owner":record.owner,"agent_id":description.source_agent.id,"thread_id":record.data["thread_id"]}),
+					json!({"owner":record.owner,"agent_id":description.source_agent.id,"workspace_id":record.data["workspace_id"]}),
 				),
 				"file.share",
 			)
@@ -209,7 +209,7 @@ pub async fn authority<'a>(
 				&scope.resource(
 					"working_area",
 					&area.to_string(),
-					json!({"owner":record.owner,"agent_id":description.source_agent.id,"thread_id":record.data["thread_id"]}),
+					json!({"owner":record.owner,"agent_id":description.source_agent.id,"workspace_id":record.data["workspace_id"]}),
 				),
 				"file.share",
 			)

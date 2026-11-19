@@ -14,9 +14,8 @@ use reinhardt::{get, patch, post};
 use uuid::Uuid;
 
 use crate::apps::workspaces::serializers::management::AbandonInput;
-use crate::apps::workspaces::serializers::management::ConversationInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
-use crate::apps::workspaces::serializers::management::StateInput;
+use crate::apps::workspaces::serializers::management::TitleInput;
 use crate::apps::workspaces::serializers::management::WorkspaceInput;
 use crate::apps::workspaces::services::management::CollaborationManagement;
 
@@ -61,7 +60,7 @@ pub async fn workspace_update(
 	#[inject] service: Depends<CollaborationManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Json(input): Json<StateInput>,
+	Json(input): Json<TitleInput>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.workspace_update(actor, id, input).await)
 }
@@ -103,13 +102,4 @@ pub async fn task_abandon(
 	Json(input): Json<AbandonInput>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.task_abandon(actor, id, input).await)
-}
-
-#[post("/api/conversations", name = "conversation-create", auth = "protected")]
-pub async fn conversation_create(
-	#[inject] service: Depends<CollaborationManagement>,
-	#[inject] actor: Actor,
-	validated_json::Json(input): validated_json::Json<ConversationInput>,
-) -> ViewResult<Response> {
-	crate::http::json(service.conversation_create(actor, input).await)
 }

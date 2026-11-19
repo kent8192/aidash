@@ -121,7 +121,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 		.unwrap();
 	seed.commit().await.unwrap();
 	let workspace = store
-		.create_workspace(&tenant, "fixture", "Step policy", "Tenant scope")
+		.create_workspace(&tenant, "fixture", "Step policy")
 		.await
 		.unwrap();
 	let task = store

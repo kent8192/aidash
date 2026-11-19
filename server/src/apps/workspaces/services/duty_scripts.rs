@@ -64,7 +64,7 @@ async fn start_script(
 		),
 	};
 	// Each start has a key of its own: several may start in one pass.
-	let (task, _) = start_with(
+	let task = start_with(
 		f,
 		lease,
 		duty,
@@ -558,7 +558,7 @@ async fn decide(
 				// fence. Its title and description stay inside it (ADR 0142).
 				// Several decisions may start Tasks in one pass; each start
 				// keys on its own time.
-				let (task, thread) = start_with(
+				let task = start_with(
 					f,
 					lease,
 					duty,
@@ -578,7 +578,6 @@ async fn decide(
 						status: TickStatus::Started,
 						reason: Some(format!("event: {} (router)", kind.as_str())),
 						task_id: Some(task),
-						thread_id: Some(thread),
 						started_by: None,
 					},
 				)

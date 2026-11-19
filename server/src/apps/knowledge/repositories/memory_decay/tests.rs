@@ -183,7 +183,6 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"deployment_administrator",
 			"Other",
-			"Independent workspace lock",
 		)
 		.await
 		.unwrap();

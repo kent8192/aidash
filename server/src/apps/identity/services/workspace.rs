@@ -31,7 +31,6 @@ impl Access {
 		&mut self,
 		store: &Store,
 		title: &str,
-		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
 		scratch_space_id: Option<Uuid>,
 		policy: &crate::config::ScratchOperatorPolicy,
@@ -39,15 +38,9 @@ impl Access {
 		let mut scope = crate::bootstrap::workspace_mutations(self, store);
 		scope.scratch_policy = Some(policy);
 		scope.requested_scratch = scratch_space_id;
-		aidash_application::workspaces::mutations::create(
-			&mut scope,
-			Uuid::new_v4(),
-			title,
-			goal,
-			node,
-		)
-		.await
-		.map_err(Into::into)
+		aidash_application::workspaces::mutations::create(&mut scope, Uuid::new_v4(), title, node)
+			.await
+			.map_err(Into::into)
 	}
 
 	pub(crate) async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
@@ -344,25 +337,24 @@ impl Workspaces {
 	pub async fn create(
 		&self,
 		title: &str,
-		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
 		scratch_space_id: Option<Uuid>,
 		policy: &crate::config::ScratchOperatorPolicy,
 	) -> Result<Workspace> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = access
-			.create_workspace(&self.store, title, goal, node, scratch_space_id, policy)
+			.create_workspace(&self.store, title, node, scratch_space_id, policy)
 			.await;
 		access.finish(result).await
 	}
 
-	pub async fn update(&self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
+	pub async fn update(&self, id: Uuid, revision: i64, title: &str) -> Result<Workspace> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = aidash_application::workspaces::mutations::update(
 			&mut crate::bootstrap::workspace_mutations(&mut access, &self.store),
 			id,
 			revision,
-			state,
+			title,
 		)
 		.await
 		.map_err(Into::into);

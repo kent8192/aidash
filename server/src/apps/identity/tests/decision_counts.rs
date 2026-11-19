@@ -307,7 +307,7 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 				&token,
 				"POST",
 				"/api/workspaces",
-				json!({"title":"Window", "goal":"Bounded state"}),
+				json!({"title":"Window", "request":"Bounded state"}),
 			)
 			.await;
 			assert_eq!(status, 200, "{workspace}");

@@ -20,8 +20,6 @@ pub struct CoreAreas {
 	#[field]
 	pub workspace_id: uuid::Uuid,
 	#[field]
-	pub thread_id: uuid::Uuid,
-	#[field]
 	pub generation: i64,
 	#[field]
 	pub revision: i64,

@@ -42,8 +42,7 @@ record!(Workspace {
 	scratch_space_id,
 	node,
 	title,
-	goal,
-	state,
+	created_by,
 	revision,
 	created_at
 });

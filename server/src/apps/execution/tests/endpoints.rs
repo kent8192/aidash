@@ -29,7 +29,7 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 		member
 			.patch(
 				&format!("/api/workspaces/{id}"),
-				&json!({"revision":0,"state":{"step":1}}),
+				&json!({"revision":0,"title":"Step"}),
 				"json",
 			)
 			.await
@@ -110,7 +110,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 			.patch(
 				&format!("/api/workspaces/{id}"),
 				&json!({
-					"revision":0, "state":{"live":true}
+					"revision":0, "title":"Live"
 				}),
 				"json",
 			)

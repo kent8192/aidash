@@ -24,7 +24,7 @@ pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Val
 	let w = &snapshot.workspace;
 	let mut value = json!({
 		"view":"workspace_observation_v1",
-		"workspace":{"id":w.id,"title":preview(&w.title,256),"goal":preview(&w.goal,512),"revision":w.revision},
+		"workspace":{"id":w.id,"title":preview(&w.title,256),"revision":w.revision},
 		"tasks":snapshot.tasks.iter().skip(offset).take(limit).map(|t| json!({
 			"id":t.id,"title":preview(&t.title,256),"description_preview":preview(&t.description,512),
 			"status":t.status,"owner":t.owner,"parent_id":t.parent_id,"revision":t.revision,

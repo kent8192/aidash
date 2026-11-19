@@ -25,7 +25,7 @@ fn description() -> Description {
 			node_id: "recipient".into(),
 			agent_id: "agent".into(),
 			agent_version: "v1".into(),
-			thread_id: Uuid::new_v4(),
+			workspace_id: Uuid::new_v4(),
 		},
 		source_tenant: "tenant".into(),
 		source_subject: "owner".into(),

@@ -32,7 +32,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Worker rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Worker rollout fence","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -282,7 +282,7 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Control rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Control rollout fence","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -354,7 +354,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Invocation rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Invocation rollout fence","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -518,7 +518,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Reclaim a legacy lease","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Reclaim a legacy lease","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -594,7 +594,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Finalization race","goal":"Give a short answer","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Finalization race","request":"Give a short answer","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -782,7 +782,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Read reference","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Read reference","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -851,7 +851,7 @@ async fn the_commit_fence_persists_the_completion_basis(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Verified answer","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Verified answer","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1010,7 +1010,7 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Unassigned child","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Unassigned child","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1168,7 +1168,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
-		"title":"Stale tool response","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+		"title":"Stale tool response","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1307,7 +1307,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Summary retry","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Summary retry","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1407,7 +1407,7 @@ async fn empty_media_observation_consumes_a_step(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media observation retry", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media observation retry", "request":"Inspect", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1461,7 +1461,7 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Referenced correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Referenced correction","request":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1565,7 +1565,7 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Effect fence","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Effect fence","request":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1691,7 +1691,7 @@ async fn channel_messages_a_local_run_publishes_record_that_run(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Channel provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Channel provenance","request":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1731,10 +1731,10 @@ async fn a_message_key_replayed_for_another_run_is_rejected(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Replay provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Replay provenance","request":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (status, second) = common::post(&app, &token, "/api/conversations", json!({"title":"Other Run","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	let (status, second) = common::post(&app, &token, "/api/conversations", json!({"title":"Other Run","request":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{second}");
 	let mut runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
@@ -1783,7 +1783,7 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
-		"title":"Run message budget","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+		"title":"Run message budget","request":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1833,7 +1833,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
-		"title":"Private correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+		"title":"Private correction","request":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1892,7 +1892,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	for (index, terminal) in ["cancel", "failure_pending"].iter().enumerate() {
 		let (status, created) = common::post(&app, &token, "/api/conversations", json!({
-			"title":format!("Terminal {index}"),"goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+			"title":format!("Terminal {index}"),"request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 		})).await;
 		assert_eq!(status, 200, "{created}");
 		let run = f
@@ -1985,7 +1985,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
-		"title":"Expired lease", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+		"title":"Expired lease", "request":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);

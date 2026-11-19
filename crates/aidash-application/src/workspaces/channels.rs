@@ -11,13 +11,11 @@ use uuid::Uuid;
 
 pub struct MessageSubmission<'a> {
 	pub content: &'a str,
-	pub thread_id: Option<Uuid>,
 	pub idempotency_key: Uuid,
 	pub attachment_ids: &'a [Uuid],
 	pub citations: &'a [CitedFileVersion],
 }
 pub struct HistoryRequest {
-	pub thread_id: Option<Uuid>,
 	pub before: Option<Uuid>,
 	pub limit: u16,
 }
@@ -37,39 +35,6 @@ pub struct AttachmentUpload<'a> {
 	pub description: Option<&'a str>,
 }
 
-pub async fn thread(
-	scope: &mut dyn ChannelScope,
-	workspace: Uuid,
-	id: Uuid,
-) -> Result<ChannelThread> {
-	scope.thread_visible(id).await?;
-	let thread = scope
-		.thread(workspace, id)
-		.await?
-		.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
-	scope.message(workspace, thread.root_message_id).await?;
-	Ok(thread)
-}
-pub async fn create_thread(
-	scope: &mut dyn ChannelScope,
-	workspace: Uuid,
-	root: Uuid,
-) -> Result<ChannelThread> {
-	scope.message(workspace, root).await?;
-	if scope.reply_thread(root).await?.is_some() {
-		return Err(Error::Conflict(
-			"a reply already belongs to a thread".into(),
-		));
-	}
-	let sender = scope.sender();
-	if let Some(thread) = scope.insert_thread(workspace, root, &sender).await? {
-		scope.thread_event(workspace, root, thread.id).await?;
-		return Ok(thread);
-	}
-	let existing = scope.existing_thread(workspace, root).await?;
-	scope.thread_visible(existing.id).await?;
-	Ok(existing)
-}
 pub async fn post(
 	scope: &mut dyn ChannelScope,
 	workspace: Uuid,
@@ -80,9 +45,6 @@ pub async fn post(
 		nonempty(input.content, "message")?;
 	}
 	let attachment_digest = digest_ids(input.attachment_ids)?;
-	if let Some(id) = input.thread_id {
-		thread(scope, workspace, id).await?;
-	}
 	let sender = scope.sender();
 	let key = format!(
 		"channel:{workspace}:{}:{}",
@@ -92,15 +54,10 @@ pub async fn post(
 	let message = scope
 		.append_message(workspace, &sender, input.content, &key)
 		.await?;
-	// Bind root submissions to the absence of a thread before any attachment write.
+	// Bind the attachment digest to the message before any attachment write.
 	let context = scope
-		.record_context(workspace, message.id, input.thread_id, &attachment_digest)
+		.record_context(workspace, message.id, &attachment_digest)
 		.await?;
-	if context.thread_id != input.thread_id {
-		return Err(Error::Conflict(
-			"message idempotency key reused for a different thread".into(),
-		));
-	}
 	if context.attachment_digest != attachment_digest {
 		let matches = if input.attachment_ids.len() < 2 {
 			false
@@ -137,11 +94,8 @@ pub async fn post(
 			.index_attachment_images(workspace, message.id, &attachments)
 			.await?;
 	}
-	let root_thread = scope.root_thread(message.id).await?;
 	Ok(ChannelMessage {
 		message,
-		thread_id: context.thread_id.or(root_thread),
-		is_thread_root: root_thread.is_some(),
 		attachments,
 		citations,
 	})
@@ -323,21 +277,9 @@ pub async fn history(
 			"history limit must be between 1 and 100".into(),
 		));
 	}
-	let thread = match input.thread_id {
-		Some(id) => Some(thread(scope, workspace, id).await?),
-		None => None,
-	};
 	let mut cursor: Option<(DateTime<Utc>, Uuid)> = match input.before {
 		Some(id) => {
 			let message = scope.message(workspace, id).await?;
-			let reply = scope.reply_thread(id).await?;
-			let valid = match &thread {
-				Some(thread) => id == thread.root_message_id || reply == Some(thread.id),
-				None => reply.is_none(),
-			};
-			if !valid {
-				return Err(Error::NotFound("message unavailable".into()));
-			}
 			Some((message.created_at, message.id))
 		}
 		None => None,
@@ -350,9 +292,7 @@ pub async fn history(
 	let mut at_cut = Tally::new();
 	let mut scanned = 0;
 	let more = loop {
-		let rows = scope
-			.history_rows(workspace, thread.as_ref(), cursor)
-			.await?;
+		let rows = scope.history_rows(workspace, cursor).await?;
 		let exhausted = rows.len() < 100;
 		for row in rows {
 			scanned += 1;
@@ -363,8 +303,6 @@ pub async fn history(
 			if unconfirmed.settle(silence, Kind::Message, workspace, visible) {
 				result.push(ChannelMessage {
 					message: row.message,
-					thread_id: row.reply_thread_id.or(row.root_thread_id),
-					is_thread_root: row.root_thread_id.is_some(),
 					attachments: Vec::new(),
 					citations: Vec::new(),
 				});
@@ -386,7 +324,7 @@ pub async fn history(
 		// rather than claim completeness after a bounded authorization scan.
 		if scanned >= 5000 {
 			return Err(Error::Invalid(
-				"history scan limit reached; select a narrower thread".into(),
+				"history scan limit reached; page with an older cursor".into(),
 			));
 		}
 	};

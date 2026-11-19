@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn conversation() -> Value {
-	json!({"title":"Scoped conversation","goal":"Complete approved work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})
+	json!({"title":"Scoped conversation","request":"Complete approved work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})
 }
 
 #[rstest::rstest]

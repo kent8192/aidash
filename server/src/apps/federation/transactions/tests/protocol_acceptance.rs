@@ -168,17 +168,17 @@ fn pair(
 		let wa = a
 			.f
 			.store
-			.create_workspace(&scope, "alice", "A", "Atomic state")
+			.create_workspace(&scope, "alice", "A")
 			.await
 			.unwrap();
 		let scope = common::tenant_scope(&b.f.store, "acme").await;
 		let wb = b
 			.f
 			.store
-			.create_workspace(&scope, "alice", "B", "Atomic state")
+			.create_workspace(&scope, "alice", "B")
 			.await
 			.unwrap();
-		let manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.address,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.address,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.address,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
+		let manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.address,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.address,"mutations":[{"kind":"workspace_title","workspace_id":wa.id,"expected_revision":0,"title":"new-a"}]},{"node_id":b.address,"mutations":[{"kind":"workspace_title","workspace_id":wb.id,"expected_revision":0,"title":"new-b"}]}]})).unwrap();
 		(a, b, manifest, wa.id, wb.id)
 	}
 	.boxed()
@@ -602,7 +602,7 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	assert!(
 		node.f
 			.store
-			.update_state(&TEST_FIXTURE, workspace, 0, json!({"bypass":true}))
+			.update_title(&TEST_FIXTURE, workspace, 0, "bypass")
 			.await
 			.is_err(),
 		"statement trigger must reject a direct write"
@@ -655,12 +655,20 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	let final_state = complete(&a, manifest.id).await;
 	assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
 	assert_eq!(
-		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().state,
-		json!({})
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		0
 	);
 	assert_eq!(
-		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state,
-		json!({})
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		0
 	);
 	let decisions: i64 = { let query_bind_1 = manifest.id; sqlx::query_scalar(&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
@@ -698,12 +706,20 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	));
 	steps(&a, manifest.id, 2).await; // Both prepared; speculative writes rolled back.
 	assert_eq!(
-		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().state,
-		json!({})
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		0
 	);
 	assert_eq!(
-		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state,
-		json!({})
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		0
 	);
 	steps(&a, manifest.id, 1).await; // Durable commit precedes any application.
 	assert_eq!(
@@ -735,18 +751,22 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	);
 	steps(&a, manifest.id, 1).await;
 	assert_eq!(
-		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().state["value"],
+		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().title,
 		"new-a"
 	);
 	assert_eq!(
-		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state,
-		json!({})
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		0
 	);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	steps(&a, manifest.id, 1).await;
 	assert_eq!(
-		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state["value"],
+		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().title,
 		"new-b"
 	);
 	assert!(
@@ -807,7 +827,7 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	#[future(awt)] pair: Pair,
 ) {
 	let (a, b, mut manifest, wa, wb) = pair;
-	if let aidash_server::transactions::Mutation::WorkspaceState {
+	if let aidash_server::transactions::Mutation::WorkspaceTitle {
 		expected_revision, ..
 	} = &mut manifest.participants[1].mutations[0]
 	{
@@ -824,8 +844,8 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 				.workspace(&TEST_FIXTURE, workspace)
 				.await
 				.unwrap()
-				.state,
-			json!({})
+				.revision,
+			0
 		);
 		assert_eq!(
 			node.get(&format!("/api/workspaces/{workspace}")).await.0,
@@ -1746,10 +1766,10 @@ async fn mapped_transaction_admission_and_revocation(
 		.unwrap();
 	for (index, workspace) in [wa, wb].into_iter().enumerate() {
 		manifest.participants[index].mutations =
-			vec![aidash_server::transactions::Mutation::WorkspaceState {
+			vec![aidash_server::transactions::Mutation::WorkspaceTitle {
 				workspace_id: workspace,
 				expected_revision: 0,
-				state: json!({"accepted":true}),
+				title: "Title".into(),
 			}];
 	}
 	let mut third = None;
@@ -1800,10 +1820,10 @@ async fn mapped_transaction_admission_and_revocation(
 			.participants
 			.push(aidash_server::transactions::Participant {
 				node_id: c.address.clone(),
-				mutations: vec![aidash_server::transactions::Mutation::WorkspaceState {
+				mutations: vec![aidash_server::transactions::Mutation::WorkspaceTitle {
 					workspace_id: workspace,
 					expected_revision: 0,
-					state: json!({"accepted":true}),
+					title: "Title".into(),
 				}],
 			});
 		third = Some((c, workspace));

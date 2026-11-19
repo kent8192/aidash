@@ -39,7 +39,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace = f
 		.store
-		.create_workspace(&acme, "alice", "Upgrade", "Replace an Agent version")
+		.create_workspace(&acme, "alice", "Upgrade")
 		.await
 		.unwrap();
 	let tenant = acme.tenant_name().unwrap();
@@ -331,7 +331,7 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace =
 		w.f.store
-			.create_workspace(&acme, "alice", "Another", "Start under a restriction")
+			.create_workspace(&acme, "alice", "Another")
 			.await
 			.unwrap();
 	let task =
@@ -684,7 +684,7 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 		&app,
 		&token,
 		"/api/workspaces",
-		json!({"node":second.node,"title":"Second Node","goal":"Run elsewhere"}),
+		json!({"node":second.node,"title":"Second Node","request":"Run elsewhere"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");

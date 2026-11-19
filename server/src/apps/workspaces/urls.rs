@@ -80,10 +80,6 @@ pub fn url_patterns() -> UnifiedRouter {
 					.with_visibility()
 					.stops_work(),
 			)
-			.endpoint(management::conversation_create)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(channels::channel_thread_create)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_message_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_message_history)

@@ -4,7 +4,7 @@ use reinhardt::query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query};
 
 pub(super) fn manifest(node: &str, workspace: Uuid) -> Value {
 	json!({"id":Uuid::new_v4(),"coordinator":node,"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
-		"participants":[{"node_id":node,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{}}]}]})
+		"participants":[{"node_id":node,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]})
 }
 
 #[rstest::rstest]
@@ -403,7 +403,7 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 #[rstest::rstest]
-#[case::workspace("workspace_state")]
+#[case::workspace("workspace_title")]
 #[case::task("complete_task")]
 #[case::run("finish_run")]
 #[tokio::test]
@@ -441,8 +441,8 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 		.await;
 	assert_eq!(status, 201, "{sibling}");
 	let mutation = match kind {
-		"workspace_state" => {
-			json!({"kind":kind,"workspace_id":workspace,"expected_revision":0,"state":{"intrusion":true}})
+		"workspace_title" => {
+			json!({"kind":kind,"workspace_id":workspace,"expected_revision":0,"title":"Intrusion"})
 		}
 		"complete_task" => {
 			json!({"kind":kind,"task_id":task_id,"expected_revision":1,"artifact":{"kind":"text","name":"Answer","content":"Must not write"}})

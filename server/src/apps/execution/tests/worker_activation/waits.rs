@@ -22,7 +22,7 @@ async fn waiting(f: &Federation, run: Uuid) {
 	let start = Instant::now();
 	loop {
 		let current = f.store.run(&TEST_FIXTURE, run).await.unwrap();
-		if matches!(current.state, aidash_server::domain::RunState::Waiting(ref w) if matches!(w.as_ref(), aidash_server::domain::WaitingState::Workspace { .. }))
+		if matches!(current.state, aidash_server::domain::RunState::Waiting(ref w) if matches!(w.as_ref(), aidash_server::domain::WaitingState::TaskWait { .. }))
 		{
 			return;
 		}

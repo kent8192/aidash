@@ -29,7 +29,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 		.post(
 			"/api/workspaces",
 			&json!({
-				"title":"Native startup", "goal":"Exercise the real management binary"
+				"title":"Native startup", "request":"Exercise the real management binary"
 			}),
 			"json",
 		)
@@ -152,7 +152,7 @@ async fn manage_runworker_recovers_durable_work_and_exposes_only_probes(
 		aidash_domain::nodes::NodeAddress::derived("aidash://manage-fixture", "manage").to_string();
 	let manifest = json!({"id":id,"coordinator":node,"isolation":"serializable",
 		"deadline":Utc::now()-Duration::seconds(1),"participants":[{"node_id":node,
-		"mutations":[{"kind":"workspace_state","workspace_id":Uuid::new_v4(),"expected_revision":0,"state":{}}]}]});
+		"mutations":[{"kind":"workspace_title","workspace_id":Uuid::new_v4(),"expected_revision":0,"title":"Committed"}]}]});
 	let typed: aidash_server::transactions::Manifest =
 		serde_json::from_value(manifest.clone()).unwrap();
 	let transaction = AtomicCoordinator::build()

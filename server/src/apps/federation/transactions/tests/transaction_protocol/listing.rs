@@ -44,10 +44,10 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 	.enumerate()
 	{
 		manifest.participants[index].mutations =
-			vec![aidash_server::transactions::Mutation::WorkspaceState {
+			vec![aidash_server::transactions::Mutation::WorkspaceTitle {
 				workspace_id: workspace,
 				expected_revision: 0,
-				state: json!({}),
+				title: "Title".into(),
 			}];
 	}
 	let mut expected = Vec::new();

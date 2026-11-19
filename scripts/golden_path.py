@@ -953,7 +953,7 @@ def main():
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
-            created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
+            created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "request": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
         workspace = created["workspace"]["id"]
         # Reaching Actix takes the coordinator's delegation and the Axum
         # researcher's whole Run first, each step authorized for a Tenant
@@ -1019,7 +1019,7 @@ def main():
                 entity("tool", tool_id, tool_descriptor(node, tool_config)),
                 entity("agent", agent_id, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Verify the registered plugin, then return its result.", "schema_version": 1, "bindings": [tool_binding(node, tool_id)], "remove_default": [], "max_steps": 32}),
             ])
-            plugin_conversation = api_request(base, "/api/conversations", {"title": agent_id, "goal": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"}, token=tokens[base])
+            plugin_conversation = api_request(base, "/api/conversations", {"title": agent_id, "request": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"}, token=tokens[base])
             plugin_workspace = plugin_conversation["workspace"]["id"]
             result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}", token=tokens[base])["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"

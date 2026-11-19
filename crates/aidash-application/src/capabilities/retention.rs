@@ -29,7 +29,7 @@ async fn authorize(scope: &mut dyn RetentionScope, area: &Area) -> Result<()> {
 	let resource = scope.resource(
 		"working_area",
 		area.id,
-		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
+		json!({"owner":area.owner,"agent_id":area.agent_id,"workspace_id":area.workspace_id}),
 	);
 	scope.require(&workspace, "workspace.read").await?;
 	scope

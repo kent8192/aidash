@@ -38,7 +38,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace = f
 		.store
-		.create_workspace(&acme, "alice", "Run Control", "Stop a Run")
+		.create_workspace(&acme, "alice", "Run Control")
 		.await
 		.unwrap();
 	let task = f
@@ -592,7 +592,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace = f
 		.store
-		.create_workspace(&acme, "alice", "Package indexes", "Run an older Agent")
+		.create_workspace(&acme, "alice", "Package indexes")
 		.await
 		.unwrap();
 	let task = f

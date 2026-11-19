@@ -31,7 +31,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let scope = endpoint_fixtures::tenant_scope(&f.store, "acme").await;
 	let workspace: Workspace = f
 		.store
-		.create_workspace(&scope, "alice", "Airline", "航空会社の新規事業計画")
+		.create_workspace(&scope, "alice", "Airline")
 		.await
 		.unwrap();
 	let task: Task = f
@@ -353,7 +353,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	);
 	let other = f
 		.store
-		.create_workspace(&scope, "alice", "Private", "Another workspace")
+		.create_workspace(&scope, "alice", "Private")
 		.await
 		.unwrap();
 	assert!(

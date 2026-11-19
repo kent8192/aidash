@@ -1387,7 +1387,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 				.node(aidash_domain::nodes::NodeName::derived("peer"))
 				.to_string();
 			let mut participants = vec![
-				json!({"node_id":local,"mutations":[{"kind":"workspace_state","workspace_id":work[0],"expected_revision":0,"state":{}}]}),
+				json!({"node_id":local,"mutations":[{"kind":"workspace_title","workspace_id":work[0],"expected_revision":0,"title":"Committed"}]}),
 				json!({"node_id":remote,"mutations":[]}),
 			];
 			participants.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));

@@ -382,10 +382,10 @@ fn preflight_discloses_only_identifiers_but_digests_the_full_manifest(input: Pre
 		participants: vec![Participant {
 			node_id: input.coordinator.clone(),
 			mutations: vec![
-				Mutation::WorkspaceState {
+				Mutation::WorkspaceTitle {
 					workspace_id: Uuid::from_u128(3),
 					expected_revision: 8,
-					state: json!({"private":"content"}),
+					title: "Title".into(),
 				},
 				Mutation::FinishRun {
 					run_id: Uuid::from_u128(1),
@@ -417,18 +417,18 @@ fn source_manifest(input: &Preflight) -> Manifest {
 		participants: vec![
 			Participant {
 				node_id: input.coordinator.clone(),
-				mutations: vec![Mutation::WorkspaceState {
+				mutations: vec![Mutation::WorkspaceTitle {
 					workspace_id: Uuid::from_u128(3),
 					expected_revision: 0,
-					state: json!({}),
+					title: "Title".into(),
 				}],
 			},
 			Participant {
 				node_id: "aidash://peer/airy-hawk-2lu4as22".into(),
-				mutations: vec![Mutation::WorkspaceState {
+				mutations: vec![Mutation::WorkspaceTitle {
 					workspace_id: Uuid::from_u128(7),
 					expected_revision: 0,
-					state: json!({"private":"source"}),
+					title: "Title".into(),
 				}],
 			},
 		],

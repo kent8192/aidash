@@ -11,15 +11,6 @@ use crate::{
 use aidash_application::capabilities::sessions as application;
 use serde_json::Value;
 use uuid::Uuid;
-pub(crate) async fn bind_task(access: &mut Access, task: Uuid, thread: Uuid) -> Result<()> {
-	application::bind_task(
-		&mut crate::bootstrap::session_scope(None, access),
-		task,
-		thread,
-	)
-	.await
-	.map_err(Into::into)
-}
 pub(crate) async fn load(access: &mut Access, id: Uuid) -> Result<Area> {
 	application::load(&mut crate::bootstrap::session_scope(None, access), id)
 		.await

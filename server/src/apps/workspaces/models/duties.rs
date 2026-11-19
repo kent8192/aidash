@@ -12,8 +12,12 @@ pub struct DutyRecord {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
+	/// The Duty's own Workspace (#1008, ADR 0140).
 	#[field]
 	pub workspace_id: Uuid,
+	/// The Workspace it was registered from; None before #1008.
+	#[field(null = true)]
+	pub origin_workspace_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
 	#[field(field_type = "text")]
 	pub requester: String,
@@ -34,9 +38,6 @@ pub struct DutyRecord {
 	/// The time trigger; None for a Duty that wakes only otherwise.
 	#[field(null = true)]
 	pub trigger: Option<Json<Value>>,
-	/// The Duty's own Thread, once its first Task opened it.
-	#[field(null = true)]
-	pub thread_id: Option<Uuid>,
 	#[field(field_type = "text", null = true)]
 	pub approval_mode: Option<String>,
 	#[field]
@@ -104,8 +105,6 @@ pub struct DutyTickRecord {
 	pub reason: Option<String>,
 	#[field(null = true)]
 	pub task_id: Option<Uuid>,
-	#[field(null = true)]
-	pub thread_id: Option<Uuid>,
 	/// The person who clicked "Run now"; None for a scheduled tick.
 	#[field(field_type = "text", null = true)]
 	pub started_by: Option<String>,

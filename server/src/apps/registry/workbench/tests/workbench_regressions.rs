@@ -1025,7 +1025,6 @@ async fn trust_run_backlog(
 				&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 				"alice",
 				"Visible history",
-				"Fixture",
 			)
 			.await
 			.unwrap();
@@ -1035,7 +1034,6 @@ async fn trust_run_backlog(
 				&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 				"alice",
 				"Hidden history",
-				"Fixture",
 			)
 			.await
 			.unwrap();

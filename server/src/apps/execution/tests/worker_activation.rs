@@ -301,7 +301,7 @@ async fn separate_process_notifications_and_negative_control(
 				.clone()
 				.post(format!("{}/api/workspaces", f.config.endpoint))
 				.bearer_auth(&token)
-				.json(&json!({"title":"Activation sample","goal":"Complete"}))
+				.json(&json!({"title":"Activation sample","request":"Complete"}))
 				.send()
 				.await
 				.unwrap()
@@ -483,7 +483,7 @@ async fn fresh_task(f: &Federation, token: &str) -> Uuid {
 		f,
 		token,
 		"/api/workspaces",
-		json!({"title":"Isolated activation","goal":"Complete"}),
+		json!({"title":"Isolated activation","request":"Complete"}),
 	)
 	.await;
 	let task = post_json(

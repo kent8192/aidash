@@ -178,9 +178,8 @@ pub struct Workspace {
 	/// The Node of its Tenant that the Workspace, its Tasks and its Runs belong to.
 	pub node: crate::nodes::NodeName,
 	pub title: String,
-	pub goal: String,
-
-	pub state: Value,
+	/// The person (or the Duty's requester) who opened it.
+	pub created_by: String,
 	pub revision: i64,
 	pub created_at: DateTime<Utc>,
 }

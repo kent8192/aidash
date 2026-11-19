@@ -232,7 +232,6 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"tree",
-			"goal",
 		)
 		.await
 		.unwrap();
@@ -762,7 +761,6 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"other",
-			"goal",
 		)
 		.await
 		.unwrap();
@@ -790,7 +788,7 @@ async fn subject_conversation_returns_the_committed_task_revision(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, response) = common::post(&app, &token, "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status, response) = common::post(&app, &token, "/api/conversations", json!({"title":"Conversation","request":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{response}");
 	let task = f
 		.store

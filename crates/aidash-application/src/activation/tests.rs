@@ -111,7 +111,7 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 	let mut row = raw(now);
 	row.metadata.phase = RunPhase::Waiting;
 	row.pending = aidash_domain::run_state::encode(
-		&RunState::Waiting(Box::new(WaitingState::Workspace {
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
 			wake_at: now + chrono::Duration::minutes(5),
 			cursor: 4,
 			resume: aidash_domain::ResumeState::ToolCall(Box::default()),
@@ -145,7 +145,7 @@ async fn a_workspace_wait_on_a_remote_home_is_polled_without_waiting_for_the_cei
 	row.metadata.phase = RunPhase::Waiting;
 	row.metadata.home_node = "aidash://other/brave-otter-k3m9q2xa".into();
 	row.pending = aidash_domain::run_state::encode(
-		&RunState::Waiting(Box::new(WaitingState::Workspace {
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
 			wake_at: now + chrono::Duration::hours(1),
 			cursor: 0,
 			resume: aidash_domain::ResumeState::Thinking(Default::default()),

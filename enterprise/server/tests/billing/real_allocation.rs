@@ -899,7 +899,7 @@ impl Dispatch {
 			&token,
 			"POST",
 			"/api/workspaces",
-			json!({"title":"Allocation","goal":"Exercise real runtime","node":node.node}),
+			json!({"title":"Allocation","request":"Exercise real runtime","node":node.node}),
 		)
 		.await;
 		assert_eq!(status, 200);

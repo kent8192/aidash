@@ -1774,7 +1774,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 				"POST",
 				"/api/workspaces",
 				Some(context),
-				json!({"title":"Retained usage", "goal":"Node purge composition", "node":node}),
+				json!({"title":"Retained usage", "request":"Node purge composition", "node":node}),
 			)
 			.await;
 		assert_eq!(status, 200, "{workspace}");

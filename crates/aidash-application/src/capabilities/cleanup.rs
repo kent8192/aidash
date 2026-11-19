@@ -56,7 +56,7 @@ pub async fn load(scope: &mut dyn CleanupScope, id: Uuid, action: &str) -> Resul
 			&scope.resource(
 				"working_area",
 				id,
-				json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
+				json!({"owner":area.owner,"agent_id":area.agent_id,"workspace_id":area.workspace_id}),
 			),
 			action,
 		)
@@ -86,7 +86,6 @@ pub async fn inventory(
 			cleanup_operation_id,
 			area_id: area.id,
 			workspace_id: area.workspace_id,
-			thread_id: area.thread_id,
 			agent_id: area.agent_id,
 			owner: area.owner,
 			state: area.state,
@@ -306,17 +305,10 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 	scope
 		.sources(area.workspace_id, &record.data["constraints"])
 		.await?;
-	scope.visible_thread(input.thread_id).await?;
-	if input.thread_id != area.thread_id {
-		let root: Option<Uuid> = scope.thread_root(&area, input.thread_id).await?;
-		scope
-			.message(
-				area.workspace_id,
-				root.ok_or_else(|| Error::NotFound("restoration thread unavailable".into()))?,
-			)
-			.await?;
-	}
-	let occupied: Option<Uuid> = scope.occupied(&area, input.thread_id).await?;
+	// An Area is restored into its own Workspace, which must still be there
+	// and hold no other active Area of the same Agent and owner.
+	scope.visible_thread(area.workspace_id).await?;
+	let occupied: Option<Uuid> = scope.occupied(&area).await?;
 	if occupied.is_some() {
 		return Err(Error::Conflict("RESTORATION_THREAD_OCCUPIED".into()));
 	}
@@ -351,7 +343,6 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 	area.constraints = record.data["constraints"].clone();
 	area.generation += 1;
 	area.epoch += 1;
-	area.thread_id = input.thread_id;
 	area.state = "active".into();
 	scope.publish(&mut area).await?;
 	scope.persist(&area, true).await?;

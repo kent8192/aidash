@@ -37,10 +37,10 @@ fn manifest() -> Manifest {
 		.into_iter()
 		.map(|node| Participant {
 			node_id: node.into(),
-			mutations: vec![Mutation::WorkspaceState {
+			mutations: vec![Mutation::WorkspaceTitle {
 				workspace_id: Uuid::from_u128(3),
 				expected_revision: 0,
-				state: json!({"ready":true}),
+				title: "Title".into(),
 			}],
 		})
 		.collect(),
@@ -1176,10 +1176,10 @@ async fn a_participant_admits_only_the_binding_made_for_its_own_targets(
 ) {
 	// The participants mutate different Workspaces, so a binding for the
 	// coordinator's targets is not the participant's.
-	manifest.participants[1].mutations = vec![Mutation::WorkspaceState {
+	manifest.participants[1].mutations = vec![Mutation::WorkspaceTitle {
 		workspace_id: Uuid::from_u128(5),
 		expected_revision: 0,
-		state: json!({"ready":true}),
+		title: "Title".into(),
 	}];
 	let mut repository = Repository::new(origin.clone());
 	repository.node = "aidash://peer/airy-hawk-2lu4as22".into();

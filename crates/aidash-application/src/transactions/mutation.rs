@@ -20,13 +20,13 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 	}
 	for mutation in &participant(manifest, node)?.mutations {
 		match mutation {
-			Mutation::WorkspaceState {
+			Mutation::WorkspaceTitle {
 				workspace_id,
 				expected_revision,
-				state,
+				title,
 			} => {
 				let workspace = scope
-					.replace_workspace(*workspace_id, *expected_revision, state.clone())
+					.replace_workspace(*workspace_id, *expected_revision, title.clone())
 					.await?;
 				scope
 					.append_event(Some(*workspace_id), "workspace.updated", json!(workspace))

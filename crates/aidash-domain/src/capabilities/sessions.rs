@@ -8,7 +8,6 @@ pub struct Area {
 	pub tenant: String,
 	pub home_node: String,
 	pub workspace_id: Uuid,
-	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub owner: String,
 	pub generation: i64,

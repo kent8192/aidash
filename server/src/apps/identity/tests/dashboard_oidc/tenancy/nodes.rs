@@ -296,7 +296,7 @@ impl Deployment {
 		context: &str,
 		node: Option<&str>,
 	) -> (u16, Value) {
-		let mut body = json!({"title":"Work","goal":"Use a Node"});
+		let mut body = json!({"title":"Work","request":"Use a Node"});
 		if let Some(node) = node {
 			body["node"] = json!(node);
 		}

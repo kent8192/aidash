@@ -138,17 +138,15 @@ pub(crate) async fn source_viewer(
 		.map(|_| ())
 }
 
-/// Gather routing before thread deletion hides its Runs from normal reads.
+/// Gather routing before Workspace deletion hides its Runs from normal reads.
 pub(crate) async fn releases_for_thread(
 	f: &Federation,
 	access: &mut crate::authorization::access::Access,
 	workspace: uuid::Uuid,
-	thread: uuid::Uuid,
 ) -> Result<Vec<ReleaseDelivery>> {
-	let refs = crate::apps::workspaces::repositories::citations::remote_for_thread(
-		access, workspace, thread,
-	)
-	.await?;
+	let refs =
+		crate::apps::workspaces::repositories::citations::remote_for_thread(access, workspace)
+			.await?;
 	let mut deliveries = Vec::new();
 	for (message_id, run_id, file_id) in refs {
 		let Ok((sender, node)) =

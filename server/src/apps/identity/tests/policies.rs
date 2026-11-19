@@ -161,7 +161,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	}
 	let token = tokens[0]["token"].as_str().unwrap();
 	let other = tokens[1]["token"].as_str().unwrap();
-	let workspace_body = json!({"title":"private","goal":"tenant secret"});
+	let workspace_body = json!({"title":"private","request":"tenant secret"});
 	let (status, workspace) = scoped_request(
 		&app,
 		token,
@@ -203,7 +203,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			other,
 			"PATCH",
 			&path,
-			json!({"revision":0,"state":{"stolen":true}})
+			json!({"revision":0,"title":"Stolen"})
 		)
 		.await
 		.0,
@@ -215,7 +215,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			token,
 			"PATCH",
 			&path,
-			json!({"revision":0,"state":{"tenant":"other","owner":"bob"}})
+			json!({"revision":0,"title":"Tenant"})
 		)
 		.await
 		.0,
@@ -234,7 +234,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			token,
 			"POST",
 			"/api/workspaces",
-			json!({"title":"forged","goal":"x","tenant":"other","owner":"alice"})
+			json!({"title":"forged","request":"x","tenant":"other","owner":"alice"})
 		)
 		.await
 		.0,
@@ -441,7 +441,7 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 		credential["token"].as_str().unwrap(),
 		"POST",
 		"/api/workspaces",
-		json!({"title":"stream","goal":"private"}),
+		json!({"title":"stream","request":"private"}),
 	)
 	.await;
 	assert_eq!(status, 200);
@@ -459,12 +459,7 @@ async fn a_large_scoped_response_retains_every_authorization_decision(
 	let mut ids = vec![workspace["id"].as_str().unwrap().to_owned()];
 	for index in 1..55 {
 		let workspace = store
-			.create_workspace(
-				&scope,
-				"alice",
-				&format!("Audit {index}"),
-				"Audit visibility",
-			)
+			.create_workspace(&scope, "alice", &format!("Audit {index}"))
 			.await
 			.unwrap();
 		ids.push(workspace.id.to_string());
@@ -706,7 +701,7 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 				&token,
 				"PATCH",
 				&path,
-				json!({"revision":0,"state":{"committed":true}}),
+				json!({"revision":0,"title":"Committed"}),
 			)
 			.await
 		}
@@ -770,7 +765,7 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 			&token,
 			"PATCH",
 			&path,
-			json!({"revision":1,"state":{}})
+			json!({"revision":1,"title":"Renamed"})
 		)
 		.await
 		.0,
@@ -778,8 +773,8 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 	);
 	let id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
 	assert_eq!(
-		store.workspace(&TEST_FIXTURE, id).await.unwrap().state,
-		json!({"committed":true})
+		store.workspace(&TEST_FIXTURE, id).await.unwrap().title,
+		"Committed"
 	);
 }
 
@@ -950,7 +945,7 @@ async fn denied_workspace_permissions_prevent_updates_and_preserve_audit(
 			token,
 			"PATCH",
 			&format!("/api/workspaces/{id}"),
-			json!({"revision":0,"state":{"probe":true}})
+			json!({"revision":0,"title":"Probe"})
 		)
 		.await
 		.0,
@@ -958,7 +953,7 @@ async fn denied_workspace_permissions_prevent_updates_and_preserve_audit(
 	);
 	let unchanged = store.workspace(&TEST_FIXTURE, id).await.unwrap();
 	assert_eq!(unchanged.revision, 0);
-	assert_eq!(unchanged.state, json!({}));
+	assert_ne!(unchanged.title, "Probe");
 	let decisions = app
 		.database
 		.fixture(async |tx| {

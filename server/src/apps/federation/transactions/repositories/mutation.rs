@@ -32,11 +32,11 @@ impl MutationScope for Scope<'_> {
 		&mut self,
 		id: Uuid,
 		revision: i64,
-		state: Value,
+		title: String,
 	) -> Result<WorkspaceContract> {
 		require_subnode_writable(self.0, "workspace", id).await?;
 		require_target_node(self.0, &self.2, "workspace", id).await?;
-		Workspace::replace_state(self.0, id, revision, state)
+		Workspace::replace_title(self.0, id, revision, title)
 			.await
 			.map_err(Into::into)
 	}

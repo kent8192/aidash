@@ -382,7 +382,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	let response = client
 		.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
 		.bearer_auth(&fixture.token)
-		.json(&json!({"revision":0,"state":{"number":2}}))
+		.json(&json!({"revision":0,"title":"Number"}))
 		.send()
 		.await
 		.unwrap();
@@ -604,7 +604,7 @@ async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
 		.clone()
 		.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
 		.bearer_auth(&fixture.token)
-		.json(&json!({"revision":0,"state":{"boundary":"A-to-B-to-C"}}))
+		.json(&json!({"revision":0,"title":"Boundary"}))
 		.send()
 		.await
 		.unwrap();

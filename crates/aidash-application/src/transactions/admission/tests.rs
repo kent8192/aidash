@@ -21,10 +21,10 @@ fn manifest() -> Manifest {
 		.into_iter()
 		.map(|node| Participant {
 			node_id: node.into(),
-			mutations: vec![Mutation::WorkspaceState {
+			mutations: vec![Mutation::WorkspaceTitle {
 				workspace_id: Uuid::from_u128(2),
 				expected_revision: 0,
-				state: json!({}),
+				title: "Title".into(),
 			}],
 		})
 		.collect(),

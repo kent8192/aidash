@@ -20,7 +20,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 	let workspace = app
 		.runtime
 		.store
-		.create_workspace(&scope, "alice", "Journal", "Bounded observation")
+		.create_workspace(&scope, "alice", "Journal")
 		.await
 		.unwrap();
 	crate::endpoint::register_fixture_agent(&app, "agent").await;

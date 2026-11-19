@@ -5150,7 +5150,7 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 		&token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Sibling", "goal":"Independent", "node":sibling}),
+		json!({"title":"Sibling", "request":"Independent", "node":sibling}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
@@ -5555,7 +5555,7 @@ async fn an_agent_version_restriction_admits_only_the_named_run_starter(
 		bob,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Bob","goal":"Denied"}),
+		json!({"title":"Bob","request":"Denied"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
@@ -5613,7 +5613,7 @@ async fn a_dependency_restriction_follows_the_using_agent_not_the_person(
 			&alice,
 			"POST",
 			"/api/workspaces",
-			json!({"title":title,"goal":"Dependency restriction"}),
+			json!({"title":title,"request":"Dependency restriction"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");

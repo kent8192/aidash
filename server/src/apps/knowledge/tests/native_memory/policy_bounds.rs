@@ -979,7 +979,6 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"deployment_administrator",
 			"Late index",
-			"Deletion must remain usable",
 		)
 		.await
 		.unwrap()

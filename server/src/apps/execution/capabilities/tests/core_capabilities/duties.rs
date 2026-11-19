@@ -368,7 +368,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		&c.token,
 		"POST",
 		"/api/workspaces",
-		json!({"title": "Elsewhere", "goal": "Another Workspace"}),
+		json!({"title": "Elsewhere", "request": "Another Workspace"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{other}");

@@ -160,7 +160,7 @@ impl RunState {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
-				| WaitingState::Workspace {
+				| WaitingState::TaskWait {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
@@ -189,7 +189,7 @@ impl StateRequirements {
 			.flat_map(ToolCallState::required_capabilities)
 			.chain(recovery.required_capabilities())
 			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { .. })).then_some(PersistedCapability::OutageWait))
-			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { .. } | WaitingState::Workspace { .. })).then_some(PersistedCapability::EventWait))
+			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { .. } | WaitingState::TaskWait { .. })).then_some(PersistedCapability::EventWait))
 			.collect();
 		Self(needed.into_iter().map(|c| c.name().to_owned()).collect())
 	}

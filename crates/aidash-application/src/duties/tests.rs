@@ -112,6 +112,14 @@ impl DutyScope for Fake {
 	async fn count(&mut self) -> Result<i64> {
 		Ok(self.duties.len() as i64)
 	}
+	async fn open_workspace(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid> {
+		assert!(self.workspaces.contains(&from));
+		assert!(!definition.title.is_empty());
+		// The Requester opens it, so they hold everything in it.
+		let own = Uuid::new_v4();
+		self.workspaces.insert(own);
+		Ok(own)
+	}
 	async fn insert(&mut self, duty: &Duty) -> Result<()> {
 		self.duties.insert(duty.id, duty.clone());
 		Ok(())
@@ -140,7 +148,9 @@ impl DutyScope for Fake {
 			.duties
 			.values()
 			.filter(|duty| match listing {
-				Listing::Workspace(workspace) => duty.workspace_id == workspace,
+				Listing::Workspace(workspace) => {
+					duty.workspace_id == workspace || duty.origin_workspace_id == Some(workspace)
+				}
 				Listing::Mine => duty.requester == self.subject,
 				Listing::Tenant => true,
 			})
@@ -203,6 +213,25 @@ async fn a_registered_duty_acts_as_its_requester_and_knows_its_next_time() {
 	);
 	assert_eq!(duty.halt, None);
 	assert!(scope.duties.contains_key(&duty.id));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_duty_opens_its_own_workspace_beside_the_one_it_was_registered_from() {
+	// Arrange
+	let workspace = Uuid::new_v4();
+	let mut scope = alice_in(workspace);
+	// Act
+	let duty = register(&mut scope, workspace, definition(), Origin::Person)
+		.await
+		.unwrap();
+	let again = register(&mut scope, workspace, definition(), Origin::Person)
+		.await
+		.unwrap();
+	// Assert: each Duty owns a Workspace of its own (#1008, ADR 0140).
+	assert_ne!(duty.workspace_id, workspace);
+	assert_ne!(duty.workspace_id, again.workspace_id);
+	assert!(scope.workspaces.contains(&duty.workspace_id));
 }
 
 #[rstest]

@@ -5,19 +5,6 @@ use reinhardt::{get, post, put};
 use uuid::Uuid;
 
 #[post(
-	"/api/workspaces/{id}/threads",
-	name = "channel-thread-create",
-	auth = "protected"
-)]
-pub async fn channel_thread_create(
-	#[inject] channels: Depends<Channels>,
-	Path(id): Path<Uuid>,
-	Json(input): Json<ChannelThreadInput>,
-) -> ViewResult<Response> {
-	crate::http::json(channels.create_thread(id, input).await)
-}
-
-#[post(
 	"/api/workspaces/{id}/thread-messages",
 	name = "channel-message-create",
 	auth = "protected"

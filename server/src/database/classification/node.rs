@@ -20,7 +20,6 @@ pub enum Root {
 	MemoryOperation,
 	SemanticOperation,
 	RemoteUsage,
-	Thread,
 	Observation,
 	Message,
 	RetentionHold,
@@ -101,7 +100,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"subnode_members" => Link("subnode_id", Subnode),
 		"scratch_space_settings" | "scratch_space_members" => Link("space_id", ScratchSpace),
 		"agent_plugin_data" => Link("scratch_space_id", ScratchSpace),
-		"identity_thread_approval_modes" => Link("thread_id", Thread),
+		"identity_thread_approval_modes" => Link("thread_id", Workspace),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
 		"tasks"
@@ -113,7 +112,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "artifacts"
 		| "messages"
 		| "conversations"
-		| "channel_threads"
 		| "channel_attachments"
 		| "channel_message_context"
 		| "authorization_workspaces"
@@ -131,8 +129,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"duty_script_versions" | "duty_script_runs" => Link("duty_id", Duty),
 		"core_operations" => Link("area_id", Area),
 		"core_runs" | "egress_run_revocations" | "stints" => Link("run_id", Run),
-		"core_task_sessions"
-		| "delegations"
+		"delegations"
 		| "memory_task_participants"
 		| "generation_remote_intents" => Link("task_id", Task),
 		"authorization_task_origins" => Link("task_id", Task),

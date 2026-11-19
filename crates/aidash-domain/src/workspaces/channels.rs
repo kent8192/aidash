@@ -1,6 +1,5 @@
 //! Durable channel contracts, attachment identities, and replay invariants.
 use crate::{Error, Message, Result};
-use chrono::{DateTime, Utc};
 use http::HeaderValue;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,19 +8,8 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ChannelThread {
-	pub id: Uuid,
-	pub workspace_id: Uuid,
-	pub root_message_id: Uuid,
-	pub created_by: String,
-	pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChannelMessage {
 	pub message: Message,
-	pub thread_id: Option<Uuid>,
-	pub is_thread_root: bool,
 	pub attachments: Vec<ChannelAttachment>,
 	#[serde(default)]
 	pub citations: Vec<ChannelCitation>,

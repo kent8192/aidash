@@ -17,7 +17,6 @@ import {
   descriptionTooLong,
   mergeMessagePages,
 } from "./conversation-model";
-import { threadCopy } from "./thread-copy";
 import { workspaceCopy } from "./workspace-copy";
 
 function AttachmentPreview({
@@ -323,7 +322,7 @@ export function ChannelFiles({ workspace }: { workspace: string }) {
               disabled={query.isFetchingNextPage}
               onClick={() => void query.fetchNextPage()}
             >
-              {threadCopy[locale].older}
+              {collaborationCopy[locale].older}
             </Button>
           )}
         </>

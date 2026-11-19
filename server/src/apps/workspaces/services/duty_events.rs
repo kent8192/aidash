@@ -459,7 +459,7 @@ pub(crate) async fn deliver(
 				events::task_description(&duty.definition.mission, &trigger.kind, &event.payload);
 			let title = duty.definition.title.clone();
 			match start_with(f, &mut lease, &duty, (now, ""), (title, description)).await {
-				Ok((task, thread)) => {
+				Ok(task) => {
 					event.outcome = EventOutcome::Started;
 					event.task_id = Some(task);
 					duty_repository::insert_tick(
@@ -474,7 +474,6 @@ pub(crate) async fn deliver(
 							status: TickStatus::Started,
 							reason: Some(format!("event: {}", trigger.kind.as_str())),
 							task_id: Some(task),
-							thread_id: Some(thread),
 							started_by: None,
 						},
 					)

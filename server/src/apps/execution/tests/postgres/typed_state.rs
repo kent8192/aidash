@@ -80,7 +80,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.await
 		.unwrap();
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Isolation", "Healthy progress")
+		.create_workspace(&ACME, "alice", "Isolation")
 		.await
 		.unwrap();
 	let mut damaged = vec![];
@@ -155,7 +155,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.await
 		.unwrap();
 	let healthy_workspace = store
-		.create_workspace(&ACME, "alice", "Healthy", "Continue")
+		.create_workspace(&ACME, "alice", "Healthy")
 		.await
 		.unwrap();
 	let healthy = create(&f, &agent, healthy_workspace.id).await;
@@ -217,7 +217,7 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Controls", "Do not execute")
+		.create_workspace(&ACME, "alice", "Controls")
 		.await
 		.unwrap();
 	let paused = create(&f, &agent, workspace.id).await;
@@ -291,7 +291,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Paging", "Later work")
+		.create_workspace(&ACME, "alice", "Paging")
 		.await
 		.unwrap();
 	for _ in 0..129 {
@@ -334,7 +334,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace(&ACME, "alice", "Delivery", "Resume disposition only")
+		.create_workspace(&ACME, "alice", "Delivery")
 		.await
 		.unwrap();
 	let ordinary = create(&f, &agent, workspace.id).await;

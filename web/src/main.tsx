@@ -1385,7 +1385,6 @@ function Dashboard({
                     workspace={workspace}
                     data={data}
                     discovery={discovery.isError ? undefined : discovery.data}
-                    threadList={location.search.view === "threads"}
                     tools={(view) => {
                       void navigate({
                         to: "/$section",

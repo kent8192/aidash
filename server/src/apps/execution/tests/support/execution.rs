@@ -119,7 +119,7 @@ pub fn execution(
 			subject
 				.post(
 					"/api/workspaces",
-					&json!({"title":"Approved task","goal":"Use approved tools"}),
+					&json!({"title":"Approved task","request":"Use approved tools"}),
 					"json",
 				)
 				.await

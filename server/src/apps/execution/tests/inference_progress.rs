@@ -63,7 +63,7 @@ async fn conversation(
 		&token,
 		"POST",
 		"/api/conversations",
-		json!({"title":"Inference progress","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+		json!({"title":"Inference progress","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");

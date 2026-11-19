@@ -982,7 +982,6 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 			&aidash_application::tenancy::TenancyScope::tenant("beta").unwrap(),
 			"actor",
 			"BYOK retrieval",
-			"Test admission",
 		)
 		.await
 		.unwrap();

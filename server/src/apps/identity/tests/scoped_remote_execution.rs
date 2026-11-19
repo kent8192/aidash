@@ -5927,7 +5927,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.a.config.api_token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
+		json!({"title":"Independent Deployment Administrator work","request":"Unrelated legacy access"}),
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
@@ -8940,7 +8940,6 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 					&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 					"alice",
 					"Doomed receiver",
-					"owned file",
 				)
 				.await
 				.unwrap();
@@ -8971,7 +8970,6 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 					&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 					"alice",
 					"Keeper receiver",
-					"unrelated file",
 				)
 				.await
 				.unwrap();
@@ -9685,8 +9683,8 @@ async fn node_deletion_fences_old_home_grant_after_decided_recovery(
 	.unwrap();
 	let manifest: Manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),
 		"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
-		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"workspace_state","workspace_id":task.workspace_id,
-		"expected_revision":revision,"state":{"recovered":true}}]}]})).unwrap();
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"workspace_title","workspace_id":task.workspace_id,
+		"expected_revision":revision,"title":"Committed"}]}]})).unwrap();
 	coordinator::submit(&p.a, &manifest).await.unwrap();
 	for _ in 0..12 {
 		let state = coordinator::advance(&p.a, manifest.id).await.unwrap();
@@ -9839,7 +9837,7 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 		&beta_token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Local Home","goal":"exact local control"}),
+		json!({"title":"Local Home","request":"exact local control"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");

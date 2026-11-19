@@ -131,7 +131,7 @@ async fn unavailable(node: &Node, workspace_id: Uuid) {
 	assert!(
 		node.f
 			.store
-			.update_state(&TEST_FIXTURE, workspace_id, 0, json!({"bypass":true}))
+			.update_title(&TEST_FIXTURE, workspace_id, 0, "bypass")
 			.await
 			.is_err(),
 		"pending atomic work must reject a competing write"
@@ -182,8 +182,8 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	);
 	let final_state = complete(&a, manifest.id).await;
 	assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
-	assert_eq!(workspace(&a, wa).await.state.0, json!({}));
-	assert_eq!(workspace(&b, wb).await.state.0, json!({}));
+	assert_eq!(workspace(&a, wa).await.revision, 0);
+	assert_eq!(workspace(&b, wb).await.revision, 0);
 	let history = AtomicHistory::objects()
 		.filter(AtomicHistory::field_transaction_id().eq(manifest.id))
 		.all_with_db(&mut a.database.lease.handle())
@@ -223,8 +223,8 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		Err(Error::TransactionPending)
 	));
 	steps(&a, manifest.id, 2).await; // Both prepared; speculative writes rolled back.
-	assert_eq!(workspace(&a, wa).await.state.0, json!({}));
-	assert_eq!(workspace(&b, wb).await.state.0, json!({}));
+	assert_eq!(workspace(&a, wa).await.revision, 0);
+	assert_eq!(workspace(&b, wb).await.revision, 0);
 	steps(&a, manifest.id, 1).await; // Durable commit precedes any application.
 	assert_eq!(
 		a.status(manifest.id).await.decision.as_deref(),
@@ -248,12 +248,12 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		.unwrap();
 	assert_eq!(stored.decision, Some(AtomicCoordinatorDecision::Commit));
 	steps(&a, manifest.id, 1).await;
-	assert_eq!(workspace(&a, wa).await.state.0["value"], "new-a");
-	assert_eq!(workspace(&b, wb).await.state.0, json!({}));
+	assert_eq!(workspace(&a, wa).await.title, "new-a");
+	assert_eq!(workspace(&b, wb).await.revision, 0);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	steps(&a, manifest.id, 1).await;
-	assert_eq!(workspace(&b, wb).await.state.0["value"], "new-b");
+	assert_eq!(workspace(&b, wb).await.title, "new-b");
 	assert!(!a.status(manifest.id).await.visible);
 	steps(&a, manifest.id, 1).await; // Visibility certificate, barriers still retained.
 	assert!(a.status(manifest.id).await.visible);
@@ -286,7 +286,7 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	let Some((a, b, mut manifest, wa, wb)) = Box::pin(pair).await else {
 		return;
 	};
-	if let Mutation::WorkspaceState {
+	if let Mutation::WorkspaceTitle {
 		expected_revision, ..
 	} = &mut manifest.participants[1].mutations[0]
 	{
@@ -297,7 +297,7 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	assert_eq!(done.decision.as_deref(), Some("ABORT"));
 	assert!(!done.visible);
 	for (node, workspace_id) in [(&a, wa), (&b, wb)] {
-		assert_eq!(workspace(node, workspace_id).await.state.0, json!({}));
+		assert_eq!(workspace(node, workspace_id).await.revision, 0);
 		assert_eq!(
 			node.get(&format!("/api/workspaces/{workspace_id}")).await.0,
 			200

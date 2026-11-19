@@ -272,8 +272,8 @@ pub enum WaitingState {
 		cadence: OutageCadence,
 		resume: ResumeState,
 	},
-	/// A Run waits for relevant workspace changes, input, or a ceiling.
-	Workspace {
+	/// A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).
+	TaskWait {
 		wake_at: DateTime<Utc>,
 		cursor: i64,
 		resume: ResumeState,
@@ -331,7 +331,7 @@ impl WaitingState {
 	pub fn reason(&self) -> &'static str {
 		match self {
 			Self::Outage { .. } => "outage",
-			Self::Workspace { .. } => "workspace",
+			Self::TaskWait { .. } => "task_wait",
 			Self::Operation { .. } => "operation",
 			Self::Dependencies { .. } => "dependencies",
 			Self::Timer { .. } => "timer",
@@ -345,7 +345,7 @@ impl WaitingState {
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
 			Self::Outage { wake_at, .. }
-			| Self::Workspace { wake_at, .. }
+			| Self::TaskWait { wake_at, .. }
 			| Self::Operation { wake_at, .. }
 			| Self::Dependencies { wake_at, .. }
 			| Self::Timer { wake_at, .. }

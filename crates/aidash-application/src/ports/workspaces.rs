@@ -17,7 +17,6 @@ pub trait ConversationScope: Send {
 	async fn create_workspace(
 		&mut self,
 		title: &str,
-		goal: &str,
 		node: Option<&NodeName>,
 		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace>;
@@ -46,7 +45,6 @@ pub trait ConversationScope: Send {
 	async fn message(&mut self, workspace: Uuid, content: &str) -> Result<()>;
 	async fn create_task(&mut self, workspace: Uuid, input: &NewTask) -> Result<Task>;
 	async fn require_task(&mut self, task: &Task, action: &str) -> Result<()>;
-	async fn bind_task(&mut self, task: Uuid, conversation: Uuid) -> Result<()>;
 	/// The memory provider `agent` binds and the embedding its policy pins, or
 	/// `None` when the agent binds no memory.
 	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>>;

@@ -6,7 +6,7 @@ use aidash_server::domain::TaskStatus;
 async fn workspace_with_parent(f: &Federation, agent: &Entry) -> (Uuid, Task) {
 	let workspace = f
 		.store
-		.create_workspace(&ACME, "alice", "Unassigned", "Subtasks nobody runs")
+		.create_workspace(&ACME, "alice", "Unassigned")
 		.await
 		.unwrap();
 	let parent = running_task(f, agent, workspace.id, None).await;

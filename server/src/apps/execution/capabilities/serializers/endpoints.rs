@@ -38,7 +38,6 @@ pub(crate) enum ApprovalRole {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AreaQuery {
 	pub(crate) cursor: Option<Uuid>,
-	pub(crate) thread_id: Option<Uuid>,
 	pub(crate) workspace_id: Option<Uuid>,
 }
 

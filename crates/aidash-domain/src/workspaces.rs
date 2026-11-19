@@ -15,6 +15,27 @@ pub struct ConversationResponse {
 	pub delegation: Delegation,
 }
 
+/// What opening a Workspace returns (#1008, ADR 0140): the Workspace and, when
+/// a person asked an Agent or cluster for something, the conversation record,
+/// the Root Task whose description is the request, and its delegation.
+#[derive(Serialize, JsonSchema)]
+pub struct WorkspaceOpened {
+	pub workspace: Workspace,
+	pub conversation: Option<Conversation>,
+	pub task: Option<Task>,
+	pub delegation: Option<Delegation>,
+}
+impl From<ConversationResponse> for WorkspaceOpened {
+	fn from(value: ConversationResponse) -> Self {
+		Self {
+			workspace: value.workspace,
+			conversation: Some(value.conversation),
+			task: Some(value.task),
+			delegation: Some(value.delegation),
+		}
+	}
+}
+
 pub fn validate_conversation_target(entry: &Entry, expected_kind: &str) -> Result<()> {
 	if entry.kind != expected_kind || !matches!(expected_kind, "agent" | "cluster") {
 		return Err(Error::Invalid(

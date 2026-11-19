@@ -86,7 +86,7 @@ pub async fn due(
 	let retry_at = recovery.retry.map(|r| r.at).filter(|d| *d > now);
 	let due = match &state {
 		RunState::Waiting(wait) => {
-			if let WaitingState::Workspace {
+			if let WaitingState::TaskWait {
 				wake_at,
 				cursor,
 				resume,

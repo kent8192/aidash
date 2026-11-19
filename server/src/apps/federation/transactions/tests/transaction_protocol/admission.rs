@@ -57,10 +57,10 @@ async fn scoped_pair(#[future(awt)] pair: Pair) -> ScopedPair {
 	.enumerate()
 	{
 		manifest.participants[index].mutations =
-			vec![aidash_server::transactions::Mutation::WorkspaceState {
+			vec![aidash_server::transactions::Mutation::WorkspaceTitle {
 				workspace_id: workspace,
 				expected_revision: 0,
-				state: json!({}),
+				title: "Title".into(),
 			}];
 	}
 	ScopedPair {
@@ -344,10 +344,10 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 			.workspace_id;
 	let mut third = manifest.participants[0].clone();
 	third.node_id = c.address.clone();
-	third.mutations = vec![aidash_server::transactions::Mutation::WorkspaceState {
+	third.mutations = vec![aidash_server::transactions::Mutation::WorkspaceTitle {
 		workspace_id: workspace,
 		expected_revision: 0,
-		state: json!({}),
+		title: "Title".into(),
 	}];
 	manifest.participants.push(third);
 	let preflights = Arc::new(AtomicUsize::new(0));
