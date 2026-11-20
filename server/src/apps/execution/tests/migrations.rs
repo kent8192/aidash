@@ -289,18 +289,30 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 		conflicts.is_empty(),
 		"unexpected migration leaves: {conflicts:?}"
 	);
-	let federation = graph.get_leaf_nodes_for_app("federation");
-	assert_eq!(federation.len(), 1);
-	assert_eq!(federation[0].name, "0030_threads");
-	let registry = graph.get_leaf_nodes_for_app("registry");
-	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0081_thread_tools");
-	let execution = graph.get_leaf_nodes_for_app("execution");
-	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0151_task_executions_state");
-	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
-	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0059_threads_state");
+	// Each app's own head: no later migration of the same app depends on it.
+	// Another app's migration may (execution 0150 follows the heads of the
+	// apps whose histories name `runs`), so global leaves would hide them.
+	let head = |app: &str| {
+		migrations
+			.iter()
+			.filter(|m| m.app_label == app)
+			.filter(|m| {
+				!migrations.iter().any(|later| {
+					later.app_label == app
+						&& later
+							.dependencies
+							.iter()
+							.any(|(dep_app, name)| dep_app == app && *name == m.name)
+				})
+			})
+			.map(|m| m.name.clone())
+			.collect::<Vec<_>>()
+	};
+	assert_eq!(head("federation"), ["0030_threads"]);
+	assert_eq!(head("registry"), ["0081_thread_tools"]);
+	assert_eq!(head("execution"), ["0151_task_executions_state"]);
+	assert_eq!(head("knowledge"), ["0059_threads_state"]);
+	assert_eq!(head("workspaces"), ["0061_duty_template_check"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
