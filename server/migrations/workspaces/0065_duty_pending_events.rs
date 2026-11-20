@@ -22,6 +22,15 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "duty_pending_events_tenant_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::Cascade,
+					on_update: ForeignKeyAction::Restrict,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "duty_pending_events_duty_fkey".into(),
 					columns: vec!["tenant".into(), "duty_id".into()],
 					referenced_table: "duties".into(),
