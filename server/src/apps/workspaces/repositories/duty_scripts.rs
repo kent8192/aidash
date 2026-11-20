@@ -7,7 +7,7 @@ use aidash_domain::{
 	TaskStatus,
 	duties::{
 		Definition, Duty,
-		scripts::{Invocation, Language, OpenTask, Role, Script, Version},
+		scripts::{Invocation, Language, OpenTask, Role, Script, TaskScript, Version},
 	},
 };
 use chrono::{DateTime, Utc};
@@ -144,6 +144,18 @@ pub(crate) async fn insert_run(
 	tenant: &str,
 	run: NewRun<'_>,
 ) -> Result<()> {
+	// The Task keeps that it runs a script after the row goes with its Duty,
+	// so its Run fails instead of asking a model (see workspaces 0062).
+	native::query(
+		&Query::update()
+			.table(Alias::new("tasks"))
+			.value(Alias::new("duty_script"), true)
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(run.task)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
 	let row = DutyScriptRunRecord::build()
 		.task_id(run.task)
 		.tenant(tenant.to_owned())
@@ -163,26 +175,92 @@ pub(crate) async fn insert_run(
 	Ok(())
 }
 
-/// The script the Run of `task` executes, if a Duty started that Task to run
-/// one. Read by the harness on each step of a Run, in the Run's own scope.
-pub(crate) async fn invocation(
+/// A Task's script marker beside its script row, if the row is still there:
+/// language, source and stdin.
+type TaskScriptRow = (bool, Option<String>, Option<String>, Option<String>);
+
+/// What the Run of `task` executes instead of a model: the script a Duty
+/// started that Task to run, or `Gone` when the script went with its Duty
+/// (#1011). Read by the harness on each step of a Run, in the Run's own scope.
+pub(crate) async fn invocation(tx: &mut dyn TransactionExecutor, task: Uuid) -> Result<TaskScript> {
+	let (tasks, runs) = (Alias::new("tasks"), Alias::new("duty_script_runs"));
+	let row: Option<TaskScriptRow> = native::query_as(
+		&Query::select()
+			.column((tasks.clone(), Alias::new("duty_script")))
+			.column((runs.clone(), Alias::new("language")))
+			.column((runs.clone(), Alias::new("source")))
+			.column((runs.clone(), Alias::new("stdin")))
+			.from(tasks.clone())
+			.join(
+				JoinType::LeftJoin,
+				runs.clone(),
+				Condition::all()
+					.add(
+						Expr::col((runs.clone(), Alias::new("task_id")))
+							.equals((tasks.clone(), Alias::new("id"))),
+					)
+					.add(
+						Expr::col((runs, Alias::new("tenant")))
+							.equals((tasks.clone(), Alias::new("tenant"))),
+					),
+			)
+			.and_where(Expr::col((tasks, Alias::new("id"))).eq(Expr::value(task)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["duty_script", "language", "source", "stdin"])
+	.fetch_optional(&mut *tx)
+	.await?;
+	Ok(match row {
+		Some((_, Some(language), Some(source), Some(stdin))) => TaskScript::Script(Invocation {
+			language: Language::parse(&language)?,
+			source,
+			stdin,
+		}),
+		Some((true, ..)) => TaskScript::Gone,
+		_ => TaskScript::Model,
+	})
+}
+
+/// Cancels the Runs of the Duty's script Tasks that have not settled, before
+/// the Duty and its script rows go (#1011): a Router or Watcher Task never
+/// becomes a model's Run on its stub description.
+pub(crate) async fn cancel_open(
 	tx: &mut dyn TransactionExecutor,
-	task: Uuid,
-) -> Result<Option<Invocation>> {
-	let Some(row) = DutyScriptRunRecord::objects()
-		.filter(DutyScriptRunRecord::field_task_id().eq(task))
-		.all_with_executor(tx)
-		.await
-		.map_err(framework)?
-		.pop()
-	else {
-		return Ok(None);
-	};
-	Ok(Some(Invocation {
-		language: Language::parse(&row.language)?,
-		source: row.source,
-		stdin: row.stdin,
-	}))
+	tenant: &str,
+	duty: Uuid,
+) -> Result<()> {
+	native::query(
+		&Query::update()
+			.table(Alias::new("task_executions"))
+			.value(Alias::new("control"), "CANCELLED")
+			.value(
+				Alias::new("control_source"),
+				aidash_domain::entities::ControlSource::System.as_str(),
+			)
+			.value_expr(
+				Alias::new("control_revision"),
+				Expr::col("control_revision").add(Expr::value(1_i64)),
+			)
+			.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(
+				Expr::col("task_id").in_subquery(
+					Query::select()
+						.column(Alias::new("task_id"))
+						.from(Alias::new("duty_script_runs"))
+						.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+						.and_where(Expr::col("duty_id").eq(Expr::value(duty)))
+						.and_where(Expr::col("settled_at").is_null())
+						.to_owned(),
+				),
+			)
+			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
+			.and_where(Expr::col("control").ne("CANCELLED"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
 }
 
 /// Whether the Duty's previous Watcher run is still under way.

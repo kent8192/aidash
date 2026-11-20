@@ -7,7 +7,8 @@ use crate::{Error, Result};
 use aidash_domain::{
 	approval_rules::ApprovalMode,
 	duties::{
-		self, Actor, Change, Definition, Duty, Halt, Patch, Resumption, Tick,
+		self, Actor, BudgetRemoval, Change, Definition, Deleter, Duty, Halt, Patch, Resumption,
+		Tick,
 		templates::{Source, Template},
 	},
 	registry::EntityRef,
@@ -74,6 +75,16 @@ pub trait DutyScope: Send {
 	/// Saves a loaded Duty; the adapter raises its revision.
 	async fn save(&mut self, duty: &Duty) -> Result<()>;
 	async fn delete(&mut self, id: Uuid) -> Result<()>;
+	/// Hands a Duty over to its successor in this transaction, before the
+	/// successor's rights are checked: the Duty's own Thread, when it opened
+	/// one, becomes theirs, and the bookings Runs made for its triggers are
+	/// dropped, so no event of the Duty wakes a Run acting for the departed
+	/// Requester.
+	async fn hand_over(&mut self, duty: &Duty, successor: &str) -> Result<()>;
+	/// Who last set each Budget that targets the Duty (#1012).
+	async fn budget_setters(&mut self, duty: Uuid) -> Result<Vec<String>>;
+	/// Whether the Tenant's policy allows the person `budget.manage`.
+	async fn manages_budgets(&mut self) -> Result<bool>;
 	async fn list(&mut self, listing: Listing) -> Result<Vec<Duty>>;
 	/// The latest ticks of a Duty, newest first.
 	async fn ticks(&mut self, id: Uuid, limit: u32) -> Result<Vec<Tick>>;
@@ -380,6 +391,11 @@ pub async fn resume(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 		},
 		duty.standing(),
 	)?;
+	// A successor takes the Duty, and its own Thread, over first: their
+	// rights there are then judged as its owner's.
+	if resumption == Resumption::Successor {
+		scope.hand_over(&duty, &subject).await?;
+	}
 	// Resuming is registering again: the person must still be allowed to,
 	// within the limits, with what the Duty names.
 	scope.require_thread(duty.thread_id, duties::CREATE).await?;
@@ -400,9 +416,28 @@ pub async fn resume(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 	Ok(duty)
 }
 
+/// Deletes a Duty, as a person. Its Budgets go with it, so one someone else
+/// set needs `budget.manage` (#1012 decision 25).
 pub async fn delete(scope: &mut dyn DutyScope, id: Uuid) -> Result<()> {
+	delete_as(scope, id, Deleter::Person).await
+}
+
+/// `duty_delete` by an Agent: an Agent never removes a Budget, so it only
+/// pauses a Duty a Budget targets (#1012 decision 25).
+pub async fn delete_by_agent(scope: &mut dyn DutyScope, id: Uuid) -> Result<()> {
+	delete_as(scope, id, Deleter::Agent).await
+}
+
+async fn delete_as(scope: &mut dyn DutyScope, id: Uuid, deleter: Deleter) -> Result<()> {
 	let duty = visible(scope, id, true).await?;
 	permitted(scope, &duty, Change::Delete).await?;
+	let setters = scope.budget_setters(id).await?;
+	if duties::budget_removal(deleter, scope.subject(), &setters)?
+		== BudgetRemoval::NeedsBudgetManage
+		&& !scope.manages_budgets().await?
+	{
+		return Err(Error::Invalid(duties::BUDGET_SET_BY_SOMEONE_ELSE.into()));
+	}
 	scope.delete(id).await
 }
 

@@ -231,12 +231,10 @@ pub trait ExecutionStore: Send + Sync {
 	async fn emit(&self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	/// The Duty script this Run executes instead of asking a model (#1011,
 	/// ADR 0142). Only the Duty service records one, for a Task it started to
-	/// run its Router or Watcher, so every other Run has none.
-	async fn duty_script(
-		&self,
-		_run: &Run,
-	) -> Result<Option<aidash_domain::duties::scripts::Invocation>> {
-		Ok(None)
+	/// run its Router or Watcher, so every other Run asks a model. A Task
+	/// started for a script that went with its Duty answers `Gone`.
+	async fn duty_script(&self, _run: &Run) -> Result<aidash_domain::duties::scripts::TaskScript> {
+		Ok(aidash_domain::duties::scripts::TaskScript::Model)
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
 	/// The commit fence before Task completion. Unless a newer input is

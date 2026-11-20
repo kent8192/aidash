@@ -34,10 +34,7 @@ const THREAD_EVENT_WINDOW: u64 = 32;
 
 #[async_trait]
 impl ExecutionStore for RunStore {
-	async fn duty_script(
-		&self,
-		run: &Run,
-	) -> Result<Option<aidash_domain::duties::scripts::Invocation>> {
+	async fn duty_script(&self, run: &Run) -> Result<aidash_domain::duties::scripts::TaskScript> {
 		let task = run.task_id;
 		Ok(self
 			.store

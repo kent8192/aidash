@@ -733,12 +733,27 @@ async fn a_retried_duty_tool_call_returns_the_duty_it_registered(
 
 /// Sends `body` to a webhook trigger, signed with `secret` unless it is None.
 async fn send_event(c: &CoreFixture, url: &str, secret: Option<&str>, body: &[u8]) -> (u16, Value) {
+	send_delivery(c, url, secret, body, None).await
+}
+
+/// [`send_event`] naming the sender's delivery id, as GitHub's
+/// `X-GitHub-Delivery` does.
+async fn send_delivery(
+	c: &CoreFixture,
+	url: &str,
+	secret: Option<&str>,
+	body: &[u8],
+	delivery: Option<&str>,
+) -> (u16, Value) {
 	use hmac::{Hmac, Mac};
 	let path = url
 		.find("/hooks/duties/")
 		.map(|start| &url[start..])
 		.expect("a webhook URL");
 	let mut request = c.app.api_http.request("POST".parse().unwrap(), path);
+	if let Some(delivery) = delivery {
+		request = request.header("X-GitHub-Delivery", delivery);
+	}
 	if let Some(secret) = secret {
 		let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
 		mac.update(body);
@@ -816,7 +831,10 @@ async fn a_signed_webhook_starts_a_duty_task_with_the_event_as_data(
 	let (unsigned, _) = send_event(&c, &url, None, event).await;
 	let (forged, _) = send_event(&c, &url, Some("not-the-secret"), event).await;
 	let (status, first) = send_event(&c, &url, Some(&secret), event).await;
-	let (_, second) = send_event(&c, &url, Some(&secret), event).await;
+	// The next event of the trigger is another body: the same body again would
+	// be the same delivery.
+	let next = br#"{"workflow_run":{"conclusion":"failure","run_attempt":2}}"#;
+	let (_, second) = send_event(&c, &url, Some(&secret), next).await;
 	// Assert
 	assert_eq!(unsigned, 404);
 	assert_eq!(forged, 404);
@@ -863,13 +881,16 @@ async fn events_arriving_together_start_one_task(#[future] capability_fixture: C
 	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
 	let url = trigger["url"].as_str().unwrap().to_owned();
 	let secret = trigger["secret"].as_str().unwrap().to_owned();
-	let event = br#"{"check_suite":{"conclusion":"success"}}"#;
+	// Four events of one CI run: each is a body of its own.
+	let events: Vec<Vec<u8>> = (0..4)
+		.map(|n| format!(r#"{{"check_suite":{{"conclusion":"success","app":{n}}}}}"#).into_bytes())
+		.collect();
 	// Act
 	let (a, b, d, e) = tokio::join!(
-		send_event(&c, &url, Some(&secret), event),
-		send_event(&c, &url, Some(&secret), event),
-		send_event(&c, &url, Some(&secret), event),
-		send_event(&c, &url, Some(&secret), event),
+		send_event(&c, &url, Some(&secret), &events[0]),
+		send_event(&c, &url, Some(&secret), &events[1]),
+		send_event(&c, &url, Some(&secret), &events[2]),
+		send_event(&c, &url, Some(&secret), &events[3]),
 	);
 	// Assert
 	let outcomes: Vec<String> = [a, b, d, e]
@@ -1531,5 +1552,539 @@ async fn a_same_tenant_sender_must_read_the_duty_unless_the_trigger_names_its_no
 	// The trigger that names the sibling Node takes the same sender's event.
 	let receipt = send(named).await.unwrap();
 	assert_eq!(receipt["outcome"], "started", "{receipt}");
+	c.close().await;
+}
+
+/// The Duty brief a Task's Run was claimed with.
+async fn pinned_brief(c: &CoreFixture, task: Uuid) -> Option<String> {
+	sqlx::query_scalar(
+		"SELECT context->'standing_instructions'->>'duty' FROM task_executions WHERE task_id = $1",
+	)
+	.bind(task)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// Every Task a Duty starts works under its mission and procedure, pinned
+/// when its Run is claimed: a time tick, a webhook event and "Run now" alike
+/// (#1011, ADR 0142).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_duty_task_works_under_its_procedure_however_it_starts(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: a Duty with a procedure, a time trigger and a webhook.
+	let c = capability_fixture.await;
+	let thread = thread(&c).await;
+	let procedure = "1. Read the changelog.\n2. List breaking changes first.";
+	let mut body = definition("Release digest", 3600);
+	body["procedure"] = json!(procedure);
+	let duty = register(&c, thread, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let (url, secret) = (
+		trigger["url"].as_str().unwrap().to_owned(),
+		trigger["secret"].as_str().unwrap().to_owned(),
+	);
+	let expected =
+		format!("Mission:\nSummarize what changed since the last tick.\n\nProcedure:\n{procedure}");
+	// Act / Assert: a time tick.
+	make_due(&c, id).await;
+	let ticked = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(ticked.started.len(), 1, "{ticked:?}");
+	assert_eq!(
+		pinned_brief(&c, ticked.started[0]).await.as_deref(),
+		Some(expected.as_str())
+	);
+	finish_task(&c, ticked.started[0]).await;
+	// Act / Assert: a webhook event.
+	let (status, receipt) =
+		send_event(&c, &url, Some(&secret), br#"{"release":{"tag":"v2.0.0"}}"#).await;
+	assert_eq!(status, 200, "{receipt}");
+	assert_eq!(receipt["outcome"], "started", "{receipt}");
+	let event_task: Uuid =
+		serde_json::from_value(events_of(&c, id).await[0]["task_id"].clone()).unwrap();
+	assert_eq!(
+		pinned_brief(&c, event_task).await.as_deref(),
+		Some(expected.as_str())
+	);
+	finish_task(&c, event_task).await;
+	// Act / Assert: "Run now".
+	let (status, started) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/duties/{id}/run-now"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{started}");
+	let manual: Uuid = serde_json::from_value(started["task_id"].clone()).unwrap();
+	assert_eq!(
+		pinned_brief(&c, manual).await.as_deref(),
+		Some(expected.as_str())
+	);
+	// Every one records its Duty, for Budgets.
+	let marked: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE duty_id = $1")
+		.bind(id)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(marked, 3);
+	c.close().await;
+}
+
+/// Deleting a Duty cancels its Router Task that has not run yet, and the Task
+/// still says it runs a script, so its Run fails rather than ask a model on
+/// its stub description (#1011).
+#[rstest::rstest]
+#[tokio::test]
+async fn deleting_a_duty_cancels_its_open_script_tasks(#[future] capability_fixture: CoreFixture) {
+	// Arrange: an event started the Router's Task, and a model Task of
+	// another Duty is open beside it.
+	let c = capability_fixture.await;
+	let thread = thread(&c).await;
+	let duty = register(&c, thread, router_duty("CI router")).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let (status, receipt) = send_event(
+		&c,
+		trigger["url"].as_str().unwrap(),
+		trigger["secret"].as_str(),
+		br#"{"check_run":{"conclusion":"failure"}}"#,
+	)
+	.await;
+	assert_eq!(status, 200, "{receipt}");
+	let (router, _) = script_task(&c, id, "router").await;
+	let other = register(&c, thread, definition("Daily digest", 86_400)).await;
+	let other: Uuid = serde_json::from_value(other["id"].clone()).unwrap();
+	make_due(&c, other).await;
+	let ticked = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(ticked.started.len(), 1, "{ticked:?}");
+	let driver = c.f.store.pool.fixture_driver();
+	let control = async |task: Uuid| -> (String, String) {
+		sqlx::query_as("SELECT phase, control FROM task_executions WHERE task_id = $1")
+			.bind(task)
+			.fetch_one(driver)
+			.await
+			.unwrap()
+	};
+	assert_eq!(control(router).await.1, "ACTIVE");
+	// The worker's store says what each Run executes instead of a model.
+	use aidash_application::ports::execution::ExecutionStore as _;
+	use aidash_domain::duties::scripts::TaskScript;
+	let store =
+		c.f.store
+			.for_run(aidash_application::tenancy::TenancyScope::tenant("acme").unwrap());
+	let run_of = async |task: Uuid| {
+		let id: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
+			.bind(task)
+			.fetch_one(driver)
+			.await
+			.unwrap();
+		c.f.store.run(&TEST_FIXTURE, id).await.unwrap()
+	};
+	let (router_run, model_run) = (run_of(router).await, run_of(ticked.started[0]).await);
+	assert!(
+		matches!(
+			store.duty_script(&router_run).await.unwrap(),
+			TaskScript::Script(_)
+		),
+		"the Router's Run runs its script"
+	);
+	assert_eq!(
+		store.duty_script(&model_run).await.unwrap(),
+		TaskScript::Model
+	);
+	// Act
+	let (status, deleted) = request(
+		&c.app,
+		&c.token,
+		"DELETE",
+		&format!("/api/duties/{id}"),
+		Value::Null,
+	)
+	.await;
+	// Assert
+	assert_eq!(status, 200, "{deleted}");
+	assert_eq!(control(router).await.1, "CANCELLED");
+	assert_eq!(
+		store.duty_script(&router_run).await.unwrap(),
+		TaskScript::Gone
+	);
+	assert_eq!(
+		store.duty_script(&model_run).await.unwrap(),
+		TaskScript::Model
+	);
+	assert_eq!(
+		control(ticked.started[0]).await.1,
+		"ACTIVE",
+		"another Duty's Task runs on"
+	);
+	let (marked, rows): (bool, i64) = sqlx::query_as(
+		"SELECT t.duty_script, (SELECT count(*) FROM duty_script_runs r WHERE r.task_id = t.id) FROM tasks t WHERE t.id = $1",
+	)
+	.bind(router)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	assert!(marked, "the Task keeps that it runs a script");
+	assert_eq!(rows, 0, "its script went with the Duty");
+	c.close().await;
+}
+
+/// A signed webhook request sent again starts nothing: the same body is the
+/// same delivery whatever delivery id it carries, and so is the same delivery
+/// id. Each repeat is answered 200 with the first event's receipt. After the
+/// retention the trigger forgets it (#1011).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_webhook_delivery_sent_again_starts_nothing(#[future] capability_fixture: CoreFixture) {
+	// Arrange: a Duty whose Router would start a script Task per event.
+	let c = capability_fixture.await;
+	let thread = thread(&c).await;
+	let duty = register(&c, thread, router_duty("CI router")).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let (url, secret) = (
+		trigger["url"].as_str().unwrap().to_owned(),
+		trigger["secret"].as_str().unwrap().to_owned(),
+	);
+	let body = br#"{"check_run":{"conclusion":"failure","id":7}}"#;
+	let driver = c.f.store.pool.fixture_driver();
+	let scripts = async || -> i64 {
+		sqlx::query_scalar("SELECT count(*) FROM duty_script_runs WHERE duty_id = $1")
+			.bind(id)
+			.fetch_one(driver)
+			.await
+			.unwrap()
+	};
+	// Act
+	let (status, first) = send_delivery(&c, &url, Some(&secret), body, Some("d-1")).await;
+	assert_eq!(status, 200, "{first}");
+	assert_eq!(first["outcome"], "routing");
+	let repeats = [
+		send_delivery(&c, &url, Some(&secret), body, Some("d-1")).await,
+		send_delivery(&c, &url, Some(&secret), body, Some("d-2")).await,
+		send_delivery(&c, &url, Some(&secret), body, None).await,
+		send_delivery(
+			&c,
+			&url,
+			Some(&secret),
+			br#"{"check_run":{"conclusion":"failure","id":8}}"#,
+			Some("d-1"),
+		)
+		.await,
+	];
+	// Assert: one event and one script Task; every repeat names the first.
+	for (status, receipt) in &repeats {
+		assert_eq!(*status, 200, "{receipt}");
+		assert_eq!(receipt["event_id"], first["event_id"], "{receipt}");
+	}
+	assert_eq!(events_of(&c, id).await.len(), 1);
+	assert_eq!(scripts().await, 1);
+	// Another delivery is taken.
+	let (status, next) = send_delivery(
+		&c,
+		&url,
+		Some(&secret),
+		br#"{"check_run":{"conclusion":"success","id":9}}"#,
+		Some("d-3"),
+	)
+	.await;
+	assert_eq!(status, 200, "{next}");
+	assert_ne!(next["event_id"], first["event_id"]);
+	assert_eq!(scripts().await, 2);
+	// Past the retention the scheduler forgets the first delivery, and the
+	// same body is taken again.
+	sqlx::query("UPDATE duty_deliveries SET received_at = received_at - interval '8 days' WHERE event_id = $1::uuid")
+		.bind(first["event_id"].as_str().unwrap())
+		.execute(driver)
+		.await
+		.unwrap();
+	pass(&c.f, Utc::now()).await.unwrap();
+	let (status, again) = send_delivery(&c, &url, Some(&secret), body, None).await;
+	assert_eq!(status, 200, "{again}");
+	assert_ne!(again["event_id"], first["event_id"]);
+	assert_eq!(scripts().await, 3);
+	c.close().await;
+}
+
+/// A booking goes when its Run ends: the scheduler pass drops it (#1011).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_booking_goes_when_its_run_ends(#[future] capability_fixture: CoreFixture) {
+	// Arrange
+	let c = capability_fixture.await;
+	let thread = thread(&c).await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, thread, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let trigger_id: Uuid = serde_json::from_value(trigger["id"].clone()).unwrap();
+	let run = admit(&c).await;
+	aidash_server::apps::workspaces::services::duty_events::book(&c.f.store, &run, trigger_id)
+		.await
+		.unwrap();
+	let driver = c.f.store.pool.fixture_driver();
+	let bookings = async || -> i64 {
+		sqlx::query_scalar("SELECT count(*) FROM duty_bookings WHERE trigger_id = $1")
+			.bind(trigger_id)
+			.fetch_one(driver)
+			.await
+			.unwrap()
+	};
+	pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(bookings().await, 1, "a waiting Run keeps its booking");
+	// Act
+	sqlx::query("UPDATE task_executions SET phase = 'COMPLETED' WHERE id = $1")
+		.bind(run.id)
+		.execute(driver)
+		.await
+		.unwrap();
+	pass(&c.f, Utc::now()).await.unwrap();
+	// Assert
+	assert_eq!(bookings().await, 0);
+	c.close().await;
+}
+
+/// The fixture's policy where each person holds the Thread actions, and
+/// starts Tasks and Duties, only in Threads they own.
+fn owners_only(c: &CoreFixture) -> Value {
+	let mut policy = c.policy.clone();
+	for person in ["alice", "bob"] {
+		policy["policies"].as_array_mut().unwrap().push(json!({
+			"id": format!("{person}-own-threads"),
+			"effect": "deny",
+			"subjects": {"ids": [person]},
+			"actions": [
+				"thread.read",
+				"thread.update",
+				"thread.delete",
+				"thread.share",
+				"thread.events",
+				"task.create",
+				"duty.create",
+			],
+			"resources": {"kinds": ["thread"]},
+			"condition": {"op": "not_eq", "left": {"source": "resource", "path": "/owner"}, "right": {"source": "literal", "value": person}},
+		}));
+	}
+	policy
+}
+
+/// A successor who takes a Duty over takes its own Thread over too, so a
+/// policy that limits Threads to their owner lets them resume it, read it and
+/// delete it, and the departed Requester no longer reaches it. The bookings
+/// the departed Requester's Runs made go, so the next event starts a Task for
+/// the successor (#1011).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: alice's Duty with a webhook her Run booked; she left, and bob
+	// is named to take it over.
+	let c = capability_fixture.await;
+	let origin = thread(&c).await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, origin, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let trigger_id: Uuid = serde_json::from_value(trigger["id"].clone()).unwrap();
+	let run = admit(&c).await;
+	aidash_server::apps::workspaces::services::duty_events::book(&c.f.store, &run, trigger_id)
+		.await
+		.unwrap();
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query(
+		"UPDATE duties SET halt = 'requester_left', halted_at = now(), successor = 'bob' WHERE id = $1",
+	)
+	.bind(id)
+	.execute(driver)
+	.await
+	.unwrap();
+	common::replace_policy(&c.f.store, "acme", owners_only(&c)).await;
+	let alice = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+	let bob = common::BrowserMapping::new(&c.f, "acme", "bob").await;
+	let (status, _) = bob
+		.send("GET", &format!("/api/threads/{own}"), Value::Null)
+		.await;
+	assert_ne!(status, 200, "bob does not own the Duty's Thread yet");
+	// Act
+	let (status, resumed) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	// Assert: bob holds the Duty and its Thread; alice's booking went.
+	assert_eq!(status, 200, "{resumed}");
+	assert_eq!(resumed["requester"], "bob");
+	let owner: String =
+		sqlx::query_scalar("SELECT owner_subject FROM authorization_threads WHERE thread_id = $1")
+			.bind(own)
+			.fetch_one(driver)
+			.await
+			.unwrap();
+	assert_eq!(owner, "bob");
+	let booked: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM duty_bookings WHERE trigger_id = $1")
+			.bind(trigger_id)
+			.fetch_one(driver)
+			.await
+			.unwrap();
+	assert_eq!(booked, 0);
+	let (status, receipt) = send_event(
+		&c,
+		trigger["url"].as_str().unwrap(),
+		trigger["secret"].as_str(),
+		br#"{"check_suite":{"conclusion":"success"}}"#,
+	)
+	.await;
+	assert_eq!(status, 200, "{receipt}");
+	assert_eq!(receipt["outcome"], "started", "{receipt}");
+	let (status, read) = bob
+		.send("GET", &format!("/api/threads/{own}"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{read}");
+	let (status, _) = alice
+		.send("GET", &format!("/api/threads/{own}"), Value::Null)
+		.await;
+	assert_ne!(status, 200, "alice no longer owns the Duty's Thread");
+	let areas: Vec<(Uuid, i64)> =
+		sqlx::query_as("SELECT id, revision FROM core_areas WHERE thread_id = $1")
+			.bind(own)
+			.fetch_all(driver)
+			.await
+			.unwrap();
+	let files: Vec<Value> = areas
+		.iter()
+		.map(
+			|(area, revision)| json!({"area_id": area, "expected_revision": revision, "choice": "keep"}),
+		)
+		.collect();
+	let (status, deleted) = bob
+		.send(
+			"POST",
+			&format!("/api/threads/{own}/delete"),
+			json!({"idempotency_key": Uuid::new_v4(), "files": files}),
+		)
+		.await;
+	assert_eq!(status, 200, "{deleted}");
+	c.close().await;
+}
+
+/// Inserts a Budget on a Duty, as `by` set it.
+async fn duty_budget(c: &CoreFixture, duty: Uuid, by: &str) {
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) SELECT $1, tenant, 'duty', $2, 'monthly', 1000, 'stop', '{}', 1, now(), $3, now() FROM duties WHERE id = $4")
+		.bind(Uuid::now_v7())
+		.bind(duty.to_string())
+		.bind(by)
+		.bind(duty)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+}
+
+/// Deleting a Duty removes its Budgets (#1012 decision 25): an Agent's
+/// `duty_delete` refuses while any Budget targets the Duty, though it may
+/// pause it, and a person deletes one whose Budget someone else set only with
+/// `budget.manage`.
+#[rstest::rstest]
+#[tokio::test]
+async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: an Agent's Duty, limited by a Budget an administrator set.
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let created = agent_tool(
+		&c.f.store,
+		&run,
+		"call-1",
+		"duty_create",
+		json!({"title": "Agent digest", "mission": "Collect the open questions."}),
+	)
+	.await
+	.unwrap();
+	let id: Uuid = serde_json::from_value(created["duty_id"].clone()).unwrap();
+	duty_budget(&c, id, "admin").await;
+	let mut policy = c.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id": "no-budget-manage",
+		"effect": "deny",
+		"subjects": {"any": true},
+		"actions": ["budget.manage"],
+		"resources": {"kinds": ["*"]},
+	}));
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let budgets = async || -> i64 {
+		sqlx::query_scalar(
+			"SELECT count(*) FROM budgets WHERE scope_kind = 'duty' AND scope_key = $1",
+		)
+		.bind(id.to_string())
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+	};
+	// Act / Assert: the Agent may pause it but not delete it.
+	let refused = agent_tool(
+		&c.f.store,
+		&run,
+		"call-2",
+		"duty_delete",
+		json!({"duty_id": id, "action": "delete"}),
+	)
+	.await
+	.unwrap_err();
+	assert!(
+		refused
+			.to_string()
+			.contains("an Agent never removes a Budget"),
+		"{refused}"
+	);
+	let paused = agent_tool(
+		&c.f.store,
+		&run,
+		"call-3",
+		"duty_delete",
+		json!({"duty_id": id, "action": "pause"}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(paused["status"], "paused", "{paused}");
+	// Act / Assert: the person needs budget.manage for the administrator's Budget.
+	let path = format!("/api/duties/{id}");
+	let (status, refused) = request(&c.app, &c.token, "DELETE", &path, Value::Null).await;
+	assert_eq!(status, 400, "{refused}");
+	assert!(
+		refused["error"].as_str().unwrap().contains("budget.manage"),
+		"{refused}"
+	);
+	assert_eq!(budgets().await, 1);
+	// A Budget the person set themselves goes with the Duty, though still not
+	// at an Agent's call.
+	sqlx::query("UPDATE budgets SET created_by = (SELECT requester FROM duties WHERE id = $1) WHERE scope_key = $2")
+		.bind(id)
+		.bind(id.to_string())
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		agent_tool(
+			&c.f.store,
+			&run,
+			"call-4",
+			"duty_delete",
+			json!({"duty_id": id, "action": "delete"}),
+		)
+		.await
+		.is_err()
+	);
+	let (status, deleted) = request(&c.app, &c.token, "DELETE", &path, Value::Null).await;
+	assert_eq!(status, 200, "{deleted}");
+	assert_eq!(budgets().await, 0);
 	c.close().await;
 }

@@ -347,6 +347,9 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 	let Some(row) = record(tx, tenant, id, true).await? else {
 		return Err(Error::NotFound("duty not found".into()));
 	};
+	// Its open Router and Watcher Tasks stop before their script rows go
+	// with it (#1011).
+	super::duty_scripts::cancel_open(tx, tenant, row.id).await?;
 	// Ticks go with their Duty through the cascading key; its Budgets go
 	// too, while its spend stays in the ledger (#1012).
 	crate::apps::identity::repositories::budgets::delete_for_duty(tx, tenant, row.id).await?;
@@ -354,6 +357,49 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 		.delete_with_executor(tx, row.id)
 		.await
 		.map_err(framework)?;
+	Ok(())
+}
+
+/// Who last set each Budget that targets the Duty (#1012). Deleting the
+/// Duty removes them.
+pub(crate) async fn budget_setters(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<Vec<String>> {
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new("created_by"))
+			.from(Alias::new("budgets"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("scope_kind").eq("duty"))
+			.and_where(Expr::col("scope_key").eq(duty.to_string()))
+			.order_by(Alias::new("created_by"), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut *tx)
+	.await
+}
+
+/// Makes a Duty's own Thread its successor's (#1011): whoever takes a Duty
+/// over owns the Thread it works in, so they may manage and delete it as
+/// its Requester did.
+pub(crate) async fn take_over_thread(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	thread: Uuid,
+	successor: &str,
+) -> Result<()> {
+	native::query(
+		&Query::update()
+			.table(Alias::new("authorization_threads"))
+			.value(Alias::new("owner_subject"), successor.to_owned())
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
 	Ok(())
 }
 
@@ -464,34 +510,64 @@ pub(crate) async fn installed(
 	}
 }
 
-/// The mission and procedure of the Duty whose tick started `task`, if one
-/// did; its Run works under them (#1011).
+/// The mission and procedure of the Duty that started `task`, if one did;
+/// its Run works under them (#1011). The Task records its Duty before its Run
+/// is claimed. Tasks its Runs create record the Duty too, for Budgets, but
+/// only the Task the Duty started itself, at the root of the Duty's own
+/// Thread and created by no Run, works under its brief.
 pub(crate) async fn brief_of_task(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	task: Uuid,
 ) -> Result<Option<String>> {
-	let duties = Alias::new("duties");
-	let ticks = Alias::new("duty_ticks");
+	let (duties, tasks) = (Alias::new("duties"), Alias::new("tasks"));
 	let row = native::query(
 		&Query::select()
 			.column((duties.clone(), Alias::new("mission")))
 			.column((duties.clone(), Alias::new("procedure")))
-			.from(ticks.clone())
+			.from(tasks.clone())
 			.inner_join(
 				duties.clone(),
 				Condition::all()
 					.add(
 						Expr::col((duties.clone(), Alias::new("id")))
-							.equals((ticks.clone(), Alias::new("duty_id"))),
+							.equals((tasks.clone(), Alias::new("duty_id"))),
 					)
 					.add(
 						Expr::col((duties.clone(), Alias::new("tenant")))
-							.equals((ticks.clone(), Alias::new("tenant"))),
+							.equals((tasks.clone(), Alias::new("tenant"))),
+					)
+					.add(
+						Expr::col((duties, Alias::new("thread_id")))
+							.equals((tasks.clone(), Alias::new("thread_id"))),
 					),
 			)
-			.and_where(Expr::col((ticks.clone(), Alias::new("tenant"))).eq(tenant.to_owned()))
-			.and_where(Expr::col((ticks, Alias::new("task_id"))).eq(Expr::value(task)))
+			.and_where(Expr::col((tasks.clone(), Alias::new("tenant"))).eq(tenant.to_owned()))
+			.and_where(Expr::col((tasks.clone(), Alias::new("id"))).eq(Expr::value(task)))
+			.and_where(Expr::col((tasks.clone(), Alias::new("parent_id"))).is_null())
+			.and_where(
+				Expr::exists(
+					Query::select()
+						.expr(Expr::value(1_i32))
+						.from(Alias::new("authorization_task_origins"))
+						.and_where(
+							Expr::col((
+								Alias::new("authorization_task_origins"),
+								Alias::new("task_id"),
+							))
+							.equals((tasks.clone(), Alias::new("id"))),
+						)
+						.and_where(
+							Expr::col((
+								Alias::new("authorization_task_origins"),
+								Alias::new("tenant"),
+							))
+							.equals((tasks, Alias::new("tenant"))),
+						)
+						.to_owned(),
+				)
+				.not(),
+			)
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)

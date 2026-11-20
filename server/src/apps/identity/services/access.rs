@@ -213,6 +213,13 @@ impl AccessTransaction {
 		self.thread_owners.insert((id, lock), owner.clone());
 	}
 
+	/// Forgets the owner held for a Thread whose owner this transaction just
+	/// changed (#1011), so the next check reads the new one.
+	pub(crate) fn forget_thread_owner(&mut self, id: Uuid) {
+		self.thread_owners.remove(&(id, false));
+		self.thread_owners.remove(&(id, true));
+	}
+
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {
 		self.admissions.clear();
 		self.live_nodes.clear();

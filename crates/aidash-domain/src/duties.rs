@@ -669,6 +669,46 @@ pub fn resumption(actor: Actor<'_>, standing: Standing<'_>) -> Result<Resumption
 	}
 }
 
+/// Who deletes a Duty, for the Budgets that go with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deleter {
+	/// A person in the dashboard or the API.
+	Person,
+	/// An Agent's `duty_delete`, for the person at the root of its Run.
+	Agent,
+}
+
+/// What deleting a Duty asks about the Budgets that target it, which go with
+/// it (#1012 decision 25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetRemoval {
+	/// No Budget targets it, or the person deleting it set every one.
+	Free,
+	/// Someone else set one, so only `budget.manage` removes it.
+	NeedsBudgetManage,
+}
+
+/// Judges deleting a Duty that `setters` (who last set each Budget targeting
+/// it) limit. An Agent never raises or removes a Budget, so it may only pause
+/// a Duty a Budget targets; a person may not lift a limit someone else set on
+/// them by deleting the Duty and registering it again.
+pub fn budget_removal(deleter: Deleter, actor: &str, setters: &[String]) -> Result<BudgetRemoval> {
+	if setters.is_empty() {
+		return Ok(BudgetRemoval::Free);
+	}
+	match deleter {
+		Deleter::Agent => Err(Error::Invalid(
+			"a Budget targets this Duty and an Agent never removes a Budget: pause the Duty, or ask a person to delete it".into(),
+		)),
+		Deleter::Person if setters.iter().all(|setter| setter == actor) => Ok(BudgetRemoval::Free),
+		Deleter::Person => Ok(BudgetRemoval::NeedsBudgetManage),
+	}
+}
+
+/// Why a person without `budget.manage` cannot delete a Duty whose Budget
+/// someone else set.
+pub const BUDGET_SET_BY_SOMEONE_ELSE: &str = "a Budget someone else set targets this Duty, and deleting the Duty removes it: that needs budget.manage";
+
 /// What the Run calling a Duty tool is, for the rules on Agents setting up
 /// Duties. A Run a Duty started may set up Duties too (#1012): only the
 /// root person's authority and Budget bound what a chain creates.

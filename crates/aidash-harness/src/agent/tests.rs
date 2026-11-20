@@ -211,6 +211,9 @@ struct State {
 	messages: Vec<Message>,
 	/// Tools that replace or extend the builtin fixtures, by alias.
 	custom: BTreeMap<String, Arc<Scripted>>,
+	/// Tools of any other kind, such as one that reads its input as the real
+	/// operation does, by alias. They win over `custom`.
+	tools_by_alias: BTreeMap<String, Arc<dyn ExecutionTool>>,
 	/// Journaled invocations by key: status and result.
 	invocations: Mutex<BTreeMap<String, (String, Option<Value>)>>,
 	invocation_reasons: Mutex<BTreeMap<String, String>>,
@@ -300,7 +303,7 @@ struct State {
 	/// The state of every question batch the approval Decider was asked.
 	judged_states: Mutex<Vec<Value>>,
 	/// The Duty script the Run executes instead of a model (#1011).
-	duty_script: Option<aidash_domain::duties::scripts::Invocation>,
+	duty_script: aidash_domain::duties::scripts::TaskScript,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -444,10 +447,7 @@ fn unexpected(operation: &str) -> ! {
 
 #[async_trait]
 impl ExecutionStore for Backend {
-	async fn duty_script(
-		&self,
-		_: &Run,
-	) -> Result<Option<aidash_domain::duties::scripts::Invocation>> {
+	async fn duty_script(&self, _: &Run) -> Result<aidash_domain::duties::scripts::TaskScript> {
 		Ok(self.0.duty_script.clone())
 	}
 	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
@@ -1930,6 +1930,7 @@ fn fixture() -> Fixture {
 		local_authority: false,
 		messages: vec![],
 		custom: BTreeMap::new(),
+		tools_by_alias: BTreeMap::new(),
 		invocations: Mutex::new(BTreeMap::new()),
 		invocation_reasons: Mutex::new(BTreeMap::new()),
 		invocation_delivery_counts: Mutex::new(BTreeMap::new()),
@@ -1990,7 +1991,7 @@ fn fixture() -> Fixture {
 		approval_decider: None,
 		approval_evidence: Mutex::new(vec![]),
 		judged_states: Mutex::new(vec![]),
-		duty_script: None,
+		duty_script: Default::default(),
 	}));
 	Fixture { backend, run }
 }
@@ -2792,6 +2793,9 @@ impl aidash_application::ports::bindings::BindingResolver for Backend {
 			.map(|name| ((*name).to_owned(), Advertised::builtin(name)))
 			.collect();
 		for (alias, tool) in &self.0.custom {
+			tools.insert(alias.clone(), tool.clone());
+		}
+		for (alias, tool) in &self.0.tools_by_alias {
 			tools.insert(alias.clone(), tool.clone());
 		}
 		if self.0.skill_tool {

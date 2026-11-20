@@ -172,6 +172,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0050_threads_state"),
 	("workspaces", "0060_duty_template"),
 	("workspaces", "0061_duty_template_check"),
+	("workspaces", "0062_task_duty_script"),
+	("workspaces", "0063_duty_deliveries"),
+	("workspaces", "0064_duty_deliveries_row_level_security"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -227,6 +230,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0050_threads_state"),
 	("workspaces", "0060_duty_template"),
 	("workspaces", "0061_duty_template_check"),
+	("workspaces", "0062_task_duty_script"),
+	("workspaces", "0063_duty_deliveries"),
+	("workspaces", "0064_duty_deliveries_row_level_security"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -334,7 +340,10 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
 	assert_eq!(head("execution"), ["0152_stint_leases"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
-	assert_eq!(head("workspaces"), ["0061_duty_template_check"]);
+	assert_eq!(
+		head("workspaces"),
+		["0064_duty_deliveries_row_level_security"]
+	);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -697,6 +706,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0050_threads_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
+			("workspaces", "0062_task_duty_script"),
+			("workspaces", "0063_duty_deliveries"),
+			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -895,14 +907,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0062_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0065_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0061_duty_template_check".to_owned()
+			"0064_duty_deliveries_row_level_security".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -2338,6 +2350,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0050_threads_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
+			("workspaces", "0062_task_duty_script"),
+			("workspaces", "0063_duty_deliveries"),
+			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -5009,6 +5024,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0050_threads_state"),
 	("workspaces", "0060_duty_template"),
 	("workspaces", "0061_duty_template_check"),
+	("workspaces", "0062_task_duty_script"),
+	("workspaces", "0063_duty_deliveries"),
+	("workspaces", "0064_duty_deliveries_row_level_security"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5588,6 +5606,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("federation", "0030_threads"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
+			("workspaces", "0062_task_duty_script"),
+			("workspaces", "0063_duty_deliveries"),
+			("workspaces", "0064_duty_deliveries_row_level_security"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5676,6 +5697,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("federation", "0030_threads"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
+			("workspaces", "0062_task_duty_script"),
+			("workspaces", "0063_duty_deliveries"),
+			("workspaces", "0064_duty_deliveries_row_level_security"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5772,6 +5796,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("federation", "0030_threads"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
+			("workspaces", "0062_task_duty_script"),
+			("workspaces", "0063_duty_deliveries"),
+			("workspaces", "0064_duty_deliveries_row_level_security"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
