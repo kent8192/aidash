@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 32] {
+fn assets() -> [(&'static str, String); 33] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
