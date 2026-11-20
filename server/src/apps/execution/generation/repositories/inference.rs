@@ -83,7 +83,7 @@ impl GenerationInferenceSession for Session {
 			.await
 			.map_err(Into::into)
 	}
-	async fn released_policy(&mut self, request: Uuid) -> Result<Option<(String, String)>> {
+	async fn released_policy(&mut self, request: Uuid) -> Result<Option<(String, String, i64)>> {
 		GenerationRequest::released_policy(self.transaction.as_mut(), request)
 			.await
 			.map_err(Into::into)

@@ -47,11 +47,16 @@ impl Reservation {
 		for request in self.requests {
 			transaction.refund(request, refund).await?;
 			if refund > 0
-				&& let Some((tenant, policy)) = transaction.released_policy(request).await?
+				&& let Some((tenant, policy, token_limit)) =
+					transaction.released_policy(request).await?
 			{
-				transaction
-					.refund_allocated(&tenant, &policy, refund)
-					.await?;
+				// An unbounded request reserved no tokens of its policy (#1012).
+				let refund = aidash_domain::generation::policy::policy_refund(token_limit, refund);
+				if refund > 0 {
+					transaction
+						.refund_allocated(&tenant, &policy, refund)
+						.await?;
+				}
 			}
 			transaction.report(request, self.attempt, reported).await?;
 		}

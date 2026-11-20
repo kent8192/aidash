@@ -107,9 +107,9 @@ impl GenerationRequest {
 	pub(crate) async fn released_policy(
 		tx: &mut dyn TransactionExecutor,
 		request: Uuid,
-	) -> Result<Option<(String, String)>> {
+	) -> Result<Option<(String, String, i64)>> {
 		let (sql, values) = Query::select()
-			.columns(["tenant", "policy_id"].map(Alias::new))
+			.columns(["tenant", "policy_id", "token_limit"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(request)))
 			.and_where(Expr::col("quota_released").eq(reinhardt::query::Expr::value(true)))
@@ -120,6 +120,7 @@ impl GenerationRequest {
 				Ok((
 					row.get("tenant").map_err(FrameworkError::from)?,
 					row.get("policy_id").map_err(FrameworkError::from)?,
+					row.get("token_limit").map_err(FrameworkError::from)?,
 				))
 			})
 			.transpose()

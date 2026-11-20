@@ -114,6 +114,11 @@ pub fn resource_attributes(policy_id: &str, root_subject: &str, task_id: Uuid) -
 }
 
 impl Request {
+	/// What a refund of `refund` tokens to this request gives back to its
+	/// policy ([`crate::generation::policy::policy_refund`]).
+	pub fn policy_refund(&self, refund: i64) -> i64 {
+		crate::generation::policy::policy_refund(self.token_limit, refund)
+	}
 	pub fn resource_attributes(&self) -> Value {
 		resource_attributes(&self.policy_id, &self.root_subject, self.task_id)
 	}

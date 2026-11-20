@@ -98,11 +98,7 @@ pub async fn transition(
 		let (unused, unused_calls) = scope.unused(job).await?;
 		// A request without a token limit reserved no tokens of its policy,
 		// whatever the policy says now (#1012 decision 41).
-		let unused = if job.token_limit >= aidash_domain::generation::policy::UNBOUNDED_TOKENS {
-			0
-		} else {
-			unused
-		};
+		let unused = job.policy_refund(unused);
 		scope.release_policy(job, unused, &unused_calls).await?;
 		scope.mark_quota_released(job).await?;
 	}

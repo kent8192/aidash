@@ -57,6 +57,22 @@ pub const UNBOUNDED_LIFETIME_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
 /// A request recorded with it reserved nothing of its policy's tokens.
 pub const UNBOUNDED_TOKENS: i64 = 1_000_000_000_000_000;
 
+/// What a refund of `refund` tokens to a request recorded with `token_limit`
+/// gives back to its policy: all of it, unless the request reserved nothing
+/// of the policy because it had no token limit. Every policy refund path
+/// (release at the end, a late inference settlement, a remote settlement)
+/// passes through this, so an unbounded request never inflates the tokens
+/// left for bounded ones. A recorded `token_limit` is the unbounded limit
+/// exactly when nothing was reserved: policies cap `tokens_per_agent` far
+/// below it.
+pub fn policy_refund(token_limit: i64, refund: i64) -> i64 {
+	if token_limit >= UNBOUNDED_TOKENS {
+		0
+	} else {
+		refund
+	}
+}
+
 impl Limits {
 	/// The lifetime to record for a generated agent.
 	pub fn lifetime(&self) -> i64 {
@@ -274,6 +290,17 @@ mod token_limit_tests {
 		let reservation = policy(token_budget, tokens_per_agent, allocated).reservation(0, 1);
 		// Assert
 		assert_eq!(reservation.is_ok(), allowed);
+	}
+
+	#[rstest]
+	#[case::bounded(200_000, 70, 70)]
+	#[case::unbounded(UNBOUNDED_TOKENS, 70, 0)]
+	fn only_a_request_that_reserved_tokens_refunds_its_policy(
+		#[case] token_limit: i64,
+		#[case] refund: i64,
+		#[case] expected: i64,
+	) {
+		assert_eq!(policy_refund(token_limit, refund), expected);
 	}
 
 	#[test]
