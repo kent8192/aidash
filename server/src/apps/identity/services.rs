@@ -43,7 +43,7 @@ pub mod tenants;
 pub mod node_purge;
 pub mod remote_renewal;
 
-pub(crate) mod budgets;
+pub mod budgets;
 pub(crate) mod creator_removal;
 pub(crate) mod data_protection;
 pub(crate) mod execution_settings;

@@ -344,6 +344,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "budgets", TenantOwned),
 	table("identity", "budget_notices", TenantOwned),
 	table("identity", "budget_spend", TenantOwned),
+	table("identity", "budget_lineage", TenantOwned),
 	table("identity", "node_instructions", TenantOwned),
 	// policy revisions outlive the purge for the audit retention period (ADR 0061)
 	audit("identity", "tenant_data_protection_history"),

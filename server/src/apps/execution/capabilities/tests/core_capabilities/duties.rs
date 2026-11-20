@@ -1533,3 +1533,72 @@ async fn a_same_tenant_sender_must_read_the_duty_unless_the_trigger_names_its_no
 	assert_eq!(receipt["outcome"], "started", "{receipt}");
 	c.close().await;
 }
+
+/// What an Agent creates is carved out of its creator's Budget (#1012
+/// decision 33): a Duty that a Run of Duty D set up sits below D, so D's
+/// Budget counts its spend and, at its Hard Limit, stops it too.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_hard_limit_on_a_duty_stops_the_duty_its_agent_set_up(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: Duty D's Run sets up Duty E, which gets a webhook trigger.
+	let c = capability_fixture.await;
+	let thread = thread(&c).await;
+	let parent = register(&c, thread, definition("Parent", 3600)).await;
+	let parent: Uuid = serde_json::from_value(parent["id"].clone()).unwrap();
+	make_due(&c, parent).await;
+	let report = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(report.started.len(), 1, "{report:?}");
+	let run =
+		c.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|candidate| candidate.task_id == report.started[0])
+			.unwrap();
+	let created = agent_tool(
+		&c.f.store,
+		&run,
+		"call-1",
+		"duty_create",
+		json!({"title": "Child", "mission": "Watch the queue.", "trigger": {"kind": "cron", "expression": "0 9 * * 1-5", "time_zone": "Asia/Tokyo"}}),
+	)
+	.await
+	.unwrap();
+	let child: Uuid = serde_json::from_value(created["duty_id"].clone()).unwrap();
+	let lineage: Vec<String> = sqlx::query_scalar(
+		"SELECT ancestor FROM budget_lineage WHERE kind = 'duty' AND child = $1",
+	)
+	.bind(child.to_string())
+	.fetch_all(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(lineage, vec![parent.to_string()]);
+	let trigger = add_trigger(&c, child, json!({"kind": "webhook"})).await;
+	let url = trigger["url"].as_str().unwrap().to_owned();
+	let secret = trigger["secret"].as_str().unwrap().to_owned();
+	// D's Budget is at its Hard Limit through spend recorded under E alone.
+	let driver = c.f.store.pool.fixture_driver();
+	let budget = Uuid::now_v7();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'duty', $2, 'monthly', 10, 'stop', '{}', 1, now(), 'test', now())")
+		.bind(budget)
+		.bind(parent.to_string())
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO budget_spend (tenant, day, node, root_subject, duty_id, spent_nanocredits, unpriced_calls) VALUES ('acme', date_trunc('day', now(), 'UTC'), 'any', 'any', $1, 10, 0)")
+		.bind(child)
+		.execute(driver)
+		.await
+		.unwrap();
+	// Act
+	let (status, receipt) = send_event(&c, &url, Some(&secret), br#"{"check_suite":{}}"#).await;
+	// Assert: E starts nothing, for D's Budget.
+	assert_eq!(status, 200, "{receipt}");
+	assert_eq!(receipt["outcome"], "skipped");
+	let events = events_of(&c, child).await;
+	assert_eq!(events[0]["reason"], format!("budget: {budget}"));
+	c.close().await;
+}

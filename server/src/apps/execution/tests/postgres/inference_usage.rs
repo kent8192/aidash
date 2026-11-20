@@ -1142,3 +1142,50 @@ async fn budget_ledger_records_spend_and_a_hard_limit_refuses_dispatch(
 		.await
 		.unwrap();
 }
+
+/// An attempt a newer dispatch made unknown still finishes at the provider,
+/// which bills it: its late completion is not written to the record, but the
+/// Budget ledger takes its cost (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_late_completion_of_an_abandoned_attempt_still_reaches_the_budget_ledger(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange: a dispatched attempt that the next dispatch of its purpose
+	// made unknown.
+	let (store, _url, _schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let stale = dispatch(token);
+	store
+		.record_usage_dispatch(&ACME, &run, token, &stale)
+		.await
+		.unwrap();
+	store
+		.record_usage_dispatch(&ACME, &run, token, &dispatch(token))
+		.await
+		.unwrap();
+	assert_eq!(usage_row(&store, stale.attempt).await.0, "unknown");
+	// Act: its completion arrives after all.
+	let written = store
+		.complete_usage_record(
+			&ACME,
+			&run,
+			stale.attempt,
+			&UsageOutcome::Completed(ReportedUsage {
+				cost: Some(ProviderCost {
+					nanocredits: 70_000,
+					upstream_nanocredits: None,
+				}),
+				..Default::default()
+			}),
+		)
+		.await
+		.unwrap();
+	// Assert: the record stays unknown; the ledger has the cost.
+	assert!(!written);
+	assert_eq!(usage_row(&store, stale.attempt).await.0, "unknown");
+	assert_eq!(ledger(&store).await, (70_000, 0));
+}

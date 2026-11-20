@@ -138,6 +138,30 @@ pub(crate) async fn create(
 			.values_panic(row)
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
+		if let NodeCreator::Agent(agent) = &creator {
+			// The Node sits below the Node its creating Run ran on, so that
+			// Node's Budgets cover it (#1012 decision 33).
+			let parent: Option<String> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("node"))
+					.from(Alias::new("task_executions"))
+					.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+					.and_where(Expr::col("id").eq(Expr::value(agent.run)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?;
+			if let Some(parent) = parent {
+				super::budgets::record_lineage(
+					tx,
+					tenant,
+					super::budgets::Lineage::Node,
+					&name,
+					&parent,
+				)
+				.await?;
+			}
+		}
 		return Ok(Node {
 			tenant: TenantName::new(tenant)?,
 			name: NodeName::parse(&name)?,

@@ -239,8 +239,10 @@ impl TenantAdministrations {
 /// Sends each Budget's Soft Limit mail once per window when its spend
 /// reaches the limit (#1012). Runs on every replica beside the Duty pass; the
 /// notice row decides which replica sends it. Without SMTP settings nothing
-/// is sent, but the notice is still recorded so the window stays quiet.
-pub(crate) async fn notice_pass(f: &crate::federation::Federation) -> Result<usize> {
+/// is sent, but the notice is still recorded so the window stays quiet. A
+/// mail the SMTP server refuses gives the notice back, so the next pass tries
+/// again.
+pub async fn notice_pass(f: &crate::federation::Federation) -> Result<usize> {
 	let now = Utc::now();
 	let mut sent = 0;
 	for budget in repository::with_soft_limits(&f.store.pool).await? {
@@ -265,9 +267,17 @@ pub(crate) async fn notice_pass(f: &crate::federation::Federation) -> Result<usi
 		let Some(spent) = notice else {
 			continue;
 		};
-		sent += 1;
-		if let Err(error) = mail(f.config.smtp.as_ref(), &budget, spent).await {
-			tracing::warn!(%error, budget = %budget.id, "a Budget's Soft Limit mail could not be sent");
+		match mail(f.config.smtp.as_ref(), &budget, spent).await {
+			Ok(()) => sent += 1,
+			Err(error) => {
+				tracing::warn!(%error, budget = %budget.id, "a Budget's Soft Limit mail could not be sent; the next pass tries again");
+				f.store
+					.pool
+					.atomic(&scope, async |tx| {
+						repository::release_notice(tx, &budget, window).await
+					})
+					.await?;
+			}
 		}
 	}
 	Ok(sent)
