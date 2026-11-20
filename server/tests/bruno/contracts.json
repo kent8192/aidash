@@ -3615,6 +3615,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -3810,6 +3811,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -12352,6 +12354,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -12851,6 +12854,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -13599,6 +13603,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -25547,6 +25552,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -25830,6 +25836,7 @@
                 "type": "array"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -25862,6 +25869,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -31537,6 +31545,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Saved as `workspace_id` in a Run's `pending` before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -31962,7 +31971,7 @@
                 "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "thread_event_cursor": {
-                "description": "Last thread event delivered to this Run.",
+                "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
               }
@@ -32756,7 +32765,8 @@
                   {
                     "type": "null"
                   }
-                ]
+                ],
+                "description": "Saved as `workspace_read_plan` before #1008."
               }
             },
             "required": [
@@ -32853,7 +32863,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).\nSaved with the reason `workspace` before #1008.",
                 "properties": {
                   "cursor": {
                     "format": "int64",
@@ -33303,6 +33313,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -35682,6 +35693,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Saved as `workspace_id` in a Run's `pending` before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -36332,7 +36344,7 @@
                 "type": ["integer", "null"]
               },
               "thread_event_cursor": {
-                "description": "Last thread event delivered to this Run.",
+                "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
               }
@@ -37624,7 +37636,8 @@
                   {
                     "type": "null"
                   }
-                ]
+                ],
+                "description": "Saved as `workspace_read_plan` before #1008."
               }
             },
             "required": [
@@ -37785,7 +37798,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).\nSaved with the reason `workspace` before #1008.",
                 "properties": {
                   "cursor": {
                     "format": "int64",
@@ -38667,6 +38680,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -40317,6 +40331,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -50499,6 +50514,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Saved as `workspace_id` in a Run's `pending` before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -50787,7 +50803,7 @@
                 "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "thread_event_cursor": {
-                "description": "Last thread event delivered to this Run.",
+                "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
               }
@@ -51405,7 +51421,8 @@
                   {
                     "type": "null"
                   }
-                ]
+                ],
+                "description": "Saved as `workspace_read_plan` before #1008."
               }
             },
             "required": [
@@ -51502,7 +51519,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).\nSaved with the reason `workspace` before #1008.",
                 "properties": {
                   "cursor": {
                     "format": "int64",
@@ -51952,6 +51969,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -52132,6 +52150,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
@@ -54946,6 +54965,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Saved as `workspace_id` in a Run's `pending` before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -55234,7 +55254,7 @@
                 "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "thread_event_cursor": {
-                "description": "Last thread event delivered to this Run.",
+                "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
               }
@@ -55852,7 +55872,8 @@
                   {
                     "type": "null"
                   }
-                ]
+                ],
+                "description": "Saved as `workspace_read_plan` before #1008."
               }
             },
             "required": [
@@ -55949,7 +55970,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).\nSaved with the reason `workspace` before #1008.",
                 "properties": {
                   "cursor": {
                     "format": "int64",
@@ -56399,6 +56420,7 @@
                 "type": "string"
               },
               "thread_id": {
+                "description": "Stored remote receipts say `workspace_id` before #1008.",
                 "format": "uuid",
                 "type": "string"
               }
