@@ -658,6 +658,88 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	c.close().await;
 }
 
+/// Deleting a Thread stops everyone's work in it (#1008): a Node
+/// administrator who owns nothing in the Thread deletes it, and the owner's
+/// execution there is cancelled and its Task, like every open Task of the
+/// Thread, ended.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_node_administrator_deleting_a_thread_stops_its_owners_work(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: alice's execution in her Thread; bob administers its Node.
+	let c = Box::pin(capability_fixture).await;
+	let thread =
+		c.f.store
+			.task(&TEST_FIXTURE, c.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let (status, area) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/threads/{thread}/agents/research/executions"),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Live work","description":"Still running"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let (status, session) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!(
+			"/api/working-areas/{}/session",
+			area["id"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{session}");
+	let run: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
+	let task: Uuid = sqlx::query_scalar("SELECT task_id FROM task_executions WHERE id = $1")
+		.bind(run)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let mut policy = c.policy.clone();
+	policy["subjects"]["bob"] = json!({"kind": "user"});
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	// Act: bob owns no Area in the Thread, so he chooses no files.
+	let (status, deleted) = request(
+		&c.app,
+		bob["token"].as_str().unwrap(),
+		"POST",
+		&format!("/api/threads/{thread}/delete"),
+		json!({"idempotency_key":Uuid::new_v4(),"files":[]}),
+	)
+	.await;
+	// Assert
+	assert_eq!(status, 200, "{deleted}");
+	let control: String = sqlx::query_scalar("SELECT control FROM task_executions WHERE id = $1")
+		.bind(run)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(control, "CANCELLED");
+	let open: Vec<(Uuid, String)> = sqlx::query_as(
+		"SELECT id, status FROM tasks WHERE thread_id = $1 AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED')",
+	)
+	.bind(thread)
+	.fetch_all(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(open.is_empty(), "{open:?}");
+	let ended: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id = $1")
+		.bind(task)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(ended, "CANCELLED");
+	c.close().await;
+}
+
 #[rstest::fixture]
 async fn short_staging(#[future] capability_fixture: CoreFixture) -> CoreFixture {
 	let mut c = Box::pin(capability_fixture).await;

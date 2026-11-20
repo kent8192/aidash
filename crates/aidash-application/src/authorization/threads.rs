@@ -7,9 +7,9 @@ use crate::{
 };
 use aidash_domain::{
 	Run,
-	policy::{Evaluation, Resource},
+	policy::{Decision, Evaluation, Resource},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 /// An inherited lease reaches its own Thread and, for reading only, the
 /// Subnode Threads its Run created (named by the lease context).
@@ -57,6 +57,29 @@ pub async fn resource(scope: &mut dyn ThreadResourceScope, id: Uuid) -> Result<R
 	}
 	Ok(resource)
 }
+/// Whether a refused `action` on a Thread is asked again as `node.administer`
+/// on the Thread's Node: a Node administrator reads every Thread of their Node
+/// and its events (#1008, ADR 0140), unless a policy denies them the Thread
+/// by name. It is a person's view, so `person` is false for a Run's inherited
+/// authority and a worker's execution grant, which stay confined to their own
+/// Thread. Every place that decides `thread.read` and `thread.events` (a read,
+/// a list, the event stream) asks this one rule.
+pub fn node_administrator_reads(action: &str, refused: &Decision, person: bool) -> bool {
+	person
+		&& !refused.allowed
+		&& matches!(action, "thread.read" | "thread.events")
+		&& refused.reason != "explicit_deny"
+}
+/// The `node.administer` question [`node_administrator_reads`] asks of `node`,
+/// the Node resource of the Thread.
+pub fn node_administer(subject: String, node: Resource, environment: Value) -> Evaluation {
+	Evaluation {
+		subject,
+		action: aidash_domain::identity::tenant_administration::NODE_ADMINISTER.into(),
+		resource: node,
+		environment,
+	}
+}
 pub async fn decision(
 	scope: &mut dyn ThreadAuthorityScope,
 	id: Uuid,
@@ -87,23 +110,16 @@ pub async fn decision(
 		decision.reason = "resource_unavailable".into();
 	}
 	let mut allowed = decision.allowed;
+	let person = !scope.inherited() && !scope.reads_for_run();
+	let administrator = owner.is_some() && node_administrator_reads(action, &decision, person);
 	let mut decisions = vec![(input, decision)];
-	// A Node administrator reads every Thread of their Node (#1008, ADR 0140),
-	// unless a policy denies them this Thread by name. It is a person's view:
-	// a Run's inherited authority stays confined to its own Thread.
-	if !allowed
-		&& !scope.inherited()
-		&& owner.is_some()
-		&& matches!(action, "thread.read" | "thread.events")
-		&& decisions[0].1.reason != "explicit_deny"
-	{
+	if administrator {
 		let node = scope.thread_node(id).await?;
-		let input = Evaluation {
+		let input = node_administer(
 			subject,
-			action: aidash_domain::identity::tenant_administration::NODE_ADMINISTER.into(),
-			resource: scope.resource("node", &node, json!({})),
-			environment: scope.environment().clone(),
-		};
+			scope.resource("node", &node, json!({})),
+			scope.environment().clone(),
+		);
 		let mut administers = scope.snapshot().bundle.evaluate(&input);
 		administers.revision = scope.snapshot().revision;
 		allowed = administers.allowed;

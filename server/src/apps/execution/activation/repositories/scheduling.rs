@@ -414,6 +414,49 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.map_err(Error::from)
 			.map_err(Into::into)
 	}
+	async fn rejoin(&mut self, run: Uuid) -> aidash_application::Result<bool> {
+		use crate::apps::execution::repositories::store::run_state::{
+			asleep_in, lock_queue_tail, rejoin_queue,
+		};
+		let (sql, values) = asleep_in(run).build(PostgresQueryBuilder);
+		let Some(area) = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?
+		else {
+			// Awake in its queue, or no core Run: the candidate query ordered it.
+			return Ok(true);
+		};
+		let area: Uuid = area
+			.get("area_id")
+			.map_err(FrameworkError::from)
+			.map_err(Error::from)?;
+		let (sql, values) = lock_queue_tail(area).build(PostgresQueryBuilder);
+		let Some(tail) = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?
+		else {
+			return Ok(false);
+		};
+		let tail: i64 = tail
+			.get("next_sequence")
+			.map_err(FrameworkError::from)
+			.map_err(Error::from)?;
+		for statement in rejoin_queue(run, area, tail) {
+			let (sql, values) = statement.build(PostgresQueryBuilder);
+			self.tx
+				.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(Error::from)?;
+		}
+		self.unblocked(run).await
+	}
 	async fn lease(
 		&mut self,
 		run: &Run,

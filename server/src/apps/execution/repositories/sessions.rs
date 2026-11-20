@@ -205,6 +205,33 @@ async fn ensure_area_row(
 	.await?
 	.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))
 }
+/// The run ids of an Area generation's queue, head first: its awake
+/// executions that have not ended (#1008, ADR 0140).
+fn queue_rows(area: Uuid, generation: i64) -> reinhardt::query::SelectStatement {
+	Query::select()
+		.column((Alias::new("q"), Alias::new("run_id")))
+		.from_as(Alias::new("core_runs"), Alias::new("q"))
+		.join(
+			reinhardt::query::JoinType::InnerJoin,
+			reinhardt::query::TableRef::table_alias(Alias::new("task_executions"), Alias::new("r")),
+			Expr::col((Alias::new("q"), Alias::new("run_id")))
+				.equals((Alias::new("r"), Alias::new("id"))),
+		)
+		.and_where(Expr::col((Alias::new("q"), Alias::new("area_id"))).eq(Expr::value(area)))
+		.and_where(
+			Expr::col((Alias::new("q"), Alias::new("generation"))).eq(Expr::value(generation)),
+		)
+		.and_where(Expr::col((Alias::new("q"), Alias::new("asleep"))).eq(Expr::value(false)))
+		.and_where(
+			Expr::col((Alias::new("r"), Alias::new("phase"))).is_not_in([
+				"COMPLETED",
+				"FAILED",
+				"CANCELLED",
+			]),
+		)
+		.order_by((Alias::new("q"), Alias::new("sequence")), Order::Asc)
+		.to_owned()
+}
 #[async_trait]
 impl SessionScope for Scope<'_> {
 	fn tenant(&self) -> &str {
@@ -353,36 +380,67 @@ impl SessionScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	/// The execution whose files the Area shows: the head of its queue once
+	/// it has initialized, and until then the last execution that left the
+	/// queue, by ending or falling asleep. An execution that slept and woke
+	/// re-enters at the tail (#1008, ADR 0140), so it does not displace the
+	/// head that ran meanwhile.
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
-			let current = {
-				let query_bind_1 = area.id;
-				let query_bind_2 = area.generation;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("run_id"))
-						.from(Alias::new("core_runs"))
-						.and_where(
-							Expr::col(Alias::new("area_id"))
-								.eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("generation"))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("initialized"))
-								.eq(reinhardt::query::Expr::value(true)),
-						)
-						.order_by(Alias::new("sequence"), Order::Desc)
-						.limit(1)
-						.to_string(PostgresQueryBuilder),
+			let head: Option<(Uuid, bool)> = crate::database::native::query_as(
+				&queue_rows(area.id, area.generation)
+					.column((Alias::new("q"), Alias::new("initialized")))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["run_id", "initialized"])
+			.fetch_optional(&mut **access.tx)
+			.await?;
+			if let Some((run, true)) = head {
+				return Ok(Some(run));
+			}
+			let left = Query::select()
+				.column((Alias::new("q"), Alias::new("run_id")))
+				.from_as(Alias::new("core_runs"), Alias::new("q"))
+				.join(
+					reinhardt::query::JoinType::InnerJoin,
+					reinhardt::query::TableRef::table_alias(
+						Alias::new("task_executions"),
+						Alias::new("r"),
+					),
+					Expr::col((Alias::new("q"), Alias::new("run_id")))
+						.equals((Alias::new("r"), Alias::new("id"))),
 				)
+				.and_where(
+					Expr::col((Alias::new("q"), Alias::new("area_id"))).eq(Expr::value(area.id)),
+				)
+				.and_where(
+					Expr::col((Alias::new("q"), Alias::new("generation")))
+						.eq(Expr::value(area.generation)),
+				)
+				.and_where(
+					Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(Expr::value(true)),
+				)
+				.cond_where(
+					reinhardt::query::Condition::any()
+						.add(
+							Expr::col((Alias::new("q"), Alias::new("asleep")))
+								.eq(Expr::value(true)),
+						)
+						.add(Expr::col((Alias::new("r"), Alias::new("phase"))).is_in([
+							"COMPLETED",
+							"FAILED",
+							"CANCELLED",
+						])),
+				)
+				.order_by((Alias::new("q"), Alias::new("sequence")), Order::Desc)
+				.limit(1)
+				.to_string(PostgresQueryBuilder);
+			let left: Option<Uuid> = crate::database::native::query_scalar(&left)
 				.scalar_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(current)
+				.await?;
+			Ok(left)
 		}
 		.await;
 		result.map_err(Into::into)
@@ -724,51 +782,22 @@ impl SessionScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	/// The Area's queue: its awake executions that have not ended, in order.
+	/// One that sleeps or is paused holds no place in it (#1008, ADR 0140).
 	async fn queue(&mut self, area: &Area) -> Result<Vec<SessionRun>> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
-			let rows: Vec<NativeSessionRun> = {
-				let query_bind_1 = area.id;
-				let query_bind_2 = area.generation;
-				crate::database::native::query_as(
-					&Query::select()
-						.column((Alias::new("q"), Alias::new("run_id")))
-						.column((Alias::new("q"), Alias::new("sequence")))
-						.column((Alias::new("r"), Alias::new("phase")))
-						.column((Alias::new("r"), Alias::new("control")))
-						.from_as(Alias::new("core_runs"), Alias::new("q"))
-						.join(
-							reinhardt::query::JoinType::InnerJoin,
-							reinhardt::query::TableRef::table_alias(
-								Alias::new("task_executions"),
-								Alias::new("r"),
-							),
-							Expr::col((Alias::new("q"), Alias::new("run_id")))
-								.equals((Alias::new("r"), Alias::new("id"))),
-						)
-						.and_where(
-							Expr::col((Alias::new("q"), Alias::new("area_id")))
-								.eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col((Alias::new("q"), Alias::new("generation")))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.and_where(
-							Expr::col((Alias::new("r"), Alias::new("phase"))).is_not_in([
-								"COMPLETED",
-								"FAILED",
-								"CANCELLED",
-							]),
-						)
-						.order_by((Alias::new("q"), Alias::new("sequence")), Order::Asc)
-						.limit(101)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["run_id", "sequence", "phase", "control"])
-				.fetch_all(&mut **access.tx)
-				.await?
-			};
+			let rows: Vec<NativeSessionRun> = crate::database::native::query_as(
+				&queue_rows(area.id, area.generation)
+					.column((Alias::new("q"), Alias::new("sequence")))
+					.column((Alias::new("r"), Alias::new("phase")))
+					.column((Alias::new("r"), Alias::new("control")))
+					.limit(101)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["run_id", "sequence", "phase", "control"])
+			.fetch_all(&mut **access.tx)
+			.await?;
 			Ok(rows)
 		}
 		.await;

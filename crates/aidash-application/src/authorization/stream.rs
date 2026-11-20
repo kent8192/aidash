@@ -46,6 +46,7 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, thread: Option<Uuid>) -
 			owner: current.owner_subject.ok_or(Error::Forbidden)?,
 			duty_id: current.duty_id,
 		};
+		let environment = json!({"node_id":scope.node_id(),"transport":"api"});
 		for action in ["thread.read", "thread.events"] {
 			let input = Evaluation {
 				subject: scope.subject().into(),
@@ -56,9 +57,25 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, thread: Option<Uuid>) -
 					id: id.to_string(),
 					attributes: super::threads::attributes(id, &owner),
 				},
-				environment: json!({"node_id":scope.node_id(),"transport":"api"}),
+				environment: environment.clone(),
 			};
-			if !snapshot.bundle.evaluate(&input).allowed {
+			let decision = snapshot.bundle.evaluate(&input);
+			if decision.allowed {
+				continue;
+			}
+			// A stream is a person's view, so a Node administrator reads the
+			// Thread's events as a read of the Thread would (#1008, ADR 0140).
+			let node = current.node.as_deref().ok_or(Error::Forbidden)?;
+			let administers = super::threads::node_administrator_reads(action, &decision, true)
+				&& snapshot
+					.bundle
+					.evaluate(&super::threads::node_administer(
+						scope.subject().into(),
+						super::lease::resource(scope.tenant(), &json!({}), "node", node, json!({})),
+						environment.clone(),
+					))
+					.allowed;
+			if !administers {
 				return Err(Error::Forbidden);
 			}
 		}

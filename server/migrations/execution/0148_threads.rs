@@ -2,9 +2,14 @@
 // The Workspace is dissolved into Threads (#1008, ADR 0140): every
 // `workspace_id` of this app becomes `thread_id`, and the Working Area key
 // becomes (home Node, Thread, Agent, owner). Areas that differed only by their
-// reply thread or Root Task are merged by dropping all but one per key, and
-// the Task to reply-thread map goes. The duplicate deletion is Reinhardt
-// Query output from `workspaces::services::thread_backfill`, checked by
+// reply thread or Root Task are merged into one per key, and the Task to
+// reply-thread map goes. The survivor is the first active or running Area,
+// else the first retained or recoverable one, else any, the newest first;
+// Runs, operations, objects, records, previews, message file versions and
+// image publications that named a merged Area name the survivor, and the
+// merged Areas' manifests, holds and Live previews cascade, so files kept in
+// a merged Area are dropped. The merge is Reinhardt Query output from
+// `workspaces::services::thread_backfill`, checked by
 // `manage migrationseeds`. Constraint and index renames, trigger function
 // bodies and the forced-policy table drop are SQL: Reinhardt has no typed
 // operation for them. Reversal restores the schema only: merged Areas stay

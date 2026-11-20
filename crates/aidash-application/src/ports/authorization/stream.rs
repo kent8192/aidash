@@ -12,6 +12,9 @@ pub struct AuthorityRecord {
 	pub owner_subject: Option<String>,
 	/// The Duty whose own Thread the selected Thread is, read with its owner.
 	pub duty_id: Option<Uuid>,
+	/// The selected Thread's Node, read with its owner: whoever administers
+	/// it reads the Thread's events (#1008, ADR 0140).
+	pub node: Option<String>,
 	pub mapping_id: Option<Uuid>,
 	pub mapping_enabled: Option<bool>,
 	pub issuer: Option<String>,

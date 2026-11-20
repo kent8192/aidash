@@ -310,6 +310,10 @@ pub async fn lease(
 			// only waited behind another Isolated Step is not charged again.
 			run.recovery.lease_recoveries = run.recovery.lease_recoveries.max(1);
 		}
+		// A cancellation is finished regardless of the queue, as `due` lets it.
+		if !cancelled && !scope.rejoin(m.id).await? {
+			continue;
+		}
 		if let Some(claimed) = scope.lease(&run, token, seconds, node).await? {
 			if claimed.recovery.lease_recoveries > 0 {
 				tracing::warn!(run_id = %claimed.id, lease_recoveries = claimed.recovery.lease_recoveries, isolated = true, worker_pid = std::process::id(), "lease recovered; next step will run isolated");

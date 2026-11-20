@@ -56,6 +56,7 @@ impl StreamAuthorityStore for Authority<'_> {
 				document: Value,
 				owner_subject: Option<String>,
 				duty_id: Option<Uuid>,
+				node: Option<String>,
 				mapping_id: Option<Uuid>,
 				mapping_enabled: Option<bool>,
 				mapping_tenant: Option<String>,
@@ -68,6 +69,7 @@ impl StreamAuthorityStore for Authority<'_> {
 				document,
 				owner_subject,
 				duty_id,
+				node,
 				mapping_id,
 				mapping_enabled,
 				mapping_tenant,
@@ -93,6 +95,8 @@ impl StreamAuthorityStore for Authority<'_> {
 					),
 					Alias::new("duty_id"),
 				)
+				// The selected Thread's Node, for its administrator (#1008).
+				.expr_as(col("t", "node"), Alias::new("node"))
 				.expr_as(col("m", "id"), Alias::new("mapping_id"))
 				.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
 				.expr_as(col("m", "tenant"), Alias::new("mapping_tenant"))
@@ -134,6 +138,16 @@ impl StreamAuthorityStore for Authority<'_> {
 					Condition::all()
 						.add(col("w", "thread_id").eq(Expr::value(thread)))
 						.add(col("w", "tenant").equals((Alias::new("c"), Alias::new("tenant")))),
+				)
+				.join(
+					reinhardt::query::JoinType::LeftJoin,
+					reinhardt::query::TableRef::table_alias(
+						Alias::new("threads"),
+						Alias::new("t"),
+					),
+					Condition::all()
+						.add(col("t", "id").equals((Alias::new("w"), Alias::new("thread_id"))))
+						.add(col("t", "tenant").equals((Alias::new("w"), Alias::new("tenant")))),
 				)
 				.and_where(col("c", "id").eq(Expr::cust("$1")))
 				.and_where(col("c", "tenant").eq(Expr::cust("$2")))
@@ -199,6 +213,7 @@ impl StreamAuthorityStore for Authority<'_> {
 				document: current.document,
 				owner_subject: current.owner_subject,
 				duty_id: current.duty_id,
+				node: current.node,
 				mapping_id: current.mapping_id,
 				mapping_enabled: current.mapping_enabled,
 				issuer: current.issuer,

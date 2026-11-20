@@ -114,6 +114,10 @@ pub async fn delete(
 	scope.delete_attachments(thread).await?;
 	scope.stop_schedules(thread).await?;
 	scope.mark_deleted(thread).await?;
+	// The Thread is gone for everyone, so is its work: another person's Run
+	// left running would find its Thread refused and pause where nobody can
+	// see or stop it (#1008).
+	scope.stop_work(thread).await?;
 	// The tombstone hides the Thread everywhere (#1008, ADR 0140).
 	scope
 		.create(Creation {
