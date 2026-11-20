@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 /// Make `run`'s own Thread an active Subnode whose only member is the Run's
 /// Agent, with `allowance` as the tools its members may use. The Run is also the
-/// creator, which the schema allows and nothing here reads.
+/// creator, which the schema allows and nothing here reads. Like
+/// `create_subnode`, it records the Node's address, not its bare name.
 #[allow(dead_code)]
 pub async fn seed_subnode(f: &Federation, run: Uuid, allowance: &[String]) -> Uuid {
 	let subnode = Uuid::new_v4();
@@ -20,13 +21,14 @@ pub async fn seed_subnode(f: &Federation, run: Uuid, allowance: &[String]) -> Uu
 		"INSERT INTO subnodes (id, tenant, node, creator_run_id, creator_task_id, \
 		  creator_agent_id, creator_agent_version, leader_agent_id, leader_agent_version, \
 		  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
-		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
-		  $2, thread_id, 'Late writes', 'active', now(), 'late', 'late' \
+		 SELECT $1, tenant, $4 || '/' || node, id, task_id, agent_id, agent_version, agent_id, \
+		  agent_version, $2, thread_id, 'Late writes', 'active', now(), 'late', 'late' \
 		 FROM task_executions WHERE id = $3",
 	)
 	.bind(subnode)
 	.bind(json!({"tools":allowance,"secrets":[]}))
 	.bind(run)
+	.bind(f.config.deployment.to_string())
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();

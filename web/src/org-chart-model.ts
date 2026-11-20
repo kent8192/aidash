@@ -59,6 +59,8 @@ export type FlowStopped = {
   root_task: string;
   tasks: number;
   runs: StoppedItem[];
+  /** Work handed to other Deployments, by Remote Grant. */
+  remote: StoppedItem[];
   subnodes: StoppedItem[];
   duties: StoppedItem[];
   nodes: { name: string; label: string }[];
@@ -101,7 +103,12 @@ export function stopSummary(result: FlowStopped): {
   failed: number;
   nodes: number;
 } {
-  const items = [...result.runs, ...result.subnodes, ...result.duties];
+  const items = [
+    ...result.runs,
+    ...result.remote,
+    ...result.subnodes,
+    ...result.duties,
+  ];
   return {
     stopped: items.filter((item) => item.outcome === "stopped").length,
     already: items.filter((item) => item.outcome === "already_stopped").length,

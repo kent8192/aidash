@@ -11,6 +11,7 @@ use aidash_application::org_chart::{
 	self as chart, DutyRow, Ledger, NodeRow, OrgChart, Rows, Spend, SubnodeRow, Viewer,
 };
 use aidash_domain::identity::tenant_administration::{BUDGET_MANAGE, NODE_ADMINISTER, NODE_READ};
+use aidash_domain::nodes::{DeploymentId, NodeAddress, NodeName};
 use aidash_domain::registry::EntityRef;
 use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
@@ -94,9 +95,24 @@ async fn thread_nodes(
 	Ok(rows.into_iter().collect())
 }
 
+/// The Node name of a stored Subnode: a Subnode records the address of its
+/// Node (`aidash://<deployment>/<name>`, as `create_subnode` writes it), and
+/// older rows the bare name. `None` for a Node of another Deployment, which
+/// no Node of this chart holds.
+fn subnode_node(deployment: &DeploymentId, stored: &str) -> Option<String> {
+	match NodeAddress::parse(stored) {
+		Ok(address) => (address.deployment == *deployment).then(|| address.node.into_string()),
+		Err(_) => NodeName::parse(stored).ok().map(NodeName::into_string),
+	}
+}
+
 /// The Tenant's active Subnodes, with their members and the person at the
 /// root of each creating Run's chain.
-async fn subnodes(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<SubnodeRow>> {
+async fn subnodes(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	deployment: &DeploymentId,
+) -> Result<Vec<SubnodeRow>> {
 	let records = SubnodeRecord::objects()
 		.filter(SubnodeRecord::field_tenant().eq(tenant.to_owned()))
 		.filter(SubnodeRecord::field_state().eq("active".to_owned()))
@@ -148,20 +164,22 @@ async fn subnodes(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<
 	.collect();
 	Ok(records
 		.into_iter()
-		.map(|record| SubnodeRow {
-			id: record.id,
-			node: record.node,
-			title: record.title,
-			creator_agent: EntityRef {
-				id: record.creator_agent_id,
-				version: record.creator_agent_version,
-			},
-			creator_task: record.creator_task_id,
-			root_subject: roots
-				.get(&record.creator_run_id)
-				.cloned()
-				.unwrap_or_default(),
-			members: members.remove(&record.id).unwrap_or_default(),
+		.filter_map(|record| {
+			Some(SubnodeRow {
+				id: record.id,
+				node: subnode_node(deployment, &record.node)?,
+				title: record.title,
+				creator_agent: EntityRef {
+					id: record.creator_agent_id,
+					version: record.creator_agent_version,
+				},
+				creator_task: record.creator_task_id,
+				root_subject: roots
+					.get(&record.creator_run_id)
+					.cloned()
+					.unwrap_or_default(),
+				members: members.remove(&record.id).unwrap_or_default(),
+			})
 		})
 		.collect())
 }
@@ -301,7 +319,7 @@ impl TenantAdministrations {
 						})
 					})
 					.collect();
-				rows.subnodes = subnodes(tx, &tenant).await?;
+				rows.subnodes = subnodes(tx, &tenant, &self.runtime.config.deployment).await?;
 				rows.ledger = ledger(tx, &tenant, since).await?;
 				let tasks = rows.creating_tasks();
 				rows.roots = aidash_application::flows::roots(

@@ -215,7 +215,12 @@ pub(crate) fn own_duty(
 /// Records, or clears, the Task whose Run set the Duty up (#1012; see
 /// threads 0047): a flow's stop pauses the Duties its Runs set up. A
 /// successor taking the Duty over clears the creating Run, and with it this.
+/// A Duty a Duty's Run sets up also sits below that Duty in the Budget
+/// lineage (identity 0112), which a successor does not clear.
 async fn creating_task(tx: &mut dyn TransactionExecutor, tenant: &str, duty: &Duty) -> Result<()> {
+	if let Some(run) = duty.created_by_run_id {
+		creating_duty(tx, tenant, duty.id, run).await?;
+	}
 	let task = match duty.created_by_run_id {
 		Some(run) => {
 			let mut task = Query::select();
@@ -237,6 +242,49 @@ async fn creating_task(tx: &mut dyn TransactionExecutor, tenant: &str, duty: &Du
 	)
 	.execute(&mut *tx)
 	.await?;
+	Ok(())
+}
+
+/// Puts `duty` below the Duty whose Task's Run `run` set it up, if a Duty's
+/// did, so that Duty's Budgets cover it (#1012 decision 33).
+async fn creating_duty(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+	run: Uuid,
+) -> Result<()> {
+	let (r, t) = (Alias::new("r"), Alias::new("t"));
+	let parent: Option<Uuid> = native::query_scalar(
+		&Query::select()
+			.column((t.clone(), Alias::new("duty_id")))
+			.from_as(Alias::new("task_executions"), r.clone())
+			.join(
+				reinhardt::query::JoinType::InnerJoin,
+				reinhardt::query::TableRef::table_alias(Alias::new("tasks"), t.clone()),
+				Expr::col((t.clone(), Alias::new("id")))
+					.equals((r.clone(), Alias::new("task_id")))
+					.and(
+						Expr::col((t.clone(), Alias::new("tenant")))
+							.equals((r.clone(), Alias::new("tenant"))),
+					),
+			)
+			.and_where(Expr::col((r.clone(), Alias::new("tenant"))).eq(tenant.to_owned()))
+			.and_where(Expr::col((r, Alias::new("id"))).eq(Expr::value(run)))
+			.and_where(Expr::col((t, Alias::new("duty_id"))).is_not_null())
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut *tx)
+	.await?;
+	if let Some(parent) = parent {
+		crate::apps::identity::repositories::budgets::record_lineage(
+			tx,
+			tenant,
+			crate::apps::identity::repositories::budgets::Lineage::Duty,
+			&duty.to_string(),
+			&parent.to_string(),
+		)
+		.await?;
+	}
 	Ok(())
 }
 

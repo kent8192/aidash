@@ -563,6 +563,9 @@ fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static s
 		Err(Error::RemoteSemantic(crate::semantic::remote::Failure::Pending)) => {
 			("pending", Some("model_call_pending"), false)
 		}
+		// A Budget at its Hard Limit refused the model call before it was
+		// sent (#1012): the job waits for the Budget without using an attempt.
+		Err(Error::BudgetExhausted { .. }) => ("pending", Some("budget_exhausted"), false),
 		Err(Error::Forbidden | Error::Conflict(_)) => {
 			("blocked", Some("authority_or_source_changed"), true)
 		}

@@ -152,7 +152,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			let query_bind_13 = status;
 			let query_bind_14 = reason;
 			let query_bind_15 = depth;
-			let query_bind_16 = limits.tokens_per_agent;
+			let query_bind_16 = limits.agent_token_limit();
 			let query_bind_17 = creation.lifetime_seconds;
 			let query_bind_19 = creation.foreign_intent.clone();
 			let deployment = self.runtime.config.deployment.as_str();
@@ -314,7 +314,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 
 		let query_bind_1 = &access.identity.tenant;
 		let query_bind_2 = policy_id;
-		let query_bind_3 = limits.tokens_per_agent;
+		let query_bind_3 = limits.reserved_tokens();
 		let query_bind_5 = allowances.embedding_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::update()
@@ -361,7 +361,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let limits = &policy.spec.limits;
 
 		let query_bind_1 = id;
-		let query_bind_2 = limits.tokens_per_agent;
+		let query_bind_2 = limits.agent_token_limit();
 		let query_bind_4 = allowances.embedding_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::insert()

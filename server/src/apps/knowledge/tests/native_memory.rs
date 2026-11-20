@@ -27,6 +27,8 @@ use upstream::reply;
 use uuid::Uuid;
 #[path = "native_memory/admission.rs"]
 mod admission;
+#[path = "native_memory/budgets.rs"]
+mod budgets;
 #[path = "native_memory/change_matrix.rs"]
 mod change_matrix;
 #[path = "native_memory/decay.rs"]

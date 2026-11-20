@@ -18,6 +18,8 @@ struct State {
 	pause: Option<String>,
 	active: usize,
 	commits: usize,
+	/// The token limit request 22 was recorded with.
+	token_limit: i64,
 }
 #[derive(Clone)]
 struct World(Arc<Mutex<State>>);
@@ -36,6 +38,7 @@ fn world() -> World {
 		pause: None,
 		active: 0,
 		commits: 0,
+		token_limit: 200_000,
 	})))
 }
 async fn point(world: &World, name: String) -> Result<()> {
@@ -197,9 +200,11 @@ impl GenerationInferenceSession for Session {
 		*self.ledger.balances.get_mut(&request).unwrap() -= amount;
 		Ok(())
 	}
-	async fn released_policy(&mut self, request: Uuid) -> Result<Option<(String, String)>> {
+	async fn released_policy(&mut self, request: Uuid) -> Result<Option<(String, String, i64)>> {
 		point(&self.world, format!("released:{request}")).await?;
-		Ok((request == Uuid::from_u128(22)).then(|| ("tenant".into(), "policy".into())))
+		let token_limit = self.world.0.lock().unwrap().token_limit;
+		Ok((request == Uuid::from_u128(22))
+			.then(|| ("tenant".into(), "policy".into(), token_limit)))
 	}
 	async fn refund_allocated(&mut self, tenant: &str, policy: &str, amount: i64) -> Result<()> {
 		assert_eq!((tenant, policy), ("tenant", "policy"));
@@ -312,6 +317,21 @@ async fn settlement_preserves_complete_unknown_and_contract_usage(
 		assert!(calls.contains(&"allocation".into()));
 	}
 	assert_eq!(calls.last().unwrap(), "drop");
+}
+/// A request without a token limit reserved nothing of its policy, so a
+/// refund after its quota was released gives nothing back to the policy
+/// (#1012 decision 41).
+#[rstest]
+#[tokio::test]
+async fn an_unbounded_request_refunds_nothing_to_its_policy(world: World) {
+	// Arrange
+	world.0.lock().unwrap().token_limit = aidash_domain::generation::policy::UNBOUNDED_TOKENS;
+	let reservation = receipt(&world).await;
+	// Act
+	reservation.settle(&response(30, 10, true)).await.unwrap();
+	// Assert: the request's own balance is refunded; the policy's is not.
+	assert_ledger(&world, 40, Some(40), 400, 2);
+	assert!(!world.0.lock().unwrap().calls.contains(&"allocation".into()));
 }
 #[rstest]
 #[tokio::test]

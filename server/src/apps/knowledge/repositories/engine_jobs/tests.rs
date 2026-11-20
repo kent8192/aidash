@@ -10,6 +10,7 @@ use rstest::rstest;
 #[case::durable_budget(Err(Error::RemoteSemantic(Failure::DurableMemoryBudget)), false, ("failed", Some("invalid_or_exhausted_work"), true))]
 #[case::queue_full(Err(Error::Conflict(crate::semantic::repositories::candidates::QUEUE_FULL.into())), true, ("pending", Some("candidate_queue_full"), false))]
 #[case::complete(Ok(()), false, ("complete", None, true))]
+#[case::budget_at_hard_limit(Err(Error::BudgetExhausted { stop: true, message: "Budget".into() }), true, ("pending", Some("budget_exhausted"), false))]
 fn a_live_model_attempt_waits_without_consuming_a_job_attempt(
 	#[case] outcome: crate::Result<()>,
 	#[case] last: bool,

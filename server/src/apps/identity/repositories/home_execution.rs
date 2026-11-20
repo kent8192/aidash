@@ -879,19 +879,71 @@ pub(crate) async fn cancel_deleted_node_grant(
 	node: &str,
 	id: Uuid,
 ) -> NativeResult<bool> {
+	cancel_grant(f, tenant, Some(node), id, false).await
+}
+
+/// A flow's stop (#1012, ADR 0143) cancels work the flow handed to another
+/// Deployment as the system, like the Node cancellation queue: the person who
+/// stops a flow need not be the grant's root person. The grant is revoked
+/// first, so it renews no more even when the receiver is unreachable; once the
+/// receiver acknowledges the cancel, the Home closes its side as a person's
+/// cancel does (`aidash_application::authorization::home::control`), without
+/// waiting for the receiver's Run to end. A grant nothing was admitted for
+/// is only revoked.
+pub(crate) async fn cancel_flow_grant(f: &Federation, tenant: &str, id: Uuid) -> NativeResult<()> {
+	cancel_grant(f, tenant, None, id, true).await.map(|_| ())
+}
+
+/// A flow's stop revokes the grant of a Task that already ended, so no grant
+/// of the flow is left unrevoked (#1012). The work is over, so the receiver
+/// is not asked to cancel anything.
+pub(crate) async fn revoke_flow_grant(f: &Federation, tenant: &str, id: Uuid) -> NativeResult<()> {
 	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
 	let mut tx = f.store.pool.begin(&scope).await?;
 	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
 	crate::transactions::gate::read_in(&mut tx).await?;
+	crate::apps::identity::repositories::remote_grants::persistence::revoke_for_node_in(
+		&f.store,
+		tx.as_mut(),
+		tenant,
+		id,
+	)
+	.await?;
+	tx.commit().await?;
+	Ok(())
+}
+
+/// Revokes grant `id` (of `node`, when one is named), asks the receiver to
+/// cancel the admission bound to it, then closes the Home Task. The Home side
+/// closes once the receiver's Run has ended, or, with `on_acknowledge`, as
+/// soon as the receiver accepted the cancel.
+async fn cancel_grant(
+	f: &Federation,
+	tenant: &str,
+	node: Option<&str>,
+	id: Uuid,
+	on_acknowledge: bool,
+) -> NativeResult<bool> {
+	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+	let mut tx = f.store.pool.begin(&scope).await?;
+	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+	crate::transactions::gate::read_in(&mut tx).await?;
+	let mut select = Query::select();
+	select
+		.column(Asterisk)
+		.from(Alias::new("authorization_remote_grants"))
+		.and_where(Expr::col("id").eq(Expr::value(id)))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())));
+	if let Some(node) = node {
+		select.and_where(
+			Expr::col("node")
+				.eq(Expr::value(node))
+				.or(Expr::col("node_id")
+					.eq(Expr::value(format!("{}/{}", f.config.deployment, node)))),
+		);
+	}
 	let grant: GrantRow = crate::database::native::query_as(
-		&Query::select()
-			.column(Asterisk)
-			.from(Alias::new("authorization_remote_grants"))
-			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-			.and_where(Expr::col("node").eq(Expr::value(node)).or(
-				Expr::col("node_id").eq(Expr::value(format!("{}/{}", f.config.deployment, node))),
-			))
+		&select
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -946,13 +998,14 @@ pub(crate) async fn cancel_deleted_node_grant(
 	use aidash_domain::federation::execution::admission::{
 		RemoteExecutionControlState, RemoteExecutionPhase,
 	};
-	if !(matches!(
-		response.phase,
-		RemoteExecutionPhase::Completed
-			| RemoteExecutionPhase::Failed
-			| RemoteExecutionPhase::Cancelled
-	) || (matches!(response.phase, RemoteExecutionPhase::Admitted)
-		&& matches!(response.control, RemoteExecutionControlState::Cancelled)))
+	if !on_acknowledge
+		&& !(matches!(
+			response.phase,
+			RemoteExecutionPhase::Completed
+				| RemoteExecutionPhase::Failed
+				| RemoteExecutionPhase::Cancelled
+		) || (matches!(response.phase, RemoteExecutionPhase::Admitted)
+			&& matches!(response.control, RemoteExecutionControlState::Cancelled)))
 	{
 		return Ok(false);
 	}

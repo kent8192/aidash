@@ -19,6 +19,7 @@ use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{self as domain, Node};
 use aidash_domain::tenancy::TenantName;
 use serde_json::json;
+use uuid::Uuid;
 
 pub struct Nodes {
 	runtime: Federation,
@@ -746,7 +747,7 @@ async fn agent_call(
 					"a Run cannot delete the Node it runs on".into(),
 				));
 			}
-			let (node, deletion) = agent_delete(f, &caller, name.as_str()).await?;
+			let (node, deletion) = agent_delete(f, run, &caller, name.as_str()).await?;
 			Ok(json!({
 				"node": node.name.as_str(),
 				"label": node.label,
@@ -848,85 +849,78 @@ async fn agent_create(
 	}
 }
 
+/// Whether the Run's flow created Node `name`: the Root Task of the Task whose
+/// Run created it is the Root Task of `task`, the deleting Run's Task (#1012
+/// decision 20).
+async fn created_by_own_flow(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	name: &str,
+	task: Uuid,
+) -> Result<bool> {
+	let names = [name.to_owned()];
+	let creators = nodes::creators(tx, tenant, Some(names.as_slice())).await?;
+	let creator = creators
+		.get(name)
+		.ok_or_else(|| Error::NotFound("node not found".into()))?;
+	let creating = match creator {
+		aidash_domain::nodes::agents::NodeCreator::Agent { task_id, .. } => Some(*task_id),
+		_ => None,
+	};
+	let tasks: Vec<Uuid> = creating.into_iter().chain([task]).collect();
+	let roots = aidash_application::flows::roots(
+		&mut crate::apps::identity::repositories::flows::NativeFlowGraph {
+			tx,
+			tenant: tenant.to_owned(),
+		},
+		&tasks,
+	)
+	.await?;
+	Ok(aidash_domain::nodes::agents::may_delete(
+		creator,
+		creating.and_then(|creating| roots.get(&creating).copied()),
+		roots.get(&task).copied().unwrap_or(task),
+	)
+	.is_ok())
+}
+
+/// An Agent deletes only a Node its own flow created; even its root person's
+/// `node.delete` does not widen that (#1012 decision 20). The deletion takes
+/// the policy exclusively, as a Tenant Administrator's does (ADR 0121); a
+/// refused call takes no lock.
 async fn agent_delete(
 	f: &Federation,
+	run: &aidash_domain::Run,
 	caller: &AgentCaller,
 	name: &str,
 ) -> Result<(Node, Option<NodeDeletion>)> {
-	type Creators = std::collections::BTreeMap<String, aidash_domain::nodes::agents::NodeCreator>;
 	let identity = &caller.identity;
 	let tenant = identity.tenant.clone();
 	let scope = TenancyScope::tenant(&tenant)?;
-	let names = [name.to_owned()];
-	let own = |creators: &Creators| {
-		creators
-			.get(name)
-			.and_then(|creator| creator.root_subject())
-			== Some(identity.subject.as_str())
+	let refused = || {
+		Error::Invalid(
+			"only a Node that this conversation's own flow created can be deleted; a person deletes any other Node"
+				.into(),
+		)
 	};
-	// Decided before the lock: a Node a chain of this person created, or a
-	// person some policy could allow `node.delete`, takes the policy
-	// exclusively as a Tenant Administrator's deletion does (ADR 0121).
-	let read = crate::apps::identity::services::core::Authorization {
-		pool: f.store.pool.clone(),
-	}
-	.snapshot(&tenant)
-	.await?;
-	let creator_read = f
+	let own = f
 		.store
 		.pool
 		.atomic(&scope, async |tx| {
-			nodes::creators(tx, &tenant, Some(names.as_slice())).await
+			created_by_own_flow(tx, &tenant, name, run.task_id).await
 		})
 		.await?;
-	let exclusive =
-		own(&creator_read) || read.bundle.may_allow(&identity.subject, rules::NODE_DELETE);
+	if !own {
+		return Err(refused());
+	}
 	let policy = f.config.dashboard_policy();
-	let denial = std::sync::Mutex::new(None);
-	let result = f
-		.store
+	f.store
 		.pool
 		.atomic(&scope, async |tx| {
-			let snapshot = identity.lock_native(tx, exclusive, policy.as_ref()).await?;
-			if !exclusive
-				&& snapshot
-					.bundle
-					.may_allow(&identity.subject, rules::NODE_DELETE)
-			{
-				return Err(Error::Conflict("authorization revision changed".into()));
+			identity.lock_native(tx, true, policy.as_ref()).await?;
+			if !created_by_own_flow(tx, &tenant, name, run.task_id).await? {
+				return Err(refused());
 			}
-			let current = nodes::get(tx, &tenant, name).await?;
-			let creators = nodes::creators(tx, &tenant, Some(names.as_slice())).await?;
-			let creator = creators
-				.get(name)
-				.ok_or_else(|| Error::NotFound("node not found".into()))?;
-			let holds = if own(&creators) {
-				false
-			} else {
-				let (evaluation, decision) = decide(
-					f,
-					identity,
-					&snapshot,
-					rules::NODE_DELETE,
-					name,
-					json!({"label": current.label, "default": current.default}),
-				);
-				let allowed = decision.allowed;
-				if allowed {
-					crate::apps::identity::models::AuthorizationDecision::append(
-						tx,
-						&tenant,
-						&evaluation,
-						&decision,
-					)
-					.await?;
-				} else {
-					*denial.lock().expect("denial lock") = Some((evaluation, decision));
-				}
-				allowed
-			};
-			aidash_domain::nodes::agents::may_delete(creator, &identity.subject, holds)
-				.map_err(|_| Error::Forbidden)?;
 			let (node, deletion, _) = change_in(
 				f,
 				tx,
@@ -940,15 +934,5 @@ async fn agent_delete(
 			.await?;
 			Ok((node, deletion))
 		})
-		.await;
-	match result {
-		Err(Error::Forbidden) => {
-			record_denial(f, &tenant, denial.into_inner().expect("denial lock")).await?;
-			Err(Error::Invalid(
-				"only a Node that a conversation of the person who started this one created can be deleted, unless they may delete Nodes (node.delete)"
-					.into(),
-			))
-		}
-		result => result,
-	}
+		.await
 }

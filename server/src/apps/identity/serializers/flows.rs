@@ -34,7 +34,8 @@ pub struct FlowNode {
 }
 
 /// What `POST /api/tenants/{tenant}/flows/{root_task}/stop` stopped: every open
-/// Run of the flow is cancelled, its Subnodes end and its Duties pause.
+/// Run of the flow is cancelled, so is the work it handed to other
+/// Deployments, its Subnodes end and its Duties pause.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FlowStopped {
@@ -42,6 +43,11 @@ pub struct FlowStopped {
 	/// How many Tasks the flow holds.
 	pub tasks: usize,
 	pub runs: Vec<StoppedItem>,
+	/// Remote Grants that handed the flow's Tasks to another Deployment, by
+	/// grant: each is revoked, its receiver cancels the Run, and the Task here
+	/// is cancelled. A grant whose Task had ended is `already_stopped`, and
+	/// revoked if it was not.
+	pub remote: Vec<StoppedItem>,
 	pub subnodes: Vec<StoppedItem>,
 	pub duties: Vec<StoppedItem>,
 	/// Nodes the flow created, left in place.

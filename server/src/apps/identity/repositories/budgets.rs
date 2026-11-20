@@ -250,13 +250,25 @@ pub(crate) async fn spent(
 		.from(Alias::new("budget_spend"))
 		.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
 		.and_where(Expr::col("day").gte(Expr::value(since)));
+	// A Duty or Node Budget counts the spend of what was created below it
+	// too: that work is carved out of it (#1012 decision 33).
 	match &budget.definition.scope {
 		Scope::Tenant => {}
 		Scope::Node { node } => {
-			query.and_where(Expr::col("node").eq(node.clone()));
+			let mut nodes = descendants(tx, &budget.tenant, Lineage::Node, node).await?;
+			nodes.push(node.clone());
+			query.and_where(Expr::col("node").is_in(nodes));
 		}
 		Scope::Duty { duty_id } => {
-			query.and_where(Expr::col("duty_id").eq(Expr::value(*duty_id)));
+			let mut duties = vec![*duty_id];
+			for duty in descendants(tx, &budget.tenant, Lineage::Duty, &duty_id.to_string()).await?
+			{
+				duties.push(
+					Uuid::parse_str(&duty)
+						.map_err(|_| Error::Invalid("a Duty lineage names no Duty".into()))?,
+				);
+			}
+			query.and_where(Expr::col("duty_id").is_in(duties.into_iter().map(Expr::value)));
 		}
 		Scope::Person { subject } => {
 			query.and_where(Expr::col("root_subject").eq(subject.clone()));
@@ -276,7 +288,10 @@ pub(crate) struct Charge {
 	pub duty: Uuid,
 }
 
-async fn charge_of(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<Option<Charge>> {
+pub(crate) async fn charge_of(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+) -> Result<Option<Charge>> {
 	let row = native::query(
 		&Query::select()
 			.column((Alias::new("r"), Alias::new("tenant")))
@@ -312,6 +327,46 @@ async fn charge_of(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<Option
 	.transpose()
 }
 
+/// What a model call outside any Run is charged to: background work on a
+/// Thread, such as memory maintenance, goes to its Tenant and its Thread's
+/// Node, with no root person or Duty (#1012).
+pub(crate) async fn thread_charge(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	thread: Uuid,
+) -> Result<Charge> {
+	Ok(Charge {
+		tenant: tenant.to_owned(),
+		node: crate::apps::workspaces::repositories::duties::thread_node(tx, tenant, thread)
+			.await?,
+		root_subject: String::new(),
+		duty: NO_DUTY,
+	})
+}
+
+/// The refusal a closed gate gives a model call (#1012): Stop pauses the Run
+/// until a person resumes it, Sleep lets it wait until the Budget recovers.
+pub(crate) fn admit(gate: Gate) -> Result<()> {
+	match gate {
+		Gate::Open => Ok(()),
+		Gate::Stop { budget } => Err(Error::BudgetExhausted {
+			stop: true,
+			message: format!("Budget {budget} is at its Hard Limit; raise it, then resume the Run"),
+		}),
+		Gate::Sleep { budget, until } => Err(Error::BudgetExhausted {
+			stop: false,
+			message: match until {
+				Some(until) => format!(
+					"Budget {budget} is at its Hard Limit; the Run sleeps until {until} or until the limit is raised"
+				),
+				None => format!(
+					"Budget {budget} is at its Hard Limit; the Run sleeps until the limit is raised"
+				),
+			},
+		}),
+	}
+}
+
 /// Adds one model call to the ledger: its reported cost, or one unpriced call.
 pub(crate) async fn record_spend(
 	tx: &mut dyn TransactionExecutor,
@@ -322,6 +377,16 @@ pub(crate) async fn record_spend(
 	let Some(charge) = charge_of(tx, run).await? else {
 		return Ok(());
 	};
+	record_charge(tx, &charge, cost, now).await
+}
+
+/// Adds one model call charged as `charge` to the ledger.
+pub(crate) async fn record_charge(
+	tx: &mut dyn TransactionExecutor,
+	charge: &Charge,
+	cost: Option<i64>,
+	now: DateTime<Utc>,
+) -> Result<()> {
 	let day = now
 		.date_naive()
 		.and_hms_opt(0, 0, 0)
@@ -415,14 +480,32 @@ pub(crate) async fn gate_for(
 	now: DateTime<Utc>,
 ) -> Result<(Gate, Vec<Budget>)> {
 	let mut covering = vec![];
-	for budget in list(tx, &charge.tenant).await? {
+	let budgets = list(tx, &charge.tenant).await?;
+	if budgets
+		.iter()
+		.all(|budget| budget.definition.hard_limit_nanocredits.is_none())
+	{
+		return Ok((Gate::Open, vec![]));
+	}
+	// The Budgets of the Duties and Nodes above the charged ones cover it
+	// too: what an Agent creates draws on its creator's Budget (#1012
+	// decision 33).
+	let mut duties = vec![];
+	if charge.duty != NO_DUTY {
+		duties.push(charge.duty.to_string());
+		duties
+			.extend(ancestors(tx, &charge.tenant, Lineage::Duty, &charge.duty.to_string()).await?);
+	}
+	let mut nodes = vec![charge.node.clone()];
+	nodes.extend(ancestors(tx, &charge.tenant, Lineage::Node, &charge.node).await?);
+	for budget in budgets {
 		if budget.definition.hard_limit_nanocredits.is_none() {
 			continue;
 		}
 		let covers = match &budget.definition.scope {
 			Scope::Tenant => true,
-			Scope::Node { node } => *node == charge.node,
-			Scope::Duty { duty_id } => *duty_id == charge.duty,
+			Scope::Node { node } => nodes.contains(node),
+			Scope::Duty { duty_id } => duties.contains(&duty_id.to_string()),
 			Scope::Person { subject } => *subject == charge.root_subject,
 		};
 		if covers {
@@ -440,6 +523,125 @@ pub(crate) async fn gate_for(
 		gate,
 		covering.into_iter().map(|(budget, _)| budget).collect(),
 	))
+}
+
+/// What a lineage row names: Duties by id, or Nodes by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lineage {
+	Duty,
+	Node,
+}
+
+impl Lineage {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Duty => "duty",
+			Self::Node => "node",
+		}
+	}
+}
+
+async fn lineage(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	by: &str,
+	select: &str,
+	value: &str,
+) -> Result<Vec<String>> {
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new(select))
+			.from(Alias::new("budget_lineage"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("kind").eq(kind.as_str()))
+			.and_where(Expr::col(Alias::new(by)).eq(value.to_owned()))
+			.order_by(Alias::new(select), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut *tx)
+	.await
+}
+
+/// Every Duty or Node above `child`: the one whose Run created it, and so on
+/// up.
+pub(crate) async fn ancestors(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	child: &str,
+) -> Result<Vec<String>> {
+	lineage(tx, tenant, kind, "child", "ancestor", child).await
+}
+
+/// Every Duty or Node created below `ancestor`, however deep.
+pub(crate) async fn descendants(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	ancestor: &str,
+) -> Result<Vec<String>> {
+	lineage(tx, tenant, kind, "ancestor", "child", ancestor).await
+}
+
+/// Records that a Run of `parent` created `child` (#1012 decision 33):
+/// `child` sits below `parent` and everything above it, so their Budgets
+/// cover it. Written once, when `child` is created; the rows outlive both.
+pub(crate) async fn record_lineage(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	child: &str,
+	parent: &str,
+) -> Result<()> {
+	if child == parent {
+		return Ok(());
+	}
+	let mut above = ancestors(tx, tenant, kind, parent).await?;
+	above.push(parent.to_owned());
+	for ancestor in above.into_iter().filter(|ancestor| ancestor != child) {
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new("budget_lineage"))
+				.columns(["tenant", "kind", "child", "ancestor"].map(Alias::new))
+				.values_panic([
+					Expr::value(tenant.to_owned()),
+					Expr::value(kind.as_str()),
+					Expr::value(child.to_owned()),
+					Expr::value(ancestor),
+				])
+				.on_conflict(
+					OnConflict::columns(["tenant", "kind", "child", "ancestor"].map(Alias::new))
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+	}
+	Ok(())
+}
+
+/// The Budgets that cover a Duty: its own and those of every Duty above it
+/// (#1012 decision 33), for a Duty's deletion to refuse lifting a limit
+/// someone else set (PR #1014 review; the Duty deletion fix reads it).
+#[allow(dead_code)]
+pub(crate) async fn covering_duty(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<Vec<Budget>> {
+	let mut duties = vec![duty.to_string()];
+	duties.extend(ancestors(tx, tenant, Lineage::Duty, &duty.to_string()).await?);
+	Ok(list(tx, tenant)
+		.await?
+		.into_iter()
+		.filter(|budget| match &budget.definition.scope {
+			Scope::Duty { duty_id } => duties.contains(&duty_id.to_string()),
+			_ => false,
+		})
+		.collect())
 }
 
 /// Every Budget with a Soft Limit, across Tenants, for the notice pass.
@@ -490,6 +692,26 @@ pub(crate) async fn claim_notice(
 	.await?
 	.rows_affected()
 		== 1)
+}
+
+/// Gives a claimed Soft Limit notice back when its mail could not be sent, so
+/// the next pass sends it again.
+pub(crate) async fn release_notice(
+	tx: &mut dyn TransactionExecutor,
+	budget: &Budget,
+	window_start: DateTime<Utc>,
+) -> Result<()> {
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("budget_notices"))
+			.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+			.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
+			.and_where(Expr::col("window_start").eq(Expr::value(window_start)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
 }
 
 /// Removes the Budgets of a Duty with the Duty; its spend stays in the ledger.

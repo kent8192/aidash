@@ -10,7 +10,8 @@ limit; the org chart is how people see and stop what grew.
 A **flow** is one Root Task (a request) and everything created under it:
 
 - its Task tree;
-- the Tasks its Runs created or delegated;
+- the Tasks its Runs created or delegated, including those handed to another
+  Deployment through a Remote Grant;
 - the Duties its Runs set up, and the Tasks those Duties started;
 - the Subnodes and the Nodes its Runs created.
 
@@ -62,20 +63,35 @@ A browser session is required, as for Budgets.
 
 - cancels every open Run of the flow (a cancelled Run also ends the Subnodes it
   created);
+- cancels the work the flow handed to other Deployments: each Remote Grant is
+  revoked, so it renews no more, the receiving Node is asked to cancel its Run,
+  and the Task here is cancelled once the receiver accepts. This runs as the
+  system, as a Node deletion's cancellation does, so whoever stops the flow
+  need not be the grant's root person;
 - ends the flow's Subnodes that outlived their creator;
 - pauses the flow's Duties; only their Requester resumes them;
 - leaves the Nodes the flow created in place and lists them, since they belong
   to the Tenant. A Tenant Administrator deletes them if they are unwanted.
 
-Each item is stopped on its own; the answer says for each Run, Subnode and Duty
-whether it was `stopped`, `already_stopped` or `failed` with the error, so one
-failure never keeps the rest running. Whoever may control a Run of the Root
+Each item is stopped on its own; the answer says for each Run, Remote Grant
+(`remote`), Subnode and Duty whether it was `stopped`, `already_stopped` or
+`failed` with the error, so one failure never keeps the rest running. A Remote
+Grant that failed is revoked already; stopping the flow again asks its receiver
+once more. Whoever may control a Run of the Root
 Task (`run.control`) or administers the Root Task's Node stops it, from a
 browser session; no Agent does.
 
 ## Nodes Agents create
 
 An Agent creates a Node with `node_create` only when the person at the root
-of its chain holds `node.create`, and deletes one with `node_delete` only when
-a chain of the same person created it or that person holds `node.delete`. See
+of its chain holds `node.create`. It deletes one with `node_delete` only when a
+Run of its own flow created it (the creating Task and the deleting Run's Task
+share a Root Task; decision 20), and likewise removes a Subnode with
+`delete_subnode` only from a Run of the creating Agent in the creating flow
+(decision 46). Another flow, even of the same person, does not, and the root
+person's `node.delete` does not widen this. That flow's root person and Tenant
+Administrators delete such Nodes and Subnodes from a browser session. See
 [authorization](../authorization.md).
+
+A Duty set up by a person starts each Task as its own Root Task, so the Task of
+one tick cannot delete a Node the Task of an earlier tick created.

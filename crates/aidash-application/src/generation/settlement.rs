@@ -84,9 +84,16 @@ async fn finalize_in(
 			));
 		}
 		let job = scope.request(row.request_id).await?;
+		// An unbounded request reserved no tokens of its policy, so none go
+		// back to it; a released embedding call still does (#1012).
 		if job.quota_released
 			&& scope
-				.refund_policy(&job, decision.refund, usage.purpose, decision.release_call)
+				.refund_policy(
+					&job,
+					job.policy_refund(decision.refund),
+					usage.purpose,
+					decision.release_call,
+				)
 				.await? != 1
 		{
 			return Err(Error::Conflict(

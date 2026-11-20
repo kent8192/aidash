@@ -310,8 +310,36 @@ impl InferenceUsage {
 				)
 				.await?;
 			}
+		} else if let UsageOutcome::Completed(usage) = outcome
+			&& Self::abandoned(tx, run, attempt).await?
+		{
+			// A newer lease made this attempt unknown, so its record keeps
+			// no usage, but the provider billed the call when it finished:
+			// the Budget ledger still takes its cost, or one unpriced call.
+			crate::apps::identity::repositories::budgets::record_spend(
+				tx,
+				run,
+				usage.cost.map(|cost| cost.nanocredits),
+				Utc::now(),
+			)
+			.await?;
 		}
 		Ok(written)
+	}
+
+	/// Whether the attempt was made unknown before its completion arrived.
+	async fn abandoned(tx: &mut dyn TransactionExecutor, run: Uuid, attempt: Uuid) -> Result<bool> {
+		let outcome: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("outcome"))
+				.from(Alias::new(Self::table_name()))
+				.and_where(Expr::col("attempt_id").eq(Expr::value(attempt)))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		Ok(outcome.as_deref() == Some(UsageOutcome::Unknown.as_str()))
 	}
 
 	async fn record_calibration_sample(

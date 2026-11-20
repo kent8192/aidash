@@ -294,6 +294,45 @@ async fn bounded_accounting_is_atomic_for_active_and_released_quota(
 	assert_eq!(state.active, 0);
 }
 
+/// A released request without a token limit reserved nothing of its policy:
+/// its settlement refunds the request's own budget and gives no tokens back
+/// to the policy (#1012 decision 41).
+#[rstest]
+#[tokio::test]
+async fn an_unbounded_released_request_refunds_no_policy_tokens(
+	repository: Repository,
+	usage: Usage,
+) {
+	// Arrange
+	repository.0.lock().unwrap().jobs[1].token_limit =
+		aidash_domain::generation::policy::UNBOUNDED_TOKENS;
+	// Act
+	finalize(
+		&repository,
+		&usage,
+		&Finalization::Settled { reported: Some(40) },
+	)
+	.await
+	.unwrap();
+	// Assert
+	let state = repository.0.lock().unwrap();
+	assert!(
+		state.committed.contains(&format!(
+			"budget:{}:60:inference:false",
+			Uuid::from_u128(22)
+		)),
+		"{:?}",
+		state.committed
+	);
+	assert!(
+		state
+			.committed
+			.contains(&format!("policy:{}:0:inference:false", Uuid::from_u128(22))),
+		"{:?}",
+		state.committed
+	);
+}
+
 #[rstest]
 #[case(Purpose::Embedding)]
 #[case(Purpose::Inference)]

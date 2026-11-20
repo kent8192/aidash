@@ -298,6 +298,8 @@ struct Management {
 	member_required: Allowance,
 	has_work: bool,
 	effects: Vec<&'static str>,
+	/// The Root Task of each Task the fake knows.
+	flows: std::collections::BTreeMap<Uuid, Uuid>,
 }
 impl Management {
 	fn new() -> Self {
@@ -332,11 +334,21 @@ impl Management {
 			member_required: Allowance::default(),
 			has_work: false,
 			effects: vec![],
+			flows: Default::default(),
 		}
 	}
 }
 #[async_trait]
 impl crate::ports::subnodes::ManageScope for Management {
+	async fn flow_roots(
+		&mut self,
+		tasks: &[Uuid],
+	) -> Result<std::collections::BTreeMap<Uuid, Uuid>> {
+		Ok(tasks
+			.iter()
+			.filter_map(|task| Some((*task, *self.flows.get(task)?)))
+			.collect())
+	}
 	async fn lock(&mut self, id: SubnodeId) -> Result<Option<Subnode>> {
 		Ok((id == self.subnode.id).then(|| self.subnode.clone()))
 	}
@@ -436,6 +448,30 @@ async fn addition_refuses_an_uncovered_binding_and_dissolution_requires_creator(
 	assert!(scope.effects.is_empty());
 	dissolve(&mut scope, &run(), id).await.unwrap();
 	assert_eq!(scope.effects, ["dissolve"]);
+}
+
+/// The creating Agent deletes its Subnode from another Run of the same flow,
+/// but not from a flow of the same person that did not create it (#1012
+/// decision 46).
+#[rstest::rstest]
+#[case::same_flow(Uuid::from_u128(2), true)]
+#[case::another_flow_of_the_same_person(Uuid::from_u128(77), false)]
+#[tokio::test]
+async fn only_the_creating_flow_deletes_a_subnode(#[case] flow: Uuid, #[case] allowed: bool) {
+	// Arrange: a later Run of the creating Agent, on Task 21, whose flow is
+	// `flow`; the creating Run's Task 2 is its own Root Task.
+	let mut scope = Management::new();
+	let id = scope.subnode.id;
+	let mut later = run();
+	later.id = Uuid::from_u128(20);
+	later.task_id = Uuid::from_u128(21);
+	scope.flows.insert(Uuid::from_u128(2), Uuid::from_u128(2));
+	scope.flows.insert(later.task_id, flow);
+	// Act
+	let result = dissolve(&mut scope, &later, id).await;
+	// Assert
+	assert_eq!(result.is_ok(), allowed, "{result:?}");
+	assert_eq!(scope.effects.len(), usize::from(allowed));
 }
 
 #[derive(Default)]

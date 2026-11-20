@@ -66,11 +66,12 @@ test("a stop counts what it stopped, what was already stopped and failures", () 
       { id: "r1", outcome: "stopped" },
       { id: "r2", outcome: "already_stopped" },
     ],
+    remote: [{ id: "g1", outcome: "stopped" }],
     subnodes: [{ id: "s1", outcome: "failed", error: "busy" }],
     duties: [{ id: "d1", outcome: "stopped" }],
     nodes: [{ name: "research", label: "Research" }],
   });
-  assert.deepEqual(summary, { stopped: 2, already: 1, failed: 1, nodes: 1 });
+  assert.deepEqual(summary, { stopped: 3, already: 1, failed: 1, nodes: 1 });
 });
 
 test("hidden Duties and Subnodes are counted together", () => {
