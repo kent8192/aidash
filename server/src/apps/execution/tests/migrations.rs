@@ -183,6 +183,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
 	("registry", "0081_thread_tools"),
+	("registry", "0082_thread_source_scope"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -330,7 +331,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
-	assert_eq!(head("registry"), ["0081_thread_tools"]);
+	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
 	assert_eq!(head("execution"), ["0152_stint_leases"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0061_duty_template_check"]);
@@ -2348,6 +2349,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 			("registry", "0081_thread_tools"),
+			("registry", "0082_thread_source_scope"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -6478,5 +6480,51 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 	for former in ["schedule.create", "workspace.create", "workspace.read"] {
 		assert!(!actions.contains(former), "{former}: {document}");
 	}
+	pool.close().await;
+}
+
+/// `registry/0082_thread_source_scope`: the native memory Source validator
+/// admits the scope `thread` (#1008) beside `participant` and the stored
+/// `workspace`, and its reverse restores the 0067 body without it.
+#[rstest]
+#[tokio::test]
+async fn thread_source_scope_migration_admits_thread_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts = async |scope: &str| {
+		contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![
+				json!({"scope":scope,"memory":{"id":"native","version":"1.0.0"},"max_tokens":4096}),
+				json!("source"),
+			],
+		)
+		.await
+	};
+	for scope in ["participant", "thread", "workspace"] {
+		assert!(accepts(scope).await, "{scope}");
+	}
+	assert!(!accepts("tenant").await);
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0082_thread_source_scope")
+			.await
+			.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+
+	// Act and Assert: the reverse narrows the scope again, and reapplying widens it.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(!accepts("thread").await);
+	assert!(accepts("workspace").await);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert!(accepts("thread").await);
 	pool.close().await;
 }
