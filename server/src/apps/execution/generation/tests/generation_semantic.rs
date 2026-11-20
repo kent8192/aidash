@@ -2173,7 +2173,7 @@ mod semantic_fixture_composition {
 		if maintenance {
 			assert_eq!(common::post(&app, &token, &format!("/api/threads/{thread}/semantic/entries"), json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
 		} else {
-			let bank = json!({"home":aidash_domain::nodes::NodeAddress::derived(f.store.deployment.as_str(),"acme").to_string(),"tenant":"acme","thread":thread,"participant":null});
+			let bank = json!({"home":aidash_domain::nodes::NodeAddress::derived(f.store.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":thread,"participant":null});
 			let (status,response)=common::post(&app, &token, &format!("/api/threads/{thread}/memory/operate"), json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
 			assert_eq!(status, 200, "{response}");
 			let (status,response)=common::post(&app, &token, &format!("/api/threads/{thread}/memory/units/mutate"), json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;

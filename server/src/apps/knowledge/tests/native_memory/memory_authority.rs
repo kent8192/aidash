@@ -31,7 +31,7 @@ fn authority_router(#[from(authority_state)] state: Arc<ModelState>) -> Arc<Rout
                     1 => vec![("delegate", "task_delegate", json!({"task_id":state.child.lock().unwrap().unwrap(),"node_id":aidash_domain::nodes::NodeAddress::derived("aidash://native-memory", "acme").to_string(),"agent":{"id":"a","version":"1.0.0"}}))],
                     _ if state.member_calls.fetch_add(1, Ordering::SeqCst) == 0 => vec![
                         ("recall", "memory_recall", json!({"text":"evidence","time":null,"kinds":[],"max_tokens":8192})),
-                        ("observe", "workspace_observe", json!({})),
+                        ("observe", "thread_observe", json!({})),
                     ],
                     _ => vec![],
                 };

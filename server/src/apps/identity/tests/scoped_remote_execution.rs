@@ -1273,7 +1273,7 @@ async fn native_remote_fixture(
 		),
 		(
 			shared,
-			json!({"home":aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(),"acme").to_string(),"tenant":"acme","thread":thread,"participant":null}),
+			json!({"home":aidash_domain::nodes::NodeAddress::derived(a.config.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":thread,"participant":null}),
 			"Native shared claim: 自転車の設計 uses reciprocal rank fusion.",
 		),
 	] {
