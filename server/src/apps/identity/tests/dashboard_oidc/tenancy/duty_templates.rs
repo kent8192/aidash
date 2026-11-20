@@ -286,6 +286,31 @@ async fn a_published_duty_installs_as_the_installers_own_duty(
 		)
 		.await;
 	assert_eq!(status, 200, "{next_detail}");
+	// Act + Assert: an update applies exactly the version the person reviewed.
+	// A digest that is not that version's (here the installed 1.0.0's) is
+	// refused, as is a version that does not exist; neither changes the Duty.
+	let (status, stale) = f
+		.bob(
+			"POST",
+			&format!("/api/duties/{bob_duty}/template-update"),
+			json!({"key": next, "digest": digest}),
+		)
+		.await;
+	assert_eq!(status, 409, "{stale}");
+	let (status, unknown) = f
+		.bob(
+			"POST",
+			&format!("/api/duties/{bob_duty}/template-update"),
+			json!({"key": format!("{next}-unknown"), "digest": next_detail["summary"]["digest"]}),
+		)
+		.await;
+	assert_eq!(status, 403, "{unknown}");
+	let (status, page) = f
+		.bob("GET", &format!("/api/duties/{bob_duty}"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page["duty"]["mission"], "Fix failing CI runs on main.");
+	assert_eq!(page["duty"]["template"]["version"], "1.0.0");
 	let (status, updated) = f
 		.bob(
 			"POST",

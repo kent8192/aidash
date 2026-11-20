@@ -27,17 +27,23 @@ import {
   agentKey,
   defaultAgent,
   installBody,
+  lineDiff,
   publishBody,
   publishForm,
   publishProblems,
   slotOf,
+  templateOf,
   timeTriggerOf,
+  updateBody,
+  updateChanges,
   type AgentRef,
   type DutyTemplate,
   type ExpectedTrigger,
   type PublishForm,
   type PublishProblem,
   type TriggerSlot,
+  type UpdateChange,
+  type UpdateField,
 } from "./duty-templates-model";
 
 const copy = {
@@ -91,7 +97,19 @@ const copy = {
     from: (packageId: string, version: string) =>
       `Installed from the template ${packageId} ${version}`,
     update: (version: string) => `Template version ${version} is available`,
-    applyUpdate: "Update the mission, procedure and scripts",
+    reviewUpdate: "Review the update",
+    reviewTitle: (version: string) =>
+      `What version ${version} changes in this Duty`,
+    noChanges:
+      "This version changes neither the mission, the procedure nor the scripts.",
+    notTemplate: "This Marketplace version is not a Duty template",
+    fields: {
+      mission: "Mission",
+      procedure: "Procedure",
+      router: "Router",
+      watcher: "Watcher",
+    } satisfies Record<UpdateField, string>,
+    applyUpdate: "Apply this version",
   },
   "ja-JP": {
     kind: "職務テンプレート",
@@ -144,7 +162,19 @@ const copy = {
       `テンプレート ${packageId} ${version} から導入`,
     update: (version: string) =>
       `テンプレートの新しいバージョン ${version} があります`,
-    applyUpdate: "使命・手順書・スクリプトを更新",
+    reviewUpdate: "更新内容を確認",
+    reviewTitle: (version: string) =>
+      `バージョン ${version} でこの職務が変わる点`,
+    noChanges: "このバージョンは使命・手順書・スクリプトを変えません。",
+    notTemplate:
+      "この Marketplace のバージョンは職務テンプレートではありません",
+    fields: {
+      mission: "使命",
+      procedure: "手順書",
+      router: "Router",
+      watcher: "Watcher",
+    } satisfies Record<UpdateField, string>,
+    applyUpdate: "このバージョンを適用",
   },
 };
 
@@ -577,7 +607,9 @@ export function PublishDutyTemplate({ duty }: { duty: Duty }) {
 }
 
 /** The template a Duty came from, and a later version its Requester may
- *  apply. A later version is offered, never applied by itself. */
+ *  apply. A later version is offered, never applied by itself, and never
+ *  unseen: the person first reviews what it changes, then applies exactly
+ *  the version they reviewed. */
 export function DutyTemplateLine({
   detail,
   onUpdated,
@@ -589,21 +621,43 @@ export function DutyTemplateLine({
   const words = copy[locale];
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [review, setReview] = useState<{
+    digest: string;
+    changes: UpdateChange[];
+  }>();
   const { duty, template_update: update } = detail;
   if (!duty.template) return null;
-  async function apply() {
+  async function load() {
     if (busy || !update) return;
     setBusy(true);
     setError("");
     try {
-      // The person applies what the Marketplace shows them now.
-      const latest = await apiFetch<{ summary: { digest: string } }>(
-        `/api/marketplace/packages/${encodeURIComponent(update.key)}`,
-      );
+      const shown = await apiFetch<{
+        summary: { digest: string };
+        manifest: { entity: { kind: string; config?: unknown } };
+      }>(`/api/marketplace/packages/${encodeURIComponent(update.key)}`);
+      const template = templateOf(shown.manifest);
+      if (!template) throw new Error(words.notTemplate);
+      setReview({
+        digest: shown.summary.digest,
+        changes: updateChanges(duty, template),
+      });
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function apply() {
+    if (busy || !update || !review) return;
+    setBusy(true);
+    setError("");
+    try {
       await apiFetch(
         `/api/duties/${duty.id}/template-update`,
-        post({ key: update.key, digest: latest.summary.digest }),
+        post(updateBody(update.key, review.digest)),
       );
+      setReview(undefined);
       onUpdated();
     } catch (reason) {
       setError(String(reason));
@@ -614,18 +668,63 @@ export function DutyTemplateLine({
   return (
     <div className="grid gap-1">
       <Hint>{words.from(duty.template.package_id, duty.template.version)}</Hint>
-      {update && detail.may_edit && (
+      {update && detail.may_edit && !review && (
         <div className="flex flex-wrap items-center gap-2">
           <Hint>{words.update(update.version)}</Hint>
           <Button
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => void apply()}
+            onClick={() => void load()}
           >
-            {words.applyUpdate}
+            {words.reviewUpdate}
           </Button>
         </div>
+      )}
+      {update && review && (
+        <section
+          aria-label={words.reviewTitle(update.version)}
+          className="grid gap-2 rounded-md border p-2"
+        >
+          <Hint>{words.reviewTitle(update.version)}</Hint>
+          {review.changes.length === 0 && <Hint>{words.noChanges}</Hint>}
+          {review.changes.map((change) => (
+            <div key={change.field} className="grid gap-1">
+              <span className="text-xs font-medium">
+                {words.fields[change.field]}
+              </span>
+              <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">
+                {lineDiff(change.before, change.after).map((line, index) => (
+                  <div
+                    key={index}
+                    className={
+                      line.kind === "+"
+                        ? "text-green-700 dark:text-green-400"
+                        : line.kind === "-"
+                          ? "text-red-700 dark:text-red-400"
+                          : undefined
+                    }
+                  >
+                    {`${line.kind} ${line.text}`}
+                  </div>
+                ))}
+              </pre>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={busy} onClick={() => void apply()}>
+              {words.applyUpdate}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setReview(undefined)}
+            >
+              {words.cancel}
+            </Button>
+          </div>
+        </section>
       )}
       {error && <Alert>{error}</Alert>}
     </div>

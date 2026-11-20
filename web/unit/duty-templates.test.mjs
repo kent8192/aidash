@@ -4,6 +4,7 @@ import {
   agentChoices,
   defaultAgent,
   installBody,
+  lineDiff,
   nextVersion,
   packageIdOf,
   publishBody,
@@ -12,6 +13,8 @@ import {
   templateOf,
   timeTriggerOf,
   toCreate,
+  updateBody,
+  updateChanges,
 } from "../src/duty-templates-model.ts";
 
 function draft() {
@@ -133,4 +136,55 @@ test("an install names the reviewed digest, the Thread and the chosen Agent", ()
     installBody("sha256:x", "t-1", { id: "a", version: "1.0.0" }, "k").agent,
     { id: "a", version: "1.0.0" },
   );
+});
+
+test("an update shows every field it replaces, scripts included, before it is applied", () => {
+  const duty = {
+    mission: "Fix failing CI runs.",
+    procedure: "1. Read the failed job.",
+    router: { language: "python", source: "print('act')" },
+    watcher: null,
+  };
+  const later = {
+    title: "GitHub CI duty",
+    mission: "Fix failing CI runs and report them.",
+    procedure: "1. Read the failed job.",
+    router: { language: "python", source: "import os\nprint('act')" },
+    watcher: {
+      script: { language: "shell", source: "curl -s https://ci.example" },
+      every_seconds: 300,
+    },
+    triggers: [],
+    agent: null,
+  };
+  const changes = updateChanges(duty, later);
+  // The unchanged procedure is left out; the new Watcher is shown in full.
+  assert.deepEqual(
+    changes.map((change) => change.field),
+    ["mission", "router", "watcher"],
+  );
+  const watcher = changes.find((change) => change.field === "watcher");
+  assert.equal(watcher.before, "");
+  assert.match(watcher.after, /curl -s https:\/\/ci\.example/);
+  assert.match(watcher.after, /every 300 s/);
+  assert.deepEqual(
+    lineDiff("python\nprint('act')", "python\nimport os\nprint('act')"),
+    [
+      { kind: " ", text: "python" },
+      { kind: "+", text: "import os" },
+      { kind: " ", text: "print('act')" },
+    ],
+  );
+  assert.deepEqual(lineDiff("old", ""), [{ kind: "-", text: "old" }]);
+  assert.deepEqual(
+    updateChanges(duty, { ...later, ...duty, triggers: [] }),
+    [],
+  );
+});
+
+test("an update sends the digest of the version the person reviewed", () => {
+  assert.deepEqual(updateBody("key-1.1.0", "sha256:reviewed"), {
+    key: "key-1.1.0",
+    digest: "sha256:reviewed",
+  });
 });

@@ -236,3 +236,91 @@ export function installBody(
     idempotency_key: idempotencyKey,
   };
 }
+
+/** What a later template version changes in a Duty: the fields an update
+ *  replaces, each as the text the person compares. */
+export type UpdateField = "mission" | "procedure" | "router" | "watcher";
+export type UpdateChange = {
+  field: UpdateField;
+  before: string;
+  after: string;
+};
+/** One line of a line diff: kept, removed or added. */
+export type DiffLine = { kind: " " | "-" | "+"; text: string };
+
+function scriptText(script?: Script | null): string {
+  return script ? `${script.language}\n${script.source}` : "";
+}
+
+function watcherText(watcher?: Watcher | null): string {
+  return watcher
+    ? `every ${watcher.every_seconds} s\n${scriptText(watcher.script)}`
+    : "";
+}
+
+/** The fields a template update would replace in `duty` and how, in the
+ *  order the update dialog shows them. Unchanged fields are left out. An
+ *  update replaces the mission, procedure and scripts; it keeps the
+ *  Duty's title, Agent and triggers (#1011 D4). */
+export function updateChanges(
+  duty: {
+    mission: string;
+    procedure: string;
+    router?: Script | null;
+    watcher?: Watcher | null;
+  },
+  template: DutyTemplate,
+): UpdateChange[] {
+  const fields: [UpdateField, string, string][] = [
+    ["mission", duty.mission, template.mission],
+    ["procedure", duty.procedure, template.procedure],
+    ["router", scriptText(duty.router), scriptText(template.router)],
+    ["watcher", watcherText(duty.watcher), watcherText(template.watcher)],
+  ];
+  return fields
+    .filter(([, before, after]) => before !== after)
+    .map(([field, before, after]) => ({ field, before, after }));
+}
+
+/** A line diff of `before` and `after` (longest common subsequence). */
+export function lineDiff(before: string, after: string): DiffLine[] {
+  const a = before === "" ? [] : before.split("\n");
+  const b = after === "" ? [] : after.split("\n");
+  const common = Array.from({ length: a.length + 1 }, () =>
+    new Array<number>(b.length + 1).fill(0),
+  );
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--)
+      common[i][j] =
+        a[i] === b[j]
+          ? common[i + 1][j + 1] + 1
+          : Math.max(common[i + 1][j], common[i][j + 1]);
+  const lines: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      lines.push({ kind: " ", text: a[i] });
+      i++;
+      j++;
+    } else if (
+      j < b.length &&
+      (i === a.length || common[i][j + 1] >= common[i + 1][j])
+    ) {
+      lines.push({ kind: "+", text: b[j] });
+      j++;
+    } else {
+      lines.push({ kind: "-", text: a[i] });
+      i++;
+    }
+  }
+  return lines;
+}
+
+/** The body of `POST /api/duties/{id}/template-update`: the version the
+ *  person reviewed, by its key and the digest of what they were shown. The
+ *  server applies exactly that version and refuses a digest that is not
+ *  its own, so nothing is applied that the person did not see. */
+export function updateBody(key: string, reviewedDigest: string) {
+  return { key, digest: reviewedDigest };
+}
