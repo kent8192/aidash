@@ -649,7 +649,11 @@ pub(crate) async fn retain_remote(
 	let Actor::Subject(identity) = actor else {
 		return Err(Error::Forbidden);
 	};
-	let (sender, node) = viewer_target(f, &identity, request.run_id).await?;
+	// Not `viewer_target`: this runs inside the citing message's transaction,
+	// so describing the grant here could wait on that transaction's own locks.
+	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
+	let result = source_target(f, &mut access, request.run_id, SourceAudience::Viewer).await;
+	let (sender, node, _) = access.finish(result).await?;
 	f.request(
 		&sender,
 		&node,
