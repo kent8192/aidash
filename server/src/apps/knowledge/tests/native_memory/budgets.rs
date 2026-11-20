@@ -98,7 +98,7 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 	server: reinhardt::test::fixtures::server::TestServerGuard,
 ) {
 	// Arrange: one indexed Unit, then a Tenant Budget at its Hard Limit.
-	let retries = usize::try_from(bounds.max_retries).unwrap();
+	let retries = bounds.max_retries;
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
