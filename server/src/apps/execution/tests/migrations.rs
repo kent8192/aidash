@@ -176,6 +176,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_stint_leases"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -229,6 +230,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_stint_leases"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -240,15 +242,19 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 /// hung reversal, so it is generous (#1016).
 const REVERSE_TO_ZERO: Duration = Duration::from_secs(120);
 
-/// Reverses the rename of `runs` (#1009), as a dependency-ordered rollback
-/// would, so an earlier migration that names the table can be rolled back
-/// alone on a full history.
+/// Reverses the rename of `runs` (#1009), and the Stint trigger that names the
+/// renamed table, as a dependency-ordered rollback would, so an earlier
+/// migration that names the table can be rolled back alone on a full history.
 async fn reverse_task_executions(
 	executor: &mut reinhardt::db::migrations::DatabaseMigrationExecutor,
 	source: &FilesystemSource,
 ) {
 	let mut renamed = Vec::new();
-	for name in ["0150_task_executions", "0151_task_executions_state"] {
+	for name in [
+		"0150_task_executions",
+		"0151_task_executions_state",
+		"0152_stint_leases",
+	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
 	executor.rollback_migrations(&renamed).await.unwrap();
@@ -325,7 +331,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0081_thread_tools"]);
-	assert_eq!(head("execution"), ["0151_task_executions_state"]);
+	assert_eq!(head("execution"), ["0152_stint_leases"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0061_duty_template_check"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -605,15 +611,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0152_policy_probe")
+		.get_migration("execution", "0153_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0151_task_executions_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0152_stint_leases".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -697,6 +700,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -2337,6 +2341,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5011,6 +5016,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0030_threads"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_stint_leases"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5572,6 +5578,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5659,6 +5666,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5754,6 +5762,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -6272,6 +6281,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0111_thread_member_policy"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;

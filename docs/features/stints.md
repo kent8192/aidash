@@ -12,15 +12,20 @@ and the CI result starts its next Stint.
 | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | is claimed, becomes ready, or starts thinking or calling a tool, with no Stint open                                           | opens                                       |
 | receives a person's input while working                                                                                       | stays open                                  |
-| is taken over by another worker after a crash (Lease Recovery)                                                                | stays open                                  |
+| is taken over by another worker after a crash (Lease Recovery)                                                                | stays open, and counts the takeover         |
 | waits for a person's answer, an approval, a reconciliation, child or dependency Tasks, a command it started, or its own timer | ends, with that wait's name as its reason   |
 | waits for a failure to be delivered                                                                                           | stays open: that is the worker's own retry  |
+| is paused by a person, a Budget set to "stop" or a Safety Stop                                                                | ends, with `paused` as its reason           |
+| is resumed                                                                                                                    | opens                                       |
 | completes, fails or is cancelled                                                                                              | ends, with the terminal phase as its reason |
 
 The database records Stints from the Run's phase and wait: a trigger on `task_executions`
 opens and ends them for every writer, so no code path can skip one, and at most
-one Stint per Run is open. Each inference attempt records the Stint it ran in,
-so cost per awake stretch is visible.
+one Stint per Run is open. A Stint also records the last worker lease
+(`lease_owner`, the holder's claim token) and how many times another worker took
+the lease over (`lease_recoveries`). A paused Run that is cancelled opens no
+Stint: its cancellation is delivered without the Agent. Each inference attempt
+records the Stint it ran in, so cost per awake stretch is visible.
 
 ## What stays with the Task
 
