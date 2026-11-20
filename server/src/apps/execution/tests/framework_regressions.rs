@@ -210,7 +210,7 @@ async fn custom_lease_predicates_preserve_target_isolation(
 		.and_where(Expr::cust(predicate))
 		.and_where(Expr::col("id").eq(Expr::value(target)))
 		.to_string(PostgresQueryBuilder);
-	let fixtures = "WITH runs(id, control, lease_until) AS (VALUES \
+	let fixtures = "WITH task_executions(id, control, lease_until) AS (VALUES \
         ('00000000-0000-0000-0000-000000000001'::uuid, 'RUNNING', NULL::timestamptz), \
         ('00000000-0000-0000-0000-000000000002'::uuid, 'RUNNING', NULL::timestamptz)) ";
 
