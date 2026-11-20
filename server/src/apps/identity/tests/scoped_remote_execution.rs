@@ -3772,11 +3772,17 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 }
 
 /// An onward hop acts under the grant's whole chain (#654): the receiver's
-/// executor itself must be allowed `task.delegate` by the Home's policy, even
-/// though the chain's root person holds it.
+/// executor itself must be allowed `federation.execute` on the target Node by
+/// the Home's policy, even though the chain's root person holds it. The deny
+/// names only the third Node, which the grant's own description never checks,
+/// so the grant's other commands still pass and only the hop is refused;
+/// without the deny the same hop goes through.
 #[rstest::rstest]
+#[case::executor_may_not_reach_the_target(true)]
+#[case::control(false)]
 #[tokio::test]
 async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
+	#[case] denied: bool,
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -3806,34 +3812,112 @@ async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
 		)
 		.await
 		.unwrap();
-	// Alice may delegate; the receiver's executor may not.
-	let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
-	let authorization = aidash_server::authorization::Authorization {
-		pool: p.a.store.pool.clone(),
-	};
-	let snapshot = authorization.snapshot("acme").await.unwrap();
-	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
-	bundle["policies"].as_array_mut().unwrap().push(json!({
-		"id":"executor-may-not-delegate","effect":"deny","subjects":{"ids":[executor]},
-		"actions":["task.delegate"],"resources":{"kinds":["task"]}
-	}));
-	common::replace_policy(&p.a.store, "acme", bundle).await;
+	if denied {
+		// Alice may hand work to the third Node; the receiver's executor may not.
+		let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+		let authorization = aidash_server::authorization::Authorization {
+			pool: p.a.store.pool.clone(),
+		};
+		let snapshot = authorization.snapshot("acme").await.unwrap();
+		let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":"executor-may-not-reach-the-third-node","effect":"deny","subjects":{"ids":[executor]},
+			"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[third.to_string()]}
+		}));
+		common::replace_policy(&p.a.store, "acme", bundle).await;
+	}
+	// The grant's own commands pass the chain's checks either way.
+	let read = home.read_record("task", &child.id.to_string()).await;
+	assert!(read.is_ok(), "{read:?}");
 	let agent = EntityRef {
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	assert!(
-		home.delegate_with_key("chain-hop", child.id, &third.to_string(), &agent)
-			.await
-			.is_err()
-	);
+	let handed = home
+		.delegate_with_key("chain-hop", child.id, &third.to_string(), &agent)
+		.await;
+	assert_eq!(handed.is_err(), denied, "{handed:?}");
 	let grants: i64 =
 		sqlx::query_scalar("SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1")
 			.bind(child.id)
 			.fetch_one(p.a.store.pool.fixture_driver())
 			.await
 			.unwrap();
-	assert_eq!(grants, 0);
+	assert_eq!(grants, if denied { 0 } else { 1 });
+	p.close().await;
+}
+
+/// A repeat of an onward `delegate` under the same key, as a harness sends one
+/// after losing its lease, answers the Delegation the first call made once the
+/// target has claimed the child, instead of refusing a hand-on that happened,
+/// and prepares no second grant (#1013 review). Other input under the key is
+/// still a conflict.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_repeated_onward_delegation_answers_its_first_delegation_after_the_target_claimed(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.list_onward_tools().await;
+	let third =
+		p.a.config
+			.deployment
+			.node(common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let research =
+		p.a.registry
+			.get(&tenant, "research", "1.0.0")
+			.await
+			.unwrap();
+	common::approve_agent_on(&p.a, "acme", &research, &third).await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let child = home
+		.create_task(
+			"replayed-child",
+			&NewTask {
+				title: "Replayed child".into(),
+				description: "Handed on once".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	let first = home
+		.delegate_with_key("replayed-hop", child.id, &third.to_string(), &agent)
+		.await
+		.unwrap();
+	// The third Node's executor claims the child, so it is no longer open.
+	let claimed = sqlx::query(
+		"UPDATE tasks SET owner = $1, status = 'CLAIMED', revision = revision + 1 WHERE id = $2",
+	)
+	.bind(aidash_domain::qualified_agent(&third, "research", "1.0.0"))
+	.bind(child.id)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(claimed.rows_affected(), 1);
+	let again = home
+		.delegate_with_key("replayed-hop", child.id, &third.to_string(), &agent)
+		.await
+		.unwrap();
+	assert_eq!(json!(again), json!(first));
+	let grants: i64 =
+		sqlx::query_scalar("SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1")
+			.bind(child.id)
+			.fetch_one(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(grants, 1);
+	let other = home
+		.delegate_with_key("replayed-hop", child.id, &node_of(&p.b), &agent)
+		.await;
+	assert!(other.is_err(), "{other:?}");
 	p.close().await;
 }
 
@@ -4278,6 +4362,325 @@ async fn a_sleeping_remote_run_keeps_its_grant_past_its_lifetime_until_its_task_
 	)
 	.await;
 	assert_ne!(ended.0, 200, "{}", ended.1);
+	p.close().await;
+}
+
+impl Pair {
+	/// The receiver's Run is paused on its only call, `task_delegate`, because
+	/// the Home's Federation Tool Request lacks it, so the Home's people are
+	/// asked (ADR 0139). Answers the call's key.
+	async fn pause_receiver_on_home_ask(&self) -> String {
+		use aidash_domain::federation::tool_lists::{Lacking, ToolAsk};
+		use aidash_domain::provider::{ModelResponse, ToolCall};
+		use aidash_domain::run_state::{
+			PausedCall, RecoveryState, RunState, ToolCallState, encode,
+		};
+		let key = self.declined_key();
+		let state = RunState::ToolCall(Box::new(ToolCallState {
+			response: ModelResponse {
+				tool_calls: vec![ToolCall {
+					id: "call-0".into(),
+					name: "task_delegate".into(),
+					arguments: json!({"task_id": Uuid::nil()}),
+				}],
+				..Default::default()
+			},
+			response_epoch: DECLINE_EPOCH,
+			..Default::default()
+		}));
+		let recovery = RecoveryState {
+			paused_call: Some(PausedCall {
+				key: key.clone(),
+				index: 0,
+				replay_safe: true,
+				tool: "task_delegate".into(),
+				tool_call: None,
+				kind: aidash_domain::tool::RefusalKind::OtherNode,
+				ask: Some(ToolAsk {
+					key: "task_delegate".into(),
+					lacking: Lacking {
+						home: true,
+						receiver: false,
+					},
+				}),
+			}),
+			..Default::default()
+		};
+		let phase = serde_json::to_value(state.phase()).unwrap();
+		sqlx::query(
+			"UPDATE task_executions SET pending = $1, phase = $2, control = 'PAUSED', lease_owner = NULL, \
+			 lease_until = NULL, error = 'task_delegate: the other Node refused' WHERE id = $3",
+		)
+		.bind(encode(&state, &recovery).unwrap())
+		.bind(phase.as_str().unwrap())
+		.bind(self.admission)
+		.execute(self.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		key
+	}
+}
+
+/// One liveness rule on the Home (#1013 review): a started grant that sleeps on
+/// a tool ask past its lifetime, its renewal missed, still lets the Home's
+/// people see the ask and answer it.
+#[rstest::rstest]
+#[tokio::test]
+async fn the_home_answers_the_tool_ask_of_a_run_that_slept_past_its_grants_lifetime(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	lapse_grant(&p).await;
+	let node = common::default_node(&p.a.store, "acme").await.node;
+	let receiver = node_of(&p.b).replace(':', "%3A").replace('/', "%2F");
+	let asks = format!("/api/tenants/acme/nodes/{node}/registrations/{receiver}/tool-asks");
+	let administrator = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let (status, listed) = administrator.send("GET", &asks, Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	let ask = listed["asks"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|ask| ask["side"] == "home")
+		.unwrap_or_else(|| panic!("the Home lists its ask: {listed}"));
+	assert_eq!(ask["id"], json!(p.grant), "{listed}");
+	assert_eq!(ask["call"], json!(call), "{listed}");
+	assert_eq!(ask["key"], "task_delegate", "{listed}");
+	let (status, answered) = administrator
+		.send(
+			"POST",
+			&format!("{asks}/{}/answer", p.grant),
+			json!({"choice": "run_only", "key": "task_delegate", "call": call}),
+		)
+		.await;
+	assert_eq!(status, 200, "{answered}");
+	assert_eq!(answered["resumed"], true, "{answered}");
+	let additions: Value = sqlx::query_scalar(
+		"SELECT tool_request_additions FROM authorization_remote_grants WHERE id = $1",
+	)
+	.bind(p.grant)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		additions.to_string().contains("task_delegate"),
+		"{additions}"
+	);
+	p.close().await;
+}
+
+/// The hourly renewal (ADR 0109 amendment of 2026-11-17) uses the Home's one
+/// liveness rule (#1013 review): a grant whose activation the Home never
+/// recorded is not renewed, though its Run is bound and its Task claimed. Once
+/// the activation is recorded, the same grant is.
+#[rstest::rstest]
+#[tokio::test]
+async fn the_renewal_extends_only_a_grant_whose_activation_was_recorded(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = p.a.store.pool.fixture_driver();
+	// Ten minutes left, inside the renewal window.
+	sqlx::query(
+		"UPDATE authorization_remote_grants SET expires_at = clock_timestamp() + interval '10 minutes' WHERE id = $1",
+	)
+	.bind(p.grant)
+	.execute(home)
+	.await
+	.unwrap();
+	let unrecorded = sqlx::query(
+		"UPDATE authorization_remote_execution SET activated_at = NULL WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.execute(home)
+	.await
+	.unwrap();
+	assert_eq!(unrecorded.rows_affected(), 1);
+	sqlx::query("UPDATE tasks SET status = 'CLAIMED' WHERE id = $1")
+		.bind(p.task)
+		.execute(home)
+		.await
+		.unwrap();
+	let expiry = async || -> chrono::DateTime<chrono::Utc> {
+		sqlx::query_scalar("SELECT expires_at FROM authorization_remote_grants WHERE id = $1")
+			.bind(p.grant)
+			.fetch_one(home)
+			.await
+			.unwrap()
+	};
+	let before = expiry().await;
+	let pass = aidash_server::apps::identity::services::remote_renewal::sweep(&p.a)
+		.await
+		.unwrap();
+	assert_eq!(pass.renewed, 0, "{pass:?}");
+	assert_eq!(expiry().await, before);
+	sqlx::query(
+		"UPDATE authorization_remote_execution SET activated_at = clock_timestamp() WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.execute(home)
+	.await
+	.unwrap();
+	let pass = aidash_server::apps::identity::services::remote_renewal::sweep(&p.a)
+		.await
+		.unwrap();
+	assert_eq!(pass.renewed, 1, "{pass:?}");
+	assert!(
+		expiry().await > before + chrono::Duration::minutes(30),
+		"renewed by another hour"
+	);
+	p.close().await;
+}
+
+/// A started grant lives past its lifetime while its Task is open (#1013), so
+/// the Viewer's requests about its Run re-evaluate the grant's whole chain
+/// first: once the requester may no longer delegate across Nodes, a sleeping
+/// Run's Working Area is out of their reach (#1013 review).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_broken_chain_refuses_the_viewer_of_a_sleeping_remote_run(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	lapse_grant(&p).await;
+	let inspect = format!("/api/executions/{}/remote-preview", p.admission);
+	let (status, inspection) = request(&p.aa, &p.token, "GET", &inspect, json!(null)).await;
+	assert_eq!(status, 200, "the chain holds: {inspection}");
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-stays-home","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["federation.execute"],"resources":{"kinds":["node"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, body) = request(&p.aa, &p.token, "GET", &inspect, json!(null)).await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/executions/{}/preview-tickets", p.admission),
+		json!({"kind": "file", "area_id": Uuid::new_v4(), "file_id": Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	p.close().await;
+}
+
+/// A message citing a File version of a sleeping remote Run asks its Node to
+/// retain it only while the grant's whole chain holds (#1013 review): with the
+/// chain intact the request reaches the receiving Node, which has no preview
+/// host here; once the requester may no longer delegate across Nodes it is
+/// refused before the message is written.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_broken_chain_refuses_retaining_a_cited_file_version_of_a_sleeping_remote_run(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	lapse_grant(&p).await;
+	let thread =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let cite = async || {
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/threads/{thread}/channel-messages"),
+			json!({
+				"content": "See the draft",
+				"idempotency_key": Uuid::new_v4(),
+				"file_versions": [{"area_id": Uuid::new_v4(), "file_id": Uuid::new_v4(), "run_id": p.admission}],
+			}),
+		)
+		.await
+	};
+	let (status, body) = cite().await;
+	assert_eq!(status, 409, "the receiving Node is asked: {body}");
+	assert!(body.to_string().contains("PREVIEW_UNAVAILABLE"), "{body}");
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-stays-home","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["federation.execute"],"resources":{"kinds":["node"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, body) = cite().await;
+	assert_eq!(status, 403, "{body}");
+	p.close().await;
+}
+
+/// A receiving Node's deny on the trusted `source_thread_id` of a Home Thread
+/// (once `source_workspace_id`; identity 0111 rewrites stored policies) refuses
+/// a remote Run's tool on that Thread, and only there.
+#[rstest::rstest]
+#[case::that_thread(true)]
+#[case::another_thread(false)]
+#[tokio::test]
+async fn a_receivers_deny_on_the_source_thread_refuses_a_remote_runs_tool(
+	#[case] that_thread: bool,
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let home_thread =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let thread = if that_thread {
+		home_thread
+	} else {
+		Uuid::new_v4()
+	};
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"no-tools-for-that-thread","effect":"deny","subjects":{"any":true},
+		"actions":["tool.invoke"],"resources":{"kinds":["tool"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/source_thread_id"},"right":{"source":"literal","value":thread}}
+	}));
+	common::replace_policy(&p.b.store, "acme", policy).await;
+	let pending = common::tool_pending(
+		json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"thread_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+	);
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(pending)
+		.bind(p.admission)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	p.step().await;
+	let run = p.run().await;
+	let history = json!(run.context);
+	if that_thread {
+		assert_eq!(run.control.as_str(), "PAUSED", "{:?} {history}", run.error);
+		assert_eq!(
+			run.error.as_deref(),
+			Some("thread_observe: tool.invoke was denied")
+		);
+		assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	} else {
+		assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+		let result = &first_result(&history)["event"]["result"];
+		assert!(result.get("error").is_none(), "{history}");
+	}
 	p.close().await;
 }
 
