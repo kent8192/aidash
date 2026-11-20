@@ -10581,18 +10581,9 @@ async fn home_cancellation_closes_remote_questions_and_refuses_late_answers(
 	p.close().await;
 }
 
-/// Stopping a flow reaches the work it handed to another Deployment (#1012,
-/// ADR 0143): the grant is revoked, so it renews no more, the receiver
-/// cancels its Run, and the Home Task is cancelled. The stop cancels it as the
-/// system, the way a Node deletion does, not as the grant's root person.
-#[rstest::rstest]
-#[tokio::test]
-async fn stopping_a_flow_cancels_the_work_it_handed_to_another_deployment(
-	#[future(awt)] scoped_pair: Pair,
-) {
-	// Arrange: the delegated Task becomes a child of a new Root Task in its
-	// Thread, and the receiver's Run has started.
-	let p = scoped_pair;
+/// Make the delegated Task a child of a new Root Task in its Thread, so it is
+/// a flow's remote child, and return that Root Task.
+async fn flow_root_of_the_delegated_task(p: &Pair) -> Uuid {
 	let thread =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
@@ -10615,6 +10606,67 @@ async fn stopping_a_flow_cancels_the_work_it_handed_to_another_deployment(
 		.execute(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	root
+}
+
+async fn grant_revoked(p: &Pair) -> bool {
+	sqlx::query_scalar("SELECT revoked FROM authorization_remote_grants WHERE id = $1")
+		.bind(p.grant)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+/// A flow whose remote child already ended leaves no grant unrevoked: the
+/// stop revokes it and reports it already stopped, without asking the
+/// receiver to cancel finished work (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn stopping_a_flow_revokes_the_grant_of_remote_work_that_already_ended(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	// Arrange: the remote child's Task has ended; its grant is not revoked.
+	let p = scoped_pair;
+	let root = flow_root_of_the_delegated_task(&p).await;
+	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+		.bind(p.task)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(!grant_revoked(&p).await);
+	// Act
+	let alice = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let (status, stopped) = alice
+		.send(
+			"POST",
+			&format!("/api/tenants/acme/flows/{root}/stop"),
+			Value::Null,
+		)
+		.await;
+	// Assert
+	assert_eq!(status, 200, "{stopped}");
+	assert_eq!(
+		stopped["remote"],
+		json!([{"id": p.grant, "outcome": "already_stopped"}]),
+		"{stopped}"
+	);
+	assert!(grant_revoked(&p).await);
+	p.close().await;
+}
+
+/// Stopping a flow reaches the work it handed to another Deployment (#1012,
+/// ADR 0143): the grant is revoked, so it renews no more, the receiver
+/// cancels its Run, and the Home Task is cancelled. The stop cancels it as the
+/// system, the way a Node deletion does, not as the grant's root person.
+#[rstest::rstest]
+#[tokio::test]
+async fn stopping_a_flow_cancels_the_work_it_handed_to_another_deployment(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	// Arrange: the delegated Task becomes a child of a new Root Task in its
+	// Thread, and the receiver's Run has started.
+	let p = scoped_pair;
+	let root = flow_root_of_the_delegated_task(&p).await;
 	p.step().await;
 	assert_eq!(p.run().await.phase().as_str(), "THINKING");
 	let path = format!("/api/tenants/acme/flows/{root}/stop");
@@ -10628,13 +10680,7 @@ async fn stopping_a_flow_cancels_the_work_it_handed_to_another_deployment(
 		json!([{"id": p.grant, "outcome": "stopped"}]),
 		"{stopped}"
 	);
-	let revoked: bool =
-		sqlx::query_scalar("SELECT revoked FROM authorization_remote_grants WHERE id = $1")
-			.bind(p.grant)
-			.fetch_one(p.a.store.pool.fixture_driver())
-			.await
-			.unwrap();
-	assert!(revoked);
+	assert!(grant_revoked(&p).await);
 	assert_eq!(
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)

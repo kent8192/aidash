@@ -45,7 +45,8 @@ pub struct FlowStopped {
 	pub runs: Vec<StoppedItem>,
 	/// Remote Grants that handed the flow's Tasks to another Deployment, by
 	/// grant: each is revoked, its receiver cancels the Run, and the Task here
-	/// is cancelled. A grant whose Task had ended is `already_stopped`.
+	/// is cancelled. A grant whose Task had ended is `already_stopped`, and
+	/// revoked if it was not.
 	pub remote: Vec<StoppedItem>,
 	pub subnodes: Vec<StoppedItem>,
 	pub duties: Vec<StoppedItem>,

@@ -895,6 +895,25 @@ pub(crate) async fn cancel_flow_grant(f: &Federation, tenant: &str, id: Uuid) ->
 	cancel_grant(f, tenant, None, id, true).await.map(|_| ())
 }
 
+/// A flow's stop revokes the grant of a Task that already ended, so no grant
+/// of the flow is left unrevoked (#1012). The work is over, so the receiver
+/// is not asked to cancel anything.
+pub(crate) async fn revoke_flow_grant(f: &Federation, tenant: &str, id: Uuid) -> NativeResult<()> {
+	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+	let mut tx = f.store.pool.begin(&scope).await?;
+	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+	crate::transactions::gate::read_in(&mut tx).await?;
+	crate::apps::identity::repositories::remote_grants::persistence::revoke_for_node_in(
+		&f.store,
+		tx.as_mut(),
+		tenant,
+		id,
+	)
+	.await?;
+	tx.commit().await?;
+	Ok(())
+}
+
 /// Revokes grant `id` (of `node`, when one is named), asks the receiver to
 /// cancel the admission bound to it, then closes the Home Task. The Home side
 /// closes once the receiver's Run has ended, or, with `on_acknowledge`, as

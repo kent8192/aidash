@@ -129,21 +129,24 @@ impl TenantAdministrations {
 		// Work handed to another Deployment: the grant is revoked, so it
 		// renews no more, and the receiver cancels its Run (decision 23). The
 		// person stopping the flow need not be the grant's root person, so
-		// this runs as the system, as a Node deletion's cancellation does.
+		// this runs as the system, as a Node deletion's cancellation does. A
+		// grant whose Task already ended is only revoked, if it is not yet.
 		let mut remote = vec![];
-		for (grant, settled) in grants {
-			if settled {
-				remote.push(stopped(grant, StopOutcome::AlreadyStopped));
-				continue;
-			}
-			match crate::apps::identity::repositories::home_execution::cancel_flow_grant(
-				f, &tenant, grant,
-			)
-			.await
-			{
-				Ok(()) => remote.push(stopped(grant, StopOutcome::Stopped)),
-				Err(error) => remote.push(failed(grant, error)),
-			}
+		for (grant, revoked, ended) in grants {
+			use crate::apps::identity::repositories::home_execution;
+			let outcome = match (revoked, ended) {
+				(true, true) => Ok(StopOutcome::AlreadyStopped),
+				(false, true) => home_execution::revoke_flow_grant(f, &tenant, grant)
+					.await
+					.map(|()| StopOutcome::AlreadyStopped),
+				(_, false) => home_execution::cancel_flow_grant(f, &tenant, grant)
+					.await
+					.map(|()| StopOutcome::Stopped),
+			};
+			remote.push(match outcome {
+				Ok(outcome) => stopped(grant, outcome),
+				Err(error) => failed(grant, error),
+			});
 		}
 
 		// Subnodes outlive a creator that completed; end the ones still active.

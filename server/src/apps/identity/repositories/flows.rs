@@ -94,10 +94,12 @@ impl NativeFlowGraph<'_> {
 	}
 
 	/// The Remote Grants that hand the flow's Tasks to another Deployment,
-	/// each with whether it is settled: its Task ended, and a grant ends with
-	/// its Task (decision 23). A grant whose Task is still open is not, even
-	/// when it was revoked.
-	pub(crate) async fn remote_grants(&mut self, tasks: &[Uuid]) -> Result<Vec<(Uuid, bool)>> {
+	/// each with whether it is revoked and whether its Task has ended
+	/// (`home::ending_statuses`).
+	pub(crate) async fn remote_grants(
+		&mut self,
+		tasks: &[Uuid],
+	) -> Result<Vec<(Uuid, bool, bool)>> {
 		if tasks.is_empty() {
 			return Ok(vec![]);
 		}
@@ -106,13 +108,15 @@ impl NativeFlowGraph<'_> {
 			&Query::select()
 				.expr_as(Expr::col((g.clone(), Alias::new("id"))), Alias::new("id"))
 				.expr_as(
-					Expr::col((t.clone(), Alias::new("status"))).is_in([
-						"COMPLETED",
-						"FAILED",
-						"CANCELLED",
-						"ABANDONED",
-					]),
-					Alias::new("settled"),
+					Expr::col((g.clone(), Alias::new("revoked"))),
+					Alias::new("revoked"),
+				)
+				.expr_as(
+					Expr::col((t.clone(), Alias::new("status"))).is_in(
+						aidash_domain::federation::execution::home::ending_statuses()
+							.map(|status| status.as_str()),
+					),
+					Alias::new("ended"),
 				)
 				.from_as(Alias::new("authorization_remote_grants"), g.clone())
 				.join(
@@ -130,7 +134,7 @@ impl NativeFlowGraph<'_> {
 				.order_by((g, Alias::new("id")), Order::Asc)
 				.to_string(PostgresQueryBuilder),
 		)
-		.columns(&["id", "settled"])
+		.columns(&["id", "revoked", "ended"])
 		.fetch_all(&mut *self.tx)
 		.await
 	}
