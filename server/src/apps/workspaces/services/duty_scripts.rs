@@ -7,7 +7,6 @@
 //! webhook's.
 use super::access::Lease;
 use super::duties::start_with;
-use super::duty_events::deliver_once;
 use crate::apps::workspaces::repositories::{
 	duties as duty_repository, duty_events as event_repository, duty_scripts as repository,
 };
@@ -20,7 +19,7 @@ use aidash_domain::{
 	TaskStatus,
 	duties::{
 		Duty, Halt, Tick, TickStatus,
-		events::{self, DutyEvent, DutyTrigger, EventOutcome, TriggerKind},
+		events::{self, DutyEvent, EventOutcome, TriggerKind},
 		scripts::{self, Invocation, Role, RouterAction, Script},
 	},
 };
@@ -30,18 +29,6 @@ use uuid::Uuid;
 
 /// Script Tasks settled and Watchers run per pass; the rest wait for the next.
 const BATCH: u64 = 32;
-
-/// The trigger a Duty's Watcher events name: the Duty itself, since a Watcher
-/// is part of the Duty rather than a trigger row.
-pub(crate) fn watcher_trigger(duty: &Duty) -> DutyTrigger {
-	DutyTrigger {
-		id: duty.id,
-		duty_id: duty.id,
-		kind: TriggerKind::Watcher,
-		created_at: duty.created_at,
-		created_by: duty.requester.clone(),
-	}
-}
 
 /// Starts a script Task in the Duty's Thread as the lease's person, and
 /// records what it runs. Returns the Task.
@@ -97,12 +84,12 @@ pub(crate) async fn route(
 	lease: &mut Lease,
 	duty: &Duty,
 	router: &Script,
-	(trigger, event): (&DutyTrigger, &DutyEvent),
+	(kind, event): (&TriggerKind, &DutyEvent),
 	now: DateTime<Utc>,
 ) -> Result<()> {
 	let tenant = lease.access_mut().identity.tenant.clone();
 	let open = repository::open_tasks(lease.tx(), &tenant, duty.id).await?;
-	let stdin = scripts::router_stdin(&event.payload, (trigger.id, trigger.kind.as_str()), &open)?;
+	let stdin = scripts::router_stdin(&event.payload, (event.trigger_id, kind.as_str()), &open)?;
 	let invocation = Invocation {
 		language: router.language,
 		source: router.source.clone(),
@@ -348,9 +335,6 @@ pub(crate) async fn settle_all(f: &Federation, now: DateTime<Utc>) -> usize {
 	settled
 }
 
-/// What a settled Watcher run leaves to deliver after its transaction.
-type Found = Vec<Value>;
-
 /// Settles one ended script Task as its Duty's Requester, exactly once.
 async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) -> Result<bool> {
 	let tenant = script.tenant.as_str();
@@ -373,13 +357,13 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 		Err(error) => return Err(error),
 	};
 	let mut lease = Lease::from_access(access);
-	let result: Result<Option<Found>> = async {
+	let result: Result<bool> = async {
 		if !repository::settle(lease.tx(), tenant, script.task, now).await? {
-			return Ok(None);
+			return Ok(false);
 		}
 		// Events of one Duty are applied one at a time, as they are delivered.
 		let Some(duty) = duty_repository::load(lease.tx(), tenant, duty.id, true).await? else {
-			return Ok(None);
+			return Ok(false);
 		};
 		let (stdout, error) = repository::outcome(lease.tx(), tenant, script.task).await?;
 		let output = match script.status {
@@ -395,7 +379,6 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 					.event
 					.ok_or_else(|| Error::Invalid("a Router run names no event".into()))?;
 				decide(f, &mut lease, &duty, event_id, output, now).await?;
-				Ok(Some(vec![]))
 			}
 			Role::Watcher => match output.and_then(|stdout| scripts::parse_watcher(&stdout)) {
 				Ok(found) => {
@@ -410,7 +393,10 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 						)
 						.await?;
 					}
-					Ok(Some(found.events))
+					for payload in found.events {
+						event_repository::enqueue(lease.tx(), tenant, duty.id, None, now, payload)
+							.await?;
+					}
 				}
 				Err(reason) => {
 					let event = script_event(
@@ -427,29 +413,20 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 						None,
 					)
 					.await?;
-					Ok(Some(vec![]))
 				}
 			},
 		}
+		Ok(true)
 	}
 	.await;
-	let found = match lease.finish(result).await {
-		Ok(Some(found)) => found,
-		Ok(None) => return Ok(false),
-		// A database outage leaves the script unsettled for the next pass.
-		Err(error) if error.is_transient_database() => return Err(error),
-		// A refused decision is a failed event, never retried silently.
-		Err(error) => return settle_failed(f, script, &duty, now, &error.to_string()).await,
-	};
-	// A Watcher's events go the way a webhook's go, each in its own
-	// transaction: to a booking, the Router or a new Task.
-	let trigger = watcher_trigger(&duty);
-	for payload in found {
-		if let Err(error) = deliver_once(f, tenant, &trigger, payload).await {
-			tracing::warn!(%error, duty = %duty.id, "a Watcher event could not be delivered");
-		}
+	match lease.finish(result).await {
+		// Watcher output failures are recorded above. If writing the receipts
+		// or pending events fails, keep the script unsettled for the next pass.
+		Err(error) if script.role == Role::Watcher || error.is_transient_database() => Err(error),
+		// A Router decision that was refused is recorded on its event.
+		Err(error) => settle_failed(f, script, &duty, now, &error.to_string()).await,
+		settled => settled,
 	}
-	Ok(true)
 }
 
 /// Settles a script Task whose outcome cannot be applied, recording why.

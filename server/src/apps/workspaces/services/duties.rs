@@ -616,21 +616,7 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 	let mut report = Pass::default();
 	for ended in repository::ended(&f.store.pool, 256).await? {
 		match settle(f, &ended, now).await {
-			Ok(true) => {
-				report.settled += 1;
-				// Another Duty may wake on this one's Task ending (#1011).
-				if let Err(error) = super::duty_events::completed(
-					f,
-					&ended.tenant,
-					ended.duty,
-					ended.task,
-					ended.status,
-				)
-				.await
-				{
-					tracing::warn!(%error, duty = %ended.duty, "Duty completion triggers could not run");
-				}
-			}
+			Ok(true) => report.settled += 1,
 			Ok(false) => {}
 			Err(error) => {
 				tracing::warn!(%error, tick = %ended.tick, "a Duty tick could not be settled");
@@ -639,6 +625,9 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 	}
 	// What Routers decided and Watchers found (#1011).
 	report.scripts_settled = super::duty_scripts::settle_all(f, now).await;
+	if super::duty_events::deliver_pending(f).await? {
+		f.notify.notify_waiters();
+	}
 	forget(f, now).await;
 	// A tick that failed transiently stays due, oldest first. Paging past it
 	// tries each due Duty at most once per pass, so a few that keep
@@ -700,6 +689,7 @@ async fn settle(f: &Federation, ended: &repository::Ended, now: DateTime<Utc>) -
 		if !repository::settle_tick(&mut tx, &ended.tenant, ended.tick, ended.status, now).await? {
 			return Ok(false);
 		}
+		super::duty_events::enqueue_completion(&mut tx, ended, now).await?;
 		if ended.manual {
 			return Ok(true);
 		}

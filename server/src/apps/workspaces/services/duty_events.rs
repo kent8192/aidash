@@ -18,8 +18,9 @@ use aidash_domain::duties::{
 	Duty, Tick, TickStatus,
 	events::{self, DutyEvent, DutyTrigger, EventOutcome, TriggerKind},
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
+use reinhardt::db::backends::TransactionExecutor;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -405,29 +406,60 @@ pub async fn notify(f: &Federation, run: &aidash_domain::Run, input: Value) -> R
 /// Where a Node receives events for its Duties, under `/federation/v0.1`.
 pub(crate) const NODE_EVENTS: &str = "/scoped/duty-events";
 
-/// Fires the `duty_completed` triggers of the Duty whose Task ended.
-pub(crate) async fn completed(
-	f: &Federation,
-	tenant: &str,
-	duty: Uuid,
-	task: Uuid,
-	status: TickStatus,
+/// Queues the deliveries of a Duty's ended Task before its tick settles.
+pub(super) async fn enqueue_completion(
+	tx: &mut dyn TransactionExecutor,
+	ended: &duty_repository::Ended,
+	now: DateTime<Utc>,
 ) -> Result<()> {
-	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-	let triggers = f
-		.store
-		.pool
-		.scoped(&scope, async |tx| {
-			repository::triggers_on_completion(&mut **tx, tenant, duty).await
-		})
-		.await?;
+	let tenant = &ended.tenant;
+	let triggers = repository::triggers_on_completion(tx, tenant, ended.duty).await?;
 	for trigger in triggers {
-		let payload = json!({"duty_id": duty, "task_id": task, "status": status.as_str()});
-		if let Err(error) = deliver_once(f, tenant, &trigger, payload).await {
-			tracing::warn!(%error, trigger = %trigger.id, "a Duty completion event could not be delivered");
-		}
+		let payload =
+			json!({"duty_id": ended.duty, "task_id": ended.task, "status": ended.status.as_str()});
+		repository::enqueue(tx, tenant, trigger.duty_id, Some(trigger.id), now, payload).await?;
 	}
 	Ok(())
+}
+
+/// Delivers Watcher and completion events that have survived settlement.
+/// Page past failed attempts so they can retry next pass without holding back
+/// other Duties. Returns whether any delivery was recorded.
+pub(super) async fn deliver_pending(f: &Federation) -> Result<bool> {
+	const BATCH: u64 = 256;
+	let mut after = None;
+	let mut delivered = 0;
+	loop {
+		let page = repository::pending(&f.store.pool, after, BATCH).await?;
+		let last_page = page.len() < BATCH as usize;
+		for pending in page {
+			after = Some(pending.id);
+			let kind = match pending.source_duty_id {
+				Some(source_duty_id) => TriggerKind::DutyCompleted { source_duty_id },
+				None => TriggerKind::Watcher,
+			};
+			let mut event = new_event(
+				pending.id,
+				pending.duty_id,
+				pending.trigger_id.unwrap_or(pending.duty_id),
+				pending.received_at,
+				pending.payload,
+			);
+			match apply(f, &pending.tenant, &kind, &mut event, Intake::Pending).await {
+				Ok(Delivered::Recorded) => delivered += 1,
+				Ok(_) => {}
+				Err(error) => {
+					tracing::warn!(%error, event = %event.id, "pending Duty event delivery will retry");
+				}
+			}
+			if delivered >= BATCH {
+				return Ok(true);
+			}
+		}
+		if last_page {
+			return Ok(delivered > 0);
+		}
+	}
 }
 
 /// Whether beginning the Requester's access failed because they left or lost
@@ -456,6 +488,60 @@ enum Delivered {
 	Recorded,
 	/// The trigger already took this delivery: its first event answers.
 	Repeat(DutyEvent),
+	/// The pending delivery was already applied or removed with its trigger or Duty.
+	Gone,
+}
+
+#[derive(Clone, Copy)]
+enum Intake<'a> {
+	Direct(Option<&'a repository::Delivery>),
+	Pending,
+}
+
+impl Intake<'_> {
+	/// Claims a pending delivery or finds the receipt of an earlier webhook.
+	/// The caller holds the receiving Duty's lock.
+	async fn prior(
+		self,
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		event: &DutyEvent,
+	) -> Result<Option<Delivered>> {
+		match self {
+			Self::Direct(Some(delivery)) => {
+				Ok(
+					repository::delivered(tx, tenant, event.trigger_id, delivery)
+						.await?
+						.map(Delivered::Repeat),
+				)
+			}
+			Self::Direct(None) => Ok(None),
+			Self::Pending => {
+				Ok((!repository::take_pending(tx, tenant, event.id).await?)
+					.then_some(Delivered::Gone))
+			}
+		}
+	}
+}
+
+fn new_event(
+	id: Uuid,
+	duty_id: Uuid,
+	trigger_id: Uuid,
+	received_at: DateTime<Utc>,
+	payload: Value,
+) -> DutyEvent {
+	DutyEvent {
+		id,
+		duty_id,
+		trigger_id,
+		received_at,
+		payload,
+		outcome: EventOutcome::Skipped,
+		reason: None,
+		task_id: None,
+		router: None,
+	}
 }
 
 /// Delivers one event to its Duty as the Duty's Requester: to the Task that
@@ -469,36 +555,54 @@ enum Delivered {
 /// the event; any other error, such as a database outage or a policy change
 /// racing the start, records nothing and is returned, so the sender can send
 /// the event again.
-pub(crate) async fn deliver(
+async fn deliver(
 	f: &Federation,
 	tenant: &str,
 	trigger: &DutyTrigger,
 	payload: Value,
 	delivery: Option<&repository::Delivery>,
 ) -> Result<DutyEvent> {
+	let mut event = new_event(
+		Uuid::now_v7(),
+		trigger.duty_id,
+		trigger.id,
+		Utc::now(),
+		payload,
+	);
+	match apply(
+		f,
+		tenant,
+		&trigger.kind,
+		&mut event,
+		Intake::Direct(delivery),
+	)
+	.await?
+	{
+		Delivered::Recorded => Ok(event),
+		Delivered::Repeat(first) => Ok(first),
+		Delivered::Gone => Err(Error::NotFound("duty not found".into())),
+	}
+}
+
+async fn apply(
+	f: &Federation,
+	tenant: &str,
+	kind: &TriggerKind,
+	event: &mut DutyEvent,
+	intake: Intake<'_>,
+) -> Result<Delivered> {
 	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
 	let Some(duty) = f
 		.store
 		.pool
 		.scoped(&scope, async |tx| {
-			duty_repository::load(&mut **tx, tenant, trigger.duty_id, false).await
+			duty_repository::load(&mut **tx, tenant, event.duty_id, false).await
 		})
 		.await?
 	else {
-		return Err(Error::NotFound("duty not found".into()));
+		return Ok(Delivered::Gone);
 	};
 	let now = Utc::now();
-	let mut event = DutyEvent {
-		id: Uuid::now_v7(),
-		duty_id: duty.id,
-		trigger_id: trigger.id,
-		received_at: now,
-		payload,
-		outcome: EventOutcome::Skipped,
-		reason: None,
-		task_id: None,
-		router: None,
-	};
 	let identity = SubjectIdentity {
 		http_session: None,
 		credential_id: duty.credential_id,
@@ -511,7 +615,7 @@ pub(crate) async fn deliver(
 		// event is recorded and starts nothing.
 		Err(error) if lost_access(&error) => {
 			event.reason = Some("the Requester lost access".into());
-			return record(f, tenant, &duty, event, delivery).await;
+			return record(f, tenant, &duty, event, intake).await;
 		}
 		Err(error) => return Err(error),
 	};
@@ -521,19 +625,16 @@ pub(crate) async fn deliver(
 		// second event wait until the first has started its Task (or not), so
 		// two events arriving together cannot both find the Duty idle, and a
 		// delivery sent twice at once is taken once.
-		let Some(duty) = duty_repository::load(lease.tx(), tenant, trigger.duty_id, true).await?
+		let Some(duty) = duty_repository::load(lease.tx(), tenant, event.duty_id, true).await?
 		else {
-			return Err(Error::NotFound("duty not found".into()));
+			return Ok(Delivered::Gone);
 		};
-		if let Some(delivery) = delivery
-			&& let Some(first) =
-				repository::delivered(lease.tx(), tenant, trigger.id, delivery).await?
-		{
-			return Ok(Delivered::Repeat(first));
+		if let Some(prior) = intake.prior(lease.tx(), tenant, event).await? {
+			return Ok(prior);
 		}
 		let mut run = None;
 		if let Some((task, booked)) =
-			repository::take_booking(lease.tx(), tenant, trigger.id).await?
+			repository::take_booking(lease.tx(), tenant, event.trigger_id).await?
 		{
 			event.outcome = EventOutcome::Delivered;
 			event.task_id = Some(task);
@@ -544,8 +645,7 @@ pub(crate) async fn deliver(
 			// The Router decides; it runs without a model and its Task
 			// settles in the scheduler pass (#1011 D3).
 			event.outcome = EventOutcome::Routing;
-			super::duty_scripts::route(f, &mut lease, &duty, router, (trigger, &event), now)
-				.await?;
+			super::duty_scripts::route(f, &mut lease, &duty, router, (kind, event), now).await?;
 		} else if duty_repository::running(lease.tx(), tenant, duty.id).await? {
 			event.reason = Some(aidash_domain::duties::skip::OVERLAP.into());
 		} else if let Some(reason) =
@@ -554,7 +654,7 @@ pub(crate) async fn deliver(
 			event.reason = Some(reason);
 		} else {
 			let description =
-				events::task_description(&duty.definition.mission, &trigger.kind, &event.payload);
+				events::task_description(&duty.definition.mission, kind, &event.payload);
 			let title = duty.definition.title.clone();
 			let task = start_with(f, &mut lease, &duty, (now, ""), (title, description)).await?;
 			event.outcome = EventOutcome::Started;
@@ -569,16 +669,16 @@ pub(crate) async fn deliver(
 					scheduled_at: now,
 					recorded_at: now,
 					status: TickStatus::Started,
-					reason: Some(format!("event: {}", trigger.kind.as_str())),
+					reason: Some(format!("event: {}", kind.as_str())),
 					task_id: Some(task),
 					started_by: None,
 				},
 			)
 			.await?;
 		}
-		repository::insert_event(lease.tx(), tenant, duty.thread_id, &event, run).await?;
-		if let Some(delivery) = delivery {
-			repository::record_delivery(lease.tx(), tenant, &event, delivery).await?;
+		repository::insert_event(lease.tx(), tenant, duty.thread_id, event, run).await?;
+		if let Intake::Direct(Some(delivery)) = intake {
+			repository::record_delivery(lease.tx(), tenant, event, delivery).await?;
 		}
 		if let Some(run) = run {
 			repository::wake(lease.tx(), run, event.id).await?;
@@ -587,89 +687,46 @@ pub(crate) async fn deliver(
 	}
 	.await;
 	match lease.finish(result).await {
-		Ok(Delivered::Recorded) => Ok(event),
-		Ok(Delivered::Repeat(first)) => Ok(first),
 		// A definite refusal is a failed event with its reason, never retried.
 		Err(error) if super::duties::refused(&error) => {
 			event.outcome = EventOutcome::Failed;
 			event.reason = Some(error.to_string());
 			event.task_id = None;
-			record(f, tenant, &duty, event, delivery).await
+			record(f, tenant, &duty, event, intake).await
 		}
-		// Anything that may pass, such as a database outage or a policy
-		// change racing the start, records nothing: the sender sends it again.
-		Err(error) => Err(error),
+		// Transient failures roll back the claim so the next pass (or the
+		// sender of a direct event) can try again.
+		outcome => outcome,
 	}
 }
 
-/// [`deliver`] for an event nobody sends again, a Watcher's or another
-/// Duty's Task ending: one that cannot be delivered now is recorded as failed
-/// with the reason, so the Duty's history shows it.
-pub(crate) async fn deliver_once(
-	f: &Federation,
-	tenant: &str,
-	trigger: &DutyTrigger,
-	payload: Value,
-) -> Result<DutyEvent> {
-	let error = match deliver(f, tenant, trigger, payload.clone(), None).await {
-		Err(error @ Error::NotFound(_)) => return Err(error),
-		Err(error) => error,
-		delivered => return delivered,
-	};
-	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-	let Some(duty) = f
-		.store
-		.pool
-		.scoped(&scope, async |tx| {
-			duty_repository::load(&mut **tx, tenant, trigger.duty_id, false).await
-		})
-		.await?
-	else {
-		return Err(error);
-	};
-	let event = DutyEvent {
-		id: Uuid::now_v7(),
-		duty_id: duty.id,
-		trigger_id: trigger.id,
-		received_at: Utc::now(),
-		payload,
-		outcome: EventOutcome::Failed,
-		reason: Some(error.to_string()),
-		task_id: None,
-		router: None,
-	};
-	record(f, tenant, &duty, event, None).await
-}
-
 /// Records an event that started nothing in a transaction of its own, with
-/// the webhook delivery that brought it, unless the trigger already took that
-/// delivery: then its first event answers.
+/// the same claim and webhook replay handling as a successful delivery.
 async fn record(
 	f: &Federation,
 	tenant: &str,
 	duty: &Duty,
-	event: DutyEvent,
-	delivery: Option<&repository::Delivery>,
-) -> Result<DutyEvent> {
+	event: &DutyEvent,
+	intake: Intake<'_>,
+) -> Result<Delivered> {
 	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
 	f.store
 		.pool
 		.scoped(&scope, async |tx| {
-			if let Some(delivery) = delivery {
-				// As in `deliver`, the Duty's lock takes one of two equal
-				// deliveries at a time.
-				duty_repository::load(&mut **tx, tenant, duty.id, true).await?;
-				if let Some(first) =
-					repository::delivered(&mut **tx, tenant, event.trigger_id, delivery).await?
-				{
-					return Ok(first);
-				}
+			if duty_repository::load(&mut **tx, tenant, duty.id, true)
+				.await?
+				.is_none()
+			{
+				return Ok(Delivered::Gone);
 			}
-			repository::insert_event(&mut **tx, tenant, duty.thread_id, &event, None).await?;
-			if let Some(delivery) = delivery {
-				repository::record_delivery(&mut **tx, tenant, &event, delivery).await?;
+			if let Some(prior) = intake.prior(&mut **tx, tenant, event).await? {
+				return Ok(prior);
 			}
-			Ok(event)
+			repository::insert_event(&mut **tx, tenant, duty.thread_id, event, None).await?;
+			if let Intake::Direct(Some(delivery)) = intake {
+				repository::record_delivery(&mut **tx, tenant, event, delivery).await?;
+			}
+			Ok(Delivered::Recorded)
 		})
 		.await
 }
