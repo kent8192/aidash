@@ -651,3 +651,227 @@ async fn native_context_descriptors_publish_without_private_content(
 	);
 	assert!(!frozen.manifest_source.contains("reference_documents"));
 }
+
+mod duty_templates {
+	//! Duty templates share the publication tail and the read checks of
+	//! every package (#1011 D4).
+	use super::*;
+	use crate::marketplace::duty_templates::{PublishTemplate, installable, publish};
+	use aidash_domain::duties::{
+		Definition,
+		scripts::{Language, Script},
+		templates::{KIND, Slot, Template, TriggerNote},
+	};
+
+	fn now() -> chrono::DateTime<chrono::Utc> {
+		chrono::Utc::now()
+	}
+
+	fn template() -> Template {
+		let duty = Definition {
+			title: "GitHub CI duty".into(),
+			mission: "Fix failing CI runs.".into(),
+			procedure: "1. Read the failed job.".into(),
+			agent: EntityRef {
+				id: "ci-fixer".into(),
+				version: "1.0.0".into(),
+			},
+			trigger: None,
+			approval_mode: None,
+			max_lateness_seconds: 3600,
+			pause_after_failures: 3,
+			router: Some(Script {
+				language: Language::Python,
+				source: "print('{\"action\":\"task\"}')".into(),
+			}),
+			watcher: None,
+		};
+		Template::from_duty(
+			&duty,
+			&[aidash_domain::duties::events::TriggerKind::Webhook],
+			&[TriggerNote {
+				kind: Slot::Webhook,
+				instruction: "Add the URL as a workflow_run webhook.".into(),
+			}],
+			true,
+		)
+		.unwrap()
+	}
+
+	fn input() -> PublishTemplate {
+		PublishTemplate {
+			package_id: "github-ci-duty".into(),
+			version: "1.0.0".into(),
+			author: "Acme".into(),
+			description: String::new(),
+			idempotency_key: Uuid::nil(),
+		}
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_published_template_reads_back_for_installing() {
+		// Arrange
+		let mut scope = Fixture::new();
+		// Act
+		let result = publish(&mut scope, &template(), &input(), "node", now())
+			.await
+			.unwrap();
+		let key = result["key"].as_str().unwrap().to_owned();
+		let digest = result["digest"].as_str().unwrap().to_owned();
+		let (version, read) = installable(&mut scope, &key, &digest, "node", now())
+			.await
+			.unwrap();
+		// Assert: an owner-only package of its own kind, with no Duty id.
+		assert_eq!(version.kind, KIND);
+		assert_eq!(version.source.id, "github-ci-duty");
+		assert!(version.dependencies.is_empty() && version.lineage.is_empty());
+		assert_eq!(
+			scope.audiences[&key].tenants,
+			BTreeSet::from(["owner".into()])
+		);
+		assert_eq!(read, template());
+		assert!(scope.calls.iter().any(|call| call == "marketplace.publish"));
+		assert!(scope.calls.iter().any(|call| call == "marketplace.install"));
+		assert_eq!(
+			scope.writes(),
+			vec![
+				"insert_version",
+				"event:marketplace.published",
+				"remember_publication"
+			]
+		);
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn publishing_needs_marketplace_publish_and_writes_nothing_without_it() {
+		let mut scope = Fixture::new();
+		scope.denied = Some("marketplace.publish".into());
+		let result = publish(&mut scope, &template(), &input(), "node", now()).await;
+		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+		assert!(scope.writes().is_empty());
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_template_with_a_credential_is_never_published() {
+		let mut scope = Fixture::new();
+		let mut template = template();
+		template.procedure = "export TOKEN=ghp_0123456789abcdefABCDEF0123456789abcd".into();
+		let result = publish(&mut scope, &template, &input(), "node", now()).await;
+		assert!(
+			result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("carries no secrets")),
+			"{result:?}"
+		);
+		assert!(scope.writes().is_empty());
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_package_id_used_by_another_kind_conflicts() {
+		let mut scope = Fixture::new();
+		scope.kind = Some("skill".into());
+		let result = publish(&mut scope, &template(), &input(), "node", now()).await;
+		assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn only_a_reviewed_duty_template_installs_as_a_duty() {
+		// Arrange: a template, and a skill package.
+		let mut scope = Fixture::new();
+		let result = publish(&mut scope, &template(), &input(), "node", now())
+			.await
+			.unwrap();
+		let key = result["key"].as_str().unwrap().to_owned();
+		// The fixture replays any key; the skill is a request of its own.
+		scope.replay = None;
+		let skill = super::publish(&mut scope, &validation(), &command(), "node")
+			.await
+			.unwrap();
+		// Act + Assert: another digest conflicts.
+		let changed = installable(&mut scope, &key, "sha256:other", "node", now())
+			.await
+			.map(|_| ());
+		assert!(matches!(changed, Err(Error::Conflict(_))), "{changed:?}");
+		// Act + Assert: a skill is not a Duty template.
+		let read = installable(
+			&mut scope,
+			skill["key"].as_str().unwrap(),
+			skill["digest"].as_str().unwrap(),
+			"node",
+			now(),
+		)
+		.await
+		.map(|_| ());
+		assert!(matches!(read, Err(Error::Invalid(_))), "{read:?}");
+		// Act + Assert: no marketplace.install, no template.
+		scope.denied = Some("marketplace.install".into());
+		let digest = result["digest"].as_str().unwrap();
+		let denied = installable(&mut scope, &key, digest, "node", now())
+			.await
+			.map(|_| ());
+		assert!(matches!(denied, Err(Error::Forbidden)), "{denied:?}");
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn an_installed_manifest_with_a_secret_field_is_refused() {
+		// Arrange: a version whose template names a webhook secret, as another
+		// Tenant's tampered package could.
+		let mut scope = Fixture::new();
+		let mut package = template()
+			.package(aidash_domain::duties::templates::Listing {
+				package_id: "github-ci-duty",
+				version: "1.0.0",
+				author: "Acme",
+				description: "",
+			})
+			.unwrap();
+		package.entity.config["webhook_secret"] = json!("s3cr3t");
+		let manifest_source = serde_json::to_string(&package).unwrap();
+		let digest = format!(
+			"sha256:{:x}",
+			<sha2::Sha256 as sha2::Digest>::digest(manifest_source.as_bytes())
+		);
+		let version = Version {
+			key: "tampered".into(),
+			repository: "node".into(),
+			owner_tenant: "owner".into(),
+			package_id: "github-ci-duty".into(),
+			version: "1.0.0".into(),
+			kind: KIND.into(),
+			publisher: "publisher".into(),
+			source: EntityRef {
+				id: "github-ci-duty".into(),
+				version: "1.0.0".into(),
+			},
+			manifest_source,
+			digest: digest.clone(),
+			dependencies: vec![],
+			lineage: BTreeSet::new(),
+		};
+		scope.versions.insert("tampered".into(), version);
+		scope.audiences.insert(
+			"tampered".into(),
+			Audience {
+				revision: 1,
+				tenants: BTreeSet::from(["owner".into()]),
+			},
+		);
+		// Act
+		let result = installable(&mut scope, "tampered", &digest, "node", now())
+			.await
+			.map(|_| ());
+		// Assert
+		assert!(
+			result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("not a valid Duty template")),
+			"{result:?}"
+		);
+	}
+}

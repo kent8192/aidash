@@ -144,5 +144,26 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"x-aidash-next-offset",
 		"Next revision offset",
 	)?;
+	// Duty templates (#1011 D4).
+	{
+		use super::duty_templates::{
+			InstallDutyTemplate, InstalledDuty, PublishDutyTemplate, UpdateDutyTemplate,
+		};
+		use crate::apps::workspaces::serializers::duties::DutyView;
+		use aidash_domain::duties::templates::Template;
+		use views::duty_templates as view;
+		let json = "application/json";
+		contracts.path(document, view::draft, &["Uuid"])?;
+		contracts.response::<_, Template>(document, view::draft, 200, json)?;
+		contracts.path(document, view::publish, &["Uuid"])?;
+		contracts.request::<_, PublishDutyTemplate>(document, view::publish)?;
+		contracts.response::<_, serde_json::Value>(document, view::publish, 200, json)?;
+		contracts.path(document, view::install, &["String"])?;
+		contracts.request::<_, InstallDutyTemplate>(document, view::install)?;
+		contracts.response::<_, InstalledDuty>(document, view::install, 200, json)?;
+		contracts.path(document, view::update, &["Uuid"])?;
+		contracts.request::<_, UpdateDutyTemplate>(document, view::update)?;
+		contracts.response::<_, DutyView>(document, view::update, 200, json)?;
+	}
 	Ok(())
 }

@@ -146,6 +146,12 @@ pub async fn install(
 	scope
 		.require(&scope.package_resource(&source), "marketplace.install")
 		.await?;
+	// A Duty template becomes a Duty, never a Registry copy (#1011 D4).
+	if source.kind == aidash_domain::duties::templates::KIND {
+		return Err(Error::Invalid(
+			"a Duty template is installed as a Duty, from a Thread".into(),
+		));
+	}
 	scope
 		.require(
 			&scope.registry_resource(

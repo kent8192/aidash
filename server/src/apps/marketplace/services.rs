@@ -1,6 +1,7 @@
 //! Tenant-owned distribution and immutable, separately approved installations.
 //! Legacy node-wide Marketplace routes remain in the registry app.
 mod distribution;
+pub(crate) mod duty_templates;
 pub(crate) mod events;
 pub(crate) mod installations;
 pub(crate) mod management;

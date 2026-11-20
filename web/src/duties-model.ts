@@ -2,6 +2,7 @@
  *  returns and the pure rules the Duty screens and the notification bell
  *  share. */
 import type { NoticeEntry } from "./notifications/model";
+import type { TemplateSource } from "./duty-templates-model";
 
 export type ApprovalMode = "manual" | "auto" | "dont_ask" | "bypass";
 export type Trigger =
@@ -85,6 +86,8 @@ export type Duty = {
   next_scheduled_at: string | null;
   consecutive_failures: number;
   created_by_run_id: string | null;
+  /** The Marketplace template version it was installed from (#1011 D4). */
+  template?: TemplateSource | null;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -107,6 +110,9 @@ export type DutyDetail = {
   duty: Duty;
   ticks: Tick[];
   newer_agent_version: string | null;
+  /** A later version of its template its Requester may move it to; never
+   *  applied by itself (#1011 D4). */
+  template_update?: TemplateSource | null;
   /** Saved Router and Watcher versions, newest first. */
   script_versions?: ScriptVersion[];
   may_edit: boolean;

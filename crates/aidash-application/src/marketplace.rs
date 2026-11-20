@@ -5,6 +5,8 @@ pub mod distribution;
 
 pub mod publication;
 
+pub mod duty_templates;
+
 pub mod installations;
 
 pub mod management;

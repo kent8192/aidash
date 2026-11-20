@@ -18,6 +18,30 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn package_versions(
+		&mut self,
+		repository: &str,
+		owner_tenant: &str,
+		package_id: &str,
+	) -> aidash_application::Result<Vec<Version>> {
+		let documents: Vec<serde_json::Value> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("document"))
+				.from(Alias::new("marketplace_versions"))
+				.and_where(Expr::col(Alias::new("repository")).eq(Expr::value(repository)))
+				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(owner_tenant)))
+				.and_where(Expr::col(Alias::new("package_id")).eq(Expr::value(package_id)))
+				.order_by(Alias::new("key"), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut **self.access.tx)
+		.await?;
+		Ok(documents
+			.into_iter()
+			.map(serde_json::from_value)
+			.collect::<Result<_, _>>()
+			.map_err(crate::Error::from)?)
+	}
 	async fn source_references(
 		&mut self,
 		offset: usize,

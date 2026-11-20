@@ -549,3 +549,170 @@ async fn a_watcher_runs_at_the_next_pass_once_set_and_never_once_removed() {
 	assert_eq!(watched.next_scheduled_at, duty.next_scheduled_at);
 	assert_eq!(unwatched.watcher_next_at, None);
 }
+
+mod templates {
+	//! Duties set up from Marketplace templates (#1011 D4).
+	use super::*;
+	use aidash_domain::duties::{
+		events::TriggerKind,
+		templates::{Slot, Source, Template, TriggerNote},
+	};
+
+	fn source(version: &str) -> Source {
+		Source {
+			key: format!("key-{version}"),
+			repository: "aidash://deployment/node".into(),
+			owner_tenant: "publisher".into(),
+			package_id: "dependency-check".into(),
+			version: version.into(),
+			install_key: Some(Uuid::nil()),
+		}
+	}
+
+	fn template() -> Template {
+		Template::from_duty(
+			&definition(),
+			&[TriggerKind::Webhook],
+			&[
+				TriggerNote {
+					kind: Slot::Time,
+					instruction: "Monday mornings.".into(),
+				},
+				TriggerNote {
+					kind: Slot::Webhook,
+					instruction: "Point the repository's push hook here.".into(),
+				},
+			],
+			true,
+		)
+		.unwrap()
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn the_person_who_installs_a_template_is_its_requester() {
+		// Arrange: bob installs a template alice's Duty became.
+		let thread = Uuid::new_v4();
+		let mut scope = Fake::new("bob");
+		scope.threads.insert(thread);
+		// Act
+		let duty = install_template(&mut scope, thread, &template(), None, source("1.0.0"))
+			.await
+			.unwrap();
+		// Assert: bob's Duty, with the suggested Agent and the time trigger.
+		assert_eq!(duty.requester, "bob");
+		assert_eq!(duty.credential_id, scope.credential);
+		assert_eq!(duty.definition.agent, definition().agent);
+		assert_eq!(duty.definition.trigger, definition().trigger);
+		assert!(duty.next_scheduled_at.is_some());
+		assert_eq!(duty.template, Some(source("1.0.0")));
+		assert_eq!(duty.created_by_run_id, None);
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn the_chosen_agent_staffs_it_and_an_unapproved_one_is_refused() {
+		let thread = Uuid::new_v4();
+		let mut scope = Fake::new("bob");
+		scope.threads.insert(thread);
+		let chosen = EntityRef {
+			id: "reporter".into(),
+			version: "1.2.0".into(),
+		};
+		let duty = install_template(
+			&mut scope,
+			thread,
+			&template(),
+			Some(chosen.clone()),
+			source("1.0.0"),
+		)
+		.await
+		.unwrap();
+		assert_eq!(duty.definition.agent, chosen);
+		// A suggested Agent this Node never approved is refused, as any is.
+		let mut foreign = template();
+		foreign.agent.as_mut().unwrap().id = "unknown".into();
+		let refused =
+			install_template(&mut scope, thread, &foreign, None, source("1.0.0")).await;
+		assert!(matches!(refused, Err(Error::Forbidden)), "{refused:?}");
+		// No suggestion and no choice: the person must pick one.
+		foreign.agent = None;
+		let unstaffed =
+			install_template(&mut scope, thread, &foreign, None, source("1.0.0")).await;
+		assert!(matches!(unstaffed, Err(Error::Invalid(_))), "{unstaffed:?}");
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn installing_needs_what_setting_up_any_duty_needs() {
+		for action in [duties::CREATE, "task.create", "thread.read"] {
+			let thread = Uuid::new_v4();
+			let mut scope = Fake::new("bob");
+			scope.threads.insert(thread);
+			scope.refused.insert(action);
+			let result =
+				install_template(&mut scope, thread, &template(), None, source("1.0.0")).await;
+			assert!(matches!(result, Err(Error::Forbidden)), "{action}");
+			assert!(scope.duties.is_empty());
+		}
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_later_version_updates_the_work_only_when_the_requester_applies_it() {
+		// Arrange
+		let thread = Uuid::new_v4();
+		let mut scope = Fake::new("bob");
+		scope.threads.insert(thread);
+		let duty = install_template(&mut scope, thread, &template(), None, source("1.0.0"))
+			.await
+			.unwrap();
+		let renamed = update(
+			&mut scope,
+			duty.id,
+			Patch {
+				title: Some("Bob's check".into()),
+				..Patch::default()
+			},
+		)
+		.await
+		.unwrap();
+		let mut next = template();
+		next.mission = "List outdated and vulnerable dependencies.".into();
+		// Act
+		let updated = update_from_template(&mut scope, duty.id, &next, source("1.1.0"))
+			.await
+			.unwrap();
+		// Assert: the new work, bob's title, the new version, the same install key.
+		assert_eq!(updated.definition.mission, next.mission);
+		assert_eq!(updated.definition.title, renamed.definition.title);
+		assert_eq!(updated.template, Some(source("1.1.0")));
+		// Act + Assert: an older or the same version never applies.
+		for stale in ["1.1.0", "0.9.0"] {
+			let result = update_from_template(&mut scope, duty.id, &next, source(stale)).await;
+			assert!(matches!(result, Err(Error::Invalid(_))), "{stale}");
+		}
+		// Act + Assert: only the Requester applies it.
+		let mut alice = scope.acting_as("alice");
+		alice.administers = true;
+		let result = update_from_template(&mut alice, duty.id, &next, source("2.0.0")).await;
+		assert!(result.is_err());
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn only_its_requester_publishes_a_duty() {
+		let thread = Uuid::new_v4();
+		let mut scope = alice_in(thread);
+		let duty = register(&mut scope, thread, definition(), Origin::Person)
+			.await
+			.unwrap();
+		assert_eq!(own(&mut scope, duty.id).await.unwrap().id, duty.id);
+		let mut bob = scope.acting_as("bob");
+		bob.threads.insert(thread);
+		assert!(matches!(
+			own(&mut bob, duty.id).await,
+			Err(Error::Invalid(_))
+		));
+	}
+}

@@ -82,6 +82,10 @@ pub struct DutyRecord {
 	/// When the Watcher runs next.
 	#[field(null = true)]
 	pub watcher_next_at: Option<DateTime<Utc>>,
+	/// The Marketplace template version it was installed from, if it was
+	/// (#1011 D4).
+	#[field(null = true)]
+	pub template: Option<Json<Value>>,
 }
 
 #[model(app_label = "workspaces", table_name = "duty_ticks")]

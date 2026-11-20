@@ -170,6 +170,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("marketplace", "0011_tenant_owned_row_level_security"),
 	("workspaces", "0049_threads"),
 	("workspaces", "0050_threads_state"),
+	("workspaces", "0060_duty_template"),
+	("workspaces", "0061_duty_template_check"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -221,6 +223,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0147_unscheduled_generations"),
 	("workspaces", "0049_threads"),
 	("workspaces", "0050_threads_state"),
+	("workspaces", "0060_duty_template"),
+	("workspaces", "0061_duty_template_check"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -660,6 +664,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0147_unscheduled_generations"),
 			("workspaces", "0049_threads"),
 			("workspaces", "0050_threads_state"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -857,12 +863,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0051_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0062_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0050_threads_state".to_owned())]
+		vec![(
+			"workspaces".to_owned(),
+			"0061_duty_template_check".to_owned()
+		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -2295,6 +2304,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0080_node_tools"),
 			("workspaces", "0049_threads"),
 			("workspaces", "0050_threads_state"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -4962,6 +4973,8 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0049_threads"),
 	("workspaces", "0050_threads_state"),
+	("workspaces", "0060_duty_template"),
+	("workspaces", "0061_duty_template_check"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5537,6 +5550,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5622,6 +5637,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5715,6 +5732,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
