@@ -6361,13 +6361,26 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 	execute(
 		Query::insert()
 			.into_table(Alias::new("messages"))
-			.columns(["id", "tenant", "thread_id", "sender", "content"].map(Alias::new))
+			// Keyed: the message gate's keyless branch still names
+			// `workspace_id` until 0148 re-creates it.
+			.columns(
+				[
+					"id",
+					"tenant",
+					"thread_id",
+					"sender",
+					"content",
+					"idempotency_key",
+				]
+				.map(Alias::new),
+			)
 			.values_panic::<_, reinhardt::query::Value>([
 				message.into(),
 				"area-merge".into(),
 				thread.into(),
 				"alice".into(),
 				"See the file".into(),
+				"fixture:area-merge".into(),
 			])
 			.to_string(PostgresQueryBuilder),
 	)
