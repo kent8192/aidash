@@ -82,11 +82,13 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 		migration_openers,
 		[
 			"migrations/execution/sql/backward/0113_content_object_references_triggers.sql",
+			"migrations/execution/sql/backward/0150_execution_events.sql",
 			"migrations/execution/sql/forward/0089_remove_agent_cluster.sql",
 			"migrations/execution/sql/forward/0090_run_created_at.sql",
 			"migrations/execution/sql/forward/0113_content_object_references_legacy.sql",
 			"migrations/execution/sql/forward/0141_remove_research_records.sql",
 			"migrations/execution/sql/forward/0148_duplicate_areas.sql",
+			"migrations/execution/sql/forward/0150_execution_events.sql",
 			"migrations/identity/sql/backward/0083_data_protection_switches.sql",
 			"migrations/identity/sql/backward/0098_duty_member_policy.sql",
 			"migrations/identity/sql/backward/0111_thread_member_policy.sql",
