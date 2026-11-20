@@ -1671,6 +1671,32 @@ async fn deleting_a_duty_cancels_its_open_script_tasks(#[future] capability_fixt
 			.unwrap()
 	};
 	assert_eq!(control(router).await.1, "ACTIVE");
+	// The worker's store says what each Run executes instead of a model.
+	use aidash_application::ports::execution::ExecutionStore as _;
+	use aidash_domain::duties::scripts::TaskScript;
+	let store =
+		c.f.store
+			.for_run(aidash_application::tenancy::TenancyScope::tenant("acme").unwrap());
+	let run_of = async |task: Uuid| {
+		let id: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
+			.bind(task)
+			.fetch_one(driver)
+			.await
+			.unwrap();
+		c.f.store.run(&TEST_FIXTURE, id).await.unwrap()
+	};
+	let (router_run, model_run) = (run_of(router).await, run_of(ticked.started[0]).await);
+	assert!(
+		matches!(
+			store.duty_script(&router_run).await.unwrap(),
+			TaskScript::Script(_)
+		),
+		"the Router's Run runs its script"
+	);
+	assert_eq!(
+		store.duty_script(&model_run).await.unwrap(),
+		TaskScript::Model
+	);
 	// Act
 	let (status, deleted) = request(
 		&c.app,
@@ -1683,6 +1709,14 @@ async fn deleting_a_duty_cancels_its_open_script_tasks(#[future] capability_fixt
 	// Assert
 	assert_eq!(status, 200, "{deleted}");
 	assert_eq!(control(router).await.1, "CANCELLED");
+	assert_eq!(
+		store.duty_script(&router_run).await.unwrap(),
+		TaskScript::Gone
+	);
+	assert_eq!(
+		store.duty_script(&model_run).await.unwrap(),
+		TaskScript::Model
+	);
 	assert_eq!(
 		control(ticked.started[0]).await.1,
 		"ACTIVE",
