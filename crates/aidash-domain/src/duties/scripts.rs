@@ -87,6 +87,16 @@ impl Language {
 			Self::Shell => "shell_poll",
 		}
 	}
+
+	/// The input field of [`Self::operation`] that carries the code: the
+	/// Python operation reads `code`, the shell operation `command`. Both
+	/// refuse any other field.
+	pub fn code_field(self) -> &'static str {
+		match self {
+			Self::Python => "code",
+			Self::Shell => "command",
+		}
+	}
 }
 
 /// A Router's or Watcher's code.
@@ -197,6 +207,25 @@ pub struct Invocation {
 	pub language: Language,
 	pub source: String,
 	pub stdin: String,
+}
+
+/// What a Run's Task runs in place of a model turn.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TaskScript {
+	/// An ordinary Task: its Run asks a model.
+	#[default]
+	Model,
+	/// A Task a Duty started to run this script.
+	Script(Invocation),
+	/// A Task a Duty started to run a script that went with its Duty. Its
+	/// Run fails rather than fall through to a model turn.
+	Gone,
+}
+
+impl TaskScript {
+	/// Why a Run whose script is gone cannot go on.
+	pub const GONE: &'static str =
+		"the Duty script this Task runs is gone with its Duty, so it is not run";
 }
 
 /// An open Task of the Duty, as a Router sees it.

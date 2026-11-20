@@ -281,6 +281,39 @@ impl DutyScope for Adapter<'_> {
 		let tenant = tenant(self.access);
 		Ok(repository::delete(&mut *self.access.tx, &tenant, id).await?)
 	}
+	async fn hand_over(&mut self, duty: &Duty, successor: &str) -> aidash_application::Result<()> {
+		let tenant = tenant(self.access);
+		// Only a Thread the Duty opened is its own to hand over; a Thread it
+		// was registered in stays its owner's.
+		if duty.origin_thread_id.is_some() {
+			repository::take_over_thread(&mut *self.access.tx, &tenant, duty.thread_id, successor)
+				.await?;
+			self.access.tx.forget_thread_owner(duty.thread_id);
+		}
+		crate::apps::workspaces::repositories::duty_events::drop_bookings(
+			&mut *self.access.tx,
+			&tenant,
+			duty.id,
+		)
+		.await?;
+		Ok(())
+	}
+	async fn budget_setters(&mut self, duty: Uuid) -> aidash_application::Result<Vec<String>> {
+		let tenant = tenant(self.access);
+		Ok(repository::budget_setters(&mut *self.access.tx, &tenant, duty).await?)
+	}
+	async fn manages_budgets(&mut self) -> aidash_application::Result<bool> {
+		let resource = self
+			.access
+			.resource("tenant", tenant(self.access), json!({}));
+		Ok(self
+			.access
+			.decide(
+				&resource,
+				aidash_domain::identity::tenant_administration::BUDGET_MANAGE,
+			)
+			.await?)
+	}
 	async fn list(&mut self, listing: Listing) -> aidash_application::Result<Vec<Duty>> {
 		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
 		let filter = match listing {
@@ -503,13 +536,13 @@ pub(crate) async fn start_with(
 			description,
 			read_pages: vec![],
 		},
+		// The Task records its Duty before its Run is claimed, so the claim
+		// pins the Duty's mission and procedure, and Budgets charge its
+		// spend, and its descendants', to the Duty.
+		Some(duty.id),
 	)
 	.await?;
-	let task = task.ok_or_else(|| Error::Conflict("this tick already started".into()))?;
-	// Budgets charge this Task's spend, and its descendants', to the Duty.
-	let tenant = tenant(lease.access_mut());
-	repository::mark_task_duty(lease.tx(), &tenant, task, duty.id).await?;
-	Ok(task)
+	task.ok_or_else(|| Error::Conflict("this tick already started".into()))
 }
 
 /// "Run now": an ordinary Run of the Duty as the person who clicked it,
@@ -606,6 +639,7 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 	}
 	// What Routers decided and Watchers found (#1011).
 	report.scripts_settled = super::duty_scripts::settle_all(f, now).await;
+	forget(f, now).await;
 	// A tick that failed transiently stays due, oldest first. Paging past it
 	// tries each due Duty at most once per pass, so a few that keep
 	// failing cannot hold back the rest of the Deployment; only ticks that
@@ -641,6 +675,21 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 		f.notify.notify_waiters();
 	}
 	Ok(report)
+}
+
+/// Rows a Duty keeps only for a while (#1011): webhook deliveries past their
+/// retention, and bookings whose Run ended, which no event can reach.
+async fn forget(f: &Federation, now: DateTime<Utc>) {
+	use crate::apps::workspaces::repositories::duty_events;
+	/// Rows of each kind forgotten per pass; the rest wait for the next.
+	const FORGET: u64 = 1000;
+	let before = now - Duration::days(duty_events::DELIVERY_RETENTION_DAYS);
+	if let Err(error) = duty_events::forget_deliveries(&f.store.pool, before, FORGET).await {
+		tracing::warn!(%error, "old Duty webhook deliveries could not be forgotten");
+	}
+	if let Err(error) = duty_events::forget_ended_bookings(&f.store.pool, FORGET).await {
+		tracing::warn!(%error, "bookings of ended Runs could not be dropped");
+	}
 }
 
 /// Settles one ended tick and counts a failure toward the Duty's pause.
@@ -727,6 +776,13 @@ fn classify(error: &Error) -> Option<Miss> {
 		Error::Conflict(message) if refusal_code(message) => Some(Miss::Fail(message.clone())),
 		_ => None,
 	}
+}
+
+/// Whether an error that stopped a Duty's start is a definite refusal, which
+/// is recorded with its reason and never retried, rather than one that may
+/// pass, which records nothing so the start can be tried again.
+pub(super) fn refused(error: &Error) -> bool {
+	classify(error).is_some()
 }
 
 /// What a claimed tick did in its Requester's transaction.
@@ -1249,7 +1305,7 @@ pub async fn agent_tool(
 				own(&scope.load(input.duty_id).await?)?;
 				match input.action {
 					tool::Removal::Delete => {
-						app::delete(&mut scope, input.duty_id).await?;
+						app::delete_by_agent(&mut scope, input.duty_id).await?;
 						json!({"deleted": input.duty_id})
 					}
 					tool::Removal::Pause => {

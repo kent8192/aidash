@@ -5,8 +5,8 @@ use aidash_domain::duties::events::{DutyEvent, DutyTrigger, EventOutcome, Trigge
 use chrono::{DateTime, Utc};
 use reinhardt::db::{backends::TransactionExecutor, orm::Model};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoIden, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr,
+	Alias, Condition, Expr, ExprTrait, IntoIden, IntoValue, LockBehavior, LockType, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use uuid::Uuid;
 
@@ -463,4 +463,212 @@ pub(crate) fn event_of_activation(reason: &str) -> Option<Uuid> {
 	reason
 		.strip_prefix("duty_event:")
 		.and_then(|id| Uuid::parse_str(id).ok())
+}
+
+/// One webhook delivery as a trigger keeps it (#1011): the SHA-256 of its
+/// body, which its signature covers, and the delivery id its sender named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Delivery {
+	pub digest: String,
+	pub id: Option<String>,
+}
+
+/// How long a trigger remembers the deliveries it accepted.
+pub(crate) const DELIVERY_RETENTION_DAYS: i64 = 7;
+
+/// The event an earlier delivery of the same body, or with the same delivery
+/// id, recorded for `trigger`, if the trigger still remembers one.
+pub(crate) async fn delivered(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	trigger: Uuid,
+	delivery: &Delivery,
+) -> Result<Option<DutyEvent>> {
+	let mut same = Condition::any().add(Expr::col("digest").eq(delivery.digest.clone()));
+	if let Some(id) = &delivery.id {
+		same = same.add(Expr::col("delivery_id").eq(id.clone()));
+	}
+	let earlier: Option<(Uuid, Uuid, DateTime<Utc>)> = native::query_as(
+		&Query::select()
+			.columns(["event_id", "duty_id", "received_at"].map(Alias::new))
+			.from(Alias::new("duty_deliveries"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("trigger_id").eq(Expr::value(trigger)))
+			.cond_where(same)
+			.order_by(Alias::new("received_at"), Order::Asc)
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["event_id", "duty_id", "received_at"])
+	.fetch_optional(&mut *tx)
+	.await?;
+	let Some((event, duty, received_at)) = earlier else {
+		return Ok(None);
+	};
+	let recorded = DutyEventRecord::objects()
+		.filter(DutyEventRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyEventRecord::field_id().eq(event))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(framework)?
+		.pop();
+	Ok(Some(match recorded {
+		Some(row) => event_of(row)?,
+		None => DutyEvent {
+			id: event,
+			duty_id: duty,
+			trigger_id: trigger,
+			received_at,
+			payload: serde_json::Value::Null,
+			outcome: EventOutcome::Skipped,
+			reason: Some("a repeat of an earlier delivery".into()),
+			task_id: None,
+			router: None,
+		},
+	}))
+}
+
+/// Remembers a delivery with the event it recorded, in that event's
+/// transaction, so a delivery that failed for now can be sent again.
+pub(crate) async fn record_delivery(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	event: &DutyEvent,
+	delivery: &Delivery,
+) -> Result<()> {
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("duty_deliveries"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"duty_id",
+					"trigger_id",
+					"digest",
+					"delivery_id",
+					"event_id",
+					"received_at",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(Uuid::now_v7()),
+				IntoValue::into_value(tenant.to_owned()),
+				IntoValue::into_value(event.duty_id),
+				IntoValue::into_value(event.trigger_id),
+				IntoValue::into_value(delivery.digest.clone()),
+				IntoValue::into_value(delivery.id.clone()),
+				IntoValue::into_value(event.id),
+				IntoValue::into_value(event.received_at),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}
+
+/// Forgets, across Tenants, deliveries older than the retention, at most
+/// `limit` per call. Returns how many went.
+pub(crate) async fn forget_deliveries(
+	pool: &Pool,
+	before: DateTime<Utc>,
+	limit: u64,
+) -> Result<u64> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::Retention);
+	let deleted = native::query(
+		&Query::delete()
+			.from_table(Alias::new("duty_deliveries"))
+			.and_where(
+				Expr::col("id").in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("duty_deliveries"))
+						.and_where(Expr::col("received_at").lt(Expr::value(before)))
+						.order_by(Alias::new("received_at"), Order::Asc)
+						.limit(limit)
+						.to_owned(),
+				),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool.in_scope(&scope))
+	.await?;
+	Ok(deleted.rows_affected())
+}
+
+/// The condition of a booking whose Run has ended or is gone.
+fn booking_ended() -> SimpleExpr {
+	Expr::exists(
+		Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("task_executions"))
+			.and_where(
+				Expr::col((Alias::new("task_executions"), Alias::new("id")))
+					.equals((Alias::new("duty_bookings"), Alias::new("run_id"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("task_executions"), Alias::new("phase"))).is_not_in([
+					"COMPLETED",
+					"FAILED",
+					"CANCELLED",
+				]),
+			)
+			.to_owned(),
+	)
+	.not()
+}
+
+/// Drops, across Tenants, bookings whose Run ended (#1011): no event can be
+/// delivered to them any more. At most `limit` per call; returns how many.
+pub(crate) async fn forget_ended_bookings(pool: &Pool, limit: u64) -> Result<u64> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::Retention);
+	let deleted = native::query(
+		&Query::delete()
+			.from_table(Alias::new("duty_bookings"))
+			.and_where(
+				Expr::col("id").in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("duty_bookings"))
+						.and_where(booking_ended())
+						.order_by(Alias::new("created_at"), Order::Asc)
+						.limit(limit)
+						.to_owned(),
+				),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool.in_scope(&scope))
+	.await?;
+	Ok(deleted.rows_affected())
+}
+
+/// Drops every booking of a Duty's triggers (#1011): when a successor takes
+/// the Duty over, no Run acting for the departed Requester gets its events.
+pub(crate) async fn drop_bookings(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<()> {
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("duty_bookings"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(
+				Expr::col("trigger_id").in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("duty_triggers"))
+						.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+						.and_where(Expr::col("duty_id").eq(Expr::value(duty)))
+						.to_owned(),
+				),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
 }

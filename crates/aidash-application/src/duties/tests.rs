@@ -18,6 +18,11 @@ struct Fake {
 	tier: Option<u32>,
 	duties: BTreeMap<Uuid, Duty>,
 	ticks: Vec<Tick>,
+	/// Who last set each Budget targeting a Duty.
+	budgets: BTreeMap<Uuid, Vec<String>>,
+	manages_budgets: bool,
+	/// The Duties handed over, and to whom.
+	handed_over: Vec<(Uuid, String)>,
 }
 
 impl Fake {
@@ -38,6 +43,9 @@ impl Fake {
 			tier: None,
 			duties: BTreeMap::new(),
 			ticks: vec![],
+			budgets: BTreeMap::new(),
+			manages_budgets: false,
+			handed_over: vec![],
 		}
 	}
 
@@ -142,6 +150,21 @@ impl DutyScope for Fake {
 	async fn delete(&mut self, id: Uuid) -> Result<()> {
 		self.duties.remove(&id);
 		Ok(())
+	}
+	async fn hand_over(&mut self, duty: &Duty, successor: &str) -> Result<()> {
+		assert_eq!(successor, self.subject);
+		// The Duty's own Thread becomes the successor's, with every action.
+		if duty.origin_thread_id.is_some() {
+			self.threads.insert(duty.thread_id);
+		}
+		self.handed_over.push((duty.id, successor.to_owned()));
+		Ok(())
+	}
+	async fn budget_setters(&mut self, duty: Uuid) -> Result<Vec<String>> {
+		Ok(self.budgets.get(&duty).cloned().unwrap_or_default())
+	}
+	async fn manages_budgets(&mut self) -> Result<bool> {
+		Ok(self.manages_budgets)
 	}
 	async fn list(&mut self, listing: Listing) -> Result<Vec<Duty>> {
 		Ok(self
@@ -713,4 +736,93 @@ mod templates {
 			Err(Error::Invalid(_))
 		));
 	}
+}
+
+/// A successor takes a Duty over before their rights are judged: its own
+/// Thread becomes theirs, so a policy that limits Threads to their owner lets
+/// them resume it (#1011). A resume by the Requester hands nothing over.
+#[rstest]
+#[tokio::test]
+async fn a_successor_takes_over_the_dutys_own_thread_before_resuming() {
+	// Arrange: Alice left; Carol, named, holds nothing in the Duty's Thread.
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	assert!(duty.origin_thread_id.is_some());
+	duty.stop(Halt::RequesterLeft, alice.now);
+	duty.successor = Some("carol".into());
+	let mut carol = alice_in(thread).acting_as("carol");
+	carol.duties.insert(duty.id, duty.clone());
+	assert!(!carol.threads.contains(&duty.thread_id));
+	// Act
+	let taken = resume(&mut carol, duty.id).await.unwrap();
+	// Assert
+	assert_eq!(taken.requester, "carol");
+	assert_eq!(carol.handed_over, vec![(duty.id, "carol".to_owned())]);
+	assert!(carol.threads.contains(&duty.thread_id));
+	let mut paused = taken.clone();
+	paused.stop(Halt::Paused, carol.now);
+	carol.duties.insert(duty.id, paused);
+	resume(&mut carol, duty.id).await.unwrap();
+	assert_eq!(
+		carol.handed_over.len(),
+		1,
+		"the Requester's own resume hands nothing over"
+	);
+}
+
+/// Deleting a Duty removes its Budgets (#1012 decision 25): a person needs
+/// `budget.manage` for one someone else set, and an Agent deletes none that
+/// a Budget targets, though it may pause it.
+#[rstest]
+#[tokio::test]
+async fn deleting_a_duty_never_lifts_a_budget_someone_else_set() {
+	// Arrange: an administrator set a Budget on Alice's Duty.
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	alice.budgets.insert(duty.id, vec!["admin".into()]);
+	// Act
+	let by_agent = delete_by_agent(&mut alice, duty.id).await;
+	let by_person = delete(&mut alice, duty.id).await;
+	let paused = pause(&mut alice, duty.id).await;
+	// Assert
+	assert!(
+		matches!(&by_agent, Err(Error::Domain(aidash_domain::Error::Invalid(message)))
+			if message.contains("an Agent never removes a Budget")),
+		"{by_agent:?}"
+	);
+	assert!(
+		matches!(&by_person, Err(Error::Invalid(message)) if message == duties::BUDGET_SET_BY_SOMEONE_ELSE),
+		"{by_person:?}"
+	);
+	assert_eq!(paused.unwrap().halt, Some(Halt::Paused));
+	assert!(alice.duties.contains_key(&duty.id));
+	// A Budget Alice set herself still stops an Agent, but not Alice.
+	alice.budgets.insert(duty.id, vec!["alice".into()]);
+	assert!(delete_by_agent(&mut alice, duty.id).await.is_err());
+	delete(&mut alice, duty.id).await.unwrap();
+	assert!(!alice.duties.contains_key(&duty.id));
+}
+
+/// `budget.manage` lets a person delete a Duty whatever Budgets target it.
+#[rstest]
+#[tokio::test]
+async fn budget_manage_deletes_a_duty_with_anyones_budget() {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	alice.budgets.insert(duty.id, vec!["admin".into()]);
+	alice.manages_budgets = true;
+	// Act
+	delete(&mut alice, duty.id).await.unwrap();
+	// Assert
+	assert!(!alice.duties.contains_key(&duty.id));
 }

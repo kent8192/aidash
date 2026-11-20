@@ -523,3 +523,28 @@ fn a_patch_sets_and_removes_scripts() {
 	let (cleared, _) = removal.apply(&after);
 	assert_eq!((cleared.router, cleared.watcher), (None, None));
 }
+
+/// Deleting a Duty removes its Budgets (#1012 decision 25): an Agent never
+/// may when one targets it, and a person needs `budget.manage` unless they
+/// set every one themselves.
+#[rstest]
+#[case(Deleter::Agent, &[], Some(BudgetRemoval::Free))]
+#[case(Deleter::Agent, &["alice"], None)]
+#[case(Deleter::Person, &[], Some(BudgetRemoval::Free))]
+#[case(Deleter::Person, &["alice", "alice"], Some(BudgetRemoval::Free))]
+#[case(Deleter::Person, &["alice", "admin"], Some(BudgetRemoval::NeedsBudgetManage))]
+fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
+	#[case] deleter: Deleter,
+	#[case] setters: &[&str],
+	#[case] expected: Option<BudgetRemoval>,
+) {
+	let setters: Vec<String> = setters.iter().map(|setter| (*setter).to_owned()).collect();
+	let judged = budget_removal(deleter, "alice", &setters);
+	match expected {
+		Some(removal) => assert_eq!(judged.unwrap(), removal),
+		None => assert!(
+			matches!(&judged, Err(Error::Invalid(message)) if message.contains("pause the Duty")),
+			"{judged:?}"
+		),
+	}
+}

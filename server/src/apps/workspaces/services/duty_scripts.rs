@@ -7,7 +7,7 @@
 //! webhook's.
 use super::access::Lease;
 use super::duties::start_with;
-use super::duty_events::deliver;
+use super::duty_events::deliver_once;
 use crate::apps::workspaces::repositories::{
 	duties as duty_repository, duty_events as event_repository, duty_scripts as repository,
 };
@@ -445,7 +445,7 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 	// transaction: to a booking, the Router or a new Task.
 	let trigger = watcher_trigger(&duty);
 	for payload in found {
-		if let Err(error) = deliver(f, tenant, &trigger, payload).await {
+		if let Err(error) = deliver_once(f, tenant, &trigger, payload).await {
 			tracing::warn!(%error, duty = %duty.id, "a Watcher event could not be delivered");
 		}
 	}

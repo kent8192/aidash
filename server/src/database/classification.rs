@@ -443,6 +443,7 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "duty_bookings", TenantOwned),
 	table("workspaces", "duty_script_versions", TenantOwned),
 	table("workspaces", "duty_script_runs", TenantOwned),
+	table("workspaces", "duty_deliveries", TenantOwned),
 	table("workspaces", "scratch_spaces", TenantOwned),
 	table("workspaces", "scratch_space_settings", TenantOwned),
 	table("workspaces", "scratch_space_members", TenantOwned),

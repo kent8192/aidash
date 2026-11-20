@@ -6,8 +6,14 @@
 //! stdout completes the Task. A script Run never records a Model Turn,
 //! publishes text, recalls memory or reaches Thinking.
 use super::*;
-use aidash_domain::duties::scripts::{self, Invocation, Language};
+use aidash_domain::duties::scripts::{self, Invocation, Language, TaskScript};
 use std::sync::Arc;
+
+/// A Run of a Task whose Duty script is gone fails: it never falls through to
+/// a model turn on the Task's stub description (#1011).
+pub(super) fn gone() -> Error {
+	Error::Invalid(TaskScript::GONE.into())
+}
 
 /// Whether a pending response is a script Run's own: every call carries the
 /// script prefix. Only then does a step ask the store for the script.
@@ -129,17 +135,21 @@ impl Executor<'_> {
 			return Err(Error::Invalid(unavailable(invocation.language)));
 		};
 		let directory = scripts::directory(run.task_id);
+		let field = invocation.language.code_field();
 		let tool_calls = scripts::plan(invocation, &directory)
 			.into_iter()
 			.enumerate()
-			.map(|(index, command)| aidash_domain::provider::ToolCall {
-				id: format!("{}{index}", scripts::CALL_PREFIX),
-				name: name.clone(),
-				arguments: json!({
+			.map(|(index, code)| {
+				let mut arguments = json!({
 					"idempotency_key": scripts::call_key(run.id, index),
-					"command": command,
 					"expected_revision": 0,
-				}),
+				});
+				arguments[field] = json!(code);
+				aidash_domain::provider::ToolCall {
+					id: format!("{}{index}", scripts::CALL_PREFIX),
+					name: name.clone(),
+					arguments,
+				}
 			})
 			.collect();
 		run.state = RunState::ToolCall(Box::new(ToolCallState {

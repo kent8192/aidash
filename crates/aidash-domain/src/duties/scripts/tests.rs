@@ -220,3 +220,17 @@ fn only_the_scripts_own_stdout_is_its_output(
 ) {
 	assert_eq!(script_output(output), expected);
 }
+
+/// Each language's operation reads the code from its own field: the Python
+/// operation refuses `command`, the shell operation `code` (#1011).
+#[rstest]
+#[case(Language::Python, "code_interpreter", "code")]
+#[case(Language::Shell, "shell", "command")]
+fn each_language_names_its_operation_and_code_field(
+	#[case] language: Language,
+	#[case] operation: &str,
+	#[case] field: &str,
+) {
+	assert_eq!(language.operation(), operation);
+	assert_eq!(language.code_field(), field);
+}
