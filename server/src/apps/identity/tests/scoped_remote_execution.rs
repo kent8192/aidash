@@ -4575,6 +4575,63 @@ async fn a_broken_chain_refuses_the_viewer_of_a_sleeping_remote_run(
 	p.close().await;
 }
 
+/// A receiving Node's deny on the trusted `source_thread_id` of a Home Thread
+/// (once `source_workspace_id`; identity 0111 rewrites stored policies) refuses
+/// a remote Run's tool on that Thread, and only there.
+#[rstest::rstest]
+#[case::that_thread(true)]
+#[case::another_thread(false)]
+#[tokio::test]
+async fn a_receivers_deny_on_the_source_thread_refuses_a_remote_runs_tool(
+	#[case] that_thread: bool,
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let home_thread =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let thread = if that_thread {
+		home_thread
+	} else {
+		Uuid::new_v4()
+	};
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"no-tools-for-that-thread","effect":"deny","subjects":{"any":true},
+		"actions":["tool.invoke"],"resources":{"kinds":["tool"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/source_thread_id"},"right":{"source":"literal","value":thread}}
+	}));
+	common::replace_policy(&p.b.store, "acme", policy).await;
+	let pending = common::tool_pending(
+		json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"thread_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+	);
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(pending)
+		.bind(p.admission)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	p.step().await;
+	let run = p.run().await;
+	let history = json!(run.context);
+	if that_thread {
+		assert_eq!(run.control.as_str(), "PAUSED", "{:?} {history}", run.error);
+		assert_eq!(
+			run.error.as_deref(),
+			Some("thread_observe: tool.invoke was denied")
+		);
+		assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	} else {
+		assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+		let result = &first_result(&history)["event"]["result"];
+		assert!(result.get("error").is_none(), "{history}");
+	}
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
