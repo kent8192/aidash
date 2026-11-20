@@ -89,11 +89,11 @@ async fn source_target(
 	// A release is cleanup for a previously authorized hold, so V can still
 	// notify H after the source grant expires or is revoked.
 	if matches!(audience, SourceAudience::Viewer) {
-		grant_query.and_where(Expr::cust(
+		grant_query.and_where(
 			crate::apps::identity::repositories::remote_grants::live_condition(
 				"authorization_remote_grants",
 			),
-		));
+		);
 	}
 	let grant: Option<(String, String, uuid::Uuid)> =
 		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))

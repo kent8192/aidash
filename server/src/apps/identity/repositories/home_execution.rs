@@ -384,9 +384,9 @@ impl HomeScope for Scope {
 						.and_where(
 							Expr::col("root_subject").ne(Expr::value(query_bind_3.to_owned())),
 						)
-						.and_where(Expr::cust(super::remote_grants::live_condition(
+						.and_where(super::remote_grants::live_condition(
 							"authorization_remote_grants",
-						)))
+						))
 						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
@@ -421,15 +421,14 @@ impl HomeScope for Scope {
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_grants"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							format!(
-								"(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND {})",
-								super::remote_grants::live_condition("authorization_remote_grants")
-							),
+							"(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND ?)"
+								.to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
 								Expr::value(query_bind_3.to_owned()).into(),
 								Expr::value(query_bind_4.to_owned()).into(),
+								super::remote_grants::live_condition("authorization_remote_grants"),
 							],
 						))
 						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
