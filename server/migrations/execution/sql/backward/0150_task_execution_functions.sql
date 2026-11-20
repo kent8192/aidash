@@ -1,5 +1,8 @@
 -- PostgreSQL function bodies cannot be expressed by typed Reinhardt operations.
--- These bodies name the runs table again (#1009).
+-- These bodies name the runs table again (#1009). The reversal restores them
+-- before the table is renamed back, so the LANGUAGE sql body of
+-- aidash_request_activation is not checked until then.
+SET LOCAL check_function_bodies = false;
 CREATE OR REPLACE FUNCTION public.aidash_activation_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

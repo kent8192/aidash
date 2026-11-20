@@ -10,7 +10,7 @@ fn wait_router(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc<
 			async move {
 				let n = calls.fetch_add(1, Ordering::SeqCst);
 				let message = if n.is_multiple_of(2) {
-					json!({"role":"assistant","content":null,"tool_calls":[{"id":"wait","type":"function","function":{"name":"workspace_wait","arguments":json!({"seconds":if n == 6 {5} else {300}}).to_string()}}]})
+					json!({"role":"assistant","content":null,"tool_calls":[{"id":"wait","type":"function","function":{"name":"task_wait","arguments":json!({"seconds":if n == 6 {5} else {300}}).to_string()}}]})
 				} else { json!({"role":"assistant","content":"Awake"}) };
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if n.is_multiple_of(2) {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
