@@ -35,24 +35,41 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 	if effects::is_onward(command_scope.local_node(), &input.operation, &input.data) {
 		// Multi-hop delegation (#654): check the child under this lease, release
 		// it, and only then prepare and activate this Home's own grant, which
-		// talks to the target Node.
-		let checked = effects::onward(&mut command_scope, command)
+		// talks to the target Node. A repeat of a command already handed on
+		// answers what it answered then.
+		enum Next {
+			Replay(Value),
+			HandOn(effects::Onward, Vec<String>),
+		}
+		let next = match effects::onward(&mut command_scope, command)
 			.await
-			.map_err(Into::into);
-		let checked = match checked {
-			Ok(onward) => {
+			.map_err(crate::Error::from)
+		{
+			Ok(effects::OnwardStep::Replay(result)) => Ok(Next::Replay(result)),
+			Ok(effects::OnwardStep::HandOn(onward)) => {
 				crate::apps::identity::repositories::remote_grants::persistence::subject_chain(
 					&mut access,
 					input.grant_id,
 				)
 				.await
-				.map(|chain| (onward, chain))
+				.map(|chain| Next::HandOn(onward, chain))
 			}
 			Err(error) => Err(error),
 		};
 		let identity = access.identity.clone();
-		let (onward, chain) = access.finish(checked).await?;
-		return hand_on(&f, identity, chain, onward).await;
+		return match access.finish(next).await? {
+			Next::Replay(result) => Ok(result),
+			Next::HandOn(onward, chain) => {
+				let root = identity.subject.clone();
+				let home = HandOnHome {
+					federation: &f,
+					identity,
+				};
+				effects::hand_on(&home, &root, input.grant_id, chain, onward)
+					.await
+					.map_err(Into::into)
+			}
+		};
 	}
 	let result = effects::execute(&mut command_scope, command, agent)
 		.await
@@ -63,54 +80,116 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 	access.finish(result).await
 }
 
-/// Hands a child Task of a Remote Grant Run on to another Node through a
-/// Remote Grant of this Home (#654, ADR 0109). It acts under the grant's whole
-/// chain, never as its root person alone: every subject of the chain, the
-/// receiver's executor included, must be allowed `task.delegate` on the child
-/// and `federation.execute` on the target Node by this Node's policy; the
-/// grant it prepares carries that chain, a prepared grant is reused only for
-/// exactly that chain, and the target decides by its own consent.
-async fn hand_on(
-	f: &Federation,
+/// The Home's side of handing an onward delegation on (#654, ADR 0109), as
+/// the grant's root person acting for its whole chain. Each step is a short
+/// transaction of its own, so none spans the peer calls of preparing and
+/// activating the next grant.
+struct HandOnHome<'a> {
+	federation: &'a Federation,
 	identity: crate::authorization::identity::SubjectIdentity,
-	chain: Vec<String>,
-	onward: effects::Onward,
-) -> Result<Value> {
-	if chain.len() < 2 || chain.first() != Some(&identity.subject) {
-		return Err(crate::Error::Forbidden);
+}
+
+/// One check of [`HandOnHome`]: the asking grant's liveness and the chain's
+/// authority, in one transaction under the chain's subjects.
+struct HandOnAccess(crate::authorization::access::Access);
+
+#[async_trait::async_trait]
+impl effects::HandOnRepository for HandOnHome<'_> {
+	type Scope = HandOnAccess;
+
+	async fn begin(&self, chain: &[String]) -> aidash_application::Result<HandOnAccess> {
+		let mut access =
+			crate::authorization::access::Access::begin(&self.federation.store, &self.identity)
+				.await?;
+		access.subjects = chain.to_vec();
+		Ok(HandOnAccess(access))
 	}
-	// The executor that asks must itself be allowed to hand the Task there.
-	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
-	access.subjects = chain.clone();
-	let checked = async {
-		let task = access.task_read(onward.child).await?;
-		let resource = access.task_resource(&task).await?;
-		access.require(&resource, "task.delegate").await?;
-		let node = access.resource(
-			"node",
+
+	async fn delegate(
+		&self,
+		chain: Vec<String>,
+		onward: &effects::Onward,
+	) -> aidash_application::Result<aidash_domain::federation::Delegation> {
+		let repository = crate::apps::identity::repositories::home_execution::Repository {
+			runtime: self.federation.clone(),
+			actor: Some(crate::authorization::identity::Actor::Subject(
+				self.identity.clone(),
+			)),
+			worker: None,
+			chain: Some(chain),
+		};
+		aidash_application::authorization::home::delegate(
+			&repository,
+			onward.child,
 			&onward.node,
-			serde_json::json!({"remote_node": onward.node}),
-		);
-		access.require(&node, "federation.execute").await
+			&onward.agent,
+			true,
+		)
+		.await
 	}
-	.await;
-	access.finish(checked).await?;
-	let repository = crate::apps::identity::repositories::home_execution::Repository {
-		runtime: f.clone(),
-		actor: Some(crate::authorization::identity::Actor::Subject(identity)),
-		worker: None,
-		chain: Some(chain),
-	};
-	let delegation = aidash_application::authorization::home::delegate(
-		&repository,
-		onward.child,
-		&onward.node,
-		&onward.agent,
-		true,
-	)
-	.await
-	.map_err(crate::Error::from)?;
-	Ok(serde_json::to_value(delegation)?)
+
+	async fn save_replay(
+		&self,
+		grant: Uuid,
+		replay: &effects::OnwardReplay,
+		result: &Value,
+	) -> aidash_application::Result<()> {
+		let mut access =
+			crate::authorization::access::Access::begin(&self.federation.store, &self.identity)
+				.await?;
+		let saved =
+			crate::apps::identity::repositories::remote_grants::persistence::save_onward_replay(
+				&mut access,
+				grant,
+				(&replay.request_key, &replay.digest),
+				result,
+			)
+			.await;
+		access.finish(saved).await.map_err(Into::into)
+	}
+}
+
+#[async_trait::async_trait]
+impl effects::HandOnScope for HandOnAccess {
+	async fn live(&mut self, grant: Uuid) -> aidash_application::Result<bool> {
+		crate::apps::identity::repositories::remote_grants::persistence::live(&mut self.0, grant)
+			.await
+			.map_err(Into::into)
+	}
+
+	async fn task_read(&mut self, id: Uuid) -> aidash_application::Result<aidash_domain::Task> {
+		self.0.task_read(id).await.map_err(Into::into)
+	}
+
+	async fn task_resource(
+		&mut self,
+		task: &aidash_domain::Task,
+	) -> aidash_application::Result<aidash_domain::policy::Resource> {
+		self.0.task_resource(task).await.map_err(Into::into)
+	}
+
+	fn node_resource(&self, node: &str) -> aidash_domain::policy::Resource {
+		self.0
+			.resource("node", node, serde_json::json!({"remote_node": node}))
+	}
+
+	async fn require(
+		&mut self,
+		resource: &aidash_domain::policy::Resource,
+		action: &str,
+	) -> aidash_application::Result<()> {
+		self.0.require(resource, action).await.map_err(Into::into)
+	}
+
+	async fn finish(
+		self,
+		result: aidash_application::Result<()>,
+	) -> aidash_application::Result<()> {
+		self.0
+			.finish(result.map_err(crate::Error::from))
+			.await
+			.map_err(Into::into)
+	}
 }
 
 /// Fetch only for the direct delegate, under both the live grant and the

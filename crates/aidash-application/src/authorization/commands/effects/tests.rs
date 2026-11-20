@@ -606,14 +606,18 @@ async fn a_child_handed_to_another_node_is_checked_here_and_granted_after_the_le
 	let onward = onward(&mut scope, input("delegate", &data)).await.unwrap();
 	assert_eq!(
 		onward,
-		Onward {
+		OnwardStep::HandOn(Onward {
 			child: id,
 			node: node.into(),
 			agent: EntityRef {
 				id: "next".into(),
 				version: "2".into()
 			},
-		}
+			replay: OnwardReplay {
+				request_key: "delegate:id".into(),
+				digest: commands::prepare("delegate", &data).unwrap().digest,
+			},
+		})
 	);
 	assert!(scope.applied.is_empty());
 	assert!(scope.journal.is_empty());
@@ -654,6 +658,258 @@ async fn an_onward_delegation_fails_closed_like_a_local_one(
 	let result = onward(&mut scope, input("delegate", &data)).await;
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 	assert!(scope.applied.is_empty());
+}
+/// A repeat of an onward `delegate` the Home already handed on answers what it
+/// answered then (#1013 review), though the target has claimed the child since
+/// and a fresh check would refuse it.
+#[rstest]
+#[tokio::test]
+async fn a_repeated_onward_delegation_answers_its_saved_result(mut scope: Scope) {
+	let mut child = scope.child();
+	child.owner = Some(aidash_domain::agent_subject("aidash://third", "next", "2"));
+	child.status = TaskStatus::Claimed;
+	let id = child.id;
+	scope.additional.insert(id, child);
+	let data = json!({"key":"id","task_id":id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":{"id":"next","version":"2"}});
+	let saved = json!({"task_id":id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent_id":"next","agent_version":"2"});
+	let digest = commands::prepare("delegate", &data).unwrap().digest;
+	scope.previous = Some((digest, saved.clone()));
+	assert_eq!(
+		onward(&mut scope, input("delegate", &data)).await.unwrap(),
+		OnwardStep::Replay(saved)
+	);
+	assert!(scope.applied.is_empty());
+	// Other input under the same key is still a conflict.
+	scope.previous = Some(("another digest".into(), json!({})));
+	assert!(matches!(
+		onward(&mut scope, input("delegate", &data)).await,
+		Err(Error::Conflict(_))
+	));
+	// Without a saved answer the claimed child is refused, as before.
+	scope.previous = None;
+	assert!(matches!(
+		onward(&mut scope, input("delegate", &data)).await,
+		Err(Error::Forbidden)
+	));
+}
+
+/// A fake Home for [`hand_on`]: `revoked` stands for a revocation of the
+/// asking grant after the command's lease ended.
+#[derive(Default)]
+struct Handing {
+	revoked: bool,
+	refused: Option<&'static str>,
+	save_fails: bool,
+	calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+	saved: std::sync::Mutex<Vec<(Uuid, OnwardReplay, Value)>>,
+}
+struct HandingScope {
+	revoked: bool,
+	refused: Option<&'static str>,
+	calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+	chain: Vec<String>,
+}
+impl Handing {
+	fn calls(&self) -> Vec<String> {
+		self.calls.lock().unwrap().clone()
+	}
+}
+impl HandingScope {
+	fn call(&self, name: impl Into<String>) {
+		self.calls.lock().unwrap().push(name.into());
+	}
+	fn resource(kind: &str, id: &str, attributes: Value) -> Resource {
+		Resource {
+			tenant: "source".into(),
+			kind: kind.into(),
+			id: id.into(),
+			attributes,
+		}
+	}
+}
+#[async_trait]
+impl HandOnRepository for Handing {
+	type Scope = HandingScope;
+	async fn begin(&self, chain: &[String]) -> Result<Self::Scope> {
+		self.calls
+			.lock()
+			.unwrap()
+			.push(format!("begin:{}", chain.join(",")));
+		Ok(HandingScope {
+			revoked: self.revoked,
+			refused: self.refused,
+			calls: self.calls.clone(),
+			chain: chain.to_vec(),
+		})
+	}
+	async fn delegate(&self, chain: Vec<String>, onward: &Onward) -> Result<Delegation> {
+		self.calls
+			.lock()
+			.unwrap()
+			.push(format!("delegate:{}", chain.len()));
+		Ok(Delegation {
+			task_id: onward.child,
+			node_id: onward.node.clone(),
+			agent_id: onward.agent.id.clone(),
+			agent_version: onward.agent.version.clone(),
+		})
+	}
+	async fn save_replay(&self, grant: Uuid, replay: &OnwardReplay, result: &Value) -> Result<()> {
+		self.calls.lock().unwrap().push("save".into());
+		if self.save_fails {
+			return Err(Error::External("fault:save".into()));
+		}
+		self.saved
+			.lock()
+			.unwrap()
+			.push((grant, replay.clone(), result.clone()));
+		Ok(())
+	}
+}
+#[async_trait]
+impl HandOnScope for HandingScope {
+	async fn live(&mut self, _: Uuid) -> Result<bool> {
+		self.call("live");
+		Ok(!self.revoked)
+	}
+	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
+		self.call("task_read");
+		Ok(Task {
+			id,
+			thread_id: Uuid::from_u128(3),
+			title: String::new(),
+			description: String::new(),
+			status: TaskStatus::Open,
+			requirements: json!({}),
+			owner: None,
+			created_by: self.chain[1].clone(),
+			dependencies: vec![],
+			parent_id: Some(Uuid::from_u128(2)),
+			revision: 1,
+			created_at: chrono::Utc::now(),
+		})
+	}
+	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
+		Ok(Self::resource("task", &task.id.to_string(), json!({})))
+	}
+	fn node_resource(&self, node: &str) -> Resource {
+		Self::resource("node", node, json!({"remote_node": node}))
+	}
+	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
+		assert_eq!(self.chain.len(), 3, "the whole chain decides");
+		self.call(format!("require:{action}"));
+		if self.refused == Some(action) {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+	async fn finish(self, result: Result<()>) -> Result<()> {
+		self.call(if result.is_ok() { "commit" } else { "refuse" });
+		result
+	}
+}
+fn handed() -> Onward {
+	Onward {
+		child: Uuid::from_u128(5),
+		node: "aidash://third/quiet-falcon-4f8k2m1z".into(),
+		agent: EntityRef {
+			id: "next".into(),
+			version: "2".into(),
+		},
+		replay: OnwardReplay {
+			request_key: "delegate:id".into(),
+			digest: "digest".into(),
+		},
+	}
+}
+fn chain() -> Vec<String> {
+	vec![
+		"root".into(),
+		aidash_domain::agent_subject("aidash://peer", "agent", "1"),
+		aidash_domain::agent_subject("aidash://third/quiet-falcon-4f8k2m1z", "next", "2"),
+	]
+}
+
+/// The asking grant is checked again after the command's lease: one revoked
+/// in between hands nothing on (#1013 review).
+#[tokio::test]
+async fn a_grant_revoked_after_the_lease_hands_nothing_on() {
+	let home = Handing {
+		revoked: true,
+		..Default::default()
+	};
+	let result = hand_on(&home, "root", Uuid::from_u128(4), chain(), handed()).await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert_eq!(
+		home.calls(),
+		[
+			format!("begin:{}", chain().join(",")),
+			"live".into(),
+			"refuse".into()
+		]
+	);
+	assert!(home.saved.lock().unwrap().is_empty());
+}
+
+/// A live grant whose chain may hand the child on is handed on and its answer
+/// saved under the asking grant's command; a refusal of the chain or a chain
+/// that does not start with the authenticated root hands nothing on.
+#[rstest]
+#[case::handed(None, "root", true)]
+#[case::child_refused(Some("task.delegate"), "root", false)]
+#[case::node_refused(Some("federation.execute"), "root", false)]
+#[case::another_root(None, "someone-else", false)]
+#[tokio::test]
+async fn a_live_grant_hands_on_only_what_its_whole_chain_may(
+	#[case] refused: Option<&'static str>,
+	#[case] root: &str,
+	#[case] handed_on: bool,
+) {
+	let home = Handing {
+		refused,
+		..Default::default()
+	};
+	let result = hand_on(&home, root, Uuid::from_u128(4), chain(), handed()).await;
+	let calls = home.calls();
+	if handed_on {
+		let result = result.unwrap();
+		assert_eq!(result["task_id"], json!(Uuid::from_u128(5)));
+		assert_eq!(
+			*home.saved.lock().unwrap(),
+			[(Uuid::from_u128(4), handed().replay, result)]
+		);
+		assert_eq!(
+			calls[1..],
+			[
+				"live",
+				"task_read",
+				"require:task.delegate",
+				"require:federation.execute",
+				"commit",
+				"delegate:3",
+				"save"
+			]
+		);
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+		assert!(!calls.iter().any(|call| call.starts_with("delegate")));
+		assert!(home.saved.lock().unwrap().is_empty());
+	}
+}
+
+/// The child is handed on whether or not its answer is saved, so a failed save
+/// still answers the delegation.
+#[tokio::test]
+async fn a_hand_on_whose_answer_is_not_saved_still_answers_it() {
+	let home = Handing {
+		save_fails: true,
+		..Default::default()
+	};
+	let result = hand_on(&home, "root", Uuid::from_u128(4), chain(), handed())
+		.await
+		.unwrap();
+	assert_eq!(result["node_id"], "aidash://third/quiet-falcon-4f8k2m1z");
+	assert_eq!(home.calls().last().unwrap(), "save");
 }
 #[rstest]
 #[tokio::test]

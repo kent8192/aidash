@@ -3772,11 +3772,17 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 }
 
 /// An onward hop acts under the grant's whole chain (#654): the receiver's
-/// executor itself must be allowed `task.delegate` by the Home's policy, even
-/// though the chain's root person holds it.
+/// executor itself must be allowed `federation.execute` on the target Node by
+/// the Home's policy, even though the chain's root person holds it. The deny
+/// names only the third Node, which the grant's own description never checks,
+/// so the grant's other commands still pass and only the hop is refused;
+/// without the deny the same hop goes through.
 #[rstest::rstest]
+#[case::executor_may_not_reach_the_target(true)]
+#[case::control(false)]
 #[tokio::test]
 async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
+	#[case] denied: bool,
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -3806,34 +3812,112 @@ async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
 		)
 		.await
 		.unwrap();
-	// Alice may delegate; the receiver's executor may not.
-	let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
-	let authorization = aidash_server::authorization::Authorization {
-		pool: p.a.store.pool.clone(),
-	};
-	let snapshot = authorization.snapshot("acme").await.unwrap();
-	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
-	bundle["policies"].as_array_mut().unwrap().push(json!({
-		"id":"executor-may-not-delegate","effect":"deny","subjects":{"ids":[executor]},
-		"actions":["task.delegate"],"resources":{"kinds":["task"]}
-	}));
-	common::replace_policy(&p.a.store, "acme", bundle).await;
+	if denied {
+		// Alice may hand work to the third Node; the receiver's executor may not.
+		let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+		let authorization = aidash_server::authorization::Authorization {
+			pool: p.a.store.pool.clone(),
+		};
+		let snapshot = authorization.snapshot("acme").await.unwrap();
+		let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":"executor-may-not-reach-the-third-node","effect":"deny","subjects":{"ids":[executor]},
+			"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[third.to_string()]}
+		}));
+		common::replace_policy(&p.a.store, "acme", bundle).await;
+	}
+	// The grant's own commands pass the chain's checks either way.
+	let read = home.read_record("task", &child.id.to_string()).await;
+	assert!(read.is_ok(), "{read:?}");
 	let agent = EntityRef {
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	assert!(
-		home.delegate_with_key("chain-hop", child.id, &third.to_string(), &agent)
-			.await
-			.is_err()
-	);
+	let handed = home
+		.delegate_with_key("chain-hop", child.id, &third.to_string(), &agent)
+		.await;
+	assert_eq!(handed.is_err(), denied, "{handed:?}");
 	let grants: i64 =
 		sqlx::query_scalar("SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1")
 			.bind(child.id)
 			.fetch_one(p.a.store.pool.fixture_driver())
 			.await
 			.unwrap();
-	assert_eq!(grants, 0);
+	assert_eq!(grants, if denied { 0 } else { 1 });
+	p.close().await;
+}
+
+/// A repeat of an onward `delegate` under the same key, as a harness sends one
+/// after losing its lease, answers the Delegation the first call made once the
+/// target has claimed the child, instead of refusing a hand-on that happened,
+/// and prepares no second grant (#1013 review). Other input under the key is
+/// still a conflict.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_repeated_onward_delegation_answers_its_first_delegation_after_the_target_claimed(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.list_onward_tools().await;
+	let third =
+		p.a.config
+			.deployment
+			.node(common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let research =
+		p.a.registry
+			.get(&tenant, "research", "1.0.0")
+			.await
+			.unwrap();
+	common::approve_agent_on(&p.a, "acme", &research, &third).await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let child = home
+		.create_task(
+			"replayed-child",
+			&NewTask {
+				title: "Replayed child".into(),
+				description: "Handed on once".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	let first = home
+		.delegate_with_key("replayed-hop", child.id, &third.to_string(), &agent)
+		.await
+		.unwrap();
+	// The third Node's executor claims the child, so it is no longer open.
+	let claimed = sqlx::query(
+		"UPDATE tasks SET owner = $1, status = 'CLAIMED', revision = revision + 1 WHERE id = $2",
+	)
+	.bind(aidash_domain::qualified_agent(&third, "research", "1.0.0"))
+	.bind(child.id)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(claimed.rows_affected(), 1);
+	let again = home
+		.delegate_with_key("replayed-hop", child.id, &third.to_string(), &agent)
+		.await
+		.unwrap();
+	assert_eq!(json!(again), json!(first));
+	let grants: i64 =
+		sqlx::query_scalar("SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1")
+			.bind(child.id)
+			.fetch_one(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(grants, 1);
+	let other = home
+		.delegate_with_key("replayed-hop", child.id, &node_of(&p.b), &agent)
+		.await;
+	assert!(other.is_err(), "{other:?}");
 	p.close().await;
 }
 

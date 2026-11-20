@@ -8,10 +8,12 @@ use crate::{
 };
 use aidash_domain::{
 	ArtifactInput, NewTask, TaskStatus,
+	federation::Delegation,
 	identity::commands::{
 		self, Metadata,
 		effects::{AuditError, audit_event, child_eligible, field},
 	},
+	policy::Resource,
 	registry::{EntityRef, Entry, Search},
 };
 use serde_json::{Value, json};
@@ -607,6 +609,26 @@ pub struct Onward {
 	pub child: Uuid,
 	pub node: String,
 	pub agent: EntityRef,
+	/// Where the answer is saved once the child is handed on.
+	pub replay: OnwardReplay,
+}
+
+/// The replay row of an onward `delegate`, as `execute` saves one for a local
+/// delegation: under the asking grant, the command's key and the digest of its
+/// input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnwardReplay {
+	pub request_key: String,
+	pub digest: String,
+}
+
+/// What [`onward`] decided under the command's lease.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnwardStep {
+	/// The same command already handed the child on: its saved answer.
+	Replay(Value),
+	/// Hand the child on with [`hand_on`] once the lease has ended.
+	HandOn(Onward),
 }
 
 /// Whether a scoped command hands a child Task to another Node.
@@ -623,7 +645,15 @@ pub fn is_onward(local_node: &str, operation: &str, data: &Value) -> bool {
 /// the Run's Task that this grant created and the caller may hand on. It
 /// prepares nothing; the caller hands the child on after the lease ends, and
 /// the grant it prepares re-checks the whole chain by the Home's policy.
-pub async fn onward(scope: &mut dyn RemoteCommandEffects, input: Command<'_>) -> Result<Onward> {
+///
+/// A command the Home already handed on answers what it answered then. A
+/// harness re-executes a replay-safe call under its key after losing its
+/// lease, and by then the target may have claimed the child, which a fresh
+/// check would refuse for a hand-on that happened.
+pub async fn onward(
+	scope: &mut dyn RemoteCommandEffects,
+	input: Command<'_>,
+) -> Result<OnwardStep> {
 	let data = input.data;
 	let grant = input.grant_id;
 	if !is_onward(scope.local_node(), input.operation, data) {
@@ -633,14 +663,14 @@ pub async fn onward(scope: &mut dyn RemoteCommandEffects, input: Command<'_>) ->
 	}
 	let node = field(data, "node_id")?.to_owned();
 	aidash_domain::nodes::NodeAddress::parse(&node)?;
-	let Prepared { task, owner, .. } = match prepare(scope, input).await? {
-		// Nothing records an onward delegation for replay: handing the same child
-		// to the same Agent again reuses the grant the first call prepared.
-		Admission::Replay(_) => {
-			return Err(Error::Conflict(
-				"remote command key binds a different delegation".into(),
-			));
-		}
+	let Prepared {
+		task,
+		owner,
+		metadata,
+		..
+	} = match prepare(scope, input).await? {
+		// `prepare` refused a different input under the same key.
+		Admission::Replay(result) => return Ok(OnwardStep::Replay(result)),
 		Admission::Ready(prepared) => *prepared,
 	};
 	let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
@@ -652,11 +682,91 @@ pub async fn onward(scope: &mut dyn RemoteCommandEffects, input: Command<'_>) ->
 	if !scope.live(grant).await? {
 		return Err(Error::Forbidden);
 	}
-	Ok(Onward {
+	Ok(OnwardStep::HandOn(Onward {
 		child: child.id,
 		node,
 		agent,
-	})
+		replay: OnwardReplay {
+			request_key: metadata.request_key,
+			digest: metadata.digest,
+		},
+	}))
+}
+
+/// The Home's side of [`hand_on`]. Every step takes its own short transaction,
+/// because handing on talks to the target Node.
+#[async_trait::async_trait]
+pub trait HandOnRepository: Send + Sync {
+	type Scope: HandOnScope;
+	/// A transaction of the Home as the chain's root person, deciding for every
+	/// subject of `chain`.
+	async fn begin(&self, chain: &[String]) -> Result<Self::Scope>;
+	/// Prepares, or reuses, and activates this Home's Remote Grant of the child
+	/// for exactly `chain`.
+	async fn delegate(&self, chain: Vec<String>, onward: &Onward) -> Result<Delegation>;
+	/// Saves `result` as the answer to a repeat of the asking grant's command.
+	async fn save_replay(&self, grant: Uuid, replay: &OnwardReplay, result: &Value) -> Result<()>;
+}
+
+/// One transaction of [`HandOnRepository::begin`].
+#[async_trait::async_trait]
+pub trait HandOnScope: Send + Sized {
+	/// Whether `grant` still lives by the Home's one liveness rule.
+	async fn live(&mut self, grant: Uuid) -> Result<bool>;
+	async fn task_read(&mut self, id: Uuid) -> Result<aidash_domain::Task>;
+	async fn task_resource(&mut self, task: &aidash_domain::Task) -> Result<Resource>;
+	fn node_resource(&self, node: &str) -> Resource;
+	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	/// Commits, or records the refusal and rolls back.
+	async fn finish(self, result: Result<()>) -> Result<()>;
+}
+
+/// Hands the child that [`onward`] checked on to its Node through a Remote
+/// Grant of this Home (#654, ADR 0109), under the asking grant's whole chain,
+/// never as its root person alone. The asking grant must still live: it may
+/// have been revoked since the command's lease ended. Every subject of the
+/// chain, the asking receiver's executor included, must be allowed
+/// `task.delegate` on the child and `federation.execute` on the target Node;
+/// the grant it prepares carries that chain, and the target decides by its own
+/// consent. The answer is saved for a repeat of the command.
+pub async fn hand_on<R: HandOnRepository>(
+	repository: &R,
+	root: &str,
+	grant: Uuid,
+	chain: Vec<String>,
+	onward: Onward,
+) -> Result<Value> {
+	if chain.len() < 2 || chain.first().map(String::as_str) != Some(root) {
+		return Err(Error::Forbidden);
+	}
+	let mut scope = repository.begin(&chain).await?;
+	let checked = async {
+		if !scope.live(grant).await? {
+			return Err(Error::Forbidden);
+		}
+		let child = scope.task_read(onward.child).await?;
+		let resource = scope.task_resource(&child).await?;
+		scope.require(&resource, "task.delegate").await?;
+		let node = scope.node_resource(&onward.node);
+		scope.require(&node, "federation.execute").await
+	}
+	.await;
+	match checked {
+		Ok(()) => scope.finish(Ok(())).await?,
+		Err(error) => {
+			scope.finish(Err(error)).await?;
+			return Err(Error::External("hand-on scope accepted a refusal".into()));
+		}
+	}
+	let delegation = repository.delegate(chain, &onward).await?;
+	let result = serde_json::to_value(delegation)?;
+	// The child is handed on whether or not the answer is saved, so a failed
+	// save does not turn it into a refusal. Only a repeat of this command after
+	// the target claimed the child would then be refused, as before replays.
+	if let Err(error) = repository.save_replay(grant, &onward.replay, &result).await {
+		tracing::warn!(%error, grant = %grant, child = %onward.child, "onward delegation replay not saved");
+	}
+	Ok(result)
 }
 async fn track(
 	scope: &mut dyn RemoteCommandEffects,

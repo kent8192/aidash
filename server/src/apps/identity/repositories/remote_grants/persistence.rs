@@ -29,7 +29,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+	Alias, ColumnRef, Expr, ExprTrait as _, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde::de::DeserializeOwned;
@@ -51,6 +51,41 @@ pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 		.scalar_one(&mut **access.tx)
 		.await?
 	})
+}
+/// Saves the answer of an onward `delegate` (#654) as the replay of the
+/// asking grant's command, so a repeat under the same key answers it after the
+/// target has claimed the child. `execute` saves a local delegation's answer
+/// inside the command's lease and moves the binding to the Task's revision;
+/// this runs after the lease, when the hand-on has changed nothing of the
+/// grant's own Task, so it leaves the binding alone. A repeat that raced this
+/// one saved the same answer, so an existing row is kept.
+pub(crate) async fn save_onward_replay(
+	access: &mut Access,
+	grant: Uuid,
+	(key, digest): (&str, &str),
+	result: &Value,
+) -> NativeResult<()> {
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("authorization_remote_commands"))
+		.columns(["grant_id", "request_key", "digest", "result", "tenant"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			grant.into(),
+			key.to_owned().into(),
+			digest.to_owned().into(),
+			result.clone().into(),
+			access.identity.tenant.clone().into(),
+		])
+		.on_conflict(
+			OnConflict::columns(["grant_id", "request_key"].map(Alias::new))
+				.do_nothing()
+				.to_owned(),
+		)
+		.build(PostgresQueryBuilder);
+	access
+		.tx
+		.execute(&sql, reinhardt::db::orm::execution::convert_values(values))
+		.await?;
+	Ok(())
 }
 /// The delegation chain a Remote Grant pins, read under the caller's lease:
 /// its root person, every Agent so far, and the receiver's executor.
