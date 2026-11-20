@@ -432,7 +432,6 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 	// default Node, reads no Thread of hers and administers nothing.
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let subnode = late_subnode::seed_subnode(&c.f, run.id, &[]).await;
 	let node = node_tool(
 		&c.f,
 		&run,
@@ -454,6 +453,7 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 	)
 	.await
 	.unwrap();
+	let subnode = late_subnode::seed_subnode(&c.f, run.id, &[]).await;
 	let mut policy = denying(
 		&c,
 		"bob-member",

@@ -94,8 +94,9 @@ impl NativeFlowGraph<'_> {
 	}
 
 	/// The Remote Grants that hand the flow's Tasks to another Deployment,
-	/// each with whether it is settled: revoked, and its Task ended. A grant
-	/// that still renews, or whose Task is still open, is not.
+	/// each with whether it is settled: its Task ended, and a grant ends with
+	/// its Task (decision 23). A grant whose Task is still open is not, even
+	/// when it was revoked.
 	pub(crate) async fn remote_grants(&mut self, tasks: &[Uuid]) -> Result<Vec<(Uuid, bool)>> {
 		if tasks.is_empty() {
 			return Ok(vec![]);
@@ -105,14 +106,12 @@ impl NativeFlowGraph<'_> {
 			&Query::select()
 				.expr_as(Expr::col((g.clone(), Alias::new("id"))), Alias::new("id"))
 				.expr_as(
-					Expr::col((g.clone(), Alias::new("revoked"))).and(
-						Expr::col((t.clone(), Alias::new("status"))).is_in([
-							"COMPLETED",
-							"FAILED",
-							"CANCELLED",
-							"ABANDONED",
-						]),
-					),
+					Expr::col((t.clone(), Alias::new("status"))).is_in([
+						"COMPLETED",
+						"FAILED",
+						"CANCELLED",
+						"ABANDONED",
+					]),
 					Alias::new("settled"),
 				)
 				.from_as(Alias::new("authorization_remote_grants"), g.clone())

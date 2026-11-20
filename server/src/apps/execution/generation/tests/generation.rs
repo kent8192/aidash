@@ -1500,12 +1500,20 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A policy without token limits (#1012 decision 41) reserves nothing for its
+/// agent, so neither the stop's release nor the late settlement of the call
+/// in flight gives tokens back to it; a bounded policy keeps what the call
+/// used.
 #[rstest::rstest]
+#[case::bounded(true, 20)]
+#[case::without_token_limits(false, 0)]
 #[tokio::test]
 async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	#[future(awt)]
 	#[from(provider_5)]
 	fixture: Provider5Fixture,
+	#[case] token_limits: bool,
+	#[case] allocated: i64,
 ) {
 	let (f, url, schema) = fixture.application.runtime.parts();
 	let app = fixture.application.application;
@@ -1516,6 +1524,11 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
+	if !token_limits {
+		let limits = spec["limits"].as_object_mut().unwrap();
+		limits.remove("token_budget");
+		limits.remove("tokens_per_agent");
+	}
 	assert_eq!(
 		request(
 			&app,
@@ -1540,6 +1553,18 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
+	let (_, policies) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/policies",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		policies[0]["allocated_tokens"],
+		if token_limits { 200000 } else { 0 }
+	);
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -1608,7 +1633,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 		Value::Null,
 	)
 	.await;
-	assert_eq!(policies[0]["allocated_tokens"], 20);
+	assert_eq!(policies[0]["allocated_tokens"], allocated);
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }
