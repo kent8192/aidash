@@ -4575,6 +4575,58 @@ async fn a_broken_chain_refuses_the_viewer_of_a_sleeping_remote_run(
 	p.close().await;
 }
 
+/// A message citing a File version of a sleeping remote Run asks its Node to
+/// retain it only while the grant's whole chain holds (#1013 review): with the
+/// chain intact the request reaches the receiving Node, which has no preview
+/// host here; once the requester may no longer delegate across Nodes it is
+/// refused before the message is written.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_broken_chain_refuses_retaining_a_cited_file_version_of_a_sleeping_remote_run(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	lapse_grant(&p).await;
+	let thread =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let cite = async || {
+		request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/threads/{thread}/channel-messages"),
+			json!({
+				"content": "See the draft",
+				"idempotency_key": Uuid::new_v4(),
+				"file_versions": [{"area_id": Uuid::new_v4(), "file_id": Uuid::new_v4(), "run_id": p.admission}],
+			}),
+		)
+		.await
+	};
+	let (status, body) = cite().await;
+	assert_eq!(status, 409, "the receiving Node is asked: {body}");
+	assert!(body.to_string().contains("PREVIEW_UNAVAILABLE"), "{body}");
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-stays-home","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["federation.execute"],"resources":{"kinds":["node"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, body) = cite().await;
+	assert_eq!(status, 403, "{body}");
+	p.close().await;
+}
+
 /// A receiving Node's deny on the trusted `source_thread_id` of a Home Thread
 /// (once `source_workspace_id`; identity 0111 rewrites stored policies) refuses
 /// a remote Run's tool on that Thread, and only there.

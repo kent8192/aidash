@@ -152,6 +152,32 @@ async fn viewer_target(
 	Ok((sender, node))
 }
 
+/// A message that cites File versions of Runs another Node executes for this
+/// Home asks that Node to retain each one ([`retain_remote`]). Each cited
+/// Run's grant is described first, its whole chain re-evaluated as for a
+/// preview ticket (#1013), before the message's own transaction opens:
+/// describing a grant inside that transaction could wait on its locks.
+pub(crate) async fn require_cited_chains(
+	f: &Federation,
+	actor: &Actor,
+	citations: &[aidash_domain::threads::channels::CitedFileVersion],
+) -> Result<()> {
+	let runs: std::collections::BTreeSet<uuid::Uuid> = citations
+		.iter()
+		.filter_map(|citation| citation.run_id)
+		.collect();
+	if runs.is_empty() {
+		return Ok(());
+	}
+	let Actor::Subject(identity) = actor else {
+		return Err(Error::Forbidden);
+	};
+	for run in runs {
+		viewer_target(f, identity, run).await?;
+	}
+	Ok(())
+}
+
 /// V can display a remote citation only to the original requester while the
 /// source Task is still readable. No local Run row exists on V.
 pub(crate) async fn source_viewer(
@@ -649,8 +675,9 @@ pub(crate) async fn retain_remote(
 	let Actor::Subject(identity) = actor else {
 		return Err(Error::Forbidden);
 	};
-	// Not `viewer_target`: this runs inside the citing message's transaction,
-	// so describing the grant here could wait on that transaction's own locks.
+	// The citing message's transaction is open here, so the grant's chain was
+	// described before it opened ([`require_cited_chains`]); this rechecks the
+	// binding, the live grant and the requester.
 	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
 	let result = source_target(f, &mut access, request.run_id, SourceAudience::Viewer).await;
 	let (sender, node, _) = access.finish(result).await?;
