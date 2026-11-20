@@ -1866,6 +1866,9 @@ mod transfer_tests;
 #[path = "core_capabilities/lifecycle.rs"]
 mod lifecycle_tests;
 
+#[path = "core_capabilities/area_queue.rs"]
+mod area_queue_tests;
+
 #[path = "core_capabilities/duties.rs"]
 mod duty_tests;
 

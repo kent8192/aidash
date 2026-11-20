@@ -176,6 +176,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_area_queue_sleep"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -229,6 +230,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_area_queue_sleep"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -248,7 +250,11 @@ async fn reverse_task_executions(
 	source: &FilesystemSource,
 ) {
 	let mut renamed = Vec::new();
-	for name in ["0150_task_executions", "0151_task_executions_state"] {
+	for name in [
+		"0150_task_executions",
+		"0151_task_executions_state",
+		"0152_area_queue_sleep",
+	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
 	executor.rollback_migrations(&renamed).await.unwrap();
@@ -325,7 +331,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0081_thread_tools"]);
-	assert_eq!(head("execution"), ["0151_task_executions_state"]);
+	assert_eq!(head("execution"), ["0152_area_queue_sleep"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0061_duty_template_check"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -605,15 +611,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0152_policy_probe")
+		.get_migration("execution", "0153_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0151_task_executions_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0152_area_queue_sleep".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -697,6 +700,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -2337,6 +2341,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5011,6 +5016,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0030_threads"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_area_queue_sleep"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5572,6 +5578,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5659,6 +5666,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5754,6 +5762,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -6260,6 +6269,245 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 	pool.close().await;
 }
 
+/// execution 0148 merges the Working Areas of one key into the most usable
+/// one (#1008, ADR 0140): the active Area survives though the retained one
+/// has the larger id, the merged Area's Run queues after the survivor's own,
+/// and nothing names the merged Area afterwards.
+#[rstest]
+#[tokio::test]
+async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: the history just before 0148, a Thread and two Areas of one
+	// key (they differed by reply thread), the retained one with the larger
+	// id holding a Run and a message's file version.
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0148_threads"),
+			("execution", "0149_threads_state"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
+		])
+		.await;
+	fixture.tenant_root("area-merge").await;
+	let node = aidash_domain::nodes::NodeName::derived("area-merge").to_string();
+	let scratch_space_id = fixture.scratch_space("area-merge").await;
+	let thread = Uuid::new_v4();
+	let execute = async |sql: String| fixture.connection.execute(&sql, vec![]).await.unwrap();
+	execute(
+		Query::insert()
+			.into_table(Alias::new("threads"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"node",
+					"title",
+					"revision",
+					"scratch_space_id",
+					"created_by",
+				]
+				.map(Alias::new),
+			)
+			.values_panic::<_, reinhardt::query::Value>([
+				thread.into(),
+				"area-merge".into(),
+				node.clone().into(),
+				"Merge".into(),
+				0_i64.into(),
+				scratch_space_id.into(),
+				"alice".into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.await;
+	let (active, retained) = (Uuid::from_u128(1), Uuid::from_u128(u128::MAX));
+	for (area, state, next_sequence) in [(active, "active", 3_i64), (retained, "retained", 2)] {
+		execute(
+			Query::insert()
+				.into_table(Alias::new("core_areas"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"home_node",
+						"agent_id",
+						"owner",
+						"workspace_id",
+						"thread_id",
+						"state",
+						"next_sequence",
+					]
+					.map(Alias::new),
+				)
+				.values_panic::<_, reinhardt::query::Value>([
+					area.into(),
+					"area-merge".into(),
+					format!("aidash://migration/{node}").into(),
+					"agent".into(),
+					"alice".into(),
+					thread.into(),
+					Uuid::new_v4().into(),
+					state.into(),
+					next_sequence.into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+	}
+	let message = Uuid::new_v4();
+	execute(
+		Query::insert()
+			.into_table(Alias::new("messages"))
+			.columns(["id", "tenant", "thread_id", "sender", "content"].map(Alias::new))
+			.values_panic::<_, reinhardt::query::Value>([
+				message.into(),
+				"area-merge".into(),
+				thread.into(),
+				"alice".into(),
+				"See the file".into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.await;
+	execute(
+		Query::insert()
+			.into_table(Alias::new("message_file_versions"))
+			.columns(
+				[
+					"id",
+					"message_id",
+					"file_id",
+					"tenant",
+					"area_id",
+					"revision",
+					"path",
+					"digest",
+					"size",
+					"media_type",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.values_panic::<_, reinhardt::query::Value>([
+				Uuid::new_v4().into(),
+				message.into(),
+				Uuid::new_v4().into(),
+				"area-merge".into(),
+				retained.into(),
+				1_i64.into(),
+				"notes.txt".into(),
+				"sha256:00".into(),
+				0_i64.into(),
+				"text/plain".into(),
+				chrono::Utc::now().into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.await;
+	let (own, merged) = (Uuid::new_v4(), Uuid::new_v4());
+	for (run, area, sequence) in [(own, active, 2_i64), (merged, retained, 1)] {
+		execute(
+			Query::insert()
+				.into_table(Alias::new("runs"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"task_id",
+						"workspace_id",
+						"node",
+						"home_node",
+						"agent_id",
+						"agent_version",
+						"phase",
+					]
+					.map(Alias::new),
+				)
+				.values_panic::<_, reinhardt::query::Value>([
+					run.into(),
+					"area-merge".into(),
+					Uuid::new_v4().into(),
+					thread.into(),
+					node.clone().into(),
+					format!("aidash://migration/{node}").into(),
+					"agent".into(),
+					"1".into(),
+					"COMPLETED".into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+		execute(
+			Query::insert()
+				.into_table(Alias::new("core_runs"))
+				.columns(["run_id", "area_id", "sequence", "tenant"].map(Alias::new))
+				.values_panic::<_, reinhardt::query::Value>([
+					run.into(),
+					area.into(),
+					sequence.into(),
+					"area-merge".into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.await;
+	}
+
+	// Act
+	fixture.migrate().await;
+
+	// Assert: the active Area is the key's only one.
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let areas: Vec<(Uuid, String, i64)> =
+		sqlx::query_as("SELECT id, state, next_sequence FROM core_areas WHERE thread_id = $1")
+			.bind(thread)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+	assert_eq!(areas, vec![(active, "active".to_owned(), 4)]);
+	// The merged Run names it and queues after the survivor's own Run.
+	let runs: Vec<(Uuid, Uuid, i64)> =
+		sqlx::query_as("SELECT run_id, area_id, sequence FROM core_runs ORDER BY sequence")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+	assert_eq!(runs, vec![(own, active, 2), (merged, active, 3)]);
+	let cited: Uuid = sqlx::query_scalar("SELECT area_id FROM message_file_versions")
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+	assert_eq!(cited, active);
+	// No row names an Area that is gone.
+	for table in [
+		"core_runs",
+		"core_operations",
+		"core_objects",
+		"core_records",
+		"core_previews",
+		"message_file_versions",
+		"semantic_image_publications",
+	] {
+		let dangling: i64 = sqlx::query_scalar(&format!(
+			"SELECT count(*) FROM {table} t WHERE t.area_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM core_areas a WHERE a.id = t.area_id)"
+		))
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert_eq!(dangling, 0, "{table}");
+	}
+	// Every other table that names an Area has a key to it, so its rows go
+	// with the merged Area.
+	let unkeyed: Vec<String> = sqlx::query_scalar(
+		"SELECT c.table_name::text FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.column_name = 'area_id' AND c.table_name::text NOT IN ('core_runs', 'core_operations', 'core_objects', 'core_records', 'core_previews', 'message_file_versions', 'semantic_image_publications') AND NOT EXISTS (SELECT 1 FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_name = k.constraint_name AND r.constraint_schema = k.constraint_schema WHERE k.table_schema = 'public' AND k.table_name = c.table_name AND k.column_name = 'area_id') ORDER BY 1",
+	)
+	.fetch_all(&pool)
+	.await
+	.unwrap();
+	assert!(unkeyed.is_empty(), "{unkeyed:?}");
+}
+
 #[rstest]
 #[tokio::test]
 async fn thread_member_policy_names_thread_actions_kind_and_attribute(
@@ -6272,6 +6520,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0111_thread_member_policy"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_area_queue_sleep"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;

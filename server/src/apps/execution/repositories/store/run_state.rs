@@ -1,7 +1,9 @@
 use super::*;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{DateTime, Utc};
-use reinhardt::query::{Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query};
+use reinhardt::query::{
+	Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query, SelectStatement, UpdateStatement,
+};
 fn a(name: &str) -> Alias {
 	Alias::new(name)
 }
@@ -49,6 +51,11 @@ pub(crate) struct FailureDelivery {
 }
 
 /// The same ordering and Area blockers govern claims and deferred notifications.
+///
+/// An execution waits behind the awake executions queued before it in its
+/// Working Area. One that sleeps, or is paused, holds no place (#1008, ADR
+/// 0140): the database sets `core_runs.asleep` when it falls asleep, and
+/// [`rejoin_queue`] puts it back at the tail when it wakes.
 pub(crate) fn run_unblocked() -> Condition {
 	let earlier = Query::select()
 		.expr(Expr::val(1))
@@ -93,6 +100,10 @@ pub(crate) fn run_unblocked() -> Condition {
 				"CANCELLED",
 			]),
 		)
+		.and_where(
+			Expr::col((Alias::new("earlier"), Alias::new("asleep")))
+				.eq(reinhardt::query::Expr::value(false)),
+		)
 		.to_owned();
 	let unready = Query::select()
 		.expr(Expr::val(1))
@@ -123,6 +134,51 @@ pub(crate) fn run_unblocked() -> Condition {
 				.add(Expr::exists(earlier).not())
 				.add(Expr::exists(unready).not()),
 		)
+}
+
+/// The Working Area of `run` when the execution holds no place in its
+/// queue: it slept, or was paused, and has not re-entered (#1008, ADR 0140).
+pub(crate) fn asleep_in(run: Uuid) -> SelectStatement {
+	Query::select()
+		.column(a("area_id"))
+		.from(a("core_runs"))
+		.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+		.and_where(Expr::col(a("asleep")).eq(Expr::value(true)))
+		.to_owned()
+}
+
+/// The Area's next queue position, its row locked as an admission locks it.
+/// Nothing when another transaction holds the row: a lease never waits for
+/// it, because it holds the rows it selected, which a deletion holding the
+/// Area may wait for. The execution is due again at the next notification
+/// or recovery scan.
+pub(crate) fn lock_queue_tail(area: Uuid) -> SelectStatement {
+	Query::select()
+		.column(a("next_sequence"))
+		.from(a("core_areas"))
+		.and_where(Expr::col(a("id")).eq(Expr::value(area)))
+		.lock(reinhardt::query::LockType::NoKeyUpdate)
+		.lock_behavior(reinhardt::query::LockBehavior::SkipLocked)
+		.to_owned()
+}
+
+/// Puts the waking execution `run` at the tail of its Area's queue, awake:
+/// it re-enters behind every execution queued while it slept, and is leased
+/// only once no awake one precedes it ([`run_unblocked`]).
+pub(crate) fn rejoin_queue(run: Uuid, area: Uuid, tail: i64) -> [UpdateStatement; 2] {
+	[
+		Query::update()
+			.table(a("core_runs"))
+			.value(a("asleep"), false)
+			.value(a("sequence"), tail)
+			.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+			.to_owned(),
+		Query::update()
+			.table(a("core_areas"))
+			.value(a("next_sequence"), tail + 1)
+			.and_where(Expr::col(a("id")).eq(Expr::value(area)))
+			.to_owned(),
+	]
 }
 
 impl Store {
