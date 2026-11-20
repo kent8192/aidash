@@ -606,6 +606,33 @@ fn bounded_generation_limits_reject_each_excess(
 		matches!(validate(&validation,&spec,&serde_json::from_value(bundle()).unwrap()),Err(Error::Invalid(message)) if message=="invalid generation limits")
 	);
 }
+/// Token limits are optional like the other limits (#1012 decision 41): a
+/// policy without them has none, and Budgets limit its spend. A token budget
+/// still needs the per-agent limit it is reserved by.
+#[rstest]
+#[case::neither(None, None, true)]
+#[case::per_agent_only(None, Some(5_000_000), true)]
+#[case::both(Some(10_000_000), Some(5_000_000), true)]
+#[case::budget_without_per_agent(Some(10_000_000), None, false)]
+fn token_limits_are_optional(
+	mut spec: Spec,
+	validation: DefinitionValidation,
+	#[case] budget: Option<i64>,
+	#[case] per_agent: Option<i64>,
+	#[case] valid: bool,
+) {
+	// Arrange
+	spec.limits.token_budget = budget;
+	spec.limits.tokens_per_agent = per_agent;
+	// Act
+	let result = validate(
+		&validation,
+		&spec,
+		&serde_json::from_value(bundle()).unwrap(),
+	);
+	// Assert
+	assert_eq!(result.is_ok(), valid, "{result:?}");
+}
 #[rstest]
 #[case("role", "generated role does not exist")]
 #[case("group", "generated group does not exist")]
@@ -667,7 +694,7 @@ async fn approved_component_kind_and_model_reservation_are_checked_before_cas(
 			.get_mut(&("model".into(), "1.0.0".into()))
 			.unwrap()["kind"] = json!("tool");
 	} else {
-		spec.limits.tokens_per_agent = 5119;
+		spec.limits.tokens_per_agent = Some(5119);
 	}
 	assert!(
 		matches!(set(&repo,"tenant","policy",0,&spec,&validation).await,Err(Error::Invalid(actual)) if actual==message)

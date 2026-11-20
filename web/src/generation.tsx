@@ -250,7 +250,7 @@ export function GenerationPage({ data }: { data: State }) {
                         />
                         <Metric
                           label={t("generationAllocated")}
-                          value={`${policy.allocated_tokens.toLocaleString(locale)} / ${policy.spec.limits.token_budget.toLocaleString(locale)}`}
+                          value={`${policy.allocated_tokens.toLocaleString(locale)} / ${policy.spec.limits.token_budget?.toLocaleString(locale) ?? t("generationNoLimit")}`}
                         />
                         <Metric
                           label={t("generationEmbeddingBudget")}
@@ -477,18 +477,16 @@ function PolicyEditor({
   const minTokens = window
     ? window + Math.min(4096, Math.max(256, Math.floor(window / 8)))
     : 1;
-  // Count, concurrency, depth and lifetime are optional and uncapped (#1012).
+  // Count, concurrency, depth, lifetime and tokens are optional and uncapped
+  // (#1012); a blank token field means no token limit, and Budgets limit spend.
   const limits: {
     max_agents?: number | null;
     max_concurrent?: number | null;
     max_depth?: number | null;
-    token_budget: number;
-    tokens_per_agent: number;
+    token_budget?: number | null;
+    tokens_per_agent?: number | null;
     lifetime_seconds?: number | null;
-  } = initial?.limits ?? {
-    token_budget: 1000000,
-    tokens_per_agent: 200000,
-  };
+  } = initial?.limits ?? {};
   const optional = (value: string) =>
     value.trim() === "" ? undefined : Number(value);
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -573,8 +571,8 @@ function PolicyEditor({
           max_agents: optional(text("max_agents")),
           max_concurrent: optional(text("max_concurrent")),
           max_depth: optional(text("max_depth")),
-          token_budget: Number(text("token_budget")),
-          tokens_per_agent: Number(text("tokens_per_agent")),
+          token_budget: optional(text("token_budget")),
+          tokens_per_agent: optional(text("tokens_per_agent")),
           lifetime_seconds: optional(text("lifetime_seconds")),
         },
       });
@@ -874,13 +872,19 @@ function PolicyEditor({
                 false,
               ],
               ["max_depth", "generationMaxDepth", 1, undefined, false],
-              ["token_budget", "generationTokenBudget", 1, 1000000000000, true],
+              [
+                "token_budget",
+                "generationTokenBudget",
+                1,
+                1000000000000,
+                false,
+              ],
               [
                 "tokens_per_agent",
                 "generationTokensPerAgent",
                 minTokens,
                 1000000000000,
-                true,
+                false,
               ],
               ["lifetime_seconds", "generationLifetime", 1, undefined, false],
             ] as const

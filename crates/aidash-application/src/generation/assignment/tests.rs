@@ -286,7 +286,7 @@ impl GenerationCreationScope for Scope {
 		job.status = input.status.into();
 		job.reason = input.reason.into();
 		job.depth = input.depth;
-		job.token_limit = input.policy.spec.limits.tokens_per_agent;
+		job.token_limit = input.policy.spec.limits.agent_token_limit();
 		job.foreign_intent = input.foreign_intent.clone();
 		if let Some(intent) = &input.foreign_intent {
 			job.home_node = intent["home_node"].as_str().unwrap().into();
@@ -305,7 +305,8 @@ impl GenerationCreationScope for Scope {
 		self.point("allocate").await?;
 		self.effects.push(format!(
 			"allocate:{}:{}",
-			policy.spec.limits.tokens_per_agent, allowances.embedding_calls
+			policy.spec.limits.reserved_tokens(),
+			allowances.embedding_calls
 		));
 		Ok(())
 	}
