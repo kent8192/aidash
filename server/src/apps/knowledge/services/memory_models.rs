@@ -397,7 +397,7 @@ impl Models {
 		let scope = aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?;
 		let gate = self
 			.store
-			.pool
+			.control_pool
 			.atomic(&scope, async |tx| {
 				let Some(charge) = self.charge(tx).await? else {
 					return Ok(aidash_domain::budgets::Gate::Open);
@@ -406,6 +406,70 @@ impl Models {
 			})
 			.await?;
 		budgets::admit(gate)
+	}
+
+	/// Passes the Budgets for a call `prepare` reserved. A refused call was
+	/// never sent, so its reservation goes back whole: the attempt is removed
+	/// and the operation's totals return, and a Budget refusal spends none of
+	/// the operation's retries or call budget (#1012).
+	async fn admit_reserved(&self, reservation: &Reservation) -> Result<()> {
+		let Err(refused) = self.admit_budget().await else {
+			return Ok(());
+		};
+		let mut tx = self
+			.store
+			.control_pool
+			.begin(&aidash_application::tenancy::TenancyScope::tenant(
+				&self.bank.tenant,
+			)?)
+			.await?;
+		// The lock order of `prepare`: the bank's ledger gate, then the rows.
+		let gate = i64::from_be_bytes(self.bank_id.as_bytes()[..8].try_into().unwrap()) ^ 125_0015;
+		native::query(
+			&Query::select()
+				.expr(reinhardt::query::SimpleExpr::CustomWithExpr(
+					"pg_advisory_xact_lock(?)".into(),
+					vec![Expr::value(gate).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		let removed = native::query(
+			&Query::delete()
+				.from_table(Alias::new("memory_model_attempts"))
+				.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
+				.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
+				.and_where(Expr::col("state").eq("pending"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?
+		.rows_affected();
+		if removed == 1 {
+			native::query(
+				&Query::update()
+					.table(Alias::new("memory_model_operations"))
+					.value_expr(
+						Alias::new("calls"),
+						Expr::col("calls").sub(Expr::value(1_i64)),
+					)
+					.value_expr(
+						Alias::new("tokens"),
+						Expr::col("tokens").sub(Expr::value(reservation.tokens as i64)),
+					)
+					.value_expr(
+						Alias::new("cost_micros"),
+						Expr::col("cost_micros").sub(Expr::value(reservation.cost as i64)),
+					)
+					.and_where(Expr::col("id").eq(Expr::value(self.operation)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+		Err(refused)
 	}
 
 	/// Adds a finished call to the Budget ledger: the cost its provider
@@ -859,7 +923,7 @@ impl Models {
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 		};
-		self.admit_budget().await?;
+		self.admit_reserved(&reservation).await?;
 		let origin = self
 			.reserve_model(reservation.id, input, output as u32)
 			.await?;
@@ -1010,7 +1074,7 @@ impl Models {
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 		};
-		self.admit_budget().await?;
+		self.admit_reserved(&reservation).await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{

@@ -98,6 +98,7 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 	server: reinhardt::test::fixtures::server::TestServerGuard,
 ) {
 	// Arrange: one indexed Unit, then a Tenant Budget at its Hard Limit.
+	let retries = usize::try_from(bounds.max_retries).unwrap();
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
@@ -161,18 +162,31 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
-	// Act
-	let refused = memory::operate(&store, &administrator(&store).await, reflect(&bank)).await;
-	// Assert: refused before any reflection call was sent.
-	assert!(
-		matches!(
-			refused,
-			Err(aidash_server::Error::BudgetExhausted { stop: true, .. })
-		),
-		"{refused:?}"
-	);
+	// Act: the same operation, refused more often than its retries allow.
+	let operation = reflect(&bank);
+	for _ in 0..=retries {
+		let refused =
+			memory::operate(&store, &administrator(&store).await, operation.clone()).await;
+		// Assert: refused before any reflection call was sent.
+		assert!(
+			matches!(
+				refused,
+				Err(aidash_server::Error::BudgetExhausted { stop: true, .. })
+			),
+			"{refused:?}"
+		);
+	}
 	assert_eq!(chat.load(Ordering::SeqCst), 0);
 	assert_eq!(ledger(&store).await, (1, indexed_unpriced));
+	// A refused call was never sent, so it spent none of the operation's
+	// attempts.
+	let attempts: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM memory_model_attempts WHERE operation_id = $1")
+			.bind(operation.operation_id)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(attempts, 0);
 
 	// Act: the limit is raised and the reflection runs.
 	sqlx::query("UPDATE budgets SET hard_limit_nanocredits = 1000000000 WHERE id = $1")
@@ -180,7 +194,7 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let reflected = memory::operate(&store, &administrator(&store).await, reflect(&bank))
+	let reflected = memory::operate(&store, &administrator(&store).await, operation)
 		.await
 		.unwrap();
 	// Assert: its cost and its query embedding are in the ledger.
