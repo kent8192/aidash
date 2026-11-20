@@ -106,7 +106,10 @@ pub trait EndScope: Send {
 		thread: Uuid,
 		reason: aidash_domain::subnodes::EndReason,
 	) -> Result<()>;
-	async fn active_runs(&mut self, thread: Uuid) -> Result<Vec<Uuid>>;
+	/// Locks controllable member Runs and any ended members that still create
+	/// active Subnodes. A resume leaves independently Safety-Stopped branches
+	/// paused. The returned flag says whether the Run can be controlled.
+	async fn member_runs(&mut self, thread: Uuid, resuming: bool) -> Result<Vec<(Uuid, bool)>>;
 	async fn control_run(
 		&mut self,
 		run: Uuid,
@@ -120,7 +123,7 @@ pub trait EndScope: Send {
 #[async_trait]
 pub trait CreatorRemovalScope: EndScope {
 	/// Locks the Tenant's policy for reading, then the creating Run, its
-	/// active Subnodes and their active Runs (the order an end takes them),
+	/// active Subnodes and their member Runs (the order an end takes them),
 	/// and returns the creating Agent and the Node address its Subnodes are
 	/// on. `None` when the Run has no active Subnode left.
 	async fn lock_creator(&mut self, creator: Uuid) -> Result<Option<(EntityRef, String)>>;

@@ -36,6 +36,36 @@ fn stopped(id: Uuid, outcome: StopOutcome) -> StoppedItem {
 	}
 }
 
+/// Use the Home's authority for remote control: the grant's requester may
+/// manage the Task and must hold `run.control` on its bound admission.
+async fn may_control_remote_root(access: &mut Access, tenant: &str, root: Uuid) -> Result<bool> {
+	let subject = access.identity.subject.clone();
+	let admissions = NativeFlowGraph {
+		tx: &mut *access.tx,
+		tenant: tenant.to_owned(),
+	}
+	.root_admissions(root, &subject)
+	.await?;
+	if admissions.is_empty() {
+		return Ok(false);
+	}
+	let task = crate::apps::workspaces::models::Task::read_many_in(&mut **access.tx, &[root])
+		.await?
+		.pop()
+		.ok_or_else(|| Error::NotFound("task".into()))?;
+	let resource = access.task_resource(&task).await?;
+	if !access.decide(&resource, "task.delegate").await? {
+		return Ok(false);
+	}
+	for admission in admissions {
+		let run = access.resource("run", admission, resource.attributes.clone());
+		if access.decide(&run, "run.control").await? {
+			return Ok(true);
+		}
+	}
+	Ok(false)
+}
+
 impl TenantAdministrations {
 	/// Stops the flow of `root`: cancels its open Runs and the work it handed
 	/// to other Deployments, ends its Subnodes and pauses its Duties, each in
@@ -89,6 +119,13 @@ impl TenantAdministrations {
 					Err(Error::Forbidden | Error::NotFound(_)) => {}
 					Err(error) => return Err(error),
 				}
+			}
+			if !allowed {
+				allowed = match may_control_remote_root(&mut access, &tenant, root).await {
+					Ok(allowed) => allowed,
+					Err(Error::Forbidden | Error::NotFound(_)) => false,
+					Err(error) => return Err(error),
+				};
 			}
 			if !allowed {
 				let resource = access.resource("node", &node, json!({}));
@@ -170,6 +207,8 @@ impl TenantAdministrations {
 		for (creator, ids) in creators {
 			let ended: Result<()> = async {
 				let mut tx = f.store.pool.begin(&scope).await?.into_executor().await?;
+				crate::apps::execution::repositories::subnodes::lock_for_end(tx.as_mut(), creator)
+					.await?;
 				f.store
 					.subnode_control_in(
 						tx.as_mut(),

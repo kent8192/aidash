@@ -687,11 +687,11 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			tx: self.access.tx.native_mut(),
 		};
 		// Lock the Runs before `mark_ended` appends an event; see `lock_end`.
-		let runs = cascade.active_runs(subnode.thread_id).await?;
+		let runs = cascade.member_runs(subnode.thread_id, false).await?;
 		cascade
 			.mark_ended(subnode.id, subnode.thread_id, reason)
 			.await?;
-		for run in runs {
+		for (run, _) in runs.into_iter().filter(|(_, controllable)| *controllable) {
 			cascade
 				.control_run(
 					run,

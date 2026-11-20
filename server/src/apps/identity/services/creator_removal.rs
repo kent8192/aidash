@@ -256,8 +256,12 @@ impl EndScope for Removal<'_> {
 	) -> aidash_application::Result<()> {
 		self.cascade.mark_ended(id, thread, reason).await
 	}
-	async fn active_runs(&mut self, thread: Uuid) -> aidash_application::Result<Vec<Uuid>> {
-		self.cascade.active_runs(thread).await
+	async fn member_runs(
+		&mut self,
+		thread: Uuid,
+		resuming: bool,
+	) -> aidash_application::Result<Vec<(Uuid, bool)>> {
+		self.cascade.member_runs(thread, resuming).await
 	}
 	async fn control_run(
 		&mut self,

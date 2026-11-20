@@ -11111,3 +11111,60 @@ async fn stopping_a_flow_cancels_the_work_it_handed_to_another_deployment(
 	assert_eq!(again["remote"][0]["outcome"], "already_stopped");
 	p.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_root_person_can_stop_a_remote_only_flow_without_node_administration(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	assert!(
+		p.a.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.iter()
+			.all(|run| run.task_id != p.task)
+	);
+	let mut policy = p.source_policy.clone();
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id": "stop-requires-run-control",
+		"effect": "deny",
+		"subjects": {"ids": ["alice", "bob"]},
+		"actions": ["node.administer"],
+		"resources": {"kinds": ["node"]},
+	}));
+	common::replace_policy(&p.a.store, "acme", policy.clone()).await;
+	let path = format!("/api/tenants/acme/flows/{}/stop", p.task);
+	let alice = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let bob = common::BrowserMapping::new(&p.a, "acme", "bob").await;
+	let (status, body) = bob.send("POST", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	let rules = policy["policies"].as_array_mut().unwrap();
+	rules.push(json!({
+		"id": "cannot-control-remote-run",
+		"effect": "deny",
+		"subjects": {"ids": ["alice"]},
+		"actions": ["run.control"],
+		"resources": {"kinds": ["run"], "ids": [p.admission]},
+	}));
+	common::replace_policy(&p.a.store, "acme", policy.clone()).await;
+	let (status, body) = alice.send("POST", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(!grant_revoked(&p).await);
+	policy["policies"].as_array_mut().unwrap().pop();
+	common::replace_policy(&p.a.store, "acme", policy).await;
+	let (status, stopped) = alice.send("POST", &path, Value::Null).await;
+	assert_eq!(status, 200, "{stopped}");
+	assert_eq!(stopped["runs"], json!([]));
+	assert_eq!(
+		stopped["remote"],
+		json!([{"id": p.grant, "outcome": "stopped"}])
+	);
+	assert!(grant_revoked(&p).await);
+	assert_eq!(p.run().await.control, aidash_domain::RunControl::Cancelled);
+	p.step().await;
+	assert_eq!(p.run().await.phase(), aidash_domain::RunPhase::Cancelled);
+	p.close().await;
+}

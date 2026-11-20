@@ -185,8 +185,8 @@ async fn subnodes(
 }
 
 /// What a Duty's own page checks for the person (`DutyScope::sees_thread`
-/// and `administers`): the Threads holding Duties that they may read, and
-/// whether they hold `duty.administer`.
+/// and `administers`): Duty Threads and originating Threads they may read,
+/// and whether they hold `duty.administer`.
 async fn duty_visibility(
 	store: &crate::store::Store,
 	identity: &crate::authorization::identity::SubjectIdentity,
@@ -194,16 +194,21 @@ async fn duty_visibility(
 ) -> Result<(BTreeSet<Uuid>, bool)> {
 	let mut access = crate::authorization::access::Access::begin(store, identity).await?;
 	let result = async {
-		let threads: Vec<Uuid> = native::query_scalar(
+		let threads: Vec<(Uuid, Option<Uuid>)> = native::query_as(
 			&Query::select()
 				.distinct()
-				.column(Alias::new("thread_id"))
+				.columns(["thread_id", "origin_thread_id"].map(Alias::new))
 				.from(Alias::new("duties"))
 				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_all(&mut **access.tx)
+		.columns(&["thread_id", "origin_thread_id"])
+		.fetch_all(&mut **access.tx)
 		.await?;
+		let threads: BTreeSet<_> = threads
+			.into_iter()
+			.flat_map(|(thread, origin)| [Some(thread), origin].into_iter().flatten())
+			.collect();
 		let mut readable = BTreeSet::new();
 		for thread in threads {
 			let resource = match access.thread(thread).await {
@@ -310,6 +315,7 @@ impl TenantAdministrations {
 							id: duty.id,
 							node: nodes.get(&duty.thread_id)?.clone(),
 							thread: duty.thread_id,
+							origin_thread_id: duty.origin_thread_id,
 							successor: duty.successor.clone(),
 							state: duty.status().to_owned(),
 							title: duty.definition.title.clone(),

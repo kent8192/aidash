@@ -93,6 +93,36 @@ impl NativeFlowGraph<'_> {
 		.await
 	}
 
+	/// Admissions for the Root Task that the Home granted to this person.
+	pub(crate) async fn root_admissions(&mut self, root: Uuid, subject: &str) -> Result<Vec<Uuid>> {
+		let (grant, execution) = (Alias::new("g"), Alias::new("e"));
+		native::query_scalar(
+			&Query::select()
+				.column((execution.clone(), Alias::new("admission_id")))
+				.from_as(Alias::new("authorization_remote_grants"), grant.clone())
+				.join(
+					JoinType::InnerJoin,
+					TableRef::table_alias(
+						Alias::new("authorization_remote_execution"),
+						execution.clone(),
+					),
+					Expr::col((execution.clone(), Alias::new("grant_id")))
+						.equals((grant.clone(), Alias::new("id")))
+						.and(
+							Expr::col((execution.clone(), Alias::new("task_id")))
+								.equals((grant.clone(), Alias::new("task_id"))),
+						),
+				)
+				.and_where(Expr::col((grant.clone(), Alias::new("tenant"))).eq(self.tenant.clone()))
+				.and_where(Expr::col((grant.clone(), Alias::new("task_id"))).eq(Expr::value(root)))
+				.and_where(Expr::col((grant, Alias::new("root_subject"))).eq(subject))
+				.order_by((execution, Alias::new("admission_id")), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut *self.tx)
+		.await
+	}
+
 	/// The Remote Grants that hand the flow's Tasks to another Deployment,
 	/// each with whether it is revoked and whether its Task has ended
 	/// (`home::ending_statuses`).

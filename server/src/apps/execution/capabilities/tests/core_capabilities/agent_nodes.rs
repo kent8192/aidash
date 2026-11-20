@@ -444,7 +444,7 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		.as_str()
 		.unwrap()
 		.to_owned();
-	duty_tool(
+	let duty = duty_tool(
 		&c.f.store,
 		&run,
 		"call-2",
@@ -472,7 +472,7 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		"actions": ["node.read"],
 		"resources": {"kinds": ["node"], "ids": [node]},
 	}));
-	common::replace_policy(&c.f.store, "acme", policy).await;
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let path = "/api/tenants/acme/org-chart";
 	// Act
 	let alice = common::BrowserMapping::new(&c.f, "acme", "alice").await;
@@ -530,6 +530,55 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 	assert_eq!(bob_home["hidden_subnodes"], 1);
 	assert!(bob_home.get("spend").is_none());
 	assert_eq!(limited["people"], json!([]));
+	// Give Bob access to the originating Thread while the Duty's own Thread
+	// remains private. The chart now shows the same Duty as its detail page.
+	let duty_id = duty["duty_id"].as_str().unwrap();
+	let duty_thread: Uuid = serde_json::from_value(duty["thread_id"].clone()).unwrap();
+	assert_ne!(run.thread_id, duty_thread);
+	let policies = policy["policies"].as_array_mut().unwrap();
+	let member = policies
+		.iter_mut()
+		.find(|rule| rule["id"] == "bob-member")
+		.unwrap();
+	member["actions"]
+		.as_array_mut()
+		.unwrap()
+		.retain(|action| action != "thread.read");
+	policies.push(json!({
+		"id": "bob-not-duty-thread",
+		"effect": "deny",
+		"subjects": {"ids": ["bob"]},
+		"actions": ["thread.read"],
+		"resources": {"kinds": ["thread"], "ids": [duty_thread]},
+	}));
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let (status, body) = bob
+		.send(
+			"GET",
+			&format!("/api/threads/{}", run.thread_id),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = bob
+		.send("GET", &format!("/api/threads/{duty_thread}"), Value::Null)
+		.await;
+	assert!(matches!(status, 403 | 404), "{status} {body}");
+	let (status, body) = bob
+		.send("GET", &format!("/api/duties/{duty_id}"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, with_origin) = bob.send("GET", path, Value::Null).await;
+	assert_eq!(status, 200, "{with_origin}");
+	let bob_home = with_origin["nodes"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["name"] == home["name"])
+		.unwrap();
+	assert_eq!(bob_home["duties"][0]["id"], duty["duty_id"], "{bob_home}");
+	assert_eq!(bob_home["duties"][0]["flow"], json!(c.task));
+	assert_eq!(bob_home["hidden_duties"], 0);
 	// A Subject Credential reads no org chart.
 	let (status, _) = request(&c.app, &c.token, "GET", path, Value::Null).await;
 	assert_eq!(status, 403);

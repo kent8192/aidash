@@ -481,8 +481,12 @@ struct Ending {
 }
 #[async_trait]
 impl crate::ports::subnodes::EndScope for Ending {
-	async fn active_subnodes(&mut self, _: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
-		Ok(vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))])
+	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+		Ok(if creator == run().id {
+			vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))]
+		} else {
+			vec![]
+		})
 	}
 	async fn mark_ended(
 		&mut self,
@@ -493,8 +497,8 @@ impl crate::ports::subnodes::EndScope for Ending {
 		self.marks.push(reason);
 		Ok(())
 	}
-	async fn active_runs(&mut self, _: Uuid) -> Result<Vec<Uuid>> {
-		Ok(vec![Uuid::from_u128(8), Uuid::from_u128(9)])
+	async fn member_runs(&mut self, _: Uuid, _: bool) -> Result<Vec<(Uuid, bool)>> {
+		Ok(vec![(Uuid::from_u128(8), true), (Uuid::from_u128(9), true)])
 	}
 	async fn control_run(
 		&mut self,
@@ -554,17 +558,25 @@ struct Logged {
 }
 #[async_trait]
 impl crate::ports::subnodes::EndScope for Logged {
-	async fn active_subnodes(&mut self, _: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
 		self.calls.push("subnodes");
-		Ok(vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))])
+		let thread = if creator == run().id { 5 } else { 6 };
+		Ok(vec![(
+			SubnodeId(Uuid::from_u128(thread + 10)),
+			Uuid::from_u128(thread),
+		)])
 	}
 	async fn mark_ended(&mut self, _: SubnodeId, _: Uuid, _: subnodes::EndReason) -> Result<()> {
 		self.calls.push("mark_ended");
 		Ok(())
 	}
-	async fn active_runs(&mut self, _: Uuid) -> Result<Vec<Uuid>> {
+	async fn member_runs(&mut self, thread: Uuid, _: bool) -> Result<Vec<(Uuid, bool)>> {
 		self.calls.push("runs");
-		Ok(vec![Uuid::from_u128(8)])
+		Ok(if thread == Uuid::from_u128(5) {
+			vec![(Uuid::from_u128(8), true)]
+		} else {
+			vec![(run().id, true)]
+		})
 	}
 	async fn control_run(
 		&mut self,
@@ -577,7 +589,7 @@ impl crate::ports::subnodes::EndScope for Logged {
 	}
 }
 #[tokio::test]
-async fn an_end_locks_subnodes_then_runs_before_it_marks_anything_ended() {
+async fn an_end_locks_nested_subnodes_before_any_effect_and_visits_a_cycle_once() {
 	use aidash_domain::{ControlSource, RunControlAction};
 	let mut scope = Logged::default();
 	control_for_creator(
@@ -589,13 +601,21 @@ async fn an_end_locks_subnodes_then_runs_before_it_marks_anything_ended() {
 	)
 	.await
 	.unwrap();
-	let first_mark = scope.calls.iter().position(|call| *call == "mark_ended");
-	let first_runs = scope.calls.iter().position(|call| *call == "runs");
-	assert!(first_runs < first_mark, "{:?}", scope.calls);
-	assert_eq!(scope.calls[..2], ["subnodes", "runs"]);
+	assert_eq!(
+		scope.calls,
+		[
+			"subnodes",
+			"runs",
+			"subnodes",
+			"runs",
+			"mark_ended",
+			"mark_ended",
+			"control_run"
+		]
+	);
 	let mut locking = Logged::default();
 	lock_end(&mut locking, run().id).await.unwrap();
-	assert_eq!(locking.calls, ["subnodes", "runs"]);
+	assert_eq!(locking.calls, ["subnodes", "runs", "subnodes", "runs"]);
 }
 
 #[tokio::test]
@@ -645,8 +665,8 @@ impl crate::ports::subnodes::EndScope for Removal {
 	) -> Result<()> {
 		self.ending.mark_ended(id, thread, reason).await
 	}
-	async fn active_runs(&mut self, thread: Uuid) -> Result<Vec<Uuid>> {
-		self.ending.active_runs(thread).await
+	async fn member_runs(&mut self, thread: Uuid, resuming: bool) -> Result<Vec<(Uuid, bool)>> {
+		self.ending.member_runs(thread, resuming).await
 	}
 	async fn control_run(
 		&mut self,

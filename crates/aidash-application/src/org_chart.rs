@@ -19,7 +19,7 @@ pub struct Viewer {
 	/// Subnodes and its spend.
 	pub administers: BTreeSet<String>,
 	/// Threads the person may read (`thread.read`): they see the
-	/// Duties that work there, as the Duty list does.
+	/// Duties that work there or were registered there, as the Duty list does.
 	pub threads: BTreeSet<Uuid>,
 	/// `duty.administer`: every Duty.
 	pub duty_administrator: bool,
@@ -30,11 +30,14 @@ pub struct Viewer {
 impl Viewer {
 	/// Whether the person sees `duty`, by the rule of a Duty's own page
 	/// (`aidash_application::duties`): its Requester, its named successor,
-	/// whoever may read its Thread, and `duty.administer`.
+	/// whoever may read its own or originating Thread, and `duty.administer`.
 	pub fn sees_duty(&self, duty: &DutyRow) -> bool {
 		duty.requester == self.subject
 			|| duty.successor.as_deref() == Some(self.subject.as_str())
 			|| self.threads.contains(&duty.thread)
+			|| duty
+				.origin_thread_id
+				.is_some_and(|origin| self.threads.contains(&origin))
 			|| self.duty_administrator
 	}
 
@@ -61,6 +64,8 @@ pub struct DutyRow {
 	pub node: String,
 	/// The Thread it works in, whose readers see it.
 	pub thread: Uuid,
+	/// The Thread it was registered from, whose readers also see it.
+	pub origin_thread_id: Option<Uuid>,
 	/// The person named to take it over, who sees it too.
 	pub successor: Option<String>,
 	pub title: String,
