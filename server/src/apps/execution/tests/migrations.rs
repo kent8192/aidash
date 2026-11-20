@@ -6343,3 +6343,123 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 	assert_eq!(policy["condition"]["value"]["path"], "/thread_id");
 	assert!(!document.to_string().contains("workspace"), "{document}");
 }
+
+/// The default member policy exactly as the database stored it before
+/// `identity/0067_scratch_member_policy` (written out from 9a387f8372, not
+/// derived from today's default) gains every later default grant on the way to
+/// the head: 0067 and 0080 must keep matching it, and 0098 must match it after
+/// renaming `schedule.create` in place (#1009 review).
+#[rstest]
+#[tokio::test]
+async fn default_member_policy_from_before_scratch_spaces_gains_every_later_grant(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: the history up to 0067's predecessor and a Tenant with that policy.
+	let fixture = fresh_database.await;
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	command
+		.args(["migrate", "identity", "0066_node_auth_history_merge"])
+		.stdin(Stdio::null())
+		.kill_on_drop(true);
+	let output = tokio::time::timeout(Duration::from_secs(600), command.output())
+		.await
+		.expect("migrating to identity 0066 must finish")
+		.unwrap();
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let tenant = "member-policy-before-0067";
+	let members = json!({
+		"id": "members",
+		"effect": "allow",
+		"subjects": {"any": false, "groups": ["members"], "ids": [], "kinds": [], "roles": []},
+		"actions": [
+				"agent.configure", "agent.execute", "agent_dependency.read", "agent_draft.archive",
+				"agent_draft.create", "agent_draft.read", "agent_draft.register", "agent_draft.share",
+				"agent_draft.test", "agent_draft.transfer", "agent_draft.write", "agent_version.inspect",
+				"approval.advance", "approval.mode.auto", "artifact.create", "artifact.read",
+				"capability.request", "chatgpt.tokens.use.direct", "cluster.execute",
+				"conversation.create", "conversation.read", "credential.create", "decision.evidence.read",
+				"decision.invoke", "decision.state.read", "embedding.invoke", "file.delete", "file.read",
+				"file.receive", "file.restore", "file.share", "file.transfer", "file.write",
+				"generation.read", "generation.request", "generation.stop", "human.answer", "human.read",
+				"human.request", "installation.create", "installation.read", "marketplace.browse",
+				"marketplace.install", "marketplace.read", "memory.candidate.propose",
+				"memory.candidate.read", "memory.derive", "memory.history.read", "memory.invoke",
+				"memory.participant.create", "memory.participant.use", "memory.pin", "memory.read",
+				"memory.reflect", "memory.use", "memory.write", "message.create", "message.read",
+				"model.infer", "node.read", "node.use", "registry.create", "registry.read", "run.control",
+				"run.message", "run.read", "semantic.index.manage", "semantic.read", "semantic.search",
+				"semantic.use", "semantic.write", "skill.import", "skill.use", "task.abandon",
+				"task.claim", "task.complete", "task.create", "task.delegate", "task.execute", "task.read",
+				"thread.delete", "tool.invoke", "workspace.create", "workspace.events", "workspace.read",
+				"workspace.share", "workspace.update"
+		],
+		"resources": {"ids": [], "kinds": ["*"]},
+		"condition": null
+	});
+	let document = json!({"tenant": tenant, "subjects": {}, "policies": [members]});
+	for sql in [
+		Query::insert()
+			.into_table(Alias::new("tenants"))
+			.columns(["name", "personal", "created_at", "created_by_kind"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(tenant))
+					.expr(Expr::value(false))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::value("deployment_administrator"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+		Query::insert()
+			.into_table(Alias::new("authorization_bundles"))
+			.columns(["tenant", "revision", "document"].map(Alias::new))
+			.values_panic::<_, reinhardt::query::Value>([
+				tenant.into(),
+				1_i64.into(),
+				document.into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	] {
+		fixture.connection.execute(&sql, vec![]).await.unwrap();
+	}
+
+	// Act
+	fixture.migrate().await;
+
+	// Assert: Scratch Spaces (0067), Duties (0080, renamed by 0098), Subnodes
+	// (0098) and the Thread actions (0111) are granted, and no old name is left.
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let document: serde_json::Value =
+		sqlx::query_scalar("SELECT document FROM authorization_bundles WHERE tenant = $1")
+			.bind(tenant)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	let actions = document["policies"][0]["actions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|action| action.as_str().unwrap())
+		.collect::<BTreeSet<_>>();
+	for granted in [
+		"scratch.create",
+		"duty.create",
+		"subnode.create",
+		"thread.create",
+		"thread.events",
+		"thread.read",
+		"thread.share",
+		"thread.update",
+	] {
+		assert!(actions.contains(granted), "{granted}: {document}");
+	}
+	for former in ["schedule.create", "workspace.create", "workspace.read"] {
+		assert!(!actions.contains(former), "{former}: {document}");
+	}
+	pool.close().await;
+}

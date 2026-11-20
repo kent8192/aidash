@@ -60,13 +60,20 @@ fn subnode_member_policy() -> String {
 	let previous = serde_json::to_value(previous).expect("the member policy serializes");
 	let current = serde_json::to_value(current).expect("the member policy serializes");
 	// Reinhardt Query has no builder for PostgreSQL's JSONB array transformation.
+	// The rename above keeps `duty.create` where `schedule.create` stood, out of
+	// the sorted order `previous` has, and JSONB array equality is ordered: the
+	// entry is compared as a set, by containment both ways.
 	let policies = SimpleExpr::CustomWithExpr(
-		"jsonb_set(document, '{policies}', (SELECT jsonb_agg(CASE WHEN entry = ?::jsonb THEN ?::jsonb ELSE entry END ORDER BY ord) FROM jsonb_array_elements(document->'policies') WITH ORDINALITY AS p(entry, ord)))".into(),
-		vec![Expr::value(previous.clone()).into(), Expr::value(current).into()],
+		"jsonb_set(document, '{policies}', (SELECT jsonb_agg(CASE WHEN entry @> ?::jsonb AND ?::jsonb @> entry THEN ?::jsonb ELSE entry END ORDER BY ord) FROM jsonb_array_elements(document->'policies') WITH ORDINALITY AS p(entry, ord)))".into(),
+		vec![
+			Expr::value(previous.clone()).into(),
+			Expr::value(previous.clone()).into(),
+			Expr::value(current).into(),
+		],
 	);
 	let matches_default = SimpleExpr::CustomWithExpr(
-		"document->'policies' @> jsonb_build_array(?::jsonb)".into(),
-		vec![Expr::value(previous).into()],
+		"EXISTS (SELECT 1 FROM jsonb_array_elements(document->'policies') AS p(entry) WHERE entry @> ?::jsonb AND ?::jsonb @> entry)".into(),
+		vec![Expr::value(previous.clone()).into(), Expr::value(previous).into()],
 	);
 	Query::update()
 		.table(Alias::new("authorization_bundles"))
