@@ -43,7 +43,7 @@ Stints:
 | Limit                                                    | Value                                                                                         |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Command Time Limit                                       | 10 minutes by default; a Deployment's capability profile may raise `maximum_seconds` to a day |
-| Consecutive Lease Recoveries before a Crash Loop Failure | 5                                                                                             |
+| Consecutive Lease Recoveries before a Crash Loop Failure | 5 by default; a Tenant may set 1 to 20 in its execution settings (`tenant.update`)            |
 | Waits for an approval (`approval_seconds`)               | 7 days by default; a Deployment may set up to 30 days                                         |
 | An Agent definition's Tool Parallelism                   | up to 64                                                                                      |
 
