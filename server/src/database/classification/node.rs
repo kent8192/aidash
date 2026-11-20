@@ -125,9 +125,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "semantic_vectors"
 		| "memory_banks"
 		| "memory_participants" => Link("thread_id", Thread),
-		// A Duty's script versions, script runs and the webhook deliveries
-		// its triggers accepted are keyed on the Duty and go with it (#1011).
-		"duty_script_versions" | "duty_script_runs" | "duty_deliveries" => {
+		// Script versions, script runs and delivery records go with their Duty.
+		"duty_script_versions" | "duty_script_runs" | "duty_deliveries" | "duty_pending_events" => {
 			Link("duty_id", Duty)
 		}
 		"core_operations" => Link("area_id", Area),

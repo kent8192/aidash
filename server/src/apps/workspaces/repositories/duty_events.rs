@@ -3,11 +3,15 @@
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::duties::events::{DutyEvent, DutyTrigger, EventOutcome, TriggerKind};
 use chrono::{DateTime, Utc};
-use reinhardt::db::{backends::TransactionExecutor, orm::Model};
-use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait, IntoIden, IntoValue, LockBehavior, LockType, Order,
-	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+use reinhardt::db::{
+	backends::TransactionExecutor,
+	orm::{Model, execution::convert_values},
 };
+use reinhardt::query::{
+	Alias, Condition, Expr, ExprTrait, IntoIden, IntoValue, JoinType, LockBehavior, LockType,
+	Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::apps::workspaces::models::{DutyBookingRecord, DutyEventRecord, DutyTriggerRecord};
@@ -176,6 +180,129 @@ pub(crate) async fn triggers_on_completion(
 		.collect()
 }
 
+/// Enqueues an event as part of the transaction settling its tick or script.
+/// Watcher events name the Duty itself, so they have no trigger foreign key.
+pub(crate) async fn enqueue(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+	trigger: Option<Uuid>,
+	received_at: DateTime<Utc>,
+	payload: Value,
+) -> Result<()> {
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("duty_pending_events"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"duty_id",
+				"trigger_id",
+				"received_at",
+				"payload",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			IntoValue::into_value(Uuid::now_v7()),
+			IntoValue::into_value(tenant),
+			IntoValue::into_value(duty),
+			IntoValue::into_value(trigger),
+			IntoValue::into_value(received_at),
+			IntoValue::into_value(payload),
+		])
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
+
+pub(crate) struct PendingEvent {
+	pub tenant: String,
+	pub id: Uuid,
+	pub duty_id: Uuid,
+	pub trigger_id: Option<Uuid>,
+	pub source_duty_id: Option<Uuid>,
+	pub received_at: DateTime<Utc>,
+	pub payload: Value,
+}
+
+crate::native_record!(PendingEvent {
+	tenant,
+	id,
+	duty_id,
+	trigger_id,
+	source_duty_id,
+	received_at,
+	payload,
+});
+
+/// Pages through pending events across Tenants in the order they were queued.
+pub(crate) async fn pending(
+	pool: &Pool,
+	after: Option<Uuid>,
+	limit: u64,
+) -> Result<Vec<PendingEvent>> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::DutyTicks);
+	let pending = Alias::new("duty_pending_events");
+	let triggers = Alias::new("duty_triggers");
+	let id = (pending.clone(), Alias::new("id"));
+	let mut query = Query::select();
+	query
+		.columns(
+			[
+				"tenant",
+				"id",
+				"duty_id",
+				"trigger_id",
+				"received_at",
+				"payload",
+			]
+			.map(|column| (pending.clone(), Alias::new(column))),
+		)
+		.column((triggers.clone(), Alias::new("source_duty_id")))
+		.from(pending.clone())
+		.join(
+			JoinType::LeftJoin,
+			triggers.clone(),
+			Condition::all()
+				.add(
+					Expr::col((triggers.clone(), Alias::new("id")))
+						.equals((pending.clone(), Alias::new("trigger_id"))),
+				)
+				.add(
+					Expr::col((triggers, Alias::new("tenant")))
+						.equals((pending, Alias::new("tenant"))),
+				),
+		)
+		.order_by(id.clone(), Order::Asc)
+		.limit(limit);
+	if let Some(after) = after {
+		query.and_where(Expr::col(id).gt(Expr::value(after)));
+	}
+	native::query_as(&query.to_string(PostgresQueryBuilder))
+		.fetch_all(pool.in_scope(&scope))
+		.await
+}
+
+/// Claims a pending event before applying it. The deletion commits with the
+/// event receipt and any Task changes; a rollback makes it pending again.
+pub(crate) async fn take_pending(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> Result<bool> {
+	let result = native::query(
+		&Query::delete()
+			.from_table(Alias::new("duty_pending_events"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(result.rows_affected() > 0)
+}
+
 pub(crate) async fn insert_event(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -220,7 +347,7 @@ pub(crate) async fn events(
 	DutyEventRecord::objects()
 		.filter(DutyEventRecord::field_tenant().eq(tenant.to_owned()))
 		.filter(DutyEventRecord::field_duty_id().eq(duty))
-		.order_by(&["-received_at"])
+		.order_by(&["-received_at", "-id"])
 		.limit(limit as usize)
 		.all_with_executor(tx)
 		.await

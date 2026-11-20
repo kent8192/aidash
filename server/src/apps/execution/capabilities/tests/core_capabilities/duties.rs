@@ -962,10 +962,34 @@ async fn a_duty_starts_nothing_while_its_budget_is_at_the_hard_limit(
 	c.close().await;
 }
 
-/// Another Duty's Task ending wakes a Duty that names it (#1011).
+/// Makes delivery fail after settlement, using fixture-only PostgreSQL trigger
+/// DDL that Reinhardt Query cannot express.
+async fn interrupt_event_delivery(c: &CoreFixture) -> sqlx::PgPool {
+	let owner = common::owner_pool(c.f.store.pool.fixture_driver()).await;
+	for ddl in [
+		"CREATE FUNCTION interrupt_duty_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'duty delivery interrupted' USING ERRCODE = '40001'; END $$",
+		"CREATE TRIGGER interrupt_duty_delivery BEFORE INSERT ON duty_events FOR EACH ROW EXECUTE FUNCTION interrupt_duty_delivery()",
+	] {
+		sqlx::query(ddl).execute(&owner).await.unwrap();
+	}
+	owner
+}
+
+async fn restore_event_delivery(owner: sqlx::PgPool) {
+	sqlx::query("DROP TRIGGER interrupt_duty_delivery ON duty_events")
+		.execute(&owner)
+		.await
+		.unwrap();
+	owner.close().await;
+}
+
+/// Another Duty's Task ending wakes a Duty that names it (#1011), even when
+/// delivery fails after the tick was settled.
 #[rstest::rstest]
 #[tokio::test]
-async fn a_duty_wakes_when_another_dutys_task_ends(#[future] capability_fixture: CoreFixture) {
+async fn a_duty_wakes_after_its_completion_delivery_was_interrupted(
+	#[future] capability_fixture: CoreFixture,
+) {
 	// Arrange
 	let c = capability_fixture.await;
 	let thread = thread(&c).await;
@@ -985,15 +1009,26 @@ async fn a_duty_wakes_when_another_dutys_task_ends(#[future] capability_fixture:
 	make_due(&c, source).await;
 	let first = pass(&c.f, Utc::now()).await.unwrap();
 	assert_eq!(first.started.len(), 1, "{first:?}");
-	// Act: the source Duty's Task completes and the next pass settles it.
+	// Act: the first pass settles the source but cannot deliver its completion.
 	finish_task(&c, first.started[0]).await;
+	let owner = interrupt_event_delivery(&c).await;
+	let settled = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(settled.settled, 1, "{settled:?}");
+	assert!(events_of(&c, target).await.is_empty());
+	assert!(ticks(&c, target).await.is_empty());
+	restore_event_delivery(owner).await;
+	let now = Utc::now();
+	let (left, right) = tokio::join!(pass(&c.f, now), pass(&c.f, now));
+	assert_eq!(left.unwrap().settled + right.unwrap().settled, 0);
 	pass(&c.f, Utc::now()).await.unwrap();
-	// Assert
+	// Assert: retrying on two replicas starts exactly one Task.
 	let events = events_of(&c, target).await;
 	assert_eq!(events.len(), 1, "{events:?}");
 	assert_eq!(events[0]["outcome"], "started");
 	assert_eq!(events[0]["payload"]["duty_id"], json!(source));
+	assert_eq!(events[0]["payload"]["task_id"], json!(first.started[0]));
 	assert_eq!(events[0]["payload"]["status"], "completed");
+	assert_eq!(ticks(&c, target).await.len(), 1);
 	c.close().await;
 }
 
@@ -1232,10 +1267,11 @@ async fn a_router_drops_starts_or_delivers_each_event(#[future] capability_fixtu
 
 /// A Watcher runs on its own interval without a time trigger, and the events
 /// it prints go the way a webhook's go: here, without a Router, the first
-/// starts a Task and the second finds it open (#1011 D3).
+/// starts a Task and the second finds it open, even when delivery is
+/// interrupted after settlement (#1011 D3).
 #[rstest::rstest]
 #[tokio::test]
-async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
+async fn a_watcher_delivers_events_after_its_delivery_was_interrupted(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	// Arrange
@@ -1265,9 +1301,20 @@ async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
 		r#"[{"pr":7,"state":"open"},{"pr":8,"state":"open"}]"#,
 	)
 	.await;
+	let owner = interrupt_event_delivery(&c).await;
 	let settled = pass(&c.f, Utc::now()).await.unwrap();
-	// Assert
 	assert_eq!(settled.scripts_settled, 1, "{settled:?}");
+	assert!(events_of(&c, id).await.is_empty());
+	assert!(ticks(&c, id).await.is_empty());
+	restore_event_delivery(owner).await;
+	let now = Utc::now();
+	let (left, right) = tokio::join!(pass(&c.f, now), pass(&c.f, now));
+	assert_eq!(
+		left.unwrap().scripts_settled + right.unwrap().scripts_settled,
+		0
+	);
+	pass(&c.f, Utc::now()).await.unwrap();
+	// Assert: each event is delivered once, in the Watcher's output order.
 	let events = events_of(&c, id).await;
 	assert_eq!(events.len(), 2, "{events:?}");
 	for event in &events {
@@ -1283,6 +1330,13 @@ async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
 		.iter()
 		.find(|event| event["outcome"] == "started")
 		.unwrap();
+	assert_eq!(started["payload"], json!({"pr":7,"state":"open"}));
+	let skipped = events
+		.iter()
+		.find(|event| event["outcome"] == "skipped")
+		.unwrap();
+	assert_eq!(skipped["payload"], json!({"pr":8,"state":"open"}));
+	assert_eq!(ticks(&c, id).await.len(), 1);
 	let task: Uuid = serde_json::from_value(started["task_id"].clone()).unwrap();
 	let description: String = sqlx::query_scalar("SELECT description FROM tasks WHERE id = $1")
 		.bind(task)
