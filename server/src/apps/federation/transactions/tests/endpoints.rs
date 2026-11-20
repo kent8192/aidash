@@ -99,7 +99,8 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 			.unwrap(),
 		200,
 	);
-	assert_eq!(snapshot["thread"]["state"], json!({}));
+	// No mutation reached the Thread: its title is still its own.
+	assert_eq!(snapshot["thread"]["title"], "Atomic validation");
 }
 
 #[rstest]
@@ -160,7 +161,8 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 			.unwrap(),
 		200,
 	);
-	assert_eq!(snapshot["thread"]["state"], json!({}));
+	// The aborted title change never reached the Thread.
+	assert_eq!(snapshot["thread"]["title"], "Atomic mutation");
 }
 
 #[rstest]

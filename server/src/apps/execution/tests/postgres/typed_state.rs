@@ -47,6 +47,13 @@ async fn create(f: &Federation, agent: &Entry, thread: Uuid) -> Run {
 	let task = running_task(f, agent, thread, None).await;
 	common::local_run(&f.store, &ACME, &task, agent).await
 }
+/// A Run in a Thread of its own. One Agent's Runs in one Thread share its
+/// Working Area and run one at a time (#1008), so independent Runs each get
+/// a Thread.
+async fn create_alone(f: &Federation, agent: &Entry, title: &str) -> Run {
+	let thread = f.store.create_thread(&ACME, "alice", title).await.unwrap();
+	create(f, agent, thread.id).await
+}
 #[rstest::rstest]
 #[tokio::test]
 async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
@@ -216,22 +223,18 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let thread = store
-		.create_thread(&ACME, "alice", "Controls")
-		.await
-		.unwrap();
-	let paused = create(&f, &agent, thread.id).await;
+	let paused = create_alone(&f, &agent, "Controls").await;
 	store
 		.control(&ACME, paused.id, RunControlAction::Pause)
 		.await
 		.unwrap();
 	damage(&store, paused.id, RunPhase::Ready, json!({}), json!([])).await;
-	let live = create(&f, &agent, thread.id).await;
+	let live = create_alone(&f, &agent, "Controls").await;
 	let token = Uuid::new_v4();
 	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
 	assert_eq!(leased.id, live.id);
 	damage(&store, live.id, RunPhase::Ready, json!({}), json!([])).await;
-	let terminal = create(&f, &agent, thread.id).await;
+	let terminal = create_alone(&f, &agent, "Controls").await;
 	damage(
 		&store,
 		terminal.id,
@@ -290,9 +293,8 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let thread = store.create_thread(&ACME, "alice", "Paging").await.unwrap();
 	for _ in 0..129 {
-		let run = create(&f, &agent, thread.id).await;
+		let run = create_alone(&f, &agent, "Paging").await;
 		damage(
 			&store,
 			run.id,
@@ -305,7 +307,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 		)
 		.await;
 	}
-	let healthy = create(&f, &agent, thread.id).await;
+	let healthy = create_alone(&f, &agent, "Paging").await;
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	assert_eq!(
 		store
@@ -330,11 +332,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let thread = store
-		.create_thread(&ACME, "alice", "Delivery")
-		.await
-		.unwrap();
-	let ordinary = create(&f, &agent, thread.id).await;
+	let ordinary = create_alone(&f, &agent, "Delivery").await;
 	store
 		.control(&ACME, ordinary.id, RunControlAction::Pause)
 		.await
@@ -354,7 +352,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 			.is_err(),
 		"ordinary execution must still reject an invalid Context"
 	);
-	let run = create(&f, &agent, thread.id).await;
+	let run = create_alone(&f, &agent, "Delivery").await;
 	damage(
 		&store,
 		run.id,
