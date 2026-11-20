@@ -289,21 +289,36 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 		conflicts.is_empty(),
 		"unexpected migration leaves: {conflicts:?}"
 	);
-	// Each app's own head: no later migration of the same app depends on it.
-	// Another app's migration may (execution 0150 follows the heads of the
-	// apps whose histories name `runs`), so global leaves would hide them.
+	// Each app's own head: the migration of the app that every other one of
+	// its migrations precedes, through any app. Execution 0150 follows the
+	// heads of the apps whose histories name `runs`, so global leaves would
+	// hide those heads, and some apps continue through another app's chain.
+	let mut ancestors: BTreeMap<(String, String), BTreeSet<(String, String)>> = Default::default();
+	let key = |m: &reinhardt::db::migrations::Migration| (m.app_label.clone(), m.name.clone());
+	let by_key = migrations
+		.iter()
+		.map(|m| (key(m), m))
+		.collect::<BTreeMap<_, _>>();
+	for migration in &migrations {
+		let mut seen = BTreeSet::new();
+		let mut stack = migration.dependencies.clone();
+		while let Some(dependency) = stack.pop() {
+			if seen.insert(dependency.clone())
+				&& let Some(parent) = by_key.get(&dependency)
+			{
+				stack.extend(parent.dependencies.iter().cloned());
+			}
+		}
+		ancestors.insert(key(migration), seen);
+	}
 	let head = |app: &str| {
 		migrations
 			.iter()
 			.filter(|m| m.app_label == app)
 			.filter(|m| {
-				!migrations.iter().any(|later| {
-					later.app_label == app
-						&& later
-							.dependencies
-							.iter()
-							.any(|(dep_app, name)| dep_app == app && *name == m.name)
-				})
+				!migrations
+					.iter()
+					.any(|later| later.app_label == app && ancestors[&key(later)].contains(&key(m)))
 			})
 			.map(|m| m.name.clone())
 			.collect::<Vec<_>>()
