@@ -176,6 +176,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0063_duty_deliveries"),
 	("workspaces", "0064_duty_deliveries_row_level_security"),
 	("workspaces", "0065_duty_pending_events"),
+	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -237,6 +238,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0063_duty_deliveries"),
 	("workspaces", "0064_duty_deliveries_row_level_security"),
 	("workspaces", "0065_duty_pending_events"),
+	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -347,7 +349,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
 	assert_eq!(head("execution"), ["0153_area_queue_sleep"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
-	assert_eq!(head("workspaces"), ["0065_duty_pending_events"]);
+	assert_eq!(head("workspaces"), ["0066_deleted_duty_flow_ancestry"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -714,6 +716,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0063_duty_deliveries"),
 			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("workspaces", "0065_duty_pending_events"),
+			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -914,14 +917,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0066_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0067_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0065_duty_pending_events".to_owned()
+			"0066_deleted_duty_flow_ancestry".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -2361,6 +2364,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0063_duty_deliveries"),
 			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("workspaces", "0065_duty_pending_events"),
+			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -5038,6 +5042,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0063_duty_deliveries"),
 	("workspaces", "0064_duty_deliveries_row_level_security"),
 	("workspaces", "0065_duty_pending_events"),
+	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5625,6 +5630,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0063_duty_deliveries"),
 			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("workspaces", "0065_duty_pending_events"),
+			("workspaces", "0066_deleted_duty_flow_ancestry"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5719,6 +5725,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0063_duty_deliveries"),
 			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("workspaces", "0065_duty_pending_events"),
+			("workspaces", "0066_deleted_duty_flow_ancestry"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5821,6 +5828,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0063_duty_deliveries"),
 			("workspaces", "0064_duty_deliveries_row_level_security"),
 			("workspaces", "0065_duty_pending_events"),
+			("workspaces", "0066_deleted_duty_flow_ancestry"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
@@ -6318,6 +6326,110 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 		"reverse must restore the legacy retention constraints"
 	);
 	pool.close().await;
+}
+
+/// A Working Area stops queuing behind an execution that went to sleep before
+/// execution 0153 installed its transition trigger.
+#[rstest]
+#[tokio::test]
+async fn area_queue_sleep_backfills_executions_on_upgrade(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[("execution", "0153_area_queue_sleep")])
+		.await;
+	let tenant = "area-sleep";
+	fixture.tenant_root(tenant).await;
+	let node = aidash_domain::nodes::NodeName::derived(tenant).to_string();
+	let home = format!("aidash://migration/{node}");
+	let scratch = fixture.scratch_space(tenant).await;
+	let (thread, area) = (Uuid::new_v4(), Uuid::new_v4());
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let insert_thread = Query::insert()
+		.into_table(Alias::new("threads"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"node",
+				"title",
+				"revision",
+				"scratch_space_id",
+				"created_by",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			thread.into(),
+			tenant.into(),
+			node.clone().into(),
+			"Area queue".into(),
+			0_i64.into(),
+			scratch.into(),
+			"alice".into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert_thread).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO core_areas (id, tenant, home_node, agent_id, owner, thread_id, state) VALUES ($1, $2, $3, 'agent', 'alice', $4, 'active')")
+		.bind(area).bind(tenant).bind(&home).bind(thread).execute(&pool).await.unwrap();
+	let states = [
+		("READY", "PAUSED", "", false),
+		("WAITING", "ACTIVE", "task_wait", false),
+		("READY", "ACTIVE", "", false),
+		("WAITING", "ACTIVE", "failure_delivery", false),
+		("WAITING", "ACTIVE", "task_wait", true),
+		("COMPLETED", "PAUSED", "", false),
+	];
+	for ((phase, control, reason, leased), sequence) in states.into_iter().zip(1_i64..) {
+		let run = Uuid::new_v4();
+		sqlx::query(
+			"INSERT INTO task_executions (id, tenant, task_id, thread_id, node, home_node, agent_id, agent_version, phase, control, pending, lease_owner, lease_until)
+			 VALUES ($1, $2, $3, $4, $5, $6, 'agent', '1', $7, $8, $9, $10, $11)",
+		)
+		.bind(run).bind(tenant).bind(Uuid::new_v4()).bind(thread).bind(&node).bind(&home)
+		.bind(phase).bind(control).bind(json!({"data": {"reason": reason}, "state_version": 1}))
+		.bind(leased.then(Uuid::new_v4))
+		.bind(leased.then(|| chrono::Utc::now() + chrono::Duration::minutes(5)))
+		.execute(&pool).await.unwrap();
+		sqlx::query(
+			"INSERT INTO core_runs (run_id, area_id, sequence, tenant) VALUES ($1, $2, $3, $4)",
+		)
+		.bind(run)
+		.bind(area)
+		.bind(sequence)
+		.bind(tenant)
+		.execute(&pool)
+		.await
+		.unwrap();
+	}
+
+	fixture.migrate().await;
+	let asleep: Vec<bool> =
+		sqlx::query_scalar("SELECT asleep FROM core_runs WHERE area_id = $1 ORDER BY sequence")
+			.bind(area)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+	assert_eq!(asleep, vec![true, true, false, false, false, false]);
+
+	let migration = FilesystemSource::new(fixture.directory.path().join("migrations"))
+		.get_migration("execution", "0153_area_queue_sleep")
+		.await
+		.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor.rollback_migrations(&[migration]).await.unwrap();
+	let remains: i64 = sqlx::query_scalar("SELECT count(*) FROM core_runs WHERE area_id = $1")
+		.bind(area)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+	assert_eq!(remains, i64::try_from(states.len()).unwrap());
+	let has_asleep: bool = sqlx::query_scalar(
+		"SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'core_runs' AND column_name = 'asleep')",
+	)
+	.fetch_one(&pool).await.unwrap();
+	assert!(!has_asleep);
 }
 
 /// execution 0148 merges the Working Areas of one key into the most usable

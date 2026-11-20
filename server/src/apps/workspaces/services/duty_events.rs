@@ -766,7 +766,8 @@ pub async fn book(
 	store
 		.pool
 		.scoped(&scope, async |tx| {
-			let duty = duty_repository::load(&mut **tx, &tenant, found.duty_id, false)
+			// Takeover locks the Duty before it clears the old Requester's bookings.
+			let duty = duty_repository::load(&mut **tx, &tenant, found.duty_id, true)
 				.await?
 				.filter(|duty| duty.requester == person)
 				.ok_or_else(|| Error::NotFound("trigger not found".into()))?;

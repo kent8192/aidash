@@ -1,13 +1,13 @@
 //! The links that make a flow (#1012, ADR 0143), read on a caller-owned Tenant
 //! transaction: Task parents, the Tasks a Run created or delegated
 //! (`authorization_task_origins`), the Duties a Run set up and the Tasks a
-//! Duty started (`tasks.duty_id`).
+//! Duty started (`tasks.duty_id`), including the Tasks of deleted Duties.
 use crate::database::native;
 use crate::{Error, Result};
 use aidash_application::flows::FlowGraph;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, JoinType, Order, PostgresQueryBuilder, Query,
+	Alias, Condition, Expr, ExprTrait, Func, JoinType, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, TableRef,
 };
 use std::collections::BTreeMap;
@@ -200,7 +200,24 @@ async fn pairs(tx: &mut dyn TransactionExecutor, sql: &str) -> Result<Vec<(Uuid,
 #[async_trait::async_trait]
 impl FlowGraph for NativeFlowGraph<'_> {
 	async fn children(&mut self, tasks: &[Uuid]) -> aidash_application::Result<Vec<Uuid>> {
-		Ok(self.column("tasks", "id", "parent_id", tasks).await?)
+		if tasks.is_empty() {
+			return Ok(vec![]);
+		}
+		Ok(native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("tenant").eq(self.tenant.clone()))
+				.cond_where(
+					Condition::any()
+						.add(Expr::col("parent_id").is_in(ids(tasks)))
+						.add(Expr::col("deleted_duty_parent_id").is_in(ids(tasks))),
+				)
+				.order_by(Alias::new("id"), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut *self.tx)
+		.await?)
 	}
 	async fn runs(&mut self, tasks: &[Uuid]) -> aidash_application::Result<Vec<Uuid>> {
 		Ok(self
@@ -280,15 +297,16 @@ impl FlowGraph for NativeFlowGraph<'_> {
 			.and_where(Expr::col((o.clone(), Alias::new("task_id"))).is_in(ids(tasks)))
 			.to_string(PostgresQueryBuilder);
 		let d = Alias::new("d");
+		let duty_parent = Func::coalesce(vec![
+			Expr::col((d.clone(), Alias::new("created_by_task_id"))).into(),
+			Expr::col((t.clone(), Alias::new("deleted_duty_parent_id"))).into(),
+		]);
 		let duties = Query::select()
 			.expr_as(Expr::col((t.clone(), Alias::new("id"))), Alias::new("task"))
-			.expr_as(
-				Expr::col((d.clone(), Alias::new("created_by_task_id"))),
-				Alias::new("parent"),
-			)
+			.expr_as(duty_parent.clone(), Alias::new("parent"))
 			.from_as(Alias::new("tasks"), t.clone())
 			.join(
-				JoinType::InnerJoin,
+				JoinType::LeftJoin,
 				TableRef::table_alias(Alias::new("duties"), d.clone()),
 				Expr::col((d.clone(), Alias::new("id")))
 					.equals((t.clone(), Alias::new("duty_id")))
@@ -299,7 +317,7 @@ impl FlowGraph for NativeFlowGraph<'_> {
 			)
 			.and_where(Expr::col((t.clone(), Alias::new("tenant"))).eq(tenant))
 			.and_where(Expr::col((t.clone(), Alias::new("id"))).is_in(ids(tasks)))
-			.and_where(Expr::col((d.clone(), Alias::new("created_by_task_id"))).is_not_null())
+			.and_where(duty_parent.is_not_null())
 			.to_string(PostgresQueryBuilder);
 		// The parent Task first, then the creating Run's Task, then the Task
 		// that set up the Duty that started it.

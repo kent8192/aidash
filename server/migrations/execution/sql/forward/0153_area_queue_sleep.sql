@@ -24,6 +24,14 @@ CREATE FUNCTION public.aidash_area_queue_release(released uuid) RETURNS void
        )
      ORDER BY next.sequence;
 $$;
+CREATE FUNCTION public.aidash_area_queue_should_sleep(phase text, control text, pending jsonb, lease_owner uuid)
+    RETURNS boolean LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+       AND lease_owner IS NULL
+       AND (control = 'PAUSED'
+            OR (phase = 'WAITING' AND COALESCE(pending #>> '{data,reason}', '') <> 'failure_delivery'));
+$$;
 CREATE FUNCTION public.aidash_area_queue_sleep() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -31,10 +39,7 @@ BEGIN
     -- Only the step into sleep releases the queue: an update of an execution
     -- that already slept, unleased and with the same control, leaves an
     -- execution that woke and waits at the tail in its place.
-    IF NEW.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
-       AND NEW.lease_owner IS NULL
-       AND (NEW.control = 'PAUSED'
-            OR (NEW.phase = 'WAITING' AND COALESCE(NEW.pending #>> '{data,reason}', '') <> 'failure_delivery'))
+    IF aidash_area_queue_should_sleep(NEW.phase, NEW.control, NEW.pending, NEW.lease_owner)
        AND (OLD.lease_owner IS NOT NULL
             OR OLD.control IS DISTINCT FROM NEW.control
             OR NOT (OLD.control = 'PAUSED'

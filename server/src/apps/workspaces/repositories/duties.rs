@@ -9,7 +9,7 @@ use aidash_domain::{
 use chrono::{DateTime, Utc};
 use reinhardt::db::{backends::TransactionExecutor, orm::Model};
 use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait, JoinType, LockBehavior, LockType, Order,
+	Alias, Condition, Expr, ExprTrait, Func, JoinType, LockBehavior, LockType, Order,
 	PostgresQueryBuilder, Query, QueryStatementBuilder, TableRef,
 };
 use serde_json::Value;
@@ -398,6 +398,7 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 	// Its open Router and Watcher Tasks stop before their script rows go
 	// with it (#1011).
 	super::duty_scripts::cancel_open(tx, tenant, row.id).await?;
+	preserve_flow_ancestry(tx, tenant, id).await?;
 	// Ticks go with their Duty through the cascading key; its Budgets go
 	// too, while its spend stays in the ledger (#1012).
 	crate::apps::identity::repositories::budgets::delete_for_duty(tx, tenant, row.id).await?;
@@ -405,6 +406,52 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 		.delete_with_executor(tx, row.id)
 		.await
 		.map_err(framework)?;
+	Ok(())
+}
+
+/// Keep the creating flow's link to Tasks that outlive their Duty. Older
+/// Duties may identify their creator only by Run.
+async fn preserve_flow_ancestry(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<()> {
+	let (d, r) = (Alias::new("d"), Alias::new("r"));
+	let parent: Option<Uuid> = native::query_scalar(
+		&Query::select()
+			.expr(Func::coalesce(vec![
+				Expr::col((d.clone(), Alias::new("created_by_task_id"))).into(),
+				Expr::col((r.clone(), Alias::new("task_id"))).into(),
+			]))
+			.from_as(Alias::new("duties"), d.clone())
+			.join(
+				JoinType::LeftJoin,
+				TableRef::table_alias(Alias::new("task_executions"), r.clone()),
+				Expr::col((r.clone(), Alias::new("id")))
+					.equals((d.clone(), Alias::new("created_by_run_id")))
+					.and(
+						Expr::col((r, Alias::new("tenant")))
+							.equals((d.clone(), Alias::new("tenant"))),
+					),
+			)
+			.and_where(Expr::col((d.clone(), Alias::new("tenant"))).eq(tenant))
+			.and_where(Expr::col((d, Alias::new("id"))).eq(Expr::value(duty)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *tx)
+	.await?;
+	if let Some(parent) = parent {
+		native::query(
+			&Query::update()
+				.table(Alias::new("tasks"))
+				.value_expr(Alias::new("deleted_duty_parent_id"), Expr::value(parent))
+				.and_where(Expr::col("tenant").eq(tenant))
+				.and_where(Expr::col("duty_id").eq(Expr::value(duty)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+	}
 	Ok(())
 }
 
