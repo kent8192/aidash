@@ -1,9 +1,13 @@
-//! Upgrade the default member policy so members may register Duties (#557).
+//! Upgrade the default member policy so members may register Schedules (#557),
+//! later renamed Duties (#1011).
 
-pub(crate) fn forward() -> String {
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
-	};
+/// The default member policy as this migration's grant left it, so the
+/// generated asset keeps the text it was applied with: later migrations rename
+/// its Workspace actions (#1008, `identity/0111_thread_member_policy`) and
+/// `schedule.create` (#1011), and grant `subnode.create` (#1012), both in
+/// `identity/0098_duty_member_policy`. `identity/0067_scratch_member_policy`
+/// compares with the same policy before this grant.
+pub(crate) fn member_policy_after() -> aidash_domain::policy::Policy {
 	let bundle = aidash_domain::identity::tenancy::initial_policy("migration", false)
 		.expect("the migration Tenant name is valid");
 	let current = bundle
@@ -11,10 +15,27 @@ pub(crate) fn forward() -> String {
 		.into_iter()
 		.find(|policy| policy.id == "members")
 		.expect("the initial member policy exists");
-	// Its text predates the Thread actions (#1008), which have their own migration.
-	let current = crate::apps::identity::services::thread_policy_backfill::before_threads(current);
+	let mut policy =
+		crate::apps::identity::services::thread_policy_backfill::before_threads(current);
+	policy
+		.actions
+		.remove(aidash_domain::identity::tenant_administration::SUBNODE_CREATE);
+	if policy.actions.remove(aidash_domain::duties::CREATE) {
+		policy.actions.insert(SCHEDULE_CREATE.to_owned());
+	}
+	policy
+}
+
+/// The action this migration granted, named `duty.create` since #1011.
+pub(crate) const SCHEDULE_CREATE: &str = "schedule.create";
+
+pub(crate) fn forward() -> String {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	};
+	let current = member_policy_after();
 	let mut previous = current.clone();
-	previous.actions.remove(aidash_domain::duties::CREATE);
+	previous.actions.remove(SCHEDULE_CREATE);
 	let previous = serde_json::to_value(previous).expect("the member policy serializes");
 	let current = serde_json::to_value(current).expect("the member policy serializes");
 	// Reinhardt Query has no builder for PostgreSQL's JSONB array transformation.
@@ -73,11 +94,9 @@ mod tests {
 				.iter_mut()
 				.find(|policy| policy.id == "members")
 				.unwrap();
-			// Stored policies of this migration's time predate the Thread actions.
-			*policy = crate::apps::identity::services::thread_policy_backfill::before_threads(
-				policy.clone(),
-			);
-			policy.actions.remove(aidash_domain::duties::CREATE);
+			// The member policy of this migration's time, before its grant.
+			*policy = super::member_policy_after();
+			policy.actions.remove(super::SCHEDULE_CREATE);
 			if tenant == "duty-custom-policy" {
 				policy.actions.remove("workspace.create");
 			}
@@ -118,10 +137,7 @@ mod tests {
 				.iter()
 				.find(|policy| policy.id == "members")
 				.unwrap();
-			assert_eq!(
-				policy.actions.contains(aidash_domain::duties::CREATE),
-				expected
-			);
+			assert_eq!(policy.actions.contains(super::SCHEDULE_CREATE), expected);
 			assert_eq!(policy.actions.contains("workspace.create"), expected);
 		}
 		tx.rollback().await.unwrap();

@@ -176,12 +176,14 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_stint_leases"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
 	("registry", "0081_thread_tools"),
+	("registry", "0082_thread_source_scope"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -229,6 +231,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_stint_leases"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -240,15 +243,19 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 /// hung reversal, so it is generous (#1016).
 const REVERSE_TO_ZERO: Duration = Duration::from_secs(120);
 
-/// Reverses the rename of `runs` (#1009), as a dependency-ordered rollback
-/// would, so an earlier migration that names the table can be rolled back
-/// alone on a full history.
+/// Reverses the rename of `runs` (#1009), and the Stint trigger that names the
+/// renamed table, as a dependency-ordered rollback would, so an earlier
+/// migration that names the table can be rolled back alone on a full history.
 async fn reverse_task_executions(
 	executor: &mut reinhardt::db::migrations::DatabaseMigrationExecutor,
 	source: &FilesystemSource,
 ) {
 	let mut renamed = Vec::new();
-	for name in ["0150_task_executions", "0151_task_executions_state"] {
+	for name in [
+		"0150_task_executions",
+		"0151_task_executions_state",
+		"0152_stint_leases",
+	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
 	executor.rollback_migrations(&renamed).await.unwrap();
@@ -324,8 +331,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
-	assert_eq!(head("registry"), ["0081_thread_tools"]);
-	assert_eq!(head("execution"), ["0151_task_executions_state"]);
+	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
+	assert_eq!(head("execution"), ["0152_stint_leases"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0061_duty_template_check"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -605,15 +612,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0152_policy_probe")
+		.get_migration("execution", "0153_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0151_task_executions_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0152_stint_leases".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -697,6 +701,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -2337,12 +2342,14 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 			("registry", "0081_thread_tools"),
+			("registry", "0082_thread_source_scope"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5011,6 +5018,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0030_threads"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
+	("execution", "0152_stint_leases"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5572,6 +5580,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5659,6 +5668,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5754,6 +5764,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -6272,6 +6283,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0111_thread_member_policy"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -6332,4 +6344,187 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 	assert_eq!(policy["resources"]["kinds"], json!(["thread", "message"]));
 	assert_eq!(policy["condition"]["value"]["path"], "/thread_id");
 	assert!(!document.to_string().contains("workspace"), "{document}");
+}
+
+/// The default member policy exactly as the database stored it before
+/// `identity/0067_scratch_member_policy` (written out from 9a387f8372, not
+/// derived from today's default) gains every later default grant on the way to
+/// the head: 0067 and 0080 must keep matching it, and 0098 must match it after
+/// renaming `schedule.create` in place (#1009 review).
+#[rstest]
+#[tokio::test]
+async fn default_member_policy_from_before_scratch_spaces_gains_every_later_grant(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: the history without 0067 and everything that follows it, and a
+	// Tenant with that policy. `migrate identity 0066_...` alone would apply
+	// only its declared dependencies, and some identity migrations before it
+	// read tables of other apps they do not name.
+	let fixture = fresh_database.await;
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let mut later = BTreeSet::from([(
+		"identity".to_owned(),
+		"0067_scratch_member_policy".to_owned(),
+	)]);
+	loop {
+		let known = later.len();
+		for migration in &migrations {
+			if migration
+				.dependencies
+				.iter()
+				.any(|dependency| later.contains(dependency))
+			{
+				later.insert((migration.app_label.clone(), migration.name.clone()));
+			}
+		}
+		if later.len() == known {
+			break;
+		}
+	}
+	let excluded = later
+		.iter()
+		.map(|(app, name)| (app.as_str(), name.as_str()))
+		.collect::<Vec<_>>();
+	fixture.migrate_excluding(&excluded).await;
+	let tenant = "member-policy-before-0067";
+	let members = json!({
+		"id": "members",
+		"effect": "allow",
+		"subjects": {"any": false, "groups": ["members"], "ids": [], "kinds": [], "roles": []},
+		"actions": [
+				"agent.configure", "agent.execute", "agent_dependency.read", "agent_draft.archive",
+				"agent_draft.create", "agent_draft.read", "agent_draft.register", "agent_draft.share",
+				"agent_draft.test", "agent_draft.transfer", "agent_draft.write", "agent_version.inspect",
+				"approval.advance", "approval.mode.auto", "artifact.create", "artifact.read",
+				"capability.request", "chatgpt.tokens.use.direct", "cluster.execute",
+				"conversation.create", "conversation.read", "credential.create", "decision.evidence.read",
+				"decision.invoke", "decision.state.read", "embedding.invoke", "file.delete", "file.read",
+				"file.receive", "file.restore", "file.share", "file.transfer", "file.write",
+				"generation.read", "generation.request", "generation.stop", "human.answer", "human.read",
+				"human.request", "installation.create", "installation.read", "marketplace.browse",
+				"marketplace.install", "marketplace.read", "memory.candidate.propose",
+				"memory.candidate.read", "memory.derive", "memory.history.read", "memory.invoke",
+				"memory.participant.create", "memory.participant.use", "memory.pin", "memory.read",
+				"memory.reflect", "memory.use", "memory.write", "message.create", "message.read",
+				"model.infer", "node.read", "node.use", "registry.create", "registry.read", "run.control",
+				"run.message", "run.read", "semantic.index.manage", "semantic.read", "semantic.search",
+				"semantic.use", "semantic.write", "skill.import", "skill.use", "task.abandon",
+				"task.claim", "task.complete", "task.create", "task.delegate", "task.execute", "task.read",
+				"thread.delete", "tool.invoke", "workspace.create", "workspace.events", "workspace.read",
+				"workspace.share", "workspace.update"
+		],
+		"resources": {"ids": [], "kinds": ["*"]},
+		"condition": null
+	});
+	let document = json!({"tenant": tenant, "subjects": {}, "policies": [members]});
+	for sql in [
+		Query::insert()
+			.into_table(Alias::new("tenants"))
+			.columns(["name", "personal", "created_at", "created_by_kind"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(tenant))
+					.expr(Expr::value(false))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::value("deployment_administrator"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+		Query::insert()
+			.into_table(Alias::new("authorization_bundles"))
+			.columns(["tenant", "revision", "document"].map(Alias::new))
+			.values_panic::<_, reinhardt::query::Value>([
+				tenant.into(),
+				1_i64.into(),
+				document.into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	] {
+		fixture.connection.execute(&sql, vec![]).await.unwrap();
+	}
+
+	// Act
+	fixture.migrate().await;
+
+	// Assert: Scratch Spaces (0067), Duties (0080, renamed by 0098), Subnodes
+	// (0098) and the Thread actions (0111) are granted, and no old name is left.
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let document: serde_json::Value =
+		sqlx::query_scalar("SELECT document FROM authorization_bundles WHERE tenant = $1")
+			.bind(tenant)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	let actions = document["policies"][0]["actions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|action| action.as_str().unwrap())
+		.collect::<BTreeSet<_>>();
+	for granted in [
+		"scratch.create",
+		"duty.create",
+		"subnode.create",
+		"thread.create",
+		"thread.events",
+		"thread.read",
+		"thread.share",
+		"thread.update",
+	] {
+		assert!(actions.contains(granted), "{granted}: {document}");
+	}
+	for former in ["schedule.create", "workspace.create", "workspace.read"] {
+		assert!(!actions.contains(former), "{former}: {document}");
+	}
+	pool.close().await;
+}
+
+/// `registry/0082_thread_source_scope`: the native memory Source validator
+/// admits the scope `thread` (#1008) beside `participant` and the stored
+/// `workspace`, and its reverse restores the 0067 body without it.
+#[rstest]
+#[tokio::test]
+async fn thread_source_scope_migration_admits_thread_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts = async |scope: &str| {
+		contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![
+				json!({"scope":scope,"memory":{"id":"native","version":"1.0.0"},"max_tokens":4096}),
+				json!("source"),
+			],
+		)
+		.await
+	};
+	for scope in ["participant", "thread", "workspace"] {
+		assert!(accepts(scope).await, "{scope}");
+	}
+	assert!(!accepts("tenant").await);
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0082_thread_source_scope")
+			.await
+			.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+
+	// Act and Assert: the reverse narrows the scope again, and reapplying widens it.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(!accepts("thread").await);
+	assert!(accepts("workspace").await);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert!(accepts("thread").await);
+	pool.close().await;
 }

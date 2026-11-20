@@ -11,6 +11,7 @@ import {
 import { Alert, Hint, Loading } from "./components/patterns";
 import {
   MAX_STANDING_INSTRUCTIONS_BYTES,
+  STANDING_INSTRUCTIONS_PROBLEM_MESSAGES,
   standingInstructionsProblems,
   utf8Bytes,
 } from "./standing-instructions-model";
@@ -71,8 +72,15 @@ export function StandingInstructionsSettings({
           onSubmit={(event) => {
             event.preventDefault();
             if (busy || !canUpdate) return;
-            if (standingInstructionsProblems(text).length > 0) {
-              setError(t("instructionsTooLong"));
+            const problems = standingInstructionsProblems(text);
+            if (problems.length > 0) {
+              setError(
+                problems
+                  .map((problem) =>
+                    t(STANDING_INSTRUCTIONS_PROBLEM_MESSAGES[problem]),
+                  )
+                  .join(" "),
+              );
               return;
             }
             setBusy(true);

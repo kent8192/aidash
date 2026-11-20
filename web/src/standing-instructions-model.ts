@@ -19,3 +19,9 @@ export function standingInstructionsProblems(
   if (text.includes("\0")) problems.push("nul");
   return problems;
 }
+
+/** The message that explains each problem, as a locale key. */
+export const STANDING_INSTRUCTIONS_PROBLEM_MESSAGES = {
+  too_long: "instructionsTooLong",
+  nul: "instructionsNul",
+} as const satisfies Record<StandingInstructionsProblem, string>;

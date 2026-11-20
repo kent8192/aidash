@@ -665,6 +665,51 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 	drop(server);
 }
 
+/// An Agent version with a native memory Source scoped to the Thread
+/// registers (#1008), and a Source saved as `workspace` before the rename
+/// still registers and reads as the Thread. The registry does not run the
+/// native Source validator on stored rows (`registry_context_config` skips
+/// native configurations), so this holds with or without
+/// `registry/0082_thread_source_scope`.
+#[rstest]
+#[tokio::test]
+async fn an_agent_with_a_thread_scoped_native_memory_source_registers(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	// Arrange: the native memory provider `p` and the Agent `a`.
+	let database = database.await;
+	let (_store, registry, _thread) = setup(&database, bounds).await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	for (id, scope) in [("thread-source", "thread"), ("stored-source", "workspace")] {
+		// Act: register the Source, then an Agent version bound to it.
+		registry
+			.register(
+				&tenant,
+				entry(
+					"source",
+					id,
+					json!({"scope":scope,"memory":reference("p"),"max_tokens":8192}),
+				),
+			)
+			.await
+			.unwrap_or_else(|error| panic!("{scope} Source: {error}"));
+		let mut agent = registry.get(&tenant, "a", "1.0.0").await.unwrap();
+		agent.id = format!("{id}-agent");
+		agent.binding_normalization = None;
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":id,"version":"1.0.0"},"narrow":{}}));
+		registry
+			.register(&tenant, agent)
+			.await
+			.unwrap_or_else(|error| panic!("Agent with the {scope} Source: {error}"));
+
+		// Assert
+		let source = registry.get(&tenant, id, "1.0.0").await.unwrap();
+		let config: SourceConfig = serde_json::from_value(source.config).unwrap();
+		assert_eq!(config.scope, SourceScope::Thread, "{id}");
+	}
+}
+
 #[path = "native_memory/fixture.rs"]
 mod fixture;
 use fixture::*;

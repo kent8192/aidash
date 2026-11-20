@@ -10210,3 +10210,175 @@ async fn stints_follow_waking_and_sleeping(
 	);
 	cleanup(f, &url, &schema).await;
 }
+
+/// A Stint records the last worker lease and every takeover of a lease its
+/// holder never released (Lease Recovery); the next Stint counts from zero
+/// (#1009, ADR 0141 amendment of 2026-11-20).
+#[rstest::rstest]
+#[tokio::test]
+async fn stints_record_the_last_lease_holder_and_lease_recoveries(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: a claimed Run whose open Stint has no lease taken over yet.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let driver = f.store.pool.fixture_driver();
+	// Lease writes pass the input ledger gate as an upgraded worker's do.
+	let lease = async |owner: Option<Uuid>| {
+		let (owner, until) = match owner {
+			Some(owner) => (
+				format!("'{owner}'"),
+				"CURRENT_TIMESTAMP + interval '5 minutes'".to_owned(),
+			),
+			None => ("NULL".to_owned(), "NULL".to_owned()),
+		};
+		let mut tx = driver.begin().await.unwrap();
+		sqlx::query("SELECT set_config('aidash.input_ledger_worker', 'true', true)")
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		sqlx::query(&format!(
+			"UPDATE task_executions SET lease_owner = {owner}, lease_until = {until} WHERE id = '{}'",
+			run.id
+		))
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+	};
+	let stints = async || -> Vec<(bool, Option<String>, i32)> {
+		sqlx::query_as::<_, (bool, Option<String>, i32)>(&format!(
+			"SELECT ended_at IS NOT NULL, lease_owner::text, lease_recoveries FROM stints WHERE run_id = '{}' ORDER BY started_at, id",
+			run.id
+		))
+		.fetch_all(driver)
+		.await
+		.unwrap()
+	};
+	lease(None).await;
+	let [first, second, third] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+	// Act: a worker leases the Run, then two others take the lease over
+	// before the last one releases it.
+	lease(Some(first)).await;
+	assert_eq!(stints().await, [(false, Some(first.to_string()), 0)]);
+	lease(Some(second)).await;
+	lease(Some(third)).await;
+	lease(None).await;
+
+	// Assert
+	assert_eq!(stints().await, [(false, Some(third.to_string()), 2)]);
+	sqlx::query(&format!(
+		"UPDATE task_executions SET phase = 'WAITING', pending = jsonb_set(pending, '{{data}}', jsonb_build_object('reason', 'human')) WHERE id = '{}'",
+		run.id
+	))
+	.execute(driver)
+	.await
+	.unwrap();
+	sqlx::query(&format!(
+		"UPDATE task_executions SET phase = 'READY' WHERE id = '{}'",
+		run.id
+	))
+	.execute(driver)
+	.await
+	.unwrap();
+	assert_eq!(
+		stints().await,
+		[(true, Some(third.to_string()), 2), (false, None, 0)],
+		"the next Stint counts its own Lease Recoveries"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A pause ends the Stint, since the Agent cannot move a paused Task forward
+/// itself; writes while paused open none; a resume opens the next one through
+/// the phase rule; a paused Run that is cancelled opens none (#1009, ADR 0141
+/// amendment of 2026-11-20).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_pause_ends_the_stint_and_a_resume_opens_the_next(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: a claimed Run with its Stint open.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let driver = f.store.pool.fixture_driver();
+	let stints = async || -> Vec<(bool, Option<String>)> {
+		sqlx::query_as::<_, (bool, Option<String>)>(&format!(
+			"SELECT ended_at IS NOT NULL, end_reason FROM stints WHERE run_id = '{}' ORDER BY started_at, id",
+			run.id
+		))
+		.fetch_all(driver)
+		.await
+		.unwrap()
+	};
+	let control = async |action: &str| {
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/executions/{}/control", run.id),
+			json!({ "action": action }),
+		)
+		.await;
+		assert_eq!(status, 200, "{action}: {body}");
+	};
+	assert_eq!(stints().await, [(false, None)]);
+
+	// Act and Assert: a person pauses the Run.
+	control("pause").await;
+	assert_eq!(stints().await, [(true, Some("paused".into()))]);
+	sqlx::query(&format!(
+		"UPDATE task_executions SET pending = pending WHERE id = '{}'",
+		run.id
+	))
+	.execute(driver)
+	.await
+	.unwrap();
+	assert_eq!(
+		stints().await,
+		[(true, Some("paused".into()))],
+		"a write while paused opens no Stint"
+	);
+	// The resume opens the next Stint.
+	control("resume").await;
+	assert_eq!(
+		stints().await,
+		[(true, Some("paused".into())), (false, None)]
+	);
+	// Paused again, then cancelled: the cancellation is delivered without the
+	// Agent, so no Stint opens.
+	control("pause").await;
+	control("cancel").await;
+	assert_eq!(
+		stints().await,
+		[(true, Some("paused".into())), (true, Some("paused".into()))]
+	);
+	cleanup(f, &url, &schema).await;
+}

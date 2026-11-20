@@ -239,6 +239,8 @@ pub struct Receipt {
 	pub operation_digest: String,
 	pub home_node: String,
 	pub tenant: String,
+	/// Stored receipts say `workspace_id` before #1008.
+	#[serde(alias = "workspace_id")]
 	pub thread_id: Uuid,
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,
