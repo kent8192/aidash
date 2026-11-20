@@ -57,7 +57,7 @@ pub(crate) async fn list(
 							]
 							.map(Alias::new),
 						)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(Expr::col("thread_id").eq(Expr::value(subnode.thread_id)))
 						.order_by(Alias::new("id"), Order::Asc)
 						.to_string(PostgresQueryBuilder),

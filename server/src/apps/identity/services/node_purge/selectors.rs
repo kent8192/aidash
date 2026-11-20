@@ -31,7 +31,7 @@ impl Owners<'_> {
 		use Root::*;
 		let (parent, key) = match root {
 			Thread => ("threads", "id"),
-			Run => ("runs", "id"),
+			Run => ("task_executions", "id"),
 			Task => ("tasks", "id"),
 			Area => ("core_areas", "id"),
 			Request => ("generation_requests", "id"),

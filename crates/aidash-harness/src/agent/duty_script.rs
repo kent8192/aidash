@@ -153,7 +153,7 @@ impl Executor<'_> {
 		}));
 		self.environment
 			.store()
-			.save_run(run, token, "run.started")
+			.save_run(run, token, "execution.started")
 			.await
 	}
 
@@ -232,7 +232,9 @@ impl Executor<'_> {
 					approval: ApprovalRef::Capability { approval_id },
 					resume: Box::new(resume),
 				}));
-				return store.save_run(run, token, "run.waiting_for_approval").await;
+				return store
+					.save_run(run, token, "execution.waiting_for_approval")
+					.await;
 			}
 			FrameworkResult::Human(_) | FrameworkResult::Wait(_) => {
 				return Err(Error::Invalid(
@@ -257,7 +259,7 @@ impl Executor<'_> {
 		}
 		if !last {
 			run.state.tool_mut()?.advance(cursor + 1);
-			return store.save_run(run, token, "run.tool_recorded").await;
+			return store.save_run(run, token, "execution.tool_recorded").await;
 		}
 		let text = self
 			.full_output(run, guard, &tools, invocation.language, &output)
@@ -278,7 +280,7 @@ impl Executor<'_> {
 		home.complete(&format!("{}:complete", run.id), &artifact, &[])
 			.await?;
 		run.state = RunState::Completed(TerminalState {});
-		store.save_run(run, token, "run.completed").await
+		store.save_run(run, token, "execution.completed").await
 	}
 
 	async fn wait_for_operation(
@@ -296,7 +298,7 @@ impl Executor<'_> {
 		}));
 		self.environment
 			.store()
-			.save_run(run, token, "run.waiting_for_operation")
+			.save_run(run, token, "execution.waiting_for_operation")
 			.await
 	}
 

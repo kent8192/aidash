@@ -61,7 +61,7 @@ use Root::*;
 pub fn ownership(name: &str) -> Result<Ownership> {
 	Ok(match name {
 		"threads"
-		| "runs"
+		| "task_executions"
 		| "generation_requests"
 		| "node_cancellation_jobs"
 		| "authorization_catalog"

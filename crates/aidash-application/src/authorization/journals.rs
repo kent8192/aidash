@@ -54,7 +54,7 @@ pub async fn track_snapshot(
 			id(&event.data["id"]).map(|id| ("conversation", id))
 		} else if event.kind.starts_with("generation.") {
 			id(&event.data["id"]).map(|id| ("generation", id))
-		} else if event.kind == "run.created" {
+		} else if event.kind == "execution.created" {
 			id(&event.data["id"]).map(|id| ("run", id))
 		} else {
 			id(&event.data["run_id"])

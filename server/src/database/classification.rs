@@ -202,13 +202,14 @@ pub const TABLES: &[Table] = &[
 	// Safety Stop audit and replay receipts; no key to a Run (ADR 0101)
 	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
-	table("execution", "runs", TenantOwned),
 	table("execution", "subnodes", TenantOwned),
 	// one Agent's awake stretches on a Task (#1009, ADR 0141)
 	table("execution", "stints", TenantOwned),
 	table("execution", "subnode_members", TenantOwned),
 	table("execution", "subnode_operation_receipts", TenantOwned),
 	table("execution", "subnode_limits", TenantOwned),
+	// the Task's execution record, formerly `runs` (#1009, ADR 0141)
+	table("execution", "task_executions", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
 	// federation
 	// cross-node transaction plumbing

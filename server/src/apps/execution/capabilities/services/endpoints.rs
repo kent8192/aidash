@@ -323,7 +323,7 @@ pub(crate) async fn enqueue(
 /// The Run just admitted for `task` in this transaction.
 async fn run_of_task(access: &mut Access, task: Uuid) -> Result<Run> {
 	aidash_server::database::query_as(
-		&sessions::select("runs")
+		&sessions::select("task_executions")
 			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
@@ -742,7 +742,7 @@ pub(crate) async fn approval_list(
 				// offers one whose Run has ended, since no decision on it could take
 				// effect.
 				select.and_where(Expr::cust(
-					"(kind NOT IN ('tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM runs r \
+					"(kind NOT IN ('tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM task_executions r \
 					 WHERE r.id::text = core_records.data->>'run_id' \
 					 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
 				));
@@ -767,7 +767,7 @@ pub(crate) async fn approval_list(
 				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.column(Alias::new("id"))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(
 							Expr::col(Alias::new("id")).is_in(waiting.into_iter().map(Expr::value)),
 						)

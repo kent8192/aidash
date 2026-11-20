@@ -142,7 +142,7 @@ pub(crate) async fn target(executor: impl Executor, run: Uuid) -> Result<RunTarg
 		executor,
 		Query::select()
 			.columns(["id", "task_id", "thread_id", "node", "home_node", "control"].map(Alias::new))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run))),
 	)
 	.await?
@@ -201,7 +201,11 @@ async fn insert_row(
 					.expr(Expr::value(kind))
 					.expr(Expr::value(item).cast_as("jsonb"))
 					.expr(Expr::current_timestamp())
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			),
 	)
@@ -313,13 +317,16 @@ pub(crate) async fn close_orphans(
 	let runs = rows::<OrphanedRun>(
 		&mut *tx,
 		Query::select()
-			.column((Alias::new("runs"), Alias::new("id")))
-			.from(Alias::new("runs"))
+			.column((Alias::new("task_executions"), Alias::new("id")))
+			.from(Alias::new("task_executions"))
 			.cond_where(
 				Condition::any()
-					.add(Expr::col((Alias::new("runs"), Alias::new("lease_until"))).is_null())
 					.add(
-						Expr::col((Alias::new("runs"), Alias::new("lease_until")))
+						Expr::col((Alias::new("task_executions"), Alias::new("lease_until")))
+							.is_null(),
+					)
+					.add(
+						Expr::col((Alias::new("task_executions"), Alias::new("lease_until")))
 							.lte(Expr::current_timestamp()),
 					),
 			)
@@ -329,7 +336,7 @@ pub(crate) async fn close_orphans(
 					.from(attempts.clone())
 					.and_where(
 						Expr::col((attempts.clone(), Alias::new("run_id")))
-							.equals((Alias::new("runs"), Alias::new("id"))),
+							.equals((Alias::new("task_executions"), Alias::new("id"))),
 					)
 					.and_where(Expr::col((attempts, Alias::new("outcome"))).is_null())
 					.to_owned(),
@@ -388,7 +395,11 @@ pub(crate) async fn start(
 					.expr(Expr::value(seq))
 					.expr(Expr::value(seq))
 					.expr(Expr::current_timestamp())
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			),
 	)

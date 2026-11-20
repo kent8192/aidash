@@ -12,7 +12,7 @@ async fn revoked_mounted_reference_is_deferred_and_reclaimed_after_detaching(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;

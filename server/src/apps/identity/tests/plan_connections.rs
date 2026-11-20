@@ -1111,7 +1111,7 @@ async fn materialize_plan_run(f: &Federation, run: Uuid) {
 		.unwrap();
 	let node = common::default_node(&f.store, "alpha").await;
 	let (sql, values) = Query::insert()
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(
 			[
 				"id",
@@ -1542,7 +1542,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			.await
 			.unwrap();
 		let events = Event::objects()
-			.filter(Event::field_kind().eq("run.plan_connection_used".to_owned()))
+			.filter(Event::field_kind().eq("execution.plan_connection_used".to_owned()))
 			.all_with_executor(audit.as_mut())
 			.await
 			.unwrap();
@@ -1611,7 +1611,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			.pool
 			.atomic(&TenancyScope::tenant("alpha").unwrap(), async |tx| {
 				let events = Event::objects()
-					.filter(Event::field_kind().eq("run.plan_connection_used".to_owned()))
+					.filter(Event::field_kind().eq("execution.plan_connection_used".to_owned()))
 					.all_with_executor(tx)
 					.await
 					.map_err(reinhardt::core::exception::Error::from)?;
@@ -1734,7 +1734,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				.unwrap();
 			let (sql, values) = Query::select()
 				.columns(["task_id", "thread_id"].map(Alias::new))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.build(PostgresQueryBuilder);
 			let row = tx

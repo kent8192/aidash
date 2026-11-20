@@ -52,7 +52,7 @@ pub trait Ledger: Send {
 	/// The receipt of an earlier command with this operation ID from this caller.
 	async fn receipt(&mut self, caller_key: &str, operation: Uuid) -> Result<Option<Stored>>;
 	/// Applies the action as a Deployment Administrator's control decision:
-	/// control, control revision and source, and the `run.control` event.
+	/// control, control revision and source, and the `execution.control` event.
 	async fn apply(&mut self, run: Uuid, action: Action, actor: Actor) -> Result<()>;
 	/// Records the audit entry and receipt. A failure aborts the whole command.
 	async fn record(&mut self, actor: Actor, command: &Command, outcome: Outcome) -> Result<()>;

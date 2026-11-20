@@ -1024,7 +1024,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		for query in [
 			Query::insert()
-				.into_table(Alias::new("runs"))
+				.into_table(Alias::new("task_executions"))
 				.columns(
 					[
 						"id",

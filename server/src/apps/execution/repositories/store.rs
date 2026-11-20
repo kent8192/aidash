@@ -315,7 +315,7 @@ impl Store {
 		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -427,7 +427,7 @@ impl Store {
 			.pool
 			.scoped(scope, async |tx| {
 				for (table, column, id) in [
-					("runs", "id", admission),
+					("task_executions", "id", admission),
 					("authorization_remote_admissions", "id", admission),
 					("authorization_remote_grants", "id", grant),
 				] {
@@ -1455,7 +1455,7 @@ impl Store {
 				let query_bind_7 = serde_json::to_value(&context)?;
 				crate::database::native::query(
 					&Query::insert()
-						.into_table(Alias::new("runs"))
+						.into_table(Alias::new("task_executions"))
 						.columns([
 							Alias::new("id"),
 							Alias::new("task_id"),
@@ -1519,7 +1519,7 @@ impl Store {
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_id"))))
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_version"))))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(home_node = ? AND task_id = ?)".to_owned(),
 							vec![
@@ -1542,7 +1542,7 @@ impl Store {
 			let run_id: Uuid = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("home_node").eq(Expr::value(address.to_string())))
 					.and_where(Expr::col("task_id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
@@ -2829,8 +2829,8 @@ impl Store {
 			let query_bind_1 = self.deployment.as_str();
 			aidash_server::database::query_as(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))
-				.from(reinhardt::query::Alias::new("runs"))
-				.and_where(SimpleExpr::CustomWithExpr("(NOT (home_node = ? || '/' || node) AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = runs.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
+				.from(reinhardt::query::Alias::new("task_executions"))
+				.and_where(SimpleExpr::CustomWithExpr("(NOT (home_node = ? || '/' || node) AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = task_executions.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.order_by(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Order::Asc)
 				.limit(1)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2943,7 +2943,7 @@ impl Store {
 					.expr(reinhardt::query::Expr::col(
 						reinhardt::query::ColumnRef::Asterisk,
 					))
-					.from(reinhardt::query::Alias::new("runs"))
+					.from(reinhardt::query::Alias::new("task_executions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id = ? AND lease_until > CURRENT_TIMESTAMP)".to_owned(),
 						vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -2991,7 +2991,7 @@ impl Store {
 			let query_bind_3 = current.stored_pending()?;
 			let mut update = reinhardt::query::Query::update();
 			update
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("pending"),
 					SimpleExpr::CustomWithExpr(
@@ -3179,7 +3179,11 @@ impl Store {
 						.expr(Expr::value(thread))
 						.expr(Expr::value(kind))
 						.expr(Expr::value(id))
-						.expr(crate::database::scope::tenant_of("runs", "id", run))
+						.expr(crate::database::scope::tenant_of(
+							"task_executions",
+							"id",
+							run,
+						))
 						.to_owned(),
 				)
 				.on_conflict(
@@ -3322,7 +3326,7 @@ impl Store {
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("updated_at"),
@@ -3434,7 +3438,7 @@ impl Store {
 				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.column(reinhardt::query::Alias::new("id"))
-						.from(reinhardt::query::Alias::new("runs"))
+						.from(reinhardt::query::Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id = ?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -3475,7 +3479,7 @@ impl Store {
 		let retain_lease = aidash_domain::run_state::persistence::retains_lease(kind);
 		let safe_context = run.context.clone();
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &safe_context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
+				.table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3514,13 +3518,13 @@ impl Store {
 			Vec::new()
 		};
 		let mut data = json!({"run_id":saved.id,"task_id":saved.task_id,"thread_id":saved.thread_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage});
-		if kind == "run.semantic_degraded"
+		if kind == "execution.semantic_degraded"
 			&& let Some(degraded) = run.recovery.degraded.recent.last()
 		{
 			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
 			data["cause"] = serde_json::to_value(degraded.cause)?;
 		}
-		if kind == "run.plugin_tools_pinned" {
+		if kind == "execution.plugin_tools_pinned" {
 			// Only names and reason codes: no URL, header, finding detail or server answer (ADR 0073).
 			data["skipped"] = serde_json::to_value(
 				run.context
@@ -3609,7 +3613,7 @@ impl Store {
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::Alias::new("id")),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND control = 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.lock(reinhardt::query::LockType::Update)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3625,7 +3629,7 @@ impl Store {
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run.id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -3644,7 +3648,7 @@ impl Store {
 								Expr::col("tenant").in_subquery(
 									Query::select()
 										.column(Alias::new("tenant"))
-										.from(Alias::new("runs"))
+										.from(Alias::new("task_executions"))
 										.and_where(Expr::col("id").eq(Expr::value(run.id)))
 										.to_owned(),
 								),
@@ -3737,7 +3741,7 @@ impl Store {
 			)?;
 			crate::database::native::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value_expr(
 						reinhardt::query::Alias::new("phase"),
 						SimpleExpr::CustomWithExpr(
@@ -3790,9 +3794,9 @@ impl Store {
 			run.is_local(self.deployment.as_str())
 				.then_some(run.thread_id),
 			if phase == "CANCELLED" {
-				"run.cancelled"
+				"execution.cancelled"
 			} else {
-				"run.reconciled"
+				"execution.reconciled"
 			},
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
@@ -3902,7 +3906,7 @@ impl Store {
 			|| (action == RunControlAction::Pause
 				&& source == ControlSource::DeploymentAdministrator)
 		{
-			// Before `run.control` appends its event; see `lock_end`.
+			// Before `execution.control` appends its event; see `lock_end`.
 			super::subnodes::lock_for_end(tx, id).await?;
 		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
@@ -3939,7 +3943,7 @@ impl Store {
 				aidash_server::database::query_as(
 					&reinhardt::query::Query::select()
 						.column(reinhardt::query::ColumnRef::Asterisk)
-						.from(reinhardt::query::Alias::new("runs"))
+						.from(reinhardt::query::Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id=?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -3965,7 +3969,7 @@ impl Store {
 		.scalar_one(&mut *tx)
 		.await?;
 		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; let query_bind_4 = source.as_str(); aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
+				.table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3991,7 +3995,7 @@ impl Store {
 			// keeping their operation IDs and durable budgets (ADR 0057).
 			let cycle: i32 = crate::database::native::query_scalar(
 				&Query::update()
-					.table(Alias::new("runs"))
+					.table(Alias::new("task_executions"))
 					.value_expr(
 						Alias::new("semantic_retry_cycle"),
 						Expr::col(Alias::new("semantic_retry_cycle")).add(Expr::value(1_i32)),
@@ -4015,7 +4019,7 @@ impl Store {
 			tx,
 			id,
 			thread,
-			"run.control",
+			"execution.control",
 			// Only a decision of someone other than the Tenant names its source.
 			if source == ControlSource::Tenant {
 				json!({"run_id":id,"action":action})
@@ -4150,7 +4154,7 @@ impl Store {
 			let query_bind_3 = run.stored_pending()?;
 			crate::database::native::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value_expr(
 						reinhardt::query::Alias::new("pending"),
 						SimpleExpr::CustomWithExpr(
@@ -4450,7 +4454,7 @@ impl Store {
 			let query_bind_3 = run.stored_pending()?;
 			crate::database::native::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value(reinhardt::query::Alias::new("phase"), run.phase().as_str())
 					.value_expr(
 						reinhardt::query::Alias::new("pending"),
@@ -4547,7 +4551,11 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()]
 							))
-							.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+							.expr(crate::database::scope::tenant_of(
+								"task_executions",
+								"id",
+								run.id
+							))
 							.to_owned()
 					)
 					.to_owned()
@@ -5611,7 +5619,7 @@ impl Store {
 			run,
 			worker,
 			&reason.to_string(),
-			"run.semantic_blocked",
+			"execution.semantic_blocked",
 			Some(("semantic_reason", serde_json::to_value(reason)?)),
 			None,
 		)
@@ -5629,7 +5637,7 @@ impl Store {
 			run,
 			worker,
 			&reason.to_string(),
-			"run.context_blocked",
+			"execution.context_blocked",
 			Some(("context_reason", serde_json::to_value(reason)?)),
 			None,
 		)
@@ -5748,7 +5756,7 @@ impl Store {
 			None => (false, "{recovery}".to_owned(), Value::Null),
 		};
 		let changed = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = reason; crate::database::native::query(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(CASE WHEN ? AND control='ACTIVE' THEN jsonb_set(pending, ?::text[], ?::jsonb, true) ELSE pending END)".to_owned(), vec![Expr::value(query_bind_4).into(), Expr::value(query_bind_5).into(), Expr::value(query_bind_6).into()])).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust(
+				.table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(CASE WHEN ? AND control='ACTIVE' THEN jsonb_set(pending, ?::text[], ?::jsonb, true) ELSE pending END)".to_owned(), vec![Expr::value(query_bind_4).into(), Expr::value(query_bind_5).into(), Expr::value(query_bind_6).into()])).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust(
 						"CASE WHEN control = 'CANCELLED' THEN control ELSE 'PAUSED' END",
 					)).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN control = 'PAUSED' AND error IS DISTINCT FROM 'identity status unavailable' THEN error ELSE ? END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust("NULL")).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust("NULL"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
@@ -5814,7 +5822,7 @@ impl Store {
 			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("id"))
-					.from(reinhardt::query::Alias::new("runs"))
+					.from(reinhardt::query::Alias::new("task_executions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)"
 							.to_owned(),
@@ -5951,7 +5959,7 @@ impl Store {
 								vec![Expr::value(query_bind_6.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"runs",
+								"task_executions",
 								"id",
 								query_bind_3,
 							))

@@ -296,9 +296,9 @@ test("inference markers do not refresh the dashboard", () => {
   });
   assert.equal(refreshesDashboard(mesh("inference.started")), false);
   assert.equal(refreshesDashboard(mesh("inference.accepted")), false);
-  assert.equal(refreshesDashboard(mesh("run.updated")), true);
+  assert.equal(refreshesDashboard(mesh("execution.updated")), true);
   assert.equal(
-    refreshesDashboard({ ...mesh("run.updated"), id: undefined }),
+    refreshesDashboard({ ...mesh("execution.updated"), id: undefined }),
     false,
   );
   assert.equal(refreshesDashboard({ id: "8", data: "not json" }), true);

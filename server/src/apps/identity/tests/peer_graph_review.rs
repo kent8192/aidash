@@ -187,7 +187,7 @@ async fn admitted_run(
 	.unwrap();
 	sqlx::query(
 		&Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",
@@ -268,7 +268,7 @@ async fn bump_run(f: &Federation, id: Uuid) {
 		let query_bind_1 = id;
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id=?)".to_owned(),
@@ -368,7 +368,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		event(
 			&f,
 			None,
-			"run.phase",
+			"execution.phase",
 			json!({"run_id":expected[0],"thread_id":thread}),
 			60 - index,
 		)
@@ -377,7 +377,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	event(
 		&f,
 		None,
-		"run.phase",
+		"execution.phase",
 		json!({"run_id":third,"thread_id":thread}),
 		1,
 	)
@@ -437,7 +437,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	event(
 		&f,
 		None,
-		"run.phase",
+		"execution.phase",
 		json!({"run_id":third,"thread_id":thread}),
 		1,
 	)

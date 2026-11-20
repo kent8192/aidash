@@ -98,7 +98,7 @@ async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 			.unwrap();
 	assert_eq!(task.title, "Hourly digest");
 	let root: String = sqlx::query_scalar(
-		"SELECT e.root_subject FROM authorization_execution e JOIN runs r ON r.id = e.run_id WHERE r.task_id = $1",
+		"SELECT e.root_subject FROM authorization_execution e JOIN task_executions r ON r.id = e.run_id WHERE r.task_id = $1",
 	)
 	.bind(task.id)
 	.fetch_one(c.f.store.pool.fixture_driver())
@@ -1162,7 +1162,7 @@ async fn a_router_drops_starts_or_delivers_each_event(#[future] capability_fixtu
 	assert_eq!(delivered["task_id"], json!(task));
 	assert_eq!(delivered["router"]["input"], "CI run 43 passed");
 	let woken: i64 = sqlx::query_scalar(
-		"SELECT count(*) FROM run_activations a JOIN runs r ON r.id = a.run_id WHERE r.task_id = $1 AND a.reason = $2",
+		"SELECT count(*) FROM run_activations a JOIN task_executions r ON r.id = a.run_id WHERE r.task_id = $1 AND a.reason = $2",
 	)
 	.bind(task)
 	.bind(format!("duty_event:{}", delivered["id"].as_str().unwrap()))
@@ -1190,7 +1190,7 @@ async fn a_router_drops_starts_or_delivers_each_event(#[future] capability_fixtu
 	let (router, _) = script_task(&c, id, "router").await;
 	let driver = c.f.store.pool.fixture_driver();
 	let reason = "this Duty's Agent cannot run python scripts: approve code_interpreter for the Duty's Node in the Catalog and bind it to the Agent";
-	sqlx::query("UPDATE runs SET error = $1 WHERE task_id = $2")
+	sqlx::query("UPDATE task_executions SET error = $1 WHERE task_id = $2")
 		.bind(reason)
 		.bind(router)
 		.execute(driver)
@@ -1440,7 +1440,7 @@ async fn an_event_from_another_node_of_the_tenant_wakes_a_duty(
 	assert!(description.contains("\"trigger\": \"node_event\""));
 	assert!(description.contains("merge everything"));
 	let root: String = sqlx::query_scalar(
-		"SELECT e.root_subject FROM authorization_execution e JOIN runs r ON r.id = e.run_id WHERE r.task_id = $1",
+		"SELECT e.root_subject FROM authorization_execution e JOIN task_executions r ON r.id = e.run_id WHERE r.task_id = $1",
 	)
 	.bind(task)
 	.fetch_one(c.f.store.pool.fixture_driver())

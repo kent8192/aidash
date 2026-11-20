@@ -12,7 +12,7 @@ pub async fn cancel_if_scoped(
 	}
 	if repository.remote_grant(&run.metadata()).await? {
 		repository
-			.save_receiver(&run.cancelled_delivery(), token, "run.cancelled")
+			.save_receiver(&run.cancelled_delivery(), token, "execution.cancelled")
 			.await?;
 		return Ok(true);
 	}

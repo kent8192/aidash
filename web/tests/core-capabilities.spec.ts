@@ -167,7 +167,7 @@ async function core(page: Page) {
     if (
       request.method() === "POST" &&
       (path.startsWith("/api/working-areas/") ||
-        path.startsWith("/api/runs/") ||
+        path.startsWith("/api/executions/") ||
         path.startsWith("/api/capabilities/") ||
         path.startsWith("/api/file-transfers/") ||
         path.endsWith("/delete") ||
@@ -559,7 +559,7 @@ test("Live preview background status is quiet when absent or unavailable", async
   const { errors } = await core(page);
   let status = 404;
   let requests = 0;
-  await page.route("**/api/runs/run-0/live-preview", (route) => {
+  await page.route("**/api/executions/run-0/live-preview", (route) => {
     requests++;
     return route.fulfill({
       status,
@@ -1078,7 +1078,7 @@ test("outbound retries reuse an ambiguous request key and a new fetch uses a fre
 }) => {
   const { errors } = await core(page);
   const requests: { url: string; idempotency_key: string }[] = [];
-  await page.route("**/api/runs/run-0/outbound", async (route) => {
+  await page.route("**/api/executions/run-0/outbound", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) return route.abort("failed");
@@ -1119,7 +1119,7 @@ test("thread run retries reuse an ambiguous idempotency key and changed prompts 
     route.fulfill({ json: { items: [], next_cursor: null } }),
   );
   // An Agent runs in the Thread itself (#1008).
-  await page.route("**/api/threads/*/agents/*/runs", async (route) => {
+  await page.route("**/api/threads/*/agents/*/executions", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) return route.abort("failed");

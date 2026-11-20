@@ -1516,7 +1516,7 @@ async fn remote_file_preview_reports_a_host_without_a_preview_domain(
 		&p.aa,
 		&p.token,
 		"GET",
-		&format!("/api/runs/{}/remote-preview", p.admission),
+		&format!("/api/executions/{}/remote-preview", p.admission),
 		json!(null),
 	)
 	.await;
@@ -1527,7 +1527,7 @@ async fn remote_file_preview_reports_a_host_without_a_preview_domain(
 		&p.aa,
 		&p.token,
 		"POST",
-		&format!("/api/runs/{}/preview-tickets", p.admission),
+		&format!("/api/executions/{}/preview-tickets", p.admission),
 		json!({
 			"kind": "file",
 			"area_id": Uuid::new_v4(),
@@ -1550,7 +1550,7 @@ async fn remote_file_preview_reports_a_host_without_a_preview_domain(
 		&p.aa,
 		&p.token,
 		"GET",
-		&format!("/api/runs/{}/remote-preview", p.admission),
+		&format!("/api/executions/{}/remote-preview", p.admission),
 		json!(null),
 	)
 	.await;
@@ -1798,7 +1798,7 @@ async fn write_home_entry(
 async fn advance_semantic_retry(p: &Pair) {
 	sqlx::query(
 		&Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value_expr(
 				Alias::new("pending"),
 				Expr::cust(
@@ -2318,7 +2318,7 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 			.await
 			.unwrap()
 			.thread_id;
-	let path = format!("/api/runs/{}", p.admission);
+	let path = format!("/api/executions/{}", p.admission);
 	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["run"]["id"], p.admission.to_string());
@@ -2441,7 +2441,7 @@ async fn semantic_journal_reads_require_the_current_viewer_at_home(
 	}
 	let viewer = common::issued_credential(&p.b.store, "acme", "bob").await;
 	let token = viewer["token"].as_str().unwrap();
-	let path = format!("/api/runs/{}", p.admission);
+	let path = format!("/api/executions/{}", p.admission);
 	assert_eq!(
 		request(&p.ba, token, "GET", &path, json!({})).await.0,
 		403,
@@ -2607,7 +2607,7 @@ async fn consumed_home_semantic_revision_blocks_next_remote_inference(
 	assert_eq!(p.run().await.control.as_str(), "PAUSED");
 	assert_eq!(p.requests.lock().await.len(), 1);
 	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
-	let management = format!("/api/runs/{}/management", p.admission);
+	let management = format!("/api/executions/{}/management", p.admission);
 	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &management, json!({})).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["semantic_reason"], "invalidated");
@@ -2732,7 +2732,7 @@ async fn invalidated_remote_run_stays_paused_across_an_execution_node_restart(
 		1,
 		"no inference after the restart"
 	);
-	let management = format!("/api/runs/{}/management", p.admission);
+	let management = format!("/api/executions/{}/management", p.admission);
 	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &management, json!({})).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["semantic_reason"], "invalidated");
@@ -3114,7 +3114,7 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	assert_eq!(task.status.as_str(), "RUNNING");
 	let run = p.run().await;
-	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("runs"))
+	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("task_executions"))
 		.value(Alias::new("phase"),"TOOL_CALL").value_expr(Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
 		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
@@ -3745,7 +3745,7 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 	let pending = common::tool_pending(
 		json!({"response":{"text":"","tool_calls":[{"id":"next-hop","name":"task_delegate","arguments":{"task_id":child.id,"node_id":node_of(&p.a),"agent":{"id":"research","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
 	);
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(run.id)
 		.execute(p.b.store.pool.fixture_driver())
@@ -4147,7 +4147,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 				let query_bind_1 = p.admission;
 				sqlx::query(
 					&Query::update()
-						.table(Alias::new("runs"))
+						.table(Alias::new("task_executions"))
 						.value_expr(Alias::new("agent_version"), Expr::cust("'9.9.9'"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id=?)".to_owned(),
@@ -4420,7 +4420,7 @@ impl Pair {
 		};
 		let phase = serde_json::to_value(state.phase()).unwrap();
 		sqlx::query(
-			"UPDATE runs SET pending = $1, phase = $2, control = 'PAUSED', lease_owner = NULL, \
+			"UPDATE task_executions SET pending = $1, phase = $2, control = 'PAUSED', lease_owner = NULL, \
 			 lease_until = NULL, error = 'task_delegate: the other Node refused' WHERE id = $3",
 		)
 		.bind(encode(&state, &recovery).unwrap())
@@ -4497,7 +4497,7 @@ async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
 		&p.ba,
 		&p.receiver_token,
 		"POST",
-		&format!("/api/runs/{}/declined-calls", p.admission),
+		&format!("/api/executions/{}/declined-calls", p.admission),
 		json!({"call": key}),
 	)
 	.await;
@@ -4560,7 +4560,7 @@ async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
 	assert_eq!(status, 409, "{stale}");
 
 	// The receiver's event says the Home declined it and names no one; the Home's names the person.
-	let there = Pair::events_of(&p.b, p.admission, "run.call_declined").await;
+	let there = Pair::events_of(&p.b, p.admission, "execution.call_declined").await;
 	assert_eq!(there.len(), 1, "{there:?}");
 	assert_eq!(there[0]["by"], "home");
 	assert_eq!(there[0]["kind"], "other_node");
@@ -5220,7 +5220,7 @@ async fn prepare_generated_pair(
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(task_id=?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -5346,7 +5346,7 @@ async fn prepare_generated_pair(
 		sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(home_node=? AND task_id=?)".to_owned(),
 					vec![
@@ -5426,7 +5426,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(home_node=? AND task_id=?)".to_owned(),
 					vec![
@@ -5860,7 +5860,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 			(
 				&pair.ba,
 				&pair.receiver_token,
-				format!("/api/runs/{}/semantic", pair.admission),
+				format!("/api/executions/{}/semantic", pair.admission),
 			)
 		};
 		let (status, view) = request(app, token, "GET", &route, Value::Null).await;
@@ -6054,7 +6054,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}", p.admission),
+		&format!("/api/executions/{}", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -6119,7 +6119,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 			&p.ba,
 			&p.b.config.api_token,
 			"GET",
-			&format!("/api/runs/{}", p.admission),
+			&format!("/api/executions/{}", p.admission),
 			Value::Null
 		)
 		.await
@@ -6130,7 +6130,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.ba,
 		&p.b.config.api_token,
 		"GET",
-		&format!("/api/runs/{}/management?tenant=acme", p.admission),
+		&format!("/api/executions/{}/management?tenant=acme", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -6155,7 +6155,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	let stop = common::http_response(
 		&p.ba,
 		"POST",
-		&format!("/api/runs/{}/management", p.admission),
+		&format!("/api/executions/{}/management", p.admission),
 		&[
 			("authorization", &format!("Bearer {}", p.b.config.api_token)),
 			("content-type", "application/json"),
@@ -6179,7 +6179,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.ba,
 		&p.b.config.api_token,
 		"GET",
-		&format!("/api/runs/{}/management?tenant=acme", p.admission),
+		&format!("/api/executions/{}/management?tenant=acme", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -6266,7 +6266,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 			});
 			sqlx::query(
 				&Query::update()
-					.table(Alias::new("runs"))
+					.table(Alias::new("task_executions"))
 					.value_expr(
 						Alias::new("phase"),
 						SimpleExpr::CustomWithExpr(
@@ -6372,7 +6372,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 		!catalog.0,
 		"terminal lifecycle must retire the generated executor"
 	);
-	let path = format!("/api/runs/{}", p.admission);
+	let path = format!("/api/executions/{}", p.admission);
 	let (status, view) = request(&p.ba, &p.receiver_token, "GET", &path, Value::Null).await;
 	assert_eq!(
 		status, 200,
@@ -7304,7 +7304,7 @@ async fn run_state(p: &Pair) -> (String, String) {
 	sqlx::query_as(
 		&Query::select()
 			.columns(["phase", "control"].map(Alias::new))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -7430,7 +7430,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 		let query_bind_1 = p.admission;
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(
 					Alias::new("lease_until"),
 					Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"),
@@ -8799,7 +8799,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			},
 		));
 		p.b.store
-			.save_run(&TEST_FIXTURE, &run, token, "run.failure_pending")
+			.save_run(&TEST_FIXTURE, &run, token, "execution.failure_pending")
 			.await
 			.unwrap();
 	} else {
@@ -9445,7 +9445,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 		aidash_server::apps::identity::services::node_purge::erase_audit(&p.b.store, 365)
 			.await
 			.unwrap();
-		for table in ["authorization_remote_admissions", "runs"] {
+		for table in ["authorization_remote_admissions", "task_executions"] {
 			let count: i64 =
 				sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE id=$1"))
 					.bind(p.admission)
@@ -9768,7 +9768,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 	.unwrap();
 	assert_eq!(jobs, 0, "original Home grant job retired");
 	if purge_receiver {
-		for table in ["runs", "authorization_remote_admissions"] {
+		for table in ["task_executions", "authorization_remote_admissions"] {
 			let count: i64 = sqlx::query_scalar(&format!(
 				"SELECT count(*) FROM {table} WHERE tenant='acme' AND id=$1"
 			))
@@ -10329,7 +10329,7 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 	.await
 	.unwrap();
 	assert_eq!(after, trust);
-	let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM runs WHERE id=$1")
+	let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM task_executions WHERE id=$1")
 		.bind(admission)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
@@ -10451,7 +10451,7 @@ async fn remote_question_closes_when_home_observes_cancelled_run(#[future(awt)] 
 		.human_request("QUESTION", "Continue?", "run-end-question")
 		.await
 		.unwrap();
-	let management = format!("/api/runs/{}/management", p.admission);
+	let management = format!("/api/executions/{}/management", p.admission);
 	let (status, body) = request(
 		&p.ba,
 		&p.receiver_token,

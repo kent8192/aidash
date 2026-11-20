@@ -14,7 +14,7 @@ async fn thread_with_parent(f: &Federation, agent: &Entry) -> (Uuid, Task) {
 }
 
 async fn run_of(store: &Store, task: Uuid) -> Uuid {
-	sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(task)
 		.fetch_one(store.pool.fixture_driver())
 		.await

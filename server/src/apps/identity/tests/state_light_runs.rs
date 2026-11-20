@@ -30,20 +30,26 @@ async fn all_run_lists_are_light_and_detail_still_has_context(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let id: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	let id: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let (status, detail) =
-		common::request(&app, &token, "GET", &format!("/api/runs/{id}"), Value::Null).await;
+	let (status, detail) = common::request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/executions/{id}"),
+		Value::Null,
+	)
+	.await;
 	assert_eq!(status, 200, "{detail}");
 	let full = &detail["run"];
 	assert!(full["context"].is_object(), "{detail}");
 	for path in [
 		"/api/state".to_owned(),
-		format!("/api/tasks/{task}/runs"),
-		format!("/api/threads/{thread}/runs"),
+		format!("/api/tasks/{task}/executions"),
+		format!("/api/threads/{thread}/executions"),
 	] {
 		let (status, response) = common::request(&app, &token, "GET", &path, Value::Null).await;
 		assert_eq!(status, 200, "{path}: {response}");

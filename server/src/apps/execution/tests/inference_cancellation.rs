@@ -185,7 +185,7 @@ async fn cancel_stalled_inference(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"cancel"}),
 		),
 	)

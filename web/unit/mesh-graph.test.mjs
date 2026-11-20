@@ -394,7 +394,7 @@ test("matches server event envelopes for task creation, completion, publication 
     artifact.id,
   );
   assert.equal(
-    eventReferences({ ...event, kind: "run.created", data: run }).run_id,
+    eventReferences({ ...event, kind: "execution.created", data: run }).run_id,
     run.id,
   );
   assert.equal(
@@ -463,13 +463,13 @@ test("Run inspector excludes sibling executions and task-only events", () => {
     {
       ...event,
       id: "selected",
-      kind: "run.started",
+      kind: "execution.started",
       data: { task_id: selected.task_id, run_id: selected.id },
     },
     {
       ...event,
       id: "sibling",
-      kind: "run.started",
+      kind: "execution.started",
       data: { task_id: selected.task_id, run_id: sibling.id },
     },
     {

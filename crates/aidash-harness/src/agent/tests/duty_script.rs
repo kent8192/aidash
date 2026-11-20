@@ -87,7 +87,7 @@ async fn a_duty_script_completes_its_task_from_the_calls_output_without_a_model(
 	);
 	assert_eq!(
 		fixture.backend.events().first().map(String::as_str),
-		Some("run.started")
+		Some("execution.started")
 	);
 }
 

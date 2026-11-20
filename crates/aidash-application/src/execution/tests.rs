@@ -795,20 +795,23 @@ fn prepared_result_views_share_fences_and_deferral() {
 		let (next, event) = super::defer_result(fitting, &call, vec![]);
 		assert!(next.force_thread_read_compaction);
 		let (deferred, expected_event) = match fitting {
-			ResultFitting::ThreadRecord => (next.deferred_thread_read, "run.read_deferred"),
+			ResultFitting::ThreadRecord => (next.deferred_thread_read, "execution.read_deferred"),
 			ResultFitting::SkillText | ResultFitting::SkillAsset => {
-				(next.deferred_skill_read, "run.skill_read_deferred")
+				(next.deferred_skill_read, "execution.skill_read_deferred")
 			}
 			ResultFitting::JournalText | ResultFitting::JournalSearch => {
-				(next.deferred_skill_read, "run.journal_read_deferred")
+				(next.deferred_skill_read, "execution.journal_read_deferred")
 			}
 			ResultFitting::CapabilityDescription => {
-				(next.deferred_skill_read, "run.description_deferred")
+				(next.deferred_skill_read, "execution.description_deferred")
 			}
-			ResultFitting::CapabilitySearch => (next.deferred_skill_read, "run.search_deferred"),
-			ResultFitting::Observation => {
-				(next.deferred_thread_observation, "run.observation_deferred")
+			ResultFitting::CapabilitySearch => {
+				(next.deferred_skill_read, "execution.search_deferred")
 			}
+			ResultFitting::Observation => (
+				next.deferred_thread_observation,
+				"execution.observation_deferred",
+			),
 		};
 		assert_eq!(event, expected_event);
 		assert_eq!(deferred.unwrap().call, call);

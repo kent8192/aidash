@@ -295,7 +295,7 @@ async fn charge_of(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<Option
 				),
 				Alias::new("duty_id"),
 			)
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)

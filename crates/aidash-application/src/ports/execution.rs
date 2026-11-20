@@ -173,31 +173,35 @@ pub trait ExecutionStore: Send + Sync {
 	/// Persist inference inputs without ending the worker's current lease. Return
 	/// the updated Run revision so the response uses the same durable boundary.
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.sources_observed").await
+		self.save_run(run, token, "execution.sources_observed")
+			.await
 	}
 	/// Persist a step that ran with Degraded context without ending the
-	/// worker's lease, and emit `run.semantic_degraded` (ADR 0059).
+	/// worker's lease, and emit `execution.semantic_degraded` (ADR 0059).
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.semantic_degraded").await
+		self.save_run(run, token, "execution.semantic_degraded")
+			.await
 	}
 	/// Persist a thread's recovery before a later memory failure reloads the
 	/// Run. Keep the current lease and adopt the saved Run revision.
 	async fn recover_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.semantic_recovered").await
+		self.save_run(run, token, "execution.semantic_recovered")
+			.await
 	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.estimate_pinned").await
+		self.save_run(run, token, "execution.estimate_pinned").await
 	}
 	/// Persist the plugin tools the Run just pinned without ending the worker's
 	/// lease, so a recovered Run never lists its servers again (ADR 0073).
 	async fn pin_plugin_tools(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.plugin_tools_pinned").await
+		self.save_run(run, token, "execution.plugin_tools_pinned")
+			.await
 	}
 	/// A known MCP wire outcome or input answer, retaining the current lease.
 	async fn checkpoint_mcp(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.mcp_checkpoint").await
+		self.save_run(run, token, "execution.mcp_checkpoint").await
 	}
 	/// Publish a sampling completion and finish its attempt atomically.
 	async fn finish_sampling(

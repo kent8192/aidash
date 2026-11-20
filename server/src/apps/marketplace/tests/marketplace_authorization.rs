@@ -1470,7 +1470,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
-	let area_path = format!("/api/runs/{}/working-area", run.id);
+	let area_path = format!("/api/executions/{}/working-area", run.id);
 	let available = request(&app, &a, "GET", &area_path, Value::Null).await;
 	assert_eq!(
 		available.0, 200,

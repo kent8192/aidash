@@ -64,7 +64,7 @@ impl ScopedCancellationRepository for Repository {
 	}
 	async fn save_receiver(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, id(5));
-		assert_eq!(event, "run.cancelled");
+		assert_eq!(event, "execution.cancelled");
 		self.record("save")?;
 		self.saved.lock().unwrap().push(run.clone());
 		Ok(())

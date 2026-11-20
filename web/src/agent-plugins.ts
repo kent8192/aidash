@@ -308,7 +308,7 @@ export function withoutPlugin(config: Config, name: string): Config {
 }
 
 /**
- * The plugin servers a `run.plugin_tools_pinned` event reports as unreachable, as
+ * The plugin servers an `execution.plugin_tools_pinned` event reports as unreachable, as
  * `plugin/server`, once each. The event carries names and reason codes only.
  */
 export function skippedServers(data: unknown): string[] {

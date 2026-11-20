@@ -59,12 +59,14 @@ const RETIRED: &[&str] = &[
 ];
 
 /// Tables renamed after their policy migration ran: Schedules became Duties
-/// (#1011), and the Workspace became the Thread (#1008).
+/// (#1011), the Workspace became the Thread (#1008), and the Run became the
+/// Task's execution record (#1009).
 const RENAMED: &[(&str, &str)] = &[
 	("schedules", "duties"),
 	("schedule_ticks", "duty_ticks"),
 	("workspaces", "threads"),
 	("authorization_workspaces", "authorization_threads"),
+	("runs", "task_executions"),
 ];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
@@ -83,6 +85,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0090_run_created_at forward",
 	"execution.0141_remove_research forward",
 	"execution.0148_threads forward",
+	"execution.0150_task_executions backward",
+	"execution.0150_task_executions forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
 	"identity.0067_scratch_member_policy forward",
@@ -104,6 +108,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"workspaces.0024_workspace_scratch_space forward",
 	"workspaces.0033_duty_checks backward",
 	"workspaces.0033_duty_checks forward",
+	"workspaces.0049_threads backward",
 ];
 
 #[rstest::rstest]
@@ -112,9 +117,12 @@ async fn no_migration_writes_tenant_owned_rows_under_their_policy() {
 	// Arrange
 	let migrations = migrations().await;
 	// Act + Assert: the scan finds the known writers, and only them.
+	// A renamed table's history writes it under its former name.
+	let mut owned = tenant_owned(TABLES);
+	owned.extend(RENAMED.iter().map(|(former, _)| *former));
 	assert_no_migration_writes_tenant_owned_rows(
 		&migrations,
-		&tenant_owned(TABLES),
+		&owned,
 		&[BEFORE_POLICIES, IN_DEPLOYMENT_SCOPE].concat(),
 	);
 }

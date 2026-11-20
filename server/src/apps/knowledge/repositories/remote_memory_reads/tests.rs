@@ -229,7 +229,7 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	sqlx::query("INSERT INTO runs(id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'a','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(node.as_str()).bind(&home).bind(pending).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO task_executions(id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'a','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(node.as_str()).bind(&home).bind(pending).execute(pool).await.unwrap();
 	sqlx::query("INSERT INTO authorization_remote_grants(id,tenant,task_id,task_revision,thread_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(task).bind(thread).bind(node.as_str()).bind(credential).execute(pool).await.unwrap();
 	// A fixture Entry written as system work in the Tenant: knowledge is
 	// Tenant content and a Deployment Administrator holds none (#484).

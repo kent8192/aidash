@@ -13,9 +13,9 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 	let Some(run): Option<Run> = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(crate::database::scope::local_home(
-				"runs",
+				"task_executions",
 				store.deployment.as_str(),
 			))
 			.and_where(Expr::col("task_id").eq(Expr::value(job.task_id)))

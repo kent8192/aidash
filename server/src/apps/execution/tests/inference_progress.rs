@@ -240,7 +240,7 @@ async fn every_attempt_records_exactly_one_outcome(
 			let mut failed = leased;
 			failed.state = RunState::Failed(TerminalState {});
 			c.f.store
-				.save_run(&TEST_FIXTURE, &failed, worker, "run.failed")
+				.save_run(&TEST_FIXTURE, &failed, worker, "execution.failed")
 				.await
 				.unwrap();
 		}

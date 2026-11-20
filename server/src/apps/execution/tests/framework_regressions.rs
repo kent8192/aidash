@@ -205,7 +205,7 @@ async fn custom_lease_predicates_preserve_target_isolation(
 	};
 	let query = Query::select()
 		.column("id")
-		.from("runs")
+		.from("task_executions")
 		.and_where(Expr::col("control").ne("PAUSED"))
 		.and_where(Expr::cust(predicate))
 		.and_where(Expr::col("id").eq(Expr::value(target)))

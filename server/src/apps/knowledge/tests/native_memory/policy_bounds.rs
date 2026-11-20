@@ -1192,7 +1192,7 @@ pub(super) async fn recorded_run(
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",

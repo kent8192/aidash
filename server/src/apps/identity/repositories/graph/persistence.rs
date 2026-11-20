@@ -108,7 +108,7 @@ pub(crate) async fn candidates(
 		0 => "threads",
 		1 => "tasks",
 		2 => "artifacts",
-		3 => "runs",
+		3 => "task_executions",
 		4 => "conversations",
 		_ => unreachable!(),
 	};
@@ -369,7 +369,14 @@ pub(crate) async fn graph_generation(
 	let conn = authority.connection();
 	let threads = aggregate_revision(&mut *conn, "threads", "revision", "id", &tenant).await?;
 	let tasks = aggregate_revision(&mut *conn, "tasks", "revision", "thread_id", &tenant).await?;
-	let runs = aggregate_revision(&mut *conn, "runs", "revision", "thread_id", &tenant).await?;
+	let runs = aggregate_revision(
+		&mut *conn,
+		"task_executions",
+		"revision",
+		"thread_id",
+		&tenant,
+	)
+	.await?;
 	let artifacts: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
 		&tenant_resources("artifacts", "thread_id", &tenant)
 			.expr(reinhardt::query::Func::max(
@@ -478,7 +485,7 @@ pub(crate) async fn project_activity(
 			Condition::any()
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("task.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("artifact.%"))
-				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("run.%"))
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("execution.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("conversation.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("message.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("thread.%")),

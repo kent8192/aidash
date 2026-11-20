@@ -48,7 +48,11 @@ pub(crate) async fn record(tx: &mut native::Transaction, run: &Run, task: &Task)
 					.expr(Expr::value(run.observed_input_seq))
 					.expr(Expr::value(body.clone()))
 					.expr(Expr::value(chrono::Utc::now()))
-					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run.id,
+					))
 					.to_owned(),
 			)
 			.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned())

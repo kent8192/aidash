@@ -12,7 +12,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", parent.id),
+		&format!("/api/executions/{}/working-area", parent.id),
 	)
 	.await;
 	let (_, child) = common::post(
@@ -74,7 +74,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (_, own) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", second.id),
+		&format!("/api/executions/{}/working-area", second.id),
 	)
 	.await;
 	assert_ne!(own["id"], area["id"]);
@@ -82,7 +82,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (status, denied) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/files/read", second.id),
+		&format!("/api/executions/{}/files/read", second.id),
 		json!({"file_id":area["manifest"][0]["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -100,13 +100,13 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 	let c = Box::pin(capability_fixture).await;
 	let predecessor = admit(&c).await;
 	let message = source(&c, predecessor.thread_id, "Successor-only current file\n").await;
-	let (status, materialized) = common::post(&c.app, &c.token, &format!("/api/runs/{}/files/materialize", predecessor.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}))
+	let (status, materialized) = common::post(&c.app, &c.token, &format!("/api/executions/{}/files/materialize", predecessor.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}))
 	.await;
 	assert_eq!(status, 200, "{materialized}");
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", predecessor.id),
+		&format!("/api/executions/{}/working-area", predecessor.id),
 	)
 	.await;
 	let file_id = area["manifest"][0]["file_id"].clone();
@@ -114,7 +114,7 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 		let query_bind_1 = predecessor.id;
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value(Alias::new("phase"), "COMPLETED")
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 				.to_string(PostgresQueryBuilder),
@@ -127,7 +127,7 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 	let (status, latest) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/files/read", predecessor.id),
+		&format!("/api/executions/{}/files/read", predecessor.id),
 		input.clone(),
 	)
 	.await;
@@ -145,7 +145,7 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 	let (status, denied) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/files/read", predecessor.id),
+		&format!("/api/executions/{}/files/read", predecessor.id),
 		input.clone(),
 	)
 	.await;
@@ -153,7 +153,7 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 	let (status, current) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{successor}/files/read"),
+		&format!("/api/executions/{successor}/files/read"),
 		input,
 	)
 	.await;
@@ -200,7 +200,7 @@ async fn eligible_approver_is_rechecked_and_preserves_the_original_requester(
 	let (status, pending) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
 	)
 	.await;
@@ -262,7 +262,7 @@ async fn eligible_approver_is_rechecked_and_preserves_the_original_requester(
 		let (blocked_status, blocked) = common::post(
 			&c.app,
 			&c.token,
-			&format!("/api/runs/{}/outbound", run.id),
+			&format!("/api/executions/{}/outbound", run.id),
 			json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/blocked"}),
 		)
 		.await;
@@ -320,7 +320,7 @@ async fn approval_list_and_decision_restore_the_request_thread_context(
 	let (status, pending) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
 	)
 	.await;
@@ -364,7 +364,7 @@ async fn every_eligible_approver_sees_a_waiting_approval_and_a_late_one_is_told_
 	let (status, pending) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
 	)
 	.await;
@@ -433,7 +433,7 @@ async fn an_approval_on_a_deleted_node_fails_no_approvals_list(
 	let (status, pending) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
 	)
 	.await;

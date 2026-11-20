@@ -73,7 +73,7 @@ async fn concurrent_workers_skip_locked_rows_and_recover_expired_leases(
 	let events = aidash_server::apps::execution::models::Event::objects()
 		.filter(
 			aidash_server::apps::execution::models::Event::field_kind()
-				.eq("run.lease_recovery_claimed"),
+				.eq("execution.lease_recovery_claimed"),
 		)
 		.all_with_db(&mut db)
 		.await
@@ -322,7 +322,7 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 	);
 	assert!(saved.lease_owner.is_none());
 	let events = Event::objects()
-		.filter(Event::field_kind().eq("run.crash_loop"))
+		.filter(Event::field_kind().eq("execution.crash_loop"))
 		.all_with_db(&mut db)
 		.await
 		.unwrap();

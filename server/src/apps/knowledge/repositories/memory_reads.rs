@@ -29,7 +29,7 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	let metadata = crate::database::query_as::<RunMetadata>(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -49,7 +49,11 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(run))
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -94,7 +98,11 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 						.expr(Expr::value(run))
 						.expr(Expr::value(unit.id))
 						.expr(Expr::value(unit.revision))
-						.expr(crate::database::scope::tenant_of("runs", "id", run))
+						.expr(crate::database::scope::tenant_of(
+							"task_executions",
+							"id",
+							run,
+						))
 						.to_owned(),
 				)
 				.on_conflict(
@@ -297,7 +305,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		crate::database::query_as::<RunMetadata>(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run_id)))
 				.to_string(PostgresQueryBuilder),
 		)

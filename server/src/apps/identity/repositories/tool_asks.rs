@@ -61,7 +61,7 @@ fn receiver_asks_query(tenant: &str, node: &str, source: &NodeAddress) -> Select
 		.column(Alias::new("id"))
 		.column(Alias::new("updated_at"))
 		.expr_as(paused_call(), Alias::new("paused_call"))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col(Alias::new("control")).eq("PAUSED"))
 		.and_where(Expr::col(Alias::new("control_source")).eq(ControlSource::System.as_str()))
 		.and_where(
@@ -217,7 +217,7 @@ pub(crate) async fn lock_receiver_ask(
 			.column(Alias::new("control"))
 			.column(Alias::new("control_source"))
 			.expr_as(paused_call(), Alias::new("paused_call"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
@@ -383,7 +383,7 @@ mod tests {
 		assert_eq!(
 			sql,
 			"SELECT \"id\", \"updated_at\", \"pending\" -> 'recovery' -> 'paused_call' AS \"paused_call\" \
-			FROM \"runs\" WHERE \"control\" = 'PAUSED' AND \"control_source\" = 'system' \
+			FROM \"task_executions\" WHERE \"control\" = 'PAUSED' AND \"control_source\" = 'system' \
 			AND \"pending\" -> 'recovery' -> 'paused_call' -> 'ask' -> 'lacking' ->> 'receiver' = 'true' \
 			AND \"id\" IN (SELECT \"id\" FROM \"authorization_remote_admissions\" \
 			WHERE \"tenant\" = 'acme' AND \"node\" = 'default' \

@@ -16,7 +16,7 @@ async fn working_area(c: &CoreFixture, run: Uuid) -> (Uuid, String) {
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{run}/working-area"),
+		&format!("/api/executions/{run}/working-area"),
 		Value::Null,
 	)
 	.await;
@@ -83,7 +83,7 @@ async fn a_run_without_a_live_preview_reads_null(#[future] capability_fixture: C
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/live-preview", run.id),
+		&format!("/api/executions/{}/live-preview", run.id),
 		Value::Null,
 	)
 	.await;
@@ -109,7 +109,7 @@ async fn live_preview_http_returns_unavailable_when_the_pool_times_out(
 	let response = common::http_response(
 		&c.app,
 		"GET",
-		&format!("/api/runs/{}/live-preview", run.id),
+		&format!("/api/executions/{}/live-preview", run.id),
 		&[("authorization", &authorization)],
 		b"",
 	)
@@ -131,7 +131,7 @@ async fn missing_runs_and_administrator_refusals_are_distinct(
 				&c.app,
 				token,
 				method,
-				&format!("/api/runs/{}/live-preview{suffix}", Uuid::nil()),
+				&format!("/api/executions/{}/live-preview{suffix}", Uuid::nil()),
 				Value::Null,
 			)
 			.await;
@@ -157,7 +157,7 @@ async fn live_preview_stop_authority_belongs_to_the_viewer(
 		"actions":["run.control"],"resources":{"kinds":["run"]}
 	}));
 	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
-	let path = format!("/api/runs/{}/live-preview", run.id);
+	let path = format!("/api/executions/{}/live-preview", run.id);
 	let (status, body) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(
@@ -291,7 +291,7 @@ async fn cancelling_the_run_stops_its_live_preview(#[future] capability_fixture:
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/control", run.id),
+		&format!("/api/executions/{}/control", run.id),
 		json!({"action":"cancel"}),
 	)
 	.await;
@@ -326,7 +326,7 @@ async fn a_newer_revision_marks_a_running_preview_stale(#[future] capability_fix
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/live-preview", run.id),
+		&format!("/api/executions/{}/live-preview", run.id),
 		Value::Null,
 	)
 	.await;
@@ -451,7 +451,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/control", run.id),
+		&format!("/api/executions/{}/control", run.id),
 		json!({"action":"cancel"}),
 	)
 	.await;
@@ -497,7 +497,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/live-preview", run.id),
+		&format!("/api/executions/{}/live-preview", run.id),
 		Value::Null,
 	)
 	.await;
@@ -513,7 +513,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}", run.id),
+		&format!("/api/executions/{}", run.id),
 		Value::Null,
 	)
 	.await;

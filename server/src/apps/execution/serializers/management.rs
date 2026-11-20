@@ -77,7 +77,7 @@ pub(crate) struct SuspendedRunsResume {
 	pub(crate) runs: Vec<SuspendedRunResume>,
 }
 /// One Run's result. Each Run is resumed on its own, with the same checks as
-/// a resume through `/api/runs/{id}/control`.
+/// a resume through `/api/executions/{id}/control`.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct SuspendedRunResume {
 	pub(crate) run_id: Uuid,

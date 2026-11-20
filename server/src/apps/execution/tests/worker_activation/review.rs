@@ -168,7 +168,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 
 	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let mut insert = Query::insert();
-	insert.into_table(a("runs")).columns([
+	insert.into_table(a("task_executions")).columns([
 		a("id"),
 		a("task_id"),
 		a("thread_id"),
@@ -352,7 +352,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 	// Widen the ordinary two-second timer so elapsed test time cannot mask the bug.
 	sqlx::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(
 				a("pending"),
 				common::pending(aidash_server::domain::RunState::Waiting(Box::new(
@@ -446,7 +446,7 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 	let invalid = admit(&f, &token, task).await;
 	sqlx::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("context"), json!([]))
 			.and_where(Expr::col(a("id")).eq(Expr::value(invalid)))
 			.to_string(PostgresQueryBuilder),
@@ -489,7 +489,7 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 	assert!(
 		events
 			.iter()
-			.any(|e| e.kind == "run.invalid_state" && e.data["run_id"] == invalid.to_string())
+			.any(|e| e.kind == "execution.invalid_state" && e.data["run_id"] == invalid.to_string())
 	);
 	worker.stop();
 	server.stop();
@@ -554,7 +554,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	if blocker == "remote_dependencies" {
 		sqlx::query(
 			&Query::update()
-				.table(a("runs"))
+				.table(a("task_executions"))
 				.value(a("home_node"), "aidash://remote-home")
 				.value(a("phase"), "WAITING")
 				.value(
@@ -689,7 +689,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	);
 	if blocker != "remote_dependencies" {
 		let (table, column, id, value) = match predecessor {
-			Some(id) => ("runs", "phase", id, "COMPLETED"),
+			Some(id) => ("task_executions", "phase", id, "COMPLETED"),
 			None => ("core_areas", "state", area, "active"),
 		};
 		sqlx::query(
@@ -786,7 +786,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 		.id;
 	sqlx::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("context"), json!([]))
 			.and_where(Expr::col(a("id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
@@ -853,7 +853,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 		&app,
 		&token,
 		"POST",
-		&format!("/api/runs/{run}/control"),
+		&format!("/api/executions/{run}/control"),
 		json!({"action":"resume"}),
 	)
 	.await;
@@ -890,7 +890,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 		&app,
 		&token,
 		"POST",
-		&format!("/api/runs/{run}/control"),
+		&format!("/api/executions/{run}/control"),
 		json!({"action":"resume"}),
 	)
 	.await;

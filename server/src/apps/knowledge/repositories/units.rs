@@ -339,7 +339,7 @@ pub(crate) fn sources_in_reader<'a>(
 						let run: aidash_domain::Run = crate::database::query_as(
 							&Query::select()
 								.column(ColumnRef::Asterisk)
-								.from(Alias::new("runs"))
+								.from(Alias::new("task_executions"))
 								.and_where(Expr::col("id").eq(Expr::value(run_id)))
 								.lock(LockType::Share)
 								.to_string(PostgresQueryBuilder),
@@ -514,7 +514,7 @@ pub(crate) fn sources_in_reader<'a>(
 						let row = native::query(
 							&Query::select()
 								.column(ColumnRef::Asterisk)
-								.from(Alias::new("runs"))
+								.from(Alias::new("task_executions"))
 								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 								.lock(LockType::Share)
 								.to_string(PostgresQueryBuilder),
@@ -533,7 +533,7 @@ pub(crate) fn sources_in_reader<'a>(
 						let run: aidash_domain::Run = crate::database::query_as(
 							&Query::select()
 								.column(ColumnRef::Asterisk)
-								.from(Alias::new("runs"))
+								.from(Alias::new("task_executions"))
 								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 								.to_string(PostgresQueryBuilder),
 						)

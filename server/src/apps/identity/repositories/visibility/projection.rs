@@ -348,7 +348,7 @@ pub(crate) async fn state_events(
 					.data
 					.get("run_id")
 					.or_else(|| {
-						(event.kind == "run.created")
+						(event.kind == "execution.created")
 							.then(|| event.data.get("id"))
 							.flatten()
 					})
@@ -359,7 +359,7 @@ pub(crate) async fn state_events(
 		if !ids.is_empty() {
 			let query = Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").is_in(ids.into_iter().map(Expr::value)))
 				.to_string(PostgresQueryBuilder);
 			let candidates: Vec<aidash_domain::RunMetadata> =

@@ -181,7 +181,7 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 	sqlx::query_scalar(
 		&Query::select()
 			.column(a("id"))
-			.from(a("runs"))
+			.from(a("task_executions"))
 			.and_where(Expr::col(a("task_id")).eq(Expr::value(task)))
 			.and_where(Expr::cust(format!(
 				"starts_with(home_node, '{}/')",
@@ -549,7 +549,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	aidash_server::database::native::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("control"), "PAUSED")
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
@@ -585,7 +585,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	// now has an independent deadline and must not be claimed early.
 	sqlx::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("phase"), "WAITING")
 			.value_expr(a("revision"), Expr::col(a("revision")).add(1))
 			.value_expr(
@@ -709,7 +709,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	post_json(
 		&f,
 		&token,
-		&format!("/api/runs/{active}/message"),
+		&format!("/api/executions/{active}/message"),
 		json!({"content":"Accepted correction","idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
@@ -1207,7 +1207,7 @@ async fn startup_reconciliation_drains_all_batches(
 	let (f, url, schema) = runtime.parts();
 	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let mut insert = Query::insert();
-	insert.into_table(a("runs")).columns([
+	insert.into_table(a("task_executions")).columns([
 		a("id"),
 		a("task_id"),
 		a("thread_id"),

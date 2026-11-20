@@ -192,7 +192,7 @@ async fn state_latency_with_665_threads_and_670_runs(
 		assert_eq!(status, 200, "{task}");
 		claim(task["id"].as_str().unwrap().to_owned()).await;
 	}
-	while count("runs").await < RUNS {
+	while count("task_executions").await < RUNS {
 		let (status, task) = common::request(
 			&app,
 			&token,
@@ -206,7 +206,7 @@ async fn state_latency_with_665_threads_and_670_runs(
 	}
 	// Five pending Human Requests on the oldest Runs.
 	let waiting: Vec<(Uuid, Uuid)> = sqlx::query_as(
-		"SELECT id, thread_id FROM runs WHERE tenant = 'acme' ORDER BY created_at LIMIT 5",
+		"SELECT id, thread_id FROM task_executions WHERE tenant = 'acme' ORDER BY created_at LIMIT 5",
 	)
 	.fetch_all(db)
 	.await
@@ -222,7 +222,7 @@ async fn state_latency_with_665_threads_and_670_runs(
 				resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
 			}));
 		let pending = aidash_domain::run_state::encode(&state, &Default::default()).unwrap();
-		sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1 WHERE id = $2")
+		sqlx::query("UPDATE task_executions SET phase = 'WAITING', pending = $1 WHERE id = $2")
 			.bind(pending)
 			.bind(run)
 			.execute(db)
@@ -244,7 +244,7 @@ async fn state_latency_with_665_threads_and_670_runs(
 	for table in [
 		"threads",
 		"tasks",
-		"runs",
+		"task_executions",
 		"human_requests",
 		"artifacts",
 		"conversations",

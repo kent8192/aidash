@@ -370,11 +370,11 @@ impl Batching {
 		let (status, area) = common::get(
 			&self.app,
 			&self.token,
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
-		let (status, created) = common::post(&self.app, &self.token, &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":path,"source":{"kind":"message","message_id":message["message"]["id"]}}))
+		let (status, created) = common::post(&self.app, &self.token, &format!("/api/executions/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":path,"source":{"kind":"message","message_id":message["message"]["id"]}}))
 		.await;
 		assert_eq!(status, 200, "{created}");
 		created["file"].clone()
@@ -680,7 +680,7 @@ async fn run_area(b: &Batching, run: &Run) -> Value {
 	let (status, area) = common::get(
 		&b.app,
 		&b.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
@@ -825,7 +825,7 @@ async fn rejected_batch_admission_writes_nothing(
 	match rejection {
 		Rejection::NewerInput => {
 			sqlx::query(
-				"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'correction', $2)",
+				"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM task_executions WHERE id = $1), 'human', 'correction', $2)",
 			)
 			.bind(run.id)
 			.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
@@ -836,7 +836,7 @@ async fn rejected_batch_admission_writes_nothing(
 		Rejection::OtherWorker => worker = Uuid::new_v4(),
 		Rejection::ExpiredLease => {
 			sqlx::query(
-				"UPDATE runs SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1",
+				"UPDATE task_executions SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1",
 			)
 			.bind(run.id)
 			.execute(driver)
@@ -959,8 +959,15 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 	.unwrap();
 	// The rollback guard reads the Runs of every Tenant, which row-level security
 	// shows only to a login that bypasses it.
+	let admin = common::admin_pool(b.f.store.pool.fixture_driver()).await;
+	// The guard names the table as it was before #1009 (`runs`); a view under
+	// that name stands in for `task_executions` while it is checked.
+	sqlx::query("CREATE VIEW public.runs AS SELECT * FROM public.task_executions")
+		.execute(&admin)
+		.await
+		.unwrap();
 	let mut executor = DatabaseMigrationExecutor::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(common::admin_pool(b.f.store.pool.fixture_driver()).await),
+		PostgresBackend::new(admin.clone()),
 	)));
 	// Act / Assert: the unfinished Run refuses the rollback.
 	let error = executor
@@ -977,6 +984,10 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 	complete(&b.f, run.id).await;
 	executor
 		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	sqlx::query("DROP VIEW public.runs")
+		.execute(&admin)
 		.await
 		.unwrap();
 	b.close().await;
@@ -1099,7 +1110,7 @@ async fn tool_batch_latency_benchmark(
 		}
 		separate.push(started.elapsed());
 		sqlx::query(
-			"UPDATE runs SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
+			"UPDATE task_executions SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
 		)
 		.bind(run.id)
 		.execute(b.f.store.pool.fixture_driver())

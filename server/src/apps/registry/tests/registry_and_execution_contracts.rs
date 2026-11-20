@@ -419,7 +419,7 @@ async fn run_message_retries_have_one_durable_effect(
 		let (status, body) = common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"once","idempotency_key":key}),
 		)
 		.await;
@@ -461,7 +461,7 @@ async fn scoped_run_details_keep_memory_home_namespace(
 		200
 	);
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let (status, details) = common::get(&app, &token, &format!("/api/runs/{}", run.id)).await;
+	let (status, details) = common::get(&app, &token, &format!("/api/executions/{}", run.id)).await;
 	assert_eq!(status, 200, "{details}");
 	assert!(
 		details["memory"].is_null(),

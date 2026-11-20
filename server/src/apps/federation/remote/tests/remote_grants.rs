@@ -610,7 +610,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		let count: i64 = sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.fetch_one(f.store.pool.fixture_driver())

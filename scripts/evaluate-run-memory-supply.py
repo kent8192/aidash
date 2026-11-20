@@ -313,12 +313,12 @@ class Campaign:
                 raise
             while True:
                 if run_id is None:
-                    run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task}/runs", self.token)["items"]), None)
+                    run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task}/executions", self.token)["items"]), None)
                     if run_id is not None:
                         claim_uncertain = False
                         record["run_id"] = run_id
                 if run_id is not None:
-                    run = bounded.get(f"/api/runs/{run_id}", self.token)["run"]
+                    run = bounded.get(f"/api/executions/{run_id}", self.token)["run"]
                     if run["phase"] in runner.TERMINAL:
                         return run
                     if run.get("control") == "PAUSED":

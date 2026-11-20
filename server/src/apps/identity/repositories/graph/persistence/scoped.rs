@@ -37,7 +37,7 @@ fn from_source(column: &str, source: &str) -> SimpleExpr {
 
 fn runs(tenant: &str, thread: Uuid, source_node: &str) -> SelectStatement {
 	Query::select()
-		.from_as(Alias::new("runs"), Alias::new("r"))
+		.from_as(Alias::new("task_executions"), Alias::new("r"))
 		.join(
 			JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(
@@ -219,7 +219,7 @@ pub(super) async fn revision(
 					"e.thread_id IS NULL AND COALESCE(e.data->>'run_id', e.data->>'id') = r.id::text",
 				),
 			)
-			.and_where(Expr::cust("e.kind LIKE 'run.%'"))
+			.and_where(Expr::cust("e.kind LIKE 'execution.%'"))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_one(authority.connection())
@@ -290,7 +290,7 @@ pub(super) async fn activity(
 		.expr(Expr::cust("e.*"))
 		.from_as(Alias::new("events"), Alias::new("e"))
 		.and_where(Expr::col((Alias::new("e"), Alias::new("thread_id"))).is_null())
-		.and_where(Expr::cust("e.kind LIKE 'run.%'"))
+		.and_where(Expr::cust("e.kind LIKE 'execution.%'"))
 		.and_where(Expr::cust("COALESCE(e.data->>'run_id', e.data->>'id')").is_in(ids))
 		.and_where(
 			Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(window_end)),

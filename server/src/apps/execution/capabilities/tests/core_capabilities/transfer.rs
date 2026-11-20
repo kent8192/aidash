@@ -88,7 +88,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		let (status, area) = common::get(
 			&c.app,
 			&c.token,
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
@@ -135,18 +135,18 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		(&sender, &receiver)
 	};
 	let target_address = format!("{}/{}", c.f.config.deployment, target.node);
-	let (status, patched) = common::post(&c.app, &c.token, &format!("/api/runs/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
+	let (status, patched) = common::post(&c.app, &c.token, &format!("/api/executions/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{patched}");
 	let (status, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", source.id),
+		&format!("/api/executions/{}/working-area", source.id),
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
 	let file = &area["manifest"][0];
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":target_address,"agent_id":target.agent_id,"agent_version":target.agent_version,"thread_id":target.thread_id}});
-	let path = format!("/api/runs/{}/files/share", source.id);
+	let path = format!("/api/executions/{}/files/share", source.id);
 	let mut denied = policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-transfer","effect":"deny","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"]}}));
 	common::replace_policy(&c.f.store, "acme", denied).await;
@@ -180,7 +180,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	let (status, received) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/files/read", target.id),
+		&format!("/api/executions/{}/files/read", target.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -241,7 +241,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	let (_, area) = common::get(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/working-area", c.sender.id),
+		&format!("/api/executions/{}/working-area", c.sender.id),
 	)
 	.await;
 	// Explicit immutable transport fixture: 4 MiB plus a final short chunk.
@@ -307,7 +307,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/files/share", c.sender.id),
+		&format!("/api/executions/{}/files/share", c.sender.id),
 		input.clone(),
 	)
 	.await;
@@ -376,7 +376,7 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	let (_, hidden) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(hidden["manifest"], json!([]));
@@ -417,7 +417,7 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
@@ -523,7 +523,7 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(
@@ -661,12 +661,12 @@ async fn peer_request(
 	.await
 }
 async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
-	let (status, value) = common::post(&c.a.app, &c.a.token, &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+immutable 東京\n*** End Patch"})).await;
+	let (status, value) = common::post(&c.a.app, &c.a.token, &format!("/api/executions/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+immutable 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
 	let (_, area) = common::get(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/working-area", c.sender.id),
+		&format!("/api/executions/{}/working-area", c.sender.id),
 	)
 	.await;
 	let file = area["manifest"][0].clone();
@@ -674,7 +674,7 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/files/share", c.sender.id),
+		&format!("/api/executions/{}/files/share", c.sender.id),
 		input.clone(),
 	)
 	.await;
@@ -688,7 +688,7 @@ async fn until_transfer(c: &TransferFixture, input: &Value, states: &[&str]) -> 
 		let (status, result) = common::post(
 			&c.a.app,
 			&c.a.token,
-			&format!("/api/runs/{}/files/share", c.sender.id),
+			&format!("/api/executions/{}/files/share", c.sender.id),
 			input.clone(),
 		)
 		.await;
@@ -714,10 +714,10 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	let (_, source) = common::get(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/working-area", c.sender.id),
+		&format!("/api/executions/{}/working-area", c.sender.id),
 	)
 	.await;
-	let (status, result) = common::post(&c.a.app, &c.a.token, &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
+	let (status, result) = common::post(&c.a.app, &c.a.token, &format!("/api/executions/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	c.lose_commit_reply.store(true, Ordering::SeqCst);
 	let WorkerControl { stop, receiver: rx } = control_1;
@@ -735,7 +735,7 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(
@@ -749,7 +749,7 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	let (status, content) = common::post(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/files/read", c.receiver.id),
+		&format!("/api/executions/{}/files/read", c.receiver.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -822,7 +822,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]), "staging is not visible");
@@ -837,7 +837,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]));

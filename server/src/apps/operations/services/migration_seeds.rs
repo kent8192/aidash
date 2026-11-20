@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 29] {
+fn assets() -> [(&'static str, String); 31] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -144,6 +144,14 @@ fn assets() -> [(&'static str, String); 29] {
 			"workspaces/sql/backward/0033_duty_halts.sql",
 			crate::apps::workspaces::services::duty_halt_backfill::backward(),
 		),
+		(
+			"execution/sql/forward/0150_execution_events.sql",
+			crate::apps::execution::services::execution_event_backfill::forward(),
+		),
+		(
+			"execution/sql/backward/0150_execution_events.sql",
+			crate::apps::execution::services::execution_event_backfill::backward(),
+		),
 	]
 }
 
@@ -279,6 +287,7 @@ mod tests {
 			("identity", "0111_thread_member_policy", 24, Some(25)),
 			("execution", "0148_threads", 26, None),
 			("workspaces", "0033_duty_checks", 27, Some(28)),
+			("execution", "0150_task_executions", 29, Some(30)),
 		] {
 			let migration = FilesystemSource::new(&root)
 				.get_migration(app, name)

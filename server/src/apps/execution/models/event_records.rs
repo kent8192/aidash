@@ -64,7 +64,7 @@ pub(crate) async fn append_for_run(
 			Box::new(
 				Query::select()
 					.column(Alias::new(column))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(run)))
 					.to_owned(),
 			),

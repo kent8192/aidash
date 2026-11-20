@@ -251,7 +251,7 @@ impl PodOperationRepository for Repository<'_> {
 		let phase: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("phase"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(operation.run_id)))
 				.and_where(
 					Expr::col(Alias::new("tenant")).eq(Expr::value(operation.tenant.clone())),

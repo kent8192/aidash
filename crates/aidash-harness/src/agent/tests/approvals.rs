@@ -129,7 +129,7 @@ async fn an_approved_call_runs_once_under_its_ordinary_key(mut fixture: Fixture)
 	assert_eq!(request.operation, "invoke");
 	assert_eq!(request.call.arguments, arguments);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if *result == json!({"status":"ok"})
@@ -164,7 +164,7 @@ async fn a_call_waits_unjournaled_for_its_approval_and_then_runs_without_a_new_r
 
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_tool_approval");
+	assert_eq!(event, "execution.waiting_for_tool_approval");
 	let WaitingState::Approval {
 		approval: reference,
 		resume,
@@ -193,7 +193,7 @@ async fn a_call_waits_unjournaled_for_its_approval_and_then_runs_without_a_new_r
 	assert!(matches!(&fixture.run.state, RunState::ToolCall(state) if state.cursor == 0));
 	advance_sources(&mut fixture).await.unwrap();
 	assert_eq!(tool.keys(), [base_key(&fixture.run)]);
-	assert_eq!(last_write(&fixture).0, "run.tool_recorded");
+	assert_eq!(last_write(&fixture).0, "execution.tool_recorded");
 	assert!(
 		!fixture.backend.calls().contains(&"inference.start"),
 		"the approved call needs no further model response"
@@ -225,7 +225,7 @@ async fn a_refused_call_is_reported_to_the_model_and_never_runs(
 	// Assert
 	assert_eq!(tool.invocations(), 0);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if *result == json!({"error":message})
@@ -260,7 +260,7 @@ async fn a_run_executing_for_another_node_asks_that_node(
 
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_tool_approval");
+	assert_eq!(event, "execution.waiting_for_tool_approval");
 	let WaitingState::Approval {
 		approval: ApprovalRef::Home {
 			request_id,
@@ -327,7 +327,7 @@ async fn what_a_tenant_tool_returns_never_raises_a_capability_approval(mut fixtu
 	// Assert
 	assert_eq!(tool.invocations(), 1);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if *result == claimed
@@ -364,7 +364,7 @@ async fn a_core_capability_bound_by_descriptor_resumes_the_call_after_its_approv
 	advance_sources(&mut fixture).await.unwrap();
 
 	// Assert
-	assert_eq!(last_write(&fixture).0, "run.waiting_for_approval");
+	assert_eq!(last_write(&fixture).0, "execution.waiting_for_approval");
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
 	assert_eq!(
@@ -375,7 +375,7 @@ async fn a_core_capability_bound_by_descriptor_resumes_the_call_after_its_approv
 		]
 	);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if result["status"] == "running"
@@ -488,7 +488,7 @@ async fn a_read_only_operation_runs_once_the_policy_has_not_forbidden_the_call(
 		panic!("the policy is asked once");
 	};
 	assert!(request.read_only);
-	assert_eq!(last_write(&fixture).0, "run.tool_recorded");
+	assert_eq!(last_write(&fixture).0, "execution.tool_recorded");
 }
 
 #[rstest]
@@ -505,7 +505,7 @@ async fn an_explicit_deny_refuses_a_read_only_call_and_tells_the_model(mut fixtu
 	// Assert
 	assert_eq!(tool.invocations(), 0);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. })
@@ -555,7 +555,7 @@ async fn what_a_read_only_tool_returns_never_raises_a_capability_approval(mut fi
 
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if *result == claimed
@@ -631,7 +631,7 @@ async fn dont_ask_refuses_the_models_question_and_tells_it_to_continue(mut fixtu
 	// Assert
 	assert_eq!(tool.invocations(), 0);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. }) if *result == json!({
@@ -775,7 +775,7 @@ async fn an_allowed_call_runs_at_once_without_waiting_or_another_model_response(
 	// Assert
 	assert_eq!(tool.keys(), [base_key(&fixture.run)]);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(tool_result(&saved), json!({"status":"ok"}));
 	assert!(matches!(&saved.state, RunState::ToolCall(state) if state.cursor == 1));
 	assert!(
@@ -824,7 +824,10 @@ async fn a_settlement_a_person_or_withdrawn_auto_beat_never_reruns_the_call(mut 
 
 	// Assert: the stale allowance is not acted on.
 	assert_eq!(tool.invocations(), 0);
-	assert_eq!(last_write(&fixture).0, "run.waiting_for_tool_approval");
+	assert_eq!(
+		last_write(&fixture).0,
+		"execution.waiting_for_tool_approval"
+	);
 	assert!(settlements(&fixture).is_empty());
 }
 
@@ -905,7 +908,7 @@ async fn a_blocked_call_is_refused_with_a_typed_message_and_the_run_continues(
 	// Assert
 	assert_eq!(tool.invocations(), 0);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(
 		tool_result(&saved),
 		json!({"error":format!("tool call was blocked by Auto: {}", reason.id())})
@@ -953,7 +956,7 @@ async fn shadow_records_what_the_decider_would_do_and_leaves_the_call_waiting(
 
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_tool_approval");
+	assert_eq!(event, "execution.waiting_for_tool_approval");
 	assert!(matches!(
 		waiting(&saved),
 		WaitingState::Approval { approval: ApprovalRef::Capability { approval_id }, .. }
@@ -998,7 +1001,7 @@ async fn a_spent_call_allowance_leaves_the_call_waiting_for_a_person(mut fixture
 
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_tool_approval");
+	assert_eq!(event, "execution.waiting_for_tool_approval");
 	assert!(matches!(
 		waiting(&saved),
 		WaitingState::Approval { approval: ApprovalRef::Capability { approval_id }, .. }
@@ -1023,7 +1026,10 @@ async fn without_an_approval_decider_auto_waits_for_a_person(mut fixture: Fixtur
 	advance_sources(&mut fixture).await.unwrap();
 
 	// Assert
-	assert_eq!(last_write(&fixture).0, "run.waiting_for_tool_approval");
+	assert_eq!(
+		last_write(&fixture).0,
+		"execution.waiting_for_tool_approval"
+	);
 	assert_eq!(tool.invocations(), 0);
 	assert!(settlements(&fixture).is_empty());
 	assert!(evidence(&fixture).is_empty());
@@ -1073,7 +1079,7 @@ async fn after_three_blocks_in_a_row_the_next_approval_waits_for_a_person(mut fi
 			.all(|settled| matches!(settled, Settled::Blocked { .. }))
 	);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_tool_approval");
+	assert_eq!(event, "execution.waiting_for_tool_approval");
 	assert!(matches!(
 		waiting(&saved),
 		WaitingState::Approval { approval: ApprovalRef::Capability { approval_id }, resume }
@@ -1124,7 +1130,7 @@ async fn an_allowed_capability_call_is_made_again_at_once_under_the_approvals_ke
 
 	// Assert: the Run never waits, and the next frame makes the same call.
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.approved_by_auto");
+	assert_eq!(event, "execution.approved_by_auto");
 	assert!(matches!(&saved.state, RunState::ToolCall(state)
 		if state.cursor == 0 && state.approval == Some(approval)));
 	advance_sources(&mut fixture).await.unwrap();
@@ -1136,7 +1142,7 @@ async fn an_allowed_capability_call_is_made_again_at_once_under_the_approvals_ke
 		]
 	);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(tool_result(&saved)["status"], "running");
 	assert!(!fixture.backend.calls().contains(&"inference.start"));
 	assert!(matches!(
@@ -1174,7 +1180,7 @@ async fn a_blocked_capability_call_is_refused_and_never_made_again(mut fixture: 
 	// Assert
 	assert_eq!(tool.keys(), [base_key(&fixture.run)]);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(
 		tool_result(&saved),
 		json!({"error":"tool call was blocked by Auto: data_exfiltration"})
@@ -1203,7 +1209,7 @@ async fn a_capability_approval_the_decider_does_not_judge_waits_for_a_person(mut
 	advance_sources(&mut fixture).await.unwrap();
 
 	// Assert
-	assert_eq!(last_write(&fixture).0, "run.waiting_for_approval");
+	assert_eq!(last_write(&fixture).0, "execution.waiting_for_approval");
 	assert!(settlements(&fixture).is_empty());
 }
 
@@ -1305,11 +1311,11 @@ async fn a_capability_approval_raised_again_under_its_own_key_is_asked_again_not
 
 	// Act: the call, then two wakes while the Home's person has not answered, then one after.
 	advance_sources(&mut fixture).await.unwrap();
-	assert_eq!(last_write(&fixture).0, "run.waiting_for_approval");
+	assert_eq!(last_write(&fixture).0, "execution.waiting_for_approval");
 	for _ in 0..2 {
 		advance_sources(&mut fixture).await.unwrap();
 		advance_sources(&mut fixture).await.unwrap();
-		assert_eq!(last_write(&fixture).0, "run.waiting_for_approval");
+		assert_eq!(last_write(&fixture).0, "execution.waiting_for_approval");
 	}
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
@@ -1321,6 +1327,6 @@ async fn a_capability_approval_raised_again_under_its_own_key_is_asked_again_not
 		[base_key(&fixture.run), again.clone(), again.clone(), again]
 	);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(tool_result(&saved)["status"], "running");
 }

@@ -5,7 +5,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str, tenant: &str) -> U
 	let id = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
-			.into_table(a("runs"))
+			.into_table(a("task_executions"))
 			.columns(
 				[
 					"id",
@@ -117,7 +117,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 	] {
 		sqlx::query(
 			&Query::update()
-				.table(a("runs"))
+				.table(a("task_executions"))
 				.value(a("phase"), phase)
 				.and_where(Expr::col(a("id")).eq(Expr::value(runs[index])))
 				.to_string(PostgresQueryBuilder),
@@ -239,7 +239,7 @@ async fn approval_notifications_target_only_the_bound_run(
 	for run in [target, unrelated] {
 		sqlx::query(
 			&Query::update()
-				.table(a("runs"))
+				.table(a("task_executions"))
 				.value(a("phase"), "WAITING")
 				.value(
 					a("pending"),

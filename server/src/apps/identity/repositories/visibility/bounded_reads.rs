@@ -107,7 +107,7 @@ impl Scope for Reads<'_> {
 	) -> Result<Vec<RawRun>> {
 		let mut q = Query::select();
 		q.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(
 				Expr::col(Alias::new("tenant"))
 					.eq(Expr::value(self.access.identity.tenant.clone())),
@@ -127,7 +127,7 @@ impl Scope for Reads<'_> {
 			let mut position = Query::select();
 			position
 				.column(Alias::new("updated_at"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(
 					Expr::col(Alias::new("tenant"))
 						.eq(Expr::value(self.access.identity.tenant.clone())),
@@ -187,7 +187,7 @@ impl Scope for Reads<'_> {
 		let threads = [self.task_thread.ok_or(Error::Forbidden)?];
 		let position = match cursor {
 			Some(id) => Some((
-				self.cursor("runs", id, Some(("task_id", task)), &threads)
+				self.cursor("task_executions", id, Some(("task_id", task)), &threads)
 					.await?,
 				id,
 			)),
@@ -196,7 +196,7 @@ impl Scope for Reads<'_> {
 		let mut query = Query::select();
 		query
 			.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(
 				Expr::col(Alias::new("tenant"))
 					.eq(Expr::value(self.access.identity.tenant.clone())),

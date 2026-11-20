@@ -318,7 +318,7 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 	let run: aidash_domain::Run = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run_id)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -637,7 +637,7 @@ async fn execute(
 			let record: aidash_domain::Run = crate::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(run)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -722,7 +722,7 @@ async fn execute(
 				let record: aidash_domain::Run = crate::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(Expr::col("id").eq(Expr::value(*run)))
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),

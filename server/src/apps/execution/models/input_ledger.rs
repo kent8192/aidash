@@ -91,7 +91,7 @@ impl RunInput {
 	async fn locked_run(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<RunContract> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
@@ -165,7 +165,7 @@ impl RunInput {
 		)?;
 		if !run.ledger_worker_ready {
 			let (sql, values) = Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(Alias::new("ledger_worker_ready"), Expr::value(true))
 				.and_where(Expr::col("id").eq(Expr::value(run_id)))
 				.build(PostgresQueryBuilder);
@@ -192,7 +192,7 @@ impl RunInput {
 				IntoValue::into_value(sender).into(),
 				IntoValue::into_value(content).into(),
 				IntoValue::into_value(key).into(),
-				crate::database::scope::tenant_of("runs", "id", run_id),
+				crate::database::scope::tenant_of("task_executions", "id", run_id),
 			])
 			.expect("one value per column")
 			.build(PostgresQueryBuilder);
@@ -315,7 +315,7 @@ impl RunInput {
 					IntoValue::into_value(key).into(),
 					IntoValue::into_value(message.id).into(),
 					IntoValue::into_value(reference_only).into(),
-					crate::database::scope::tenant_of("runs", "id", run_id),
+					crate::database::scope::tenant_of("task_executions", "id", run_id),
 				])
 				.expect("one value per column")
 				.on_conflict(

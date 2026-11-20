@@ -221,7 +221,7 @@ async fn new_input_supersedes_a_review_of_a_check_this_node_cannot_run(
 		&g.c.app,
 		&g.c.token,
 		"POST",
-		&format!("/api/runs/{}/message", run.id),
+		&format!("/api/executions/{}/message", run.id),
 		json!({"content":"Use the fixture data instead","idempotency_key":Uuid::new_v4()}),
 	)
 	.await;

@@ -548,7 +548,7 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 	};
 
 	let waiting = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
-	let pinned = events(&world, "run.plugin_tools_pinned").await;
+	let pinned = events(&world, "execution.plugin_tools_pinned").await;
 	assert_eq!(pinned.len(), 1, "{pinned:?}");
 	assert_eq!(pinned[0]["skipped"], json!([]));
 	assert_eq!(
@@ -675,7 +675,7 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 
 	let finished = step_until(&harness, &world, |run| run.phase().as_str() == "COMPLETED").await;
 
-	let pinned = events(&world, "run.plugin_tools_pinned").await;
+	let pinned = events(&world, "execution.plugin_tools_pinned").await;
 	assert_eq!(pinned.len(), 1, "{pinned:?}");
 	assert_eq!(
 		pinned[0]["skipped"],
@@ -1139,7 +1139,7 @@ async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_comm
 				.api_http
 				.request(
 					"POST".parse().unwrap(),
-					&format!("/api/runs/{}/{endpoint}", world.run.id),
+					&format!("/api/executions/{}/{endpoint}", world.run.id),
 				)
 				.header(
 					"Authorization",
@@ -1165,7 +1165,7 @@ async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_comm
 				&world.app,
 				&world.token,
 				"POST",
-				&format!("/api/runs/{}/{endpoint}", world.run.id),
+				&format!("/api/executions/{}/{endpoint}", world.run.id),
 				json!({"action":action}),
 			)
 			.await

@@ -78,7 +78,7 @@ async fn thread_wait_wakes_for_child_input_and_resume(
 			post_json(
 				&f,
 				&token,
-				&format!("/api/runs/{run}/message"),
+				&format!("/api/executions/{run}/message"),
 				json!({"content":"New instruction","idempotency_key":Uuid::new_v4()}),
 			)
 			.await;
@@ -105,7 +105,7 @@ async fn thread_wait_wakes_for_child_input_and_resume(
 				"starting a child must not wake the parent"
 			);
 			if scenario == "paused" {
-				sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+				sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 					.bind(run)
 					.execute(db)
 					.await
@@ -123,7 +123,7 @@ async fn thread_wait_wakes_for_child_input_and_resume(
 					before,
 					"paused Run must remain asleep"
 				);
-				sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+				sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 					.bind(run)
 					.execute(db)
 					.await

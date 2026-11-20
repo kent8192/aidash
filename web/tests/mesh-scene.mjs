@@ -150,10 +150,10 @@ export function meshScene(now = Date.now()) {
     kind: [
       "task.created",
       "task.claimed",
-      "run.started",
+      "execution.started",
       "artifact.created",
       "task.completed",
-      "run.waiting",
+      "execution.waiting",
     ][i % 6],
     data: { task_id: tasks[i % 3].id, run_id: runs[i % 5].id },
     created_at: time(3 + i * 4),

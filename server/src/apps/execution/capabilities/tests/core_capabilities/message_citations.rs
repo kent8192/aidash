@@ -63,7 +63,7 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -86,7 +86,7 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 	let (_, replaced_area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	assert_ne!(
@@ -121,7 +121,7 @@ async fn a_quota_refusal_leaves_no_message_and_no_hold(#[future] capability_fixt
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -183,7 +183,7 @@ async fn a_viewer_without_download_authority_sees_no_digest(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();

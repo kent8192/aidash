@@ -103,12 +103,12 @@ async fn the_first_step_pins_the_plugin_tools_once_before_the_run_starts(mut fix
 	assert_eq!(listings(&fixture), 1);
 	assert_eq!(
 		fixture.backend.events(),
-		["run.plugin_tools_pinned", "run.started"]
+		["execution.plugin_tools_pinned", "execution.started"]
 	);
-	let pinning = written(&fixture, "run.plugin_tools_pinned");
+	let pinning = written(&fixture, "execution.plugin_tools_pinned");
 	assert_eq!(pinning.context.plugin_tools, Some(pinned(false)));
 	assert!(matches!(pinning.state, RunState::Ready(_)));
-	let started = written(&fixture, "run.started");
+	let started = written(&fixture, "execution.started");
 	assert_eq!(started.context.plugin_tools, Some(pinned(false)));
 	assert!(matches!(started.state, RunState::Thinking(_)));
 	assert!(fixture.backend.0.closed_sessions.lock().unwrap().is_empty());
@@ -143,9 +143,9 @@ async fn a_recovered_run_that_pinned_its_tools_never_lists_again(mut fixture: Fi
 	advance(&mut fixture).await.unwrap();
 
 	assert_eq!(listings(&fixture), 0);
-	assert_eq!(fixture.backend.events(), ["run.started"]);
+	assert_eq!(fixture.backend.events(), ["execution.started"]);
 	assert_eq!(
-		written(&fixture, "run.started").context.plugin_tools,
+		written(&fixture, "execution.started").context.plugin_tools,
 		Some(pinned(false))
 	);
 }
@@ -154,7 +154,7 @@ async fn a_recovered_run_that_pinned_its_tools_never_lists_again(mut fixture: Fi
 #[tokio::test]
 async fn a_crash_before_the_pin_is_saved_lists_again(mut fixture: Fixture) {
 	with_plugin(&mut fixture, Some(pinned(false)));
-	*state(&mut fixture).failing_save.lock().unwrap() = Some("run.plugin_tools_pinned");
+	*state(&mut fixture).failing_save.lock().unwrap() = Some("execution.plugin_tools_pinned");
 	let stored = fixture.run.clone();
 
 	assert!(advance(&mut fixture).await.is_err());
@@ -164,7 +164,7 @@ async fn a_crash_before_the_pin_is_saved_lists_again(mut fixture: Fixture) {
 	assert_eq!(listings(&fixture), 2);
 	assert_eq!(
 		fixture.backend.events(),
-		["run.plugin_tools_pinned", "run.started"]
+		["execution.plugin_tools_pinned", "execution.started"]
 	);
 }
 
@@ -176,8 +176,11 @@ async fn a_run_without_plugins_lists_and_emits_nothing_new(mut fixture: Fixture)
 	advance(&mut fixture).await.unwrap();
 
 	assert_eq!(listings(&fixture), 0);
-	assert_eq!(fixture.backend.events(), ["run.started"]);
-	assert_eq!(written(&fixture, "run.started").context.plugin_tools, None);
+	assert_eq!(fixture.backend.events(), ["execution.started"]);
+	assert_eq!(
+		written(&fixture, "execution.started").context.plugin_tools,
+		None
+	);
 }
 
 #[rstest]
@@ -188,8 +191,11 @@ async fn an_environment_without_plugin_support_pins_nothing(mut fixture: Fixture
 	advance(&mut fixture).await.unwrap();
 
 	assert_eq!(listings(&fixture), 1);
-	assert_eq!(fixture.backend.events(), ["run.started"]);
-	assert_eq!(written(&fixture, "run.started").context.plugin_tools, None);
+	assert_eq!(fixture.backend.events(), ["execution.started"]);
+	assert_eq!(
+		written(&fixture, "execution.started").context.plugin_tools,
+		None
+	);
 }
 
 #[rstest]
@@ -261,7 +267,7 @@ async fn a_preliminary_mcp_checkpoint_does_not_admit_stale_tool_calls(mut fixtur
 
 	assert_eq!(scripted(&fixture).invocations(), 0);
 	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
-	assert_eq!(fixture.backend.events(), ["run.message_received"]);
+	assert_eq!(fixture.backend.events(), ["execution.message_received"]);
 	assert!(fixture.backend.0.invocations.lock().unwrap().is_empty());
 }
 
@@ -276,7 +282,7 @@ async fn a_rejected_call_returns_to_the_model_and_the_run_goes_on(mut fixture: F
 	// The call never ran; the refusal is the call's result and the Run moves to the next call.
 	assert_eq!(scripted(&fixture).invocations(), 0);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. })
@@ -301,7 +307,10 @@ async fn a_plugin_call_waits_for_a_tool_call_approval(mut fixture: Fixture) {
 
 	advance(&mut fixture).await.unwrap();
 
-	assert_eq!(fixture.backend.events(), ["run.waiting_for_tool_approval"]);
+	assert_eq!(
+		fixture.backend.events(),
+		["execution.waiting_for_tool_approval"]
+	);
 	assert!(matches!(
 		&fixture.run.state,
 		RunState::Waiting(wait) if matches!(
@@ -342,7 +351,7 @@ async fn an_approved_plugin_call_runs_once(mut fixture: Fixture) {
 		!fixture
 			.backend
 			.events()
-			.contains(&"run.waiting_for_tool_approval".into())
+			.contains(&"execution.waiting_for_tool_approval".into())
 	);
 }
 
@@ -366,7 +375,7 @@ async fn a_read_only_plugin_call_proceeds_without_approval(mut fixture: Fixture)
 		!fixture
 			.backend
 			.events()
-			.contains(&"run.waiting_for_tool_approval".into())
+			.contains(&"execution.waiting_for_tool_approval".into())
 	);
 	assert!(fixture.backend.0.human.lock().unwrap().is_none());
 }
@@ -381,7 +390,10 @@ async fn a_run_executing_for_another_node_asks_that_node_with_the_prompt_prefix_
 
 	advance(&mut fixture).await.unwrap();
 
-	assert_eq!(fixture.backend.events(), ["run.waiting_for_tool_approval"]);
+	assert_eq!(
+		fixture.backend.events(),
+		["execution.waiting_for_tool_approval"]
+	);
 	assert!(
 		fixture
 			.backend

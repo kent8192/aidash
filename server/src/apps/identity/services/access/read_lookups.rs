@@ -1046,7 +1046,7 @@ impl Access {
 			("authorization_run_reads", "source", "run_id"),
 			("authorization_run_registry_reads", "registry", "run_id"),
 			("authorization_run_remote_reads", "remote", "run_id"),
-			("runs", "snapshot", "id"),
+			("task_executions", "snapshot", "id"),
 			("core_runs", "core", "run_id"),
 			("semantic_run_reads", "semantic", "run_id"),
 		] {

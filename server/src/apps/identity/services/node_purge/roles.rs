@@ -158,7 +158,13 @@ pub(super) async fn resolve(
 		&["id", "node", "grant_id", "source_node"],
 	)
 	.await?;
-	let runs: Vec<Run> = read(tx, owners.tenant, "runs", &["id", "node", "home_node"]).await?;
+	let runs: Vec<Run> = read(
+		tx,
+		owners.tenant,
+		"task_executions",
+		&["id", "node", "home_node"],
+	)
+	.await?;
 	let mut evidence = Evidence {
 		grants: grants.into_iter().map(|g| (g.id, g.node)).collect(),
 		admissions: admissions.into_iter().map(|a| (a.id, a)).collect(),

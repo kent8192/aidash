@@ -56,7 +56,7 @@ impl DependencyScope for NativeDependencies<'_> {
 			aidash_server::database::query_as(
 				&Query::select()
 					.column(Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id=? AND home_node=?)".to_owned(),
 						vec![

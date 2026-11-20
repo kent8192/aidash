@@ -640,11 +640,12 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	d.make_personal(&kept).await;
 	d.queue_run(&kept).await.unwrap();
 	let pool = d.federation.store.pool.fixture_driver();
-	let workspace: Uuid = sqlx::query_scalar("SELECT thread_id FROM runs WHERE tenant = $1")
-		.bind(&kept)
-		.fetch_one(pool)
-		.await
-		.unwrap();
+	let workspace: Uuid =
+		sqlx::query_scalar("SELECT thread_id FROM task_executions WHERE tenant = $1")
+			.bind(&kept)
+			.fetch_one(pool)
+			.await
+			.unwrap();
 	sqlx::query(
 		"INSERT INTO channel_attachments (id, tenant, thread_id, uploaded_by, idempotency_key, filename, media_type, sha256, size_bytes, content) VALUES ($1, $2, $3, 'alice', $4, 'report.pdf', 'application/pdf', $5, 4000, $6)",
 	)

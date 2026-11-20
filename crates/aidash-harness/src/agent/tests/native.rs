@@ -395,7 +395,7 @@ async fn a_native_final_answer_is_a_model_turn_without_calls(mut fixture: Fixtur
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.completed");
+	assert_eq!(event, "execution.completed");
 	assert_eq!(
 		saved.context.events().collect::<Vec<_>>(),
 		[&turn(5, "Final answer", &[])]

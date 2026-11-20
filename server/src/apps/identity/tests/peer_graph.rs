@@ -349,7 +349,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.await
 		.unwrap();
 	let mut runs = Query::insert();
-	runs.into_table(Alias::new("runs")).columns(
+	runs.into_table(Alias::new("task_executions")).columns(
 		[
 			"id",
 			"task_id",

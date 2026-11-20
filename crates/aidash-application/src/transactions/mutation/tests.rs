@@ -446,7 +446,7 @@ async fn execution_event_preserves_raw_usage_and_home_visibility(
 		scope.events[0],
 		(
 			thread,
-			"run.completed".into(),
+			"execution.completed".into(),
 			json!({"run_id":scope.run.id,"task_id":scope.run.task_id,"thread_id":scope.run.thread_id,"agent_id":"agent","phase":"COMPLETED","step":7,"error":null,"context_usage":{"input_tokens":11,"output_tokens":4,"context_window":128000,"compactions":2}})
 		)
 	);

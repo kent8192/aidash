@@ -120,7 +120,7 @@ impl Executor<'_> {
 								},
 								_ => return Err(Error::Invalid("invalid MCP wait".into())),
 							}));
-							store.save_run(run, token, "run.mcp_waiting").await?;
+							store.save_run(run, token, "execution.mcp_waiting").await?;
 							return Ok(None);
 						}
 						Err(error) => {
@@ -192,7 +192,7 @@ impl Executor<'_> {
 				store
 					.reconciliation_request(run, token, &round_key, &prompt)
 					.await?;
-				store.save_run(run, token, "run.waiting").await?;
+				store.save_run(run, token, "execution.waiting").await?;
 				return Ok(None);
 			}
 			let round = if invocation.status == "COMPLETED" {

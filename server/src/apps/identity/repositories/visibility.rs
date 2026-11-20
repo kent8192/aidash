@@ -577,7 +577,7 @@ impl EventVisibilityScope for Reads<'_> {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.cond_where(
 							Condition::all()
 								.add(

@@ -78,7 +78,7 @@ async fn working_area(c: &CoreFixture, run: Uuid) -> Value {
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{run}/working-area"),
+		&format!("/api/executions/{run}/working-area"),
 		Value::Null,
 	)
 	.await;
@@ -94,7 +94,7 @@ async fn copy_first_reference_file(c: &CoreFixture, run: Uuid) -> i64 {
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{run}/files/search"),
+		&format!("/api/executions/{run}/files/search"),
 		json!({"query":"","mode":"path","scope":"references"}),
 	)
 	.await;
@@ -103,7 +103,7 @@ async fn copy_first_reference_file(c: &CoreFixture, run: Uuid) -> i64 {
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{run}/files/materialize"),
+		&format!("/api/executions/{run}/files/materialize"),
 		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":found["matches"][0]["file_id"],"expected_digest":found["matches"][0]["digest"]}}),
 	)
 	.await;

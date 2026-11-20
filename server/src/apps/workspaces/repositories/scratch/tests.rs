@@ -359,7 +359,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(vals)).await.unwrap();
 		let (sql, vals) = Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",

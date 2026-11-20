@@ -154,7 +154,7 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(&driver).await.unwrap();
+	sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(&driver).await.unwrap();
 	let artifact = Uuid::new_v4();
 	sqlx::query("INSERT INTO artifacts (id,tenant,thread_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Fixture','{}','reader',$1::text)").bind(artifact).bind(thread).bind(read_task).execute(&driver).await.unwrap();
 	let mut sources = vec![
@@ -701,7 +701,7 @@ async fn remote_preview(fixture: &Fixture) -> RemoteRun {
 		.unwrap();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let thread = Uuid::new_v4();
-	sqlx::query("UPDATE runs SET home_node = $1, thread_id = $2 WHERE id = $3")
+	sqlx::query("UPDATE task_executions SET home_node = $1, thread_id = $2 WHERE id = $3")
 		.bind(home_node())
 		.bind(thread)
 		.bind(fixture.run)
@@ -1245,7 +1245,7 @@ async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: 
 	for run in [shared, between] {
 		let task = Uuid::new_v4();
 		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
-		sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.thread).bind(&node).bind(DEPLOYMENT).bind(pending.clone()).execute(fixture.driver()).await.unwrap();
+		sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.thread).bind(&node).bind(DEPLOYMENT).bind(pending.clone()).execute(fixture.driver()).await.unwrap();
 	}
 	let mut tx = fixture
 		.store
@@ -1255,7 +1255,7 @@ async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: 
 		.unwrap();
 	// Every Run executes under a grant (ADR 0043).
 	for run in [shared, between] {
-		let task: Uuid = sqlx::query_scalar("SELECT task_id FROM runs WHERE id=$1")
+		let task: Uuid = sqlx::query_scalar("SELECT task_id FROM task_executions WHERE id=$1")
 			.bind(run)
 			.fetch_one(fixture.driver())
 			.await
@@ -1435,7 +1435,7 @@ async fn finished_run(fixture: &Fixture) -> Uuid {
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let [run, task] = [Uuid::new_v4(), Uuid::new_v4()];
 	sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
-	sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(fixture.driver()).await.unwrap();
 	let mut tx = fixture
 		.store
 		.pool
@@ -1700,7 +1700,7 @@ async fn a_write_a_subnode_fences_is_checked_afresh_inside_a_check(
 		  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
 		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
 		  $2, thread_id, 'Fenced', 'active', now(), 'fenced', 'fenced' \
-		 FROM runs WHERE id = $3",
+		 FROM task_executions WHERE id = $3",
 	)
 	.bind(Uuid::new_v4())
 	.bind(json!({"tools":[],"secrets":[]}))
@@ -1758,7 +1758,7 @@ async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_su
 	}
 	let fixture = fixture(database.await, 1).await;
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
-	sqlx::query("UPDATE runs SET home_node = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET home_node = $1 WHERE id = $2")
 		.bind(format!("{DEPLOYMENT}/{node}"))
 		.bind(fixture.run)
 		.execute(fixture.driver())

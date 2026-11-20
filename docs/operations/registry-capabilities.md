@@ -270,7 +270,7 @@ and change only the Run's Exposure set. Identities serialize as
 An invalid search cursor is a recoverable tool error. A description is recorded
 whole or not at all: when it would not fit the remaining request budget, with
 room reserved for the response's later calls, the step is deferred like a
-`skill_read` that does not fit (`run.description_deferred`). The retained
+`skill_read` that does not fit (`execution.description_deferred`). The retained
 context is compacted and the next request asks the model to retry the call.
 
 A search page is recorded with only its leading results that fit the remaining
@@ -278,7 +278,7 @@ request budget, with the same reserve. A cut page sets `truncated` and
 `budget_limited`, and its `next_cursor` resumes at the first dropped result.
 When no result fits but the empty page does, the page also sets `deferred` and
 a `message` to continue on a later turn. When not even the empty page fits, the
-step is deferred (`run.search_deferred`) like a description.
+step is deferred (`execution.search_deferred`) like a description.
 
 A successful load or unload also returns an `exposure_update`. The Executor
 stages it in `context.exposure` only for tools whose contract declares
@@ -410,7 +410,7 @@ Only `streamable-http` servers are called from the server process. A Run lists
 every remote server of its Agent's plugins (`tools/list`) at its first step,
 before its first model request and outside any transaction, at most four at a
 time, for up to 15 s per server and 30 s in all. The per-server budget includes the modern discovery probe and legacy fallback. The result is the Run's
-`plugin_tools`. It is saved with `run.plugin_tools_pinned`, so a recovered Run
+`plugin_tools`. It is saved with `execution.plugin_tools_pinned`, so a recovered Run
 never lists again, and the Binding snapshot stays what admission resolved.
 
 The tools a server listed are pinned as follows.
@@ -512,7 +512,7 @@ declared digest against the Run's own listing.
 
 A server that times out, is refused, cannot initialize or answers nonsense is
 left out with a typed cause and the Run continues without its tools. The event
-`run.plugin_tools_pinned` carries `skipped`, a list of `plugin`, `server` and
+`execution.plugin_tools_pinned` carries `skipped`, a list of `plugin`, `server` and
 `reason` codes, and no URL, header, detail or server answer. The Run channel
 shows which servers could not be reached.
 

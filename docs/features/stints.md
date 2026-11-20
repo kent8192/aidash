@@ -17,7 +17,7 @@ and the CI result starts its next Stint.
 | waits for a failure to be delivered                                                                                           | stays open: that is the worker's own retry  |
 | completes, fails or is cancelled                                                                                              | ends, with the terminal phase as its reason |
 
-The database records Stints from the Run's phase and wait: a trigger on `runs`
+The database records Stints from the Run's phase and wait: a trigger on `task_executions`
 opens and ends them for every writer, so no code path can skip one, and at most
 one Stint per Run is open. Each inference attempt records the Stint it ran in,
 so cost per awake stretch is visible.
@@ -41,3 +41,19 @@ Stints:
 | Consecutive Lease Recoveries before a Crash Loop Failure | 5                                                                                             |
 | Waits for an approval (`approval_seconds`)               | 7 days by default; a Deployment may set up to 30 days                                         |
 | An Agent definition's Tool Parallelism                   | up to 64                                                                                      |
+
+## Names
+
+The Task's execution record is the table `task_executions` (formerly `runs`).
+API paths say `executions` where they said `runs`: `GET /api/executions/{id}`,
+`POST /api/executions/{id}/control`, `GET /api/tasks/{id}/executions`,
+`GET /api/threads/{id}/executions`, `GET /api/suspended-executions` and the
+other `/api/executions/{id}/...` routes, with operation ids such as
+`execution-get` and `task-executions`. Events say `execution.` where they said
+`run.` (`execution.started`, `execution.control`, `execution.budget_exhausted`,
+...), with the same meaning and data; stored events were renamed with them.
+
+Internal names stay: the `run_id` columns and fields, the Rust types (`Run`,
+`RunRecord`, ...), the policy actions `run.read`, `run.message`, `run.control`,
+`run.decline_call` and `run.finish`, the resource kind `run`, and the keys
+`runs` and `run_id` inside API bodies such as `/api/state`.

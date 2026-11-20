@@ -108,7 +108,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 	let (member, _) = crate::endpoint::tenant_member(&app).await;
 	let first = assert_json(
 		member
-			.get(&format!("/api/runs/{observed_run}"))
+			.get(&format!("/api/executions/{observed_run}"))
 			.await
 			.unwrap(),
 		200,
@@ -120,7 +120,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 	);
 	let next = assert_json(
 		member
-			.get(&format!("/api/runs/{observed_run}?offset=100"))
+			.get(&format!("/api/executions/{observed_run}?offset=100"))
 			.await
 			.unwrap(),
 		200,

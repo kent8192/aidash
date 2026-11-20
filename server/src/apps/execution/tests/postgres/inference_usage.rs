@@ -297,7 +297,7 @@ async fn dispatch_does_not_wait_for_the_workers_own_run_references(
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),
@@ -357,7 +357,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	sqlx::query(
 		&Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value_expr(
 				Alias::new("lease_until"),
 				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
@@ -847,7 +847,7 @@ async fn evaluation_export_keeps_usage_and_recovery_without_private_context(
 	run.context.estimate.demoted = true;
 	let context = serde_json::to_value(&run.context).unwrap();
 	let update = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value_expr(Alias::new("context"), Expr::value(context))
 		.and_where(Expr::col("id").eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);

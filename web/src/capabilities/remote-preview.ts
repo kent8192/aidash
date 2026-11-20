@@ -25,7 +25,7 @@ type RemotePreviewTicket = {
 };
 
 export const inspectRemotePreview = (run: string, signal?: AbortSignal) =>
-  apiFetch<RemotePreviewInspection>(`/api/runs/${run}/remote-preview`, {
+  apiFetch<RemotePreviewInspection>(`/api/executions/${run}/remote-preview`, {
     signal,
   });
 
@@ -34,7 +34,7 @@ export async function issueRemotePreview(
   target: RemotePreviewTarget,
 ): Promise<string> {
   const ticket = await apiFetch<RemotePreviewTicket>(
-    `/api/runs/${run}/preview-tickets`,
+    `/api/executions/${run}/preview-tickets`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },

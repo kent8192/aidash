@@ -327,7 +327,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(401, 403, 404, 405), token="not-a-federation-token", headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "thread_record", "data": {"kind": "task", "id": rejected_task["id"]}}, codes=(401, 403, 404), token="not-a-federation-token", headers=peer_headers)
             def run(run_id=run_id):
-                return api_request(base_b, f"/api/runs/{run_id}", token=mapped["token"])["run"]
+                return api_request(base_b, f"/api/executions/{run_id}", token=mapped["token"])["run"]
 
             def progress(grant=grant, scenario=scenario):
                 stalled = run()

@@ -120,7 +120,7 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 		.await;
 	let mut tx = database.begin_in(&scope).await;
 	let insert = Query::insert()
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(
 			[
 				"id",
@@ -302,7 +302,7 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 	let worker = Uuid::new_v4();
 	let mut tx = database.begin_in(&scope).await;
 	let update = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value(Alias::new("control"), "ACTIVE")
 		.value(Alias::new("error"), None::<String>)
 		.value(Alias::new("lease_owner"), worker)
@@ -324,7 +324,7 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 		(cancelled, "READY", "CANCELLED", Some("cancelled")),
 	] {
 		let insert = Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",

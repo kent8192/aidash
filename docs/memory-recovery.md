@@ -221,7 +221,7 @@ The `memory_decay:` test lives in
 ## Typed recovery
 
 A Run stopped by its semantic context reports the exact cause and the actions
-the current contract authorizes. `GET /api/runs/{id}/management` returns
+the current contract authorizes. `GET /api/executions/{id}/management` returns
 `semantic_recovery` next to `semantic_reason` while the Run is neither cancelled
 nor finished. The view carries no content, so it stays available when the Run's
 content is hidden. On the Home, each entry of

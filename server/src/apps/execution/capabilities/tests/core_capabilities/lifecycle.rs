@@ -86,14 +86,14 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
 	let run = admit(&c).await;
-	let path = format!("/api/runs/{}/patch", run.id);
+	let path = format!("/api/executions/{}/patch", run.id);
 	let (status, result) = request(&c.app,&c.token,"POST",&path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"keep.txt":null},"patch":"*** Begin Patch\n*** Add File: keep.txt\n+kept 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	let (_, before) = request(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -130,7 +130,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -232,7 +232,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":before["manifest"][0]["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -260,7 +260,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/threads/{thread}/agents/research/runs"),
+		&format!("/api/threads/{thread}/agents/research/executions"),
 		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Exercise bounded area pagination"}),
 	)
 	.await;
@@ -431,7 +431,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 
 	let run_app = c.app.clone();
 	let run_token = c.token.clone();
-	let run_path = format!("/api/threads/{thread}/agents/research/runs");
+	let run_path = format!("/api/threads/{thread}/agents/research/executions");
 	let creating = tokio::spawn(async move {
 		request(
 			&run_app,
@@ -482,7 +482,7 @@ async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture:
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/threads/{thread}/agents/research/runs"),
+		&format!("/api/threads/{thread}/agents/research/executions"),
 		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"First run","description":"Create the area"}),
 	)
 	.await;
@@ -503,7 +503,7 @@ async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture:
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/threads/{thread}/agents/research/runs"),
+		&format!("/api/threads/{thread}/agents/research/executions"),
 		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Overflow run","description":"Must not create run 101"}),
 	)
 	.await;
@@ -536,7 +536,7 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 			.thread_id;
 	let marker = "This thread will be deleted";
 	source(&c, thread, marker).await;
-	let (status,area)=request(&c.app,&c.token,"POST",&format!("/api/threads/{thread}/agents/research/runs"),json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Preserve files"})).await;
+	let (status,area)=request(&c.app,&c.token,"POST",&format!("/api/threads/{thread}/agents/research/executions"),json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Preserve files"})).await;
 	assert_eq!(status, 200, "{area}");
 	let (status, session) = request(
 		&c.app,
@@ -551,13 +551,13 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	.await;
 	assert_eq!(status, 200, "{session}");
 	let run = session["active_run_id"].as_str().unwrap();
-	let (status,result)=request(&c.app,&c.token,"POST",&format!("/api/runs/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"kept.txt":null},"patch":"*** Begin Patch\n*** Add File: kept.txt\n+Keep 東京 exactly\n*** End Patch"})).await;
+	let (status,result)=request(&c.app,&c.token,"POST",&format!("/api/executions/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"kept.txt":null},"patch":"*** Begin Patch\n*** Add File: kept.txt\n+Keep 東京 exactly\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	let (_, before) = request(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{run}/working-area"),
+		&format!("/api/executions/{run}/working-area"),
 		Value::Null,
 	)
 	.await;
@@ -607,7 +607,11 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 			format!("/api/threads/{thread}/tasks"),
 			json!({"title":"After deletion","description":"Must be refused"}),
 		),
-		("GET", format!("/api/tasks/{}/runs", c.task), Value::Null),
+		(
+			"GET",
+			format!("/api/tasks/{}/executions", c.task),
+			Value::Null,
+		),
 	] {
 		let (status, body) = request(&c.app, &c.token, method, &path, body).await;
 		assert!(
@@ -650,7 +654,7 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	// An Area is restored only into its own Thread, which is gone.
 	let (status, refused) = request(&c.app, &c.token, "POST", &restore, input).await;
 	assert!(matches!(status, 403 | 404), "{refused}");
-	assert_ne!(request(&c.app,&c.token,"POST",&format!("/api/runs/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+late\n*** End Patch"})).await.0,200);
+	assert_ne!(request(&c.app,&c.token,"POST",&format!("/api/executions/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+late\n*** End Patch"})).await.0,200);
 	c.close().await;
 }
 
@@ -750,13 +754,13 @@ async fn expired_upload_releases_only_its_owned_staging_bytes(
 async fn cleanup_fault_fixture(#[future] capability_fixture: CoreFixture) -> (CoreFixture, Value) {
 	let c = Box::pin(capability_fixture).await;
 	let run = admit(&c).await;
-	let (status,result)=request(&c.app,&c.token,"POST",&format!("/api/runs/{}/patch",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"a.txt":null,"b.txt":null},"patch":"*** Begin Patch\n*** Add File: a.txt\n+first 東京\n*** Add File: b.txt\n+second\n*** End Patch"})).await;
+	let (status,result)=request(&c.app,&c.token,"POST",&format!("/api/executions/{}/patch",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"a.txt":null,"b.txt":null},"patch":"*** Begin Patch\n*** Add File: a.txt\n+first 東京\n*** Add File: b.txt\n+second\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	let (status, area) = request(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1001,7 +1005,7 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;

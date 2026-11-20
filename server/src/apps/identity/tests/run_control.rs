@@ -116,7 +116,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{}", self.run),
+			&format!("/api/executions/{}", self.run),
 			Value::Null,
 		)
 		.await
@@ -127,7 +127,7 @@ impl World {
 			&self.app,
 			token,
 			"POST",
-			&format!("/api/runs/{}/control", self.run),
+			&format!("/api/executions/{}/control", self.run),
 			json!({"action":action}),
 		)
 		.await
@@ -138,7 +138,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{}/management", self.run),
+			&format!("/api/executions/{}/management", self.run),
 			Value::Null,
 		)
 		.await
@@ -271,7 +271,7 @@ impl World {
 			&self.app,
 			token,
 			"POST",
-			"/api/suspended-runs/resume",
+			"/api/suspended-executions/resume",
 			Value::Null,
 		)
 		.await
@@ -281,7 +281,7 @@ impl World {
 	/// records the epoch it paused under, as `pause_for_execution` does.
 	async fn paused_for(&self, error: &str) {
 		sqlx::query(
-			"UPDATE runs SET error = $1, pending = CASE WHEN $1 = 'account_suspended' \
+			"UPDATE task_executions SET error = $1, pending = CASE WHEN $1 = 'account_suspended' \
 			 THEN jsonb_set(pending, '{recovery}', \
 			 COALESCE(pending->'recovery', '{}'::jsonb) || '{\"account_suspension_epoch\": 1}') \
 			 ELSE pending END WHERE id = $2 AND control = 'PAUSED'",

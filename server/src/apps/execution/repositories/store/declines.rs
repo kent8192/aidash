@@ -127,7 +127,11 @@ impl Store {
 									"(?)".to_owned(),
 									vec![Expr::value(paused.replay_safe).into()],
 								))
-								.expr(crate::database::scope::tenant_of("runs", "id", id))
+								.expr(crate::database::scope::tenant_of(
+									"task_executions",
+									"id",
+									id,
+								))
 								.to_owned(),
 						)
 						.to_owned()
@@ -164,7 +168,7 @@ impl Store {
 		let raw: RawRun = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder),
@@ -212,7 +216,7 @@ impl Store {
 		let mut pending: serde_json::Value = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("pending"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -232,7 +236,7 @@ impl Store {
 		);
 		crate::database::native::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(Alias::new("pending"), Expr::value(pending))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
@@ -244,7 +248,7 @@ impl Store {
 			&mut **tx,
 			id,
 			thread,
-			"run.call_declined",
+			"execution.call_declined",
 			json!({
 				"run_id": id,
 				"task_id": raw.metadata.task_id,
@@ -275,7 +279,7 @@ impl Store {
 		let raw: RawRun = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder),
@@ -305,7 +309,7 @@ impl Store {
 		let pending = aidash_domain::run_state::encode(&state, &recovery)?;
 		let changed = crate::database::native::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(Alias::new("pending"), Expr::value(pending))
 				.value(Alias::new("lease_owner"), Option::<Uuid>::None)
 				.value(
@@ -336,7 +340,7 @@ impl Store {
 			&mut **tx,
 			id,
 			thread,
-			"run.call_declined",
+			"execution.call_declined",
 			json!({
 				"run_id": id,
 				"task_id": raw.metadata.task_id,

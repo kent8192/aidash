@@ -470,7 +470,8 @@ impl ExecutionStore for Backend {
 		})
 	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.estimate_pinned").await?;
+		self.save_run(run, token, "execution.estimate_pinned")
+			.await?;
 		// Native persistence returns the saved projection, whose Research
 		// history contains immutable references rather than provider payloads.
 		*run = serde_json::from_value(serde_json::to_value(&*run)?)?;
@@ -560,7 +561,7 @@ impl ExecutionStore for Backend {
 		Ok(())
 	}
 	async fn emit(&self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
-		assert!(matches!(kind, "mcp.input_failed" | "run.recovered"));
+		assert!(matches!(kind, "mcp.input_failed" | "execution.recovered"));
 		self.0
 			.emitted
 			.lock()
@@ -710,7 +711,8 @@ impl ExecutionStore for Backend {
 				invocations.remove(key);
 			}
 		}
-		self.save_run(run, token, "run.connection_refused").await
+		self.save_run(run, token, "execution.connection_refused")
+			.await
 	}
 	async fn invocation_finish(
 		&self,
@@ -2183,7 +2185,7 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 			.lock()
 			.unwrap()
 			.iter()
-			.all(|(event, run)| event == "run.waiting" && run.phase() == RunPhase::Waiting)
+			.all(|(event, run)| event == "execution.waiting" && run.phase() == RunPhase::Waiting)
 	);
 	fixture
 		.backend
@@ -2205,7 +2207,7 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 	assert_eq!(fixture.run.phase(), RunPhase::Ready);
 	assert_eq!(
 		fixture.backend.0.writes.lock().unwrap().last().unwrap().0,
-		"run.resumed"
+		"execution.resumed"
 	);
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert_eq!(
@@ -2250,7 +2252,7 @@ async fn an_outage_wake_keeps_the_short_retries_its_wait_spent(
 	assert_eq!(fixture.run.phase(), RunPhase::Ready);
 	let writes = fixture.backend.0.writes.lock().unwrap();
 	let (event, saved) = writes.last().unwrap();
-	assert_eq!(event, "run.outage_resumed");
+	assert_eq!(event, "execution.outage_resumed");
 	assert_eq!(
 		saved.recovery.retry.as_ref().map(|retry| retry.count),
 		spent
@@ -2584,7 +2586,7 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 			.lock()
 			.unwrap()
 			.iter()
-			.all(|(event, saved)| event == "run.sources_observed"
+			.all(|(event, saved)| event == "execution.sources_observed"
 				&& saved.phase() == RunPhase::Thinking)
 	);
 	let calls = fixture.backend.0.calls.lock().unwrap();
@@ -2688,7 +2690,7 @@ async fn late_run_input_prevents_final_completion_and_output_publication(mut fix
 	assert!(!calls.contains(&"home.complete"));
 	assert_eq!(
 		fixture.backend.0.writes.lock().unwrap()[0].0,
-		"run.message_received"
+		"execution.message_received"
 	);
 }
 #[rstest]
@@ -2753,10 +2755,10 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 			.map(|(event, _)| event.as_str())
 			.collect::<Vec<_>>(),
 		[
-			"run.started",
-			"run.sources_observed",
+			"execution.started",
+			"execution.sources_observed",
 			"model.completed",
-			"run.completed"
+			"execution.completed"
 		]
 	);
 	let calls = fixture.backend.0.calls.lock().unwrap();
@@ -3133,7 +3135,10 @@ async fn provider_overflow_retries_with_a_smaller_window_without_dispatching(mut
 	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
 	assert_eq!(fixture.run.context.recovery.window_permille, 750);
 	assert_eq!(fixture.run.context.recovery.overflow_attempts, 1);
-	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	assert_eq!(
+		events(&fixture).last().unwrap(),
+		"execution.context_overflow"
+	);
 	// The retried request did not shrink, so recovery pauses instead of looping.
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
@@ -3166,7 +3171,10 @@ async fn provider_overflow_releases_its_reservation_before_the_reduced_retry(mut
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: the rejected attempt's charge is released before the retry
 	// state is saved, and its Usage Record stays a provider rejection.
-	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	assert_eq!(
+		events(&fixture).last().unwrap(),
+		"execution.context_overflow"
+	);
 	let overflowed = calls(&fixture);
 	assert!(position(&overflowed, "provider.infer") < position(&overflowed, "reservation.abort"));
 	assert!(!overflowed.contains(&"reservation.settle"));
@@ -3205,7 +3213,7 @@ async fn default_policy_retries_overflow_but_not_unrelated_rejections(mut fixtur
 		Err(Error::ProviderRejected { status: 400, .. })
 	));
 	assert!(rejected.run.context.recovery.is_initial());
-	assert!(!events(&rejected).contains(&"run.context_overflow".to_owned()));
+	assert!(!events(&rejected).contains(&"execution.context_overflow".to_owned()));
 }
 
 #[rstest]
@@ -3784,7 +3792,7 @@ async fn imported_history_is_journaled_whole_before_summary(mut fixture: Fixture
 		.unwrap(),
 	);
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(!events(&fixture).contains(&"run.sources_observed".to_owned()));
+	assert!(!events(&fixture).contains(&"execution.sources_observed".to_owned()));
 	assert_eq!(fixture.run.context.history, originals);
 	let journal = fixture
 		.backend
@@ -4192,7 +4200,7 @@ async fn new_input_mid_stream_discards_the_attempt_and_replans_with_it(fixture: 
 	assert_eq!(fixture.run.step, 0);
 	assert_eq!(
 		fixture.backend.events().last().unwrap(),
-		"run.message_received"
+		"execution.message_received"
 	);
 	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Discarded]]);
 	let calls = fixture.backend.calls();
@@ -5858,7 +5866,7 @@ async fn deferred_dispatch_rejects_a_capability_that_is_not_loaded(mut fixture: 
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. })
@@ -5899,7 +5907,7 @@ async fn a_load_exposes_its_capability_only_from_the_next_request(mut fixture: F
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: the call is checked against its own request's Exposure set.
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert!(matches!(
 		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. })
@@ -6046,7 +6054,7 @@ async fn replayed_load_and_resumed_run_keep_the_same_exposure(mut fixture: Fixtu
 	// Assert
 	assert_eq!(fixture.backend.0.custom["capability_load"].invocations(), 0);
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(saved.context.exposure, staged);
 	// Act: resume from the persisted Run, then infer.
 	fixture.run = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -6125,8 +6133,8 @@ async fn deferred_media_intake_reports_no_tool_exposure(mut fixture: Fixture) {
 }
 
 #[rstest]
-#[case::fits(100_000, "run.tool_recorded")]
-#[case::deferred(4_000, "run.description_deferred")]
+#[case::fits(100_000, "execution.tool_recorded")]
+#[case::deferred(4_000, "execution.description_deferred")]
 #[tokio::test]
 async fn capability_descriptions_are_recorded_whole_or_deferred(
 	mut fixture: Fixture,
@@ -6202,7 +6210,7 @@ async fn journal_fitting_reports_a_missing_run_to_the_model(
 
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	assert_eq!(saved.state.tool().unwrap().cursor, 1);
 	assert!(
 		matches!(saved.context.events().last(), Some(ContextEvent::Tool { call, result }) if call == &request && result["error"].as_str().is_some_and(|message| message.contains("Check run_id")))
@@ -6249,7 +6257,7 @@ async fn capability_search_pages_fit_the_remaining_request_budget(
 	// Assert: never a page the next request cannot carry.
 	let (event, saved) = last_write(&fixture);
 	if expected == Some(0) {
-		assert_eq!(event, "run.search_deferred");
+		assert_eq!(event, "execution.search_deferred");
 		let RunState::Thinking(thinking) = &saved.state else {
 			panic!("a deferred search returns to thinking");
 		};
@@ -6258,7 +6266,7 @@ async fn capability_search_pages_fit_the_remaining_request_budget(
 		assert!(saved.context.history.is_empty());
 		return;
 	}
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	let Some(ContextEvent::Tool { call, .. }) = saved.context.events().last() else {
 		panic!("expected a tool result");
 	};
@@ -6313,7 +6321,7 @@ async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: the page is cut to the headroom and continues from the cut.
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(event, "execution.tool_recorded");
 	let Some(ContextEvent::Tool { call, .. }) = saved.context.events().last() else {
 		panic!("expected a tool result");
 	};
@@ -6564,7 +6572,7 @@ async fn conflicting_recheck_discards_the_ordered_cache_and_retrieves_once(mut c
 	let writes = canonical.backend.0.writes.lock().unwrap();
 	let observed = writes
 		.iter()
-		.filter(|(event, _)| event == "run.sources_observed")
+		.filter(|(event, _)| event == "execution.sources_observed")
 		.collect::<Vec<_>>();
 	assert_eq!(observed.len(), 2);
 	assert_eq!(
@@ -7297,7 +7305,7 @@ async fn recovered_step_emits_count_and_resets_it_only_when_the_step_ends(mut fi
 	let events = fixture.backend.0.emitted.lock().unwrap();
 	let recovered = events
 		.iter()
-		.find(|(kind, _)| kind == "run.recovered")
+		.find(|(kind, _)| kind == "execution.recovered")
 		.unwrap();
 	assert_eq!(recovered.1["lease_recoveries"], 2);
 	assert_eq!(recovered.1["run_id"], fixture.run.id.to_string());

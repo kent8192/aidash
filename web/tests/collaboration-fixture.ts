@@ -318,7 +318,7 @@ export async function setup(
           ["peer.registered", "01:30:40", { node_id: "aidash://lab" }],
           ["task.completed", "01:31:10", { task: data.tasks[0] }],
           ["task.claimed", "01:31:40", data.tasks[1]],
-          ["run.created", "01:32:20", data.runs[0]],
+          ["execution.created", "01:32:20", data.runs[0]],
           ["tool.invoke", "01:33:10", {}],
           ["task.completed", "01:34:00", { task: data.tasks[2] }],
           ["artifact.created", "01:34:30", {}],
@@ -328,7 +328,7 @@ export async function setup(
           ["tool.invoke", "01:37:50", {}],
           ["human_request.created", "01:38:20", {}],
           ["tool.invoke", "01:39:30", {}],
-          ["run.invalid_state", "01:40:10", {}],
+          ["execution.invalid_state", "01:40:10", {}],
         ] as const
       ).map(([kind, time, payload], index) => ({
         id: `reference-event-${index}`,
@@ -568,7 +568,7 @@ export async function setup(
       return route.fulfill({ json: { access, node_id: data.deployment.id } });
     // Every page lists Runs a suspension paused (#876). Unmocked, its 404 is
     // retried, and every action's query refresh waits for that retry.
-    if (path === "/api/suspended-runs")
+    if (path === "/api/suspended-executions")
       return route.fulfill({ json: { runs: [] } });
     if (path === "/api/state")
       return route.fulfill({
@@ -793,15 +793,15 @@ export async function setup(
         return route.fulfill({ json: envelope(message) });
       }
       const controlled = data.runs.find(
-        (run) => path === `/api/runs/${run.id}/control`,
+        (run) => path === `/api/executions/${run.id}/control`,
       );
       if (controlled) {
         controlled.control = body.action === "pause" ? "PAUSED" : "ACTIVE";
         return route.fulfill({ json: controlled });
       }
-      if (path === "/api/runs/run-0/message")
+      if (path === "/api/executions/run-0/message")
         return route.fulfill({ json: { sent: true } });
-      if (path === "/api/runs/run-0/declined-calls") {
+      if (path === "/api/executions/run-0/declined-calls") {
         if (options.failDecline)
           return route.fulfill({
             status: 409,
@@ -859,7 +859,9 @@ export async function setup(
     }
     if (/^\/api\/runs\/[^/]+\/live-preview$/.test(path))
       return route.fulfill({ status: 404, json: { error: "not_found" } });
-    const run = data.runs.find((value) => path === `/api/runs/${value.id}`);
+    const run = data.runs.find(
+      (value) => path === `/api/executions/${value.id}`,
+    );
     if (run)
       return route.fulfill({
         json: {

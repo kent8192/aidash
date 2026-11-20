@@ -61,7 +61,7 @@ fn facts_query(run: Uuid, lock: bool) -> String {
 	let mut query = Query::select();
 	query
 		.columns(["phase", "control", "control_revision", "control_source"].map(Alias::new))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)));
 	if lock {
 		// `NoKeyUpdate`, like `Run::hold_worker_lease`: a worker's retained

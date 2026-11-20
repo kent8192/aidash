@@ -311,9 +311,9 @@ outside a Run.
 - The Pod mounts the revision current at start and never publishes what its
   server writes. It does not take the Area's writer slot, so a later turn can
   run while the preview keeps serving.
-- `live_preview_stop {}` and `POST /api/runs/{id}/live-preview/stop` stop it.
+- `live_preview_stop {}` and `POST /api/executions/{id}/live-preview/stop` stop it.
   The Run's requester and whoever may cancel the Run may stop it; viewing
-  alone does not allow it. `GET /api/runs/{id}/live-preview` reports
+  alone does not allow it. `GET /api/executions/{id}/live-preview` reports
   `may_stop` under the viewer's authority so the dashboard shows Stop only to
   them.
 

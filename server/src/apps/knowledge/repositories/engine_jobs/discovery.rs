@@ -60,9 +60,9 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 	let rows = native::query(
 		&Query::select()
 			.columns(["id", "updated_at"].map(Alias::new))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(crate::database::scope::local_home(
-				"runs",
+				"task_executions",
 				store.deployment.as_str(),
 			))
 			.and_where(Expr::col("phase").eq("COMPLETED"))

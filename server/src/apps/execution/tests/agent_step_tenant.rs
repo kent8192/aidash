@@ -143,7 +143,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 	let node = aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme");
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	let (sql, values) = Query::insert()
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(
 			[
 				"id",

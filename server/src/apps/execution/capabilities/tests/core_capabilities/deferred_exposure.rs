@@ -1239,7 +1239,7 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(
 	leased.observed_input_seq = summarized;
 	d.c.f
 		.store
-		.save_run(&TEST_FIXTURE, &leased, worker, "run.message_received")
+		.save_run(&TEST_FIXTURE, &leased, worker, "execution.message_received")
 		.await
 		.unwrap();
 	d.c.f

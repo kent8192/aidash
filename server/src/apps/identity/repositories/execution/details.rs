@@ -61,7 +61,7 @@ impl RunDetailsRepository for Details<'_> {
 	}
 }
 /// Whether the subject of the caller's authorization transaction may see the
-/// Run, decided exactly as `GET /api/runs/{id}` decides it but inside that
+/// Run, decided exactly as `GET /api/executions/{id}` decides it but inside that
 /// transaction, so the locks the decision takes also cover the caller's own
 /// changes. The transaction's policy context is left as it was.
 pub(crate) async fn visible_within(
@@ -184,7 +184,7 @@ impl RunDetailsScope for Scope<'_> {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -208,7 +208,7 @@ impl RunDetailsScope for Scope<'_> {
 		}
 		let query = Query::select()
 			.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 			.to_string(PostgresQueryBuilder);
 		let result: NativeResult<Vec<RawRun>> = async {

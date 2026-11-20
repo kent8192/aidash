@@ -279,7 +279,7 @@ async fn retry_cycle(lease: &mut Lease<'_>, run: Option<Uuid>) -> Result<i32> {
 	native::query_scalar(
 		&Query::select()
 			.column(Alias::new("semantic_retry_cycle"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -488,7 +488,7 @@ pub(crate) async fn operate_staged(
 		let thread: Uuid = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("thread_id"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)

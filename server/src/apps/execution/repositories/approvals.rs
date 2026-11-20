@@ -119,7 +119,7 @@ impl ApprovalScope for Scope<'_> {
 			let run: Run = {
 				let query_bind_1 = id;
 				aidash_server::database::query_as(
-					&sessions::select("runs")
+					&sessions::select("task_executions")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(

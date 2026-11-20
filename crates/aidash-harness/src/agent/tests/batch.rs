@@ -1184,7 +1184,7 @@ async fn batched_reads_execute_concurrently_and_are_adopted_once() {
 	assert_eq!(lab.events("dispatch"), keys(&run, 0..2));
 	assert_eq!(adopted(&run), expected(&[(0, read("p0")), (1, read("p1"))]));
 	assert_eq!(progress(&run), (2, None));
-	assert_eq!(bench.saved(), ["run.tool_recorded"]);
+	assert_eq!(bench.saved(), ["execution.tool_recorded"]);
 	let saves = bench.0.saves.lock().unwrap();
 	assert_eq!(progress(&saves[0].1), (2, None));
 	assert_eq!(adopted(&saves[0].1), adopted(&run));
@@ -1308,7 +1308,7 @@ async fn resumed_batch_reuses_completed_calls_and_dispatches_started_ones_once()
 	assert_eq!(bench.finished(), keys(&run, [1]));
 	assert_eq!(adopted(&run), expected(&[(0, journaled), (1, read("p1"))]));
 	assert_eq!(progress(&run), (2, None));
-	assert_eq!(bench.saved(), ["run.tool_recorded"]);
+	assert_eq!(bench.saved(), ["execution.tool_recorded"]);
 }
 
 #[tokio::test]

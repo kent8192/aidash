@@ -176,10 +176,13 @@ impl ExecutionAdmissionSession for Admission<'_> {
 				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.cond_where(
 							Condition::all()
-								.add(crate::database::scope::local_home("runs", query_bind_1))
+								.add(crate::database::scope::local_home(
+									"task_executions",
+									query_bind_1,
+								))
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
 										"task_id",
@@ -534,7 +537,7 @@ pub(crate) async fn persist_grant_in(
 ) -> NativeResult<()> {
 	use reinhardt::{db::orm::execution::convert_values, query::LockType};
 	for (table, key, id) in [
-		("runs", "id", grant.run_id),
+		("task_executions", "id", grant.run_id),
 		("authorization_threads", "thread_id", grant.thread_id),
 		("tasks", "id", grant.task_id),
 	] {
@@ -545,10 +548,10 @@ pub(crate) async fn persist_grant_in(
 			.and_where(Expr::col(key).eq(Expr::value(id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(&grant.tenant)))
 			.lock(LockType::KeyShare);
-		if table == "runs" || table == "tasks" {
+		if table == "task_executions" || table == "tasks" {
 			query.and_where(Expr::col("thread_id").eq(Expr::value(grant.thread_id)));
 		}
-		if table == "runs" {
+		if table == "task_executions" {
 			query.and_where(Expr::col("task_id").eq(Expr::value(grant.task_id)));
 		}
 		let (sql, values) = query.build(PostgresQueryBuilder);

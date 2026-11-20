@@ -434,7 +434,7 @@ only how many files there are. An Agent lists their paths with `file_search` in
 `path` mode and an empty query under the `references` scope, and reads them with
 `file_read`. Neither tool reaches a Pod or the runner. Shell and Python do not
 see Reference files. An API client can copy one into the Working Area with
-`POST /api/runs/{id}/files/materialize`. An Agent tool for this arrives with the
+`POST /api/executions/{id}/files/materialize`. An Agent tool for this arrives with the
 copy tools of #697.
 
 A Source gives each file a relative `path`, shown to the Agent under

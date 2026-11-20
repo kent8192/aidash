@@ -8,7 +8,7 @@ async fn sandbox_cpu_and_memory_limits_are_enforced_under_load(
 ) {
 	let (c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
-	let path = format!("/api/runs/{}/shell", run.id);
+	let path = format!("/api/executions/{}/shell", run.id);
 	let command = "python - <<'PY'\nimport os,time,resource,json\nstart=time.monotonic()\npids=[]\nfor i in range(4):\n pid=os.fork()\n if pid==0:\n  while time.monotonic()-start<4: pass\n  os._exit(0)\n pids.append(pid)\nfor pid in pids: os.waitpid(pid,0)\nu=resource.getrusage(resource.RUSAGE_CHILDREN)\ncpu=u.ru_utime+u.ru_stime\nwall=time.monotonic()-start\nassert cpu>0.2 and cpu<=2*wall+1,(cpu,wall)\nprint(json.dumps({'cpu_seconds':cpu,'wall_seconds':wall,'ceiling_cpus':2}))\nPY";
 	let (status,op)=common::post(&c.app, &c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"timeout_seconds":30,"command":command})).await;
 	assert_eq!(status, 200, "{op}");
@@ -47,7 +47,7 @@ async fn idle_heap_is_physically_stopped_without_deleting_saved_files(
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let (c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
-	let path = format!("/api/runs/{}/python", run.id);
+	let path = format!("/api/executions/{}/python", run.id);
 	let (status,op)=common::post(&c.app, &c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"code":"private_value=91\nfrom pathlib import Path\nPath('kept.txt').write_text('kept')"})).await;
 	assert_eq!(status, 200, "{op}");
 	let first = operation_until(&c, run.id, "python", &op["operation_id"], &["completed"]).await;
@@ -114,7 +114,7 @@ async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
 	let (c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"timeout_seconds":5,"code":"from pathlib import Path\nimport time\nsecret_counter=53\nPath('before-timeout.txt').write_text('saved before timeout 東京')\ntime.sleep(40)"});
-	let path = format!("/api/runs/{}/python", run.id);
+	let path = format!("/api/executions/{}/python", run.id);
 	let (status, operation) = common::post(&c.app, &c.token, &path, input).await;
 	assert_eq!(status, 200, "{operation}");
 	let result = operation_until(
@@ -131,7 +131,7 @@ async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let file = area["manifest"]
@@ -143,7 +143,7 @@ async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
 	let (status, content) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -177,14 +177,14 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 ) {
 	let (c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
-	let (status,operation)=common::post(&c.app, &c.token, &format!("/api/runs/{}/shell",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"python -c 'import sys,time; sys.stdout.write(\"x\"*(10*1024*1024)); sys.stdout.flush(); time.sleep(30)'"})).await;
+	let (status,operation)=common::post(&c.app, &c.token, &format!("/api/executions/{}/shell",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"python -c 'import sys,time; sys.stdout.write(\"x\"*(10*1024*1024)); sys.stdout.flush(); time.sleep(30)'"})).await;
 	assert_eq!(status, 200, "{operation}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
 	loop {
 		let (status, result) = common::post(
 			&c.app,
 			&c.token,
-			&format!("/api/runs/{}/shell/poll", run.id),
+			&format!("/api/executions/{}/shell/poll", run.id),
 			json!({"operation_id":operation["operation_id"]}),
 		)
 		.await;
@@ -202,7 +202,7 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 	let (status, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
@@ -212,7 +212,7 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/shell/cancel", run.id),
+		&format!("/api/executions/{}/shell/cancel", run.id),
 		json!({"operation_id":operation["operation_id"]}),
 	)
 	.await;
@@ -257,7 +257,7 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let (mut c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
-	let path = format!("/api/runs/{}/python", run.id);
+	let path = format!("/api/executions/{}/python", run.id);
 	let (status, op) = common::post(&c.app, &c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"code":"from pathlib import Path\nprivate_heap=43\nPath('saved.txt').write_text('preserved 東京')"})).await;
 	assert_eq!(status, 200, "{op}");
 	let first = operation_until(&c, run.id, "python", &op["operation_id"], &["completed"]).await;
@@ -336,7 +336,7 @@ async fn profile_drift_still_cancels_an_active_operation(
 ) {
 	let (mut c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
-	let (status, operation) = common::post(&c.app, &c.token, &format!("/api/runs/{}/shell", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf started; sleep 30"}))
+	let (status, operation) = common::post(&c.app, &c.token, &format!("/api/executions/{}/shell", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf started; sleep 30"}))
 	.await;
 	assert_eq!(status, 200, "{operation}");
 	operation_until(
@@ -384,7 +384,7 @@ async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
 ) {
 	let (c, run, worker) = Box::pin(runtime_fixture).await;
 	let stop = worker.stop.clone();
-	let (status,op)=common::post(&c.app, &c.token, &format!("/api/runs/{}/shell",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf saved > live.txt; printf ready; sleep 30; printf forbidden > late.txt"})).await;
+	let (status,op)=common::post(&c.app, &c.token, &format!("/api/executions/{}/shell",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf saved > live.txt; printf ready; sleep 30; printf forbidden > late.txt"})).await;
 	assert_eq!(status, 200, "{op}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(40);
 	loop {
@@ -414,7 +414,7 @@ async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
 	let (status, cancel) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/shell/cancel", run.id),
+		&format!("/api/executions/{}/shell/cancel", run.id),
 		json!({"operation_id":op["operation_id"]}),
 	)
 	.await;
@@ -424,7 +424,7 @@ async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	assert_eq!(
@@ -435,7 +435,7 @@ async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
 	assert_eq!(area["manifest"][0]["path"], "live.txt");
 	let (status,cleaned)=common::post(&c.app, &c.token, &cleanup, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
 	assert_eq!(status, 200, "{cleaned}");
-	let (status,stale)=common::post(&c.app, &c.token, &format!("/api/runs/{}/patch",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+must not recreate deleted generation\n*** End Patch"})).await;
+	let (status,stale)=common::post(&c.app, &c.token, &format!("/api/executions/{}/patch",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+must not recreate deleted generation\n*** End Patch"})).await;
 	assert!(status >= 400, "stale generation must not write: {stale}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	loop {

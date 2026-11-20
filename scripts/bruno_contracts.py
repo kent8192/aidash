@@ -26,7 +26,7 @@ DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_
 # route is checked with the contract subject, which passes the boundary, so
 # extractor errors such as 415 and 422 still reach the response.
 ADMIN_ADMITTED = {
-    "session", "state", "run-management-get", "run-management-control",
+    "session", "state", "execution-management-get", "execution-management-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
     "transaction_revocations", "transaction-participants",
     "tenant-administration", "tenant-invitation-approvals", "tenant-registrations", "tenant-registration-approve",
@@ -152,7 +152,7 @@ TENANT_ROUTES = {
         "body": {"node_id": "{{node_id}}", "agent": AGENT},
         "path": "/api/tasks/{{task_id}}/delegate",
     },
-    "POST /api/runs/{id}/message": {"body": {"content": "Must not persist"}},
+    "POST /api/executions/{id}/message": {"body": {"content": "Must not persist"}},
     "POST /api/human-requests/{id}/answer": {"body": {"answer": "Must not persist"}},
 }
 # Tenant reads by subjects. Journey 05 gives the contract subject `registry.read`
@@ -161,13 +161,13 @@ TENANT_ROUTES = {
 # action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
-    "GET /api/threads/{id}/runs": [
+    "GET /api/threads/{id}/executions": [
         ("Subject lists the readable Thread's live Runs", 200, SUBJECT,
-         "/api/threads/{{thread_id}}/runs?live=true", 'expect(res.getBody().items).to.be.an("array");'),
+         "/api/threads/{{thread_id}}/executions?live=true", 'expect(res.getBody().items).to.be.an("array");'),
     ],
-    "GET /api/tasks/{id}/runs": [
+    "GET /api/tasks/{id}/executions": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
-         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
+         "/api/tasks/{{task_id}}/executions", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
     ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
@@ -927,7 +927,7 @@ def render():
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.
         actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
-        if route["name"] in {"task-runs", "thread-runs", "human-requests", "thread-list"}:
+        if route["name"] in {"task-executions", "thread-executions", "human-requests", "thread-list"}:
             add(endpoint, "Deployment Administrator cannot read Tenant data", 403,
                 headers=DEPLOYMENT_ADMINISTRATOR)
         if route["name"] == "tenants-personal":
@@ -1320,7 +1320,7 @@ def render():
             continue
         if route["source"] == "server/src/apps/execution/capabilities/views/live_previews.rs":
             # A Live preview's status, stop, ticket and the Tenant's lowered limits.
-            if path == "/api/runs/{id}/live-preview":
+            if path == "/api/executions/{id}/live-preview":
                 add(endpoint, "Anonymous request is rejected", 401)
                 add(endpoint, "Deployment Administrator cannot read a missing Run", 403,
                     headers=DEPLOYMENT_ADMINISTRATOR)
@@ -1516,14 +1516,14 @@ def render():
         # inspection of a Tenant's version. Deployment Administrator credentials cannot
         # replace a subject or browser-bound graph grant.
         denied_reads = {
-            "task-runs",
-            "thread-runs",
+            "task-executions",
+            "thread-executions",
             "memory-participant-current",
             "remote-semantic-home-provenance",
-            "remote-semantic-run-provenance",
+            "remote-semantic-execution-provenance",
             "remote_execution_list",
             "federated_graph_peers",
-            "run_working_area",
+            "execution_working_area",
             "core_outbound_history",
             "core_operation_history",
             "generation-usage",
@@ -1563,7 +1563,7 @@ def render():
         if route["name"] in {
             "marketplace-administration",
             "workbench-test-profiles",
-            "run-management-get",
+            "execution-management-get",
         }:
             uri = path + "?tenant={{tenant}}"
         if route["name"] in {"authorization-catalog", "registry-versions"}:
@@ -1641,7 +1641,7 @@ def render():
         # response the journeys fix; every other Tenant route is shown to refuse
         # the administrator (#484).
         subject_read = (
-            path in ("/api/threads", "/api/threads/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
+            path in ("/api/threads", "/api/threads/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/executions", "/api/human-requests")
             or path.endswith("/message-history")
         )
         if not admitted and not core:

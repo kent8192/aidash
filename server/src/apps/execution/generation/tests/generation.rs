@@ -686,7 +686,7 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 		let pool = f.store.pool.fixture_driver().clone();
 		async move {
 			sqlx::query(
-				"UPDATE runs SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
+				"UPDATE task_executions SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
 			)
 			.bind(run)
 			.execute(&pool)
@@ -2194,7 +2194,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -2444,7 +2444,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 		.event(
 			&mut tx,
 			Some(run.thread_id),
-			"run.updated",
+			"execution.updated",
 			json!({"run_id":run.id}),
 		)
 		.await

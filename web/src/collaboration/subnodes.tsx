@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../components/ui/button";
 import { Alert, Facts } from "../components/patterns";
-import { runSubnodes, subnodeDissolve } from "../generated/aidash";
+import { executionSubnodes, subnodeDissolve } from "../generated/aidash";
 import type { EntityRef, SubnodeView } from "../generated/models";
 import { subnodeActive, subnodeTitle } from "../subnodes-model";
 import { ApiError } from "../transport";
@@ -25,10 +25,10 @@ export function RunSubnodes({
   const [error, setError] = useState("");
   // A 403 on dissolve means this person cannot cancel the Run either.
   const [forbidden, setForbidden] = useState(false);
-  const key = ["run-subnodes", node, run];
+  const key = ["execution-subnodes", node, run];
   const query = useQuery({
     queryKey: key,
-    queryFn: () => runSubnodes(run),
+    queryFn: () => executionSubnodes(run),
     refetchInterval: 2000,
     retry: false,
   });

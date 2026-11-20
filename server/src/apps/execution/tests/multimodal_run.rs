@@ -136,7 +136,7 @@ async fn verify_audio_batches(
 		let (status, sent) = common::post(
 			app,
 			member,
-			&format!("/api/runs/{}/message", audio_run.id),
+			&format!("/api/executions/{}/message", audio_run.id),
 			json!({"content":content,"idempotency_key":Uuid::new_v4()}),
 		)
 		.await;
@@ -163,7 +163,7 @@ async fn verify_audio_batches(
 	)
 	.await;
 	for attachment in [first, second] {
-		let (status, sent) = common::post(app, member, &format!("/api/runs/{}/message", audio_run.id), json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}))
+		let (status, sent) = common::post(app, member, &format!("/api/executions/{}/message", audio_run.id), json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}))
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
@@ -270,7 +270,7 @@ async fn verify_attachment_labels_count_toward_admission(
 	let audio = wav_bytes(audio_tokens * 16);
 	let long = upload(app, member, thread, &long_name, "audio/wav", &audio).await;
 	let short = upload(app, member, thread, short_name, "audio/wav", &audio).await;
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let (status, rejected) = common::post(
 		app,
 		member,
@@ -359,7 +359,7 @@ async fn verify_expired_route_retry(
 	let image = upload(app, member, thread, "retry.png", "image/png", PNG).await;
 	let key = Uuid::new_v4();
 	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let (status, body) = common::post(app, member, &path, input.clone()).await;
 	assert_eq!(status, 200, "{body}");
 	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
@@ -457,7 +457,7 @@ async fn verify_separate_format_routes(
 		let (status, sent) = common::post(
 			app,
 			member,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
 		)
 		.await;
@@ -603,7 +603,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}", run.id),
+		&format!("/api/executions/{}", run.id),
 		json!({}),
 	)
 	.await;
@@ -630,7 +630,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		upload_response(&app, &token, &thread, "bad.png", "image/png", b"not a png").await;
 	assert_eq!(status, 400, "{rejected}");
 	assert_eq!(rejected["error"], "MEDIA_UNDECODABLE");
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	assert!(
 		f.store
 			.run_inputs(&TEST_FIXTURE, run.id)
@@ -714,7 +714,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", Uuid::new_v4()),
+			&format!("/api/executions/{}/message", Uuid::new_v4()),
 			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":[image["id"]]})
 		)
 		.await
@@ -871,7 +871,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (status, rejected) = common::post(
 		&app,
 		&member,
-		&format!("/api/runs/{}/message", member_run.id),
+		&format!("/api/executions/{}/message", member_run.id),
 		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":&image_ids[..9]}),
 	)
 	.await;
@@ -888,7 +888,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		let (status, sent) = common::post(
 			&app,
 			&member,
-			&format!("/api/runs/{}/message", member_run.id),
+			&format!("/api/executions/{}/message", member_run.id),
 			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":ids}),
 		)
 		.await;
@@ -1019,7 +1019,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let attachment = upload(&app, &member, thread, "sample.mp3", "audio/mpeg", source).await;
 	let attachment_id: Uuid = attachment["id"].as_str().unwrap().parse().unwrap();
 	let key = Uuid::new_v4();
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let input = json!({"content":"", "idempotency_key":key, "attachment_ids":[attachment_id]});
 	let (status, body) = common::post(&app, &member, &path, input.clone()).await;
 	assert_eq!(status, 200, "{body}");
@@ -1279,8 +1279,12 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		.find(|run| run.thread_id.to_string() == created["id"].as_str().unwrap())
 		.unwrap();
 	let thread = run.thread_id.to_string();
-	let (status, area) =
-		common::get(&app, &token, &format!("/api/runs/{}/working-area", run.id)).await;
+	let (status, area) = common::get(
+		&app,
+		&token,
+		&format!("/api/executions/{}/working-area", run.id),
+	)
+	.await;
 	assert_eq!(status, 200, "{area}");
 	*selected_thread_requests.revision.lock().unwrap() = area["revision"].as_i64().unwrap();
 	let attachment = upload(&app, &token, &thread, "selected.png", "image/png", PNG).await;
@@ -1582,7 +1586,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 async fn run_tool(f: &Federation, run: Uuid, epoch: u64, name: &str, arguments: Value) -> Value {
 	let call = format!("call-{epoch}");
 	let response = json!({"text":"","tool_calls":[{"id":call,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(common::tool_pending(
 			json!({"response":response,"response_epoch":epoch,"cursor":0,"request_window":120000,"request_tokens":0}),
 		))
@@ -1721,8 +1725,12 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, area) =
-		common::get(&app, &token, &format!("/api/runs/{}/working-area", run.id)).await;
+	let (status, area) = common::get(
+		&app,
+		&token,
+		&format!("/api/executions/{}/working-area", run.id),
+	)
+	.await;
 	assert_eq!(status, 200, "{area}");
 	let copied = run_tool(&f, run.id, 1, "attachment_copy", json!({"id":attachment["id"], "path":"copied.png", "expected_revision":area["revision"], "idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(copied["file"]["path"], "copied.png", "{copied}");

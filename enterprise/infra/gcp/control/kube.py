@@ -111,7 +111,7 @@ MEMORY_ROLE = "aidash_memory_recovery"
 # pg_stat_activity hides other sessions' state and in-flight work would look idle.
 OBSERVER_ROLE = "aidash_observer"
 OBSERVER_TABLES = (
-    "runs", "human_requests", "core_records", "agent_test_sessions", "generation_requests",
+    "task_executions", "human_requests", "core_records", "agent_test_sessions", "generation_requests",
     "invocations", "atomic_participants", "core_operations", "atomic_coordinators",
 )
 DATABASE = "aidash_a"

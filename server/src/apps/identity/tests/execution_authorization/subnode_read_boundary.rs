@@ -52,7 +52,7 @@ impl SubnodeRig {
 	/// and the panic names why the Run stopped.
 	async fn call(&self, run: Uuid, name: &str, arguments: Value, call_id: &str) -> Value {
 		sqlx::query(
-			"UPDATE runs SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END \
+			"UPDATE task_executions SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END \
 			 WHERE control IN ('ACTIVE', 'PAUSED')",
 		)
 		.bind(run)
@@ -465,7 +465,7 @@ async fn subnode_member_can_export_only_the_handed_creator_range(
 				.is_some_and(|path| path.contains("/inputs/"))
 		})
 		.count();
-	sqlx::query("UPDATE runs SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END WHERE control IN ('ACTIVE', 'PAUSED')")
+	sqlx::query("UPDATE task_executions SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END WHERE control IN ('ACTIVE', 'PAUSED')")
 		.bind(member).execute(f.store.pool.fixture_driver()).await.unwrap();
 	assert!(
 		rig.script(
@@ -554,7 +554,7 @@ async fn creator_delegates_in_the_same_step_as_giving_its_subnode_a_task(
 	let pending = common::tool_pending(
 		json!({"response":response,"response_epoch":rig.epoch.get(),"cursor":0,"request_window":120000,"request_tokens":0}),
 	);
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(rig.creator_run)
 		.execute(f.store.pool.fixture_driver())
@@ -566,11 +566,13 @@ async fn creator_delegates_in_the_same_step_as_giving_its_subnode_a_task(
 	// The leader's Run appears after the first call: keep it from taking a step.
 	for _ in 0..4 {
 		harness.worker_once().await.unwrap();
-		sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id <> $1 AND control = 'ACTIVE'")
-			.bind(rig.creator_run)
-			.execute(f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+		sqlx::query(
+			"UPDATE task_executions SET control = 'PAUSED' WHERE id <> $1 AND control = 'ACTIVE'",
+		)
+		.bind(rig.creator_run)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 		if rig.result_of(rig.creator_run, "hand").await.is_some() {
 			break;
 		}
@@ -640,7 +642,7 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 		&rig.app,
 		&rig.token,
 		"GET",
-		&format!("/api/tasks/{helper_task}/runs"),
+		&format!("/api/tasks/{helper_task}/executions"),
 		Value::Null,
 	)
 	.await;
@@ -716,7 +718,7 @@ async fn person_who_cannot_read_the_creators_records_stays_refused_on_the_subnod
 		&rig.app,
 		&rig.token,
 		"GET",
-		&format!("/api/tasks/{root}/runs"),
+		&format!("/api/tasks/{root}/executions"),
 		Value::Null,
 	)
 	.await;
@@ -725,7 +727,7 @@ async fn person_who_cannot_read_the_creators_records_stays_refused_on_the_subnod
 		&rig.app,
 		bob,
 		"GET",
-		&format!("/api/tasks/{root}/runs"),
+		&format!("/api/tasks/{root}/executions"),
 		Value::Null,
 	)
 	.await;
@@ -747,7 +749,7 @@ async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
 	set_policy(&rig.f, &rig.app, &policy).await;
 	let credential = common::issued_credential(&rig.f.store, "acme", "carol").await;
 	let carol = credential["token"].as_str().unwrap();
-	let runs = format!("/api/tasks/{root}/runs");
+	let runs = format!("/api/tasks/{root}/executions");
 	let (status, body) = request(&rig.app, carol, "GET", &runs, Value::Null).await;
 	assert_eq!(status, 200, "carol before the withdrawal: {body}");
 	// Catalog Approval governs use, not read dependencies (#769). Deny the
@@ -822,7 +824,7 @@ async fn cancelling_the_creator_stops_members_that_outlived_its_read(
 		&rig.app,
 		&rig.token,
 		"POST",
-		&format!("/api/runs/{}/management", rig.creator_run),
+		&format!("/api/executions/{}/management", rig.creator_run),
 		json!({"action":"cancel"}),
 	)
 	.await;

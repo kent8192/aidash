@@ -206,7 +206,7 @@ async fn a_rejected_input_batch_finishes_the_round_and_replays_its_error(mut fix
 			.backend
 			.events()
 			.iter()
-			.any(|event| event == "run.waiting")
+			.any(|event| event == "execution.waiting")
 	);
 }
 

@@ -143,7 +143,7 @@ impl World {
 				&run,
 				self.worker,
 				"task_delegate: task.delegate was denied",
-				"run.authorization_blocked",
+				"execution.authorization_blocked",
 				Some(refusal),
 			)
 			.await
@@ -222,7 +222,7 @@ async fn a_pause_records_its_call_only_when_the_call_certainly_did_not_run(
 	assert!(
 		w.events()
 			.await
-			.contains(&"run.authorization_blocked".to_owned())
+			.contains(&"execution.authorization_blocked".to_owned())
 	);
 }
 
@@ -234,7 +234,7 @@ async fn a_plain_pause_by_a_person_is_not_declinable(
 ) {
 	let w = world(database.await, run).await;
 	// A person paused the Run first; the worker's later refusal does not record a call.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(w.id)
 		.execute(w.store.pool.fixture_driver())
 		.await
@@ -269,7 +269,7 @@ async fn declining_completes_the_call_with_the_fixed_sentence_and_resumes_the_ru
 	let events = w.events().await;
 	assert!(!events.contains(&"tool.started".to_owned()) || row == "refused");
 	assert!(events.contains(&"tool.completed".to_owned()));
-	assert!(events.contains(&"run.call_declined".to_owned()));
+	assert!(events.contains(&"execution.call_declined".to_owned()));
 	// The Run went on; the pause is forgotten and the decision is kept for the worker.
 	let run = w.run().await;
 	assert_eq!(run.control, crate::domain::RunControl::Active);
@@ -280,7 +280,7 @@ async fn declining_completes_the_call_with_the_fixed_sentence_and_resumes_the_ru
 		json!([{"key": w.key, "kind": "policy"}])
 	);
 	let event: Value = sqlx::query_scalar(
-		"SELECT data FROM events WHERE kind = 'run.call_declined' AND data->>'run_id' = $1",
+		"SELECT data FROM events WHERE kind = 'execution.call_declined' AND data->>'run_id' = $1",
 	)
 	.bind(w.id.to_string())
 	.fetch_one(w.store.pool.fixture_driver())
@@ -306,7 +306,7 @@ async fn decline_records_the_call_from_the_filtered_response(
 		{"id":"kept", "name":"task_delegate", "arguments":{"task_id":"correct"}}
 	]);
 	sqlx::query(
-		"UPDATE runs SET pending = jsonb_set(pending, '{data,response,tool_calls}', $1) WHERE id = $2",
+		"UPDATE task_executions SET pending = jsonb_set(pending, '{data,response,tool_calls}', $1) WHERE id = $2",
 	)
 	.bind(calls)
 	.bind(w.id)
@@ -320,7 +320,7 @@ async fn decline_records_the_call_from_the_filtered_response(
 	});
 	w.pause(&refusal).await;
 	let event: Value = sqlx::query_scalar(
-		"SELECT data FROM events WHERE kind = 'run.authorization_blocked' AND data->>'run_id' = $1",
+		"SELECT data FROM events WHERE kind = 'execution.authorization_blocked' AND data->>'run_id' = $1",
 	)
 	.bind(w.id.to_string())
 	.fetch_one(w.store.pool.fixture_driver())
@@ -394,7 +394,7 @@ async fn a_receiver_records_that_the_home_declined_without_naming_anyone(
 		.await;
 	w.decline(&w.key, "home").await.unwrap();
 	let event: Value = sqlx::query_scalar(
-		"SELECT data FROM events WHERE kind = 'run.call_declined' AND data->>'run_id' = $1",
+		"SELECT data FROM events WHERE kind = 'execution.call_declined' AND data->>'run_id' = $1",
 	)
 	.bind(w.id.to_string())
 	.fetch_one(w.store.pool.fixture_driver())
@@ -414,7 +414,7 @@ async fn declining_keeps_what_resuming_changed_in_the_pending_state(
 	w.pause(&w.refusal(RefusalCheck::Policy, true)).await;
 	// A pause that also carries a context reason: resuming clears it and opens a new decision.
 	sqlx::query(
-		"UPDATE runs SET pending = jsonb_set(pending, '{recovery,context_reason}', \
+		"UPDATE task_executions SET pending = jsonb_set(pending, '{recovery,context_reason}', \
 		 '\"output_truncated\"'::jsonb, true) WHERE id = $1",
 	)
 	.bind(w.id)
@@ -475,7 +475,7 @@ async fn standing_decline_only_answers_matching_later_refusals(
 		.execute(&mut *fixture_tx)
 		.await
 		.unwrap();
-	sqlx::query("UPDATE runs SET pending = $1, lease_owner = $2, lease_until = $3, ledger_worker_ready = true WHERE id = $4")
+	sqlx::query("UPDATE task_executions SET pending = $1, lease_owner = $2, lease_until = $3, ledger_worker_ready = true WHERE id = $4")
 		.bind(run_fixtures::pending(state, recovery))
 		.bind(w.worker)
 		.bind(Utc::now() + Duration::minutes(1))

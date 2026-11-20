@@ -131,7 +131,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	async fn cancel_runs(&mut self, job: &Request) -> aidash_application::Result<()> {
 		let mut query = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("tenant"),
 				Expr::value(job.tenant.clone()),
@@ -188,7 +188,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			let raw: aidash_domain::run_state::RawRun = crate::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)

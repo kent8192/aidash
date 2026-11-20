@@ -469,7 +469,7 @@ impl SessionScope for Scope<'_> {
 										Expr::col(Alias::new("run_id")).in_subquery(
 											Query::select()
 												.column(Alias::new("id"))
-												.from(Alias::new("runs"))
+												.from(Alias::new("task_executions"))
 												.and_where(
 													Expr::col(Alias::new("task_id"))
 														.eq(Expr::value(query_bind_1.to_owned())),
@@ -655,10 +655,11 @@ impl SessionScope for Scope<'_> {
 					.column(Alias::new("id"))
 					.from(Alias::new("core_areas"))
 					.and_where(Expr::col("id").eq(Expr::value(area.id)))
-					.and_where(
-						Expr::col("tenant")
-							.eq(crate::database::scope::tenant_of("runs", "id", run_id)),
-					)
+					.and_where(Expr::col("tenant").eq(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run_id,
+					)))
 					.lock(LockType::KeyShare)
 					.to_string(PostgresQueryBuilder),
 			)
@@ -689,7 +690,11 @@ impl SessionScope for Scope<'_> {
 							.expr(Expr::value(area.next_sequence))
 							.expr(Expr::value(area.generation))
 							.expr(Expr::value(initialized))
-							.expr(crate::database::scope::tenant_of("runs", "id", run_id))
+							.expr(crate::database::scope::tenant_of(
+								"task_executions",
+								"id",
+								run_id,
+							))
 							.to_owned(),
 					)
 					.to_string(PostgresQueryBuilder),
@@ -735,7 +740,7 @@ impl SessionScope for Scope<'_> {
 						.join(
 							reinhardt::query::JoinType::InnerJoin,
 							reinhardt::query::TableRef::table_alias(
-								Alias::new("runs"),
+								Alias::new("task_executions"),
 								Alias::new("r"),
 							),
 							Expr::col((Alias::new("q"), Alias::new("run_id")))
@@ -785,7 +790,7 @@ impl SessionScope for Scope<'_> {
 						.join(
 							reinhardt::query::JoinType::InnerJoin,
 							reinhardt::query::TableRef::table_alias(
-								Alias::new("runs"),
+								Alias::new("task_executions"),
 								Alias::new("r"),
 							),
 							Expr::col((Alias::new("q"), Alias::new("run_id")))

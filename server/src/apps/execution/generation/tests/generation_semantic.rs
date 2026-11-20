@@ -1001,7 +1001,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	fixture.response_mode.store(0, Ordering::SeqCst);
 	sqlx::query(
 		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("lease_until"),
 				reinhardt::query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),

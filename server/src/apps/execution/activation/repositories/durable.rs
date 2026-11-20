@@ -37,7 +37,7 @@ fn request_statement(id: Uuid, run_id: Uuid) -> reinhardt::query::InsertStatemen
 		.column(a("revision"))
 		.expr(Expr::value("handoff"))
 		.column(a("tenant"))
-		.from(a("runs"))
+		.from(a("task_executions"))
 		.and_where(Expr::col("id").eq(Expr::value(run_id)))
 		.to_owned();
 	Query::insert()
@@ -147,14 +147,14 @@ pub(super) async fn reconcile(store: &Store) -> Result<u64> {
 	let existing = Query::select()
 		.expr(Expr::value(1_i64))
 		.from_as(a("run_activations"), a("a"))
-		.and_where(Expr::col((a("a"), a("run_id"))).equals((a("runs"), a("id"))))
+		.and_where(Expr::col((a("a"), a("run_id"))).equals((a("task_executions"), a("id"))))
 		.to_owned();
 	let select = Query::select()
 		.column(a("id"))
 		.column(a("revision"))
 		.expr(Expr::value("reconcile"))
 		.column(a("tenant"))
-		.from(a("runs"))
+		.from(a("task_executions"))
 		.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 		.and_where(Expr::exists(existing).not())
 		.order_by(a("updated_at"), Order::Asc)
@@ -202,7 +202,7 @@ pub(super) async fn publish_batch(store: &Store, token: Uuid) -> Result<Vec<Obli
 	// Correlated owner checks preserve heartbeat postponement and supersession.
 	let owner = Query::select()
 		.expr(Expr::value(1_i64))
-		.from_as(a("runs"), a("r"))
+		.from_as(a("task_executions"), a("r"))
 		.and_where(Expr::col((a("r"), a("id"))).equals((a("run_activations"), a("run_id"))))
 		.and_where(
 			Expr::col((a("r"), a("lease_owner"))).equals((a("run_activations"), a("lease_token"))),
@@ -226,7 +226,7 @@ pub(super) async fn publish_batch(store: &Store, token: Uuid) -> Result<Vec<Obli
 				Expr::col((a("r"), a("lease_until"))).into(),
 			],
 		))
-		.from_as(a("runs"), a("r"))
+		.from_as(a("task_executions"), a("r"))
 		.and_where(Expr::col((a("r"), a("id"))).equals((a("run_activations"), a("run_id"))))
 		.and_where(
 			Expr::col((a("r"), a("lease_owner"))).equals((a("run_activations"), a("lease_token"))),

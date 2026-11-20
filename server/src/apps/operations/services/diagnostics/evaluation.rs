@@ -201,7 +201,7 @@ fn run_recovery() -> String {
 	] {
 		row.expr_as(Expr::cust(expression), Alias::new(name));
 	}
-	row.from(Alias::new("runs"))
+	row.from(Alias::new("task_executions"))
 		.order_by(Alias::new("id"), Order::Asc);
 	json_rows(row.to_owned())
 }
