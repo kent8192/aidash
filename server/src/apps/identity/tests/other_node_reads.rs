@@ -144,7 +144,7 @@ fn next_message(script: &Script, request: &Value) -> Value {
 				}),
 			)
 		}
-		2 if read_delegated => tool_call("wait-created", "workspace_wait", json!({"seconds":1})),
+		2 if read_delegated => tool_call("wait-created", "task_wait", json!({"seconds":1})),
 		stage
 			if stage == (if read_delegated { 3 } else { 2 })
 				&& *script.delegate.lock().unwrap() =>
@@ -161,7 +161,7 @@ fn next_message(script: &Script, request: &Value) -> Value {
 				}),
 			)
 		}
-		4 if read_delegated => tool_call("wait-child", "workspace_wait", json!({"seconds":1})),
+		4 if read_delegated => tool_call("wait-child", "task_wait", json!({"seconds":1})),
 		5 if read_delegated
 			&& !script
 				.child_completed
@@ -170,7 +170,7 @@ fn next_message(script: &Script, request: &Value) -> Value {
 			script
 				.stage
 				.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-			tool_call("wait-again", "workspace_wait", json!({"seconds":1}))
+			tool_call("wait-again", "task_wait", json!({"seconds":1}))
 		}
 		5 if read_delegated => {
 			let message = script
@@ -180,7 +180,7 @@ fn next_message(script: &Script, request: &Value) -> Value {
 				.expect("the receiver's message exists");
 			tool_call(
 				"read-child",
-				"workspace_read",
+				"thread_read",
 				json!({"kind":"message", "id":message}),
 			)
 		}
@@ -1017,7 +1017,7 @@ async fn establish_delegated_read(world: &World, created: usize) -> Task {
 		.as_array()
 		.unwrap()
 		.iter()
-		.find(|invocation| invocation["tool"] == "workspace_read")
+		.find(|invocation| invocation["tool"] == "thread_read")
 		.expect("the coordinator read the delegated message");
 	assert_eq!(read["status"], "COMPLETED", "{read}");
 	assert!(read["result"].get("error").is_none(), "{read}");

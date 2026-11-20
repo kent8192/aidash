@@ -97,7 +97,7 @@ impl SubnodeRig {
 		let task = self.f.store.run(&TEST_FIXTURE, run).await.unwrap().task_id;
 		self.call(
 			run,
-			"workspace_read",
+			"thread_read",
 			json!({"kind":"task","id":task}),
 			&format!("read-own-task-{run}"),
 		)
@@ -647,7 +647,7 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 	assert_eq!(status, 200, "the owner reads the helper's Task: {body}");
 	rig.script(
 		helper,
-		"workspace_read",
+		"thread_read",
 		json!({"thread_id":thread,"kind":"task","id":root}),
 		"helper-names-subnode",
 	)
@@ -763,7 +763,7 @@ async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
 	rig.set_run_control(creator, "ACTIVE").await;
 	rig.script(
 		creator,
-		"workspace_read",
+		"thread_read",
 		json!({"thread_id":thread,"kind":"task","id":root}),
 		"creator-after-withdrawal",
 	)
@@ -851,7 +851,7 @@ async fn creator_reads_a_members_output_and_then_delegates(
 	let read = rig
 		.call(
 			rig.creator_run,
-			"workspace_read",
+			"thread_read",
 			json!({"thread_id":thread,"kind":"task","id":output}),
 			"creator-reads-member",
 		)
@@ -907,7 +907,7 @@ async fn parent_delegates_after_reading_a_child_that_discovered_other_agents(
 	let read = rig
 		.call(
 			parent,
-			"workspace_read",
+			"thread_read",
 			json!({"kind":"task","id":output}),
 			"parent-reads-child",
 		)
@@ -1008,7 +1008,7 @@ async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, 
 		.task_id;
 	rig.script(
 		creator,
-		"workspace_read",
+		"thread_read",
 		json!({"kind":"task","id":task}),
 		"creator-after-message",
 	)

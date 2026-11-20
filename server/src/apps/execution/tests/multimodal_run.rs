@@ -1147,7 +1147,7 @@ fn media_router(
 				sent.send(body).unwrap();
 				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {
 					assert!(no_tools, "media intake must not advertise task tools");
-					return reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"workspace_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
+					return reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"thread_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
 				}
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
 			}
@@ -1187,11 +1187,11 @@ fn selected_thread_router(
 			requests.sender.send(body).unwrap();
 			let step = count.fetch_add(1, Ordering::SeqCst);
 			let call = match step {
-				0 => Some(("workspace_observe", json!({}))),
-				1 | 6 | 7 | 9 => Some(("workspace_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
+				0 => Some(("thread_observe", json!({}))),
+				1 | 6 | 7 | 9 => Some(("thread_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
 				2 => Some(("attachment_copy", json!({"id":requests.attachment.lock().unwrap().as_ref().unwrap(), "path":"copied.png", "expected_revision":*requests.revision.lock().unwrap(), "idempotency_key":Uuid::new_v4()}))),
-				3 => Some(("workspace_message", json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single pixel"}}))),
-				5 => Some(("workspace_observe", json!({}))),
+				3 => Some(("thread_message", json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single pixel"}}))),
+				5 => Some(("thread_observe", json!({}))),
 				_ => None,
 			};
 			let message = match call {
@@ -1731,7 +1731,7 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 		&f,
 		run.id,
 		10,
-		"workspace_message",
+		"thread_message",
 		json!({"content":"No words", "files":["copied.png"]}),
 	)
 	.await;
@@ -1740,13 +1740,13 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 		"{undescribed}"
 	);
 	let with_files = json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single grey pixel"}});
-	let sent = run_tool(&f, run.id, 2, "workspace_message", with_files.clone()).await;
+	let sent = run_tool(&f, run.id, 2, "thread_message", with_files.clone()).await;
 	assert_eq!(sent["sent"], true, "{sent}");
 	let sent = run_tool(
 		&f,
 		run.id,
 		3,
-		"workspace_message",
+		"thread_message",
 		json!({"content":"Agent note"}),
 	)
 	.await;
@@ -1761,7 +1761,7 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 			.await
 			.unwrap();
 	assert_eq!(forgotten.rows_affected(), 1);
-	let retried = run_tool(&f, run.id, 2, "workspace_message", with_files).await;
+	let retried = run_tool(&f, run.id, 2, "thread_message", with_files).await;
 	assert_eq!(retried["sent"], true, "{retried}");
 
 	let messages = message_history(&app, &token, &thread).await;
@@ -1996,13 +1996,13 @@ async fn live_openrouter_thread_attachment(
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");
 	agent.config["instructions"] = json!(
-		"Use workspace_observe to find the attachment. Call workspace_read with kind attachment, its id, and representation model_input. Then describe the media briefly. Do not finish before viewing it."
+		"Use thread_observe to find the attachment. Call thread_read with kind attachment, its id, and representation model_input. Then describe the media briefly. Do not finish before viewing it."
 	);
 	let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Live attachment", "request":"Inspect the attached media using workspace_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Live attachment", "request":"Inspect the attached media using thread_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let thread = created["id"].as_str().unwrap();
 	let bytes = if mime.starts_with("image/") {
@@ -2011,7 +2011,7 @@ async fn live_openrouter_thread_attachment(
 		wav_bytes(48_044)
 	};
 	let attachment = upload(&app, &token, thread, filename, mime, &bytes).await;
-	let (status, message) = common::post(&app, &token, &format!("/api/threads/{thread}/channel-messages"), json!({"content":format!("Read attachment {} with workspace_read kind attachment representation model_input, then describe it.", attachment["id"].as_str().unwrap()), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	let (status, message) = common::post(&app, &token, &format!("/api/threads/{thread}/channel-messages"), json!({"content":format!("Read attachment {} with thread_read kind attachment representation model_input, then describe it.", attachment["id"].as_str().unwrap()), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
 	assert_eq!(status, 200, "{message}");
 	let worker = Harness {
 		federation: f.clone(),
@@ -2230,16 +2230,16 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		&f,
 		run.id,
 		1,
-		"workspace_search",
+		"thread_search",
 		json!({"query":"a vehicle on the street"}),
 	)
 	.await;
-	let early = run_tool(&f, run.id, 2, "workspace_search", json!({"image":{"attachment_id":photo_id,"message_id":message_id,"expected_digest":aidash_domain::semantic::indexing::content_digest_bytes(PNG)}})).await;
+	let early = run_tool(&f, run.id, 2, "thread_search", json!({"image":{"attachment_id":photo_id,"message_id":message_id,"expected_digest":aidash_domain::semantic::indexing::content_digest_bytes(PNG)}})).await;
 	let opened = run_tool(
 		&f,
 		run.id,
 		3,
-		"workspace_read",
+		"thread_read",
 		json!({"kind":"attachment","id":photo_id,"representation":"model_input"}),
 	)
 	.await;
@@ -2258,7 +2258,7 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		&f,
 		run.id,
 		4,
-		"workspace_search",
+		"thread_search",
 		json!({"image":opened["selection"]}),
 	)
 	.await;

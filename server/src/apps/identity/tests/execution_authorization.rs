@@ -1049,7 +1049,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.into_iter()
 		.find(|r| r.task_id == second_id)
 		.unwrap();
-	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
+	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"thread_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
         .execute(f.store.pool.fixture_driver()).await }.unwrap();
 	Harness {
 		federation: f.clone(),
@@ -7345,14 +7345,14 @@ impl SubnodeRig {
 					.unwrap();
 				// Keep member defaults within the deliberately narrow test allowance.
 				let narrow: &[&str] = if files {
-					&["skill_list", "skill_load", "skill_read", "workspace_search"]
+					&["skill_list", "skill_load", "skill_read", "thread_search"]
 				} else {
 					&[
 						"skill_list",
 						"skill_load",
 						"skill_read",
 						"attachment_copy",
-						"workspace_search",
+						"thread_search",
 					]
 				};
 				for name in narrow
@@ -7760,7 +7760,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.await
 		.unwrap();
 	let read = inject(
-		"workspace_read",
+		"thread_read",
 		json!({"thread_id":thread,"kind":"task","id":child_task}),
 		"read-subnode-task",
 	)
@@ -7877,13 +7877,13 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.await
 		.unwrap();
 	let note = inject(
-		"workspace_message",
+		"thread_message",
 		json!({"content":"Creator note"}),
 		"creator-note",
 	)
 	.await;
 	assert!(note["error"].is_null(), "creator message: {note}");
-	let observed = inject("workspace_observe", json!({"limit":50}), "creator-observe").await;
+	let observed = inject("thread_observe", json!({"limit":50}), "creator-observe").await;
 	assert!(
 		observed["events"].to_string().contains("message.created")
 			&& observed.to_string().contains("Investigation complete"),
@@ -7995,9 +7995,9 @@ async fn subnode_rows(f: &aidash_server::federation::Federation) -> i64 {
 }
 
 const SUBNODE_TOOLS: [&str; 6] = [
-	"workspace_read",
-	"workspace_observe",
-	"workspace_wait",
+	"thread_read",
+	"thread_observe",
+	"task_wait",
 	"artifact_publish",
 	"human_request",
 	"connection_request",
@@ -8147,7 +8147,7 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 	assert!(
 		rig.script(
 			member,
-			"workspace_read",
+			"thread_read",
 			json!({"kind":"task","id":child_task}),
 			"member-reads-own",
 		)
@@ -8161,8 +8161,7 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 	// Neither the creating Run's Task nor its named Thread is reachable: the
 	// denial pauses the member without recording a tool result.
 	let denied = async |arguments: Value, call_id: &str| {
-		rig.script(member, "workspace_read", arguments, call_id)
-			.await;
+		rig.script(member, "thread_read", arguments, call_id).await;
 		assert!(
 			rig.result_of(member, call_id).await.is_none(),
 			"a denied call must not record a tool result"
@@ -8171,7 +8170,7 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 		assert_eq!(run.control, aidash_domain::RunControl::Paused, "{call_id}");
 		assert_eq!(
 			run.error.as_deref(),
-			Some("workspace_read: an authority check refused this step")
+			Some("thread_read: an authority check refused this step")
 		);
 		rig.set_run_control(member, "ACTIVE").await;
 	};
@@ -8194,9 +8193,9 @@ const LATE_PIXEL: &[u8] = include_bytes!("../../execution/tests/support/media/pi
 /// The member's tools: the coordination tools need no entry, and the file tools
 /// give each member Run a Working Area.
 const SUBNODE_FILE_TOOLS: [&str; 9] = [
-	"workspace_read",
-	"workspace_observe",
-	"workspace_wait",
+	"thread_read",
+	"thread_observe",
+	"task_wait",
 	"artifact_publish",
 	"human_request",
 	"connection_request",
@@ -8359,7 +8358,7 @@ impl LateFiles {
 	async fn stage(&self, rig: &SubnodeRig, call: LateCall) {
 		let (name, arguments) = match call {
 			LateCall::Message => (
-				"workspace_message",
+				"thread_message",
 				json!({"content":"Late file","files":["sent.png"],"image_descriptions":{"sent.png":"A single pixel"}}),
 			),
 			LateCall::Copy => (
@@ -8402,7 +8401,7 @@ impl LateFiles {
 
 #[derive(Clone, Copy, Debug)]
 enum LateCall {
-	/// `workspace_message` with `files`.
+	/// `thread_message` with `files`.
 	Message,
 	/// `attachment_copy`.
 	Copy,

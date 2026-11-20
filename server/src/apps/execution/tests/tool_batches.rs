@@ -74,13 +74,14 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 		async |config| contract_accepts(&pool, "aidash_agent_bindings_is_valid", config).await;
 	// Act / Assert: a definition without the field keeps its meaning.
 	assert!(accepts(agent(None, json!({}))).await);
-	for valid in [1, 2, 16] {
+	// The maximum is 64 since #1009 (registry 0077).
+	for valid in [1, 2, 16, 17, 64] {
 		assert!(
 			accepts(agent(Some(json!(valid)), json!({}))).await,
 			"{valid}"
 		);
 	}
-	for invalid in [json!(0), json!(17), json!("2"), json!(2.5), Value::Null] {
+	for invalid in [json!(0), json!(65), json!("2"), json!(2.5), Value::Null] {
 		assert!(
 			!accepts(agent(Some(invalid.clone()), json!({}))).await,
 			"{invalid}"
@@ -1616,7 +1617,7 @@ async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
 						.await
 						.unwrap();
 					sqlx::query(
-						"UPDATE memory_tenant_scope SET scope = 'thread', revision = 2 \
+						"UPDATE memory_tenant_scope SET scope = 'workspace', revision = 2 \
 						 WHERE tenant = 'acme'",
 					)
 					.execute(&pool)
