@@ -233,7 +233,7 @@ impl Nodes {
 								&snapshot,
 								rules::NODE_UPDATE,
 								name.as_str(),
-								json!({"label": current.label, "default": current.default}),
+								nodes::policy_attributes(&current.label, current.default),
 							)
 							.await?;
 						relabel_in(
@@ -358,7 +358,7 @@ impl Nodes {
 										&snapshot,
 										change.permission(),
 										name.as_str(),
-										json!({"label": current.label,"default":current.default}),
+										nodes::policy_attributes(&current.label, current.default),
 									)
 									.await?;
 								change_in(

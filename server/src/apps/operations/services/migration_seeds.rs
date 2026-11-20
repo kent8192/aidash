@@ -133,6 +133,10 @@ fn assets() -> [(&'static str, String); 32] {
 			crate::apps::identity::services::thread_policy_backfill::backward(),
 		),
 		(
+			"identity/sql/backward/0113_budget_notice_delivery.sql",
+			crate::apps::identity::repositories::budgets::rollback_notices(),
+		),
+		(
 			"execution/sql/forward/0148_duplicate_areas.sql",
 			crate::apps::workspaces::services::thread_backfill::duplicate_areas(),
 		),

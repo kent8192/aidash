@@ -42,9 +42,8 @@ pub trait ThreadAuthorityScope: ThreadResourceScope + AuthorizationLease {
 	fn identity(&self) -> (&str, &str);
 	async fn all_owners(&mut self) -> Result<Vec<(Uuid, ThreadOwner)>>;
 	async fn event_owners(&mut self, selected: Option<Uuid>) -> Result<Vec<(Uuid, ThreadOwner)>>;
-	/// The Node the Thread belongs to: whoever administers that Node reads
-	/// every Thread in it (#1008, ADR 0140).
-	async fn thread_node(&mut self, id: Uuid) -> Result<String>;
+	/// The policy resource for the Node that owns the Thread.
+	async fn thread_node_resource(&mut self, id: Uuid) -> Result<Resource>;
 	/// Whether this authority is a worker's execution grant reading for a
 	/// Run. Like an inherited lease, it never reads as a Node administrator.
 	fn reads_for_run(&self) -> bool {

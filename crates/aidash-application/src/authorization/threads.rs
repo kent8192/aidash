@@ -114,12 +114,8 @@ pub async fn decision(
 	let administrator = owner.is_some() && node_administrator_reads(action, &decision, person);
 	let mut decisions = vec![(input, decision)];
 	if administrator {
-		let node = scope.thread_node(id).await?;
-		let input = node_administer(
-			subject,
-			scope.resource("node", &node, json!({})),
-			scope.environment().clone(),
-		);
+		let node = scope.thread_node_resource(id).await?;
+		let input = node_administer(subject, node, scope.environment().clone());
 		let mut administers = scope.snapshot().bundle.evaluate(&input);
 		administers.revision = scope.snapshot().revision;
 		allowed = administers.allowed;

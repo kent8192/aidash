@@ -65,13 +65,13 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, thread: Option<Uuid>) -
 			}
 			// A stream is a person's view, so a Node administrator reads the
 			// Thread's events as a read of the Thread would (#1008, ADR 0140).
-			let node = current.node.as_deref().ok_or(Error::Forbidden)?;
+			let node = current.node.as_ref().ok_or(Error::Forbidden)?;
 			let administers = super::threads::node_administrator_reads(action, &decision, true)
 				&& snapshot
 					.bundle
 					.evaluate(&super::threads::node_administer(
 						scope.subject().into(),
-						super::lease::resource(scope.tenant(), &json!({}), "node", node, json!({})),
+						node.clone(),
 						environment.clone(),
 					))
 					.allowed;

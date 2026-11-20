@@ -285,6 +285,11 @@ fn live_condition() -> SimpleExpr {
 	Expr::exists(deleted).not()
 }
 
+/// Persisted Node attributes available to policy conditions.
+pub(crate) fn policy_attributes(label: &str, default: bool) -> serde_json::Value {
+	serde_json::json!({"label": label, "default": default})
+}
+
 pub(crate) async fn get_live(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
