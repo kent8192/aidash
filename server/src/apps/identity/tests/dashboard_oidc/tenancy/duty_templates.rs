@@ -59,9 +59,7 @@ impl Fixture {
 				)
 				.await;
 			assert_eq!(status, 200, "{thread}");
-			threads.push(
-				thread["id"].as_str().unwrap().to_owned(),
-			);
+			threads.push(thread["id"].as_str().unwrap().to_owned());
 		}
 		let bob_thread = threads.pop().unwrap();
 		let alice_thread = threads.pop().unwrap();

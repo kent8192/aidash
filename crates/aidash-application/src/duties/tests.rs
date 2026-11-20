@@ -632,13 +632,11 @@ mod templates {
 		// A suggested Agent this Node never approved is refused, as any is.
 		let mut foreign = template();
 		foreign.agent.as_mut().unwrap().id = "unknown".into();
-		let refused =
-			install_template(&mut scope, thread, &foreign, None, source("1.0.0")).await;
+		let refused = install_template(&mut scope, thread, &foreign, None, source("1.0.0")).await;
 		assert!(matches!(refused, Err(Error::Forbidden)), "{refused:?}");
 		// No suggestion and no choice: the person must pick one.
 		foreign.agent = None;
-		let unstaffed =
-			install_template(&mut scope, thread, &foreign, None, source("1.0.0")).await;
+		let unstaffed = install_template(&mut scope, thread, &foreign, None, source("1.0.0")).await;
 		assert!(matches!(unstaffed, Err(Error::Invalid(_))), "{unstaffed:?}");
 	}
 
