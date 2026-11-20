@@ -57,7 +57,9 @@ default.
 The Requester edits, pauses, resumes, deletes or runs a Duty now from the
 Duties tab or **Settings → Duties** ("my Duties"). "Run now" starts an
 ordinary Run as the person who clicked it, in their own Approval Mode, and
-records it in the history.
+records it in the history. Deleting a Duty removes the Budgets that target
+it, so deleting one whose Budget someone else set needs `budget.manage`.
+Deleting it also cancels its Router and Watcher Tasks that have not finished.
 
 A Duty runs on its Requester's Mapping credential, whichever credential
 set it up, so an API token may expire without stopping it; disabling the
@@ -84,7 +86,15 @@ Besides its time trigger, a Duty wakes on the triggers its Requester adds with
   `sha256=<hex HMAC-SHA256 of the body>`; an unknown trigger and a wrong
   signature are refused alike with 404. The body, at most 256 KiB of JSON or
   UTF-8 text, is the event. The secret is derived from the Deployment's API
-  token, so replacing the token replaces every webhook secret.
+  token, so replacing the token replaces every webhook secret. A trigger
+  takes each delivery once: for seven days the same body, or the same
+  `X-GitHub-Delivery`, `X-Aidash-Delivery` or `X-Request-Id`, is answered 200
+  with the first delivery's receipt and starts nothing. The delivery id is
+  not signed, so the body decides: a sender whose events can repeat their
+  body word for word must vary it, for example with an id or a timestamp. An
+  event that could not be taken for now (a database outage, a policy change
+  racing the start) is answered 503 and recorded nowhere, so the sender can
+  send it again.
 - `{"kind":"duty_completed","source_duty_id":…}` wakes the Duty whenever a
   Task of that other Duty ends; the event names the Duty, the Task and its
   status.
@@ -270,12 +280,15 @@ toasts.
 Only the Requester resumes a Duty. A holder of `duty.administer` may pause and
 delete anyone's Duties and name a successor for one whose Requester left; it
 runs again only when the successor resumes it, and they become its Requester.
+The Duty's own Thread becomes theirs too, and the departed Requester's Runs
+lose the trigger events they booked.
 
 ## Agents
 
 The core capability `duties` (`core.duties@1`) is on by default; an Agent
 definition removes its tools with `remove_default`. `duty_create`,
-`duty_update` and `duty_delete` (which also pauses) are Tool call approvals of
+`duty_update` and `duty_delete` (which also pauses; it deletes no Duty a
+Budget targets, since Agents never remove a Budget) are Tool call approvals of
 the person at the root of the Run's chain, decided by their Approval Mode and
 Approval Rules; `duty_list` needs none. A Duty an Agent sets up acts as that
 person and belongs to the Run's Thread. A Run a Duty started may set up
