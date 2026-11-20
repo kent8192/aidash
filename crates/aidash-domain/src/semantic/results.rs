@@ -20,6 +20,8 @@ pub struct Match {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticSearchResult")]
 pub struct SearchResult {
+	/// Stored remote receipts say `workspace_id` before #1008.
+	#[serde(alias = "workspace_id")]
 	pub thread_id: Uuid,
 	pub index_revision: i64,
 	pub model: String,

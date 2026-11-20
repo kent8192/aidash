@@ -57,6 +57,8 @@ pub struct SourceConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SourceScope {
 	Participant,
+	/// Stored Source configurations say `workspace` before #1008.
+	#[serde(alias = "workspace")]
 	Thread,
 }
 

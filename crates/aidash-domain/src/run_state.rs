@@ -77,9 +77,14 @@ pub struct ReadyState {}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThinkingState {
+	// The aliases decode `pending` saved before the Workspace became the
+	// Thread (#1008); nothing rewrote stored Runs.
+	#[serde(alias = "force_workspace_read_compaction")]
 	pub force_thread_read_compaction: bool,
+	#[serde(alias = "deferred_workspace_read")]
 	pub deferred_thread_read: Option<Box<DeferredRead>>,
 	pub deferred_skill_read: Option<Box<DeferredRead>>,
+	#[serde(alias = "deferred_workspace_observation")]
 	pub deferred_thread_observation: Option<Box<DeferredRead>>,
 	pub selected_media: Vec<ModelMedia>,
 	pub media_intake_through_seq: Option<i64>,
@@ -144,6 +149,8 @@ pub struct ToolCallState {
 	pub run_message_summary_end_seq: i64,
 	pub run_message_summary_limit: usize,
 	pub deferred_reads: ThinkingState,
+	/// Saved as `workspace_read_plan` before #1008.
+	#[serde(alias = "workspace_read_plan")]
 	pub thread_read_plan: Option<ReadPlan>,
 	pub skill_read_plan: Option<ReadPlan>,
 	pub workspace_observation_plan: Option<ReadPlan>,
@@ -273,6 +280,8 @@ pub enum WaitingState {
 		resume: ResumeState,
 	},
 	/// A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).
+	/// Saved with the reason `workspace` before #1008.
+	#[serde(alias = "workspace")]
 	TaskWait {
 		wake_at: DateTime<Utc>,
 		cursor: i64,
@@ -512,8 +521,13 @@ pub struct RecoveryState {
 	/// Start of the current external-service outage, retained across wake-ups.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub outage: Option<OutageTracking>,
-	/// Last thread event delivered to this Run.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	/// Last thread event delivered to this Run; `workspace_event_cursor`
+	/// before #1008.
+	#[serde(
+		default,
+		skip_serializing_if = "Option::is_none",
+		alias = "workspace_event_cursor"
+	)]
 	pub thread_event_cursor: Option<i64>,
 	/// Fingerprint of remote terminal child Tasks observed before inference.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

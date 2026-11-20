@@ -58,6 +58,8 @@ pub struct Unconfirmed {
 	/// The silent Node, except in graph responses where this is the answering Node.
 	pub node: String,
 	pub kind: Kind,
+	/// Stored remote receipts say `workspace_id` before #1008.
+	#[serde(alias = "workspace_id")]
 	pub thread_id: Uuid,
 	pub count: u64,
 }

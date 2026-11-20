@@ -45,7 +45,12 @@ pub struct Selection {
 pub struct ModelFileSelection {
 	pub file_id: Uuid,
 	pub expected_digest: String,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	/// Saved as `workspace_id` in a Run's `pending` before #1008.
+	#[serde(
+		default,
+		skip_serializing_if = "Option::is_none",
+		alias = "workspace_id"
+	)]
 	pub thread_id: Option<Uuid>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub area_id: Option<Uuid>,

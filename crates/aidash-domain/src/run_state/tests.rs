@@ -650,3 +650,121 @@ fn outage_wakes_at_cadence_and_never_after_its_bound() {
 		None
 	);
 }
+
+/// `pending` as 9a387f8372 wrote it, before the Workspace became the Thread
+/// (#1008): nothing rewrote stored Runs, so a Run saved then must still load,
+/// whether it is thinking, calling a tool, waiting in `workspace_wait` or
+/// ended with a recovery cursor. Handwritten in the old names.
+#[rstest::rstest]
+fn pending_saved_before_the_thread_rename_still_decodes() {
+	let id = "0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf";
+	let thread = "6f0d7d1e-30a5-4f69-9a8e-1d2b0c3e4f50";
+	let call = json!({"id":"call-1","name":"workspace_read","arguments":{}});
+	let file = json!({"file_id":id,"expected_digest":"sha256:0","workspace_id":thread});
+	let thinking = json!({
+		"force_workspace_read_compaction":true,
+		"deferred_workspace_read":{"message":"read later","call":call},
+		"deferred_skill_read":null,
+		"deferred_workspace_observation":{"message":"observe later","call":call},
+		"selected_media":[file],"media_intake_through_seq":null,"deferred_run_message_reads":[]
+	});
+	let tool = json!({
+		"response":{"text":"answer","tool_calls":[call],"input_tokens":1,"output_tokens":2,"usage_complete":true},
+		"response_epoch":9,"cursor":0,"included_input_seq":3,"request_window":128000,"request_tokens":100,"finalizing":false,
+		"media_inferred_seq_before_response":0,"observed_input_seq_before_response":0,"inferred_selected_media":[],"deferred_selected_media":[],"selected_media":[],"deferred_human_media":false,
+		"media_inferred_through_seq":null,"media_intake_through_seq":0,"required_run_message_reads":[],"references_read_at_inference":true,"run_message_catchup":false,"run_message_summary_end_seq":0,"run_message_summary_limit":1024,
+		"deferred_reads":thinking.clone(),
+		"workspace_read_plan":{"step":2,"cursor":0,"call":call,"result":{"ok":true}},
+		"skill_read_plan":null,"workspace_observation_plan":null,"home_approval":null,"approval":null
+	});
+	// The event cursor needs `event_wait`, which the old encoder also declared.
+	let saved = |data: Value| json!({"state_version":1,"data":data,"recovery":{"retry":null,"workspace_event_cursor":41},"requires":["event_wait"]});
+	let expect_thinking = |state: &ThinkingState| {
+		assert!(state.force_thread_read_compaction);
+		assert_eq!(
+			state.deferred_thread_read.as_ref().unwrap().message,
+			"read later"
+		);
+		assert_eq!(
+			state.deferred_thread_observation.as_ref().unwrap().message,
+			"observe later"
+		);
+		let [ModelMedia::File(file)] = state.selected_media.as_slice() else {
+			panic!("the saved file selection is kept: {state:?}");
+		};
+		assert_eq!(file.thread_id, Some(thread.parse().unwrap()));
+	};
+
+	// Thinking.
+	let (state, recovery) = decode(RunPhase::Thinking, saved(thinking.clone())).unwrap();
+	let RunState::Thinking(state) = state else {
+		panic!("thinking: {state:?}");
+	};
+	expect_thinking(&state);
+	assert_eq!(recovery.thread_event_cursor, Some(41));
+
+	// Calling a tool.
+	let (state, _) = decode(RunPhase::ToolCall, saved(tool.clone())).unwrap();
+	let RunState::ToolCall(state) = state else {
+		panic!("tool call: {state:?}");
+	};
+	assert_eq!(state.thread_read_plan.as_ref().unwrap().step, 2);
+	expect_thinking(&state.deferred_reads);
+
+	// Waiting in `workspace_wait`, which saved the reason `workspace`.
+	let pending = saved(json!({
+		"reason":"workspace","wake_at":"2030-01-01T00:00:00Z","cursor":42,
+		"resume":{"phase":"TOOL_CALL","data":tool}
+	}));
+	let (state, recovery) = decode(RunPhase::Waiting, pending).unwrap();
+	let RunState::Waiting(wait) = state else {
+		panic!("waiting: {state:?}");
+	};
+	let WaitingState::TaskWait { cursor, resume, .. } = *wait else {
+		panic!("the saved wait is a task wait: {wait:?}");
+	};
+	assert_eq!(cursor, 42);
+	assert!(matches!(resume, ResumeState::ToolCall(_)));
+	assert_eq!(recovery.thread_event_cursor, Some(41));
+	// It is saved again in the current names.
+	let encoded = encode(
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
+			wake_at: "2030-01-01T00:00:00Z".parse().unwrap(),
+			cursor,
+			resume,
+		})),
+		&recovery,
+	)
+	.unwrap()
+	.to_string();
+	for current in ["\"task_wait\"", "thread_event_cursor", "thread_read_plan"] {
+		assert!(encoded.contains(current), "{current}: {encoded}");
+	}
+	assert!(!encoded.contains("workspace_read_plan"), "{encoded}");
+
+	// A finished Run keeps its recovery cursor.
+	let (state, recovery) = decode(RunPhase::Completed, saved(json!({}))).unwrap();
+	assert_eq!(state.phase(), RunPhase::Completed);
+	assert_eq!(recovery.thread_event_cursor, Some(41));
+}
+
+/// Other records stored before #1008 named the Thread `workspace`: a memory
+/// Source's scope in the registry, the Thread of a remote search receipt and
+/// its unconfirmed counts, and a `file_read` call kept in a Run's `pending`.
+#[rstest::rstest]
+fn records_saved_before_the_thread_rename_still_decode() {
+	let thread: Uuid = "6f0d7d1e-30a5-4f69-9a8e-1d2b0c3e4f50".parse().unwrap();
+	let scope: crate::memory::SourceScope = serde_json::from_value(json!("workspace")).unwrap();
+	assert_eq!(scope, crate::memory::SourceScope::Thread);
+	let unconfirmed: crate::unconfirmed::Unconfirmed = serde_json::from_value(
+		json!({"node":"brave-otter-k3m9q2xa","kind":"task","workspace_id":thread,"count":2}),
+	)
+	.unwrap();
+	assert_eq!(unconfirmed.thread_id, thread);
+	let read: crate::capabilities::files::FileRead = serde_json::from_value(json!({
+		"file_id":thread,"workspace_id":thread,"area_id":null,"representation":"text",
+		"offset":null,"max_bytes":null,"expected_digest":null
+	}))
+	.unwrap();
+	assert_eq!(read.thread_id, Some(thread));
+}
