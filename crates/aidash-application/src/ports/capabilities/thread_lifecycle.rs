@@ -30,5 +30,8 @@ pub trait ThreadScope: CleanupScope + DeletionAuthority {
 	async fn stop_schedules(&mut self, _thread: Uuid) -> Result<()> {
 		Ok(())
 	}
+	/// Stop all work in the deleted Thread, whoever it belongs to (#1008):
+	/// cancel every execution that has not ended and end every open Task.
+	async fn stop_work(&mut self, thread: Uuid) -> Result<()>;
 	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 }

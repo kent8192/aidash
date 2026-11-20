@@ -15,8 +15,8 @@ use aidash_domain::capabilities::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
+	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -79,7 +79,7 @@ impl aidash_application::ports::capabilities::thread_lifecycle::DeletionAuthorit
 #[async_trait]
 impl ThreadScope for Scope<'_> {
 	async fn lock_for_deletion(&mut self, thread: Uuid) -> Result<()> {
-		crate::apps::workspaces::models::Thread::lock_existing(&mut *self.access.tx, thread)
+		crate::apps::workspaces::models::Thread::lock_for_deletion(&mut *self.access.tx, thread)
 			.await
 			.map_err(Into::into)
 	}
@@ -193,6 +193,94 @@ impl ThreadScope for Scope<'_> {
 				.execute(&mut **access.tx)
 				.await?
 			};
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	async fn stop_work(&mut self, thread: Uuid) -> Result<()> {
+		let store = self
+			.store
+			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?;
+		let result: NativeResult<()> = async {
+			let terminal = ["COMPLETED", "FAILED", "CANCELLED"];
+			let runs: Vec<Uuid> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("task_executions"))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
+					.and_where(Expr::col(Alias::new("phase")).is_not_in(terminal))
+					.order_by(Alias::new("id"), Order::Asc)
+					.lock(LockType::Update)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut **self.access.tx)
+			.await?;
+			// Lock every end before the first control event takes the event
+			// lock, as a Node's cancellation does.
+			for run in &runs {
+				super::subnodes::lock_for_end(&mut **self.access.tx, *run).await?;
+			}
+			for run in runs {
+				// A creator's cascade, or the Area cancellation above, may
+				// already have cancelled it.
+				let open: bool = crate::database::native::query_scalar(
+					&Query::select()
+						.expr(Expr::exists(
+							Query::select()
+								.expr(Expr::value(1_i32))
+								.from(Alias::new("task_executions"))
+								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
+								.and_where(Expr::col(Alias::new("phase")).is_not_in(terminal))
+								.and_where(
+									Expr::col(Alias::new("control")).ne(Expr::value("CANCELLED")),
+								)
+								.to_owned(),
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **self.access.tx)
+				.await?;
+				if open {
+					store
+						.control_in_as(
+							&mut **self.access.tx,
+							run,
+							aidash_domain::RunControlAction::Cancel,
+							aidash_domain::ControlSource::Tenant,
+						)
+						.await?;
+				}
+			}
+			let tasks: Vec<(Uuid, i64, Option<String>)> = crate::database::native::query_as(
+				&Query::select()
+					.columns(["id", "revision", "owner"].map(Alias::new))
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
+					.and_where(Expr::col(Alias::new("status")).is_not_in([
+						"COMPLETED",
+						"FAILED",
+						"CANCELLED",
+						"ABANDONED",
+					]))
+					.order_by(Alias::new("id"), Order::Asc)
+					.lock(LockType::Update)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["id", "revision", "owner"])
+			.fetch_all(&mut **self.access.tx)
+			.await?;
+			for (task, revision, owner) in tasks {
+				store
+					.transition_in(
+						&mut self.access.tx,
+						task,
+						revision,
+						owner.as_deref().unwrap_or("thread-deletion"),
+						aidash_domain::TaskStatus::Cancelled,
+					)
+					.await?;
+			}
 			Ok(())
 		}
 		.await;

@@ -271,6 +271,10 @@ impl ThreadScope for Deletion {
 		self.call("stop_schedules");
 		Ok(())
 	}
+	async fn stop_work(&mut self, _thread: Uuid) -> Result<()> {
+		self.call("stop_work");
+		Ok(())
+	}
 	async fn event(&mut self, _thread: Uuid, kind: &str, _data: Value) -> Result<()> {
 		self.call(&format!("event:{kind}"));
 		Ok(())
@@ -306,6 +310,7 @@ async fn a_refused_deletion_touches_nothing_of_the_thread(
 		"delete_attachments",
 		"stop_schedules",
 		"mark_deleted",
+		"stop_work",
 		"create:thread_tombstone",
 		"cache",
 		"event:thread.deleted",
@@ -350,6 +355,8 @@ async fn a_permitted_deletion_marks_the_thread_before_its_tombstone(
 	assert!(position("delete_attachments") > position("lock_for_deletion"));
 	assert!(position("stop_schedules") > position("lock_for_deletion"));
 	assert!(position("mark_deleted") > position("stop_schedules"));
-	assert!(position("create:thread_tombstone") > position("mark_deleted"));
+	// Everyone's work in the Thread stops with it, not only the deleter's.
+	assert!(position("stop_work") > position("mark_deleted"));
+	assert!(position("create:thread_tombstone") > position("stop_work"));
 	assert!(position("event:thread.deleted") > position("create:thread_tombstone"));
 }

@@ -15,14 +15,43 @@ use serde_json::Value;
 use uuid::Uuid;
 
 impl Thread {
-	pub(crate) async fn lock_existing(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+	/// Locks a live Thread for new work: an Area admission, a Run started in
+	/// it, a semantic index change. `FOR NO KEY UPDATE` serializes these with
+	/// each other and with [`Self::lock_for_deletion`], but not with the
+	/// foreign key's `KEY SHARE`, so events and messages written in the
+	/// Thread meanwhile do not wait for an admission (#1008).
+	pub async fn lock_existing(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+		Self::lock_live_as(tx, id, LockType::NoKeyUpdate).await
+	}
+
+	/// Deletion's lock. `FOR UPDATE` also waits for every writer holding
+	/// [`Self::lock_live`], and makes every later one wait for the deletion
+	/// to commit and then find the Thread deleted (#1008).
+	pub async fn lock_for_deletion(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+		Self::lock_live_as(tx, id, LockType::Update).await
+	}
+
+	/// A writer's check that the Thread is live, before a Task, a message or a
+	/// title commits into it. The condition is on the locked row itself, so a
+	/// writer that waited for a deletion sees its `deleted_at` and is refused
+	/// instead of committing into the deleted Thread (#1008). `KEY SHARE`
+	/// leaves concurrent writers and admissions alone.
+	pub async fn lock_live(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+		Self::lock_live_as(tx, id, LockType::KeyShare).await
+	}
+
+	async fn lock_live_as(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		lock: LockType,
+	) -> Result<()> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			// A deleted Thread takes no new work (#1008).
 			.and_where(Expr::col("deleted_at").is_null())
-			.lock(LockType::Update)
+			.lock(lock)
 			.build(PostgresQueryBuilder);
 		if tx
 			.fetch_optional(&sql, convert_values(values))
@@ -50,6 +79,8 @@ impl Thread {
 			)
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("revision").eq(Expr::value(revision)))
+			// Rechecked on the row a concurrent deletion wrote (#1008).
+			.and_where(Expr::col("deleted_at").is_null())
 			.returning_all()
 			.build(PostgresQueryBuilder);
 		let row = tx

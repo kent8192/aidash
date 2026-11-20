@@ -163,5 +163,7 @@ async fn native_null_parameters_retain_timestamp_and_uuid_types(
 mod leases;
 #[path = "run_fixtures.rs"]
 mod run_fixtures;
+#[path = "database_thread_locks.rs"]
+mod thread_locks;
 #[path = "database_waiting_requests.rs"]
 mod waiting_requests;

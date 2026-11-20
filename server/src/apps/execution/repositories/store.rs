@@ -1052,6 +1052,9 @@ impl Store {
 							Expr::value(query_bind_2.to_owned()).into(),
 						],
 					))
+					// Rechecked on the row a concurrent deletion wrote, so a
+					// deleted Thread is never renamed (#1008).
+					.and_where(Expr::col(Alias::new("deleted_at")).is_null())
 					.returning_all()
 					.to_string(PostgresQueryBuilder),
 			)
@@ -1115,6 +1118,8 @@ impl Store {
 		}
 		let _: Search = serde_json::from_value(input.requirements.clone())
 			.map_err(|e| Error::Invalid(e.to_string()))?;
+		// No Task commits into a Thread being deleted (#1008).
+		crate::apps::workspaces::models::Thread::lock_live(&mut **tx, thread).await?;
 		for dep in input.dependencies.iter().chain(input.parent_id.iter()) {
 			let valid: bool = {
 				let query_bind_1 = dep;
@@ -3221,6 +3226,8 @@ impl Store {
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
+		// No message commits into a Thread being deleted (#1008).
+		crate::apps::workspaces::models::Thread::lock_live(&mut **tx, thread).await?;
 		let inserted: Option<Message> = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = thread;
