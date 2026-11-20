@@ -147,8 +147,8 @@ impl ThreadAuthorityScope for Scope {
 			.filter(|(id, _)| selected.is_none_or(|selected| selected == *id))
 			.collect())
 	}
-	async fn thread_node(&mut self, _id: Uuid) -> Result<String> {
-		Ok(self.node.clone())
+	async fn thread_node_resource(&mut self, _id: Uuid) -> Result<Resource> {
+		Ok(self.resource("node", &self.node, json!({"label":"Home","default":true})))
 	}
 	fn reads_for_run(&self) -> bool {
 		self.reads_for_run

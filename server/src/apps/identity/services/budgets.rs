@@ -236,15 +236,12 @@ impl TenantAdministrations {
 	}
 }
 
-/// Sends each Budget's Soft Limit mail once per window when its spend
-/// reaches the limit (#1012). Runs on every replica beside the Duty pass; the
-/// notice row decides which replica sends it. Without SMTP settings nothing
-/// is sent, but the notice is still recorded so the window stays quiet. A
-/// mail the SMTP server refuses gives the notice back, so the next pass tries
-/// again.
+/// Claims and delivers Soft Limit notices. Each window stays pending until
+/// SMTP accepts its message or the Deployment has no SMTP configuration.
 pub async fn notice_pass(f: &crate::federation::Federation) -> Result<usize> {
+	use repository::NoticeDelivery;
 	let now = Utc::now();
-	let mut sent = 0;
+	let mut completed = 0;
 	for budget in repository::with_soft_limits(&f.store.pool).await? {
 		let scope = aidash_application::tenancy::TenancyScope::tenant(&budget.tenant)?;
 		let window = budget
@@ -255,43 +252,54 @@ pub async fn notice_pass(f: &crate::federation::Federation) -> Result<usize> {
 			.store
 			.pool
 			.atomic(&scope, async |tx| {
+				if let Some(pending) = repository::reclaim_notice(tx, &budget).await? {
+					return Ok(Some(pending));
+				}
 				let (spent, _) = repository::spent(tx, &budget, now).await?;
 				if budget.definition.standing(spent) == aidash_domain::budgets::Standing::Under {
 					return Ok(None);
 				}
-				Ok(repository::claim_notice(tx, &budget, window, now)
-					.await?
-					.then_some(spent))
+				repository::claim_notice(tx, &budget, window, spent).await
 			})
 			.await?;
-		let Some(spent) = notice else {
+		let Some(notice) = notice else {
 			continue;
 		};
-		match mail(f.config.smtp.as_ref(), &budget, spent).await {
-			Ok(()) => sent += 1,
-			Err(error) => {
-				tracing::warn!(%error, budget = %budget.id, "a Budget's Soft Limit mail could not be sent; the next pass tries again");
-				f.store
-					.pool
-					.atomic(&scope, async |tx| {
-						repository::release_notice(tx, &budget, window).await
-					})
-					.await?;
-			}
+		let delivery = match f
+			.config
+			.smtp
+			.as_ref()
+			.filter(|settings| !settings.host.trim().is_empty())
+		{
+			None => NoticeDelivery::Skipped,
+			Some(settings) => match mail(settings, &budget, notice.spent).await {
+				Ok(()) => NoticeDelivery::Sent,
+				Err(error) => {
+					tracing::warn!(%error, budget = %budget.id, "a Budget's Soft Limit mail could not be sent; the next pass tries again");
+					NoticeDelivery::Retry
+				}
+			},
+		};
+		let handled = !matches!(delivery, NoticeDelivery::Retry);
+		if f.store
+			.pool
+			.atomic(&scope, async |tx| {
+				repository::finish_notice(tx, &budget, &notice, delivery).await
+			})
+			.await? && handled
+		{
+			completed += 1;
 		}
 	}
-	Ok(sent)
+	Ok(completed)
 }
 
 async fn mail(
-	settings: Option<&crate::apps::operations::serializers::deployment::SmtpSettings>,
+	settings: &crate::apps::operations::serializers::deployment::SmtpSettings,
 	budget: &Budget,
 	spent: i64,
 ) -> Result<()> {
 	use reinhardt::mail::{EmailMessage, backend_from_settings};
-	let Some(settings) = settings.filter(|settings| !settings.host.trim().is_empty()) else {
-		return Ok(());
-	};
 	let mut mail = reinhardt::conf::EmailSettings::default();
 	mail.backend = "smtp".into();
 	mail.host = settings.host.clone();
@@ -328,9 +336,13 @@ async fn mail(
 		.to(budget.definition.recipients.clone())
 		.build()
 		.map_err(|error| Error::External(error.to_string()))?;
-	backend
-		.send_messages(&[message])
-		.await
-		.map_err(|error| Error::External(error.to_string()))?;
+	// The entire attempt must finish before the database lease can expire.
+	tokio::time::timeout(
+		std::time::Duration::from_secs(30),
+		backend.send_messages(&[message]),
+	)
+	.await
+	.map_err(|error| Error::External(error.to_string()))?
+	.map_err(|error| Error::External(error.to_string()))?;
 	Ok(())
 }

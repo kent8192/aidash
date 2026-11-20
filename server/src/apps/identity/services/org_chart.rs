@@ -257,7 +257,10 @@ impl TenantAdministrations {
 				let live =
 					crate::apps::identity::repositories::nodes::list_live(tx, &tenant).await?;
 				for node in &live {
-					let attributes = json!({"label": node.label, "default": node.default});
+					let attributes = crate::apps::identity::repositories::nodes::policy_attributes(
+						&node.label,
+						node.default,
+					);
 					let name = node.name.as_str();
 					if !administrator
 						.allowed(tx, &snapshot, NODE_READ, name, attributes.clone())

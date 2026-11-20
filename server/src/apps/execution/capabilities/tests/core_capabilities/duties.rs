@@ -30,7 +30,7 @@ async fn register(c: &CoreFixture, thread: Uuid, body: Value) -> Value {
 /// Moves a Duty's next tick into the past, as if its time had come. An
 /// interval counts from its anchor, which moves with it, so every call is a
 /// new scheduled time.
-async fn make_due(c: &CoreFixture, duty: Uuid) {
+pub(super) async fn make_due(c: &CoreFixture, duty: Uuid) {
 	let due = Utc::now() - Span::seconds(90);
 	sqlx::query(
 		"UPDATE duties SET anchor = $1 - interval '1 day', next_scheduled_at = $1, next_fire_at = $1 WHERE id = $2",

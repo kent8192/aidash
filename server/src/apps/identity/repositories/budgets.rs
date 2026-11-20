@@ -6,7 +6,7 @@ use aidash_domain::budgets::{self as domain, Definition, Gate, OnHardLimit, Peri
 use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, OnConflict, Order, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait, LockBehavior, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use uuid::Uuid;
@@ -662,23 +662,53 @@ pub(crate) async fn with_soft_limits(pool: &Pool) -> Result<Vec<Budget>> {
 	.await
 }
 
-/// Claims the Soft Limit notice of one window; false when it was sent.
+/// An SMTP attempt has a shorter deadline than the lease, so an expired
+/// claim is safe for another replica to acquire.
+const NOTICE_LEASE_END: &str = "clock_timestamp() + interval '5 minutes'";
+
+pub(crate) struct NoticeClaim {
+	id: Uuid,
+	window_start: DateTime<Utc>,
+	pub spent: i64,
+}
+
+pub(crate) enum NoticeDelivery {
+	Sent,
+	Skipped,
+	Retry,
+}
+
+/// Records the threshold crossing before sending. The unique window key
+/// elects one replica when several discover the same crossing.
 pub(crate) async fn claim_notice(
 	tx: &mut dyn TransactionExecutor,
 	budget: &Budget,
 	window_start: DateTime<Utc>,
-	now: DateTime<Utc>,
-) -> Result<bool> {
-	Ok(native::query(
+	spent: i64,
+) -> Result<Option<NoticeClaim>> {
+	let id = Uuid::new_v4();
+	let inserted = native::query(
 		&Query::insert()
 			.into_table(Alias::new("budget_notices"))
-			.columns(["budget_id", "window_start", "tenant", "sent_at"].map(Alias::new))
+			.columns(
+				[
+					"budget_id",
+					"window_start",
+					"tenant",
+					"claim_id",
+					"claim_until",
+					"spent_nanocredits",
+				]
+				.map(Alias::new),
+			)
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(budget.id))
 					.expr(Expr::value(window_start))
 					.expr(Expr::value(budget.tenant.clone()))
-					.expr(Expr::value(now))
+					.expr(Expr::value(id))
+					.expr(Expr::cust(NOTICE_LEASE_END))
+					.expr(Expr::value(spent))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -690,20 +720,51 @@ pub(crate) async fn claim_notice(
 	)
 	.execute(&mut *tx)
 	.await?
-	.rows_affected()
-		== 1)
+	.rows_affected();
+	Ok((inserted == 1).then_some(NoticeClaim {
+		id,
+		window_start,
+		spent,
+	}))
 }
 
-/// Gives a claimed Soft Limit notice back when its mail could not be sent, so
-/// the next pass sends it again.
-pub(crate) async fn release_notice(
+/// Reclaims an unsent window after a send error or an expired lease, even if
+/// its month ended while the sending replica was down.
+pub(crate) async fn reclaim_notice(
 	tx: &mut dyn TransactionExecutor,
 	budget: &Budget,
-	window_start: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<Option<NoticeClaim>> {
+	let row: Option<(DateTime<Utc>, i64)> = native::query_as(
+		&Query::select()
+			.columns(["window_start", "spent_nanocredits"].map(Alias::new))
+			.from(Alias::new("budget_notices"))
+			.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+			.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
+			.and_where(Expr::col("sent_at").is_null())
+			.and_where(Expr::col("skipped").eq(false))
+			.and_where(
+				Expr::col("claim_until")
+					.is_null()
+					.or(Expr::col("claim_until").lte(Expr::cust("clock_timestamp()"))),
+			)
+			.order_by(Alias::new("window_start"), Order::Asc)
+			.limit(1)
+			.lock(LockType::Update)
+			.lock_behavior(LockBehavior::SkipLocked)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["window_start", "spent_nanocredits"])
+	.fetch_optional(&mut *tx)
+	.await?;
+	let Some((window_start, spent)) = row else {
+		return Ok(None);
+	};
+	let id = Uuid::new_v4();
 	native::query(
-		&Query::delete()
-			.from_table(Alias::new("budget_notices"))
+		&Query::update()
+			.table(Alias::new("budget_notices"))
+			.value_expr(Alias::new("claim_id"), Expr::value(id))
+			.value_expr(Alias::new("claim_until"), Expr::cust(NOTICE_LEASE_END))
 			.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
 			.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
 			.and_where(Expr::col("window_start").eq(Expr::value(window_start)))
@@ -711,7 +772,57 @@ pub(crate) async fn release_notice(
 	)
 	.execute(&mut *tx)
 	.await?;
-	Ok(())
+	Ok(Some(NoticeClaim {
+		id,
+		window_start,
+		spent,
+	}))
+}
+
+/// Only a claim's owner may finish it. A retry releases its lease and keeps
+/// the pending row. A window with no SMTP configuration is recorded as skipped.
+pub(crate) async fn finish_notice(
+	tx: &mut dyn TransactionExecutor,
+	budget: &Budget,
+	claim: &NoticeClaim,
+	delivery: NoticeDelivery,
+) -> Result<bool> {
+	let mut update = Query::update();
+	update
+		.table(Alias::new("budget_notices"))
+		.value_expr(Alias::new("claim_id"), Expr::value(Option::<Uuid>::None))
+		.value_expr(
+			Alias::new("claim_until"),
+			Expr::value(Option::<DateTime<Utc>>::None),
+		)
+		.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+		.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
+		.and_where(Expr::col("window_start").eq(Expr::value(claim.window_start)))
+		.and_where(Expr::col("claim_id").eq(Expr::value(claim.id)));
+	match delivery {
+		NoticeDelivery::Sent => {
+			update.value_expr(Alias::new("sent_at"), Expr::cust("clock_timestamp()"));
+		}
+		NoticeDelivery::Skipped => {
+			update.value_expr(Alias::new("skipped"), Expr::value(true));
+		}
+		NoticeDelivery::Retry => {}
+	}
+	Ok(native::query(&update.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?
+		.rows_affected()
+		== 1)
+}
+
+/// Reverse asset for identity/0113. The previous schema can only store
+/// completed deliveries, so discard pending and skipped windows on rollback.
+pub(crate) fn rollback_notices() -> String {
+	let delete = Query::delete()
+		.from_table(Alias::new("budget_notices"))
+		.and_where(Expr::col("sent_at").is_null())
+		.to_string(PostgresQueryBuilder);
+	format!("SET LOCAL aidash.scope = 'deployment';\n{delete};\n")
 }
 
 /// Removes the Budgets of a Duty with the Duty; its spend stays in the ledger.

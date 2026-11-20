@@ -1,7 +1,7 @@
 //! Idle stream snapshots grant no right to emit; each frame retains a live lease.
 use super::visibility::RunVerdicts;
 use crate::Result;
-use aidash_domain::Event;
+use aidash_domain::{Event, policy::Resource};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -12,9 +12,8 @@ pub struct AuthorityRecord {
 	pub owner_subject: Option<String>,
 	/// The Duty whose own Thread the selected Thread is, read with its owner.
 	pub duty_id: Option<Uuid>,
-	/// The selected Thread's Node, read with its owner: whoever administers
-	/// it reads the Thread's events (#1008, ADR 0140).
-	pub node: Option<String>,
+	/// The selected Thread's Node policy resource from the same snapshot.
+	pub node: Option<Resource>,
 	pub mapping_id: Option<Uuid>,
 	pub mapping_enabled: Option<bool>,
 	pub issuer: Option<String>,

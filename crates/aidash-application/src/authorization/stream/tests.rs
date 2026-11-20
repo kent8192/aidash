@@ -21,7 +21,7 @@ struct Authority {
 	disabled: Option<DateTime<Utc>>,
 	owner: Option<String>,
 	duty: Option<Uuid>,
-	node: Option<String>,
+	node: Option<Resource>,
 	reads: AtomicUsize,
 	fail: bool,
 }
@@ -37,7 +37,12 @@ fn authority_store() -> Authority {
 		disabled: None,
 		owner: Some("saved-owner".into()),
 		duty: None,
-		node: Some("sales".into()),
+		node: Some(Resource {
+			tenant: "tenant".into(),
+			kind: "node".into(),
+			id: "sales".into(),
+			attributes: json!({"label":"Sales","default":true}),
+		}),
 		reads: AtomicUsize::new(0),
 		fail: false,
 	};

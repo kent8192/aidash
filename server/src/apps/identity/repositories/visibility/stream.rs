@@ -8,7 +8,7 @@ use aidash_application::{
 		visibility::RunVerdicts,
 	},
 };
-use aidash_domain::Event;
+use aidash_domain::{Event, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
@@ -57,6 +57,8 @@ impl StreamAuthorityStore for Authority<'_> {
 				owner_subject: Option<String>,
 				duty_id: Option<Uuid>,
 				node: Option<String>,
+				node_label: Option<String>,
+				node_default: Option<bool>,
 				mapping_id: Option<Uuid>,
 				mapping_enabled: Option<bool>,
 				mapping_tenant: Option<String>,
@@ -70,6 +72,8 @@ impl StreamAuthorityStore for Authority<'_> {
 				owner_subject,
 				duty_id,
 				node,
+				node_label,
+				node_default,
 				mapping_id,
 				mapping_enabled,
 				mapping_tenant,
@@ -96,7 +100,9 @@ impl StreamAuthorityStore for Authority<'_> {
 					Alias::new("duty_id"),
 				)
 				// The selected Thread's Node, for its administrator (#1008).
-				.expr_as(col("t", "node"), Alias::new("node"))
+				.expr_as(col("n", "name"), Alias::new("node"))
+				.expr_as(col("n", "label"), Alias::new("node_label"))
+				.expr_as(col("n", "is_default"), Alias::new("node_default"))
 				.expr_as(col("m", "id"), Alias::new("mapping_id"))
 				.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
 				.expr_as(col("m", "tenant"), Alias::new("mapping_tenant"))
@@ -148,6 +154,16 @@ impl StreamAuthorityStore for Authority<'_> {
 					Condition::all()
 						.add(col("t", "id").equals((Alias::new("w"), Alias::new("thread_id"))))
 						.add(col("t", "tenant").equals((Alias::new("w"), Alias::new("tenant")))),
+				)
+				.join(
+					reinhardt::query::JoinType::LeftJoin,
+					reinhardt::query::TableRef::table_alias(
+						Alias::new("nodes"),
+						Alias::new("n"),
+					),
+					Condition::all()
+						.add(col("n", "name").equals((Alias::new("t"), Alias::new("node"))))
+						.add(col("n", "tenant").equals((Alias::new("t"), Alias::new("tenant")))),
 				)
 				.and_where(col("c", "id").eq(Expr::cust("$1")))
 				.and_where(col("c", "tenant").eq(Expr::cust("$2")))
@@ -213,7 +229,18 @@ impl StreamAuthorityStore for Authority<'_> {
 				document: current.document,
 				owner_subject: current.owner_subject,
 				duty_id: current.duty_id,
-				node: current.node,
+				node: current
+					.node
+					.zip(current.node_label)
+					.zip(current.node_default)
+					.map(|((id, label), default)| Resource {
+						tenant: self.tenant().into(),
+						kind: "node".into(),
+						id,
+						attributes: crate::apps::identity::repositories::nodes::policy_attributes(
+							&label, default,
+						),
+					}),
 				mapping_id: current.mapping_id,
 				mapping_enabled: current.mapping_enabled,
 				issuer: current.issuer,

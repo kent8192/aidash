@@ -3,6 +3,7 @@
 use super::*;
 use aidash_server::apps::identity::services::nodes::agent_tool as node_tool;
 use aidash_server::apps::workspaces::services::duties::agent_tool as duty_tool;
+use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query};
 
 /// The fixture's policy with `deny` added: actions refused to `subjects`.
 fn denying(c: &CoreFixture, id: &str, subjects: &[&str], actions: &[&str]) -> Value {
@@ -305,6 +306,151 @@ async fn stopping_a_flow_cancels_its_runs_ends_its_subnodes_and_pauses_its_dutie
 	c.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn stopping_a_flow_cancels_a_tick_that_commits_while_the_stop_waits(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let root = admit(&c).await;
+	let duty = duty_tool(
+		&c.f.store,
+		&root,
+		"call-1",
+		"duty_create",
+		json!({
+			"title": "Concurrent digest",
+			"mission": "Summarize new activity.",
+			"trigger": {"kind": "interval", "every_seconds": 3600},
+		}),
+	)
+	.await
+	.unwrap();
+	let id = serde_json::from_value(duty["duty_id"].clone()).unwrap();
+	let thread = serde_json::from_value(duty["thread_id"].clone()).unwrap();
+	super::duty_tests::make_due(&c, id).await;
+	let browser = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+	let pool = c.f.store.pool.fixture_driver();
+	let (thread_lock, blocker) = super::lifecycle_tests::hold_thread_lock(pool, thread).await;
+	let scheduler =
+		aidash_server::apps::workspaces::services::duties::pass(&c.f, chrono::Utc::now());
+	let stop = async {
+		// The tick holds the Duty and is waiting to start work in its Thread.
+		let tick = super::lifecycle_tests::wait_for_blocked_connection(pool, blocker).await;
+		let path = format!("/api/tenants/acme/flows/{}/stop", c.task);
+		let (response, ()) = tokio::join!(browser.send("POST", &path, Value::Null), async {
+			super::lifecycle_tests::wait_for_blocked_connection(pool, tick).await;
+			thread_lock.commit().await.unwrap();
+		});
+		response
+	};
+
+	let (pass, (status, stopped)) = tokio::join!(scheduler, stop);
+	let pass = pass.unwrap();
+	assert_eq!(status, 200, "{stopped}");
+	assert_eq!(pass.started.len(), 1, "{pass:?}");
+	let run =
+		c.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.task_id == pass.started[0])
+			.expect("the Duty started a Run");
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Cancelled,
+		"{stopped}"
+	);
+	assert!(
+		stopped["runs"]
+			.as_array()
+			.unwrap()
+			.contains(&json!({"id":run.id,"outcome":"stopped"})),
+		"{stopped}"
+	);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[case::default_node_denied("default", json!(true), "deny", 403)]
+#[case::label_grants_access("label", json!("Thread policy fixture"), "allow", 200)]
+#[tokio::test]
+async fn thread_reads_and_streams_use_the_nodes_policy_attributes(
+	#[future] capability_fixture: CoreFixture,
+	#[case] attribute: &str,
+	#[case] value: Value,
+	#[case] effect: &str,
+	#[case] expected: u16,
+) {
+	let c = capability_fixture.await;
+	let thread =
+		c.f.store
+			.task(&TEST_FIXTURE, c.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let relabel = Query::update()
+		.table(Alias::new("nodes"))
+		.value(Alias::new("label"), "Thread policy fixture")
+		.and_where(Expr::col("tenant").eq("acme"))
+		.and_where(Expr::col("name").eq(node.as_str()))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&relabel)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let mut policies = vec![json!({
+		"id": "conditional", "effect": effect, "subjects": {"ids": ["bob"]},
+		"actions": ["node.administer"], "resources": {"kinds": ["node"]},
+		"condition": {"op": "eq", "left": {"source": "resource", "path": format!("/{attribute}")},
+			"right": {"source": "literal", "value": value}},
+	})];
+	if effect == "deny" {
+		policies.push(json!({
+			"id": "administer", "effect": "allow", "subjects": {"ids": ["bob"]},
+			"actions": ["node.administer"], "resources": {"kinds": ["node"]},
+		}));
+	}
+	let mut policy = c.policy.clone();
+	policy["policies"] = json!(policies);
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let token = common::subject_credential(&c.f.store, "acme", "bob").await;
+
+	let (read_status, body) = request(
+		&c.app,
+		&token,
+		"GET",
+		&format!("/api/threads/{thread}"),
+		Value::Null,
+	)
+	.await;
+	let (list_status, page) = request(&c.app, &token, "GET", "/api/threads", Value::Null).await;
+	assert_eq!(list_status, 200, "{page}");
+	let listed = page["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.any(|item| item["id"] == json!(thread));
+	let stream_status = c
+		.app
+		.streaming_http
+		.get(c.app.url(format!("/api/events/stream?thread_id={thread}")))
+		.bearer_auth(&token)
+		.send()
+		.await
+		.unwrap()
+		.status()
+		.as_u16();
+	assert_eq!(
+		(read_status, stream_status, listed),
+		(expected, expected, expected == 200),
+		"{body}"
+	);
+	c.close().await;
+}
+
 /// The state and end reason of a Subnode.
 async fn subnode_end(c: &CoreFixture, subnode: Uuid) -> (String, Option<String>) {
 	sqlx::query_as("SELECT state, ended_reason FROM subnodes WHERE id = $1")
@@ -593,46 +739,105 @@ async fn notices(c: &CoreFixture, budget: Uuid) -> i64 {
 		.unwrap()
 }
 
-/// A Soft Limit mail the SMTP server refuses is not recorded as sent: the
-/// next pass sends it again, and a sent one is not sent twice (#1012).
+async fn over_soft_limit(c: &CoreFixture, period: &str) -> Uuid {
+	let budget = Uuid::now_v7();
+	let now = chrono::Utc::now();
+	let day = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+	let insert = Query::insert()
+		.into_table(Alias::new("budgets"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"scope_kind",
+				"scope_key",
+				"period",
+				"soft_limit_nanocredits",
+				"on_hard_limit",
+				"recipients",
+				"revision",
+				"created_at",
+				"created_by",
+				"updated_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(budget))
+				.expr(Expr::value("acme"))
+				.expr(Expr::value("tenant"))
+				.expr(Expr::value(""))
+				.expr(Expr::value(period))
+				.expr(Expr::value(10_i64))
+				.expr(Expr::value("stop"))
+				.expr(Expr::cust("ARRAY['ops@example.test']"))
+				.expr(Expr::value(1_i64))
+				.expr(Expr::value(now))
+				.expr(Expr::value("alice"))
+				.expr(Expr::value(now))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	let spend = Query::insert()
+		.into_table(Alias::new("budget_spend"))
+		.columns(
+			[
+				"tenant",
+				"day",
+				"node",
+				"root_subject",
+				"duty_id",
+				"spent_nanocredits",
+				"unpriced_calls",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			Expr::value("acme"),
+			Expr::value(day),
+			Expr::value("any"),
+			Expr::value("alice"),
+			Expr::value(Uuid::nil()),
+			Expr::value(10_i64),
+			Expr::value(0_i64),
+		])
+		.to_string(PostgresQueryBuilder);
+	let pool = c.f.store.pool.fixture_driver();
+	sqlx::query(&insert).execute(pool).await.unwrap();
+	sqlx::query(&spend).execute(pool).await.unwrap();
+	budget
+}
+
+fn smtp(port: u16) -> aidash_server::apps::operations::serializers::deployment::SmtpSettings {
+	aidash_server::apps::operations::serializers::deployment::SmtpSettings {
+		host: "127.0.0.1".into(),
+		port,
+		from: "budgets@example.test".into(),
+		username: None,
+		password: None,
+		starttls: false,
+	}
+}
+
+/// A Soft Limit mail the SMTP server refuses leaves the window open (#1012).
 #[rstest::rstest]
 #[tokio::test]
 async fn a_soft_limit_mail_that_fails_is_sent_again_on_the_next_pass(
 	#[future] capability_fixture: CoreFixture,
 ) {
-	// Arrange: a Tenant Budget past its Soft Limit, and an SMTP server that
-	// refuses connections.
 	let mut c = capability_fixture.await;
-	let budget = Uuid::now_v7();
-	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, soft_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 10, 'stop', '{ops@example.test}', 1, now(), 'alice', now())")
-		.bind(budget)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	sqlx::query("INSERT INTO budget_spend (tenant, day, node, root_subject, duty_id, spent_nanocredits, unpriced_calls) VALUES ('acme', date_trunc('day', now(), 'UTC'), 'any', 'alice', '00000000-0000-0000-0000-000000000000', 10, 0)")
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+	let budget = over_soft_limit(&c, "monthly").await;
 	let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let port = closed.local_addr().unwrap().port();
+	c.f.config.smtp = Some(smtp(closed.local_addr().unwrap().port()));
 	drop(closed);
-	c.f.config.smtp = Some(
-		aidash_server::apps::operations::serializers::deployment::SmtpSettings {
-			host: "127.0.0.1".into(),
-			port,
-			from: "budgets@example.test".into(),
-			username: None,
-			password: None,
-			starttls: false,
-		},
-	);
 	// Act
 	let failed = aidash_server::apps::identity::services::budgets::notice_pass(&c.f)
 		.await
 		.unwrap();
-	// Assert: nothing was sent, and the window's notice is still open.
+	// Assert: nothing was sent and the window has one pending notice.
 	assert_eq!(failed, 0);
-	assert_eq!(notices(&c, budget).await, 0);
+	assert_eq!(notices(&c, budget).await, 1);
 	// Act: the next pass goes through (no SMTP settings: recorded only).
 	c.f.config.smtp = None;
 	let sent = aidash_server::apps::identity::services::budgets::notice_pass(&c.f)
@@ -644,5 +849,108 @@ async fn a_soft_limit_mail_that_fails_is_sent_again_on_the_next_pass(
 	// Assert
 	assert_eq!((sent, again), (1, 0));
 	assert_eq!(notices(&c, budget).await, 1);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_soft_limit_mail_is_retried_after_the_sending_replica_stops(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use aidash_server::apps::identity::services::budgets::notice_pass;
+	use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+	use tokio::net::TcpListener;
+	use tokio::time::{Duration, timeout};
+
+	let mut c = capability_fixture.await;
+	let budget = over_soft_limit(&c, "total").await;
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	c.f.config.smtp = Some(smtp(listener.local_addr().unwrap().port()));
+	let mut sending = Box::pin(notice_pass(&c.f));
+	// A TCP connection has opened, but the peer has sent no SMTP greeting.
+	let (connection, _) = timeout(Duration::from_secs(10), async {
+		tokio::select! {
+			accepted = listener.accept() => accepted.unwrap(),
+			result = &mut sending => panic!("SMTP completed before the greeting: {result:?}"),
+		}
+	})
+	.await
+	.unwrap();
+	assert_eq!(
+		timeout(Duration::from_secs(10), notice_pass(&c.f))
+			.await
+			.unwrap()
+			.unwrap(),
+		0,
+		"the claim is still leased"
+	);
+	drop(sending);
+	drop(connection);
+	let pool = c.f.store.pool.fixture_driver();
+	let sent = Query::select()
+		.expr(Expr::col("sent_at").is_not_null())
+		.from(Alias::new("budget_notices"))
+		.and_where(Expr::col("budget_id").eq(Expr::value(budget)))
+		.to_string(PostgresQueryBuilder);
+	let already_sent: bool = sqlx::query_scalar(&sent).fetch_one(pool).await.unwrap();
+	assert!(
+		!already_sent,
+		"an interrupted attempt must leave a pending notice"
+	);
+	let expire = Query::update()
+		.table(Alias::new("budget_notices"))
+		.value_expr(
+			Alias::new("claim_until"),
+			Expr::cust("clock_timestamp() - interval '1 second'"),
+		)
+		.and_where(Expr::col("budget_id").eq(Expr::value(budget)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire).execute(pool).await.unwrap();
+
+	let smtp_peer = async move {
+		let (connection, _) = listener.accept().await.unwrap();
+		let mut connection = BufReader::new(connection);
+		connection.write_all(b"220 test SMTP\r\n").await.unwrap();
+		let mut line = String::new();
+		let mut delivered = false;
+		while connection.read_line(&mut line).await.unwrap() != 0 {
+			let response: &[u8] = if line.starts_with("DATA") {
+				b"354 End data with <CRLF>.<CRLF>\r\n"
+			} else if line == ".\r\n" {
+				delivered = true;
+				b"250 Accepted\r\n"
+			} else if line.starts_with("QUIT") {
+				connection.write_all(b"221 Bye\r\n").await.unwrap();
+				break;
+			} else if line.starts_with("EHLO")
+				|| line.starts_with("MAIL")
+				|| line.starts_with("RCPT")
+			{
+				b"250 OK\r\n"
+			} else {
+				b""
+			};
+			connection.write_all(response).await.unwrap();
+			line.clear();
+		}
+		delivered
+	};
+	let ((first, second), delivered) = timeout(Duration::from_secs(10), async {
+		tokio::join!(
+			async { tokio::join!(notice_pass(&c.f), notice_pass(&c.f)) },
+			smtp_peer
+		)
+	})
+	.await
+	.unwrap();
+	assert_eq!(first.unwrap() + second.unwrap(), 1);
+	assert!(delivered);
+	assert_eq!(notice_pass(&c.f).await.unwrap(), 0);
+	assert!(
+		sqlx::query_scalar::<_, bool>(&sent)
+			.fetch_one(pool)
+			.await
+			.unwrap()
+	);
 	c.close().await;
 }

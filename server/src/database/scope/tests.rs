@@ -92,6 +92,7 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 			"migrations/identity/sql/backward/0083_data_protection_switches.sql",
 			"migrations/identity/sql/backward/0098_duty_member_policy.sql",
 			"migrations/identity/sql/backward/0111_thread_member_policy.sql",
+			"migrations/identity/sql/backward/0113_budget_notice_delivery.sql",
 			"migrations/identity/sql/forward/0067_scratch_member_policy.sql",
 			"migrations/identity/sql/forward/0080_schedule_member_policy.sql",
 			"migrations/identity/sql/forward/0082_remove_package_index_approvals.sql",

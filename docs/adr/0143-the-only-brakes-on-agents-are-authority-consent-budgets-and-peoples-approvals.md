@@ -12,7 +12,7 @@ Decided on 2026-11-18 in the agent activation grilling (umbrella Issue #1007). A
   4. _Tenant approvals are made by people._ An Agent never makes a Catalog Approval, decides a Registration Request, invites, changes the Tenant's policy, groups, Approval Modes, Approval Rules, Tenant or Node Instructions, or raises a Budget, even when its root person is a Tenant Administrator. Approval Mode, Bypass included, only stops interrupting an Agent's actions.
 - **Generated agents follow the same line.** A Generation policy may let the Agent write the instructions and pick components within bounds a person set. Approval Modes and Rules never approve a generated definition; only the policy's no-approval mark, set by a person holding `generation.manage`, skips the per-request approval.
 - **Creating Nodes is a permission of the Tenant's policy**, held by Tenant Administrators at first and grantable to members; an Agent has it only through its root person. `subnode.create` becomes an ordinary member permission.
-- **People can see and stop what Agents built.** An org chart shows what each chain created, under whose authority and with what spend, and one action stops everything a chain created.
+- **People can see and stop what Agents built.** An org chart shows what each chain created, under whose authority and with what spend, and one action stops everything a chain created. The stop pauses the flow's Duties and checks for Runs that committed while the pause waited for a Duty to start.
 
 ## Considered Options
 
@@ -39,5 +39,5 @@ Lead's calls made while building Budgets:
 - **An Agent deletes only what its own flow created**: `node_delete` and `delete_subnode` compare Root Tasks, not root people, and the root person's `node.delete` does not widen this.
 - **Stop pauses the Run like any pause a person lifts** (event `execution.budget_exhausted`). **Sleep is an Outage Wait** that rechecks every hour with no deadline, so a reset window or a raised limit lets the same step run. Neither spends a recovery attempt.
 - **A Duty starts no Task** while a Budget that covers its Node, its Requester or itself is at its Hard Limit; the tick or event is skipped with reason `budget: <id>`.
-- **A Soft Limit mails its recipients once per window** through the Deployment's SMTP settings; without them the notice is recorded and nothing is sent. A mail the SMTP server refuses is not recorded, so the next pass tries again.
+- **A Soft Limit records one notice per window** and mails its recipients through the Deployment's SMTP settings. Without SMTP, the pass records the notice as skipped. A refused or interrupted delivery stays pending. If SMTP accepts the message and the replica stops before recording success, a later attempt can deliver it again.
 - **In-flight calls can overshoot**: the gate reads spend recorded so far, and a call already dispatched completes. A call a newer lease abandoned still posts its cost when it finishes.

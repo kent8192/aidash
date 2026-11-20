@@ -13,11 +13,15 @@ use crate::{
 	Error, Result,
 	authorization::{access::Access, identity::Actor},
 };
-use aidash_application::tenancy::TenancyScope;
+use aidash_application::{
+	flows::{self, Flow, FlowGraph},
+	tenancy::TenancyScope,
+};
 use aidash_domain::identity::tenant_administration::NODE_ADMINISTER;
 use aidash_domain::{ControlSource, RunControlAction};
 use chrono::Utc;
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 fn failed(id: Uuid, error: impl ToString) -> StoppedItem {
@@ -66,6 +70,128 @@ async fn may_control_remote_root(access: &mut Access, tenant: &str, root: Uuid) 
 	Ok(false)
 }
 
+#[derive(Default)]
+struct StoppedFlow {
+	flow: Flow,
+	runs: BTreeMap<Uuid, StoppedItem>,
+	remote: BTreeMap<Uuid, StoppedItem>,
+	duties: BTreeMap<Uuid, StoppedItem>,
+}
+
+/// Fence each producer, then walk again for work it committed before its fence.
+async fn stop_producers(
+	f: &crate::federation::Federation,
+	scope: &TenancyScope,
+	tenant: &str,
+	root: Uuid,
+) -> Result<StoppedFlow> {
+	use crate::apps::workspaces::repositories::duties::{self, Stop};
+	let mut result = StoppedFlow::default();
+	loop {
+		let (flow, open, grants) = f
+			.store
+			.pool
+			.atomic(scope, async |tx| {
+				let mut graph = NativeFlowGraph {
+					tx,
+					tenant: tenant.to_owned(),
+				};
+				let flow = flows::closure(&mut graph, root).await?;
+				let runs: Vec<Uuid> = flow.runs.iter().copied().collect();
+				let tasks: Vec<Uuid> = flow.tasks.iter().copied().collect();
+				Ok((
+					flow,
+					graph.open_runs(&runs).await?,
+					graph.remote_grants(&tasks).await?,
+				))
+			})
+			.await?;
+		let new_duties: Vec<Uuid> = flow
+			.duties
+			.iter()
+			.copied()
+			.filter(|id| !result.duties.contains_key(id))
+			.collect();
+		let new_runs: Vec<Uuid> = flow
+			.runs
+			.iter()
+			.copied()
+			.filter(|id| !result.runs.contains_key(id))
+			.collect();
+		let new_grants: Vec<_> = grants
+			.into_iter()
+			.filter(|(id, _, _)| !result.remote.contains_key(id))
+			.collect();
+		result.flow = flow;
+		if new_duties.is_empty() && new_runs.is_empty() && new_grants.is_empty() {
+			return Ok(result);
+		}
+
+		// Ticks and event-driven starts hold their Duty lock through commit.
+		// Pausing waits for any in-flight start and prevents new scheduled work.
+		if !new_duties.is_empty() {
+			let paused = f
+				.store
+				.pool
+				.atomic(scope, async |tx| {
+					duties::stop(tx, tenant, Stop::Flow(&new_duties), Utc::now()).await
+				})
+				.await
+				.map(|rows| {
+					rows.into_iter()
+						.map(|duty| duty.id)
+						.collect::<BTreeSet<_>>()
+				});
+			for id in new_duties {
+				let item = match &paused {
+					Ok(ids) if ids.contains(&id) => stopped(id, StopOutcome::Stopped),
+					Ok(_) => stopped(id, StopOutcome::AlreadyStopped),
+					Err(error) => failed(id, error),
+				};
+				result.duties.insert(id, item);
+			}
+			// A start we waited for may have committed a Run or another Duty.
+			continue;
+		}
+
+		// Cancelling a Run also ends the Subnodes it created.
+		let open: BTreeSet<Uuid> = open.into_iter().collect();
+		for id in new_runs {
+			let item = if open.contains(&id) {
+				match f.store.control(scope, id, RunControlAction::Cancel).await {
+					Ok(_) => stopped(id, StopOutcome::Stopped),
+					Err(error) => failed(id, error),
+				}
+			} else {
+				stopped(id, StopOutcome::AlreadyStopped)
+			};
+			result.runs.insert(id, item);
+		}
+
+		// The action runs as the system, like a Node deletion's cancellation.
+		// A grant whose Task already ended only needs revocation.
+		for (grant, revoked, ended) in new_grants {
+			use crate::apps::identity::repositories::home_execution;
+			let outcome = match (revoked, ended) {
+				(true, true) => Ok(StopOutcome::AlreadyStopped),
+				(false, true) => home_execution::revoke_flow_grant(f, tenant, grant)
+					.await
+					.map(|()| StopOutcome::AlreadyStopped),
+				(_, false) => home_execution::cancel_flow_grant(f, tenant, grant)
+					.await
+					.map(|()| StopOutcome::Stopped),
+			};
+			result.remote.insert(
+				grant,
+				match outcome {
+					Ok(outcome) => stopped(grant, outcome),
+					Err(error) => failed(grant, error),
+				},
+			);
+		}
+	}
+}
+
 impl TenantAdministrations {
 	/// Stops the flow of `root`: cancels its open Runs and the work it handed
 	/// to other Deployments, ends its Subnodes and pauses its Duties, each in
@@ -89,13 +215,13 @@ impl TenantAdministrations {
 				tenant: tenant.clone(),
 			};
 			let node = graph.task_node(root).await?;
-			if !aidash_application::flows::is_root(&mut graph, root).await? {
+			if !flows::is_root(&mut graph, root).await? {
 				return Err(Error::Invalid(
 					"only a Root Task's flow is stopped; this Task was created under another"
 						.into(),
 				));
 			}
-			let root_runs = aidash_application::flows::FlowGraph::runs(&mut graph, &[root]).await?;
+			let root_runs = graph.runs(&[root]).await?;
 			let mut allowed = false;
 			for run in root_runs {
 				match crate::authorization::execution::management::readable(
@@ -134,57 +260,13 @@ impl TenantAdministrations {
 			if !allowed {
 				return Err(Error::Forbidden);
 			}
-			let mut graph = NativeFlowGraph {
-				tx: &mut *access.tx,
-				tenant: tenant.clone(),
-			};
-			let flow = aidash_application::flows::closure(&mut graph, root).await?;
-			let runs: Vec<Uuid> = flow.runs.iter().copied().collect();
-			let open = graph.open_runs(&runs).await?;
-			let tasks: Vec<Uuid> = flow.tasks.iter().copied().collect();
-			let grants = graph.remote_grants(&tasks).await?;
-			Ok((flow, open, grants))
+			Ok(())
 		}
 		.await;
-		let (flow, open, grants) = access.finish(result).await?;
+		access.finish(result).await?;
 		let scope = TenancyScope::tenant(&tenant)?;
-		let tasks: Vec<Uuid> = flow.tasks.iter().copied().collect();
-
-		// Runs first: cancelling a Run also ends the Subnodes it created.
-		let mut runs = vec![];
-		for id in &flow.runs {
-			if !open.contains(id) {
-				runs.push(stopped(*id, StopOutcome::AlreadyStopped));
-				continue;
-			}
-			match f.store.control(&scope, *id, RunControlAction::Cancel).await {
-				Ok(_) => runs.push(stopped(*id, StopOutcome::Stopped)),
-				Err(error) => runs.push(failed(*id, error)),
-			}
-		}
-
-		// Work handed to another Deployment: the grant is revoked, so it
-		// renews no more, and the receiver cancels its Run (decision 23). The
-		// person stopping the flow need not be the grant's root person, so
-		// this runs as the system, as a Node deletion's cancellation does. A
-		// grant whose Task already ended is only revoked, if it is not yet.
-		let mut remote = vec![];
-		for (grant, revoked, ended) in grants {
-			use crate::apps::identity::repositories::home_execution;
-			let outcome = match (revoked, ended) {
-				(true, true) => Ok(StopOutcome::AlreadyStopped),
-				(false, true) => home_execution::revoke_flow_grant(f, &tenant, grant)
-					.await
-					.map(|()| StopOutcome::AlreadyStopped),
-				(_, false) => home_execution::cancel_flow_grant(f, &tenant, grant)
-					.await
-					.map(|()| StopOutcome::Stopped),
-			};
-			remote.push(match outcome {
-				Ok(outcome) => stopped(grant, outcome),
-				Err(error) => failed(grant, error),
-			});
-		}
+		let stopped_flow = stop_producers(f, &scope, &tenant, root).await?;
+		let tasks: Vec<Uuid> = stopped_flow.flow.tasks.iter().copied().collect();
 
 		// Subnodes outlive a creator that completed; end the ones still active.
 		let active = f
@@ -200,7 +282,7 @@ impl TenantAdministrations {
 			})
 			.await?;
 		let mut subnodes = vec![];
-		let mut creators = std::collections::BTreeMap::<Uuid, Vec<Uuid>>::new();
+		let mut creators = BTreeMap::<Uuid, Vec<Uuid>>::new();
 		for (subnode, creator) in active {
 			creators.entry(creator).or_default().push(subnode);
 		}
@@ -230,45 +312,6 @@ impl TenantAdministrations {
 			}
 		}
 
-		// Duties pause; only their Requester resumes them.
-		let duty_ids: Vec<Uuid> = flow.duties.iter().copied().collect();
-		let duties = match f
-			.store
-			.pool
-			.atomic(&scope, async |tx| {
-				crate::apps::workspaces::repositories::duties::stop(
-					tx,
-					&tenant,
-					crate::apps::workspaces::repositories::duties::Stop::Flow(&duty_ids),
-					Utc::now(),
-				)
-				.await
-			})
-			.await
-		{
-			Ok(paused) => {
-				let paused: std::collections::BTreeSet<Uuid> =
-					paused.iter().map(|duty| duty.id).collect();
-				duty_ids
-					.iter()
-					.map(|id| {
-						stopped(
-							*id,
-							if paused.contains(id) {
-								StopOutcome::Stopped
-							} else {
-								StopOutcome::AlreadyStopped
-							},
-						)
-					})
-					.collect()
-			}
-			Err(error) => duty_ids
-				.iter()
-				.map(|id| failed(*id, error.to_string()))
-				.collect(),
-		};
-
 		let nodes = f
 			.store
 			.pool
@@ -286,11 +329,11 @@ impl TenantAdministrations {
 		f.notify.notify_waiters();
 		Ok(FlowStopped {
 			root_task: root,
-			tasks: flow.tasks.len(),
-			runs,
-			remote,
+			tasks: tasks.len(),
+			runs: stopped_flow.runs.into_values().collect(),
+			remote: stopped_flow.remote.into_values().collect(),
 			subnodes,
-			duties,
+			duties: stopped_flow.duties.into_values().collect(),
 			nodes,
 		})
 	}

@@ -1040,7 +1040,10 @@ impl Access {
 		Ok(self.resource(
 			"node",
 			node.name.as_str(),
-			json!({"label":node.label,"default":node.default}),
+			crate::apps::identity::repositories::nodes::policy_attributes(
+				&node.label,
+				node.default,
+			),
 		))
 	}
 
@@ -1237,7 +1240,7 @@ impl Access {
 			&& let Ok(thread) = Uuid::parse_str(&resource.id)
 		{
 			let node = self.thread_node(thread).await?;
-			let node = self.resource("node", node.as_str(), json!({}));
+			let node = self.node_resource(&node).await?;
 			allowed = aidash_application::authorization::lease::decide(
 				&mut crate::bootstrap::run_visibility_scope(self),
 				&node,

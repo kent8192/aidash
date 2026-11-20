@@ -174,12 +174,9 @@ impl ThreadAuthorityScope for Reads<'_> {
 	fn identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
-	async fn thread_node(&mut self, id: Uuid) -> Result<String> {
-		self.access
-			.thread_node(id)
-			.await
-			.map(|node| node.as_str().to_owned())
-			.map_err(Into::into)
+	async fn thread_node_resource(&mut self, id: Uuid) -> Result<Resource> {
+		let node = self.access.thread_node(id).await?;
+		self.access.node_resource(&node).await.map_err(Into::into)
 	}
 	fn reads_for_run(&self) -> bool {
 		self.access.read_run.is_some()

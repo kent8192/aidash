@@ -185,6 +185,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
+	("identity", "0113_budget_notice_delivery"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -246,6 +247,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
+	("identity", "0113_budget_notice_delivery"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -723,6 +725,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
+			("identity", "0113_budget_notice_delivery"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -1461,6 +1464,99 @@ async fn assert_image_policies(pool: &PgPool) {
 		let name: String = sqlx::query_scalar(&policy).fetch_one(pool).await.unwrap();
 		assert_eq!(name, "tenant_isolation");
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let name = "0113_budget_notice_delivery";
+	fixture.migrate_excluding(&[("identity", name)]).await;
+	fixture.tenant_root("notice-upgrade").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let id = Uuid::new_v4();
+	let sent_at = chrono::DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+	let insert = Query::insert()
+		.into_table(Alias::new("budgets"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"scope_kind",
+				"scope_key",
+				"period",
+				"soft_limit_nanocredits",
+				"on_hard_limit",
+				"recipients",
+				"revision",
+				"created_at",
+				"created_by",
+				"updated_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(id))
+				.expr(Expr::value("notice-upgrade"))
+				.expr(Expr::value("tenant"))
+				.expr(Expr::value(""))
+				.expr(Expr::value("monthly"))
+				.expr(Expr::value(10_i64))
+				.expr(Expr::value("stop"))
+				.expr(Expr::cust("ARRAY['ops@example.test']"))
+				.expr(Expr::value(1_i64))
+				.expr(Expr::value(sent_at))
+				.expr(Expr::value("alice"))
+				.expr(Expr::value(sent_at))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert).execute(&pool).await.unwrap();
+	let old = Query::insert()
+		.into_table(Alias::new("budget_notices"))
+		.columns(["budget_id", "tenant", "window_start", "sent_at"].map(Alias::new))
+		.values_panic([
+			Expr::value(id),
+			Expr::value("notice-upgrade"),
+			Expr::value(sent_at),
+			Expr::value(sent_at),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&old).execute(&pool).await.unwrap();
+	let notices = Query::select()
+		.column(Alias::new("sent_at"))
+		.from(Alias::new("budget_notices"))
+		.and_where(Expr::col("budget_id").eq(Expr::value(id)))
+		.order_by(Alias::new("window_start"), reinhardt::query::Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	let read_notices = async || -> Vec<Option<chrono::DateTime<chrono::Utc>>> {
+		sqlx::query_scalar(&notices).fetch_all(&pool).await.unwrap()
+	};
+
+	fixture.migrate().await;
+	assert_eq!(read_notices().await, vec![Some(sent_at)]);
+	let pending = Query::insert()
+		.into_table(Alias::new("budget_notices"))
+		.columns(["budget_id", "tenant", "window_start", "spent_nanocredits"].map(Alias::new))
+		.values_panic([
+			Expr::value(id),
+			Expr::value("notice-upgrade"),
+			Expr::value(sent_at + chrono::Duration::days(31)),
+			Expr::value(12_i64),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&pending).execute(&pool).await.unwrap();
+	assert_eq!(read_notices().await, vec![Some(sent_at), None]);
+
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migration = source.get_migration("identity", name).await.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor.rollback_migrations(&[migration]).await.unwrap();
+	assert_eq!(read_notices().await, vec![Some(sent_at)]);
 }
 
 #[rstest]
@@ -2370,6 +2466,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
+			("identity", "0113_budget_notice_delivery"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5043,6 +5140,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
+	("identity", "0113_budget_notice_delivery"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5616,6 +5714,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
+			("identity", "0113_budget_notice_delivery"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5710,6 +5809,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
+			("identity", "0113_budget_notice_delivery"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5812,6 +5912,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
+			("identity", "0113_budget_notice_delivery"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6584,6 +6685,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 		.migrate_excluding(&[
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
+			("identity", "0113_budget_notice_delivery"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
 			("execution", "0152_stint_leases"),
