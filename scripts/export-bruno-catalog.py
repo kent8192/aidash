@@ -28,6 +28,11 @@ ADDITIONS = {
     ("POST", NODE_PATH + "/restore"): ("tenant-node-restore", "nodes"),
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
     ("GET", "/api/threads"): ("thread-list", "workspaces/management"),
+    # Marketplace Duty templates (#1011 D4).
+    ("GET", "/api/duties/{id}/template"): ("duty-template-draft", "marketplace/duty_templates"),
+    ("POST", "/api/duties/{id}/template"): ("duty-template-publish", "marketplace/duty_templates"),
+    ("POST", "/api/marketplace/packages/{key}/duty"): ("marketplace-install-duty", "marketplace/duty_templates"),
+    ("POST", "/api/duties/{id}/template-update"): ("duty-template-update", "marketplace/duty_templates"),
     ("GET", "/api/threads/{id}/executions"): ("thread-executions", "execution/management"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),

@@ -2,8 +2,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "run-management-get",
-    "path": "/api/runs/{id}/management",
+    "name": "execution-management-get",
+    "path": "/api/executions/{id}/management",
     "query_parameters": ["tenant"],
     "responses": {
       "200": {
@@ -355,8 +355,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "run-management-control",
-    "path": "/api/runs/{id}/management",
+    "name": "execution-management-control",
+    "path": "/api/executions/{id}/management",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -7868,8 +7868,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "run_working_area",
-    "path": "/api/runs/{id}/working-area",
+    "name": "execution_working_area",
+    "path": "/api/executions/{id}/working-area",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -7948,7 +7948,7 @@
     "json": true,
     "method": "POST",
     "name": "core_file_read",
-    "path": "/api/runs/{id}/files/read",
+    "path": "/api/executions/{id}/files/read",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8002,7 +8002,7 @@
     "json": true,
     "method": "POST",
     "name": "core_file_search",
-    "path": "/api/runs/{id}/files/search",
+    "path": "/api/executions/{id}/files/search",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8056,7 +8056,7 @@
     "json": true,
     "method": "POST",
     "name": "core_shell",
-    "path": "/api/runs/{id}/shell",
+    "path": "/api/executions/{id}/shell",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8250,7 +8250,7 @@
     "json": true,
     "method": "POST",
     "name": "core_apply_patch",
-    "path": "/api/runs/{id}/patch",
+    "path": "/api/executions/{id}/patch",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8304,7 +8304,7 @@
     "json": true,
     "method": "POST",
     "name": "core_shell_poll",
-    "path": "/api/runs/{id}/shell/poll",
+    "path": "/api/executions/{id}/shell/poll",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8498,7 +8498,7 @@
     "json": true,
     "method": "POST",
     "name": "core_shell_cancel",
-    "path": "/api/runs/{id}/shell/cancel",
+    "path": "/api/executions/{id}/shell/cancel",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8692,7 +8692,7 @@
     "json": true,
     "method": "POST",
     "name": "core_file_materialize",
-    "path": "/api/runs/{id}/files/materialize",
+    "path": "/api/executions/{id}/files/materialize",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9003,7 +9003,7 @@
     "json": true,
     "method": "POST",
     "name": "core_skill_list",
-    "path": "/api/runs/{id}/skills/list",
+    "path": "/api/executions/{id}/skills/list",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9057,7 +9057,7 @@
     "json": true,
     "method": "POST",
     "name": "core_skill_load",
-    "path": "/api/runs/{id}/skills/load",
+    "path": "/api/executions/{id}/skills/load",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9111,7 +9111,7 @@
     "json": true,
     "method": "POST",
     "name": "core_skill_read",
-    "path": "/api/runs/{id}/skills/read",
+    "path": "/api/executions/{id}/skills/read",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9165,7 +9165,7 @@
     "json": true,
     "method": "POST",
     "name": "core_file_share",
-    "path": "/api/runs/{id}/files/share",
+    "path": "/api/executions/{id}/files/share",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9218,8 +9218,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "core_thread_run",
-    "path": "/api/threads/{thread}/agents/{agent}/runs",
+    "name": "core_thread_execution",
+    "path": "/api/threads/{thread}/agents/{agent}/executions",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9298,7 +9298,7 @@
     "json": true,
     "method": "POST",
     "name": "core_outbound_get",
-    "path": "/api/runs/{id}/outbound",
+    "path": "/api/executions/{id}/outbound",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9352,7 +9352,7 @@
     "json": false,
     "method": "GET",
     "name": "core_outbound_history",
-    "path": "/api/runs/{id}/outbound",
+    "path": "/api/executions/{id}/outbound",
     "query_parameters": ["cursor"],
     "responses": {
       "200": {
@@ -9934,7 +9934,7 @@
     "json": true,
     "method": "POST",
     "name": "core_python",
-    "path": "/api/runs/{id}/python",
+    "path": "/api/executions/{id}/python",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9988,7 +9988,7 @@
     "json": true,
     "method": "POST",
     "name": "core_python_poll",
-    "path": "/api/runs/{id}/python/poll",
+    "path": "/api/executions/{id}/python/poll",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -10042,7 +10042,7 @@
     "json": true,
     "method": "POST",
     "name": "core_python_cancel",
-    "path": "/api/runs/{id}/python/cancel",
+    "path": "/api/executions/{id}/python/cancel",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -11953,7 +11953,7 @@
     "json": false,
     "method": "GET",
     "name": "core_operation_history",
-    "path": "/api/runs/{id}/core-operations",
+    "path": "/api/executions/{id}/core-operations",
     "query_parameters": ["cursor"],
     "responses": {
       "200": {
@@ -24582,8 +24582,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "remote-semantic-run-provenance",
-    "path": "/api/runs/{id}/semantic",
+    "name": "remote-semantic-execution-provenance",
+    "path": "/api/executions/{id}/semantic",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -33724,8 +33724,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "run-get",
-    "path": "/api/runs/{id}",
+    "name": "execution-get",
+    "path": "/api/executions/{id}",
     "query_parameters": ["offset"],
     "responses": {
       "200": {
@@ -38172,8 +38172,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "run-control",
-    "path": "/api/runs/{id}/control",
+    "name": "execution-control",
+    "path": "/api/executions/{id}/control",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -38483,8 +38483,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "run-message",
-    "path": "/api/runs/{id}/message",
+    "name": "execution-message",
+    "path": "/api/executions/{id}/message",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -38706,8 +38706,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "run-inference-stream",
-    "path": "/api/runs/{id}/inference/stream",
+    "name": "execution-inference-stream",
+    "path": "/api/executions/{id}/inference/stream",
     "query_parameters": ["after"],
     "source": "server/src/apps/execution/views/management.rs",
     "uuid_parameters": ["id"]
@@ -47642,7 +47642,7 @@
     "json": false,
     "method": "GET",
     "name": "core_live_preview",
-    "path": "/api/runs/{id}/live-preview",
+    "path": "/api/executions/{id}/live-preview",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -47743,7 +47743,7 @@
     "json": false,
     "method": "POST",
     "name": "core_live_preview_stop",
-    "path": "/api/runs/{id}/live-preview/stop",
+    "path": "/api/executions/{id}/live-preview/stop",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -47985,7 +47985,7 @@
     "json": false,
     "method": "GET",
     "name": "core_remote_preview_inspect",
-    "path": "/api/runs/{id}/remote-preview",
+    "path": "/api/executions/{id}/remote-preview",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -48074,7 +48074,7 @@
     "json": true,
     "method": "POST",
     "name": "core_remote_preview_ticket",
-    "path": "/api/runs/{id}/preview-tickets",
+    "path": "/api/executions/{id}/preview-tickets",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -50043,8 +50043,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "task-runs",
-    "path": "/api/tasks/{id}/runs",
+    "name": "task-executions",
+    "path": "/api/tasks/{id}/executions",
     "query_parameters": ["cursor"],
     "responses": {
       "200": {
@@ -53050,8 +53050,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "run-subnodes",
-    "path": "/api/runs/{id}/subnodes",
+    "name": "execution-subnodes",
+    "path": "/api/executions/{id}/subnodes",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -53517,8 +53517,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "run-decline-call",
-    "path": "/api/runs/{id}/declined-calls",
+    "name": "execution-decline-call",
+    "path": "/api/executions/{id}/declined-calls",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -54490,8 +54490,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "thread-runs",
-    "path": "/api/threads/{id}/runs",
+    "name": "thread-executions",
+    "path": "/api/threads/{id}/executions",
     "query_parameters": ["cursor", "live"],
     "responses": {
       "200": {
@@ -56882,8 +56882,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "suspended-runs",
-    "path": "/api/suspended-runs",
+    "name": "suspended-executions",
+    "path": "/api/suspended-executions",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -56914,8 +56914,8 @@
   {
     "json": false,
     "method": "POST",
-    "name": "suspended-runs-resume",
-    "path": "/api/suspended-runs/resume",
+    "name": "suspended-executions-resume",
+    "path": "/api/suspended-executions/resume",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -56926,7 +56926,7 @@
             "type": "string"
           },
           "SuspendedRunResume": {
-            "description": "One Run's result. Each Run is resumed on its own, with the same checks as\na resume through `/api/runs/{id}/control`.",
+            "description": "One Run's result. Each Run is resumed on its own, with the same checks as\na resume through `/api/executions/{id}/control`.",
             "properties": {
               "error": {
                 "description": "Why the Run was not resumed, as a single resume would answer; absent\nwhen it was resumed.",
@@ -57158,6 +57158,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -57185,6 +57196,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -57314,6 +57326,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -57521,6 +57564,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -57548,6 +57602,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -57677,6 +57732,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -57881,6 +57967,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -57908,6 +58005,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -58037,6 +58135,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -58230,12 +58359,24 @@
                   "$ref": "#/components/schemas/Version"
                 },
                 "type": "array"
+              },
+              "template_update": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "A later version of the template it was installed from that the viewer\nmay install, which its Requester may move it to (#1011 D4). Never\napplied by itself."
               }
             },
             "required": [
               "duty",
               "ticks",
               "newer_agent_version",
+              "template_update",
               "script_versions",
               "may_edit",
               "may_administer"
@@ -58401,6 +58542,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -58428,6 +58580,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -58686,6 +58839,37 @@
             },
             "required": ["script", "every_seconds"],
             "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
+            "type": "object"
           }
         },
         "schema": {
@@ -58889,6 +59073,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -58916,6 +59111,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -59045,6 +59241,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -59249,6 +59476,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -59276,6 +59514,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -59405,6 +59644,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -59609,6 +59879,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -59636,6 +59917,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -59765,6 +60047,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -59969,6 +60282,17 @@
                 "description": "The Thread it was registered from; None for a Duty from before #1008.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
               }
             },
             "required": [
@@ -59996,6 +60320,7 @@
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
+              "template",
               "revision",
               "created_at",
               "updated_at",
@@ -60125,6 +60450,37 @@
               }
             },
             "required": ["script", "every_seconds"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
             "type": "object"
           }
         },
@@ -61992,6 +62348,1154 @@
       }
     },
     "source": "server/src/apps/identity/views/duty_events.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "duty-template-draft",
+    "path": "/api/duties/{id}/template",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DutyTemplate": {
+            "additionalProperties": false,
+            "description": "A ready-made Duty, as a Marketplace package carries it.",
+            "properties": {
+              "agent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateAgent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Agent the publisher staffed it with, suggested to whoever installs\nit when their Node has approved it."
+              },
+              "mission": {
+                "description": "What the Duty is for; every Task it starts is asked this.",
+                "type": "string"
+              },
+              "procedure": {
+                "default": "",
+                "description": "The checklist its Agent follows on every Task.",
+                "type": "string"
+              },
+              "router": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Script"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that decides what each event no Task booked does."
+              },
+              "title": {
+                "description": "The title the installed Duty starts with.",
+                "type": "string"
+              },
+              "triggers": {
+                "default": [],
+                "description": "The Duty Triggers the template expects, each with what to set up.",
+                "items": {
+                  "$ref": "#/components/schemas/DutyTemplateTrigger"
+                },
+                "type": "array"
+              },
+              "watcher": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Watcher"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that polls an outside service on its own interval."
+              }
+            },
+            "required": ["title", "mission", "procedure", "triggers"],
+            "type": "object"
+          },
+          "DutyTemplateAgent": {
+            "additionalProperties": false,
+            "description": "An Agent a template suggests, by the id and version it had where it was\npublished.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "DutyTemplateTrigger": {
+            "description": "A Duty Trigger a template expects, and a short instruction for whoever\ninstalls it. A time trigger is set up as given; the others are listed for\nthe person to create, since only a person's own trigger may carry a\nwebhook secret or name a Duty or Node of their Tenant.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The Duty's time trigger: a five-field cron expression in an IANA time\nzone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The Duty's time trigger: a fixed gap in seconds.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A signed webhook, such as a GitHub `workflow_run` hook.",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["webhook"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A Task of another Duty of the installing Tenant ends.",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["duty_completed"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An event another Node sends.",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["node_event"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "instruction"],
+                "type": "object"
+              }
+            ]
+          },
+          "Language": {
+            "description": "The language a script is written in.",
+            "enum": ["python", "shell"],
+            "type": "string"
+          },
+          "Script": {
+            "additionalProperties": false,
+            "description": "A Router's or Watcher's code.",
+            "properties": {
+              "language": {
+                "$ref": "#/components/schemas/Language"
+              },
+              "source": {
+                "description": "At most 64 KiB, without NUL.",
+                "type": "string"
+              }
+            },
+            "required": ["language", "source"],
+            "type": "object"
+          },
+          "Watcher": {
+            "additionalProperties": false,
+            "description": "A script that polls an outside service on its own interval, independent of\nthe Duty's time trigger. Its stdout is a JSON array of events.",
+            "properties": {
+              "every_seconds": {
+                "description": "Seconds between two runs: one minute to one year.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "script": {
+                "$ref": "#/components/schemas/Script"
+              }
+            },
+            "required": ["script", "every_seconds"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DutyTemplate"
+        }
+      }
+    },
+    "source": "server/src/apps/marketplace/views/duty_templates.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "duty-template-publish",
+    "path": "/api/duties/{id}/template",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/marketplace/views/duty_templates.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "duty-template-update",
+    "path": "/api/duties/{id}/template-update",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
+            "type": "object"
+          },
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Requester's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Requester, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Requester.",
+                "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
+                "type": "string"
+              },
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "router": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Script"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that decides what each event no Task booked does (#1011)."
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "thread_id": {
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "watcher": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Watcher"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that polls an outside service on its own interval."
+              },
+              "watcher_next_at": {
+                "description": "When the Watcher runs next.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "thread_id",
+              "origin_thread_id",
+              "requester",
+              "mine",
+              "title",
+              "mission",
+              "procedure",
+              "agent",
+              "trigger",
+              "approval_mode",
+              "max_lateness_seconds",
+              "pause_after_failures",
+              "router",
+              "watcher",
+              "watcher_next_at",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "template",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              }
+            ]
+          },
+          "Language": {
+            "description": "The language a script is written in.",
+            "enum": ["python", "shell"],
+            "type": "string"
+          },
+          "Script": {
+            "additionalProperties": false,
+            "description": "A Router's or Watcher's code.",
+            "properties": {
+              "language": {
+                "$ref": "#/components/schemas/Language"
+              },
+              "source": {
+                "description": "At most 64 KiB, without NUL.",
+                "type": "string"
+              }
+            },
+            "required": ["language", "source"],
+            "type": "object"
+          },
+          "Trigger": {
+            "description": "When a Duty fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          },
+          "Watcher": {
+            "additionalProperties": false,
+            "description": "A script that polls an outside service on its own interval, independent of\nthe Duty's time trigger. Its stdout is a JSON array of events.",
+            "properties": {
+              "every_seconds": {
+                "description": "Seconds between two runs: one minute to one year.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "script": {
+                "$ref": "#/components/schemas/Script"
+              }
+            },
+            "required": ["script", "every_seconds"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DutyView"
+        }
+      }
+    },
+    "source": "server/src/apps/marketplace/views/duty_templates.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "marketplace-install-duty",
+    "path": "/api/marketplace/packages/{key}/duty",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "DutyTemplateInstalled": {
+            "description": "The Duty a template set up, and the triggers the person creates on it.",
+            "properties": {
+              "duty": {
+                "$ref": "#/components/schemas/DutyView"
+              },
+              "triggers_to_create": {
+                "description": "Webhook, `duty_completed` and `node_event` triggers the template\nexpects, each with its instruction. A webhook's secret is shown only\nto the person who creates it.",
+                "items": {
+                  "$ref": "#/components/schemas/DutyTemplateTrigger"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["duty", "triggers_to_create"],
+            "type": "object"
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
+            "type": "object"
+          },
+          "DutyTemplateTrigger": {
+            "description": "A Duty Trigger a template expects, and a short instruction for whoever\ninstalls it. A time trigger is set up as given; the others are listed for\nthe person to create, since only a person's own trigger may carry a\nwebhook secret or name a Duty or Node of their Tenant.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The Duty's time trigger: a five-field cron expression in an IANA time\nzone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The Duty's time trigger: a fixed gap in seconds.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A signed webhook, such as a GitHub `workflow_run` hook.",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["webhook"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A Task of another Duty of the installing Tenant ends.",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["duty_completed"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An event another Node sends.",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["node_event"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "instruction"],
+                "type": "object"
+              }
+            ]
+          },
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Requester's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Requester, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Requester.",
+                "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
+                "type": "string"
+              },
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "router": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Script"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that decides what each event no Task booked does (#1011)."
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "thread_id": {
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "watcher": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Watcher"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that polls an outside service on its own interval."
+              },
+              "watcher_next_at": {
+                "description": "When the Watcher runs next.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "thread_id",
+              "origin_thread_id",
+              "requester",
+              "mine",
+              "title",
+              "mission",
+              "procedure",
+              "agent",
+              "trigger",
+              "approval_mode",
+              "max_lateness_seconds",
+              "pause_after_failures",
+              "router",
+              "watcher",
+              "watcher_next_at",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "template",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              }
+            ]
+          },
+          "Language": {
+            "description": "The language a script is written in.",
+            "enum": ["python", "shell"],
+            "type": "string"
+          },
+          "Script": {
+            "additionalProperties": false,
+            "description": "A Router's or Watcher's code.",
+            "properties": {
+              "language": {
+                "$ref": "#/components/schemas/Language"
+              },
+              "source": {
+                "description": "At most 64 KiB, without NUL.",
+                "type": "string"
+              }
+            },
+            "required": ["language", "source"],
+            "type": "object"
+          },
+          "Trigger": {
+            "description": "When a Duty fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          },
+          "Watcher": {
+            "additionalProperties": false,
+            "description": "A script that polls an outside service on its own interval, independent of\nthe Duty's time trigger. Its stdout is a JSON array of events.",
+            "properties": {
+              "every_seconds": {
+                "description": "Seconds between two runs: one minute to one year.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "script": {
+                "$ref": "#/components/schemas/Script"
+              }
+            },
+            "required": ["script", "every_seconds"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DutyTemplateInstalled"
+        }
+      }
+    },
+    "source": "server/src/apps/marketplace/views/duty_templates.rs",
     "uuid_parameters": []
   }
 ]
