@@ -181,6 +181,9 @@ impl ThreadAuthorityScope for Reads<'_> {
 			.map(|node| node.as_str().to_owned())
 			.map_err(Into::into)
 	}
+	fn reads_for_run(&self) -> bool {
+		self.access.read_run.is_some()
+	}
 	async fn all_owners(&mut self) -> Result<Vec<(Uuid, ThreadOwner)>> {
 		let result: NativeResult<Vec<(Uuid, ThreadOwner)>> = async {
 			let mut query = owners_query();

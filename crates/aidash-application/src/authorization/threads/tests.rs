@@ -28,6 +28,8 @@ struct Scope {
 	fail: Option<&'static str>,
 	/// The Node every Thread of this fake belongs to.
 	node: String,
+	/// A worker's execution grant reading for a Run.
+	reads_for_run: bool,
 }
 fn run() -> Run {
 	Run {
@@ -57,7 +59,7 @@ fn run() -> Run {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"thread_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),duties:Default::default(),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,admitted:false,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None,node:"home-node".into()}
+	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"thread_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),duties:Default::default(),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,admitted:false,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None,node:"home-node".into(),reads_for_run:false}
 }
 impl Scope {
 	fn touch(&mut self, name: &'static str) -> Result<()> {
@@ -147,6 +149,9 @@ impl ThreadAuthorityScope for Scope {
 	}
 	async fn thread_node(&mut self, _id: Uuid) -> Result<String> {
 		Ok(self.node.clone())
+	}
+	fn reads_for_run(&self) -> bool {
+		self.reads_for_run
 	}
 }
 #[async_trait]
@@ -522,10 +527,14 @@ async fn a_node_administrator_reads_every_thread_of_their_node(mut scope: Scope)
 	assert!(allowed(&mut scope, thread, "thread.events").await.unwrap());
 	// ... but administering the Node changes nothing else in the Thread.
 	assert!(!allowed(&mut scope, thread, "thread.update").await.unwrap());
-	// A Run's inherited authority stays confined to its own Thread.
+	// A Run's inherited authority stays confined to its own Thread, and so
+	// does a worker's execution grant reading for a Run.
 	scope.inherited = true;
 	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());
 	scope.inherited = false;
+	scope.reads_for_run = true;
+	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());
+	scope.reads_for_run = false;
 	// Another Node's Thread stays hidden from them.
 	scope.node = "other-node".into();
 	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());

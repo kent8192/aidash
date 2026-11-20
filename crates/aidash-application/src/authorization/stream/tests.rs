@@ -21,6 +21,7 @@ struct Authority {
 	disabled: Option<DateTime<Utc>>,
 	owner: Option<String>,
 	duty: Option<Uuid>,
+	node: Option<String>,
 	reads: AtomicUsize,
 	fail: bool,
 }
@@ -36,6 +37,7 @@ fn authority_store() -> Authority {
 		disabled: None,
 		owner: Some("saved-owner".into()),
 		duty: None,
+		node: Some("sales".into()),
 		reads: AtomicUsize::new(0),
 		fail: false,
 	};
@@ -71,6 +73,7 @@ impl StreamAuthorityStore for Authority {
 			document: self.document.clone(),
 			owner_subject: self.owner.clone(),
 			duty_id: self.duty,
+			node: self.node.clone(),
 			mapping_id: self.mapping.then_some(Uuid::from_u128(9)),
 			mapping_enabled: self.mapping_enabled,
 			issuer: self.issuer.clone(),
@@ -108,6 +111,41 @@ async fn idle_authority_on_a_duty_thread_evaluates_its_duty(
 	assert_eq!(result.is_ok(), allowed, "{result:?}");
 	if !allowed {
 		assert!(matches!(result, Err(Error::Forbidden)));
+	}
+}
+/// An idle stream on a Thread reads as a read of that Thread does (#1008,
+/// ADR 0140): someone who administers the Thread's Node, and holds no
+/// `thread.*` grant on it, opens its stream; a policy that denies them the
+/// Thread by name closes it, as does administering another Node.
+#[rstest]
+#[case::administers_its_node("sales", None, true)]
+#[case::denied_by_name("sales", Some("deny"), false)]
+#[case::administers_another_node("support", None, false)]
+#[tokio::test]
+async fn a_node_administrator_streams_every_thread_of_their_node(
+	mut authority_store: Authority,
+	#[case] administered: &str,
+	#[case] thread_policy: Option<&str>,
+	#[case] allowed: bool,
+) {
+	// Arrange: the reader holds only `node.administer` on one Node.
+	let thread = Uuid::from_u128(1);
+	let mut policies = vec![
+		json!({"id":"administer","effect":"allow","subjects":{"ids":["reader"]},
+		"actions":["node.administer"],"resources":{"kinds":["node"],"ids":[administered]}}),
+	];
+	if let Some(effect) = thread_policy {
+		policies.push(json!({"id":"hide","effect":effect,"subjects":{"any":true},
+			"actions":["thread.read","thread.events"],"resources":{"kinds":["thread"],"ids":[thread]}}));
+	}
+	authority_store.document =
+		json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":policies});
+	// Act
+	let result = authority(&authority_store, Some(thread)).await;
+	// Assert
+	assert_eq!(result.is_ok(), allowed, "{result:?}");
+	if !allowed {
+		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 	}
 }
 #[rstest]
