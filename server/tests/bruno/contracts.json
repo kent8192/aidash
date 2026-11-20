@@ -14098,14 +14098,15 @@
               },
               "token_budget": {
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"],
+                "description": "How many tokens the policy's generated agents may use in all; absent\nmeans no token limit. Money Budgets are the limit then (#1012\ndecision 41, ADR 0143)."
               },
               "tokens_per_agent": {
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"],
+                "description": "How many tokens one generated agent may use; absent means no token\nlimit. Required with `token_budget`, which it is reserved against."
               }
             },
-            "required": ["token_budget", "tokens_per_agent"],
             "type": "object"
           },
           "GenerationPermissions": {
@@ -14755,14 +14756,15 @@
               },
               "token_budget": {
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"],
+                "description": "How many tokens the policy's generated agents may use in all; absent\nmeans no token limit. Money Budgets are the limit then (#1012\ndecision 41, ADR 0143)."
               },
               "tokens_per_agent": {
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"],
+                "description": "How many tokens one generated agent may use; absent means no token\nlimit. Required with `token_budget`, which it is reserved against."
               }
             },
-            "required": ["token_budget", "tokens_per_agent"],
             "type": "object"
           },
           "GenerationPermissions": {
@@ -17069,14 +17071,15 @@
               },
               "token_budget": {
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"],
+                "description": "How many tokens the policy's generated agents may use in all; absent\nmeans no token limit. Money Budgets are the limit then (#1012\ndecision 41, ADR 0143)."
               },
               "tokens_per_agent": {
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"],
+                "description": "How many tokens one generated agent may use; absent means no token\nlimit. Required with `token_budget`, which it is reserved against."
               }
             },
-            "required": ["token_budget", "tokens_per_agent"],
             "type": "object"
           },
           "GenerationPermissions": {
@@ -62184,7 +62187,7 @@
           },
           "FlowStopped": {
             "additionalProperties": false,
-            "description": "What `POST /api/tenants/{tenant}/flows/{root_task}/stop` stopped: every open\nRun of the flow is cancelled, its Subnodes end and its Duties pause.",
+            "description": "What `POST /api/tenants/{tenant}/flows/{root_task}/stop` stopped: every open\nRun of the flow is cancelled, so is the work it handed to other\nDeployments, its Subnodes end and its Duties pause.",
             "properties": {
               "duties": {
                 "items": {
@@ -62220,12 +62223,20 @@
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "remote": {
+                "description": "Remote Grants that handed the flow's Tasks to another Deployment, by\ngrant: each is revoked, its receiver cancels the Run, and the Task here\nis cancelled. A grant whose Task had ended is `already_stopped`, and\nrevoked if it was not.",
+                "items": {
+                  "$ref": "#/components/schemas/StoppedItem"
+                },
+                "type": "array"
               }
             },
             "required": [
               "root_task",
               "tasks",
               "runs",
+              "remote",
               "subnodes",
               "duties",
               "nodes"
