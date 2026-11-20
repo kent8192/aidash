@@ -62,6 +62,7 @@ import type {
 } from "./generated/models";
 import type { State, Task } from "./types";
 import { entityRef, type Submit } from "./forms";
+import { tokenLimitLabel } from "./generation-limits";
 
 const key = (reference: EntityRef) => `${reference.id}@${reference.version}`;
 const localized = (
@@ -1089,7 +1090,7 @@ function RequestDetail({
           <MetricRow compact columns={4} className="border-y">
             <Metric
               label={t("generationUsedTokens")}
-              value={`${usage.data.used_tokens.toLocaleString(locale)} / ${usage.data.token_limit.toLocaleString(locale)}`}
+              value={`${usage.data.used_tokens.toLocaleString(locale)} / ${tokenLimitLabel(usage.data.token_limit, locale, t("generationNoLimit"))}`}
             />
             <Metric
               label={t("generationInferenceAttempts")}

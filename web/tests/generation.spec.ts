@@ -342,6 +342,14 @@ async function createGenerationScenario(
     await dialog
       .getByLabel("埋め込み呼び出しの総予算", { exact: true })
       .fill("8");
+    // Token limits are optional since #1012 (decision 41); this policy keeps
+    // them so the request shows its per-agent limit and allocation.
+    await dialog
+      .getByLabel("合計トークン予算", { exact: true })
+      .fill("1000000");
+    await dialog
+      .getByLabel("Agentごとのトークン上限", { exact: true })
+      .fill("200000");
     await expect(dialog.getByLabel("実行前に承認を必要とする")).toBeChecked();
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);

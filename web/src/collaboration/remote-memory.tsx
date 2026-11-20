@@ -12,6 +12,7 @@ import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Field, useI18n } from "../ui";
 import type { RunManagement } from "../generated/models";
+import { tokenLimitLabel } from "../generation-limits";
 import { collaborationCopy } from "./copy";
 import { DeclineCall } from "./decline-call";
 import { offeredDecline } from "./decline-call-model";
@@ -478,7 +479,7 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                     items={[
                       [
                         t("generationUsedTokens"),
-                        `${allowance.used_tokens.toLocaleString()} / ${allowance.token_limit.toLocaleString()}`,
+                        `${allowance.used_tokens.toLocaleString()} / ${tokenLimitLabel(allowance.token_limit, undefined, t("generationNoLimit"))}`,
                         true,
                       ],
                       [
