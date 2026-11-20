@@ -199,12 +199,17 @@ pub async fn assign_in_drafted(
 		}) {
 			continue;
 		}
+		let subject = qualified_agent(&node, &entry.id, &entry.version);
 		// A generated agent is reused only in chains of the person whose chain
 		// generated it; anyone else needs a person's Catalog Approval (#1012).
-		if scope.generated(&entry).await? && !scope.reusable(&entry).await? {
+		// It is never handed a Task by its own chain: an agent asking for a
+		// specialist does not get itself or a generated ancestor back, so a
+		// nested request still generates one level deeper (`max_depth`).
+		if scope.generated(&entry).await?
+			&& (!scope.reusable(&entry).await? || scope.subjects().contains(&subject))
+		{
 			continue;
 		}
-		let subject = qualified_agent(&node, &entry.id, &entry.version);
 		if scope
 			.bundle()
 			.subjects

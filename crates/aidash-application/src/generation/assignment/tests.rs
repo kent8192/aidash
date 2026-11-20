@@ -793,6 +793,37 @@ async fn a_generated_agent_is_reused_only_in_its_root_persons_chains(
 	assert!(!scope.calls().iter().any(|c| c == "insert"));
 }
 #[rstest]
+#[tokio::test]
+async fn a_generated_agent_is_never_handed_a_task_by_its_own_chain(
+	validation: DefinitionValidation,
+) {
+	// Arrange: the generated agent is reusable by this person, but it is the
+	// agent asking (it is in the chain), so it must not get its own Task back.
+	let mut scope = Scope::new();
+	scope.ordinary("generated", true, SubjectKind::Agent);
+	scope.generated.insert("generated".into());
+	scope.reusable.insert("generated".into());
+	scope.ordinary("ordinary", true, SubjectKind::Agent);
+	scope
+		.chain
+		.push(qualified_agent(&node(), "generated", "1.0.0"));
+	// Act
+	let Assignment::Existing { delegation } = assign_in(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await
+	.unwrap() else {
+		panic!("existing")
+	};
+	// Assert: the next matching agent takes the Task instead.
+	assert_eq!(delegation.agent_id, "ordinary");
+	assert!(!scope.calls().iter().any(|c| c == "insert"));
+}
+#[rstest]
 #[case("thread.read")]
 #[case("agent.execute")]
 #[case("task.read")]
