@@ -50,7 +50,7 @@ struct Scope {
 	chain: Vec<String>,
 	bundle: PolicyBundle,
 	context: Value,
-	inherited: bool,
+	task_origin: Option<Vec<String>>,
 	existing: Option<Request>,
 	run: Option<(String, String, Vec<String>)>,
 	catalog: Vec<Entry>,
@@ -103,7 +103,7 @@ impl Scope {
 			chain: vec!["alice".into()],
 			bundle: serde_json::from_value(json!({"tenant":"tenant"})).unwrap(),
 			context: json!({}),
-			inherited: false,
+			task_origin: None,
 			existing: None,
 			run: None,
 			catalog: vec![],
@@ -395,7 +395,11 @@ impl GenerationAssignmentScope for Scope {
 	}
 	async fn inherit_task_origin(&mut self, _id: Uuid) -> Result<bool> {
 		self.point("origin").await?;
-		Ok(self.inherited)
+		let Some(chain) = &self.task_origin else {
+			return Ok(false);
+		};
+		self.chain.clone_from(chain);
+		Ok(true)
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.point("task.resource").await?;
@@ -441,7 +445,11 @@ impl GenerationAssignmentScope for Scope {
 	}
 	async fn delegate(&mut self, task_id: Uuid, agent: &EntityRef) -> Result<Delegation> {
 		self.point("delegate").await?;
-		assert_eq!(self.chain, ["alice"]);
+		let root_chain = [self.subject().to_owned()];
+		assert_eq!(
+			self.chain,
+			self.task_origin.as_deref().unwrap_or(&root_chain)
+		);
 		self.effects.push("delegate".into());
 		Ok(Delegation {
 			task_id,
@@ -577,8 +585,7 @@ async fn task_origin_rejects_wrong_creator_or_unproven_chain(
 #[tokio::test]
 async fn inherited_worker_origin_preserves_the_narrowed_chain(validation: DefinitionValidation) {
 	let mut scope = Scope::new();
-	scope.inherited = true;
-	scope.chain.push("ancestor".into());
+	scope.task_origin = Some(vec!["alice".into(), "ancestor".into()]);
 	scope.task.created_by = "ancestor".into();
 	let job = generated(
 		assign_in(
@@ -804,9 +811,10 @@ async fn a_generated_agent_is_never_handed_a_task_by_its_own_chain(
 	scope.generated.insert("generated".into());
 	scope.reusable.insert("generated".into());
 	scope.ordinary("ordinary", true, SubjectKind::Agent);
-	scope
-		.chain
-		.push(qualified_agent(&node(), "generated", "1.0.0"));
+	scope.task_origin = Some(vec![
+		"alice".into(),
+		qualified_agent(&node(), "generated", "1.0.0"),
+	]);
 	// Act
 	let Assignment::Existing { delegation } = assign_in(
 		&mut scope,

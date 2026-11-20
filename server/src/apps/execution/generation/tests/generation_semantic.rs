@@ -335,10 +335,10 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case("catalog")]
 #[case("policy")]
 #[case("index")]
+#[tokio::test]
 async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase_authority(
 	#[case] reason: &str,
 	#[future(awt)]
@@ -601,9 +601,9 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case(false)]
 #[case(true)]
+#[tokio::test]
 async fn background_indexing_uses_generated_authority_and_checks_expiry_before_http(
 	#[case] expired: bool,
 	#[future]
@@ -715,10 +715,10 @@ async fn excessive_embedding_usage_retains_reservation_and_prevents_inference(
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case("unapproved")]
 #[case("approved")]
 #[case("token_exhausted")]
+#[tokio::test]
 async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 	#[case] case: &str,
 	#[future(awt)]
@@ -1048,11 +1048,11 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 use reinhardt::query::QueryStatementBuilder as _;
 
 #[rstest::rstest]
-#[tokio::test]
 #[case("current")]
 #[case("expired")]
 #[case("exhausted")]
 #[case("expires_during_call")]
+#[tokio::test]
 async fn native_maintenance_retains_generated_origin_budgets_and_rechecks_expiry(
 	#[case] mode: &str,
 	#[future(awt)]
@@ -1141,10 +1141,10 @@ async fn native_maintenance_retains_generated_origin_budgets_and_rechecks_expiry
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case("current")]
 #[case("expired")]
 #[case("exhausted")]
+#[tokio::test]
 async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_budgets(
 	#[case] mode: &str,
 	#[future(awt)]

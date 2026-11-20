@@ -2018,10 +2018,10 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case("max_agents")]
 #[case("max_concurrent")]
 #[case("token_budget")]
+#[tokio::test]
 async fn count_concurrency_and_total_token_limits_are_independent(
 	#[future(awt)]
 	#[from(common::native_application)]
