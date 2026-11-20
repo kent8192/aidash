@@ -998,15 +998,16 @@ async fn cancel_grant(
 	use aidash_domain::federation::execution::admission::{
 		RemoteExecutionControlState, RemoteExecutionPhase,
 	};
-	if !on_acknowledge
-		&& !(matches!(
-			response.phase,
-			RemoteExecutionPhase::Completed
-				| RemoteExecutionPhase::Failed
-				| RemoteExecutionPhase::Cancelled
-		) || (matches!(response.phase, RemoteExecutionPhase::Admitted)
-			&& matches!(response.control, RemoteExecutionControlState::Cancelled)))
-	{
+	// The receiver's answer settles the remote work when it has ended, or when
+	// an admitted execution was cancelled before it ever started.
+	let ended = matches!(
+		response.phase,
+		RemoteExecutionPhase::Completed
+			| RemoteExecutionPhase::Failed
+			| RemoteExecutionPhase::Cancelled
+	) || (matches!(response.phase, RemoteExecutionPhase::Admitted)
+		&& matches!(response.control, RemoteExecutionControlState::Cancelled));
+	if !(on_acknowledge || ended) {
 		return Ok(false);
 	}
 	let mut tx = f.store.pool.begin(&scope).await?;

@@ -6334,6 +6334,7 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
+			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 		])
 		.await;
