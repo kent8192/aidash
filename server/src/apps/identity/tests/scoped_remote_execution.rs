@@ -4451,6 +4451,46 @@ async fn the_renewal_extends_only_a_grant_whose_activation_was_recorded(
 	p.close().await;
 }
 
+/// A started grant lives past its lifetime while its Task is open (#1013), so
+/// the Viewer's requests about its Run re-evaluate the grant's whole chain
+/// first: once the requester may no longer delegate across Nodes, a sleeping
+/// Run's Working Area is out of their reach (#1013 review).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_broken_chain_refuses_the_viewer_of_a_sleeping_remote_run(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	lapse_grant(&p).await;
+	let inspect = format!("/api/executions/{}/remote-preview", p.admission);
+	let (status, inspection) = request(&p.aa, &p.token, "GET", &inspect, json!(null)).await;
+	assert_eq!(status, 200, "the chain holds: {inspection}");
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-stays-home","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["federation.execute"],"resources":{"kinds":["node"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, body) = request(&p.aa, &p.token, "GET", &inspect, json!(null)).await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/executions/{}/preview-tickets", p.admission),
+		json!({"kind": "file", "area_id": Uuid::new_v4(), "file_id": Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
