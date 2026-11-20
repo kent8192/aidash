@@ -558,7 +558,7 @@ export async function setup(
     const path = url.pathname;
     if (
       path === "/api/events/stream" ||
-      /^\/api\/runs\/[^/]+\/inference\/stream$/.test(path)
+      /^\/api\/executions\/[^/]+\/inference\/stream$/.test(path)
     )
       return route.abort();
     const access = asSubject
@@ -816,7 +816,7 @@ export async function setup(
         return route.fulfill({ json: data.human_requests[0] });
       }
     }
-    const runsThread = path.match(/^\/api\/threads\/([^/]+)\/runs$/)?.[1];
+    const runsThread = path.match(/^\/api\/threads\/([^/]+)\/executions$/)?.[1];
     if (runsThread)
       return route.fulfill({
         json: {
@@ -857,7 +857,7 @@ export async function setup(
         },
       });
     }
-    if (/^\/api\/runs\/[^/]+\/live-preview$/.test(path))
+    if (/^\/api\/executions\/[^/]+\/live-preview$/.test(path))
       return route.fulfill({ status: 404, json: { error: "not_found" } });
     const run = data.runs.find(
       (value) => path === `/api/executions/${value.id}`,
