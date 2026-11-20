@@ -6354,23 +6354,40 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 async fn default_member_policy_from_before_scratch_spaces_gains_every_later_grant(
 	#[future] fresh_database: MigrationFixture,
 ) {
-	// Arrange: the history up to 0067's predecessor and a Tenant with that policy.
+	// Arrange: the history without 0067 and everything that follows it, and a
+	// Tenant with that policy. `migrate identity 0066_...` alone would apply
+	// only its declared dependencies, and some identity migrations before it
+	// read tables of other apps they do not name.
 	let fixture = fresh_database.await;
-	let mut command = deployment_command(&fixture.url, fixture.directory.path());
-	command
-		.args(["migrate", "identity", "0066_node_auth_history_merge"])
-		.stdin(Stdio::null())
-		.kill_on_drop(true);
-	let output = tokio::time::timeout(Duration::from_secs(600), command.output())
-		.await
-		.expect("migrating to identity 0066 must finish")
-		.unwrap();
-	assert!(
-		output.status.success(),
-		"{}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
-	);
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let mut later = BTreeSet::from([(
+		"identity".to_owned(),
+		"0067_scratch_member_policy".to_owned(),
+	)]);
+	loop {
+		let known = later.len();
+		for migration in &migrations {
+			if migration
+				.dependencies
+				.iter()
+				.any(|dependency| later.contains(dependency))
+			{
+				later.insert((migration.app_label.clone(), migration.name.clone()));
+			}
+		}
+		if later.len() == known {
+			break;
+		}
+	}
+	let excluded = later
+		.iter()
+		.map(|(app, name)| (app.as_str(), name.as_str()))
+		.collect::<Vec<_>>();
+	fixture.migrate_excluding(&excluded).await;
 	let tenant = "member-policy-before-0067";
 	let members = json!({
 		"id": "members",
