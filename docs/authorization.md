@@ -234,16 +234,19 @@ the Tenant's Catalog Approvals to the new Node exactly as a person's creation
 does. The Node records its creator as kind `agent` with the root person, the
 creating Run and Task (database-only columns of `identity/0109`); a retried
 call returns the Node its first call created. `node_delete` performs the
-ordinary recoverable deletion, never a purge: it deletes a Node that a chain of
-the same root person created, or any Node when that person holds
-`node.delete`. The default and last live Node are never deleted, and a Run
+ordinary recoverable deletion, never a purge: it deletes only a Node that a Run
+of its own flow created (the creating Task shares the deleting Run's Root Task;
+#1012 decision 20). Another flow's Node, even one of the same root person, is
+refused, and the root person's `node.delete` does not widen this; that person
+or a Tenant Administrator deletes it from a browser session. The default and
+last live Node are never deleted, and a Run
 cannot delete the Node it runs on. The deletion records `deleted_by_kind`
 `agent`, and a Tenant Administrator restores it as any deletion. Both calls
 are Authority Changes (ADR 0121): the Run releases its own authority lease
 while the call runs, so the exclusive policy lock never waits on the Run that
 asked for it; a busy Tenant answers the call with the usual policy-busy
-refusal. Refusals come back to the model as tool errors and are recorded in
-the decision log. Administration history records the events with actor kind
+refusal. Refusals come back to the model as tool errors; a refused
+`node.create` is recorded in the decision log. Administration history records the events with actor kind
 `agent` and the root person as the concerned subject.
 
 `GET /api/tenants/{tenant}/org-chart` shows, for each Node the caller may read

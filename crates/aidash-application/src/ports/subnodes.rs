@@ -37,9 +37,13 @@ pub trait CreateScope: AuthorizationLease {
 #[async_trait]
 pub trait ManageScope: Send {
 	async fn lock(&mut self, id: aidash_domain::subnodes::SubnodeId) -> Result<Option<Subnode>>;
-	/// The person at the root of a Run's delegation chain, when it is known.
-	async fn root_subject(&mut self, _run: Uuid) -> Result<Option<String>> {
-		Ok(None)
+	/// The Root Task of each of `tasks`: the flow it belongs to (#1012,
+	/// [`crate::flows::roots`]). A Task this cannot place is left out.
+	async fn flow_roots(
+		&mut self,
+		_tasks: &[Uuid],
+	) -> Result<std::collections::BTreeMap<Uuid, Uuid>> {
+		Ok(Default::default())
 	}
 	/// Current creator authority; it may have narrowed since creation.
 	async fn creator_authority(&mut self, subnode: &Subnode) -> Result<Allowance>;

@@ -206,8 +206,10 @@ pub async fn task(
 }
 
 /// Deletes a Subnode (`delete_subnode`). The creating Agent may do so from any
-/// Run it works for the same person, not only the creating Run (#1012): the
-/// Subnode outlives that Run. Its records stay readable.
+/// Run of the same flow, not only the creating Run (#1012 decision 46): the
+/// Subnode outlives that Run. Another flow does not, even of the same person;
+/// that flow's root person and Tenant Administrators delete it from a browser
+/// session. Its records stay readable.
 pub async fn dissolve(
 	scope: &mut dyn crate::ports::subnodes::ManageScope,
 	run: &RunMetadata,
@@ -217,9 +219,11 @@ pub async fn dissolve(
 	if creator(&subnode, run).is_err() {
 		let same_agent = subnode.creator_agent.id == run.agent_id
 			&& subnode.creator_agent.version == run.agent_version;
-		let root = scope.root_subject(run.id).await?;
-		let creator_root = scope.root_subject(subnode.creator_run_id).await?;
-		if !same_agent || root.is_none() || root != creator_root {
+		let roots = scope
+			.flow_roots(&[run.task_id, subnode.creator_task_id])
+			.await?;
+		let flow = roots.get(&run.task_id);
+		if !same_agent || flow.is_none() || flow != roots.get(&subnode.creator_task_id) {
 			return Err(Error::Forbidden);
 		}
 	}

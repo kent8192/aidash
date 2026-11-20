@@ -348,24 +348,19 @@ pub(crate) struct Management<'a> {
 }
 #[async_trait]
 impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
-	async fn root_subject(&mut self, run: Uuid) -> Result<Option<String>> {
+	async fn flow_roots(
+		&mut self,
+		tasks: &[Uuid],
+	) -> Result<std::collections::BTreeMap<Uuid, Uuid>> {
 		let tenant = self.access.identity.tenant.clone();
-		let (sql, values) = Query::select()
-			.column(Alias::new("root_subject"))
-			.from(Alias::new("authorization_execution"))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-			.build(PostgresQueryBuilder);
-		let row = self
-			.access
-			.tx
-			.native_mut()
-			.fetch_optional(&sql, convert_values(values))
-			.await
-			.map_err(crate::Error::from)?;
-		Ok(row.and_then(|row| {
-			reinhardt::db::orm::QueryRow::from_backend_row(row).get("root_subject")
-		}))
+		aidash_application::flows::roots(
+			&mut crate::apps::identity::repositories::flows::NativeFlowGraph {
+				tx: self.access.tx.native_mut(),
+				tenant,
+			},
+			tasks,
+		)
+		.await
 	}
 	async fn lock(&mut self, id: SubnodeId) -> Result<Option<Subnode>> {
 		let tenant = self.access.identity.tenant.clone();

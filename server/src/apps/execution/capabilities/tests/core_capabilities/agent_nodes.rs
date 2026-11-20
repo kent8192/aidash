@@ -129,12 +129,16 @@ async fn an_agent_creates_a_node_only_when_its_root_person_may(
 	c.close().await;
 }
 
+/// An Agent deletes a Node its own flow created, and no other: not one
+/// another flow of the same person created, even though that person may
+/// delete Nodes (#1012 decision 20).
 #[rstest::rstest]
 #[tokio::test]
-async fn an_agent_deletes_its_own_chains_node_but_not_another_persons(
+async fn an_agent_deletes_its_own_flows_node_but_not_another_flows(
 	#[future] capability_fixture: CoreFixture,
 ) {
-	// Arrange: two Nodes alice's chain created; one is then recorded as bob's.
+	// Arrange: two Nodes alice's flow created; one is then recorded as made by
+	// another Root Task of hers in the same Thread. alice holds `node.delete`.
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
 	let own = node_tool(&c.f, &run, "call-1", "node_create", json!({"label": "Own"}))
@@ -148,25 +152,34 @@ async fn an_agent_deletes_its_own_chains_node_but_not_another_persons(
 		&run,
 		"call-2",
 		"node_create",
-		json!({"label": "Bob's"}),
+		json!({"label": "Another flow's"}),
 	)
 	.await
 	.unwrap()["node"]
 		.as_str()
 		.unwrap()
 		.to_owned();
-	sqlx::query("UPDATE nodes SET created_by_subject = 'bob' WHERE name = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
+		.bind(c.task)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, second) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/threads/{thread}/tasks"),
+		json!({"title": "Another request", "description": "Unrelated"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{second}");
+	let second: Uuid = serde_json::from_value(second["id"].clone()).unwrap();
+	sqlx::query("UPDATE nodes SET created_by_task_id = $1 WHERE name = $2")
+		.bind(second)
 		.bind(&others)
 		.execute(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	// alice may not delete Nodes in general.
-	common::replace_policy(
-		&c.f.store,
-		"acme",
-		denying(&c, "no-node-delete", &["alice"], &["node.delete"]),
-	)
-	.await;
 	// Act
 	let refused = node_tool(&c.f, &run, "call-3", "node_delete", json!({"node": others})).await;
 	let deleted = node_tool(&c.f, &run, "call-4", "node_delete", json!({"node": own}))
@@ -180,9 +193,9 @@ async fn an_agent_deletes_its_own_chains_node_but_not_another_persons(
 		json!({"node": aidash_domain::nodes::NodeName::derived("acme").as_str()}),
 	)
 	.await;
-	// Assert: another person's Node stays; her chain's own is deleted, not purged.
+	// Assert: the other flow's Node stays; her flow's own is deleted, not purged.
 	assert!(
-		matches!(&refused, Err(aidash_server::Error::Invalid(message)) if message.contains("node.delete")),
+		matches!(&refused, Err(aidash_server::Error::Invalid(message)) if message.contains("own flow")),
 		"{refused:?}"
 	);
 	assert_eq!(deleted["deleted"], true);
@@ -194,7 +207,7 @@ async fn an_agent_deletes_its_own_chains_node_but_not_another_persons(
 	.await
 	.unwrap();
 	assert_eq!(deletions, vec![(own.clone(), "agent".to_owned(), None)]);
-	// The Node the Run works on is never its to delete.
+	// The Node the Run works on, which a person created, is never its to delete.
 	assert!(
 		matches!(default, Err(aidash_server::Error::Invalid(_))),
 		"{default:?}"
@@ -413,11 +426,13 @@ async fn disabling_the_creating_agent_deletes_its_subnodes(
 async fn the_org_chart_shows_each_person_what_they_may_see(
 	#[future] capability_fixture: CoreFixture,
 ) {
-	// Arrange: alice's chain creates a Node and sets up a Duty on its own
-	// Node; bob is a member who may read only the default Node, reads no
-	// Thread of hers and administers nothing.
+	// Arrange: alice's chain creates a Node, sets up a Duty on its own Node
+	// and forms a Subnode there, recorded by its Node's address as
+	// `subnode_create` records it; bob is a member who may read only the
+	// default Node, reads no Thread of hers and administers nothing.
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
+	let subnode = late_subnode::seed_subnode(&c.f, run.id, &[]).await;
 	let node = node_tool(
 		&c.f,
 		&run,
@@ -489,6 +504,10 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		.unwrap();
 	assert_eq!(home["duties"][0]["title"], "Chart digest");
 	assert_eq!(home["duties"][0]["flow"], json!(c.task));
+	assert_eq!(home["subnodes"][0]["id"], json!(subnode), "{home}");
+	assert_eq!(home["subnodes"][0]["root_subject"], "alice");
+	assert_eq!(home["subnodes"][0]["flow"], json!(c.task));
+	assert_eq!(home["hidden_subnodes"], 0);
 	// bob does not see that Node; on the Node he reads, alice's Duty is only
 	// counted, and he sees no spend.
 	assert_eq!(bob_status, 200, "{limited}");
@@ -507,10 +526,74 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		.unwrap();
 	assert_eq!(bob_home["duties"], json!([]));
 	assert_eq!(bob_home["hidden_duties"], 1);
+	assert_eq!(bob_home["subnodes"], json!([]));
+	assert_eq!(bob_home["hidden_subnodes"], 1);
 	assert!(bob_home.get("spend").is_none());
 	assert_eq!(limited["people"], json!([]));
 	// A Subject Credential reads no org chart.
 	let (status, _) = request(&c.app, &c.token, "GET", path, Value::Null).await;
 	assert_eq!(status, 403);
+	c.close().await;
+}
+
+async fn notices(c: &CoreFixture, budget: Uuid) -> i64 {
+	sqlx::query_scalar("SELECT count(*) FROM budget_notices WHERE budget_id = $1")
+		.bind(budget)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+/// A Soft Limit mail the SMTP server refuses is not recorded as sent: the
+/// next pass sends it again, and a sent one is not sent twice (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_soft_limit_mail_that_fails_is_sent_again_on_the_next_pass(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: a Tenant Budget past its Soft Limit, and an SMTP server that
+	// refuses connections.
+	let mut c = capability_fixture.await;
+	let budget = Uuid::now_v7();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, soft_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 10, 'stop', '{ops@example.test}', 1, now(), 'alice', now())")
+		.bind(budget)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO budget_spend (tenant, day, node, root_subject, duty_id, spent_nanocredits, unpriced_calls) VALUES ('acme', date_trunc('day', now(), 'UTC'), 'any', 'alice', '00000000-0000-0000-0000-000000000000', 10, 0)")
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let port = closed.local_addr().unwrap().port();
+	drop(closed);
+	c.f.config.smtp = Some(
+		aidash_server::apps::operations::serializers::deployment::SmtpSettings {
+			host: "127.0.0.1".into(),
+			port,
+			from: "budgets@example.test".into(),
+			username: None,
+			password: None,
+			starttls: false,
+		},
+	);
+	// Act
+	let failed = aidash_server::apps::identity::services::budgets::notice_pass(&c.f)
+		.await
+		.unwrap();
+	// Assert: nothing was sent, and the window's notice is still open.
+	assert_eq!(failed, 0);
+	assert_eq!(notices(&c, budget).await, 0);
+	// Act: the next pass goes through (no SMTP settings: recorded only).
+	c.f.config.smtp = None;
+	let sent = aidash_server::apps::identity::services::budgets::notice_pass(&c.f)
+		.await
+		.unwrap();
+	let again = aidash_server::apps::identity::services::budgets::notice_pass(&c.f)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!((sent, again), (1, 0));
+	assert_eq!(notices(&c, budget).await, 1);
 	c.close().await;
 }

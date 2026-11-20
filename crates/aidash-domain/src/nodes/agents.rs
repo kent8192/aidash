@@ -1,7 +1,7 @@
 //! Nodes an Agent's chain creates and deletes (#1012, ADR 0143). An Agent has
 //! no authority of its own: it creates a Node only when the person at the root
-//! of its chain holds `node.create`, and it deletes a Node that a chain of the
-//! same person created, or any Node when that person holds `node.delete`.
+//! of its chain holds `node.create`, and it deletes only a Node its own flow
+//! created. Every other Node is deleted by a person, from a browser session.
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -69,24 +69,28 @@ impl NodeCreator {
 /// Why an Agent's chain may not delete a Node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletionRefusal {
-	/// Another person's chain, or a person, created it, and the root person
-	/// holds no `node.delete`.
-	NotOwnChain,
+	/// A person, or another flow, created it: even another flow of the same
+	/// person.
+	NotOwnFlow,
 }
 
-/// Whether an Agent's chain acting as `root_person` may delete a Node that
-/// `creator` created: one a chain of the same person created, or any Node
-/// when that person holds `node.delete` (#1012). The default and last live
-/// Node rules of [`super::deletion::check_delete`] still apply.
+/// Whether an Agent may delete a Node that `creator` created: only one that a
+/// Run of its own flow created (#1012 decision 20). `creator_flow` is the
+/// Root Task of the Task whose Run created the Node, and `own_flow` the Root
+/// Task of the deleting Run's Task. A person's Node, or one another flow
+/// created, is deleted by that flow's root person or a Tenant Administrator
+/// from a browser session, never by an Agent, whatever its root person may
+/// do. The default and last live Node rules of
+/// [`super::deletion::check_delete`] still apply.
 pub fn may_delete(
 	creator: &NodeCreator,
-	root_person: &str,
-	holds_node_delete: bool,
+	creator_flow: Option<Uuid>,
+	own_flow: Uuid,
 ) -> std::result::Result<(), DeletionRefusal> {
-	if holds_node_delete || creator.root_subject() == Some(root_person) {
+	if matches!(creator, NodeCreator::Agent { .. }) && creator_flow == Some(own_flow) {
 		Ok(())
 	} else {
-		Err(DeletionRefusal::NotOwnChain)
+		Err(DeletionRefusal::NotOwnFlow)
 	}
 }
 
@@ -105,6 +109,9 @@ mod tests {
 	use super::*;
 	use rstest::rstest;
 
+	const FLOW: Uuid = Uuid::from_u128(1);
+	const OTHER_FLOW: Uuid = Uuid::from_u128(2);
+
 	fn agent(root: &str) -> NodeCreator {
 		NodeCreator::Agent {
 			root_subject: root.into(),
@@ -114,20 +121,18 @@ mod tests {
 	}
 
 	#[rstest]
-	#[case::own_chain(agent("alice"), "alice", false, true)]
-	#[case::other_person_chain(agent("bob"), "alice", false, false)]
-	#[case::other_person_chain_with_node_delete(agent("bob"), "alice", true, true)]
-	#[case::person_created(NodeCreator::Person { identity: None }, "alice", false, false)]
-	#[case::person_created_with_node_delete(NodeCreator::Person { identity: None }, "alice", true, true)]
-	#[case::first_node(NodeCreator::Deployment, "alice", false, false)]
-	fn an_agent_deletes_only_what_its_root_person_chains_created(
+	#[case::own_flow(agent("alice"), Some(FLOW), true)]
+	#[case::another_flow_of_the_same_person(agent("alice"), Some(OTHER_FLOW), false)]
+	#[case::unknown_flow(agent("alice"), None, false)]
+	#[case::person_created(NodeCreator::Person { identity: None }, Some(FLOW), false)]
+	#[case::first_node(NodeCreator::Deployment, Some(FLOW), false)]
+	fn an_agent_deletes_only_what_its_own_flow_created(
 		#[case] creator: NodeCreator,
-		#[case] root: &str,
-		#[case] holds_node_delete: bool,
+		#[case] creator_flow: Option<Uuid>,
 		#[case] allowed: bool,
 	) {
 		// Act
-		let decision = may_delete(&creator, root, holds_node_delete);
+		let decision = may_delete(&creator, creator_flow, FLOW);
 		// Assert
 		assert_eq!(decision.is_ok(), allowed);
 	}
