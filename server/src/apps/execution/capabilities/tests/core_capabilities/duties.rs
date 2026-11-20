@@ -1816,8 +1816,8 @@ async fn a_booking_goes_when_its_run_ends(#[future] capability_fixture: CoreFixt
 	c.close().await;
 }
 
-/// The fixture's policy where each person holds the Thread actions only on
-/// Threads they own.
+/// The fixture's policy where each person holds the Thread actions, and
+/// starts Tasks and Duties, only in Threads they own.
 fn owners_only(c: &CoreFixture) -> Value {
 	let mut policy = c.policy.clone();
 	for person in ["alice", "bob"] {
@@ -1825,7 +1825,15 @@ fn owners_only(c: &CoreFixture) -> Value {
 			"id": format!("{person}-own-threads"),
 			"effect": "deny",
 			"subjects": {"ids": [person]},
-			"actions": ["thread.read", "thread.update", "thread.delete", "thread.share", "thread.events"],
+			"actions": [
+				"thread.read",
+				"thread.update",
+				"thread.delete",
+				"thread.share",
+				"thread.events",
+				"task.create",
+				"duty.create",
+			],
 			"resources": {"kinds": ["thread"]},
 			"condition": {"op": "not_eq", "left": {"source": "resource", "path": "/owner"}, "right": {"source": "literal", "value": person}},
 		}));
