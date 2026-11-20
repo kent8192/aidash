@@ -1,7 +1,8 @@
 //! Stopping a flow (#1012, ADR 0143): one action stops everything a request's
-//! chain made. Only a person's browser session stops one, and only someone
-//! who may control the Root Task's Run (`run.control`) or administers the Root
-//! Task's Node (`node.administer`, which Tenant Administrators hold).
+//! chain made, including the work it handed to other Deployments. Only a
+//! person's browser session stops one, and only someone who may control the
+//! Root Task's Run (`run.control`) or administers the Root Task's Node
+//! (`node.administer`, which Tenant Administrators hold).
 use super::tenant_administration::TenantAdministrations;
 use crate::apps::identity::{
 	oidc::BrowserOrigin,
@@ -36,9 +37,10 @@ fn stopped(id: Uuid, outcome: StopOutcome) -> StoppedItem {
 }
 
 impl TenantAdministrations {
-	/// Stops the flow of `root`: cancels its open Runs, ends its Subnodes and
-	/// pauses its Duties, each in its own transaction, and lists the Nodes it
-	/// created, which stay. One item that fails does not keep the rest running.
+	/// Stops the flow of `root`: cancels its open Runs and the work it handed
+	/// to other Deployments, ends its Subnodes and pauses its Duties, each in
+	/// its own transaction, and lists the Nodes it created, which stay. One
+	/// item that fails does not keep the rest running.
 	pub(crate) async fn stop_flow(
 		&self,
 		actor: Actor,
@@ -102,10 +104,12 @@ impl TenantAdministrations {
 			let flow = aidash_application::flows::closure(&mut graph, root).await?;
 			let runs: Vec<Uuid> = flow.runs.iter().copied().collect();
 			let open = graph.open_runs(&runs).await?;
-			Ok((flow, open))
+			let tasks: Vec<Uuid> = flow.tasks.iter().copied().collect();
+			let grants = graph.remote_grants(&tasks).await?;
+			Ok((flow, open, grants))
 		}
 		.await;
-		let (flow, open) = access.finish(result).await?;
+		let (flow, open, grants) = access.finish(result).await?;
 		let scope = TenancyScope::tenant(&tenant)?;
 		let tasks: Vec<Uuid> = flow.tasks.iter().copied().collect();
 
@@ -119,6 +123,26 @@ impl TenantAdministrations {
 			match f.store.control(&scope, *id, RunControlAction::Cancel).await {
 				Ok(_) => runs.push(stopped(*id, StopOutcome::Stopped)),
 				Err(error) => runs.push(failed(*id, error)),
+			}
+		}
+
+		// Work handed to another Deployment: the grant is revoked, so it
+		// renews no more, and the receiver cancels its Run (decision 23). The
+		// person stopping the flow need not be the grant's root person, so
+		// this runs as the system, as a Node deletion's cancellation does.
+		let mut remote = vec![];
+		for (grant, settled) in grants {
+			if settled {
+				remote.push(stopped(grant, StopOutcome::AlreadyStopped));
+				continue;
+			}
+			match crate::apps::identity::repositories::home_execution::cancel_flow_grant(
+				f, &tenant, grant,
+			)
+			.await
+			{
+				Ok(()) => remote.push(stopped(grant, StopOutcome::Stopped)),
+				Err(error) => remote.push(failed(grant, error)),
 			}
 		}
 
@@ -222,6 +246,7 @@ impl TenantAdministrations {
 			root_task: root,
 			tasks: flow.tasks.len(),
 			runs,
+			remote,
 			subnodes,
 			duties,
 			nodes,

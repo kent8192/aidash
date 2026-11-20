@@ -93,6 +93,49 @@ impl NativeFlowGraph<'_> {
 		.await
 	}
 
+	/// The Remote Grants that hand the flow's Tasks to another Deployment,
+	/// each with whether it is settled: revoked, and its Task ended. A grant
+	/// that still renews, or whose Task is still open, is not.
+	pub(crate) async fn remote_grants(&mut self, tasks: &[Uuid]) -> Result<Vec<(Uuid, bool)>> {
+		if tasks.is_empty() {
+			return Ok(vec![]);
+		}
+		let (g, t) = (Alias::new("g"), Alias::new("t"));
+		native::query_as(
+			&Query::select()
+				.expr_as(Expr::col((g.clone(), Alias::new("id"))), Alias::new("id"))
+				.expr_as(
+					Expr::col((g.clone(), Alias::new("revoked"))).and(
+						Expr::col((t.clone(), Alias::new("status"))).is_in([
+							"COMPLETED",
+							"FAILED",
+							"CANCELLED",
+							"ABANDONED",
+						]),
+					),
+					Alias::new("settled"),
+				)
+				.from_as(Alias::new("authorization_remote_grants"), g.clone())
+				.join(
+					JoinType::InnerJoin,
+					TableRef::table_alias(Alias::new("tasks"), t.clone()),
+					Expr::col((t.clone(), Alias::new("id")))
+						.equals((g.clone(), Alias::new("task_id")))
+						.and(
+							Expr::col((t.clone(), Alias::new("tenant")))
+								.equals((g.clone(), Alias::new("tenant"))),
+						),
+				)
+				.and_where(Expr::col((g.clone(), Alias::new("tenant"))).eq(self.tenant.clone()))
+				.and_where(Expr::col((g.clone(), Alias::new("task_id"))).is_in(ids(tasks)))
+				.order_by((g, Alias::new("id")), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&["id", "settled"])
+		.fetch_all(&mut *self.tx)
+		.await
+	}
+
 	/// Active Subnodes a Run of the flow's Tasks created, with their creating Run.
 	pub(crate) async fn active_subnodes(&mut self, tasks: &[Uuid]) -> Result<Vec<(Uuid, Uuid)>> {
 		if tasks.is_empty() {

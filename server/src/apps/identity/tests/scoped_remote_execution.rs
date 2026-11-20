@@ -10580,3 +10580,85 @@ async fn home_cancellation_closes_remote_questions_and_refuses_late_answers(
 	assert_eq!(status, 403, "{body}");
 	p.close().await;
 }
+
+/// Stopping a flow reaches the work it handed to another Deployment (#1012,
+/// ADR 0143): the grant is revoked, so it renews no more, the receiver
+/// cancels its Run, and the Home Task is cancelled. The stop cancels it as the
+/// system, the way a Node deletion does, not as the grant's root person.
+#[rstest::rstest]
+#[tokio::test]
+async fn stopping_a_flow_cancels_the_work_it_handed_to_another_deployment(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	// Arrange: the delegated Task becomes a child of a new Root Task in its
+	// Thread, and the receiver's Run has started.
+	let p = scoped_pair;
+	let thread =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.thread_id;
+	let (status, root) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/threads/{thread}/tasks"),
+		json!({"title": "Flow root", "description": "Hands work on"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{root}");
+	let root: Uuid = serde_json::from_value(root["id"].clone()).unwrap();
+	sqlx::query("UPDATE tasks SET parent_id = $1 WHERE id = $2")
+		.bind(root)
+		.bind(p.task)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "THINKING");
+	let path = format!("/api/tenants/acme/flows/{root}/stop");
+	// Act
+	let alice = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let (status, stopped) = alice.send("POST", &path, Value::Null).await;
+	// Assert: the remote item is listed and every side has stopped.
+	assert_eq!(status, 200, "{stopped}");
+	assert_eq!(
+		stopped["remote"],
+		json!([{"id": p.grant, "outcome": "stopped"}]),
+		"{stopped}"
+	);
+	let revoked: bool =
+		sqlx::query_scalar("SELECT revoked FROM authorization_remote_grants WHERE id = $1")
+			.bind(p.grant)
+			.fetch_one(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(revoked);
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"CANCELLED"
+	);
+	assert_eq!(p.run().await.control.as_str(), "CANCELLED");
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
+	// The grant takes no more input, and a second stop finds it stopped.
+	let sent = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+		json!({"id": Uuid::new_v4(), "content": "Still there?"}),
+	)
+	.await;
+	assert_ne!(sent.0, 200, "{}", sent.1);
+	let (status, again) = alice.send("POST", &path, Value::Null).await;
+	assert_eq!(status, 200, "{again}");
+	assert_eq!(again["remote"][0]["outcome"], "already_stopped");
+	p.close().await;
+}
