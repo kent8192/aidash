@@ -175,12 +175,16 @@ pub(crate) async fn insert_run(
 	Ok(())
 }
 
+/// A Task's script marker beside its script row, if the row is still there:
+/// language, source and stdin.
+type TaskScriptRow = (bool, Option<String>, Option<String>, Option<String>);
+
 /// What the Run of `task` executes instead of a model: the script a Duty
 /// started that Task to run, or `Gone` when the script went with its Duty
 /// (#1011). Read by the harness on each step of a Run, in the Run's own scope.
 pub(crate) async fn invocation(tx: &mut dyn TransactionExecutor, task: Uuid) -> Result<TaskScript> {
 	let (tasks, runs) = (Alias::new("tasks"), Alias::new("duty_script_runs"));
-	let row: Option<(bool, Option<String>, Option<String>, Option<String>)> = native::query_as(
+	let row: Option<TaskScriptRow> = native::query_as(
 		&Query::select()
 			.column((tasks.clone(), Alias::new("duty_script")))
 			.column((runs.clone(), Alias::new("language")))
