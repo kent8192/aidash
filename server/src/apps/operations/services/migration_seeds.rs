@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 31] {
+fn assets() -> [(&'static str, String); 32] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -151,6 +151,10 @@ fn assets() -> [(&'static str, String); 31] {
 		(
 			"execution/sql/backward/0150_execution_events.sql",
 			crate::apps::execution::services::execution_event_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0153_area_queue_sleep_backfill.sql",
+			crate::apps::execution::services::area_queue_sleep_backfill::forward(),
 		),
 	]
 }

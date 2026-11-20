@@ -2030,6 +2030,173 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 	c.close().await;
 }
 
+/// A booking delayed at insertion must go with its Requester's takeover.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_successor_discards_a_booking_already_in_flight(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use reinhardt::query::{Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query};
+
+	let c = capability_fixture.await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, thread(&c).await, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let trigger_id: Uuid = serde_json::from_value(trigger["id"].clone()).unwrap();
+	let run = admit(&c).await;
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query(
+		"UPDATE duties SET halt = 'requester_left', halted_at = now(), successor = 'bob' WHERE id = $1",
+	)
+	.bind(id)
+	.execute(driver)
+	.await
+	.unwrap();
+	let bob = common::BrowserMapping::new(&c.f, "acme", "bob").await;
+
+	// The booking insert must check its trigger foreign key. Hold that row
+	// until takeover either commits or waits for the booking transaction.
+	let mut blocker = driver.begin().await.unwrap();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("duty_triggers"))
+		.and_where(Expr::col("id").eq(Expr::value(trigger_id)))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	let locked: Uuid = sqlx::query_scalar(&lock)
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+	assert_eq!(locked, trigger_id);
+	let blocker_pid = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+	let (status, resumed) = {
+		let booking = aidash_server::apps::workspaces::services::duty_events::book(
+			&c.f.store, &run, trigger_id,
+		);
+		tokio::pin!(booking);
+		let booking_pid = tokio::select! {
+			pid = super::lifecycle_tests::wait_for_blocked_connection(driver, blocker_pid) => pid,
+			result = &mut booking => panic!("booking completed before its trigger was unlocked: {result:?}"),
+		};
+		let resume_path = format!("/api/duties/{id}/resume");
+		let resume = bob.send("POST", &resume_path, Value::Null);
+		tokio::pin!(resume);
+		let early = tokio::select! {
+			result = &mut resume => Some(result),
+			_ = super::lifecycle_tests::wait_for_blocked_connection(driver, booking_pid) => None,
+		};
+		blocker.commit().await.unwrap();
+		booking.await.unwrap();
+		match early {
+			Some(result) => result,
+			None => resume.await,
+		}
+	};
+	assert_eq!(status, 200, "{resumed}");
+	assert_eq!(resumed["requester"], "bob");
+
+	let (status, receipt) = send_event(
+		&c,
+		trigger["url"].as_str().unwrap(),
+		trigger["secret"].as_str(),
+		br#"{"check_suite":{"conclusion":"success"}}"#,
+	)
+	.await;
+	assert_eq!(status, 200, "{receipt}");
+	assert_eq!(receipt["outcome"], "started", "{receipt}");
+	c.close().await;
+}
+
+/// Deleting a Duty leaves its ordinary Task running within the creating flow.
+#[rstest::rstest]
+#[tokio::test]
+async fn stopping_a_flow_cancels_the_tasks_of_a_deleted_duty(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let creator = admit(&c).await;
+	let duty = agent_tool(
+		&c.f.store,
+		&creator,
+		"create-scheduled-duty",
+		"duty_create",
+		json!({
+			"title": "Flow digest",
+			"mission": "Collect the open questions.",
+			"trigger": {"kind": "cron", "expression": "0 9 * * 1-5", "time_zone": "Asia/Tokyo"},
+		}),
+	)
+	.await
+	.unwrap();
+	let duty: Uuid = serde_json::from_value(duty["duty_id"].clone()).unwrap();
+	make_due(&c, duty).await;
+	let started = pass(&c.f, Utc::now()).await.unwrap().started;
+	assert_eq!(started.len(), 1);
+	let run =
+		c.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.task_id == started[0])
+			.unwrap();
+	let (status, deleted) = request(
+		&c.app,
+		&c.token,
+		"DELETE",
+		&format!("/api/duties/{duty}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{deleted}");
+	let driver = c.f.store.pool.fixture_driver();
+	let execution_control = async || -> String {
+		sqlx::query_scalar("SELECT control FROM task_executions WHERE id = $1")
+			.bind(run.id)
+			.fetch_one(driver)
+			.await
+			.unwrap()
+	};
+	assert_eq!(execution_control().await, "ACTIVE");
+
+	let browser = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+	let (status, stopped) = browser
+		.send(
+			"POST",
+			&format!("/api/tenants/acme/flows/{}/stop", c.task),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{stopped}");
+	assert!(
+		stopped["runs"]
+			.as_array()
+			.unwrap()
+			.contains(&json!({"id": run.id, "outcome": "stopped"})),
+		"{stopped}"
+	);
+	assert_eq!(execution_control().await, "CANCELLED");
+	assert_eq!(stopped["duties"], json!([]));
+	let (status, refused) = browser
+		.send(
+			"POST",
+			&format!("/api/tenants/acme/flows/{}/stop", run.task_id),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 400, "{refused}");
+	assert!(
+		refused["error"].as_str().unwrap().contains("Root Task"),
+		"{refused}"
+	);
+	c.close().await;
+}
+
 /// Inserts a Budget on a Duty, as `by` set it.
 async fn duty_budget(c: &CoreFixture, duty: Uuid, by: &str) {
 	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) SELECT $1, tenant, 'duty', $2, 'monthly', 1000, 'stop', '{}', 1, now(), $3, now() FROM duties WHERE id = $4")

@@ -5,7 +5,8 @@
 // blocks the executions queued behind it, and it re-enters the queue at the
 // tail when it wakes (the lease does that). The trigger that marks it and
 // tells the next execution of the Area it may run is SQL: Reinhardt has no
-// typed operation for a function body or a trigger. Reversal drops the mark,
+// typed operation for a function body or a trigger. The Reinhardt Query
+// backfill uses the same eligibility function as the trigger. Reversal drops the mark,
 // so every execution of an Area queues behind the first that has not ended,
 // as before.
 use reinhardt::db::migrations::prelude::*;
@@ -24,5 +25,10 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0153_area_queue_sleep.sql").into(),
 			reverse_sql: Some(include_str!("sql/backward/0153_area_queue_sleep.sql").into()),
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0153_area_queue_sleep_backfill.sql").into(),
+			// Rollback drops the backfilled column.
+			reverse_sql: Some("".into()),
 		})
 }

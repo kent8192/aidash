@@ -2,6 +2,7 @@
 -- execution of the Area that has not ended (#1008).
 DROP TRIGGER aidash_area_queue_sleep ON public.task_executions;
 DROP FUNCTION public.aidash_area_queue_sleep();
+DROP FUNCTION public.aidash_area_queue_should_sleep(text, text, jsonb, uuid);
 CREATE OR REPLACE FUNCTION public.aidash_activation_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

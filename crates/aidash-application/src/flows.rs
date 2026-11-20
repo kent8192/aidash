@@ -11,7 +11,7 @@ use uuid::Uuid;
 /// The links between a Tenant's Tasks, Runs and Duties that make a flow.
 #[async_trait]
 pub trait FlowGraph: Send {
-	/// Tasks whose parent Task is one of `tasks`.
+	/// Tasks whose parent Task is one of `tasks`, including ancestry from deleted Duties.
 	async fn children(&mut self, tasks: &[Uuid]) -> Result<Vec<Uuid>>;
 	/// The Runs of `tasks`.
 	async fn runs(&mut self, tasks: &[Uuid]) -> Result<Vec<Uuid>>;
@@ -58,10 +58,12 @@ pub async fn closure(graph: &mut dyn FlowGraph, root: Uuid) -> Result<Flow> {
 	while !frontier.is_empty() {
 		let runs = fresh(graph.runs(&frontier).await?, &flow.runs);
 		flow.runs.extend(runs.iter().copied());
-		let mut next = graph.children(&frontier).await?;
-		next.extend(graph.created_by_runs(&runs).await?);
+		// A deletion preserves the Duty's Task links in children. Read Duties
+		// first so a deletion between reads cannot hide both links.
 		let duties = fresh(graph.duties(&frontier, &runs).await?, &flow.duties);
 		flow.duties.extend(duties.iter().copied());
+		let mut next = graph.children(&frontier).await?;
+		next.extend(graph.created_by_runs(&runs).await?);
 		next.extend(graph.duty_tasks(&duties).await?);
 		frontier = fresh(next, &flow.tasks);
 		flow.tasks.extend(frontier.iter().copied());
