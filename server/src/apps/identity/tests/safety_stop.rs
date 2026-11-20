@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "../../execution/tests/support/late_subnode.rs"]
+mod late_subnode;
 
 /// A Tenant with one local Run and one Run it executes for another Home.
 struct World {
@@ -161,6 +163,105 @@ impl World {
 		let owner = common::owner_pool(self.f.store.pool.fixture_driver()).await;
 		sqlx::query(sql).execute(&owner).await.unwrap();
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_safety_stop_controls_three_levels_of_nested_subnodes(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let agent =
+		w.f.registry
+			.get(scope.tenant_name().unwrap(), "fixture-agent", "1.0.0")
+			.await
+			.unwrap();
+	let mut runs = vec![w.run];
+	let mut subnodes = vec![];
+	for depth in 1..=3 {
+		let title = format!("Subnode level {depth}");
+		let thread =
+			w.f.store
+				.create_thread(&scope, "alice", &title)
+				.await
+				.unwrap();
+		let task =
+			w.f.store
+				.create_task(
+					&scope,
+					thread.id,
+					&aidash_server::domain::NewTask {
+						title,
+						description: "A member of a nested Subnode".into(),
+						requirements: json!({}),
+						dependencies: vec![],
+						parent_id: None,
+					},
+					"human",
+					None,
+				)
+				.await
+				.unwrap();
+		let member = common::admitted_run(&w.f, "acme", &task, &agent).await;
+		let subnode = late_subnode::seed_subnode(&w.f, member.id, &[]).await;
+		// The shared fixture initially points to the member as creator.
+		// Wire each Subnode to the Run in the level above it.
+		sqlx::query("UPDATE subnodes SET creator_run_id = r.id, creator_task_id = r.task_id FROM task_executions r WHERE subnodes.id = $1 AND r.id = $2")
+			.bind(subnode)
+			.bind(runs.last().unwrap())
+			.execute(w.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		runs.push(member.id);
+		subnodes.push(subnode);
+	}
+	let expect = async |runs: &[Uuid], control: &str, source: &str, revision: i64| {
+		for run in runs {
+			let facts = w.facts(*run).await;
+			assert_eq!(facts["control"], control, "{facts}");
+			assert_eq!(facts["control_revision"], revision, "{facts}");
+			assert_eq!(facts["control_source"], source, "{facts}");
+		}
+	};
+	expect(&runs, "ACTIVE", "tenant", 0).await;
+	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 0).await;
+	assert_eq!(status, 200, "{body}");
+	expect(&runs, "PAUSED", "deployment_administrator", 1).await;
+	let resume = async || {
+		let (status, body) = common::request(
+			&w.app,
+			&w.subject,
+			"POST",
+			&format!("/api/executions/{}/control", w.run),
+			json!({"action":"resume"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	};
+	resume().await;
+	expect(&runs, "ACTIVE", "tenant", 2).await;
+	// A separate stop on an inner Run survives a later resume at the root.
+	let (status, body) = w.stop(runs[1], Uuid::new_v4(), "pause", 2).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 2).await;
+	assert_eq!(status, 200, "{body}");
+	expect(&runs, "PAUSED", "deployment_administrator", 3).await;
+	resume().await;
+	expect(&runs[..1], "ACTIVE", "tenant", 4).await;
+	expect(&runs[1..], "PAUSED", "deployment_administrator", 3).await;
+	let (status, body) = w.stop(w.run, Uuid::new_v4(), "cancel", 4).await;
+	assert_eq!(status, 200, "{body}");
+	expect(&runs[..1], "CANCELLED", "deployment_administrator", 5).await;
+	expect(&runs[1..], "CANCELLED", "deployment_administrator", 4).await;
+	let ended: i64 = sqlx::query_scalar("SELECT count(*) FROM subnodes WHERE id = ANY($1) AND state = 'dissolved' AND ended_reason = 'safety_stop'")
+		.bind(&subnodes)
+		.fetch_one(w.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(ended, 3);
 }
 
 #[rstest::rstest]

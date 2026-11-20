@@ -1,13 +1,17 @@
 //! Authorized use cases for Run-scoped Subnodes.
-use crate::{Error, Result, ports::subnodes::CreateScope};
+use crate::{
+	Error, Result,
+	ports::subnodes::{CreateScope, EndScope},
+};
 use aidash_domain::{
-	RunMetadata,
+	ControlSource, RunControlAction, RunMetadata,
 	policy::Evaluation,
 	registry::EntityRef,
 	subnodes::{self, Allowance, Subnode},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -247,50 +251,67 @@ pub async fn message(
 	scope.message_creator(&subnode, run, key, content).await
 }
 
-/// Lock a creator's active Subnodes, then their active Runs: the order an end
-/// takes them. A write holds the shared Subnode lock and then takes the event
-/// lock, and a member's next step holds its Run row and then takes the event
-/// lock, so an end that appended an event before it had these locks would
-/// deadlock with either. A caller that has appended an event itself calls this
-/// before the first one.
-pub async fn lock_end(
-	scope: &mut dyn crate::ports::subnodes::EndScope,
-	creator: uuid::Uuid,
-) -> Result<()> {
-	for (_, thread) in scope.active_subnodes(creator).await? {
-		scope.active_runs(thread).await?;
+#[derive(Default)]
+struct Descendants {
+	subnodes: Vec<(subnodes::SubnodeId, Uuid)>,
+	runs: Vec<Uuid>,
+}
+
+/// Lock from the creator down, with every Subnode held before its member
+/// Runs. Writers and workers take those locks before the event lock, so the
+/// whole walk must finish before a control or dissolution appends an event.
+async fn lock_descendants(
+	scope: &mut dyn EndScope,
+	creator: Uuid,
+	resuming: bool,
+) -> Result<Descendants> {
+	let mut descendants = Descendants::default();
+	let mut pending = VecDeque::from([creator]);
+	let mut seen = BTreeSet::from([creator]);
+	while let Some(creator) = pending.pop_front() {
+		for (id, thread) in scope.active_subnodes(creator).await? {
+			descendants.subnodes.push((id, thread));
+			for (run, controllable) in scope.member_runs(thread, resuming).await? {
+				if seen.insert(run) {
+					pending.push_back(run);
+					if controllable {
+						descendants.runs.push(run);
+					}
+				}
+			}
+		}
 	}
+	Ok(descendants)
+}
+
+/// A caller that appends an event before cascading locks descendants first.
+pub async fn lock_end(scope: &mut dyn EndScope, creator: Uuid) -> Result<()> {
+	lock_descendants(scope, creator, false).await?;
 	Ok(())
 }
 
-/// Propagate a creator control while retaining its Run lock. A pause keeps the
-/// Subnode active; a cancel or terminal transition ends it and cancels members.
+/// Propagate a creator control while retaining its Run lock. A pause or resume
+/// keeps the Subnodes active. Cancellation ends them and cancels their members.
 pub async fn control_for_creator(
-	scope: &mut dyn crate::ports::subnodes::EndScope,
-	creator: uuid::Uuid,
-	action: aidash_domain::RunControlAction,
-	source: aidash_domain::ControlSource,
+	scope: &mut dyn EndScope,
+	creator: Uuid,
+	action: RunControlAction,
+	source: ControlSource,
 	reason: Option<subnodes::EndReason>,
 ) -> Result<()> {
-	if reason.is_some() && action != aidash_domain::RunControlAction::Cancel {
+	if reason.is_some() != (action == RunControlAction::Cancel) {
 		return Err(Error::Invalid(
-			"ending a Subnode requires cancellation".into(),
+			"Subnode cancellation requires an end reason".into(),
 		));
 	}
-	if reason.is_none() && action != aidash_domain::RunControlAction::Pause {
-		return Err(Error::Invalid(
-			"a nonterminal Subnode control must pause".into(),
-		));
-	}
-	// Mark nothing ended, which appends an event, before every lock is held.
-	lock_end(scope, creator).await?;
-	for (id, thread) in scope.active_subnodes(creator).await? {
-		if let Some(reason) = reason {
+	let descendants = lock_descendants(scope, creator, action == RunControlAction::Resume).await?;
+	if let Some(reason) = reason {
+		for (id, thread) in descendants.subnodes {
 			scope.mark_ended(id, thread, reason).await?;
 		}
-		for run in scope.active_runs(thread).await? {
-			scope.control_run(run, action, source).await?;
-		}
+	}
+	for run in descendants.runs {
+		scope.control_run(run, action, source).await?;
 	}
 	Ok(())
 }

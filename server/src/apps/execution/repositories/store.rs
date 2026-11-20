@@ -3909,26 +3909,28 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
-		if action == RunControlAction::Cancel
-			|| (action == RunControlAction::Pause
-				&& source == ControlSource::DeploymentAdministrator)
-		{
-			// Before `execution.control` appends its event; see `lock_end`.
-			super::subnodes::lock_for_end(tx, id).await?;
-		}
+		// Finish locking the cascade before `execution.control` takes the
+		// event lock. Descendant updates below use the single-Run control path.
+		let (cascade, reason) = match action {
+			RunControlAction::Cancel => {
+				super::subnodes::lock_for_end(tx, id).await?;
+				let reason = if source == ControlSource::DeploymentAdministrator {
+					"safety_stop"
+				} else {
+					"creator_cancelled"
+				};
+				(true, Some(reason))
+			}
+			RunControlAction::Pause if source == ControlSource::DeploymentAdministrator => {
+				super::subnodes::lock_for_end(tx, id).await?;
+				(true, None)
+			}
+			RunControlAction::Resume => (super::subnodes::lock_for_resume(tx, id).await?, None),
+			RunControlAction::Pause => (false, None),
+		};
 		let run = self.control_one_in_as(tx, id, action, source).await?;
-		if action == RunControlAction::Cancel {
-			let reason = if source == ControlSource::DeploymentAdministrator {
-				"safety_stop"
-			} else {
-				"creator_cancelled"
-			};
-			self.subnode_control_in(tx, id, RunControlAction::Cancel, source, Some(reason))
-				.await?;
-		} else if action == RunControlAction::Pause
-			&& source == ControlSource::DeploymentAdministrator
-		{
-			self.subnode_control_in(tx, id, RunControlAction::Pause, source, None)
+		if cascade {
+			self.subnode_control_in(tx, id, action, source, reason)
 				.await?;
 		}
 		Ok(run)
@@ -3955,7 +3957,7 @@ impl Store {
 							"(id=?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
-						.lock(reinhardt::query::LockType::Update)
+						.lock(reinhardt::query::LockType::NoKeyUpdate)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
 				.fetch_one(&mut *tx)

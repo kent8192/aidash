@@ -40,6 +40,7 @@ fn fixture() -> Fixture {
 		} else {
 			bobs_thread
 		},
+		origin_thread_id: None,
 		successor: (requester == "bob").then(|| "carol".to_owned()),
 		title: format!("{requester}'s report"),
 		requester: requester.into(),
