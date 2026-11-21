@@ -130,6 +130,8 @@ pub struct Store {
 	/// reaches the other Nodes of its Deployment (#751). Empty in a process
 	/// that never built a `Federation`. Shared by every clone of this Store.
 	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
+	pub(crate) grant_peer_cache:
+		std::sync::Arc<aidash_application::authorization::source::grants::GrantPeerCache>,
 	/// Nodes that did not answer a list read, so the next list does not wait on
 	/// them again (#770). Shared by every clone of this Store.
 	pub(crate) silent_nodes:
@@ -551,6 +553,7 @@ impl Store {
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 			in_process: Default::default(),
+			grant_peer_cache: Default::default(),
 			silent_nodes: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
@@ -698,6 +701,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			grant_peer_cache: self.grant_peer_cache.clone(),
 			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
@@ -761,6 +765,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			grant_peer_cache: self.grant_peer_cache.clone(),
 			silent_nodes: self.silent_nodes.clone(),
 		})
 	}

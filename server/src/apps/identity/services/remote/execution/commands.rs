@@ -5,10 +5,8 @@ use aidash_application::federation::inbound::Admitted;
 use aidash_application::ports::authorization::commands::effects::RemoteCommandEffects as _;
 pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> Result<Value> {
 	let node = &admitted.sender.to_string();
-	let mut revision_race = false;
 	let (mut access, description) =
-		super::super::description_lease_mode(&f, node, input.grant_id, true, &mut revision_race)
-			.await?;
+		super::super::description_lease_mode(&f, node, input.grant_id, true).await?;
 	access.worker();
 	access.read_grant = Some(input.grant_id);
 	let agent = &description.inspection.agent;
@@ -203,13 +201,11 @@ pub(crate) async fn thread_attachment(
 	if admitted.subject().is_none() {
 		return Err(crate::Error::Forbidden);
 	}
-	let mut revision_race = false;
 	let (mut access, description) = super::super::description_lease_mode(
 		&f,
 		&admitted.sender.to_string(),
 		input.grant_id,
 		false,
-		&mut revision_race,
 	)
 	.await?;
 	access.worker();

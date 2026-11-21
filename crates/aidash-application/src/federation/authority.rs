@@ -5,12 +5,29 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
+
+pub const HOME_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 /// Only personal tool calls have an invocation journal that classifies delivery.
 pub fn is_connection_call(path: &str, body: &Value) -> bool {
 	path == "/scoped/execution/commands"
 		&& body.get("operation").and_then(Value::as_str)
 			== Some(aidash_domain::identity::commands::connections::CALL)
+}
+
+fn home_authority(path: &str) -> bool {
+	path == "/scoped/execution/commands"
+		|| path.starts_with("/scoped/execution/grants/")
+		|| path.starts_with("/scoped/execution/deliveries/")
+}
+
+fn home_unreachable(node: &str) -> Error {
+	// A lost reply cannot establish whether a command took effect. Keep its
+	// invocation for reconciliation when the Home answers again.
+	Error::NodeUnreachable {
+		node: node.to_owned(),
+		after_effect: true,
+	}
 }
 
 pub struct Client {
@@ -48,28 +65,41 @@ impl Client {
 				Error::External("remote execution authority unavailable".into())
 			}
 		})?;
-		let reply = self
-			.transport
-			.request(&route, path, body)
-			.await
-			.map_err(|error| {
-				if matches!(error, Error::Forbidden | Error::Unauthorized) {
-					return Error::Forbidden;
-				}
-				tracing::warn!(%node, %path, %error, "authority request failed");
-				if connection_call && matches!(error, Error::ToolNotDelivered { .. }) {
-					error
-				} else {
-					Error::External("remote execution authority unavailable".into())
-				}
-			})?;
-		let status = reply.status;
-		let value = classify(reply).inspect_err(|error| {
-			if matches!(error,Error::External(message) if message=="remote execution authority unavailable")
-			{
-				tracing::warn!(%node,%path,status,"authority request rejected");
+		let home = home_authority(path);
+		let request = self.transport.request(&route, path, body);
+		let reply = if home {
+			tokio::time::timeout(HOME_REQUEST_TIMEOUT, request)
+				.await
+				.map_err(|_| home_unreachable(node))?
+		} else {
+			request.await
+		}
+		.map_err(|error| {
+			if matches!(error, Error::Forbidden | Error::Unauthorized) {
+				return Error::Forbidden;
+			}
+			tracing::warn!(%node, %path, %error, "authority request failed");
+			if home {
+				home_unreachable(node)
+			} else {
+				Error::External("remote execution authority unavailable".into())
 			}
 		})?;
+		let status = reply.status;
+		let value = classify(reply)
+			.map_err(|error| {
+				if home && matches!(status, 502..=504) && matches!(error, Error::External(_)) {
+					home_unreachable(node)
+				} else {
+					error
+				}
+			})
+			.inspect_err(|error| {
+				if matches!(error,Error::External(message) if message=="remote execution authority unavailable")
+				{
+					tracing::warn!(%node,%path,status,"authority request rejected");
+				}
+			})?;
 		serde_json::from_slice(&value)
 			.map_err(|_| Error::External("invalid remote authority response".into()))
 	}

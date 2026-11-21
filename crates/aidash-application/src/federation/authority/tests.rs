@@ -269,7 +269,7 @@ async fn typed_authority_reply_rejects_duplicate_fields() {
 
 #[rstest]
 #[tokio::test]
-async fn personal_call_preserves_peer_result_and_delivery_failure() {
+async fn personal_call_keeps_the_result_and_waits_when_the_home_is_unreachable() {
 	struct CallWire {
 		delivered: bool,
 	}
@@ -325,7 +325,7 @@ async fn personal_call_preserves_peer_result_and_delivery_failure() {
 		unavailable
 			.request::<Value>("aidash://peer", path, &body)
 			.await,
-		Err(Error::ToolNotDelivered { .. })
+		Err(Error::NodeUnreachable { node, after_effect: true }) if node == "aidash://peer"
 	));
 }
 
@@ -361,4 +361,64 @@ fn an_envelope_without_a_node_or_another_code_is_not_unreachable() {
 			.unwrap()
 			.after_effect
 	);
+}
+
+#[rstest]
+#[case::bad_gateway("/scoped/execution/commands", Some(502))]
+#[case::unavailable("/scoped/execution/grants/describe", Some(503))]
+#[case::gateway_timeout("/scoped/execution/deliveries/chunks", Some(504))]
+#[case::home_error("/scoped/execution/commands", Some(500))]
+#[case::forbidden("/scoped/execution/commands", Some(403))]
+#[case::not_found("/scoped/execution/commands", Some(404))]
+#[case::conflict("/scoped/execution/commands", Some(409))]
+#[case::different_peer_direction("/scoped/execution/inspect", Some(503))]
+#[case::connection_reset("/scoped/execution/commands", None)]
+#[case::client_timeout("/scoped/execution/grants/describe", None)]
+#[tokio::test(start_paused = true)]
+async fn home_authority_waits_out_transport_and_gateway_failures(
+	#[case] path: &str,
+	#[case] status: Option<u16>,
+) {
+	struct HomePeer;
+	#[async_trait]
+	impl Peers for HomePeer {
+		async fn route(
+			&self,
+			node: &str,
+			_: &crate::federation::inbound::RequestDigest<'_>,
+		) -> Result<Route> {
+			Ok(crate::test_support::foreign_route(node))
+		}
+	}
+	struct HomeWire(Option<u16>);
+	#[async_trait]
+	impl Transport for HomeWire {
+		async fn request(&self, _: &Route, path: &str, _: &Value) -> Result<Reply> {
+			match self.0 {
+				Some(status) => Ok(reply(status)),
+				None if path.ends_with("/describe") => std::future::pending().await,
+				None => Err(Error::External("connection reset".into())),
+			}
+		}
+	}
+	let start = tokio::time::Instant::now();
+	let result = Client::new(Arc::new(HomePeer), Arc::new(HomeWire(status)))
+		.request::<Value>("aidash://home", path, &json!({}))
+		.await;
+	match (path, status) {
+		("/scoped/execution/inspect", _) | (_, Some(500)) => {
+			assert!(matches!(result, Err(Error::External(_))));
+		}
+		(_, Some(403)) => assert!(matches!(result, Err(Error::Forbidden))),
+		(_, Some(404)) => assert!(matches!(result, Err(Error::NotFound(_)))),
+		(_, Some(409)) => assert!(matches!(result, Err(Error::Conflict(_)))),
+		_ => {
+			assert!(
+				matches!(result, Err(Error::NodeUnreachable { node, after_effect: true }) if node == "aidash://home")
+			);
+		}
+	}
+	if status.is_none() && path.ends_with("/describe") {
+		assert_eq!(start.elapsed(), std::time::Duration::from_secs(25));
+	}
 }

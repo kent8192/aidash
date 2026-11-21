@@ -240,6 +240,19 @@ impl GrantScope for Scope {
 		.await?;
 		live(&mut self.access, id).await.map_err(Into::into)
 	}
+	fn set_dependency_checks(
+		&mut self,
+		checks: Option<aidash_application::authorization::source::grants::DependencyChecks>,
+	) {
+		self.access.grant_dependency_checks = checks;
+	}
+	async fn release_probe(self) -> Result<()> {
+		(*self.access)
+			.into_native()?
+			.rollback()
+			.await
+			.map_err(Into::into)
+	}
 	async fn grant_reads_visible(&mut self, id: Uuid) -> Result<bool> {
 		self.access
 			.grant_reads_visible(id)
@@ -516,6 +529,22 @@ impl GrantScope for Scope {
 #[async_trait]
 impl GrantRepository for Repository {
 	type Scope = Scope;
+	fn peer_cache(
+		&self,
+	) -> std::sync::Arc<aidash_application::authorization::source::grants::GrantPeerCache> {
+		self.runtime.store.grant_peer_cache.clone()
+	}
+	async fn check_dependency(
+		&self,
+		route: &aidash_domain::federation::route::Route,
+		input: &aidash_domain::federation::dependencies::Input,
+		remaining: std::time::Duration,
+	) -> aidash_application::ports::federation::dependencies::Check {
+		use aidash_application::ports::federation::dependencies::DependencyTransport as _;
+		crate::apps::federation::remote::services::wire::Wire::of(&self.runtime)
+			.check(route, input, remaining)
+			.await
+	}
 	fn source_node_id(&self) -> &str {
 		self.runtime.config.deployment.as_str()
 	}

@@ -15,9 +15,6 @@ use uuid::Uuid;
 pub const RECONCILE_BATCH_SIZE: u64 = 128;
 /// A worker that cannot load a Run's state leaves it for a capable one and looks again later.
 pub const CAPABILITY_RETRY_SECONDS: i64 = 5;
-/// How long after its last save a Run waiting on an answer its Home holds asks the Home again:
-/// a person's answer there, or the Home's person's answer to an outbound read (ADR 0139).
-pub const HOME_POLL_SECONDS: i64 = 1;
 
 /// Capabilities the Run's stored requirement needs beyond what the worker advertises.
 /// Only the envelope's requirement is read, so a state the worker cannot decode is still judged.
@@ -103,7 +100,7 @@ pub async fn due(
 				if scope.input_after(m.id, observed).await? {
 					Some(now)
 				} else if !m.is_local(node) {
-					Some((*wake_at).min(m.updated_at + chrono::Duration::seconds(15)))
+					Some((*wake_at).min(m.updated_at + recovery.home_poll.delay()))
 				} else {
 					Some(
 						scope
@@ -130,7 +127,7 @@ pub async fn due(
 				if raw.context["binding_snapshot"]["remote"] == true {
 					// Home journals the answer. Poll it through the authorized worker
 					// step after releasing this local scheduling transaction.
-					Some(m.updated_at + chrono::Duration::seconds(HOME_POLL_SECONDS))
+					Some(m.updated_at + recovery.home_poll.delay())
 				} else if scope.human_answered(id).await? {
 					Some(now)
 				} else if let Some(included) = review_candidate_input(raw, wait, id)
@@ -155,7 +152,7 @@ pub async fn due(
 					Some(Approval { state, .. })
 						if state == crate::capabilities::approvals::AWAITING_HOME =>
 					{
-						Some(m.updated_at + chrono::Duration::seconds(HOME_POLL_SECONDS))
+						Some(m.updated_at + recovery.home_poll.delay())
 					}
 					_ => Some(now),
 				}
