@@ -265,80 +265,70 @@ async fn reopen(
 }
 
 pub(crate) async fn finish_auxiliary(
-	store: &Store,
-	tenant: &str,
+	tx: &mut dyn TransactionExecutor,
 	attempt: Attempt,
 	result: &aidash_application::Result<aidash_domain::provider::ModelResponse>,
 ) -> Result<()> {
 	use aidash_domain::provider::usage::ProviderCost;
 	use reinhardt::query::LockType;
 	let usage = aidash_application::model_calls::usage(result);
-	store
-		.control_pool
-		.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-			let previous: Option<serde_json::Value> = native::query_scalar(
-				&Query::select()
-					.column(Alias::new("usage"))
-					.from(Alias::new("model_calls"))
-					.and_where(Expr::col("id").eq(Expr::value(attempt.call)))
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_one(&mut *tx)
-			.await?;
-			if !InferenceUsage::write_completion(tx, attempt.id, &usage).await? {
-				return Ok(());
-			}
-			let mut total: Option<ReportedUsage> =
-				previous.map(serde_json::from_value).transpose()?;
-			if let Some(reported) = reported(&usage) {
-				let combined = total.get_or_insert_with(ReportedUsage::default);
-				let sum = |left: Option<u64>, right: Option<u64>| match (left, right) {
-					(Some(left), Some(right)) => left.checked_add(right),
-					(left, right) => left.or(right),
-				};
-				combined.input_tokens = sum(combined.input_tokens, reported.input_tokens);
-				combined.output_tokens = sum(combined.output_tokens, reported.output_tokens);
-				combined.cache_read_tokens =
-					sum(combined.cache_read_tokens, reported.cache_read_tokens);
-				combined.cache_write_tokens =
-					sum(combined.cache_write_tokens, reported.cache_write_tokens);
-				combined.reasoning_tokens =
-					sum(combined.reasoning_tokens, reported.reasoning_tokens);
-				combined.cost = match (combined.cost, reported.cost) {
-					(Some(previous), Some(current)) => previous
-						.nanocredits
-						.checked_add(current.nanocredits)
-						.map(|nanocredits| ProviderCost {
-							nanocredits,
-							upstream_nanocredits: match (
-								previous.upstream_nanocredits,
-								current.upstream_nanocredits,
-							) {
-								(Some(left), Some(right)) => left.checked_add(right),
-								(left, right) => left.or(right),
-							},
-						}),
-					(previous, current) => previous.or(current),
-				};
-				for (tool, count) in &reported.server_tool_use {
-					combined
-						.server_tool_use
-						.entry(tool.clone())
-						.and_modify(|total| *total = total.saturating_add(*count))
-						.or_insert(*count);
-				}
-				combined.provider_identity = reported.provider_identity.clone();
-			}
-			finish(
-				tx,
-				attempt.call,
-				aidash_application::model_calls::outcome(result),
-				total.as_ref(),
-			)
-			.await
-		})
-		.await
+	let previous: Option<serde_json::Value> = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("usage"))
+			.from(Alias::new("model_calls"))
+			.and_where(Expr::col("id").eq(Expr::value(attempt.call)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *tx)
+	.await?;
+	if !InferenceUsage::write_completion(tx, attempt.id, &usage).await? {
+		return Ok(());
+	}
+	let mut total: Option<ReportedUsage> = previous.map(serde_json::from_value).transpose()?;
+	if let Some(reported) = reported(&usage) {
+		let combined = total.get_or_insert_with(ReportedUsage::default);
+		let sum = |left: Option<u64>, right: Option<u64>| match (left, right) {
+			(Some(left), Some(right)) => left.checked_add(right),
+			(left, right) => left.or(right),
+		};
+		combined.input_tokens = sum(combined.input_tokens, reported.input_tokens);
+		combined.output_tokens = sum(combined.output_tokens, reported.output_tokens);
+		combined.cache_read_tokens = sum(combined.cache_read_tokens, reported.cache_read_tokens);
+		combined.cache_write_tokens = sum(combined.cache_write_tokens, reported.cache_write_tokens);
+		combined.reasoning_tokens = sum(combined.reasoning_tokens, reported.reasoning_tokens);
+		combined.cost = match (combined.cost, reported.cost) {
+			(Some(previous), Some(current)) => previous
+				.nanocredits
+				.checked_add(current.nanocredits)
+				.map(|nanocredits| ProviderCost {
+					nanocredits,
+					upstream_nanocredits: match (
+						previous.upstream_nanocredits,
+						current.upstream_nanocredits,
+					) {
+						(Some(left), Some(right)) => left.checked_add(right),
+						(left, right) => left.or(right),
+					},
+				}),
+			(previous, current) => previous.or(current),
+		};
+		for (tool, count) in &reported.server_tool_use {
+			combined
+				.server_tool_use
+				.entry(tool.clone())
+				.and_modify(|total| *total = total.saturating_add(*count))
+				.or_insert(*count);
+		}
+		combined.provider_identity = reported.provider_identity.clone();
+	}
+	finish(
+		tx,
+		attempt.call,
+		aidash_application::model_calls::outcome(result),
+		total.as_ref(),
+	)
+	.await
 }
 
 /// The Workbench owns test quotas separately from the Tenant and Node Budget.
@@ -525,13 +515,10 @@ pub(crate) async fn tenant_usage(
 ) -> Result<Vec<aidash_domain::model_call::UsageByPurpose>> {
 	use aidash_domain::model_call::UsageByPurpose;
 	use reinhardt::query::{Func, JoinType, Order, TableRef};
-	let mut query = Query::select();
-	query
+	let fields = ["input_tokens", "output_tokens", "cost_nanocredits"];
+	let mut calls = Query::select();
+	calls
 		.column((Alias::new("m"), Alias::new("purpose")))
-		.expr_as(
-			Func::count(Expr::cust("DISTINCT m.id").into()),
-			Alias::new("calls"),
-		)
 		.from_as(Alias::new("model_calls"), Alias::new("m"))
 		.join(
 			JoinType::LeftJoin,
@@ -547,11 +534,28 @@ pub(crate) async fn tenant_usage(
 			Expr::col((Alias::new("m"), Alias::new("tenant"))).eq(Expr::value(tenant.to_owned())),
 		)
 		.and_where(Expr::col((Alias::new("m"), Alias::new("run_id"))).is_null())
-		.group_by_col((Alias::new("m"), Alias::new("purpose")))
-		.order_by((Alias::new("m"), Alias::new("purpose")), Order::Asc);
-	for field in ["input_tokens", "output_tokens", "cost_nanocredits"] {
+		.group_by_col((Alias::new("m"), Alias::new("id")))
+		.group_by_col((Alias::new("m"), Alias::new("purpose")));
+	for field in fields {
+		calls.expr_as(
+			Func::sum(Expr::col((Alias::new("u"), Alias::new(field))).into()),
+			Alias::new(field),
+		);
+	}
+
+	let mut query = Query::select();
+	query
+		.column(Alias::new("purpose"))
+		.expr_as(
+			Func::count(Expr::col(Alias::new("purpose")).into()),
+			Alias::new("calls"),
+		)
+		.from_subquery(calls, Alias::new("calls_by_id"))
+		.group_by_col(Alias::new("purpose"))
+		.order_by("purpose", Order::Asc);
+	for field in fields {
 		query.expr_as(
-			Func::sum(Expr::col((Alias::new("u"), Alias::new(field))).into()).cast_as("int8"),
+			Func::sum(Expr::col(Alias::new(field)).into()).cast_as("int8"),
 			Alias::new(field),
 		);
 	}

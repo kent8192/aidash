@@ -974,38 +974,34 @@ impl Models {
 			self.run.is_none().then_some(purpose),
 		)?;
 		let tenant = &self.bank.tenant;
-		let model_call =
-			self.store
-				.control_pool
-				.atomic(
-					&aidash_application::tenancy::TenancyScope::tenant(tenant)?,
-					async |tx| {
-						let owner =
-							match self.run {
-								Some(run) => model_calls::Attribution::for_run(tx, run).await?,
-								None => {
-									let charge = crate::apps::identity::repositories::budgets::thread_charge(
-							tx, tenant, self.bank.thread,
-						).await?;
-									model_calls::Attribution::node(charge.tenant, charge.node)
-								}
-							};
-						model_calls::start_auxiliary(
-							tx,
-							&owner,
-							model_calls::Auxiliary {
-								model: reference,
-								config: &config,
-								request: &request,
-								purpose: aidash_domain::model_call::Purpose::MemoryRole,
-							},
-							reservation.id,
-							&reservation.prior_attempts,
-						)
-						.await
+		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+		let model_call = self
+			.store
+			.control_pool
+			.atomic(&scope, async |tx| {
+				use crate::apps::identity::repositories::budgets::thread_charge;
+				let owner = match self.run {
+					Some(run) => model_calls::Attribution::for_run(tx, run).await?,
+					None => {
+						let charge = thread_charge(tx, tenant, self.bank.thread).await?;
+						model_calls::Attribution::node(charge.tenant, charge.node)
+					}
+				};
+				model_calls::start_auxiliary(
+					tx,
+					&owner,
+					model_calls::Auxiliary {
+						model: reference,
+						config: &config,
+						request: &request,
+						purpose: aidash_domain::model_call::Purpose::MemoryRole,
 					},
+					reservation.id,
+					&reservation.prior_attempts,
 				)
-				.await?;
+				.await
+			})
+			.await?;
 		let response = tokio::time::timeout(
 			std::time::Duration::from_secs(u64::from(self.policy.bounds.max_call_seconds)),
 			provider.infer(request, &aidash_application::ports::NoProgress),
@@ -1019,52 +1015,45 @@ impl Models {
 			Ok(response) => Some(response),
 			Err(error) => error.terminal_usage(),
 		};
-		let recorded = if let Some(response) = observed {
-			// Persist reported usage even when output validation or source
-			// authorization later refuses the result. Policy settlement stays as-is.
-			let usage = &response.reported;
-			let reported = json!({
-				"input_tokens": usage.input_tokens,
-				"output_tokens": usage.output_tokens,
-				"cache_read_tokens": usage.cache_read_tokens,
-				"cache_write_tokens": usage.cache_write_tokens,
-				"reasoning_tokens": usage.reasoning_tokens,
-				"cost_nanocredits": usage.cost.map(|cost| cost.nanocredits),
-				"upstream_cost_nanocredits": usage.cost.and_then(|cost| cost.upstream_nanocredits),
-				"provider_identity": usage.provider_identity,
-			});
-			// The Budget ledger takes the call once, with its usage record.
-			let cost = usage.cost.map(|cost| cost.nanocredits);
-			self.store
-				.control_pool
-				.atomic(
-					&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
-					async |tx| {
-						let recorded = native::query(
-							&Query::update()
-								.table(Alias::new("memory_model_attempts"))
-								.value_expr(Alias::new("provider_usage"), Expr::value(reported))
-								.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
-								.and_where(
-									Expr::col("operation_id").eq(Expr::value(self.operation)),
-								)
-								.and_where(Expr::col("provider_usage").is_null())
-								.to_string(PostgresQueryBuilder),
-						)
-						.execute(&mut *tx)
-						.await?
-						.rows_affected();
-						if recorded == 1 {
-							self.record_budget_spend(tx, cost).await?;
-						}
-						Ok(())
-					},
+		let recorded = self
+			.store
+			.control_pool
+			.atomic(&scope, async |tx| {
+				model_calls::finish_auxiliary(tx, model_call, &response).await?;
+				let Some(response) = observed else {
+					return Ok(());
+				};
+				// Output validation and source authorization can still refuse the result.
+				let usage = &response.reported;
+				let cost = usage.cost.map(|cost| cost.nanocredits);
+				let reported = json!({
+					"input_tokens": usage.input_tokens,
+					"output_tokens": usage.output_tokens,
+					"cache_read_tokens": usage.cache_read_tokens,
+					"cache_write_tokens": usage.cache_write_tokens,
+					"reasoning_tokens": usage.reasoning_tokens,
+					"cost_nanocredits": cost,
+					"upstream_cost_nanocredits": usage.cost.and_then(|cost| cost.upstream_nanocredits),
+					"provider_identity": usage.provider_identity,
+				});
+				let recorded = native::query(
+					&Query::update()
+						.table(Alias::new("memory_model_attempts"))
+						.value_expr(Alias::new("provider_usage"), Expr::value(reported))
+						.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
+						.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
+						.and_where(Expr::col("provider_usage").is_null())
+						.to_string(PostgresQueryBuilder),
 				)
-				.await
-		} else {
-			Ok(())
-		};
-		model_calls::finish_auxiliary(&self.store, tenant, model_call, &response).await?;
+				.execute(&mut *tx)
+				.await?
+				.rows_affected();
+				if recorded == 1 {
+					self.record_budget_spend(tx, cost).await?;
+				}
+				Ok(())
+			})
+			.await;
 		let response = response?;
 		if let Some(origin) = origin {
 			origin.settle(&response).await?;

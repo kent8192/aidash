@@ -2416,6 +2416,37 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		}
 	};
 
+	// One logical Model Call retried once, with usage reported for both attempts.
+	let pool = fixture.federation.store.pool.fixture_driver();
+	let call_id = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO model_calls
+		 (id, tenant, node, purpose, model_id, model_version, request_digest, started_at)
+		 VALUES ($1, 'acme', $2, 'workbench_test', 'fixture', '1', $3, now())",
+	)
+	.bind(call_id)
+	.bind(aidash_domain::nodes::NodeName::derived("acme").to_string())
+	.bind(format!("sha256:{}", "0".repeat(64)))
+	.execute(pool)
+	.await
+	.unwrap();
+	for tokens in [12_i64, 20] {
+		sqlx::query(
+			"INSERT INTO inference_usage
+			 (attempt_id, tenant, lease_token, response_epoch, model_id, model_version,
+			  projection_version, harness_contract, estimator, estimator_version, estimated_tokens,
+			  estimate_confidence, purpose, outcome, completed_at, model_call_id, input_tokens)
+			 VALUES ($1, 'acme', $1, 0, 'fixture', '1', 3, 1, 'bytes', 1, 32,
+			  'conservative', 'auxiliary', 'completed', now(), $2, $3)",
+		)
+		.bind(Uuid::new_v4())
+		.bind(call_id)
+		.bind(tokens)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
 	// Act and assert: the administrator holds every administration action.
 	let (status, overview) = call(
 		"alice-session",
@@ -2429,10 +2460,14 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	expected.push(aidash_domain::identity::tenancy::TENANT_DELETE);
 	assert_eq!(overview["actions"], json!(expected));
 	assert_eq!(overview["assignable_groups"], json!(["members"]));
+	assert_eq!(
+		overview["model_call_usage"],
+		json!([{"purpose":"workbench_test","calls":1,"input_tokens":32,
+			"output_tokens":null,"cost_nanocredits":null}])
+	);
 	// A blocked report keeps its policy fence without monopolizing the global
 	// audit cursor. DDL holds the table lock until rollback, making this
 	// independent of report speed or machine load.
-	let pool = fixture.federation.store.pool.fixture_driver();
 	let owner = common::owner_pool(pool).await;
 	let mut blocker = owner.begin().await.unwrap();
 	let ddl = Query::alter_table()
@@ -2547,6 +2582,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	.await;
 	assert_eq!(status, 200, "{member_overview}");
 	assert_eq!(member_overview["actions"], json!([]));
+	assert!(member_overview.get("model_call_usage").is_none());
 	let denial = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(Alias::new("authorization_decisions"))
