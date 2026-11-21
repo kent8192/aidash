@@ -124,9 +124,26 @@ fn held_by_receiver(chain: SimpleExpr, owner: SimpleExpr) -> SimpleExpr {
 	))
 }
 
+/// A queued Run still has the original OPEN Task. Checking the grant's
+/// original revision prevents a reopened Task from keeping an old grant live.
+fn holds_or_awaits_task(grant: &Alias, binding: &Alias, task: &Alias) -> SimpleExpr {
+	let column = |table: &Alias, name: &str| Expr::col((table.clone(), Alias::new(name)));
+	let pending_claim = column(task, "status")
+		.eq("OPEN")
+		.and(column(task, "owner").is_null())
+		.and(column(task, "revision").equals((grant.clone(), Alias::new("task_revision"))))
+		.and(column(task, "revision").equals((binding.clone(), Alias::new("task_revision"))));
+	held_by_receiver(
+		column(grant, "subject_chain").into(),
+		column(task, "owner").into(),
+	)
+	.and(column(task, "status").is_not_in(home::ending_statuses().map(|status| status.as_str())))
+	.or(pending_claim)
+}
+
 /// The Run a grant row of `authorization_remote_grants` started is bound at the Home, has
-/// started, and has not ended: the binding recorded the receiver's activation, the receiver
-/// holds the Task (as [`live_condition`] requires), and the Task is neither open nor ended. The
+/// started and has not ended. The binding recorded the receiver's activation, and
+/// the receiver either still awaits its original Task or holds it (as [`live_condition`] requires). The
 /// binding pins the Task revision the Run works on; a Task that has moved on to another revision
 /// no longer has a live remote Run. The renewal of ADR 0109 (amended 2026-11-17) and the Home's
 /// tool asks read it, so neither keeps a grant that [`live_condition`] would let expire.
@@ -153,17 +170,7 @@ pub(crate) fn run_live() -> SimpleExpr {
 			)
 			.and_where(column(&binding, "grant_id").equals((grants.clone(), Alias::new("id"))))
 			.and_where(column(&binding, "activated_at").is_not_null())
-			.and_where(held_by_receiver(
-				column(&grants, "subject_chain").into(),
-				column(&task, "owner").into(),
-			))
-			.and_where(column(&task, "status").is_not_in([
-				"OPEN",
-				"COMPLETED",
-				"FAILED",
-				"CANCELLED",
-				"ABANDONED",
-			]))
+			.and_where(holds_or_awaits_task(&grants, &binding, &task))
 			.to_owned(),
 	)
 	.into()
@@ -172,10 +179,8 @@ pub(crate) fn run_live() -> SimpleExpr {
 /// The condition that the `authorization_remote_grants` row named by `grant`
 /// (its table name or alias) is live: the rule of [`home::Liveness`] (#1013).
 /// Its lifetime bounds it until this grant's own Home binding has recorded the
-/// receiver's activation and the receiver holds the Task (its owner is the
-/// last subject of the grant's chain, which only that receiver's claim makes
-/// it); from then on it lives while the Task has not ended, however long the
-/// Run's Stint sleeps. The Task's status never stands in for the activation.
+/// receiver's activation. From then on it lives while the original Task is
+/// still awaiting its first claim, or while the receiver holds the unfinished Task.
 /// Every Home check of a grant's liveness uses this condition, so none of them
 /// reads `expires_at` alone.
 pub(crate) fn live_condition(grant: &str) -> SimpleExpr {
@@ -198,14 +203,7 @@ pub(crate) fn live_condition(grant: &str) -> SimpleExpr {
 		.and_where(column(&binding, "grant_id").equals((grant.clone(), Alias::new("id"))))
 		.and_where(column(&binding, "task_id").equals((grant.clone(), Alias::new("task_id"))))
 		.and_where(column(&binding, "activated_at").is_not_null())
-		.and_where(held_by_receiver(
-			column(&grant, "subject_chain").into(),
-			column(&task, "owner").into(),
-		))
-		.and_where(
-			column(&task, "status")
-				.is_not_in(home::ending_statuses().map(|status| status.as_str())),
-		)
+		.and_where(holds_or_awaits_task(&grant, &binding, &task))
 		.to_owned();
 	column(&grant, "revoked").not().and(
 		column(&grant, "expires_at")
@@ -225,8 +223,8 @@ mod live_condition_tests {
 			.to_string(PostgresQueryBuilder)
 	}
 
-	/// Revocation ends the grant before anything else; the lifetime, or this grant's own
-	/// recorded activation with its receiver holding a Task that has not ended, keeps it.
+	/// A live grant has time left or a recorded activation for a Task the
+	/// receiver holds or has yet to claim. Revocation takes precedence.
 	#[test]
 	fn the_condition_needs_this_grants_activation_its_executor_and_an_open_task() {
 		assert_eq!(
@@ -238,8 +236,10 @@ mod live_condition_tests {
 			WHERE \"live_binding\".\"grant_id\" = \"g\".\"id\" \
 			AND \"live_binding\".\"task_id\" = \"g\".\"task_id\" \
 			AND \"live_binding\".\"activated_at\" IS NOT NULL \
-			AND array_length(\"g\".\"subject_chain\", 1) = ANY(array_positions(\"g\".\"subject_chain\", \"live_task\".\"owner\")) \
-			AND \"live_task\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED'))) \
+			AND (array_length(\"g\".\"subject_chain\", 1) = ANY(array_positions(\"g\".\"subject_chain\", \"live_task\".\"owner\")) \
+			AND \"live_task\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED') \
+			OR \"live_task\".\"status\" = 'OPEN' AND \"live_task\".\"owner\" IS NULL \
+			AND \"live_task\".\"revision\" = \"g\".\"task_revision\" AND \"live_task\".\"revision\" = \"live_binding\".\"task_revision\"))) \
 			FROM \"authorization_remote_grants\" AS \"g\""
 		);
 	}

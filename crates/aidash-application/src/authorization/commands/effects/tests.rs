@@ -244,6 +244,7 @@ impl RemoteCommandEffects for Scope {
 				revision,
 				next,
 				through,
+				..
 			} => json!({"kind":"transition","revision":revision,"next":next,"through":through}),
 			Effect::Artifact {
 				artifact,

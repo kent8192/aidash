@@ -443,8 +443,10 @@ pub async fn status<R: PeerAdmissionRepository>(
 		error: run.and_then(|r| {
 			r.error
 				.clone()
-				.map(|_| {
-					"Remote execution requires attention. Review current authority and retry controls.".into()
+				.map(|error| match error.as_str() {
+					aidash_domain::capabilities::sessions::QUEUED
+					| aidash_domain::capabilities::sessions::QUEUE_LIMIT => error,
+					_ => "Remote execution requires attention. Review current authority and retry controls.".into(),
 				})
 		}),
 	}))

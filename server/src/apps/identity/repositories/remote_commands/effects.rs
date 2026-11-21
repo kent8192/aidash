@@ -234,6 +234,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					revision,
 					next,
 					through,
+					reason,
 				} => {
 					if matches!(
 						next,
@@ -259,6 +260,16 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 							.transition_in(&mut self.access.tx, task.id, revision, owner, next)
 							.await?
 					};
+					if let Some(reason) = reason {
+						store
+							.event(
+								&mut self.access.tx,
+								Some(task.thread_id),
+								"remote_run.failed",
+								json!({"task_id":task.id,"remote_run_id":admission,"reason":reason}),
+							)
+							.await?;
+					}
 					(json!(value), None)
 				}
 				Effect::AbandonUnassigned { ids } => {

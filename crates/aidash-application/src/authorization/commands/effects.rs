@@ -389,6 +389,17 @@ pub async fn execute(
 			scope.require(&task_resource, "task.execute").await?;
 			let revision = serde_json::from_value(data["revision"].clone())?;
 			let next: TaskStatus = serde_json::from_value(data["status"].clone())?;
+			let reason = match data.get("reason") {
+				None => None,
+				Some(value)
+					if input.operation == "run_message_terminal_transition"
+						&& next == TaskStatus::Failed
+						&& value == aidash_domain::capabilities::sessions::QUEUE_LIMIT =>
+				{
+					Some(aidash_domain::capabilities::sessions::QUEUE_LIMIT)
+				}
+				Some(_) => return Err(Error::Invalid("invalid remote failure reason".into())),
+			};
 			let through = if input.operation == "run_message_terminal_transition" {
 				let seq: i64 = serde_json::from_value(data["through_seq"].clone())?;
 				if seq < 0 {
@@ -405,6 +416,7 @@ pub async fn execute(
 						revision,
 						next,
 						through,
+						reason,
 					},
 				)
 				.await?
@@ -564,6 +576,32 @@ pub async fn execute(
 					.await?;
 			}
 			json!({"acknowledged":true})
+		}
+		"run_queued" => {
+			scope.require(&task_resource, "task.execute").await?;
+			let queued: aidash_domain::federation::execution::admission::RunQueued =
+				serde_json::from_value(data.clone())?;
+			if queued.task_id != task.id || queued.run_id != input.admission_id {
+				return Err(Error::Forbidden);
+			}
+			if !(1..100).contains(&queued.runs_ahead) {
+				return Err(Error::Invalid("invalid Run queue position".into()));
+			}
+			scope
+				.apply(
+					context(),
+					Effect::Event {
+						kind: "remote_run.queued",
+						data: json!({
+							"task_id": task.id,
+							"remote_run_id": input.admission_id,
+							"runs_ahead": queued.runs_ahead,
+							"queued_at": queued.queued_at,
+						}),
+					},
+				)
+				.await?
+				.value
 		}
 		"event" => {
 			let (kind, detail) =
