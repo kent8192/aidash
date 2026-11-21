@@ -38294,7 +38294,6 @@
               "compaction_summary",
               "memory_role",
               "workbench_test",
-              "media_check",
               "mcp_sampling"
             ],
             "type": "string"
@@ -42315,7 +42314,6 @@
               "compaction_summary",
               "memory_role",
               "workbench_test",
-              "media_check",
               "mcp_sampling"
             ],
             "type": "string"
