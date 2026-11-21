@@ -66,6 +66,35 @@ async fn grant_request_from(
 		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
 	)
 }
+async fn open_home(home: &Federation) -> (Federation, common::TestApplication) {
+	let mut fresh = home.clone();
+	fresh.store = aidash_server::store::Store::from_pool(
+		home.store
+			.pool
+			.options()
+			.clone()
+			.connect_with(home.store.pool.connect_options().as_ref().clone())
+			.await
+			.unwrap(),
+		home.config.deployment.clone(),
+	)
+	.await
+	.unwrap();
+	common::peering::carry_over(&mut fresh, home);
+	let app = common::application(fresh.clone()).await;
+	(fresh, app)
+}
+
+/// A receiver-only change does not update the Home's grant revision.
+async fn verify_uncached(home: &Federation, from: &Federation, grant: Uuid) -> (u16, Value) {
+	let (fresh, app) = open_home(home).await;
+	let result = verify(&app, (&fresh, from), grant).await;
+	drop(app);
+	fresh.store.pool.close().await;
+	fresh.store.control_pool.close().await;
+	result
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revocation(
@@ -123,22 +152,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	);
 	assert_eq!(verify(&aa, (&a, &b), id).await, (200, json!(true)));
 	// A newly constructed store/router must use the persisted grant, not memory.
-	let mut fresh = a.clone();
-	fresh.store = aidash_server::store::Store::from_pool(
-		a.store
-			.pool
-			.options()
-			.clone()
-			.connect_with(a.store.pool.connect_options().as_ref().clone())
-			.await
-			.unwrap(),
-		a.config.deployment.clone(),
-	)
-	.await
-	.unwrap();
-	common::peering::carry_over(&mut fresh, &a);
-	// Act: rebuild the application after replacing the durable store connection.
-	let fresh_app = common::application(fresh.clone()).await;
+	let (fresh, fresh_app) = open_home(&a).await;
 	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
 	let mut different = input.clone();
 	different["agent"]["id"] = json!("nonexistent");
@@ -320,7 +334,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 403);
+	assert_eq!(verify_uncached(&a, &b, id).await.0, 403);
 	{
 		let query_bind_1 = metadata;
 		sqlx::query(
@@ -340,7 +354,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
+	assert_eq!(verify_uncached(&a, &b, id).await.0, 200);
 	let mut denied = policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-model","effect":"deny","subjects":{"ids":[executor]},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/config/provider"},"right":{"source":"literal","value":"openrouter"}}}));
 	assert_eq!(
@@ -575,7 +589,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	] {
 		assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential,"expected_revision":revision,"enabled":true})).await.0,200);
 		assert_eq!(
-			verify(&fresh_app, (&a, &b), replacement_id).await.0,
+			verify_uncached(&a, &b, replacement_id).await.0,
 			expected,
 			"receiver credential rebinding must invalidate the prepared authority"
 		);
@@ -595,7 +609,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 			.0,
 		200
 	);
-	assert_ne!(verify(&fresh_app, (&a, &b), replacement_id).await.0, 200);
+	assert_ne!(verify_uncached(&a, &b, replacement_id).await.0, 200);
 	let count: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
