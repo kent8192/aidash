@@ -1082,7 +1082,7 @@ async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
 	let entry = definition(
 		"chatgpt-model",
 		"model",
-		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{},"projection_versions":["legacy","ordered","native"]}),
+		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{}}),
 	);
 	for local in [false, true] {
 		assert!(

@@ -268,7 +268,8 @@ pub(crate) async fn impact(
 			blocked.insert((entry.id.clone(), entry.version.clone()), reason);
 		}
 		if entry.kind == "model" {
-			let config: aidash_domain::model::ModelConfig = serde_json::from_value(entry.config)?;
+			let config: aidash_domain::model::ModelConfig =
+				aidash_domain::model::ModelConfig::from_stored(entry.config)?;
 			if config.plan_connection.is_none()
 				&& config.provider_credential.is_some()
 				&& let Some(reason) = refusal(&config.model_id)

@@ -38,12 +38,8 @@ fn plan_models_advertise_their_declared_image_route() {
 /// media or cache restrictions.
 #[test]
 fn native_plan_models_keep_the_plan_usage_restrictions() {
-	let mut model = plan_model(&["text", "image"]);
-	model.projection_versions = vec![crate::projection::ProjectionVersion::Native];
+	let model = plan_model(&["text", "image"]);
 	model.validate_plan_usage().unwrap();
-	model
-		.require_projection(crate::projection::ProjectionVersion::Native)
-		.unwrap();
 	for (field, value) in [
 		("streaming", json!(false)),
 		("cache_mode", json!("explicit")),
@@ -137,7 +133,6 @@ fn openrouter_model_ids_refuse_variant_suffixes(
 }
 
 #[rstest::rstest]
-#[case::other_projection(crate::projection::ProjectionVersion::Ordered, 20, vec!["bytes"])]
 #[case::not_calibrated(crate::projection::ProjectionVersion::Native, 19, vec!["bytes"])]
 #[case::frozen_calibration(crate::projection::ProjectionVersion::Native, 20, vec!["bytes", "calibrated"])]
 fn diagnostic_snapshots_use_only_the_frozen_projection_calibration(
@@ -235,33 +230,20 @@ fn wire_api_requires_an_openrouter_provider_credential(
 }
 
 #[test]
-fn omitted_wire_api_keeps_chat_transport_for_every_projection() {
-	use crate::projection::ProjectionVersion;
+fn request_estimates_follow_the_model_wire_api() {
 	use crate::provider::InputFormat;
-	let model = openrouter_model(None);
-	for version in [
-		ProjectionVersion::Legacy,
-		ProjectionVersion::Ordered,
-		ProjectionVersion::Native,
-	] {
-		assert_eq!(InputFormat::for_model(&model, version), InputFormat::Chat);
-	}
-}
-
-#[test]
-fn openrouter_responses_follow_the_plan_projection_mapping() {
-	use crate::projection::ProjectionVersion;
-	use crate::provider::InputFormat;
-	let openrouter = openrouter_model(Some("responses"));
-	let plan = plan_model(&["text"]);
-	for (version, expected) in [
-		(ProjectionVersion::Legacy, InputFormat::Chat),
-		(ProjectionVersion::Ordered, InputFormat::Chat),
-		(ProjectionVersion::Native, InputFormat::Responses),
-	] {
-		assert_eq!(InputFormat::for_model(&openrouter, version), expected);
-		assert_eq!(InputFormat::for_model(&plan, version), expected);
-	}
+	assert_eq!(
+		InputFormat::for_model(&openrouter_model(None)),
+		InputFormat::Chat
+	);
+	assert_eq!(
+		InputFormat::for_model(&openrouter_model(Some("responses"))),
+		InputFormat::Responses
+	);
+	assert_eq!(
+		InputFormat::for_model(&plan_model(&["text"])),
+		InputFormat::Responses
+	);
 }
 
 #[test]
@@ -336,7 +318,7 @@ fn diagnostic_configuration_bounds_the_frozen_inputs(
 	model.estimate_diagnostics = Some(EstimateDiagnostics {
 		token_encoding: None,
 		calibrations: std::collections::BTreeMap::from([(
-			crate::projection::ProjectionVersion::Legacy,
+			crate::projection::ProjectionVersion::Native,
 			crate::provider::estimate::Calibration { ratio_ppm, samples },
 		)]),
 	});

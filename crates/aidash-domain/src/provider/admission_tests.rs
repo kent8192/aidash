@@ -75,11 +75,9 @@ fn shadow_tokenization_uses_the_supplied_encoding_and_preserves_unavailability()
 	assert_eq!(request.estimate, EstimateSnapshot::conservative(0));
 }
 #[rstest]
-fn admission_fingerprint_retains_the_existing_metadata_and_exact_ordered_media_hash_contract(
-	request: ModelRequest,
-) {
+fn admission_fingerprint_uses_native_metadata_and_ordered_media_hashes(request: ModelRequest) {
 	let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-	let expected = json!({"request":{"instructions":"system","context":{"text":"東京"},"tools":[],"max_output_tokens":12},
+	let expected = json!({"request":{"instructions":"system","context":{"standalone":true,"attachments":[],"history":[],"volatile":"{\"text\":\"東京\"}"},"tools":[],"max_output_tokens":12},
         "media":[{"text":abc},{"media_type":"image/png","digest":abc},{"format":"wav","digest":abc}]});
 	assert_eq!(
 		request.inference_digest(),
@@ -115,12 +113,7 @@ fn every_admitted_request_or_media_change_has_a_distinct_identity(
 			request.content_parts = parts;
 		}
 		"instructions" => request.instructions.push('!'),
-		"context" => {
-			request
-				.context
-				.legacy_mut()
-				.expect("Legacy request context")["text"] = json!("changed")
-		}
+		"context" => request.context = ModelContext::native_data(&json!({"text":"changed"})),
 		"output" => request.max_output_tokens += 1,
 		"bytes" => request.content_parts[0] = ContentPart::Text("abcd".into()),
 		"order" => request.content_parts.swap(0, 1),
@@ -165,7 +158,7 @@ fn media_only_estimate_keeps_transmitted_array_framing_without_encoded_payload(
 fn responses_fitting_counts_the_sent_input_shape() {
 	let request: ModelRequest = serde_json::from_value(json!({
 		"instructions":"Follow the task.",
-		"context":{"task":"東京 \"quoted\""},
+		"context":{"standalone":true,"attachments":[],"history":[],"volatile":json!({"task":"東京 \"quoted\""}).to_string()},
 		"tools":[],
 		"max_output_tokens":12,
 		"input_format":"responses",

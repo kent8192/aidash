@@ -625,7 +625,7 @@ fn declared_prompt_cache_survives_the_agent_settings_view() {
 	// Arrange
 	let mut input = serde_json::to_value(agent()).unwrap();
 	assert!(input.get("prompt_cache").is_none());
-	input["projection_version"] = json!("ordered");
+	input["projection_version"] = json!("native");
 	input["prompt_cache"] = json!("explicit");
 	// Act
 	let decoded: AgentBindings = serde_json::from_value(input.clone()).unwrap();
@@ -641,7 +641,7 @@ fn declared_prompt_cache_survives_the_agent_settings_view() {
 }
 
 #[test]
-fn absent_harness_contract_keeps_the_definition_bytes() {
+fn omitted_rendering_pins_keep_the_definition_bytes() {
 	// Arrange: no definition, digest or Binding snapshot written before #531
 	// names a Harness Contract.
 	let input = serde_json::to_value(agent()).unwrap();
@@ -650,39 +650,14 @@ fn absent_harness_contract_keeps_the_definition_bytes() {
 	let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();
 	let config = crate::registry::AgentConfig::from_definition(parsed);
 	// Assert
+	assert_eq!(config.projection_version, None);
 	assert_eq!(config.harness_contract, None);
-	assert_eq!(serde_json::to_value(config).unwrap(), input);
-}
-
-#[test]
-fn structured_harness_contracts_require_the_native_projection_version() {
-	// Arrange
-	let contract = "structured@3";
-	for projection in [None, Some("legacy"), Some("ordered")] {
-		let mut input = serde_json::to_value(agent()).unwrap();
-		if let Some(projection) = projection {
-			input["projection_version"] = json!(projection);
-		}
-		input["harness_contract"] = json!(contract);
-		// Act / Assert
-		let error = serde_json::from_value::<crate::registry::AgentConfig>(input).unwrap_err();
-		assert!(
-			error
-				.to_string()
-				.contains("does not support Projection Version"),
-			"{contract} with {projection:?}: {error}"
-		);
-	}
-	// Act: Native accepts the structured version.
-	let mut input = serde_json::to_value(agent()).unwrap();
-	input["projection_version"] = json!("native");
-	input["harness_contract"] = json!(contract);
-	let parsed: crate::registry::AgentConfig = serde_json::from_value(input).unwrap();
-	// Assert
 	assert_eq!(
-		parsed.definition().harness_contract,
-		serde_json::from_value(json!(contract)).unwrap()
+		crate::registry::execution_contract(config.projection_version, config.harness_contract)
+			.unwrap(),
+		crate::harness_contract::HarnessContract::Structured4
 	);
+	assert_eq!(serde_json::to_value(config).unwrap(), input);
 }
 
 #[test]
@@ -696,15 +671,23 @@ fn unknown_harness_contract_versions_are_rejected() {
 }
 
 #[test]
-fn legacy_harness_contract_accepts_every_projection_version() {
+fn retired_pins_keep_their_saved_serialization() {
 	for projection in ["legacy", "ordered", "native"] {
 		let mut input = serde_json::to_value(agent()).unwrap();
 		input["projection_version"] = json!(projection);
 		input["harness_contract"] = json!("legacy@1");
-		let parsed: crate::registry::AgentConfig = serde_json::from_value(input).unwrap();
+		let parsed: crate::registry::AgentConfig = serde_json::from_value(input.clone()).unwrap();
+		let serialized = serde_json::to_value(&parsed).unwrap();
+		assert_eq!(
+			serialized["projection_version"],
+			input["projection_version"]
+		);
+		assert_eq!(serialized["harness_contract"], input["harness_contract"]);
 		assert_eq!(
 			parsed.definition().harness_contract,
-			Some(crate::harness_contract::HarnessContract::Legacy)
+			Some(crate::harness_contract::HarnessContractPin::Retired(
+				crate::harness_contract::RetiredHarnessContract::V1
+			))
 		);
 	}
 }

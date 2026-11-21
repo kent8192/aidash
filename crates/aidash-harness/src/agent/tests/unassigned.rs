@@ -38,10 +38,6 @@ fn answer(run: &mut Run, text: &str) {
 	}));
 }
 
-fn use_native_projection(fixture: &mut Fixture) {
-	Arc::get_mut(&mut fixture.backend.0).unwrap().projection = ProjectionVersion::Native;
-}
-
 fn calls(fixture: &Fixture, name: &str) -> usize {
 	fixture
 		.backend
@@ -117,8 +113,7 @@ async fn the_next_request_carries_the_notice_on_the_legacy_projection(fixture: F
 
 #[rstest]
 #[tokio::test]
-async fn the_next_request_carries_the_notice_on_the_native_projection(mut fixture: Fixture) {
-	use_native_projection(&mut fixture);
+async fn the_next_request_carries_the_notice_on_the_native_projection(fixture: Fixture) {
 	the_next_request_carries_the_notice(fixture).await;
 }
 
@@ -149,7 +144,6 @@ async fn the_next_final_answer_abandons_what_the_run_created_and_says_so(mut fix
 #[rstest]
 #[tokio::test]
 async fn the_model_turn_keeps_the_models_own_words(mut fixture: Fixture) {
-	use_native_projection(&mut fixture);
 	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
 	answer(&mut fixture.run, "All done.");
 	advance_sources(&mut fixture).await.unwrap();

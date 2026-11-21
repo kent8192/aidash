@@ -40,19 +40,6 @@ fn legacy_history_is_imported_with_journal_sequences() {
 }
 
 #[test]
-fn prune_only_request_is_byte_identical_to_the_legacy_shape() {
-	let context: Context = serde_json::from_value(legacy_context()).unwrap();
-	let pinned = json!({"task":{"id":"t"}});
-	let legacy = json!({
-		"current": pinned,
-		"summary": "",
-		"run_message_summary": "",
-		"history": legacy_context()["history"],
-	});
-	assert_eq!(context.model_view(&pinned).to_string(), legacy.to_string());
-}
-
-#[test]
 fn push_assigns_monotonic_sequences_and_rejects_disorder() {
 	let mut context: Context = serde_json::from_value(legacy_context()).unwrap();
 	context.push(ContextEvent::RunMessageReadRequired {
@@ -71,12 +58,11 @@ fn a_stored_legacy_summary_stays_model_visible_across_saves() {
 	stored["summary"] = json!("Never deploy on Fridays");
 	let context: Context = serde_json::from_value(stored).unwrap();
 	let pinned = json!({"task":{"id":"t"}});
-	assert_eq!(
-		context.model_view(&pinned)["summary"],
-		json!("Never deploy on Fridays")
-	);
-	let ordered: Value = serde_json::from_str(&ordered_context(&context, &pinned).stable).unwrap();
-	assert_eq!(ordered["summary"], json!("Never deploy on Fridays"));
+	let projected = crate::projection::native::native_context(&context, &pinned);
+	assert!(projected.attachments.iter().any(|envelope| {
+		envelope.source == crate::projection::native::Source::ExecutionSummary
+			&& envelope.content == json!("Never deploy on Fridays")
+	}));
 	// The next save keeps the text instead of dropping it.
 	let saved = serde_json::to_value(&context).unwrap();
 	assert_eq!(saved["summary"], json!("Never deploy on Fridays"));

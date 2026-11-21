@@ -512,7 +512,6 @@ export function EntityForm({
                       ? {
                           plan_connection: "chatgpt",
                           streaming: true,
-                          projection_versions: ["legacy", "ordered", "native"],
                         }
                       : modelSource === "openrouter"
                         ? {
@@ -525,12 +524,6 @@ export function EntityForm({
                             ...(s("cache_mode")
                               ? { cache_mode: s("cache_mode") }
                               : {}),
-                            // Native lets new Agents default to structured@4 (#532, #1010).
-                            projection_versions: [
-                              "legacy",
-                              "ordered",
-                              "native",
-                            ],
                           }
                         : {}),
                     model_id: s("model_id"),

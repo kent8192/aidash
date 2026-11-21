@@ -4,7 +4,7 @@
 //!
 //! The harness builds this IR; `ModelRequest::input_body` gives it its
 //! canonical chat serialization, which transport and request budgeting share.
-use crate::context::{Context, ContextEvent, EvidenceItem, HistoryEntry, ORDERED_STABLE_KEYS};
+use crate::context::{Context, ContextEvent, EvidenceItem, HistoryEntry, STABLE_KEYS};
 use crate::provider::ToolCall;
 use crate::{Error, Result};
 use schemars::JsonSchema;
@@ -906,7 +906,7 @@ fn single<'a>(
 fn attachments(context: &Context, pinned: &Value) -> Vec<Envelope> {
 	let mut attachments = Vec::new();
 	for (key, source) in
-		ORDERED_STABLE_KEYS
+		STABLE_KEYS
 			.iter()
 			.zip([Source::Identity, Source::Task, Source::ReferenceDocuments])
 	{

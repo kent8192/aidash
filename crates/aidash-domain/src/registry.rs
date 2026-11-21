@@ -145,10 +145,10 @@ pub struct AgentConfig {
 	pub tool_parallelism: u8,
 	/// Absent means `legacy@1`; see [`AgentConfig::exposure_policy`].
 	pub exposure: Option<crate::exposure::ExposurePolicy>,
-	/// As written in the definition; `None` renders as Legacy.
-	pub projection_version: Option<crate::projection::ProjectionVersion>,
-	/// As written in the definition; `None` means `legacy@1`.
-	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
+	/// As written in the definition; `None` renders as Native.
+	pub projection_version: Option<crate::projection::ProjectionPin>,
+	/// As written in the definition; `None` means `structured@4`.
+	pub harness_contract: Option<crate::harness_contract::HarnessContractPin>,
 	/// As written in the definition; `None` means `off` (ADR 0019).
 	pub prompt_cache: Option<crate::projection::PromptCache>,
 	/// As written in the definition; `None` requires no verification.
@@ -211,3 +211,25 @@ pub mod skill_import;
 pub mod workbench;
 
 pub mod bindings;
+
+/// Resolve the effective contract while keeping historical pins readable.
+/// Admission and dispatch reject all retired pins.
+pub fn execution_contract(
+	projection: Option<crate::projection::ProjectionPin>,
+	contract: Option<crate::harness_contract::HarnessContractPin>,
+) -> std::result::Result<crate::harness_contract::HarnessContract, String> {
+	use crate::harness_contract::HarnessContractPin;
+
+	if let Some(crate::projection::ProjectionPin::Retired(version)) = projection {
+		return Err(format!(
+			"Projection Version {version} has been retired. Use native."
+		));
+	}
+	match contract {
+		Some(HarnessContractPin::Active(contract)) => Ok(contract),
+		Some(HarnessContractPin::Retired(contract)) => Err(format!(
+			"Harness Contract {contract} has been retired. Use structured@4."
+		)),
+		None => Ok(Default::default()),
+	}
+}

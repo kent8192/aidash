@@ -472,7 +472,7 @@ impl Executor<'_> {
 					.catalog()
 					.get_for_run(run, &call.agent.model.id, &call.agent.model.version)
 					.await?;
-				let model: ModelConfig = serde_json::from_value(model_entry.config)?;
+				let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
 				let sample = SamplingRequest::parse(
 					&request.params,
 					limits.sampling_tokens.min(model.output_token_limit()),
@@ -644,10 +644,7 @@ impl Executor<'_> {
 		call.guard.inference().await?;
 		let request = ModelRequest {
 			instructions: sample.system_prompt,
-			input_format: aidash_domain::provider::InputFormat::for_model(
-				&model,
-				aidash_domain::projection::ProjectionVersion::Native,
-			),
+			input_format: aidash_domain::provider::InputFormat::for_model(&model),
 			context: ModelContext::Sampling(SamplingContext {
 				sampling_messages: sample.messages,
 			}),

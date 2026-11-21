@@ -1,5 +1,4 @@
-//! Explicit cache breakpoints (ADR 0019) end `system` and the Ordered Stable
-//! Prefix part, never the volatile part, and never change an estimate.
+//! Request accounting and identity with explicit cache breakpoints (ADR 0019).
 use super::*;
 use crate::context::{Context, ContextEvent, RequestBudget, RequestProjection};
 use crate::projection::CacheScope;
@@ -39,9 +38,9 @@ fn request(projection: RequestProjection, events: u32) -> ModelRequest {
 }
 
 #[fixture]
-fn ordered() -> ModelRequest {
+fn native() -> ModelRequest {
 	request(
-		RequestProjection::Ordered(CacheScope {
+		RequestProjection::Native(CacheScope {
 			tenant: "tenant-a".into(),
 			key_version: 1,
 		}),
@@ -49,95 +48,42 @@ fn ordered() -> ModelRequest {
 	)
 }
 
-/// Which body locations carry `cache_control`: `system`, then each user part.
-fn marked(request: &ModelRequest) -> (bool, Vec<bool>) {
-	let body = request.input_body();
-	assert!(!body["tools"].to_string().contains("cache_control"));
-	let system = body["messages"][0]["content"][0]
-		.get("cache_control")
-		.is_some();
-	let parts = body["messages"][1]["content"]
-		.as_array()
-		.unwrap()
-		.iter()
-		.map(|part| part.get("cache_control").is_some())
-		.collect();
-	(system, parts)
-}
-
 #[rstest]
-fn breakpoints_end_system_and_the_stable_part_but_never_the_volatile_part(
-	mut ordered: ModelRequest,
-) {
-	assert_eq!(marked(&ordered), (false, vec![false, false]));
-	assert!(!ordered.input_body().to_string().contains("cache_control"));
-	ordered.cache_breakpoints = true;
-	assert_eq!(marked(&ordered), (true, vec![true, false]));
-	let body = ordered.input_body();
-	assert_eq!(
-		body["messages"][0]["content"],
-		json!([{"type":"text","text":"Follow the task","cache_control":{"type":"ephemeral"}}])
-	);
-	let ModelContext::Ordered(parts) = &ordered.context else {
-		panic!("expected an Ordered request");
-	};
-	assert_eq!(body["messages"][1]["content"][0]["text"], parts.stable);
-	assert_eq!(body["messages"][1]["content"][1]["text"], parts.volatile);
-}
-
-#[rstest]
-fn media_parts_after_the_volatile_part_are_never_marked(mut ordered: ModelRequest) {
-	ordered.cache_breakpoints = true;
-	ordered.content_parts = vec![ContentPart::Text("attachment".into())];
-	assert_eq!(marked(&ordered), (true, vec![true, false, false]));
-}
-
-#[test]
-fn without_history_the_breakpoint_still_ends_the_stable_part() {
-	let mut request = request(
-		RequestProjection::Ordered(CacheScope {
-			tenant: "tenant-a".into(),
-			key_version: 1,
-		}),
-		0,
-	);
-	request.cache_breakpoints = true;
-	assert_eq!(marked(&request), (true, vec![true, false]));
-}
-
-#[rstest]
-fn breakpoints_never_change_an_ordered_estimate(mut ordered: ModelRequest) {
-	let unmarked = ordered.estimated_total_tokens();
-	ordered.cache_breakpoints = true;
-	assert_eq!(ordered.estimated_total_tokens(), unmarked);
+fn breakpoints_never_change_an_native_estimate(mut native: ModelRequest) {
+	let unmarked = native.estimated_total_tokens();
+	native.cache_breakpoints = true;
+	assert_eq!(native.estimated_total_tokens(), unmarked);
 	assert_eq!(
 		unmarked,
-		ordered.input_body().to_string().len()
+		native.input_body().to_string().len()
 			+ crate::projection::CACHE_SALT_LINE_RESERVE
 			+ 64 + 1024
 	);
 }
 
 #[rstest]
-fn breakpoints_are_part_of_the_request_identity(mut ordered: ModelRequest) {
-	let unmarked = ordered.inference_digest();
+fn breakpoints_are_part_of_the_request_identity(mut native: ModelRequest) {
+	let unmarked = native.inference_digest();
 	assert!(
-		!serde_json::to_string(&ordered)
+		!serde_json::to_string(&native)
 			.unwrap()
 			.contains("cache_breakpoints")
 	);
-	ordered.cache_breakpoints = true;
-	assert_ne!(ordered.inference_digest(), unmarked);
+	native.cache_breakpoints = true;
+	assert_ne!(native.inference_digest(), unmarked);
 }
 
 #[test]
-fn legacy_requests_reject_breakpoints_and_keep_their_bytes() {
-	let mut legacy = request(RequestProjection::Legacy, 2);
-	let (body, estimate) = (legacy.input_body(), legacy.estimated_total_tokens());
-	legacy.cache_breakpoints = true;
-	assert!(legacy.validate().is_err());
-	assert_eq!(legacy.input_body(), body);
-	assert_eq!(legacy.estimated_total_tokens(), estimate);
+fn standalone_requests_reject_breakpoints_and_keep_their_bytes() {
+	let mut standalone = ModelRequest {
+		context: ModelContext::native_data(&json!({"task":"standalone"})),
+		..Default::default()
+	};
+	let (body, estimate) = (standalone.input_body(), standalone.estimated_total_tokens());
+	standalone.cache_breakpoints = true;
+	assert!(standalone.validate().is_err());
+	assert_eq!(standalone.input_body(), body);
+	assert_eq!(standalone.estimated_total_tokens(), estimate);
 }
 
 /// Each Tenant's salt starts a prefix no other Tenant can reuse, so identical
@@ -145,10 +91,10 @@ fn legacy_requests_reject_breakpoints_and_keep_their_bytes() {
 #[rstest]
 #[case::tenant(false)]
 #[case::input_format(true)]
-fn cache_identity_follows_the_provider_cache_boundary(ordered: ModelRequest, #[case] format: bool) {
+fn cache_identity_follows_the_provider_cache_boundary(native: ModelRequest, #[case] format: bool) {
 	// Arrange
 	let mut other = request(
-		RequestProjection::Ordered(CacheScope {
+		RequestProjection::Native(CacheScope {
 			tenant: if format { "tenant-a" } else { "tenant-b" }.into(),
 			key_version: 1,
 		}),
@@ -159,7 +105,7 @@ fn cache_identity_follows_the_provider_cache_boundary(ordered: ModelRequest, #[c
 	}
 	// Act
 	let (a, b) = (
-		ordered.cache_identity().unwrap(),
+		native.cache_identity().unwrap(),
 		other.cache_identity().unwrap(),
 	);
 	// Assert

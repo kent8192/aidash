@@ -2735,7 +2735,7 @@ fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_inter
         counter.fetch_add(1,Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
     }}))
 .route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
-        let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let context:Value=crate::common::captured_context(&body);
         let message=if context["history"].as_array().unwrap().iter().any(|e| e["kind"]=="tool") {
             json!({"role":"assistant","content":"Completed authorized work"})
         } else { json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]}) };
@@ -3033,8 +3033,7 @@ fn tool_call_router(
 					let schedule = schedule.clone();
 					async move {
 						let context: Value =
-							serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
-								.unwrap();
+							crate::common::captured_context(&body);
 						let called = context["history"]
 							.as_array()
 							.unwrap()

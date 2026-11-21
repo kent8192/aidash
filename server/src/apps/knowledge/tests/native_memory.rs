@@ -2954,7 +2954,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			);
 		}
 		if delivery == "shared_read_revoked" {
-			let actual = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
+			let actual = captured.lock().unwrap()[0]["snapshot"]["semantic_memory"].clone();
 			assert_eq!(
 				actual["memory"]["banks"][1]["recall"]["units"][0]["id"],
 				json!(shared_unit),
@@ -3070,7 +3070,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		1,
 		"Run error: {run_error:?}"
 	);
-	let first = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
+	let first = captured.lock().unwrap()[0]["snapshot"]["semantic_memory"].clone();
 	assert_eq!(
 		first["memory"]["binding"]["bank"]["participant"],
 		json!(participant.id)
@@ -3116,7 +3116,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			"automatic recall stages both Units before the response adoption checks its journal"
 		);
 		let proposed =
-			frames[1]["current"]["semantic_memory"]["memory"]["banks"][0]["recall"]["units"]
+			frames[1]["snapshot"]["semantic_memory"]["memory"]["banks"][0]["recall"]["units"]
 				.as_array()
 				.unwrap();
 		assert!(
@@ -3227,7 +3227,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error,
 		frames.last().map(|f| &f["history"])
 	);
-	let second = captured.lock().unwrap()[1]["current"]["semantic_memory"].clone();
+	let second = captured.lock().unwrap()[1]["snapshot"]["semantic_memory"].clone();
 	assert_eq!(
 		second["memory"]["boundary"]["inputs"][0]["id"],
 		json!(message)
@@ -4967,9 +4967,7 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 						.unwrap();
 					}
 				}
-				let context: serde_json::Value =
-					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
-						.unwrap();
+				let context = native_request::captured_context(&input);
 				let mut calls = received.lock().unwrap();
 				calls.push(context);
 				let (name, arguments) = if calls.len() == 1 {
@@ -5392,3 +5390,6 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 	late_subnode::assert_waited_at_the_subnode_check(waiting);
 	late_subnode::assert_cancelled(&late_subnode::run_to_its_end(&f, run.id).await);
 }
+
+#[path = "../../execution/tests/support/native_request.rs"]
+mod native_request;

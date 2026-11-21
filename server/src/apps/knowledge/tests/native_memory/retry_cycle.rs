@@ -90,7 +90,7 @@ async fn outage_provider(
 const KEY: &str = "retry-cycle-recall";
 
 /// Recall through a Run's memory tool. The same key replays the same memory
-/// operation, as an Ordered Run's Retrieval Key does for its context recall.
+/// operation, as a Run's Retrieval Key does for its context recall.
 async fn run_recall(
 	store: &Store,
 	run: &aidash_domain::Run,

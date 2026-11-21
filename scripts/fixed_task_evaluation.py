@@ -2083,10 +2083,9 @@ def check_matched_live_models(corpus, planned, mapping, models, *, execution_est
             continue
         if config.get("reasoning_effort") != "medium":
             raise GuardRefusal(f"primary route {route} model {reference} must pin reasoning_effort=medium")
-        version = item["agent_fields"].get("projection_version", "legacy")
-        supported = config.get("projection_versions") or ["legacy"]
-        if version not in supported:
-            raise GuardRefusal(f"model {reference} does not explicitly support projection {version}")
+        version = item["agent_fields"].get("projection_version", "native")
+        if version != "native":
+            raise GuardRefusal(f"Projection Version {version} is retired. Select a Native arm.")
         if item["agent_fields"].get("prompt_cache") == "explicit" and config.get("cache_mode") != "explicit":
             raise GuardRefusal(f"explicit route model {reference} must declare cache_mode=explicit")
         provider_route_evidence(config, reference)

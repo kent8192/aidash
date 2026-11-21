@@ -85,8 +85,7 @@ fn deferred_router(
 					(requests.clone(), script.clone(), unavailable.clone());
 				async move {
 					let context: Value =
-						serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
-							.unwrap();
+						crate::common::captured_context(&body);
 					let count = {
 						let mut requests = capture.lock().await;
 						requests.push(body.clone());
@@ -739,7 +738,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		if events(context).is_empty() {
 			Reply::Call(
 				"thread_read",
-				json!({"kind":"task","id":context["current"]["task"]["id"]}),
+				json!({"kind":"task","id":context["snapshot"]["task"]["id"]}),
 			)
 		} else {
 			Reply::Text("Read the task.")
@@ -1176,11 +1175,14 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(
 	#[future] deferred_fixture: Deferred,
 ) {
 	let d = Box::pin(deferred_fixture).await;
-	d.script(|body, context| {
-		if !instructions(body).contains(CATCH_UP) {
+	d.script(|_, context| {
+		if !context["snapshot"]["turn_instructions"]
+			.to_string()
+			.contains(CATCH_UP)
+		{
 			return Reply::Text("Done.");
 		}
-		let current = &context["current"];
+		let current = &context["snapshot"];
 		let required = current["run_messages"]
 			.as_array()
 			.into_iter()

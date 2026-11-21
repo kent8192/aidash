@@ -52,7 +52,7 @@ Cargo fetching crates for the first build. It
    private recovery directory, then starts one Node in the `serve` role (HTTP
    plus four worker slots that consume activation) with
    `AIDASH_ACTIVATION_BOOTSTRAP=true`, a random Deployment Administrator token and a random
-   Cache Salt Key, so Ordered Runs are possible;
+   Cache Salt Key for Run inference;
 4. serves the scripted provider (`scripts/fixed_task_fixture.py`): the model at
    `/v1/chat/completions` and the fixture tools at `/tools/{task}/{alias}`
    (the fixture provider is local and scripted);
@@ -63,6 +63,11 @@ Cargo fetching crates for the first build. It
    query, and executes the memory scenarios;
 6. writes `private/evaluation/deterministic-<hex>.json` (mode 0600, created
    exclusively) and prints a summary.
+
+Corpora that compare the retired rendering versions are historical. Use the
+corresponding release to repeat those comparisons. For a new evaluation,
+pin `projection_version = "native"` and either `harness_contract = "structured@4"`
+or `harness_contract = "structured@3"` in each arm.
 
 The command exits non-zero when the manifest is invalid, when any Run differs
 from its task's declared calibration (`[tasks.expected]`), when a

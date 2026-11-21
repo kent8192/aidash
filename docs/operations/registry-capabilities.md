@@ -14,6 +14,12 @@ New Tool registrations require qualified Provider descriptors. Old transport-tag
 
 Every Tenant's Registry holds the built-in declarations at exact immutable versions (`aidash.<operation>@1.0.0`): the 17 legacy required/default operations, `capability_search`, `capability_describe`, `capability_load`, `capability_unload`, `skill_asset_read` and `task_assign`. Tenant creation writes them, and startup writes any that a Tenant lacks (ADR 0033). All are seeded whatever Exposure policies Agents use; an Agent's [Exposure policy](#deferred-capability-exposure) decides which of them it binds implicitly. Seeding verifies existing bytes and fails on a reserved-name conflict. These built-ins need no Catalog Approval and add no resource grants. Built-ins cannot be published, installed or mutated through Marketplace.
 
+A Keyless model uses a non-catalog endpoint and must support OpenAI-compatible
+Chat Completions tool calls. It must accept tool definitions, return tool
+calls with IDs, and accept the matching tool results in later messages.
+Every Run sends Native messages. Registration validates the definition without
+contacting its endpoint.
+
 ## Sandboxed built-ins and page reading
 
 The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and page reading are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one without `page_reading = true` under `[research_providers]` offers no page reading group. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
@@ -100,15 +106,14 @@ Agent documents become immutable private Source definitions. Their contents
 retain separate knowledge/reference authorization and are never made public by
 Registry visibility. Inference journals a bounded content observation before
 calling the model; recovery at the same boundary reuses that content after
-checking current authority. On the Legacy Projection Version a later boundary
-observes current mutable content. On the Ordered Projection Version the
-semantic observation is reused across steps while its Retrieval Key (query
-inputs, Run-fixed retrieval budget, binding, authorization scope and the policy,
-index and memory-binding revisions) is unchanged, and Skill context while the
-Run's Skill record revision is unchanged; every reuse is rechecked first, a
-revoked or narrowed authority pauses the Run, and a stale reuse retrieves again
-once. Run inspection and state responses omit the Source observation cache;
-durable storage retains it for authorized recovery.
+checking current authority. A Run reuses semantic retrieval while the query
+inputs, Run-fixed retrieval budget, binding, authorization scope and the
+policy, index and memory-binding revisions in its Retrieval Key hold. It
+reuses Skill context while the Skill record revision is unchanged. Each
+reuse checks current authority. Revoked or narrowed authority pauses the
+Run, and stale retrieval is refreshed once. The Source observation cache
+is retained for authorized recovery and omitted from Run inspection and
+state responses.
 
 Local execution, remote admission and Workbench save the same complete Binding
 snapshot. Updating an active installation does not replace an admitted Run's
@@ -641,7 +646,7 @@ request pinned.
 Peer execution requires protocol `0.2` or later; the `/v0.1/` URL namespace remains
 a path name and does not negotiate an old contract. Both Nodes verify that the
 protocol header is a version they accept, and the Provider contracts. Protocol
-`0.3` additionally lets a remote Ordered Run see changes to the Home's semantic
+`0.3` additionally lets a remote Run see changes to the Home's semantic
 corpus (see [context projection](../features/context-projection.md)). Remote mandatory thread and Human operations
 use Home authority under the exact task, grant, admission and Run. Unsupported
 remote defaults have persisted placement exclusions; explicit incompatible

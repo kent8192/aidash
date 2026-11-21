@@ -172,11 +172,11 @@ async fn verify_audio_batches(
 	for _ in 0..12 {
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
-			let Some(parts) = body["messages"][1]["content"].as_array() else {
+			let Some(parts) =
+				body["messages"].as_array().unwrap().last().unwrap()["content"].as_array()
+			else {
 				if let Some(prefix) = &leading_text
-					&& body["messages"][1]["content"]
-						.as_str()
-						.is_some_and(|content| content.contains(prefix.as_str()))
+					&& body["messages"].to_string().contains(prefix.as_str())
 				{
 					assert!(body.get("tools").is_none());
 					saw_prefix_batch = true;
@@ -482,7 +482,9 @@ async fn verify_separate_format_routes(
 	for _ in 0..12 {
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
-			let Some(parts) = body["messages"][1]["content"].as_array() else {
+			let Some(parts) =
+				body["messages"].as_array().unwrap().last().unwrap()["content"].as_array()
+			else {
 				continue;
 			};
 			let urls: Vec<_> = parts
@@ -790,7 +792,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	for _ in 0..6 {
 		assert!(worker.worker_once().await.unwrap());
 		if let Ok(body) = received.try_recv() {
-			let parts = body["messages"][1]["content"].as_array().unwrap();
+			let parts = body["messages"].as_array().unwrap().last().unwrap()["content"]
+				.as_array()
+				.unwrap();
 			let types: Vec<_> = parts
 				.iter()
 				.map(|part| part["type"].as_str().unwrap())
@@ -937,7 +941,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	for _ in 0..12 {
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
-			let Some(parts) = body["messages"][1]["content"].as_array() else {
+			let Some(parts) =
+				body["messages"].as_array().unwrap().last().unwrap()["content"].as_array()
+			else {
 				continue;
 			};
 			let urls: Vec<String> = parts
@@ -1098,7 +1104,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	for _ in 0..8 {
 		assert!(worker.worker_once().await.unwrap());
 		if let Ok(body) = received.try_recv() {
-			let parts = body["messages"][1]["content"].as_array().unwrap();
+			let parts = body["messages"].as_array().unwrap().last().unwrap()["content"]
+				.as_array()
+				.unwrap();
 			assert!(
 				parts
 					.iter()

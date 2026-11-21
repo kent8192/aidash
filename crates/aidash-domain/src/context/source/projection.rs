@@ -146,13 +146,6 @@ pub fn declared_present(request: &ModelRequest, contribution: &SourceContributio
 	match &request.context {
 		// Sampling carries only the requesting server's explicit messages.
 		ModelContext::Sampling(_) => false,
-		ModelContext::Legacy(context) => context
-			.get("current")
-			.is_some_and(|part| contains_envelope(part, &envelope)),
-		ModelContext::Ordered(context) => contains(match volatility {
-			Volatility::Run => &context.stable,
-			Volatility::Step => &context.volatile,
-		}),
 		ModelContext::Native(context) => match volatility {
 			Volatility::Run => context.attachments.contains(&envelope),
 			Volatility::Step => contains(&context.volatile),
@@ -214,15 +207,6 @@ fn retain(request: &mut ModelRequest, selected: &BTreeSet<String>) {
 	};
 	match &mut request.context {
 		ModelContext::Sampling(_) => {}
-		ModelContext::Legacy(context) => {
-			if let Some(current) = context.get_mut("current") {
-				filter(current);
-			}
-		}
-		ModelContext::Ordered(context) => {
-			filter_text(&mut context.stable);
-			filter_text(&mut context.volatile);
-		}
 		ModelContext::Native(context) => {
 			context.attachments.retain(|envelope| {
 				envelope.source != Source::ContextSource

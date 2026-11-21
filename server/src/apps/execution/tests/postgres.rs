@@ -234,14 +234,13 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
-	#[values("ordered", "native")] version: &str,
 ) {
-	// Arrange: a model that declares the salted version and an Agent that
-	// names it, on a node without Cache Salt Keys.
+	// Arrange a Native Agent on a Node without a Cache Salt Key.
 	let (store, url, schema) = _store_fixture.parts();
+	let unconfigured = store.clone().with_cache_salt(None);
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
-	registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
-	let agent = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
+	registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	let agent = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
 	let thread = store
 		.create_thread(&ACME, "alice", "Research")
 		.await
@@ -256,43 +255,107 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		&agent.version,
 	);
 	// Act: claiming would create the Run.
-	let rejected = store.claim(&ACME, task.id, 0, &owner, &agent).await;
+	let rejected = unconfigured.claim(&ACME, task.id, 0, &owner, &agent).await;
 	// Assert: no Run and no claim without a key.
 	assert!(
 		matches!(rejected, Err(aidash_server::Error::Invalid(_))),
 		"{rejected:?}"
 	);
 	assert_eq!(store.task(&ACME, task.id).await.unwrap().revision, 0);
-	let salted = store.clone().with_cache_salt(Some(
-		aidash_integrations::inference::CacheSaltKeys::new(
-			&[aidash_integrations::inference::CacheSaltKey {
-				version: 1,
-				secret: "fixture-cache-salt-secret".into(),
-			}],
-			1,
-		)
-		.unwrap(),
-	));
-	let salted_claim = salted
+	let salted_claim = store
 		.claim(&ACME, task.id, 0, &owner, &agent)
 		.await
 		.unwrap();
 	assert_eq!(salted_claim.revision, 1);
-	let other = store
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case::old_projection("projection_version", "legacy")]
+#[case::ordered_projection("projection_version", "ordered")]
+#[case::old_contract("harness_contract", "legacy@1")]
+#[tokio::test]
+async fn a_run_with_a_retired_pin_fails_at_the_next_worker_step(
+	#[from(store)] fixture: StoreFuture,
+	#[from(authenticated_runtime)]
+	#[with(fixture.clone())]
+	runtime: common::RuntimeFuture,
+	#[case] field: &str,
+	#[case] retired: &str,
+) {
+	let (store, url, schema) = fixture.await.parts();
+	let federation = runtime.await.federation;
+	let agent = seed(&federation.registry).await;
+	let thread = store
+		.create_thread(&ACME, "alice", "Retired rendering")
+		.await
+		.unwrap();
+	let task = store
 		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"legacy"}))).await.unwrap();
-	let legacy_owner = qualified_agent(
-		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
-		&legacy.id,
-		&legacy.version,
-	);
-	let claimed = store
-		.claim(&ACME, other.id, 0, &legacy_owner, &legacy)
+	let run = common::admitted_run(&federation, "acme", &task, &agent).await;
+	// Model an existing row created before this release. The retired pin is
+	// part of the immutable definition and its snapshot digest.
+	let token = Uuid::new_v4();
+	let mut leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	assert_eq!(leased.id, run.id);
+	let snapshot = leased.context.binding_snapshot.as_mut().unwrap();
+	let root = snapshot
+		.definitions
+		.iter_mut()
+		.find(|item| item.identity == snapshot.agent)
+		.unwrap();
+	if field == "projection_version" {
+		root.definition.config["harness_contract"] = json!("legacy@1");
+	}
+	root.definition.config[field] = json!(retired);
+	let metadata = serde_json::to_value(&root.definition).unwrap();
+	root.digest = aidash_domain::registry::rules::digest(&metadata);
+	// The authority recheck compares the pinned digest with the Registry row.
+	// Seed both records as they would have been written before retirement.
+	use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+	let updated = sqlx::query(
+		&Query::update()
+			.table(Alias::new("registry"))
+			.value(Alias::new("metadata"), metadata)
+			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+			.and_where(Expr::col(Alias::new("id")).eq(root.identity.id.clone()))
+			.and_where(Expr::col(Alias::new("version")).eq(root.identity.version.clone()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(updated.rows_affected(), 1);
+	snapshot.validate().unwrap();
+	store
+		.save_run(&ACME, &leased, token, "execution.fixture")
 		.await
 		.unwrap();
-	assert_eq!(claimed.revision, 1);
+	let harness = aidash_server::harness::Harness { federation };
+	assert!(harness.worker_once().await.unwrap());
+	let failed = store.run(&ACME, run.id).await.unwrap();
+	let error = failed.error.as_deref().unwrap_or_default();
+	assert!(
+		error.starts_with("PROJECTION_RETIRED:") && error.contains(retired),
+		"{failed:?}"
+	);
+	assert!(failed.recovery.retry.is_none());
+	for _ in 0..3 {
+		if store.run(&ACME, run.id).await.unwrap().phase() == RunPhase::Failed {
+			break;
+		}
+		assert!(harness.worker_once().await.unwrap());
+	}
+	assert_eq!(
+		store.run(&ACME, run.id).await.unwrap().phase(),
+		RunPhase::Failed
+	);
+	assert_eq!(
+		store.task(&ACME, task.id).await.unwrap().status,
+		TaskStatus::Failed
+	);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -2451,9 +2514,7 @@ fn rejected_sources_router(
 			let endpoint = format!("http://{}", request.headers["host"].to_str().unwrap());
 let forbidden_host = format!("http://localhost:{}/blocked", reqwest::Url::parse(&endpoint).unwrap().port().unwrap());
 			async move {
-				let context: serde_json::Value = serde_json::from_str(
-					body["messages"][1]["content"].as_str().unwrap()
-				).unwrap();
+				let context: serde_json::Value = crate::common::captured_context(&body);
 				let history: Vec<_> = context["history"].as_array().unwrap().iter().filter(|event|event.get("call").is_some()).collect();
 				let next = match history.len() {
 					0 => Some(format!("{endpoint}/blocked")),
