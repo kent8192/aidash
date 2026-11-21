@@ -10139,7 +10139,7 @@ async fn a_claim_pins_tenant_and_node_instructions(
 	cleanup(f, &url, &schema).await;
 }
 
-/// A claim opens a Stint; entering a wait the Agent cannot move forward
+/// An authorized worker opens a Stint; entering a wait the Agent cannot move forward
 /// itself ends it with the wait's name; waking opens the next one; a failure
 /// delivery wait keeps the Stint open (#1009, ADR 0141).
 #[rstest::rstest]
@@ -10163,6 +10163,9 @@ async fn stints_follow_waking_and_sleeping(
 	assert_eq!(status, 200, "claim: {body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let driver = f.store.pool.fixture_driver();
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
 	let stints = async |run: Uuid| -> Vec<(bool, Option<String>)> {
 		sqlx::query_as::<_, (bool, Option<String>)>(&format!(
 			"SELECT ended_at IS NOT NULL, end_reason FROM stints WHERE run_id = '{run}' ORDER BY started_at, id"
@@ -10176,7 +10179,7 @@ async fn stints_follow_waking_and_sleeping(
 			Some(reason) => {
 				format!("jsonb_set(pending, '{{data}}', jsonb_build_object('reason', '{reason}'))")
 			}
-			None => "pending".to_owned(),
+			None => "jsonb_set(pending, '{data}', '{}'::jsonb)".to_owned(),
 		};
 		sqlx::query(&format!(
 			"UPDATE task_executions SET phase = '{phase}', pending = {pending} WHERE id = '{}'",
@@ -10186,6 +10189,8 @@ async fn stints_follow_waking_and_sleeping(
 		.await
 		.unwrap();
 	};
+	assert!(stints(run.id).await.is_empty());
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(stints(run.id).await, [(false, None)]);
 	set("WAITING", Some("failure_delivery")).await;
 	assert_eq!(
@@ -10196,6 +10201,7 @@ async fn stints_follow_waking_and_sleeping(
 	set("WAITING", Some("human")).await;
 	assert_eq!(stints(run.id).await, [(true, Some("human".into()))]);
 	set("READY", None).await;
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
 		stints(run.id).await,
 		[(true, Some("human".into())), (false, None)]
@@ -10236,6 +10242,10 @@ async fn stints_record_the_last_lease_holder_and_lease_recoveries(
 	assert_eq!(status, 200, "claim: {body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let driver = f.store.pool.fixture_driver();
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
 	// Lease writes pass the input ledger gate as an upgraded worker's do.
 	let lease = async |owner: Option<Uuid>| {
 		let (owner, until) = match owner {
@@ -10289,23 +10299,28 @@ async fn stints_record_the_last_lease_holder_and_lease_recoveries(
 	.await
 	.unwrap();
 	sqlx::query(&format!(
-		"UPDATE task_executions SET phase = 'READY' WHERE id = '{}'",
+		"UPDATE task_executions SET phase = 'READY', pending = jsonb_set(pending, '{{data}}', '{{}}'::jsonb) WHERE id = '{}'",
 		run.id
 	))
 	.execute(driver)
 	.await
 	.unwrap();
+	assert!(worker.worker_once().await.unwrap());
+	let recorded = stints().await;
+	assert_eq!(recorded.len(), 2);
+	assert_eq!(recorded[0], (true, Some(third.to_string()), 2));
+	assert!(!recorded[1].0);
+	assert!(recorded[1].1.is_some());
 	assert_eq!(
-		stints().await,
-		[(true, Some(third.to_string()), 2), (false, None, 0)],
+		recorded[1].2, 0,
 		"the next Stint counts its own Lease Recoveries"
 	);
 	cleanup(f, &url, &schema).await;
 }
 
 /// A pause ends the Stint, since the Agent cannot move a paused Task forward
-/// itself; writes while paused open none; a resume opens the next one through
-/// the phase rule; a paused Run that is cancelled opens none (#1009, ADR 0141
+/// itself; writes while paused open none. The worker opens the next Stint
+/// when it takes up the resumed Run. A paused Run that is cancelled opens none (#1009, ADR 0141
 /// amendment of 2026-11-20).
 #[rstest::rstest]
 #[tokio::test]
@@ -10349,6 +10364,10 @@ async fn a_pause_ends_the_stint_and_a_resume_opens_the_next(
 		.await;
 		assert_eq!(status, 200, "{action}: {body}");
 	};
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(stints().await, [(false, None)]);
 
 	// Act and Assert: a person pauses the Run.
@@ -10366,8 +10385,9 @@ async fn a_pause_ends_the_stint_and_a_resume_opens_the_next(
 		[(true, Some("paused".into()))],
 		"a write while paused opens no Stint"
 	);
-	// The resume opens the next Stint.
+	// The worker resumes the Run and opens its next Stint.
 	control("resume").await;
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
 		stints().await,
 		[(true, Some("paused".into())), (false, None)]

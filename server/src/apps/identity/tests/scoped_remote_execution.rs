@@ -366,6 +366,7 @@ mod scoped_pair_composition {
 		#[default(false)] tenant_embedding: bool,
 		#[default(false)] media: bool,
 		#[default(true)] activate: bool,
+		#[default(false)] files: bool,
 		#[future(awt)]
 		#[from(scoped_infrastructure)]
 		#[with(native, ordered)]
@@ -415,8 +416,11 @@ mod scoped_pair_composition {
 		let endpoint = model_server.url.clone();
 		let (mut source_policy, token, mut task) =
 			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
-		let (receiver_policy, _receiver_token, _) =
-			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
+		let (receiver_policy, _receiver_token, _) = if files {
+			common::bootstrap_with_area(&b, &ba, &endpoint).await
+		} else {
+			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await
+		};
 		// Work from another Deployment runs under the strictest Data Protection
 		// Level, which no Tenant Keyless endpoint meets (ADR 0104), so each
 		// Deployment runs the model fixture itself.
@@ -610,6 +614,175 @@ mod scoped_pair_composition {
 	}
 }
 use scoped_pair_composition::scoped_pair;
+
+/// A second admission for the same receiving Area waits without starting a
+/// Stint. Its Home sees one queue event and keeps renewing the live grant.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_run_waits_for_its_receiving_area(
+	#[with(false, false, false, false, (false, false, 32), false, false, false, true, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "THINKING");
+	let lease = Uuid::new_v4();
+	let first = p.b.store.lease_run(lease, 180).await.unwrap().unwrap();
+	assert_eq!(first.id, p.admission);
+
+	let (status, task) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/threads/{}/tasks", first.thread_id),
+		json!({"title":"Follow-up research","description":"Use the same receiving Area"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let task: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+	let grant = Uuid::new_v4();
+	let (status, prepared) = request(
+		&p.aa, &p.token, "POST", &format!("/api/tasks/{task}/remote-grants"),
+		json!({"id":grant,"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300,"semantic":{"mode":"disabled"}}),
+	).await;
+	assert_eq!(status, 200, "{prepared}");
+	let (status, activation) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{activation}");
+	let second: Uuid = serde_json::from_value(activation["admission_id"].clone()).unwrap();
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
+	let queued = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
+	assert_eq!(queued.error.as_deref(), Some("execution.queued"));
+	assert_eq!(queued.phase().as_str(), "READY");
+	assert!(queued.lease_owner.is_none());
+	assert!(queued.recovery.retry.is_none());
+	let stints = Query::select()
+		.expr(Expr::cust("COUNT(*)"))
+		.from(Alias::new("stints"))
+		.and_where(Expr::col("run_id").eq(second))
+		.to_string(PostgresQueryBuilder);
+	let stint_count = async || -> i64 {
+		sqlx::query_scalar(&stints)
+			.fetch_one(p.b.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	assert_eq!(stint_count().await, 0);
+	assert!(
+		p.requests.lock().await.is_empty(),
+		"no provider work while queued"
+	);
+	for _ in 0..2 {
+		assert!(
+			!worker.worker_once().await.unwrap(),
+			"the Area head still holds its turn"
+		);
+	}
+
+	let events = async || {
+		p.a.store
+			.events(&TEST_FIXTURE, 0, Some(first.thread_id), 1000)
+			.await
+			.unwrap()
+			.into_iter()
+			.filter(|event| event.kind == "remote_run.queued")
+			.collect::<Vec<_>>()
+	};
+	let notices = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+		loop {
+			let notices = events().await;
+			if !notices.is_empty() {
+				return notices;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the Home records its queue notice");
+	assert_eq!(notices.len(), 1);
+	assert_eq!(notices[0].data["task_id"], json!(task));
+	assert_eq!(notices[0].data["remote_run_id"], json!(second));
+	assert_eq!(notices[0].data["runs_ahead"], 1);
+	assert!(
+		serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
+			notices[0].data["queued_at"].clone()
+		)
+		.is_ok()
+	);
+	assert!(
+		!p.a.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.is_terminal()
+	);
+	let due = chrono::Utc::now() + chrono::Duration::minutes(10);
+	let expiry = Query::update()
+		.table(Alias::new("authorization_remote_grants"))
+		.value(Alias::new("expires_at"), due)
+		.and_where(Expr::col("id").eq(grant))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expiry)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let renewal = aidash_server::apps::identity::services::remote_renewal::sweep(&p.a)
+		.await
+		.unwrap();
+	let expiry = Query::select()
+		.column(Alias::new("expires_at"))
+		.from(Alias::new("authorization_remote_grants"))
+		.and_where(Expr::col("id").eq(grant))
+		.to_string(PostgresQueryBuilder);
+	let renewed: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(&expiry)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(renewed > due + chrono::Duration::minutes(30), "{renewal:?}");
+
+	p.b.store
+		.release_lease(&TEST_FIXTURE, first.id, lease)
+		.await
+		.unwrap();
+	for _ in 0..10 {
+		if p.run().await.phase().is_terminal() {
+			break;
+		}
+		p.step().await;
+	}
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
+	for _ in 0..2 {
+		if worker.worker_once().await.unwrap() {
+			break;
+		}
+	}
+	let started = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
+	assert_eq!(started.phase().as_str(), "THINKING", "{:?}", started.error);
+	assert!(started.error.is_none());
+	assert_eq!(stint_count().await, 1);
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"RUNNING"
+	);
+	assert_eq!(events().await.len(), 1);
+	p.close().await;
+}
 
 /// The first tool result in a Run's history. Run-start memory recall (#852)
 /// may record a history entry before it.

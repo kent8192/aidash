@@ -264,7 +264,7 @@ pub(crate) async fn enqueue(
 			return Ok(serde_json::from_value(result)?);
 		}
 		if sessions::status(&mut access, &area).await?.queue.len() >= 100 {
-			return Err(Error::Conflict("QUEUE_LIMIT".into()));
+			return Err(Error::QueueLimit);
 		}
 		check_url_intents(&input.read_pages)?;
 		let thread = access.thread(area.thread_id).await?;

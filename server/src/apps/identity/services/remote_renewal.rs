@@ -5,8 +5,8 @@
 //!
 //! Renewal runs in two places. A watched loop looks, every few minutes, at the
 //! grants that expire within the renewal window while their Run lives by the
-//! Home's one liveness rule ([`run_live`]: the activation recorded, the receiver
-//! holding the Task, the Task started and not ended), so a Run that waits for a
+//! Home's one liveness rule ([`run_live`]: a recorded activation and a Task that
+//! is still waiting for its first claim or held by the receiver), so a Run that waits for a
 //! person's answer without making calls is renewed too, and a grant whose
 //! activation was never recorded is not. Serving a description or verification of such a grant
 //! renews it as well. Both extend the expiry only from the value they read, so
