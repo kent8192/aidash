@@ -4873,11 +4873,13 @@ impl Store {
 		outcome: aidash_domain::model_call::Outcome,
 	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		if InferenceUsage::complete(tx.as_mut(), run.id, attempt, usage).await? {
-			super::model_calls::finish(
+		if InferenceUsage::complete(tx.as_mut(), run.id, attempt, usage).await?
+			&& let Some(call) = InferenceUsage::model_call(tx.as_mut(), run.id, attempt).await?
+		{
+			super::model_calls::settle(
 				tx.as_mut(),
-				attempt,
-				outcome,
+				call,
+				Some(outcome),
 				super::model_calls::reported(usage),
 			)
 			.await?;

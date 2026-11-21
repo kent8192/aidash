@@ -1357,6 +1357,43 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	assert_eq!(world.model.sampling.lock().unwrap().len(), 2);
 	assert_eq!(world.mcp.requests("tools/call").len(), 2);
 	assert_eq!(events(&world, "inference.accepted").await.len(), 3);
+	// A single Stint can span more than one Model Call page.
+	sqlx::query(
+		"INSERT INTO model_calls
+		 (id, tenant, node, run_id, stint_id, purpose, model_id, model_version, request_digest, started_at)
+		 SELECT gen_random_uuid(), tenant, node, run_id, id, 'mcp_sampling', 'fixture', '1',
+		        'sha256:' || repeat('0', 64), now()
+		 FROM stints CROSS JOIN generate_series(1, 101) WHERE id = $1",
+	).bind(provenance[0].0).execute(world.f.store.pool.fixture_driver()).await.unwrap();
+	let mut seen = std::collections::BTreeSet::new();
+	for (offset, expected) in [(0, 100), (100, 3), (200, 0)] {
+		let (status, page) = request(
+			&world.app,
+			&world.token,
+			"GET",
+			&format!("/api/executions/{}?offset={offset}", world.run.id),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{page}");
+		let calls: Vec<_> = page["stints"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.flat_map(|stint| {
+				stint["model_calls"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.map(move |call| (stint, call))
+			})
+			.collect();
+		assert_eq!(calls.len(), expected);
+		for (stint, call) in calls {
+			assert_eq!(stint["id"], call["owner"]["stint_id"]);
+			assert!(seen.insert(call["id"].as_str().unwrap().to_owned()));
+		}
+	}
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

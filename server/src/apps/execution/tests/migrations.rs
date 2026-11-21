@@ -7084,6 +7084,7 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 		.migrate_excluding(&[
 			("execution", "0154_model_calls"),
 			("execution", "0155_model_call_state"),
+			("execution", "0156_model_call_recovery"),
 		])
 		.await;
 	let tenant = "call-owner";
@@ -7116,7 +7117,40 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 		 VALUES ($1, $2, $3, $1, 0, 'fixture', '1', 3, 1, 'bytes', 1, 9, 'conservative', 'main', 'dispatched')",
 	).bind(historical).bind(tenant).bind(run).execute(&pool).await.unwrap();
 
+	fixture
+		.migrate_excluding(&[("execution", "0156_model_call_recovery")])
+		.await;
+	let media_row = Uuid::new_v4();
+	let media_check = |id| {
+		sqlx::query(
+			"INSERT INTO model_calls
+		 (id, tenant, node, purpose, model_id, model_version, request_digest, started_at)
+		 VALUES ($1, $2, $3, 'media_check', 'fixture', '1', $4, now())",
+		)
+		.bind(id)
+		.bind(tenant)
+		.bind(&node)
+		.bind(format!("sha256:{}", "0".repeat(64)))
+	};
+	media_check(media_row).execute(&pool).await.unwrap();
+
 	fixture.migrate().await;
+	let rejected = media_check(Uuid::new_v4())
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		rejected.as_database_error().unwrap().code().as_deref(),
+		Some("23514")
+	);
+	let historical_purpose: String =
+		sqlx::query_scalar("SELECT purpose FROM model_calls WHERE id = $1")
+			.bind(media_row)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(historical_purpose, "media_check");
+
 	let updated = sqlx::query(
 		"UPDATE inference_usage SET outcome = 'unknown', completed_at = now()
 		 WHERE attempt_id = $1 AND stint_id IS NULL AND model_call_id IS NULL",

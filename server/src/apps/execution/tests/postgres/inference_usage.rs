@@ -1225,3 +1225,107 @@ async fn a_late_completion_of_an_abandoned_attempt_still_reaches_the_budget_ledg
 	assert_eq!(usage_row(&store, stale.attempt).await.0, "unknown");
 	assert_eq!(ledger(&store).await, (70_000, 0));
 }
+
+#[rstest::rstest]
+#[case(
+	aidash_domain::model_call::Purpose::CompactionSummary,
+	UsagePurpose::Summary
+)]
+#[case(aidash_domain::model_call::Purpose::McpSampling, UsagePurpose::Main)]
+#[tokio::test]
+async fn retried_model_calls_record_late_usage_once_under_the_original_owner(
+	#[future(awt)]
+	#[from(store)]
+	fixture: StoreFixture,
+	#[case] purpose: aidash_domain::model_call::Purpose,
+	#[case] lane: UsagePurpose,
+) {
+	use aidash_application::ports::execution::ExecutionStore;
+	use aidash_domain::model_call::{Dispatch, Outcome, Purpose};
+	let (store, _, _) = fixture.parts();
+	let worker = Uuid::new_v4();
+	let run = leased_run(&store, worker).await;
+	let call = Dispatch::new(purpose, &Default::default()).unwrap();
+	let call = if purpose == Purpose::McpSampling {
+		call.with_retry_key("tool-batch:mcp:sample")
+	} else {
+		call
+	};
+	let first = UsageDispatch {
+		model_call: Some(call.clone()),
+		purpose: lane,
+		..dispatch(worker)
+	};
+	let retry = UsageDispatch {
+		model_call: Some(call),
+		purpose: lane,
+		..dispatch(worker)
+	};
+	for attempt in [&first, &retry] {
+		if lane == UsagePurpose::Summary {
+			prepare_summary_usage(&store, &run, worker, attempt).await;
+		}
+		store
+			.record_usage_dispatch(&ACME, &run, worker, attempt)
+			.await
+			.unwrap();
+	}
+	assert_eq!(usage_row(&store, first.attempt).await.0, "unknown");
+	let late = UsageOutcome::Completed(ReportedUsage {
+		input_tokens: Some(5),
+		cost: Some(ProviderCost {
+			nanocredits: 70_000,
+			upstream_nanocredits: None,
+		}),
+		..Default::default()
+	});
+	let scoped = store.for_run((*ACME).clone());
+	for _ in 0..2 {
+		scoped
+			.complete_model_call(&run, first.attempt, &late, Outcome::Accepted)
+			.await
+			.unwrap();
+	}
+	let active: (Option<String>, i64) = sqlx::query_as(
+		"SELECT outcome, (usage->>'input_tokens')::bigint FROM model_calls WHERE id = $1",
+	)
+	.bind(first.attempt)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		active,
+		(None, 5),
+		"a late attempt supplies facts without closing the retry"
+	);
+	assert_eq!(ledger(&store).await, (70_000, 0));
+	let accepted = UsageOutcome::Completed(ReportedUsage {
+		input_tokens: Some(10),
+		cost: Some(ProviderCost {
+			nanocredits: 30_000,
+			upstream_nanocredits: None,
+		}),
+		..Default::default()
+	});
+	scoped
+		.complete_model_call(&run, retry.attempt, &accepted, Outcome::Accepted)
+		.await
+		.unwrap();
+	let attempts: Vec<Uuid> = sqlx::query_scalar(
+		"SELECT model_call_id FROM inference_usage WHERE run_id = $1 ORDER BY created_at, attempt_id",
+	)
+	.bind(run.id)
+	.fetch_all(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(attempts, [first.attempt, first.attempt]);
+	let accepted: (String, i64) = sqlx::query_as(
+		"SELECT outcome, (usage->>'input_tokens')::bigint FROM model_calls WHERE id = $1",
+	)
+	.bind(first.attempt)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(accepted, ("accepted".into(), 15));
+	assert_eq!(ledger(&store).await, (100_000, 0));
+}

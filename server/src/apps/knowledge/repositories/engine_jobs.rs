@@ -652,7 +652,7 @@ async fn execute(
 		}
 		// Run learning and maintenance triggered by Run writes retain the origin's
 		// authority and model allowance in addition to the finite bank policy.
-		let models = if run_id.is_some() {
+		let mut models = if run_id.is_some() {
 			crate::semantic::services::memory_models::Models::resolve(
 				store,
 				&mut lease,
@@ -676,6 +676,7 @@ async fn execute(
 			)
 			.await?
 		};
+		models.work_run = None;
 		let engine = aidash_application::memory::Engine {
 			provider,
 			policy: &policy,

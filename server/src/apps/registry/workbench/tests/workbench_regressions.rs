@@ -850,6 +850,64 @@ fn model_waiting_for_real_tool(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn expired_workbench_dispatch_recovers_and_settles_a_late_provider_report(
+	#[future(awt)] model_waiting_for_real_tool: (Workbench, Value),
+) {
+	let (wb, started) = model_waiting_for_real_tool;
+	let pool = wb.f.store.pool.fixture_driver();
+	let id: uuid::Uuid = sqlx::query_scalar(
+		"UPDATE inference_usage SET recovery_after = now() - interval '1 second'
+		 WHERE tenant = 'acme' AND purpose = 'auxiliary' AND outcome = 'dispatched'
+		 RETURNING model_call_id",
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(wb.f.store.close_orphaned_inference().await.unwrap(), 1);
+	assert_eq!(wb.f.store.close_orphaned_inference().await.unwrap(), 0);
+	let state = || {
+		sqlx::query_as::<_, (String, String, Option<i64>)>(
+			"SELECT m.outcome, u.outcome, u.input_tokens FROM model_calls m
+		 JOIN inference_usage u ON u.model_call_id = m.id WHERE m.id = $1",
+		)
+		.bind(id)
+		.fetch_one(pool)
+	};
+	assert_eq!(
+		state().await.unwrap(),
+		("failed".into(), "unknown".into(), None)
+	);
+	// Prevent the returned tool request from starting a second model call.
+	assert_eq!(
+		request(
+			&wb.app,
+			&wb.token,
+			"PUT",
+			"/api/workbench/test-profiles/acme/sandbox",
+			json!({"expected_revision":1,"enabled":false,"rules":[]})
+		)
+		.await
+		.0,
+		200
+	);
+	wb.model_gate.release.notify_one();
+	wb.observed_finished(&started, "alice").await;
+	assert_eq!(
+		state().await.unwrap(),
+		("failed".into(), "completed".into(), Some(30))
+	);
+	let spent: i64 = sqlx::query_scalar(
+		"SELECT COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend WHERE tenant = 'acme'",
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(spent, 1, "the late Workbench usage reaches its Budget once");
+	wb.cleanup().await;
+}
+
+#[rstest::rstest]
 #[case("profile")]
 #[case("credential")]
 #[case("policy")]

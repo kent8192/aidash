@@ -510,6 +510,7 @@ pub(crate) async fn operate_staged(
 		model_run,
 	)
 	.await?;
+	models.work_run = run;
 	models.cycle = cycle;
 	let engine = aidash_application::memory::Engine {
 		provider: &input.provider,

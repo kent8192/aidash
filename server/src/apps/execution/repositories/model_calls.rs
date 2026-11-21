@@ -35,7 +35,7 @@ impl Attribution {
 		}
 	}
 
-	pub(crate) async fn for_run(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<Self> {
+	async fn for_run(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<Self> {
 		let row = native::query(
 			&Query::select()
 				.columns(["tenant", "node"].map(Alias::new))
@@ -94,6 +94,7 @@ pub(crate) async fn start(
 			"model_id",
 			"model_version",
 			"request_digest",
+			"retry_key",
 			"started_at",
 		]
 		.map(Alias::new),
@@ -109,6 +110,7 @@ pub(crate) async fn start(
 			.expr(Expr::value(model.id.clone()))
 			.expr(Expr::value(model.version.clone()))
 			.expr(Expr::value(call.request_digest.clone()))
+			.expr(Expr::value(call.retry_key.clone()))
 			.expr(Expr::current_timestamp())
 			.to_owned(),
 	);
@@ -118,19 +120,51 @@ pub(crate) async fn start(
 	Ok(())
 }
 
+/// Find an earlier attempt of this same Run request. The worker lease
+/// serializes competing dispatches even if the Runtimes span Stints.
+pub(crate) async fn start_run_call(
+	tx: &mut dyn TransactionExecutor,
+	owner: &Attribution,
+	attempt: Uuid,
+	model: &EntityRef,
+	dispatch: &Dispatch,
+) -> Result<Uuid> {
+	let mut dispatch = dispatch.clone();
+	if dispatch.purpose == Purpose::CompactionSummary && dispatch.retry_key.is_none() {
+		dispatch.retry_key = Some(dispatch.request_digest.clone());
+	}
+	if let Some(key) = &dispatch.retry_key {
+		let existing: Option<Uuid> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("model_calls"))
+				.and_where(Expr::col("tenant").eq(Expr::value(owner.tenant.clone())))
+				.and_where(Expr::col("run_id").eq(Expr::value(owner.run)))
+				.and_where(Expr::col("purpose").eq(Expr::value(dispatch.purpose.as_str())))
+				.and_where(Expr::col("retry_key").eq(Expr::value(key.clone())))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		if let Some(id) = existing {
+			reopen_call(tx, id).await?;
+			return Ok(id);
+		}
+	}
+	start(tx, attempt, owner, model, &dispatch).await?;
+	Ok(attempt)
+}
+
 pub(crate) async fn finish(
 	tx: &mut dyn TransactionExecutor,
 	id: Uuid,
 	outcome: Outcome,
-	usage: Option<&ReportedUsage>,
 ) -> Result<()> {
-	let usage = usage.map(serde_json::to_value).transpose()?;
 	native::query(
 		&Query::update()
 			.table(Alias::new("model_calls"))
 			.value_expr(Alias::new("outcome"), Expr::value(outcome.as_str()))
 			.value_expr(Alias::new("ended_at"), Expr::current_timestamp())
-			.value_expr(Alias::new("usage"), Expr::value(usage))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("ended_at").is_null())
 			.to_string(PostgresQueryBuilder),
@@ -153,6 +187,8 @@ pub(crate) struct Auxiliary<'a> {
 	pub config: &'a ModelConfig,
 	pub request: &'a ModelRequest,
 	pub purpose: Purpose,
+	pub replay_key: Option<&'a str>,
+	pub timeout: std::time::Duration,
 }
 
 pub(crate) struct Attempt {
@@ -172,12 +208,15 @@ pub(crate) async fn start_auxiliary(
 		config,
 		request,
 		purpose,
+		replay_key,
+		timeout,
 	} = call;
-	let dispatch = Dispatch::new(purpose, request)?;
+	let mut dispatch = Dispatch::new(purpose, request)?;
+	dispatch.retry_key = replay_key.map(str::to_owned);
 	let prior = if prior_attempts.is_empty() {
 		None
 	} else {
-		reopen(tx, &owner.tenant, &dispatch, prior_attempts).await?
+		reopen(tx, owner, &dispatch, prior_attempts).await?
 	};
 	let (call, run) = if let Some(prior) = prior {
 		prior
@@ -206,48 +245,72 @@ pub(crate) async fn start_auxiliary(
 		cache_identity: request.cache_identity(),
 	};
 	InferenceUsage::insert_dispatch(tx, owner.tenant.clone(), run, Some(call), &usage).await?;
+	let deadline = chrono::Utc::now()
+		+ chrono::TimeDelta::from_std(timeout)
+			.map_err(|_| Error::Invalid("model call timeout is out of range".into()))?
+		+ chrono::TimeDelta::minutes(1);
+	native::query(
+		&Query::update()
+			.table(Alias::new("inference_usage"))
+			.value_expr(Alias::new("recovery_after"), Expr::value(deadline))
+			.and_where(Expr::col("attempt_id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+
 	Ok(Attempt { id, call })
 }
 
 /// Resume the same logical call while allocating a new physical attempt.
 async fn reopen(
 	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
+	owner: &Attribution,
 	dispatch: &Dispatch,
 	prior_attempts: &[Uuid],
 ) -> Result<Option<(Uuid, Option<Uuid>)>> {
-	use reinhardt::query::LockType;
 	let calls = Query::select()
 		.column(Alias::new("model_call_id"))
 		.from(Alias::new("inference_usage"))
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+		.and_where(Expr::col("tenant").eq(Expr::value(owner.tenant.clone())))
 		.and_where(Expr::col("attempt_id").is_in(prior_attempts.iter().copied().map(Expr::value)))
 		.to_owned();
-	let row = native::query(
-		&Query::select()
-			.columns(["id", "run_id", "request_digest"].map(Alias::new))
-			.from(Alias::new("model_calls"))
-			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-			.and_where(Expr::col("id").in_subquery(calls))
-			.limit(1)
-			.lock(LockType::Update)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_optional(&mut *tx)
-	.await?;
+	let mut query = Query::select();
+	query
+		.columns(["id", "run_id", "retry_key"].map(Alias::new))
+		.from(Alias::new("model_calls"))
+		.and_where(Expr::col("tenant").eq(Expr::value(owner.tenant.clone())))
+		.and_where(Expr::col("id").in_subquery(calls))
+		.and_where(Expr::col("node").eq(Expr::value(owner.node.clone())))
+		.order_by("started_at", reinhardt::query::Order::Desc)
+		.order_by("id", reinhardt::query::Order::Desc)
+		.limit(1);
+	if let Some(run) = owner.run {
+		query.and_where(Expr::col("run_id").eq(Expr::value(run)));
+	} else {
+		query.and_where(Expr::col("run_id").is_null());
+	}
+	let row = native::query(&query.to_string(PostgresQueryBuilder))
+		.fetch_optional(&mut *tx)
+		.await?;
 	let Some(row) = row else {
 		return Ok(None);
 	};
-	let digest: String = row.try_get("request_digest")?;
-	if digest != dispatch.request_digest {
+	let key: Option<String> = row.try_get("retry_key")?;
+	if key.is_some() && key != dispatch.retry_key {
 		return Err(Error::Conflict(
 			"retried model call changed its request".into(),
 		));
 	}
 	let call: Uuid = row.try_get("id")?;
 	for attempt in prior_attempts {
-		InferenceUsage::write_completion(tx, *attempt, &UsageOutcome::Unknown).await?;
+		InferenceUsage::abandon_auxiliary_attempt(tx, *attempt).await?;
 	}
+	reopen_call(tx, call).await?;
+	Ok(Some((call, row.try_get("run_id")?)))
+}
+
+async fn reopen_call(tx: &mut dyn TransactionExecutor, call: Uuid) -> Result<()> {
 	native::query(
 		&Query::update()
 			.table(Alias::new("model_calls"))
@@ -261,32 +324,50 @@ async fn reopen(
 	)
 	.execute(&mut *tx)
 	.await?;
-	Ok(Some((call, row.try_get("run_id")?)))
+	Ok(())
 }
 
 pub(crate) async fn finish_auxiliary(
 	tx: &mut dyn TransactionExecutor,
 	attempt: Attempt,
 	result: &aidash_application::Result<aidash_domain::provider::ModelResponse>,
+) -> Result<bool> {
+	let usage = aidash_application::model_calls::usage(result);
+	let outcome = if InferenceUsage::write_completion(tx, attempt.id, &usage).await? {
+		Some(aidash_application::model_calls::outcome(result))
+	} else if matches!(usage, UsageOutcome::Completed(_))
+		&& InferenceUsage::write_late_completion(tx, attempt.id, &usage).await?
+	{
+		None
+	} else {
+		return Ok(false);
+	};
+	settle(tx, attempt.call, outcome, reported(&usage)).await?;
+	Ok(true)
+}
+
+/// Accumulate each persisted attempt's reported use. A late result supplies
+/// provider facts without changing the logical call's current outcome.
+pub(crate) async fn settle(
+	tx: &mut dyn TransactionExecutor,
+	call: Uuid,
+	outcome: Option<Outcome>,
+	reported: Option<&ReportedUsage>,
 ) -> Result<()> {
 	use aidash_domain::provider::usage::ProviderCost;
 	use reinhardt::query::LockType;
-	let usage = aidash_application::model_calls::usage(result);
 	let previous: Option<serde_json::Value> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("usage"))
 			.from(Alias::new("model_calls"))
-			.and_where(Expr::col("id").eq(Expr::value(attempt.call)))
+			.and_where(Expr::col("id").eq(Expr::value(call)))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_one(&mut *tx)
 	.await?;
-	if !InferenceUsage::write_completion(tx, attempt.id, &usage).await? {
-		return Ok(());
-	}
 	let mut total: Option<ReportedUsage> = previous.map(serde_json::from_value).transpose()?;
-	if let Some(reported) = reported(&usage) {
+	if let Some(reported) = reported {
 		let combined = total.get_or_insert_with(ReportedUsage::default);
 		let sum = |left: Option<u64>, right: Option<u64>| match (left, right) {
 			(Some(left), Some(right)) => left.checked_add(right),
@@ -322,16 +403,27 @@ pub(crate) async fn finish_auxiliary(
 		}
 		combined.provider_identity = reported.provider_identity.clone();
 	}
-	finish(
-		tx,
-		attempt.call,
-		aidash_application::model_calls::outcome(result),
-		total.as_ref(),
-	)
-	.await
+	let usage = total.map(serde_json::to_value).transpose()?;
+	let mut change = Query::update();
+	change
+		.table(Alias::new("model_calls"))
+		.value_expr(Alias::new("usage"), Expr::value(usage))
+		.and_where(Expr::col("id").eq(Expr::value(call)));
+	if let Some(outcome) = outcome {
+		change
+			.value_expr(Alias::new("outcome"), Expr::value(outcome.as_str()))
+			.value_expr(Alias::new("ended_at"), Expr::current_timestamp());
+	}
+	native::query(&change.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?;
+	Ok(())
 }
 
-/// The Workbench owns test quotas separately from the Tenant and Node Budget.
+const WORKBENCH_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Workbench tests carry a Tenant but no Node in their admission contract.
+/// Use that Tenant's default Node for Model Call attribution and Budget.
 pub(crate) struct WorkbenchProvider {
 	pub store: Store,
 	pub tenant: String,
@@ -352,7 +444,7 @@ impl aidash_application::ports::ModelProvider for WorkbenchProvider {
 		use chrono::Utc;
 
 		let scope = TenancyScope::tenant(&self.tenant)?;
-		let (id, charge) = self
+		let (attempt, charge) = self
 			.store
 			.control_pool
 			.atomic(&scope, async |tx| {
@@ -375,32 +467,42 @@ impl aidash_application::ports::ModelProvider for WorkbenchProvider {
 						config: &self.config,
 						request: &request,
 						purpose: Purpose::WorkbenchTest,
+						replay_key: None,
+						timeout: WORKBENCH_MODEL_TIMEOUT,
 					},
 					Uuid::new_v4(),
 					&[],
 				)
 				.await?;
-				Ok((attempt.id, charge))
+				Ok((attempt, charge))
 			})
 			.await?;
-		let result = self.provider.infer(request, progress).await;
+		let result = tokio::time::timeout(
+			WORKBENCH_MODEL_TIMEOUT,
+			self.provider.infer(request, progress),
+		)
+		.await
+		.unwrap_or_else(|_| {
+			Err(aidash_application::Error::External(
+				"Workbench model request timed out".into(),
+			))
+		});
 		let usage = model_calls::usage(&result);
 		self.store
 			.control_pool
 			.atomic(&scope, async |tx| {
-				if InferenceUsage::write_completion(tx, id, &usage).await? {
-					finish(tx, id, model_calls::outcome(&result), reported(&usage)).await?;
-					if !matches!(usage, UsageOutcome::Rejected { .. }) {
-						budgets::record_charge(
-							tx,
-							&charge,
-							reported(&usage)
-								.and_then(|usage| usage.cost)
-								.map(|cost| cost.nanocredits),
-							Utc::now(),
-						)
-						.await?;
-					}
+				if finish_auxiliary(tx, attempt, &result).await?
+					&& !matches!(usage, UsageOutcome::Rejected { .. })
+				{
+					budgets::record_charge(
+						tx,
+						&charge,
+						reported(&usage)
+							.and_then(|usage| usage.cost)
+							.map(|cost| cost.nanocredits),
+						Utc::now(),
+					)
+					.await?;
 				}
 				Ok(())
 			})
@@ -409,37 +511,60 @@ impl aidash_application::ports::ModelProvider for WorkbenchProvider {
 	}
 }
 
+/// Recover auxiliary dispatches that outlived their provider deadline. Costs
+/// are posted only when a provider report arrives, including a late report.
+pub(crate) async fn recover_auxiliary(store: &Store) -> Result<usize> {
+	use aidash_application::tenancy::DeploymentScopeReason;
+	use reinhardt::query::{LockType, Order};
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::Retention);
+	store
+		.control_pool
+		.atomic(&scope, async |tx| {
+			let now = chrono::Utc::now();
+			let expired = Expr::col("recovery_after")
+				.lt(Expr::value(now))
+				.or(Expr::col("recovery_after").is_null().and(
+					Expr::col("created_at").lt(Expr::value(now - chrono::TimeDelta::minutes(15))),
+				));
+			let rows = native::query(
+				&Query::select()
+					.columns(["attempt_id", "model_call_id"].map(Alias::new))
+					.from(Alias::new("inference_usage"))
+					.and_where(
+						Expr::col("purpose").eq(Expr::value(UsagePurpose::Auxiliary.as_str())),
+					)
+					.and_where(Expr::col("outcome").eq(Expr::value("dispatched")))
+					.and_where(Expr::col("model_call_id").is_not_null())
+					.and_where(expired)
+					.order_by("recovery_after", Order::Asc)
+					.order_by("attempt_id", Order::Asc)
+					.limit(100)
+					.lock(LockType::Update)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(&mut *tx)
+			.await?;
+			for row in &rows {
+				let id = row.try_get("attempt_id")?;
+				let call = row.try_get("model_call_id")?;
+				if InferenceUsage::abandon_auxiliary_attempt(tx, id).await? {
+					finish(tx, call, Outcome::Failed).await?;
+				}
+			}
+			Ok(rows.len())
+		})
+		.await
+}
+
 /// Read Stints and their Model Calls under the Run inspection disclosure lease.
 pub(crate) async fn stints(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	run: Uuid,
+	offset: u64,
 ) -> Result<Vec<aidash_domain::model_call::Stint>> {
 	use aidash_domain::model_call::{ModelCall, Owner, Stint};
 	use reinhardt::query::Order;
-	let rows = native::query(
-		&Query::select()
-			.columns(
-				[
-					"id",
-					"node",
-					"agent_id",
-					"agent_version",
-					"started_at",
-					"ended_at",
-					"end_reason",
-				]
-				.map(Alias::new),
-			)
-			.from(Alias::new("stints"))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-			.order_by("started_at", Order::Asc)
-			.order_by("id", Order::Asc)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(&mut *tx)
-	.await?;
 	let calls = native::query(
 		&Query::select()
 			.columns(
@@ -460,8 +585,14 @@ pub(crate) async fn stints(
 			.from(Alias::new("model_calls"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+			.and_where(
+				Expr::col("purpose")
+					.is_in(Purpose::ALL.map(|purpose| Expr::value(purpose.as_str()))),
+			)
 			.order_by("started_at", Order::Asc)
 			.order_by("id", Order::Asc)
+			.limit(100)
+			.offset(offset)
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_all(&mut *tx)
@@ -492,6 +623,43 @@ pub(crate) async fn stints(
 			ended_at: row.try_get("ended_at")?,
 		});
 	}
+	let columns = [
+		"id",
+		"node",
+		"agent_id",
+		"agent_version",
+		"started_at",
+		"ended_at",
+		"end_reason",
+	]
+	.map(Alias::new);
+	// A call can outnumber its owner's page, so include the owners of this call page too.
+	let mut page = Query::select();
+	page.column(Alias::new("id"))
+		.from(Alias::new("stints"))
+		.and_where(Expr::col("run_id").eq(Expr::value(run)))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+		.order_by("started_at", Order::Asc)
+		.order_by("id", Order::Asc)
+		.limit(100)
+		.offset(offset);
+	let rows = native::query(
+		&Query::select()
+			.columns(columns)
+			.from(Alias::new("stints"))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(
+				Expr::col("id")
+					.in_subquery(page)
+					.or(Expr::col("id").is_in(grouped.keys().copied().map(Expr::value))),
+			)
+			.order_by("started_at", Order::Asc)
+			.order_by("id", Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut *tx)
+	.await?;
 	rows.into_iter()
 		.map(|row| {
 			let id = row.try_get("id")?;
@@ -534,6 +702,10 @@ pub(crate) async fn tenant_usage(
 			Expr::col((Alias::new("m"), Alias::new("tenant"))).eq(Expr::value(tenant.to_owned())),
 		)
 		.and_where(Expr::col((Alias::new("m"), Alias::new("run_id"))).is_null())
+		.and_where(
+			Expr::col((Alias::new("m"), Alias::new("purpose")))
+				.is_in(Purpose::ALL.map(|purpose| Expr::value(purpose.as_str()))),
+		)
 		.group_by_col((Alias::new("m"), Alias::new("id")))
 		.group_by_col((Alias::new("m"), Alias::new("purpose")));
 	for field in fields {

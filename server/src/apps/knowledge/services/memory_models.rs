@@ -1,5 +1,7 @@
 //! Run-pinned Agent models and exact Registry roles with durable pre-I/O accounting.
 use super::native_memory::definition;
+use crate::apps::execution::repositories::model_calls;
+use crate::apps::identity::repositories::budgets;
 use crate::apps::knowledge::repositories::{access::Lease, native_memory::bank_id};
 use crate::{Error, Result, database::native, registry::Entry, store::Store};
 use aidash_application::{
@@ -35,7 +37,10 @@ pub(crate) struct Models {
 	pub policy: Policy,
 	pub operation: Uuid,
 	pub digest: String,
+	/// Origin for authority and allowance, including stored evidence.
 	pub run: Option<Uuid>,
+	/// Run whose current Stint is executing this operation.
+	pub(crate) work_run: Option<Uuid>,
 	/// The caller's Retry Cycle (ADR 0057): a native Run's
 	/// `semantic_retry_cycle` or a remote journal record's `cycle`. It is 0
 	/// for work outside a Run, such as engine jobs.
@@ -331,6 +336,7 @@ impl Models {
 			operation,
 			digest,
 			run,
+			work_run: if indexing { None } else { run },
 			cycle: 0,
 			indexing,
 			inference: tokio::sync::Mutex::new(Authorities {
@@ -377,48 +383,40 @@ impl Models {
 		drop(generation);
 		Ok(())
 	}
-	/// What this memory work's model calls are charged to (#1012): its Run's
-	/// chain, or, for background work without a Run, its Tenant and its
-	/// Thread's Node. `None` for a Run this Deployment does not hold.
-	async fn charge(
-		&self,
-		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	) -> Result<Option<crate::apps::identity::repositories::budgets::Charge>> {
-		use crate::apps::identity::repositories::budgets;
-		match self.run {
-			Some(run) => budgets::charge_of(tx, run).await,
-			None => budgets::thread_charge(tx, &self.bank.tenant, self.bank.thread)
-				.await
-				.map(Some),
-		}
-	}
-
-	/// Every model call passes the Budgets that cover it, memory roles and
-	/// embeddings included (#1012, ADR 0143): a Hard Limit refuses the call
-	/// before it is sent, as it refuses a Run's own model call.
-	async fn admit_budget(&self) -> Result<()> {
-		use crate::apps::identity::repositories::budgets;
-		let scope = aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?;
-		let gate = self
-			.store
+	/// Resolve the owner and Budget scope together before dispatch.
+	async fn billing(&self) -> Result<(model_calls::Attribution, budgets::Charge)> {
+		let tenant = &self.bank.tenant;
+		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+		self.store
 			.control_pool
 			.atomic(&scope, async |tx| {
-				let Some(charge) = self.charge(tx).await? else {
-					return Ok(aidash_domain::budgets::Gate::Open);
+				let (owner, charge) = if let Some(run) = self.work_run {
+					let owner = model_calls::Attribution::awake(tx, run).await?;
+					let charge = budgets::charge_of(tx, run).await?.ok_or(Error::Forbidden)?;
+					(owner, charge)
+				} else {
+					let charge = budgets::thread_charge(tx, tenant, self.bank.thread).await?;
+					let owner =
+						model_calls::Attribution::node(charge.tenant.clone(), charge.node.clone());
+					(owner, charge)
 				};
-				Ok(budgets::gate_for(tx, &charge, Utc::now()).await?.0)
+				budgets::admit(budgets::gate_for(tx, &charge, Utc::now()).await?.0)?;
+				Ok((owner, charge))
 			})
-			.await?;
-		budgets::admit(gate)
+			.await
 	}
 
 	/// Passes the Budgets for a call `prepare` reserved. A refused call was
 	/// never sent, so its reservation goes back whole: the attempt is removed
 	/// and the operation's totals return, and a Budget refusal spends none of
 	/// the operation's retries or call budget (#1012).
-	async fn admit_reserved(&self, reservation: &Reservation) -> Result<()> {
-		let Err(refused) = self.admit_budget().await else {
-			return Ok(());
+	async fn admit_reserved(
+		&self,
+		reservation: &Reservation,
+	) -> Result<(model_calls::Attribution, budgets::Charge)> {
+		let refused = match self.billing().await {
+			Ok(billing) => return Ok(billing),
+			Err(error) => error,
 		};
 		let mut tx = self
 			.store
@@ -474,25 +472,6 @@ impl Models {
 		}
 		tx.commit().await?;
 		Err(refused)
-	}
-
-	/// Adds a finished call to the Budget ledger: the cost its provider
-	/// reported, or one unpriced call.
-	async fn record_budget_spend(
-		&self,
-		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-		cost: Option<i64>,
-	) -> Result<()> {
-		if let Some(charge) = self.charge(tx).await? {
-			crate::apps::identity::repositories::budgets::record_charge(
-				tx,
-				&charge,
-				cost,
-				Utc::now(),
-			)
-			.await?;
-		}
-		Ok(())
 	}
 
 	pub fn role(&self, reference: &EntityRef, kind: &str) -> Result<&Entry> {
@@ -931,19 +910,16 @@ impl Models {
 			.as_object_mut()
 			.expect("model request serializes as an object")
 			.remove("input_format");
+		let identity = json!({"role":reference,"request":identity});
+		let replay_key = aidash_domain::registry::rules::digest(&identity);
 		let reservation = match self
-			.prepare::<T>(
-				&json!({"role":reference,"request":identity}),
-				input + output,
-				charge,
-				allowance,
-			)
+			.prepare::<T>(&identity, input + output, charge, allowance)
 			.await?
 		{
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 		};
-		self.admit_reserved(&reservation).await?;
+		let (owner, billing) = self.admit_reserved(&reservation).await?;
 		let origin = self
 			.reserve_model(reservation.id, input, output as u32)
 			.await?;
@@ -962,7 +938,6 @@ impl Models {
 			None
 		};
 
-		use crate::apps::execution::repositories::model_calls;
 		let provider = crate::bootstrap::admitted_model_provider(
 			&self.store,
 			config.clone(),
@@ -976,14 +951,6 @@ impl Models {
 			.store
 			.control_pool
 			.atomic(&scope, async |tx| {
-				use crate::apps::identity::repositories::budgets::thread_charge;
-				let owner = match self.run {
-					Some(run) => model_calls::Attribution::for_run(tx, run).await?,
-					None => {
-						let charge = thread_charge(tx, tenant, self.bank.thread).await?;
-						model_calls::Attribution::node(charge.tenant, charge.node)
-					}
-				};
 				model_calls::start_auxiliary(
 					tx,
 					&owner,
@@ -992,6 +959,10 @@ impl Models {
 						config: &config,
 						request: &request,
 						purpose: aidash_domain::model_call::Purpose::MemoryRole,
+						replay_key: Some(&replay_key),
+						timeout: std::time::Duration::from_secs(u64::from(
+							self.policy.bounds.max_call_seconds,
+						)),
 					},
 					reservation.id,
 					&reservation.prior_attempts,
@@ -1046,7 +1017,7 @@ impl Models {
 				.await?
 				.rows_affected();
 				if recorded == 1 {
-					self.record_budget_spend(tx, cost).await?;
+					budgets::record_charge(tx, &billing, cost, Utc::now()).await?;
 				}
 				Ok(())
 			})
@@ -1117,7 +1088,7 @@ impl Models {
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 		};
-		self.admit_reserved(&reservation).await?;
+		let (_, billing) = self.admit_reserved(&reservation).await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
@@ -1169,7 +1140,7 @@ impl Models {
 			.control_pool
 			.atomic(
 				&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
-				async |tx| self.record_budget_spend(tx, None).await,
+				async |tx| budgets::record_charge(tx, &billing, None, Utc::now()).await,
 			)
 			.await?;
 		if let Some(local) = local {

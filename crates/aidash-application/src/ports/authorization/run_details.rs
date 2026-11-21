@@ -65,7 +65,11 @@ pub trait RunDetailsScope: Send {
 	) -> Result<Vec<aidash_domain::egress::RequestRecord>> {
 		Ok(vec![])
 	}
-	async fn stints(&mut self, _id: Uuid) -> Result<Vec<aidash_domain::model_call::Stint>> {
+	async fn stints(
+		&mut self,
+		_id: Uuid,
+		_offset: u64,
+	) -> Result<Vec<aidash_domain::model_call::Stint>> {
 		Ok(vec![])
 	}
 	async fn provider_tool_activity(
