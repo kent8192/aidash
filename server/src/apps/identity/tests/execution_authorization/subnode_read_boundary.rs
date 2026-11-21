@@ -14,7 +14,8 @@ impl SubnodeRig {
 		f: &aidash_server::federation::Federation,
 		app: &common::TestApplication,
 	) -> Self {
-		let (mut policy, token, node, _) = Self::register(f, app, &MEMBERS, true, false).await;
+		let (mut policy, token, node, _) =
+			Self::register(f, app, &MEMBERS, true, false, "http://127.0.0.1:9").await;
 		policy["policies"][0]["actions"] = json!(aidash_domain::identity::tenancy::MEMBER_ACTIONS);
 		set_policy(f, app, &policy).await;
 		let (status, created) = request(
@@ -654,12 +655,19 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 		"helper-names-subnode",
 	)
 	.await;
+	let result = rig
+		.result_of(helper, "helper-names-subnode")
+		.await
+		.expect("the worker returns a Rejected Call");
 	assert!(
-		rig.result_of(helper, "helper-names-subnode")
-			.await
-			.is_none(),
-		"only the creator reads the Subnode's Thread"
+		result["error"]
+			.as_str()
+			.is_some_and(|message| message.contains("is not in the Thread this call reads")),
+		"{result}"
 	);
+	let run = f.store.run(&TEST_FIXTURE, helper).await.unwrap();
+	assert_eq!(run.control, aidash_domain::RunControl::Active);
+	assert!(run.recovery.paused_call.is_none());
 	cleanup(f, &url, &schema).await;
 }
 

@@ -37,6 +37,66 @@ crate::native_record!(AttachmentRecordRow {
 	sha256,
 	description
 });
+const CREATOR_THREAD_BOUNDARY: &str = "That record is in the Thread of the Agent that created this Subnode, which members cannot read. Ask the creator to put what you need in the Task or the Subnode Workspace. Do not repeat this call.";
+
+pub(crate) fn wrong_thread(kind: &str, id: Uuid) -> crate::Error {
+	crate::Error::Invalid(format!(
+		"{kind} {id} is not in the Thread this call reads. To read a Subnode this Run created, pass its thread_id. Do not repeat this call unchanged."
+	))
+}
+
+/// Describe the immediate creator boundary using only the existence of the
+/// supplied ID in that Thread. Unrelated Threads are never queried.
+pub(crate) async fn in_creator_thread(
+	access: &mut super::Access,
+	member_thread: Uuid,
+	kind: &str,
+	id: Uuid,
+) -> NativeResult<bool> {
+	use crate::apps::execution::models::subnodes::SubnodeRecord;
+	let table = match kind {
+		"thread" => "threads",
+		"task" => "tasks",
+		"artifact" => "artifacts",
+		"message" => "messages",
+		"event" => "events",
+		"attachment" => "channel_attachments",
+		_ => return Ok(false),
+	};
+	let tenant = access.identity.tenant.clone();
+	let Some(creator) =
+		SubnodeRecord::creator_of_thread(&mut *access.tx, &tenant, member_thread).await?
+	else {
+		return Ok(false);
+	};
+	let creator_thread = Query::select()
+		.column(Alias::new("thread_id"))
+		.from(Alias::new("task_executions"))
+		.and_where(Expr::col("id").eq(creator))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.to_owned();
+	let thread_column = if kind == "thread" { "id" } else { "thread_id" };
+	let mut record = Query::select();
+	record
+		.expr(Expr::value(true))
+		.from(Alias::new(table))
+		.and_where(Expr::col("id").eq(id))
+		.and_where(Expr::col(thread_column).in_subquery(creator_thread));
+	if kind == "attachment" {
+		record.and_where(Expr::col("message_id").is_not_null());
+	}
+	Ok(
+		crate::database::native::query_scalar(&record.to_string(PostgresQueryBuilder))
+			.scalar_optional(&mut *access.tx)
+			.await?
+			.unwrap_or(false),
+	)
+}
+
+pub(crate) fn creator_thread_boundary() -> crate::Error {
+	crate::Error::Invalid(CREATOR_THREAD_BOUNDARY.into())
+}
+
 #[async_trait]
 impl ThreadRecordScope for Reads<'_> {
 	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
@@ -81,6 +141,17 @@ impl ThreadRecordScope for Reads<'_> {
 	}
 	async fn track(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
 		aidash_application::authorization::journals::track_snapshot(self, snapshot).await
+	}
+	async fn missing_record(&mut self, kind: &str, id: Uuid) -> Result<aidash_application::Error> {
+		let Some(member_thread) = self.tool_thread else {
+			return Ok(aidash_application::Error::Forbidden);
+		};
+		let error = if in_creator_thread(self.access, member_thread, kind, id).await? {
+			creator_thread_boundary()
+		} else {
+			wrong_thread(kind, id)
+		};
+		Ok(error.into())
 	}
 	async fn thread_row(&mut self, thread_id: Uuid) -> Result<Thread> {
 		let result: NativeResult<Thread> = async {
