@@ -152,6 +152,17 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)
 	}
+	async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		self.access.task_source_run(task).await.map_err(Into::into)
+	}
+	async fn own_task_read(
+		&mut self,
+		task: Uuid,
+	) -> Result<
+		std::result::Result<Task, aidash_application::authorization::worker_tasks::OwnTaskRefusal>,
+	> {
+		self.access.own_task_read(task).await.map_err(Into::into)
+	}
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation> {
 		crate::apps::identity::services::execution::delegate_in(
 			self.federation,

@@ -153,6 +153,32 @@ pub async fn task_read(scope: &mut dyn ResourceAccessScope, id: Uuid) -> Result<
 	}
 	Ok(task)
 }
+/// Which check refused a Task that exists: its `task.read` policy, or the Read
+/// dependencies of the Runs that produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskRefusal {
+	Policy,
+	Outputs,
+}
+/// [`task_read`] that says which check refused. A missing Task is still
+/// [`Error::Forbidden`].
+pub async fn task_read_explained(
+	scope: &mut dyn ResourceAccessScope,
+	id: Uuid,
+) -> Result<std::result::Result<Task, TaskRefusal>> {
+	let task = scope.task_any(id).await?.ok_or(Error::Forbidden)?;
+	let resource = task_resource(scope, &task).await?;
+	if !scope.decide(&resource, "task.read").await? {
+		return Ok(Err(TaskRefusal::Policy));
+	}
+	if !scope
+		.output_visible(task.thread_id, "task", task.id)
+		.await?
+	{
+		return Ok(Err(TaskRefusal::Outputs));
+	}
+	Ok(Ok(task))
+}
 pub async fn related_tasks(
 	scope: &mut dyn ResourceAccessScope,
 	thread: Uuid,

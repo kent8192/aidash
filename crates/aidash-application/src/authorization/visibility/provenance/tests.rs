@@ -714,7 +714,7 @@ async fn hidden_dependency_journals_stop_before_loading_any_source_records(
 #[case("tenant_agent", ReadBlock::Definition(EntityRef { id: "sibling-agent".into(), version: "1.0.0".into() }))]
 #[case("semantic", ReadBlock::SemanticRead)]
 #[case("received", ReadBlock::SemanticRead)]
-#[case("base", ReadBlock::Source("run".into()))]
+#[case("base", ReadBlock::Source { kind: "run".into(), id: Uuid::from_u128(2) })]
 #[tokio::test]
 async fn a_walk_reports_the_read_that_stopped_it(
 	mut scope: Scope,

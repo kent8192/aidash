@@ -28,14 +28,20 @@ pub(crate) async fn authorize(access: &mut Access, area: &Area, action: &str) ->
 }
 /// Execution-owned read gate: a core run stays visible only while its working area grants
 /// `file.read` to the caller; runs without a core area are unaffected.
+///
+/// Checking the Area moves the context to the Area's Thread; the reader's own context is
+/// restored afterwards. Under a Run's inherited authority the context is the Thread the
+/// Run may reach, so a producer's Area in a Subnode's Thread must not leave the reader
+/// confined there for the rest of its walk (#1058).
 pub(crate) async fn run_area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
-	if let Some((readable, context)) = access.read_lookups.area(run) {
-		access.context = context;
+	if let Some(readable) = access.read_lookups.area(run) {
 		return Ok(readable);
 	}
-	let readable = area_readable(access, run).await?;
-	let context = access.context.clone();
-	access.read_lookups.remember_area(run, readable, &context);
+	let reader = access.context.clone();
+	let readable = area_readable(access, run).await;
+	access.context = reader;
+	let readable = readable?;
+	access.read_lookups.remember_area(run, readable);
 	Ok(readable)
 }
 
