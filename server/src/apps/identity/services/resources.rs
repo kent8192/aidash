@@ -5,7 +5,9 @@ use crate::{
 	Result,
 	domain::{Artifact, Event, Message, Task},
 };
-use aidash_application::authorization::visibility::provenance::ReadBlock;
+use aidash_application::authorization::{
+	visibility::provenance::ReadBlock, worker_tasks::OwnTaskRefusal,
+};
 use uuid::Uuid;
 
 impl Access {
@@ -28,6 +30,51 @@ impl Access {
 		// A refusal reached while a Node did not answer is that Node's silence (#751),
 		// when this read's own walk met the Node and not an earlier call of the authority.
 		result.map_err(|error| self.named_since(mark, error))
+	}
+	/// [`Self::task_read`] for a Task the calling Run created, saying which check refused
+	/// (#1058). A refusal reached while a Node did not answer stays that Node's silence.
+	pub(crate) async fn own_task_read(
+		&mut self,
+		id: Uuid,
+	) -> Result<std::result::Result<Task, OwnTaskRefusal>> {
+		use aidash_application::authorization::visibility::resources::TaskRefusal;
+		let mark = self.call_mark();
+		// A block left by an earlier walk of this authority is not this read's.
+		self.read_block = None;
+		let result = aidash_application::authorization::visibility::resources::task_read_explained(
+			&mut crate::bootstrap::run_visibility_scope(self),
+			id,
+		)
+		.await
+		.map_err(crate::Error::from);
+		let block = self.read_block.take();
+		match result {
+			Ok(Ok(task)) => Ok(Ok(task)),
+			Ok(Err(refusal)) => match self.named_since(mark, crate::Error::Forbidden) {
+				silent @ crate::Error::NodeUnreachable { .. } => Err(silent),
+				_ => Ok(Err(match refusal {
+					TaskRefusal::Policy => OwnTaskRefusal::Policy,
+					TaskRefusal::Outputs => OwnTaskRefusal::Read(block),
+				})),
+			},
+			Err(error) => Err(self.named_since(mark, error)),
+		}
+	}
+	/// The Run that created `task` with `task_create`, if one did.
+	pub(crate) async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("source_run_id"))
+				.from(Alias::new("authorization_task_origins"))
+				.and_where(Expr::col("task_id").eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.tx)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_visible(

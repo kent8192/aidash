@@ -14,7 +14,15 @@ impl SubnodeRig {
 		f: &aidash_server::federation::Federation,
 		app: &common::TestApplication,
 	) -> Self {
-		let (mut policy, token, node, _) = Self::register(f, app, &MEMBERS, true, false).await;
+		Self::conversation(f, app, false).await
+	}
+
+	pub(super) async fn conversation(
+		f: &aidash_server::federation::Federation,
+		app: &common::TestApplication,
+		files: bool,
+	) -> Self {
+		let (mut policy, token, node, _) = Self::register(f, app, &MEMBERS, true, files).await;
 		policy["policies"][0]["actions"] = json!(aidash_domain::identity::tenancy::MEMBER_ACTIONS);
 		set_policy(f, app, &policy).await;
 		let (status, created) = request(
@@ -50,7 +58,13 @@ impl SubnodeRig {
 	/// Call a tool as `run` while every other Run stays paused, so the worker
 	/// selects this one, and return its result. A refused call leaves no result,
 	/// and the panic names why the Run stopped.
-	async fn call(&self, run: Uuid, name: &str, arguments: Value, call_id: &str) -> Value {
+	pub(super) async fn call(
+		&self,
+		run: Uuid,
+		name: &str,
+		arguments: Value,
+		call_id: &str,
+	) -> Value {
 		sqlx::query(
 			"UPDATE task_executions SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END \
 			 WHERE control IN ('ACTIVE', 'PAUSED')",
@@ -107,6 +121,10 @@ impl SubnodeRig {
 	/// Create a Subnode led by `subnode-leader` and give it a Task. Returns its
 	/// id, its Thread, the Task and the leader's Run.
 	async fn subnode_with_task(&self) -> (Value, Uuid, Uuid, Uuid) {
+		self.subnode_with_tools(&SUBNODE_TOOLS).await
+	}
+
+	pub(super) async fn subnode_with_tools(&self, tools: &[&str]) -> (Value, Uuid, Uuid, Uuid) {
 		let created = self
 			.call(
 				self.creator_run,
@@ -114,7 +132,7 @@ impl SubnodeRig {
 				json!({
 					"leader":"subnode-leader@1.0.0",
 					"members":["subnode-leader@1.0.0","subnode-second@1.0.0"],
-					"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},
+					"allowance":{"tools":tools,"secrets":[]},
 					"title":"Investigation",
 				}),
 				"create-subnode",
@@ -150,7 +168,7 @@ impl SubnodeRig {
 			.id
 	}
 
-	async fn create_task(&self, run: Uuid, title: &str, dependencies: &[Uuid]) -> Uuid {
+	pub(super) async fn create_task(&self, run: Uuid, title: &str, dependencies: &[Uuid]) -> Uuid {
 		let created = self
 			.call(
 				run,
@@ -168,7 +186,7 @@ impl SubnodeRig {
 	}
 
 	/// Delegate `task` from `run` and return the new Run.
-	async fn delegate(&self, run: Uuid, task: Uuid, agent: &str) -> Uuid {
+	pub(super) async fn delegate(&self, run: Uuid, task: Uuid, agent: &str) -> Uuid {
 		self.call(
 			run,
 			"task_delegate",

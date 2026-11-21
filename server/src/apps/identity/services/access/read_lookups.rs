@@ -113,7 +113,7 @@ pub(crate) struct Passes {
 	dependencies: BTreeSet<(Uuid, bool)>,
 	catalog_reads: BTreeSet<(Option<NodeName>, String, String, bool)>,
 	restrictions: BTreeMap<(String, String, String), Option<Value>>,
-	areas: BTreeMap<Uuid, (bool, Value)>,
+	areas: BTreeMap<Uuid, bool>,
 }
 
 impl ReadLookups {
@@ -250,15 +250,15 @@ impl ReadLookups {
 	}
 	/// Whether a Run's Working Area was readable in this walk, and the context that
 	/// checking it left behind.
-	pub(crate) fn area(&self, run: Uuid) -> Option<(bool, Value)> {
+	pub(crate) fn area(&self, run: Uuid) -> Option<bool> {
 		if !self.walking {
 			return None;
 		}
 		self.passes.areas.get(&run).cloned()
 	}
-	pub(crate) fn remember_area(&mut self, run: Uuid, readable: bool, context: &Value) {
+	pub(crate) fn remember_area(&mut self, run: Uuid, readable: bool) {
 		if self.walking {
-			self.passes.areas.insert(run, (readable, context.clone()));
+			self.passes.areas.insert(run, readable);
 		}
 	}
 	pub(crate) fn task(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Task>> {

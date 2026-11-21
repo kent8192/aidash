@@ -106,6 +106,10 @@ struct Scope {
 	decisions: Vec<(Resource, String)>,
 	denied: Option<&'static str>,
 	fail: Option<&'static str>,
+	/// The Run that created the Task, as `authorization_task_origins` says.
+	source_run: Option<Uuid>,
+	/// What reading the Run's own Task answers in place of the Task.
+	own_read: Option<Result<OwnTaskRefusal>>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -152,6 +156,8 @@ fn scope() -> Scope {
 		decisions: vec![],
 		denied: None,
 		fail: None,
+		source_run: None,
+		own_read: None,
 	}
 }
 impl Scope {
@@ -296,6 +302,21 @@ impl WorkerTaskScope for Scope {
 		assert_eq!(task, self.task.id);
 		self.touch("task_read")?;
 		Ok(self.task.clone())
+	}
+	async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		assert_eq!(task, self.task.id);
+		Ok(self.source_run)
+	}
+	async fn own_task_read(
+		&mut self,
+		task: Uuid,
+	) -> Result<std::result::Result<Task, OwnTaskRefusal>> {
+		assert_eq!(task, self.task.id);
+		self.touch("task_read")?;
+		match self.own_read.take() {
+			Some(refusal) => refusal.map(Err),
+			None => Ok(Ok(self.task.clone())),
+		}
 	}
 	async fn execution_grant(&mut self, task: Uuid) -> Result<Option<ExecutionGrant>> {
 		assert_eq!(task, self.task.id);
@@ -704,4 +725,89 @@ async fn subnode_delegation_stays_within_current_members(mut scope: Scope, run: 
 		create_task(&mut scope, &run, "key", &input()).await,
 		Err(Error::Forbidden)
 	));
+}
+
+/// #1058 decisions 1 and 7: a refusal of the Run's own Task names what refused
+/// and says retrying will not change it.
+#[rstest]
+#[case::policy(
+	OwnTaskRefusal::Policy,
+	"the task.read policy refuses task 00000000-0000-0000-0000-000000000004"
+)]
+#[case::read(
+	OwnTaskRefusal::Read(Some(ReadBlock::Source { kind: "message".into(), id: id(42) })),
+	"a read it depends on is refused: message 00000000-0000-0000-0000-00000000002a"
+)]
+#[case::definition(
+	OwnTaskRefusal::Read(Some(ReadBlock::Definition(agent()))),
+	"a read it depends on is refused: definition coordinator@1"
+)]
+#[tokio::test]
+async fn a_refusal_of_the_runs_own_task_names_what_refused(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] refusal: OwnTaskRefusal,
+	#[case] reason: &str,
+) {
+	scope.source_run = Some(run.id);
+	scope.own_read = Some(Ok(refusal));
+	let Err(Error::Refused(message)) =
+		delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await
+	else {
+		panic!("the Run's own Task must be refused with its reason");
+	};
+	assert!(message.contains("was created by this Run"), "{message}");
+	assert!(message.contains(reason), "{message}");
+	assert!(
+		message.contains("Retrying will not change this"),
+		"{message}"
+	);
+	assert!(
+		!message.contains("not found or is not visible"),
+		"{message}"
+	);
+	assert_eq!(scope.calls, vec!["task_thread", "task_read"]);
+}
+/// #1058 decision 7: another Node that did not answer is not a refusal; the
+/// Run hears that it could not be confirmed and may try again.
+#[rstest]
+#[tokio::test]
+async fn a_silent_node_leaves_the_runs_own_task_unconfirmed(mut scope: Scope, run: RunMetadata) {
+	scope.source_run = Some(run.id);
+	scope.own_read = Some(Err(Error::NodeUnreachable {
+		node: "aidash://peer".into(),
+		after_effect: false,
+	}));
+	let error = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
+		.await
+		.unwrap_err();
+	let text = error.to_string();
+	assert!(
+		matches!(error, Error::NodeUnreachable { ref node, after_effect: false } if node == "aidash://peer")
+	);
+	assert!(text.contains("could not be reached to confirm"), "{text}");
+	assert!(text.contains("Try again"), "{text}");
+}
+/// #1058 decision 1: a Task another Run created keeps the single text, so the
+/// model cannot probe for it.
+#[rstest]
+#[case::other_run(Some(id(99)))]
+#[case::no_origin(None)]
+#[tokio::test]
+async fn a_task_of_another_run_keeps_the_single_text(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] source: Option<Uuid>,
+) {
+	scope.source_run = source;
+	scope.denied = Some("task_read");
+	let Err(Error::Refused(message)) =
+		delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await
+	else {
+		panic!("another Run's Task must be refused");
+	};
+	assert_eq!(
+		message,
+		"task 00000000-0000-0000-0000-000000000004 was not found or is not visible to this Run"
+	);
 }

@@ -92,6 +92,9 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 /// Producers retain the repository's ascending UUID order and exact resource scope.
 #[async_trait]
 pub trait LocalOutputScope: Send + super::RowOutcome {
+	/// The Run whose authority reads, when a Run reads. Its own Read Recheck
+	/// checks its Read dependencies, so its outputs are not walked again (#1058).
+	fn reading_run(&self) -> Option<Uuid>;
 	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>>;
 	async fn producer_reads_visible(&mut self, run: Uuid) -> Result<bool>;
 }

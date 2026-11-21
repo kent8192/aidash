@@ -42,6 +42,14 @@ pub trait WorkerTaskScope: Send {
 	async fn insert_origin(&mut self, task: Uuid, source: Uuid) -> Result<()>;
 	async fn created_origin(&mut self, task: Uuid) -> Result<CreatedTaskOrigin>;
 	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
+	/// The Run that created `task` with `task_create`, if any.
+	async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>>;
+	/// [`Self::task_read`] for the calling Run's own Task, saying which check
+	/// refused. A Node that did not answer stays `Error::NodeUnreachable`.
+	async fn own_task_read(
+		&mut self,
+		task: Uuid,
+	) -> Result<std::result::Result<Task, crate::authorization::worker_tasks::OwnTaskRefusal>>;
 	async fn execution_grant(&mut self, task: Uuid) -> Result<Option<ExecutionGrant>>;
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation>;
 }

@@ -1,4 +1,5 @@
 //! Worker effects retain their producer, delegated creator and admitted credential.
+use crate::authorization::visibility::provenance::ReadBlock;
 use crate::{Error, Result, ports::authorization::worker_tasks::WorkerTaskScope};
 use aidash_domain::{
 	NewTask, RunMetadata, Task,
@@ -13,6 +14,42 @@ use uuid::Uuid;
 pub fn task_not_visible(task: Uuid) -> Error {
 	Error::Refused(format!(
 		"task {task} was not found or is not visible to this Run"
+	))
+}
+/// Why the calling Run may not read a Task it created itself (#1058).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnTaskRefusal {
+	/// The `task.read` policy refuses the Task to this Run's authority.
+	Policy,
+	/// A Read dependency of a Run that produced the Task is refused; `None`
+	/// when the check that refused did not say which read.
+	Read(Option<ReadBlock>),
+}
+/// The real reason for a refusal of the Run's own Task. A Run may hear it: the
+/// Task is its own, so naming it discloses nothing the Run could probe for.
+/// A Node that did not answer is not a refusal and never reaches this text.
+pub fn own_task_refused(task: Uuid, refusal: &OwnTaskRefusal) -> Error {
+	let what = match refusal {
+		OwnTaskRefusal::Policy => format!("the task.read policy refuses task {task}"),
+		OwnTaskRefusal::Read(Some(ReadBlock::Source { kind, id })) => {
+			format!("a read it depends on is refused: {kind} {id}")
+		}
+		OwnTaskRefusal::Read(Some(ReadBlock::Definition(definition))) => format!(
+			"a read it depends on is refused: definition {}@{}",
+			definition.id, definition.version
+		),
+		OwnTaskRefusal::Read(Some(ReadBlock::RemoteRead)) => {
+			"a read it depends on is refused: a read from another Node".into()
+		}
+		OwnTaskRefusal::Read(Some(ReadBlock::SemanticRead)) => {
+			"a read it depends on is refused: a semantic read".into()
+		}
+		OwnTaskRefusal::Read(None) => {
+			"a read it depends on is refused; the check did not say which".into()
+		}
+	};
+	Error::Refused(format!(
+		"task {task} was created by this Run, but {what}. Retrying will not change this"
 	))
 }
 async fn subnode_members(
@@ -113,10 +150,21 @@ pub async fn delegate(
 	if scope.task_thread(task).await? != Some(run.thread_id) {
 		return Err(task_not_visible(task));
 	}
-	let record = scope.task_read(task).await.map_err(|error| match error {
-		Error::Forbidden => task_not_visible(task),
-		error => error,
-	})?;
+	// The Run's own Task says why it cannot be read (#1058); any other Task
+	// reads the same whether missing or hidden.
+	let record = if scope.task_source_run(task).await? == Some(run.id) {
+		match scope.own_task_read(task).await {
+			Ok(Ok(record)) => record,
+			Ok(Err(refusal)) => return Err(own_task_refused(task, &refusal)),
+			Err(Error::Forbidden) => return Err(task_not_visible(task)),
+			Err(error) => return Err(error),
+		}
+	} else {
+		scope.task_read(task).await.map_err(|error| match error {
+			Error::Forbidden => task_not_visible(task),
+			error => error,
+		})?
+	};
 	let resource = scope.task_resource(&record).await?;
 	scope.require(&resource, "task.delegate").await?;
 	if let Some(existing) = scope.execution_grant(task).await? {
