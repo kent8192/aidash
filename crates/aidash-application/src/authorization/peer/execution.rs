@@ -1,12 +1,23 @@
 //! Pinned dependency checks are shared by HTTP preflight, admission and worker refresh.
 use crate::{Error, Result, ports::authorization::peer::PeerInspectionScope};
 use aidash_domain::{
-	federation::execution::{Definition, Inspection, admission::InspectInput},
+	federation::{
+		execution::{
+			Definition, Inspection, PublicTool, ReceiverRefusal, Refusal, ToolListSide,
+			admission::InspectInput,
+		},
+		tool_lists::ToolList,
+	},
 	policy::SubjectKind,
-	registry::{EntityRef, Entry, rules::digest},
+	registry::{
+		AgentConfig, EntityRef, Entry,
+		bindings::{BindingOrigin, BindingSnapshot},
+		rules::digest,
+	},
+	tool::{ToolReach, builtin_reach},
 };
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 async fn definition(
 	access: &mut dyn PeerInspectionScope,
 	reference: &EntityRef,
@@ -136,7 +147,29 @@ async fn inspect_in(
 		pinned.binding_snapshot.validate()?;
 		pinned.binding_snapshot.clone()
 	} else {
-		access.bindings(&entry).await?
+		match access.bindings(&entry).await {
+			Ok(snapshot) => snapshot,
+			Err(Error::RemoteExecutionRefused(Refusal::ReceiverRefused(reason))) => {
+				return Err(record_binding_refusal(access, &resource, reason).await?);
+			}
+			Err(
+				error @ (Error::Invalid(_)
+				| Error::Conflict(_)
+				| Error::Domain(
+					aidash_domain::Error::Invalid(_) | aidash_domain::Error::Conflict(_),
+				)
+				| Error::Json(_)),
+			) => {
+				tracing::warn!(%error, "remote Agent configuration refused");
+				return Err(record_binding_refusal(
+					access,
+					&resource,
+					ReceiverRefusal::BindingInvalid,
+				)
+				.await?);
+			}
+			Err(error) => return Err(error),
+		}
 	};
 	if !snapshot.remote
 		|| snapshot.agent.registry_deployment != access.node_id()
@@ -188,6 +221,28 @@ async fn inspect_in(
 			));
 		}
 	}
+	if let Some(request) = &input.tool_request {
+		let lists = access.federation_tool_lists(node).await?;
+		let required = required_binding_tools(&snapshot)?;
+		if let Some(tool) = required
+			.iter()
+			.find(|tool| snapshot.operation(tool).is_err())
+		{
+			tracing::warn!(%tool, "remote Agent lacks a required tool Binding");
+			let error =
+				record_binding_refusal(access, &resource, ReceiverRefusal::BindingInvalid).await?;
+			return Err(if lists.is_none() {
+				Error::RemoteExecutionRefused(Refusal::Policy)
+			} else {
+				error
+			});
+		}
+		if let Some((allowance, block)) = lists
+			&& let Some(reason) = missing_binding_tool(required, request, &allowance, &block)
+		{
+			return Err(record_binding_refusal(access, &resource, reason).await?);
+		}
+	}
 	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
 		binding_snapshot: snapshot,
@@ -201,6 +256,68 @@ async fn inspect_in(
 		definitions: definitions.into_values().collect(),
 		semantic_memory: aidash_domain::semantic::remote::VERSION,
 	})
+}
+
+async fn record_binding_refusal(
+	access: &mut dyn PeerInspectionScope,
+	resource: &aidash_domain::policy::Resource,
+	reason: ReceiverRefusal,
+) -> Result<Error> {
+	tracing::warn!(receiver = %access.receiver_address(), ?reason, "remote Agent binding refused");
+	access
+		.record_binding_refusal(resource, reason.code())
+		.await?;
+	Ok(Error::RemoteExecutionRefused(Refusal::ReceiverRefused(
+		reason,
+	)))
+}
+
+fn required_binding_tools(snapshot: &BindingSnapshot) -> Result<BTreeSet<&str>> {
+	let config = AgentConfig::from_snapshot(snapshot)?;
+	let mut required: BTreeSet<_> = snapshot
+		.bindings
+		.iter()
+		.filter(|binding| {
+			matches!(
+				binding.origin,
+				BindingOrigin::Required | BindingOrigin::SkillSupport
+			)
+		})
+		.filter_map(|binding| binding.identity.id.strip_prefix("aidash."))
+		.collect();
+	if !config.reference_attachments.is_empty() {
+		required.insert("file_read");
+	}
+	if config.core_capabilities.skills || !config.skills.is_empty() {
+		required.extend(config.exposure_policy().skill_support_tools());
+	}
+	Ok(required)
+}
+
+/// Required bindings cannot enter a Run that cannot use them. Ordinary optional tools
+/// stay candidates for a per-call ask. A Block is equivalent to absence from the Allowance.
+fn missing_binding_tool(
+	required: BTreeSet<&str>,
+	request: &ToolList,
+	allowance: &ToolList,
+	block: &ToolList,
+) -> Option<ReceiverRefusal> {
+	for operation in required {
+		if builtin_reach(operation).is_none_or(|reach| reach == ToolReach::Run) {
+			continue;
+		}
+		let side = if !request.matches(operation) {
+			ToolListSide::Home
+		} else if !allowance.matches(operation) || block.matches(operation) {
+			ToolListSide::Receiver
+		} else {
+			continue;
+		};
+		if let Some(tool) = PublicTool::new(operation) {
+			return Some(ReceiverRefusal::RequiredToolNotListed { tool, side });
+		}
+	}
+	None
 }
 
 pub async fn inspect(

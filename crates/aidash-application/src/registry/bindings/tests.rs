@@ -325,6 +325,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 	#[case] second_count: usize,
 	#[case] duplicate: bool,
 	#[case] accepted: bool,
+	#[values(false, true)] remote: bool,
 ) {
 	fn source(adapter: &str, count: usize, offset: usize) -> Value {
 		let ids = (offset..offset + count).map(|id| uuid::Uuid::from_u128(id as u128));
@@ -362,7 +363,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 			exposure: None,
 		});
 	}
-	let result = snapshot(&mut catalog, &config, false).await;
+	let result = snapshot(&mut catalog, &config, remote).await;
 	assert_eq!(result.is_ok(), accepted, "{adapter}: {result:?}");
 	if let Ok(snapshot) = result {
 		snapshot.validate().unwrap();

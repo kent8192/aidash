@@ -268,8 +268,8 @@ fn a_block_and_a_reach_that_never_refuse_the_member_whatever_the_lists_say() {
 	let blocked = lists(&["*"], &["*"], &["file_read"]);
 	assert!(within_federation_lists(&blocked, &keys(&["file_read"])).is_err());
 	assert!(within_federation_lists(&blocked, &keys(&["file_search"])).is_ok());
-	// `skill_list` is Reach never: no list makes it usable.
-	assert!(within_federation_lists(&lists(&["*"], &["*"], &[]), &keys(&["skill_list"])).is_err());
+	// `duty_list` is Reach never: no list makes it usable.
+	assert!(within_federation_lists(&lists(&["*"], &["*"], &[]), &keys(&["duty_list"])).is_err());
 }
 
 #[test]

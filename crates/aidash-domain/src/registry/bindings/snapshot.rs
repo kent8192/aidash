@@ -351,13 +351,20 @@ impl BindingSnapshot {
 				let descriptor: ToolDescriptor =
 					serde_json::from_value(definitions[&saved.identity].definition.config.clone())?;
 				let contract = descriptor.declared_contract(saved.identity.clone())?;
+				let pinned = match saved.provider_contract_digest.as_deref() {
+					Some(digest) => contract.pinned(digest)?,
+					None => None,
+				}
+				.ok_or_else(|| {
+					Error::Invalid("Tool snapshot differs from its Provider contract".into())
+				})?;
 				let mut excluded_reason = match memory_exclusion(
 					expected.origin,
 					&descriptor.operation,
 					memory_provider,
 				)? {
 					Some(reason) => Some(reason),
-					None if self.remote => remote_exclusion(expected.origin, &contract)?,
+					None if self.remote => remote_exclusion(expected.origin, &pinned)?,
 					None => None,
 				};
 				// A Workbench test may also exclude a Schedule tool
@@ -368,13 +375,8 @@ impl BindingSnapshot {
 				{
 					excluded_reason = saved.excluded_reason.clone();
 				}
-				let pinned = match saved.provider_contract_digest.as_deref() {
-					Some(digest) => contract.pinned(digest)?.is_some(),
-					None => false,
-				};
 				if saved.excluded_reason != excluded_reason
-					|| !pinned || excluded_reason.is_some()
-					&& saved.provider_implementation.is_some()
+					|| excluded_reason.is_some() && saved.provider_implementation.is_some()
 				{
 					return Err(Error::Invalid(
 						"Tool snapshot differs from its placement or Provider contract".into(),

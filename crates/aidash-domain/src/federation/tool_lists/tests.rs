@@ -361,7 +361,7 @@ fn the_receiver_answers_only_its_own_ask_and_only_while_nothing_else_holds_the_r
 	use crate::{ControlSource, RunControl};
 	let paused = paused_on("call-1", "shell", true);
 	let may = |control, source, paused: Option<&crate::run_state::PausedCall>, call, key| {
-		receiver_may_answer(control, source, paused, call, key)
+		may_answer(control, source, paused, call, key, AskSide::Receiver)
 	};
 	// The worker's Authority Pause leaves the source `System`.
 	assert!(may(

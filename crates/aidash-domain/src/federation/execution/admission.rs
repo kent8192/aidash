@@ -70,9 +70,19 @@ impl RemoteExecutionControl {
 		}
 	}
 }
-#[derive(Deserialize)]
+/// A list answer may continue only the specific Authority Pause shown to its author.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAskTarget {
+	pub call: String,
+	pub key: String,
+}
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectInput {
+	/// Sent while preparing a new grant. Live rechecks refresh the lists through its Description.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_request: Option<crate::federation::tool_lists::ToolList>,
 	#[serde(default)]
 	pub task_id: Option<Uuid>,
 	pub agent: EntityRef,

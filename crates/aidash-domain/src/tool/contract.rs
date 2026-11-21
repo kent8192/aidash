@@ -316,12 +316,32 @@ impl ToolContract {
 	pub fn digest(&self) -> crate::Result<String> {
 		Ok(crate::registry::rules::digest(&serde_json::to_value(self)?))
 	}
+	/// A remote Run without mounted Skills keeps its existing default exclusions.
+	pub fn legacy_skill_reach(&self) -> Option<Self> {
+		(self.reach == ToolReach::ReceiverMaterial
+			&& matches!(&self.identity, ToolIdentity::Builtin(name)
+				if matches!(name.as_str(), "builtin:skill_list" | "builtin:skill_load")))
+		.then(|| Self {
+			reach: ToolReach::Never,
+			..self.clone()
+		})
+	}
+
 	/// The contract a Run pinned under `digest`, if any. A Run admitted before
 	/// its provider declared Concurrency safety keeps that operation Sequential;
 	/// a legacy Read-only definition keeps its approval-gated Unsafe contract.
 	pub fn pinned(mut self, digest: &str) -> crate::Result<Option<Self>> {
 		if self.digest()? == digest {
 			return Ok(Some(self));
+		}
+		if let Some(mut previous) = self.legacy_skill_reach() {
+			if previous.digest()? == digest {
+				return Ok(Some(previous));
+			}
+			previous.behavior.concurrency = Concurrency::Sequential;
+			if previous.digest()? == digest {
+				return Ok(Some(previous));
+			}
 		}
 		if self.behavior.fitting == Some(ResultFitting::ThreadRecord)
 			&& self.behavior.yields_model_media
@@ -471,9 +491,8 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		// it: the Home serves both commands and grants every onward hop under
 		// the whole chain (#654, #1013), so they reach the Home's Thread.
 		"agent_discover" | "task_delegate" => ToolReach::HomeWorkspace,
-		"skill_read" | "skill_asset_read" | "file_read" | "file_search" => {
-			ToolReach::ReceiverMaterial
-		}
+		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" | "file_read"
+		| "file_search" => ToolReach::ReceiverMaterial,
 		"subnode_create"
 		| "subnode_task"
 		| "subnode_add_member"
@@ -487,7 +506,6 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		| "python_cancel" | "apply_patch" | "file_save" | "file_remove" | "file_copy"
 		| "process_list" | "process_log" | "process_stop" | "live_preview_start"
 		| "live_preview_stop" => ToolReach::Execution,
-		"skill_list" | "skill_load" => ToolReach::Never,
 		// An Agent Plugin's stdio MCP server is never remote (ADR 0100), a Duty acts as one
 		// person of its own Tenant (ADR 0134), which a remote Run cannot be, and Node tools
 		// and node events act as that person too (#1012, #1013).
@@ -990,6 +1008,8 @@ mod tests {
 		assert_eq!(
 			by_reach(ToolReach::ReceiverMaterial),
 			sorted(vec![
+				"skill_list",
+				"skill_load",
 				"skill_read",
 				"skill_asset_read",
 				"file_read",
@@ -1039,8 +1059,6 @@ mod tests {
 		assert_eq!(
 			by_reach(ToolReach::Never),
 			sorted(vec![
-				"skill_list",
-				"skill_load",
 				"mcp_stdio",
 				"duty_create",
 				"duty_update",

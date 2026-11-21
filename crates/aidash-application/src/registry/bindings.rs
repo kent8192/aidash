@@ -183,7 +183,10 @@ pub async fn resolve(
 	// memory source alone feeds automatic context (#617).
 	let mut memory_provider = false;
 	for Pending { normalized, .. } in &pending {
-		if normalized.binding.kind != BindingKind::Memory {
+		let kind = normalized.binding.kind;
+		if kind != BindingKind::Memory
+			&& !(remote && !config.exposure_policy().is_deferred() && kind == BindingKind::Source)
+		{
 			continue;
 		}
 		let target = &normalized.binding.target;
@@ -195,9 +198,15 @@ pub async fn resolve(
 				entry
 			}
 		};
-		memory_provider |=
-			aidash_domain::registry::bindings::memory_provider(&entry.kind, &entry.config);
+		if kind == BindingKind::Memory {
+			memory_provider |=
+				aidash_domain::registry::bindings::memory_provider(&entry.kind, &entry.config);
+		} else {
+			source_skill_support |= sources::validate_definition(&entry)?
+				.is_some_and(|source| source.requires_skill_support());
+		}
 	}
+	let remote_without_mounted_skills = remote && !source_skill_support;
 	if !memory_provider {
 		pending.push(Pending {
 			normalized: aidash_domain::registry::bindings::memory_defaults::binding(
@@ -317,7 +326,13 @@ pub async fn resolve(
 			}
 			let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone())?;
 			config.exposure_policy().admit_tool(&descriptor)?;
-			let contract = providers.contract(&descriptor, &target)?;
+			let mut contract = providers.contract(&descriptor, &target)?;
+			if remote_without_mounted_skills
+				&& origin == BindingOrigin::Default
+				&& let Some(previous) = contract.legacy_skill_reach()
+			{
+				contract = previous;
+			}
 			validate_restrictions(&descriptor.operation, &effective_narrow)?;
 			effective_narrow = descriptor.narrow.intersect(&effective_narrow)?;
 			validate_concurrency(&contract, &effective_narrow)?;
@@ -366,7 +381,22 @@ pub async fn resolve(
 			}
 			excluded_reason = memory_exclusion(origin, &descriptor.operation, memory_provider)?;
 			if remote && excluded_reason.is_none() {
-				excluded_reason = remote_exclusion(origin, &contract)?;
+				excluded_reason = remote_exclusion(origin, &contract).map_err(|error| {
+					use aidash_domain::federation::execution::{
+						PublicTool, ReceiverRefusal, Refusal,
+					};
+
+					tracing::warn!(%error, operation = %descriptor.operation, "remote tool binding refused");
+					let tool = matches!(
+						contract.identity,
+						aidash_domain::tool::ToolIdentity::Builtin(_)
+					)
+					.then(|| PublicTool::new(&descriptor.operation))
+					.flatten();
+					Error::RemoteExecutionRefused(Refusal::ReceiverRefused(
+						ReceiverRefusal::ToolNeverRemote { tool },
+					))
+				})?;
 			}
 			provider_contract_digest = Some(contract.digest()?);
 			if excluded_reason.is_none() {
@@ -439,17 +469,6 @@ pub async fn resolve(
 			if matches!(kind, BindingKind::Memory | BindingKind::Source)
 				&& let Some(descriptor) = sources::validate_definition(&entry)?
 			{
-				if remote
-					&& matches!(
-						descriptor.source,
-						sources::NativeSource::ReferenceAttachments { .. }
-							| sources::NativeSource::SkillAttachments { .. }
-							| sources::NativeSource::SkillRoots { .. }
-					) {
-					return Err(Error::Invalid(
-						"native mounted Source is unavailable remotely".into(),
-					));
-				}
 				source_skill_support |= descriptor.requires_skill_support();
 			}
 			catalog.source(&entry).await?;

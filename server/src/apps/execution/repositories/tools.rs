@@ -666,7 +666,7 @@ impl ToolOperations for Operations {
 		Ok(specifications)
 	}
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
-		match &self.0.home.authority {
+		match self.0.home.tool_authority() {
 			Some(authority) => authority
 				.direct_skills(&self.0.store, &self.0.run)
 				.await
@@ -682,8 +682,7 @@ impl ToolOperations for Operations {
 	) -> Result<Option<Vec<u8>>> {
 		self.0
 			.home
-			.authority
-			.as_ref()
+			.tool_authority()
 			.ok_or_else(|| aidash_application::Error::NotFound("skill unavailable".into()))?
 			.direct_skill_file(&self.0.store, &self.0.run, skill_id, digest, path)
 			.await
