@@ -3100,7 +3100,7 @@ fn thinking_with_history(fixture: &mut Fixture, old: usize) {
 	}
 	for i in 0..6 {
 		fixture.run.context.push(ContextEvent::Assistant {
-			epoch: i64::try_from(i + 10000).unwrap(),
+			epoch: i64::from(i + 10000),
 			text: String::new(),
 			calls: vec![format!("recent-{i}")],
 			reasoning: None,

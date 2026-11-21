@@ -206,6 +206,7 @@ test("searches and selects a model without credential input", async ({
   const config = (await submitted).postDataJSON().config;
   // Omitted, so registration chooses by route.
   expect(config).not.toHaveProperty("cache_mode");
+  expect(config).not.toHaveProperty("projection_versions");
   expect(config).toMatchObject({
     provider: "openrouter",
     model_id: "vendor/fixture-model",
@@ -400,6 +401,7 @@ test("provider-first selection discovers personal plan models and submits an exp
     cost: {},
   });
   expect(config).not.toHaveProperty("provider_credential");
+  expect(config).not.toHaveProperty("projection_versions");
 });
 
 test("switching to a Keyless endpoint discards a provider catalog selection", async ({
