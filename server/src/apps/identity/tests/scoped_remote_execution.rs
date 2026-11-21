@@ -10,6 +10,8 @@ mod common;
 mod connections;
 #[path = "scoped_remote_execution/native_memory.rs"]
 mod native_memory;
+#[path = "scoped_remote_execution/receiver_material.rs"]
+mod receiver_material;
 #[path = "../../execution/tests/support/sender_schedule.rs"]
 mod sender_schedule;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]
@@ -79,6 +81,7 @@ struct ModelScript {
 	selected_attachment: Arc<Mutex<Option<String>>>,
 	/// Tool-call responses after the first, for Runs that need several inferences.
 	extra_tool_rounds: Arc<AtomicUsize>,
+	material_calls: Arc<Mutex<std::collections::VecDeque<(String, Value)>>>,
 }
 
 #[derive(Clone)]
@@ -4408,7 +4411,7 @@ impl Pair {
 		};
 		let phase = serde_json::to_value(state.phase()).unwrap();
 		sqlx::query(
-			"UPDATE task_executions SET pending = $1, phase = $2, control = 'PAUSED', lease_owner = NULL, \
+			"UPDATE task_executions SET pending = $1, phase = $2, control = 'PAUSED', control_source = 'system', lease_owner = NULL, \
 			 lease_until = NULL, error = 'task_delegate: the other Node refused' WHERE id = $3",
 		)
 		.bind(encode(&state, &recovery).unwrap())
@@ -8172,6 +8175,7 @@ fn model_script(
 		force_memory_mutate,
 		selected_attachment: Arc::new(Mutex::new(None)),
 		extra_tool_rounds: Arc::new(AtomicUsize::new(0)),
+		material_calls: Default::default(),
 	}
 }
 #[rstest::fixture]
@@ -8189,7 +8193,10 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
         calls.push(input);
         let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;}
         let selected = script.selected_attachment.lock().await.clone();
-        let message=if let Some(id)=selected.filter(|_| count <= 2) {
+        let material_call = script.material_calls.lock().await.pop_front();
+        let message=if let Some((name, arguments))=material_call {
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("material-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]})
+        } else if let Some(id)=selected.filter(|_| count <= 2) {
             let (name, arguments) = if count == 1 { ("thread_observe", json!({})) } else { ("thread_read", json!({"kind":"attachment", "id":id, "representation":"model_input"})) };
             json!({"role":"assistant","content":if count == 2 { Some("Image selected") } else { None },"tool_calls":[{"id":format!("media-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]})
         } else if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"thread_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};

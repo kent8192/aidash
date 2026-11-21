@@ -838,7 +838,7 @@ async fn sibling_node_use_distinguishes_ancestor_deny_from_missing_allow(
 		Refusal::NodeUseAsk
 	};
 	assert!(
-		matches!(result, Err(aidash_application::Error::RemoteExecutionRefused(reason)) if reason == expected),
+		matches!(&result, Err(aidash_application::Error::RemoteExecutionRefused(reason)) if reason == &expected),
 		"{result:?}"
 	);
 }

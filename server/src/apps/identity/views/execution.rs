@@ -22,7 +22,16 @@ pub async fn inspect(
 	#[inject] peer: InboundCall,
 	Json(input): Json<InspectInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.inspect(peer.0, input).await)
+	let result = service.inspect(peer.0, input).await;
+	use aidash_domain::federation::execution::Refusal;
+	if let Err(crate::Error::RemoteExecutionRefused(refusal @ Refusal::ReceiverRefused(reason))) =
+		&result
+	{
+		return Response::new(reinhardt::StatusCode::FORBIDDEN)
+			.with_header("x-aidash-execution-refusal", &refusal.header())
+			.with_json(reason);
+	}
+	crate::http::json(result)
 }
 
 #[post(

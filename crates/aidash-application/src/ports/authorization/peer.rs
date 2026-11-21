@@ -4,8 +4,9 @@ use aidash_domain::{
 	Run,
 	federation::execution::{
 		Description,
-		admission::{InspectInput, Record, RemoteExecutionControl},
+		admission::{InspectInput, Record, RemoteExecutionControl, ToolAskTarget},
 	},
+	federation::tool_lists::ToolList,
 	generation::remote::Ancestor,
 	identity::execution::ExecutionPrincipal,
 	nodes::NodeName,
@@ -30,6 +31,9 @@ pub trait PeerInspectionScope: Send {
 	fn subjects(&self) -> &[String];
 	fn push_subject(&mut self, subject: String);
 	async fn invalid_executor(&mut self, resource: &Resource) -> Result<()>;
+	async fn record_binding_refusal(&mut self, resource: &Resource, code: &str) -> Result<()>;
+	/// The receiver's Allowance and Block for a registered Home. Same-Tenant Nodes have no lists.
+	async fn federation_tool_lists(&mut self, home: &str) -> Result<Option<(ToolList, ToolList)>>;
 	fn context(&mut self) -> &mut Value;
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
@@ -160,7 +164,12 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 		id: Uuid,
 		grant: Uuid,
 	) -> Result<aidash_domain::federation::execution::admission::Activation>;
-	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection>;
+	async fn control(
+		&self,
+		id: Uuid,
+		action: &RemoteExecutionControl,
+		tool_ask: Option<&ToolAskTarget>,
+	) -> Result<RunInspection>;
 	/// Decline the call the Run is paused on and let it go on, as the Run's Home. `Conflict`
 	/// when the Run is no longer paused on that call.
 	async fn decline_call(
@@ -168,6 +177,7 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 		id: Uuid,
 		call: &str,
 		rest_of_run: bool,
+		tool_ask_key: Option<&str>,
 	) -> Result<(RunInspection, aidash_domain::run_state::PausedCall)>;
 	fn messages(&self, run: &Run) -> Box<dyn AdmissionMessages + '_>;
 	async fn message_limit(&self, run: &Run) -> Result<usize>;
