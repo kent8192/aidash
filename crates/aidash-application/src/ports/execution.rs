@@ -82,6 +82,8 @@ pub struct InvocationOutcome {
 	pub result: Option<Value>,
 	pub uncertain_reason: Option<String>,
 	pub retrying: bool,
+	/// A new or previously refused invocation with no earlier delivery.
+	pub unexecuted: bool,
 }
 /// One call journaled by Tool Batch admission.
 pub struct BatchInvocation<'a> {
