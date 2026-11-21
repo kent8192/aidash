@@ -255,17 +255,32 @@ async fn verify_attachment_labels_count_toward_admission(
 	let short_name = "s.wav";
 	let long_name = format!("{}.wav", "x".repeat(251));
 	let short_label = format!("Run message {seq} attachment: {short_name}");
-	let text_body = json!({"messages":[
-		{"role":"system","content":""},
-		{"role":"user","content":[
-			{"type":"text","text":json!({"run_message":""}).to_string()},
-			{"type":"text","text":short_label}
-		]}
-	]});
+	let entry = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
+	let model = serde_json::from_value(entry.config).unwrap();
+	use aidash_domain::provider::ContentPart;
+	let request = aidash_application::execution::media::admission_request(
+		&model,
+		json!({"run_message":""}),
+		vec![
+			ContentPart::Text(short_label),
+			ContentPart::Audio {
+				format: "wav".into(),
+				bytes: vec![],
+			},
+		],
+	);
 	// Leave a little room for the short label while the 255-byte filename
 	// pushes the otherwise identical audio beyond the admission boundary.
 	let audio_tokens = (f.run_message_limit(&run).await.unwrap() * 4)
-		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
+		.checked_sub(request.estimated_total_tokens() + 16)
 		.unwrap();
 	let audio = wav_bytes(audio_tokens * 16);
 	let long = upload(app, member, thread, &long_name, "audio/wav", &audio).await;
