@@ -2,9 +2,8 @@
 //!
 //! Plan usage requires `stream: true` and `store: false` and keeps no
 //! conversation state, so every request carries the whole projected context
-//! in `input`. Legacy, Ordered and Native projections retain the observable
-//! messages and tool turns; a Native Run also replays each turn's reasoning
-//! items as received (#942, amending ADR 0083). Output is
+//! in `input`. A Run replays its observable messages, Model Turns and
+//! reasoning items (#942, amending ADR 0083). Output is
 //! accepted only from `response.completed`; truncated terminal responses retain
 //! text for bounded MCP sampling. Deltas feed sanitized Inference Progress.
 use super::{CacheSaltKeys, MAX_RESPONSE_BYTES, safe_upstream_reason};
@@ -377,13 +376,6 @@ impl ResponsesProvider {
 		deadline: std::time::Duration,
 		stall: std::time::Duration,
 	) -> Result<ModelResponse> {
-		let version = request.context.projection_version();
-		if !version.is_legacy() && !self.config.supports_projection(version) {
-			return Err(Error::UnsupportedProjection {
-				model: self.config.model_id.clone(),
-				version,
-			});
-		}
 		if self.config.provider_credential.is_some()
 			&& request.max_output_tokens > self.config.output_token_limit()
 		{

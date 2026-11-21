@@ -438,7 +438,7 @@ async fn legacy(
 						version: entry.version,
 					})
 					.await?;
-				let model: ModelConfig = serde_json::from_value(effective.config)?;
+				let model: ModelConfig = ModelConfig::from_stored(effective.config)?;
 				model.require_media_types([file.media_type.as_str()])?;
 			}
 			read(scope, area, selection).await?

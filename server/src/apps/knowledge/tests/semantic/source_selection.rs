@@ -148,7 +148,7 @@ async fn cleanup(fixture: ControlledContext) {
 }
 
 fn thread_envelopes(context: &Value) -> Vec<Value> {
-	context["current"]["context_sources"]
+	context["snapshot"]["context_sources"]
 		.as_array()
 		.expect("explicit Step sources are attributed data")
 		.iter()
@@ -164,7 +164,7 @@ fn thread_envelopes(context: &Value) -> Vec<Value> {
 async fn scored_sources_reach_the_actual_request_as_individual_items(
 	#[case] case: SelectionCase,
 	#[future(awt)]
-	#[with(false, true, false, false, false, Some(case))]
+	#[with(false, true, false, false, Some(case))]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -306,7 +306,7 @@ enum Denial {
 async fn source_selection_denial_pauses_before_classifier_or_inference(
 	#[case] denial: Denial,
 	#[future(awt)]
-	#[with(false, true, false, false, false, Some(SelectionCase::Enforce))]
+	#[with(false, true, false, false, Some(SelectionCase::Enforce))]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;

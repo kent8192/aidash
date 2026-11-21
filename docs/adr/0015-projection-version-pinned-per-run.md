@@ -30,3 +30,7 @@ Each value is a complete, frozen rendering; layout and message format are never 
 ## Amendment (2026-10-30)
 
 New Agent definitions that omit `projection_version` are registered as `Native` when their model declares Native, together with the `structured@3` Harness Contract (#532, ADR 0093 amendment). The value is written into the definition at registration. A definition or Binding snapshot read without the field still decodes as `Legacy`, so pinned Runs keep byte-identical requests. Agents whose model does not declare Native keep the Legacy default.
+
+## Amendment (2026-11-21, #1068)
+
+Superseded in part by ADR 0144: Legacy and Ordered are removed and Native is the only Projection Version. A definition or snapshot without the field is read as Native, not Legacy, and a Run that pins Legacy or Ordered fails at its next step. Model definitions no longer declare `projection_versions`.

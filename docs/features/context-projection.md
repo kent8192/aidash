@@ -1,67 +1,23 @@
 # Context Projection Versions
 
-A Projection Version is the rule that turns a Run's context into the bytes of a
-model request. An Agent definition version names it, the Run's Binding snapshot
-pins it, and it never changes while the Run exists. Runs created before this
-feature, and Agent definitions that name no version, use `legacy`.
+Native is the Projection Version for every Run step. It renders the Context
+Projection as model-native messages and uses the Tenant Cache Salt and an
+opaque sticky-routing identifier. An Agent definition may name
+`projection_version: "native"`. Omitting the field selects Native, including
+when a stored definition or Binding snapshot is read. Models use Native
+automatically.
 
-| Version   | Request shape                                                                                                                           |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `legacy`  | One JSON user message with alphabetically ordered keys. Omitted means `legacy`; new Agents on a Native model register as `native`.      |
-| `ordered` | A Tenant Cache Salt line at the start of `system`, then one user message with two text parts: a Stable Prefix part and a volatile part. |
-| `native`  | A Tenant Cache Salt line at the start of `system`, enveloped attachments, then model-native assistant and tool messages, then the step. |
+Registration rejects the retired Projection Versions. A Run whose saved
+snapshot explicitly pins a retired version fails at its next worker step
+with `PROJECTION_RETIRED`. Existing definitions, snapshots, digests and Usage
+Records keep their stored values. See [ADR 0144](../adr/0144-native-is-the-only-projection-version-and-model-requests-outside-run-steps-are-model-calls.md).
 
-## Selecting `ordered`
+## Model requests
 
-Declare the versions a model accepts, then name one in the Agent definition:
+A Run step sends:
 
-```json
-{
-  "provider": "openrouter",
-  "model_id": "vendor/model",
-  "endpoint": "https://openrouter.ai/api/v1",
-  "provider_credential": "openrouter",
-  "context_window": 128000,
-  "max_output_tokens": 8192,
-  "modalities": ["text"],
-  "cost": {},
-  "projection_versions": ["legacy", "ordered"]
-}
-```
-
-```json
-{
-  "schema_version": 1,
-  "model": { "id": "model", "version": "1.0.0" },
-  "instructions": "Do the task.",
-  "projection_version": "ordered"
-}
-```
-
-Agent registration, publication and installation reject a version that the
-pinned model does not declare. A model that omits `projection_versions` accepts
-only `legacy`. Both fields are omitted from stored definitions when absent, so
-existing definitions, digests and Binding snapshots keep their bytes. Run
-creation checks the version again and rejects it if this node cannot render it.
-It never falls back to `legacy`. Migration `registry/0017_projection_versions`
-lets the registry database constraints accept both keys.
-
-## Selecting `native`
-
-Declare `native` in the model's `projection_versions` and name it in the Agent
-definition, exactly as for `ordered`. `native` is salted too, so its Runs need a
-Cache Salt Key and Tenant-scoped execution. Registration, Run creation and the
-OpenRouter adapter each reject `native` on a model that does not declare it;
-the adapter fails with a typed `UnsupportedProjection` error before any provider
-traffic, and nothing ever falls back to `legacy`.
-
-A `native` request has this shape:
-
-1. `system`: the salt line, the Harness Contract and every harness instruction,
-   including the per-turn catch-up and media-intake paragraphs. Under the
-   `structured@*` [Harness Contracts](harness-contract.md), the per-turn
-   paragraphs and the step's markers move to an `aidash`-trust envelope at the
-   end of the trailing user message instead.
+1. The `system` message with its Tenant Cache Salt, the
+   [Harness Contract](harness-contract.md), and pinned instruction text.
 2. One user message of Run-stable attachments: `identity`, `task`,
    `reference_documents`, `run_message_summary` and the Execution Summary, each
    a separate text part.
@@ -69,12 +25,14 @@ A `native` request has this shape:
    exact `tool_calls`, followed by one `tool` message per call with the same
    `tool_call_id`. A Human answer becomes a user message. Media observations
    become user messages.
-4. One trailing user message with this step's volatile content (agent state,
-   thread observation, run messages, `semantic_memory`, deferred reads and
-   the continuation markers no rendered Model Turn has answered yet) and this
-   step's media parts. It is never stored in history. A citation correction
-   asks for a corrected answer, so it stays through tool-call turns that
-   gather evidence until a turn without calls answers it.
+4. When present, a trailing user message carrying this step’s volatile
+   evidence and media. Changed bookkeeping, Harness requirements, and
+   admitted run messages and thread observations are journaled and appear
+   in history at the position where they were recorded.
+
+Compaction, memory, Workbench, media checks and MCP sampling use Native
+Model Calls. The Model Call owns its Inference Attempts and records the
+digest of the request and its usage.
 
 Everything derived from data is wrapped in a provenance envelope,
 `{"source", "provenance", "revision", "trust": "data", "content"}`: attachments,
@@ -83,7 +41,7 @@ step's volatile content and the text labels of its media parts. Only the Human
 answer itself is unwrapped. Data never enters `system`. Request budgeting
 reserves the enveloped size of media labels before it bounds the snapshot.
 
-Only `native` Runs record Model Turns: once per accepted response, the Context
+Once per accepted response, the Context
 Journal gains an `assistant` event with the response text and the IDs of its
 tool calls, before the first result. A final answer is a Model Turn without
 calls. The provider's reasoning is recorded on the same event exactly as
@@ -95,8 +53,7 @@ its reasoning; routes that require the field get an empty reasoning string.
 Compaction steps drop the reasoning of turns older than the protected recent
 tail, and the Journal export leaves reasoning out. A call that never ran, because an
 earlier call of the same response waited for a human or deferred its result, is
-left out of the rendered assistant message, as `legacy` leaves it out of
-history. A response without text whose calls never ran renders nothing and is
+left out of the rendered assistant message. A response without text whose calls never ran renders nothing and is
 no Model Turn. Text beside calls that the citation gate withholds is neither
 published nor recorded; its turn keeps only the calls. A request never carries
 part of a Model Turn; validation rejects one before sending.
@@ -113,7 +70,7 @@ message, or on the last attachment when there is no history.
 
 ## Cache Salt Key
 
-`ordered` requests start `system` with
+Run step requests start `system` with
 `aidash-cache-scope:v{version}:{hex}`. Here `hex` is an HMAC-SHA256 of the Run's
 Tenant ID under the node's Cache Salt Key, truncated to 128 bits. Provider
 prefix caches therefore never match across Tenants. Configure the key in the
@@ -134,23 +91,16 @@ without any setup. Configure keys to rotate the salt on its own. To rotate, add 
 requests use the new version, and the only effect is cache misses. The OpenRouter
 adapter adds the salt just before sending. Request metadata, compaction input,
 logs and diagnostics show only the key version. A remote Run is salted with the
-receiving node's local Tenant and that node's key. Because the salt needs a
-Tenant, `ordered` Runs are created only through Tenant-scoped execution. Legacy
-claims and legacy remote admission run in Threads without a Tenant, so they
-reject `ordered` Agents even on a node that has keys.
+receiving Node's local Tenant and that Node's key. Every Run requires a Tenant
+and the executing Node's Cache Salt Key.
 
 ## What stays stable
 
-The Stable Prefix part holds `identity`, `task`, `reference_documents`,
-`run_message_summary`, the adopted Execution Summary as `summary` (only when a
-Context Policy's Summary Stage produced one), and `history`, in that order. The
-volatile part follows:
-it holds the agent state, thread observation, run messages, deferred markers,
-`semantic_memory` and per-turn instructions such as run-message catch-up and
-media intake. Two consecutive steps share their bytes through all earlier
-history.
+The Stable Prefix holds the system message, Run-stable attachments and
+the history. Consecutive steps reuse the prefix through earlier unchanged
+messages.
 
-These events legitimately end the shared prefix:
+These events end the shared prefix:
 
 - History compaction, including a Summary Stage merge, or removal of an old
   media observation.
@@ -158,11 +108,10 @@ These events legitimately end the shared prefix:
 - Run-message catch-up and media-intake turns, which narrow or clear the tools.
 - Fixed content (instructions, tools, reference documents, per-turn
   instructions) so large that the Run-stable snapshot quota no longer fits
-  beside it: the snapshot is then truncated to the remaining headroom, as in
-  `legacy`, instead of failing the request.
+  beside it. The snapshot is truncated to the remaining headroom.
 - A different tool set.
 
-For `ordered` and `native` Runs, a semantic retrieval is reused across steps while its
+A Run reuses a semantic retrieval across steps while its
 Retrieval Key is unchanged. The key covers the query inputs, a Run-fixed budget,
 the binding, the authorization scope, and the policy, index and memory-binding
 revisions. It also covers a digest of the Thread's semantic entries and of
@@ -173,12 +122,12 @@ digest in the reply to the same describe request that refreshes the Run's
 authority (peer protocol `0.3`). A Home on protocol `0.2` sends no digest, and
 the key then has no corpus component: its remote Runs keep reusing a retrieval
 until another component changes. The budget never exceeds half of the request's
-remaining headroom, the same share `legacy` uses, so oversized fixed content can
+remaining headroom, so oversized fixed content can
 change the budget and therefore the key.
 Every reuse is rechecked against current authority first: revoked or narrowed
 access pauses the Run, and a stale result is retrieved again once.
 
-A remote `ordered` Run reuses a retrieval the Home performed for an earlier
+A remote Run reuses a retrieval the Home performed for an earlier
 step, so the Home has no semantic operation for the current step. Its inference
 and compaction admissions therefore cite the operation whose receipt the step
 reuses. The Home admits a cited operation only when it is READY for the same
@@ -201,7 +150,7 @@ A model version declares its route's behaviour with `cache_mode`:
 | `automatic`       | The route caches matching prefixes without request markers.                                       |
 | `explicit`        | The route caches up to `cache_control` breakpoints. Accepted only for the IDs in the table below. |
 
-Registration writes `explicit` on a new model whose ID is in the table, on OpenRouter's Chat API at `https://openrouter.ai/`. An Agent version uses it through `prompt_cache` (`off` or `explicit`). Registration writes `explicit` on a new Agent on Native with a structured Harness Contract when its model accepts breakpoints. Both opt-outs are explicit: `prompt_cache: off`, or `cache_mode: none` on the model.
+Registration writes `explicit` on a new model whose ID is in the table, on OpenRouter's Chat API at `https://openrouter.ai/`. An Agent version uses it through `prompt_cache` (`off` or `explicit`). Registration writes `explicit` on a new Agent when its model accepts breakpoints. Both opt-outs are explicit: `prompt_cache: off`, or `cache_mode: none` on the model.
 
 | Model IDs                                  | What a request sends                                                                          |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
@@ -211,13 +160,13 @@ Registration writes `explicit` on a new model whose ID is in the table, on OpenR
 
 A breakpoint is `{"type":"ephemeral"}`. `system` becomes a single text block that starts with the Tenant Cache Salt. The volatile part and media parts are never marked. Run-message catch-up and media-deferral steps narrow or clear the tools, which precede the cached prefix, so they carry no breakpoints. Request estimates always count the breakpoint framing, so turning caching on never changes a fitting or compaction decision.
 
-`prompt_cache: explicit` requires `projection_version: ordered` or `native` and a model that declares `cache_mode: explicit` for a listed ID. Registration, publication, installation and each inference check this pairing. An opt-in is never dropped silently, and no other route ever receives `cache_control`.
+`prompt_cache: explicit` requires a model that declares `cache_mode: explicit` for a listed ID. Registration, publication, installation and each inference check this pairing. An opt-in is never dropped silently, and no other route ever receives `cache_control`.
 
 Without markers, GPT-5.6 and later write through the last message of every request at 1.25× the input price and read only the start of the prefix. `cache_mode: none` sends explicit mode there too, which really turns caching off. A model that omits `cache_mode` keeps its implicit writes, so its stored bytes do not change.
 
 ### Staying on one provider
 
-Caches are local to a provider, so every step of an Ordered or Native Run sends `session_id`, and OpenRouter keeps the Run on one provider while it can. The value is `aidash-session-` followed by an HMAC of the Tenant and the Run under the Cache Salt Key, truncated to 128 bits. It reaches OpenRouter and its Broadcast destinations, so it names neither. The broker rejects any other form.
+Caches are local to a provider, so every Run step sends `session_id`, and OpenRouter keeps the Run on one provider while it can. The value is `aidash-session-` followed by an HMAC of the Tenant and the Run under the Cache Salt Key, truncated to 128 bits. It reaches OpenRouter and its Broadcast destinations, so it names neither. The broker rejects any other form.
 
 ### Costs to expect
 
@@ -229,8 +178,7 @@ The evidence is in [the route check](../operations/evidence/2026-11-07-prompt-ca
 
 ## Operations
 
-Register `ordered` Agent versions only after every worker and receiving peer
-that may run them is upgraded and configured with a Cache Salt Key; see
+Configure Cache Salt Keys on every executing Node. See
 [Worker activation](../operations/worker-activation.md). Cache-hit metrics come
 from the usage ledger (#177) and `aidash_model_tokens_total`; see
 [HTTP observability](../operations/http-observability.md).

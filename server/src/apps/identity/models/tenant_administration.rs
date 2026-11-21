@@ -658,13 +658,25 @@ impl TenantAdministrator {
 			}
 			AuthorizationDecision::append_many(tx, self.tenant(), &decisions).await?;
 			let label = super::Tenant::objects()
-				.filter(super::Tenant::field_name().eq(tenant))
+				.filter(super::Tenant::field_name().eq(tenant.as_str()))
 				.all_with_db(tx)
 				.await?
 				.pop()
 				.and_then(|root| root.label);
 
+			let model_call_usage = if self
+				.allowed(tx, &snapshot, rules::BUDGET_MANAGE, &tenant, json!({}))
+				.await?
+			{
+				Some(
+					crate::apps::execution::repositories::model_calls::tenant_usage(tx, &tenant)
+						.await?,
+				)
+			} else {
+				None
+			};
 			Ok(TenantAdministration {
+				model_call_usage,
 				label,
 				tenant: self.tenant().to_owned(),
 				actions,

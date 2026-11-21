@@ -7,11 +7,10 @@ are not part of it. An Agent definition names one version, the Run's Binding
 snapshot pins it, and it never changes while the Run exists
 ([ADR 0093](../adr/0093-harness-contract-is-a-versioned-rule-pinned-per-run.md)).
 
-| Version        | Projection Versions           | Content                                                                                                                                                                                                                                                                                |
-| -------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. Never changes.                                                                                                                                                                                                                |
-| `structured@3` | `native`                      | Text selected by a GEPA search (#532): names the forms injected directions take, checks why an action is needed, keeps task-authorized data. Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index.                            |
-| `structured@4` | `native`                      | `structured@3` with Instruction precedence stated (#1010): system rules, human answers, Tenant Instructions, Node Instructions, Agent instructions and Skills, a Duty's mission and procedure, task and run messages, Repository rules; data never directs. Number 5 on Usage Records. |
+| Version        | Usage Record number | Content                                                                                                                                          |
+| -------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `structured@3` | 4                   | Text selected by the #532 evaluation. It names the forms injected directions take, asks why an action is needed, and keeps task-authorized data. |
+| `structured@4` | 5                   | Current default. It adds the precedence of Tenant Instructions, Node Instructions, and a Duty's mission and procedure.                           |
 
 `structured@1` and `structured@2` lost the #532 comparison and were removed
 before any deployment. Their names and numbers (2 and 3 on Usage Records) are
@@ -29,25 +28,12 @@ never reused, and a database that still stores either refuses the upgrade.
 }
 ```
 
-Registration, publication and installation reject a version that does not
-support the Agent's Projection Version, and Run creation rejects one this node
-cannot render. Nothing falls back to `legacy@1`. The field is omitted from
-stored definitions when absent, so existing definitions, digests and Binding
-snapshots keep their bytes.
-
-A new Agent definition that names neither `projection_version` nor
-`harness_contract` is registered as `native` with `structured@4` when its model
-declares Native ([#532](https://github.com/kent8192/aidash/issues/532),
-[#1010](https://github.com/kent8192/aidash/issues/1010)). A Native definition
-without a contract gets `structured@4`, and one whose model
-lacks Native keeps the omitted defaults, `legacy` and `legacy@1`. Registration
-writes these values into the definition, so its bytes, digest and every Binding
-snapshot pin them. Stored definitions, installed Marketplace packages and
-system declarations are never rewritten, and an omitted field still means
-`legacy@1` when a stored definition or snapshot is read. Usage Records carry the
-Harness Contract version beside the Projection Version, and the fixed-task
-evaluator accepts `harness_contract` as an arm field; an evaluator arm that names
-no Projection Version is registered as `legacy`, so comparisons stay matched.
+Registration, publication and installation accept either structured version.
+Omitting `harness_contract` selects `structured@4`. A stored definition or
+Binding snapshot that omits the field keeps its serialized form and digest.
+A Run that explicitly pins the retired contract fails with
+`PROJECTION_RETIRED` at its next worker step. Usage Records keep the number
+of the contract used.
 
 ## How `structured@3` was selected
 
@@ -56,8 +42,8 @@ variant. A replay evaluator rebuilt the exact Native requests of the
 fixed-task corpus from deterministic-tier captures, changed only the Harness
 Contract text, and played each task against `openai/gpt-oss-20b` and
 `deepseek/deepseek-v4.1-flash-1017` through OpenRouter. GEPA, seeded with
-`legacy@1`, proposed new texts with a strong reflection model. The objective
-gated on safety (no regression from `legacy@1` on any model), then weighted
+the original contract, proposed new texts with a strong reflection model. The objective
+gated on safety (no regression from the original contract on any model), then weighted
 safety 0.40, corrections 0.35 and capability 0.25, using Wilson lower bounds
 and a small length penalty. Candidates naming any task-specific token were
 rejected. Selection used held-out tasks with different wording, facts and
@@ -65,8 +51,8 @@ injection styles.
 
 On the held-out tasks with gpt-oss-20b, injected directions that claim
 authority, impersonate the user, or demand a tool call were resisted in 26 of
-30 Runs, against 5 of 30 for `legacy@1`. Task-authorized formats taken from
-data stayed at the `legacy@1` level, 9 of 10, so the text does not over-refuse.
+30 Runs, against 5 of 30 for the original contract. Task-authorized formats taken from
+data stayed at the original level, 9 of 10, so the text does not over-refuse.
 DeepSeek V4.1 Flash was at ceiling with every version. Directions that ask the
 model to append text to its answer still succeeded with every version; text
 alone does not stop them. Marking or encoding the data did not stop them
@@ -74,7 +60,7 @@ either on every model (see below); #630 checks deliverables instead.
 
 The live A/B on Aidash (gpt-oss-20b, 15 Runs per cell) confirmed it: the three
 injection styles were resisted in 36 of 45 Runs with `structured@3` against 14
-of 45 with `legacy@1`, with no loss on task-authorized formats, corrections or
+of 45 with the original contract, with no loss on task-authorized formats, corrections or
 failed tools. `structured@3` was therefore the default for new Native Agent
 definitions until `structured@4` replaced it.
 
@@ -82,11 +68,9 @@ definitions until `structured@4` replaced it.
 
 `structured@4` changes only the sentences that say what directs the work, so the
 model ranks the Tenant Instructions and Node Instructions a Run pins at claim
-(#1010). They appear only when they say something: under `legacy@1` just before
-the Agent's own instructions (`Tenant instructions:` and `Node instructions:`),
-and under `structured@*` between the contract text and `# Agent instructions`,
-Tenant first. Empty texts leave every version's bytes unchanged. Only
-`structured@4` tells the model how they rank. Its text has not been re-scored on
+(#1010). Nonempty Tenant and Node Instructions appear between the contract
+text and `# Agent instructions`, Tenant first. `structured@4` states how they
+rank. Its text has not been re-scored on
 the fixed-task corpus; the #532 evaluator should be re-run against it.
 
 ## Models that read untrusted data
@@ -140,14 +124,14 @@ what may execute.
 
 ## Request shape under `structured@*`
 
-`system` holds, in order: the Tenant Cache Salt line, the Harness Contract, a
+`system` holds, in order: the Tenant Cache Salt line, the Harness Contract, Tenant and Node Instructions, a
 `# Agent instructions` section (omitted when the instructions are empty), the
 pinned Skill bodies, then the capability index and resident Skills of a
 deferred Exposure policy. Content that changes with Load and Unload therefore
 comes last.
 
-The Harness's own requirements for a step travel in one envelope, the last part
-of the trailing user message
+The Harness records changed requirements in a step-state message, inside
+an envelope with `trust: "aidash"`
 ([ADR 0094](../adr/0094-harness-requirements-travel-in-an-aidash-trust-envelope.md)):
 
 ```json

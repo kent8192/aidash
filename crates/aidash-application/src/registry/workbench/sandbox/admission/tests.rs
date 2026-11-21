@@ -597,7 +597,12 @@ impl ModelProvider for NeverInfer {
 	}
 }
 impl SandboxModels for Repository {
-	fn provider(&self, tenant: &str, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+	fn provider(
+		&self,
+		tenant: &str,
+		_: &EntityRef,
+		model: ModelConfig,
+	) -> Result<Arc<dyn ModelProvider>> {
 		assert_eq!(tenant, draft().tenant);
 		assert_eq!(model.model_id, "model");
 		let mut s = self.state.lock().unwrap();
@@ -673,10 +678,11 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 		admitted.session.scenario,
 		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect()).for_workbench_test(),"plugin_tools":{"servers":[],"findings":[]}})
 	);
-	let aidash_domain::provider::ModelContext::Legacy(context) = &admitted.job.request.context
+	let aidash_domain::provider::ModelContext::Native(context) = &admitted.job.request.context
 	else {
-		panic!("Legacy request context");
+		panic!("Native request context");
 	};
+	let context: Value = serde_json::from_str(&context.volatile).unwrap();
 	assert!(!context.as_object().unwrap().contains_key("conversation"));
 }
 #[tokio::test]
@@ -717,10 +723,11 @@ async fn continuation_reuses_only_the_matching_completed_conversation() {
 			json!({"role":"user","content":"current"})
 		]
 	);
-	let aidash_domain::provider::ModelContext::Legacy(context) = &admitted.job.request.context
+	let aidash_domain::provider::ModelContext::Native(context) = &admitted.job.request.context
 	else {
-		panic!("Legacy request context");
+		panic!("Native request context");
 	};
+	let context: Value = serde_json::from_str(&context.volatile).unwrap();
 	assert_eq!(
 		context["conversation"],
 		json!(admitted.job.initial_conversation)
@@ -1076,7 +1083,13 @@ async fn listing_reservation_does_not_charge_an_unavailable_warning_to_the_final
 	let admitted = admit(&repository.admission(), draft().id, request)
 		.await
 		.unwrap();
-	let final_bytes = serde_json::to_vec(&admitted.job.request).unwrap().len();
+	let final_bytes = admitted
+		.job
+		.request
+		.model_input_body()
+		.unwrap()
+		.to_string()
+		.len();
 	assert!(
 		!admitted
 			.job
@@ -1095,7 +1108,13 @@ async fn listing_reservation_does_not_charge_an_unavailable_warning_to_the_final
 		.await
 		.expect("the actual final request fits exactly within the input byte limit");
 	assert_eq!(
-		serde_json::to_vec(&admitted.job.request).unwrap().len(),
+		admitted
+			.job
+			.request
+			.model_input_body()
+			.unwrap()
+			.to_string()
+			.len(),
 		final_bytes
 	);
 	assert_eq!(sessions.listings().len(), 1);

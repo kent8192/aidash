@@ -25,6 +25,9 @@ pub(crate) struct TenantAdministration {
 	pub(crate) assignable_groups: BTreeSet<String>,
 	/// The policy revision a membership update must name.
 	pub(crate) policy_revision: Option<i64>,
+	/// Out-of-Run Model Calls, visible to holders of the Tenant Budget action.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub(crate) model_call_usage: Option<Vec<aidash_domain::model_call::UsageByPurpose>>,
 }
 
 #[derive(Serialize, JsonSchema)]

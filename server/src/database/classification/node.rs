@@ -131,6 +131,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		}
 		"core_operations" => Link("area_id", Area),
 		"core_runs" | "egress_run_revocations" | "stints" => Link("run_id", Run),
+		"model_calls" => Node("node"),
 		"delegations"
 		| "memory_task_participants"
 		| "generation_remote_intents" => Link("task_id", Task),

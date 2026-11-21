@@ -192,10 +192,9 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 		.received
 		.try_recv()
 		.expect("agent must reach inference");
-	let context: Value =
-		serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let context: Value = crate::native_request::captured_context(&body);
 	assert_eq!(
-		context["current"]["reference_documents"],
+		context["snapshot"]["reference_documents"],
 		json!([{"name":"chart.png"}])
 	);
 	let calls = count.load(Ordering::SeqCst);
@@ -236,7 +235,12 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			instructions: "",
 			tools: &tools,
 			max_output_tokens: 4096,
-			projection: &aidash_domain::context::RequestProjection::Legacy,
+			projection: &aidash_domain::context::RequestProjection::Native(
+				aidash_domain::projection::CacheScope {
+					tenant: String::new(),
+					key_version: 1,
+				},
+			),
 			estimate: Default::default(),
 		};
 		let private = json!({"reference_documents":input["documents"]});
@@ -349,13 +353,15 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 		.received
 		.try_recv()
 		.unwrap_or_else(|error| panic!("no inference ({error}): {}", diagnostic_state["runs"]));
-	let context: Value =
-		serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let context: Value = crate::native_request::captured_context(&body);
 	assert_eq!(
-		context["current"]["reference_documents"][0]["text"],
+		context["snapshot"]["reference_documents"][0]["text"],
 		expected_text
 	);
 	let instructions = body["messages"][0]["content"].as_str().unwrap();
 	assert!(instructions.contains("Use the provided reference documents."));
 	assert!(!instructions.contains("PRIVATE-REFERENCE-123"));
 }
+
+#[path = "../../execution/tests/support/native_request.rs"]
+mod native_request;

@@ -97,14 +97,10 @@ Compatible schema is retained on binary rollback. Before enabling incompatible
 future Run semantics, stop incompatible old workers; a notification is not a
 compatibility upgrade mechanism.
 
-Projection Versions are such semantics. A Run whose Agent definition selects the
-`ordered` Projection Version carries `projection_version` in its Binding snapshot,
-which workers built before #172 reject as an unknown field. Register Agent
-versions that select `ordered` only after every worker and every receiving peer
-that may execute them runs a #172 build with a Cache Salt Key configured
-(`docs/features/context-projection.md`). Legacy Runs are unaffected in mixed
-clusters. Rolling back below #172 while Ordered Runs exist stalls those Runs
-instead of rendering them differently.
+Native Run steps require a Cache Salt Key on the executing Node. A Node with
+`core.secret_key` derives a version 1 key by default. A stored Run with a
+retired rendering pin fails with `PROJECTION_RETIRED` on its next step.
+[Context Projection](../features/context-projection.md) describes key rotation.
 
 ### Persisted-state capabilities
 

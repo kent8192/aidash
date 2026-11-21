@@ -53,3 +53,7 @@ An unanswered human request stored on the Run's Node closes when the Run is canc
 stdio servers of Agent Plugins speak both the legacy era and MCP 2026-07-28, and support sampling and form elicitation exactly as remote servers do: the same Sampling approvals, Run grants and rules, cumulative waiting limits, one Inference Attempt per request and continuation ceiling.
 
 Since ADR 0073's amendment of 2026-11-14 removed the per-call freeze of writers, the modern-era wait no longer keeps the stdio server's process frozen. A modern-era human wait stops the stdio session and saves its Agent Plugin data; the answer starts the session again and sends the continuation, whose `requestState` carries the server's state. A legacy-era wait keeps the session and the worker lease, as before.
+
+## Amendment (2026-11-21, #1068)
+
+A sampling completion is now a Model Call of the Stint that holds the open tool call (ADR 0144). Its Inference Attempts belong to that Model Call, it is sent in the Native form, and it still counts against the Run's Budgets.

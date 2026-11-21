@@ -180,7 +180,7 @@ pub async fn validate_references(
 				reference.id
 			)));
 		}
-		validation.validate_in(&referenced, true)?;
+		validation.validate_stored(&referenced, true)?;
 		if entry.kind == "memory" && kind == "embedding" {
 			let provider: aidash_domain::memory::ProviderConfig =
 				serde_json::from_value(entry.config.clone())?;
@@ -362,13 +362,8 @@ pub async fn register_definition(
 ///
 /// - A model on an allowlisted OpenRouter route declares `explicit` caching
 ///   (ADR 0115).
-/// - An Agent on a model that declares Native gets Native with `structured@4`
-///   (#532, #1010). One that names a Projection Version keeps it, a Native one
-///   without a contract gets `structured@4`, and one whose model lacks Native keeps the
-///   omitted defaults (`legacy`, `legacy@1`).
-/// - A Native Agent on a structured contract gets `prompt_cache: explicit` when
-///   its model accepts breakpoints (ADR 0115). `legacy@1` appends per-turn text
-///   to `system`, which would end the cached prefix on those turns.
+/// - Agents use Native and default to the current structured Harness Contract.
+/// - On models that accept cache breakpoints, Agents default to explicit caching.
 pub async fn apply_definition_defaults(scope: &mut dyn DefinitionLookup, entry: &mut Entry) {
 	if !matches!(entry.kind.as_str(), "agent" | "model") || !entry.config.is_object() {
 		return;
@@ -413,28 +408,21 @@ pub async fn apply_definition_defaults(scope: &mut dyn DefinitionLookup, entry: 
 	let model = match model {
 		Some((id, version)) => match scope.definition(&id, &version).await {
 			Ok(model) if model.kind == "model" => {
-				serde_json::from_value::<aidash_domain::model::ModelConfig>(model.config).ok()
+				aidash_domain::model::ModelConfig::from_stored(model.config).ok()
 			}
 			_ => None,
 		},
 		None => None,
 	};
-	if entry.config.get("projection_version").is_none()
-		&& !stored_omits("projection_version")
-		&& model.as_ref().is_some_and(|config| {
-			config.supports_projection(aidash_domain::projection::ProjectionVersion::Native)
-		}) {
-		entry.config["projection_version"] = json!("native");
+	for (field, value) in [
+		("projection_version", "native"),
+		("harness_contract", "structured@4"),
+	] {
+		if entry.config.get(field).is_none() && !stored_omits(field) {
+			entry.config[field] = json!(value);
+		}
 	}
-	let native = entry.config.get("projection_version") == Some(&json!("native"));
-	if native && entry.config.get("harness_contract").is_none() && !stored_omits("harness_contract")
-	{
-		entry.config["harness_contract"] = json!("structured@4");
-	}
-	if native
-		&& entry.config.get("harness_contract") != Some(&json!("legacy@1"))
-		&& entry.config.get("harness_contract").is_some()
-		&& entry.config.get("prompt_cache").is_none()
+	if entry.config.get("prompt_cache").is_none()
 		&& !stored_omits("prompt_cache")
 		&& model
 			.as_ref()

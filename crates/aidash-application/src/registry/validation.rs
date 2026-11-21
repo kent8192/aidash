@@ -206,7 +206,7 @@ impl DefinitionValidation {
 	pub fn source_slot_available(&self, entry: &Entry) -> Result<bool> {
 		if entry.kind == "model" {
 			let model: aidash_domain::model::ModelConfig =
-				serde_json::from_value(entry.config.clone())?;
+				aidash_domain::model::ModelConfig::from_stored(entry.config.clone())?;
 			if model.provider_credential.is_some() && !self.provider_credentials_enabled {
 				return Ok(false);
 			}
@@ -244,6 +244,15 @@ impl DefinitionValidation {
 		specifications
 	}
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
+		self.validate_definition(e, local, false)
+	}
+
+	/// References to immutable definitions can contain fields retired since registration.
+	pub(super) fn validate_stored(&self, e: &Entry, local: bool) -> Result<()> {
+		self.validate_definition(e, local, true)
+	}
+
+	fn validate_definition(&self, e: &Entry, local: bool, stored: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
 			"external_service" => {
@@ -309,8 +318,12 @@ impl DefinitionValidation {
 					.map_err(|e| Error::Invalid(e.to_string()))?,
 			)?,
 			"model" => {
-				let m: ModelConfig = serde_json::from_value(e.config.clone())
-					.map_err(|e| Error::Invalid(e.to_string()))?;
+				let m: ModelConfig = if stored {
+					ModelConfig::from_stored(e.config.clone())?
+				} else {
+					serde_json::from_value(e.config.clone())
+						.map_err(|error| Error::Invalid(error.to_string()))?
+				};
 				// A plan model names `chatgpt`; every other model is an OpenRouter route.
 				let provider = if m.uses_plan_connection() {
 					"chatgpt"
@@ -334,7 +347,6 @@ impl DefinitionValidation {
 				}
 				m.request_timeout()?;
 				m.stream_stall_timeout()?;
-				m.validate_projection_versions()?;
 				m.validate_cache_mode()?;
 				m.validate_provider_route()?;
 				m.validate_wire_api()?;
@@ -380,6 +392,13 @@ impl DefinitionValidation {
 				let input: aidash_domain::registry::bindings::AgentBindings =
 					serde_json::from_value(e.config.clone())?;
 				input.validate()?;
+				if !stored {
+					aidash_domain::registry::execution_contract(
+						input.projection_version,
+						input.harness_contract,
+					)
+					.map_err(Error::Invalid)?;
+				}
 				self.validate_plugin_servers(&input)?;
 			}
 			"cluster" => {
@@ -564,16 +583,13 @@ impl DefinitionValidation {
 					&& d.identity.local() == config.model
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
-		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
-		let version = config.projection_version.unwrap_or_default();
-		let contract = config.harness_contract.unwrap_or_default();
-		if !contract.supports(version) {
-			return Err(Error::Invalid(format!(
-				"Harness Contract {contract} does not support Projection Version {version}"
-			)));
-		}
-		model.require_projection(version)?;
-		model.require_prompt_cache(config.prompt_cache.unwrap_or_default(), version)?;
+		let model = ModelConfig::from_stored(model.definition.config.clone())?;
+		let contract = aidash_domain::registry::execution_contract(
+			config.projection_version,
+			config.harness_contract,
+		)
+		.map_err(Error::ProjectionRetired)?;
+		model.require_prompt_cache(config.prompt_cache.unwrap_or_default())?;
 		if let Some(budgets) = config.exposure_policy().budgets() {
 			return self.deferred_headroom(
 				snapshot,
@@ -581,7 +597,7 @@ impl DefinitionValidation {
 				&model,
 				budgets,
 				private_context,
-				version,
+				contract,
 				standing,
 			);
 		}
@@ -616,7 +632,6 @@ impl DefinitionValidation {
 			.collect::<Vec<_>>();
 		let instructions = aidash_domain::harness_contract::system_text(
 			contract,
-			version,
 			standing,
 			&config.instructions,
 			&fragments,
@@ -628,8 +643,8 @@ impl DefinitionValidation {
 			&instructions,
 			&specifications,
 			private_context,
-			&registration_projection(version),
-			aidash_domain::provider::InputFormat::for_model(&model, version),
+			&registration_projection(),
+			aidash_domain::provider::InputFormat::for_model(&model),
 			// Registration measures the conservative byte estimate (ADR 0017).
 			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)
@@ -647,7 +662,7 @@ impl DefinitionValidation {
 		model: &ModelConfig,
 		budgets: &DeferredBudgets,
 		private_context: &Value,
-		version: aidash_domain::projection::ProjectionVersion,
+		contract: aidash_domain::harness_contract::HarnessContract,
 		standing: &aidash_domain::standing_instructions::StandingInstructions,
 	) -> Result<usize> {
 		let node = self.node_specifications();
@@ -709,8 +724,7 @@ impl DefinitionValidation {
 			.map(|(slot, text)| (*slot, text.as_str()))
 			.collect::<Vec<_>>();
 		let instructions = aidash_domain::harness_contract::system_text(
-			config.harness_contract.unwrap_or_default(),
-			version,
+			contract,
 			standing,
 			&config.instructions,
 			&fragments,
@@ -734,8 +748,8 @@ impl DefinitionValidation {
 			&instructions,
 			&exposed,
 			private_context,
-			&registration_projection(version),
-			aidash_domain::provider::InputFormat::for_model(model, version),
+			&registration_projection(),
+			aidash_domain::provider::InputFormat::for_model(model),
 			// Registration measures the conservative byte estimate (ADR 0017).
 			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)?
@@ -750,21 +764,12 @@ impl DefinitionValidation {
 	}
 }
 
-/// The request shape Run creation will use for `version`. The Cache Scope's
-/// values do not affect the estimate; only its presence reserves the salt line.
-fn registration_projection(
-	version: aidash_domain::projection::ProjectionVersion,
-) -> aidash_domain::context::RequestProjection {
-	use aidash_domain::{context::RequestProjection, projection::ProjectionVersion};
-	let scope = aidash_domain::projection::CacheScope {
+/// Only the presence of the Cache Scope affects the registration estimate.
+fn registration_projection() -> aidash_domain::context::RequestProjection {
+	aidash_domain::context::RequestProjection::Native(aidash_domain::projection::CacheScope {
 		tenant: String::new(),
 		key_version: 0,
-	};
-	match version {
-		ProjectionVersion::Legacy => RequestProjection::Legacy,
-		ProjectionVersion::Ordered => RequestProjection::Ordered(scope),
-		ProjectionVersion::Native => RequestProjection::Native(scope),
-	}
+	})
 }
 
 /// The Node's Decision Provider: Jev through OpenRouter's System One API with

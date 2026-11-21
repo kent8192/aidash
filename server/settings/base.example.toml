@@ -258,7 +258,7 @@ enabled = false
 # [research_providers]
 # page_reading = true
 
-# Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
+# Tenant Cache Salt Keys for Native Runs (ADR 0016). Without
 # keys this node derives one from `core.secret_key` (ADR 0115). Rotate by adding
 # a key version and changing `current`.
 # [cache_salt]

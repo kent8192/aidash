@@ -53,10 +53,7 @@ pub struct ExecutionAgent {
 	pub context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
 	/// The Run Tool Parallelism ceiling pinned with the Binding snapshot.
 	pub tool_parallelism: usize,
-	/// Pinned through the Run's Binding snapshot; Legacy when the definition
-	/// names none.
-	pub projection_version: aidash_domain::projection::ProjectionVersion,
-	/// Pinned through the Run's Binding snapshot; `legacy@1` when the
+	/// Pinned through the Run's Binding snapshot; `structured@4` when the
 	/// definition names none.
 	pub harness_contract: aidash_domain::harness_contract::HarnessContract,
 	/// Pinned through the Run's Binding snapshot; `off` when the definition
@@ -353,6 +350,16 @@ pub trait ExecutionStore: Send + Sync {
 		attempt: Uuid,
 		outcome: &UsageOutcome,
 	) -> Result<()>;
+	/// Settle both the provider facts and the outcome of an auxiliary call.
+	async fn complete_model_call(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		usage: &UsageOutcome,
+		_outcome: aidash_domain::model_call::Outcome,
+	) -> Result<()> {
+		self.complete_usage_record(run, attempt, usage).await
+	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool>;
 	/// Original Context Journal entries with `from <= seq <= through`, in order.
 	async fn context_journal(
@@ -801,7 +808,7 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// cache the request may share and the current Cache Salt Key version. Fails
 	/// with a typed error when the node has no Cache Salt Key; never unsalted.
 	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope>;
-	/// Authority scope and source revisions of an Ordered Retrieval Key. Cheap
+	/// Authority scope and source revisions of a Retrieval Key. Cheap
 	/// reads only; a remote Run reports its admission values.
 	async fn retrieval_scope(
 		&self,

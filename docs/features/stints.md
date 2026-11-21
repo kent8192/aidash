@@ -24,8 +24,27 @@ opens and ends them for every writer, so no code path can skip one, and at most
 one Stint per Run is open. A Stint also records the last worker lease
 (`lease_owner`, the holder's claim token) and how many times another worker took
 the lease over (`lease_recoveries`). A paused Run that is cancelled opens no
-Stint: its cancellation is delivered without the Agent. Each inference attempt
-records the Stint it ran in, so cost per awake stretch is visible.
+Stint: its cancellation is delivered without the Agent. Each Run-step
+Inference Attempt records its Stint, making cost per awake stretch visible.
+
+## Model Calls
+
+A Model Call records a request for a compaction summary, a memory role, a
+Workbench test, a media admission check or an MCP sample
+([ADR 0144](../adr/0144-native-is-the-only-projection-version-and-model-requests-outside-run-steps-are-model-calls.md)).
+The request uses Native model input. The record contains the model version, a
+SHA-256 digest of its canonical input, the outcome, reported usage and cost,
+and the start and end times. Prompt and response contents are excluded from the record.
+
+An awake execution's Stint owns its Model Calls. Other work belongs to its
+Tenant and Node. Workbench tests use the Tenant's default Node. Memory retries
+of the same request have separate Usage Records under the original Model
+Call. MCP sampling keeps its Run Budget attribution. A media admission check
+measures a proposed request locally and has no provider usage.
+
+`GET /api/executions/{id}` returns each Stint with its `model_calls` array.
+`GET /api/tenants/{tenant}/administration` returns `model_call_usage` by
+purpose for callers who can manage the Tenant's Budgets.
 
 ## What stays with the Task
 

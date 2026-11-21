@@ -272,7 +272,6 @@ impl Cloud {
 			modalities: vec!["text".into(), "image".into()],
 			media_routes: vec![],
 			cost: json!({}),
-			projection_versions: vec![],
 			cache_mode: None,
 			request_estimator: None,
 			provider_route: None,

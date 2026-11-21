@@ -194,7 +194,6 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			modalities: vec!["text".into()],
 			media_routes: vec![],
 			cost: json!({}),
-			projection_versions: vec![],
 			cache_mode: None,
 			request_estimator: None,
 			provider_route: None,

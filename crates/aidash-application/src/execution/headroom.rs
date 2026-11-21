@@ -74,7 +74,7 @@ pub async fn media_routes(scope: &dyn Definitions, run: &RunMetadata) -> Result<
 		.ok_or(crate::Error::Forbidden)?
 		.definition
 		.clone();
-	let model: ModelConfig = serde_json::from_value(entry.config)?;
+	let model: ModelConfig = ModelConfig::from_stored(entry.config)?;
 	let mut routes = model.current_media_input_routes();
 	for route in &mut routes {
 		if route.iter().any(|mime| mime == "audio/wav") {

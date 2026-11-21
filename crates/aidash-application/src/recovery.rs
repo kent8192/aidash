@@ -102,6 +102,7 @@ pub enum ExecutionFailure {
 		status: Option<u16>,
 		message: String,
 	},
+	ProjectionRetired(String),
 	Other(String),
 }
 impl ExecutionFailure {
@@ -130,6 +131,7 @@ impl ExecutionFailure {
 			| Self::Budget { message, .. }
 			| Self::Inference { message, .. }
 			| Self::Other(message) => message.clone(),
+			Self::ProjectionRetired(reason) => format!("PROJECTION_RETIRED: {reason}"),
 			Self::Deferred => "execution state is temporarily unavailable".into(),
 			Self::DatabaseUnavailable => "the database is temporarily unavailable".into(),
 			Self::ToolRetry { message, .. } => message.clone(),

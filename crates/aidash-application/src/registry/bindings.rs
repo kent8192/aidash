@@ -339,7 +339,7 @@ pub async fn resolve(
 					})
 					.ok_or_else(|| Error::Invalid("missing Agent model".into()))?;
 				let model: aidash_domain::model::ModelConfig =
-					serde_json::from_value(model.config.clone())?;
+					aidash_domain::model::ModelConfig::from_stored(model.config.clone())?;
 				tool.eligible(&model)?;
 				// Mutable Tenant/delegation policy is reloaded at each send, never pinned here.
 			}

@@ -1,4 +1,4 @@
-//! Bounded source reads survive recovery of one inference boundary. An Ordered
+//! Bounded source reads survive recovery of one inference boundary. A
 //! Run keys its semantic read by a Retrieval Key and its Skill context by the
 //! Skill record revision, so later steps reuse identical bytes.
 use crate::{Error, Result, registry::rules::digest, semantic::InputRead};
@@ -15,7 +15,7 @@ pub struct SourceObservation {
 	pub binding_digest: String,
 	pub content: Value,
 	pub digest: String,
-	/// Ordered only: the Skill context, cached apart from the semantic read.
+	/// The Skill context, cached apart from the semantic read.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub skill: Option<SkillObservation>,
 }
@@ -111,7 +111,7 @@ pub struct RetrievalScope {
 	pub corpus_digest: Option<String>,
 }
 
-/// Everything an Ordered semantic read depends on. Equal keys must yield the
+/// Everything a semantic read depends on. Equal keys must yield the
 /// same retrieval bytes, so the key never contains the Run step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,9 +162,9 @@ impl RetrievalKey {
 	}
 }
 
-/// The Run-fixed semantic budget of an Ordered request, in bytes. The caller
-/// caps it by the request's remaining headroom, as Legacy does.
-pub fn ordered_semantic_budget(window: usize, max_output_tokens: u32) -> usize {
+/// The Run-fixed semantic budget of a Run step, in bytes. The caller
+/// caps it by the request's remaining headroom.
+pub fn semantic_retrieval_budget(window: usize, max_output_tokens: u32) -> usize {
 	window.saturating_sub(max_output_tokens as usize) / 8
 }
 

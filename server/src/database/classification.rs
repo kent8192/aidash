@@ -194,6 +194,7 @@ pub const TABLES: &[Table] = &[
 	table("execution", "inference_attempts", TenantOwned),
 	table("execution", "inference_progress", TenantOwned),
 	table("execution", "inference_usage", TenantOwned),
+	table("execution", "model_calls", TenantOwned),
 	table("execution", "invocations", TenantOwned),
 	// recorded ends of Research account holders' agreements (ADR 0058)
 	table("execution", "run_activations", TenantOwned),

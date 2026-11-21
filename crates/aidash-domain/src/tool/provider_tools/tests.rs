@@ -57,17 +57,13 @@ fn provider_activity_growth_covers_every_replay(#[case] activity: Value) {
 	let mut after = before.clone();
 	after.push(event.clone());
 	let reserved = crate::context::tool_event_growth(&before, &event);
-	for native in [false, true] {
+	{
 		for input_format in [InputFormat::Chat, InputFormat::Responses] {
 			let request = |context: &Context| ModelRequest {
-				context: if native {
-					ModelContext::Native(crate::projection::native::native_context(
-						context,
-						&Value::Null,
-					))
-				} else {
-					context.model_view(&Value::Null).into()
-				},
+				context: ModelContext::Native(crate::projection::native::native_context(
+					context,
+					&Value::Null,
+				)),
 				input_format,
 				..Default::default()
 			};
@@ -76,7 +72,7 @@ fn provider_activity_growth_covers_every_replay(#[case] activity: Value) {
 				.saturating_sub(request(&before).estimated_total_tokens());
 			assert!(
 				reserved >= actual,
-				"reserved {reserved}, actual {actual}, native {native}, {input_format:?}"
+				"reserved {reserved}, actual {actual}, {input_format:?}"
 			);
 		}
 	}

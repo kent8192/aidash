@@ -543,6 +543,9 @@ impl HarnessManagement {
 		let principal = lease.principal();
 		let limit = f.run_message_limit(&run).await?;
 		let mut lease = lease.into_native().await?;
+		use crate::apps::execution::repositories::model_calls;
+		use aidash_domain::model_call::{Dispatch, Outcome, Purpose};
+		let mut refused = None;
 		let result = async {
 			let (existing, record) = crate::apps::execution::models::RunInput::admit_media(
 				lease.tx(),
@@ -578,15 +581,10 @@ impl HarnessManagement {
 				.registry
 				.get_for_run(&tenant, &run, &agent.model.id, &agent.model.version)
 				.await?;
-			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
+			let model: crate::registry::ModelConfig =
+				crate::registry::ModelConfig::from_stored(model.config)?;
 			let headroom = f.run_request_headroom(&run).await?;
-			let version = agent.projection_version.unwrap_or_default();
-			if !agent.harness_contract.unwrap_or_default().supports(version) {
-				return Err(Error::Invalid(format!(
-					"Harness Contract {} does not support Projection Version {version}",
-					agent.harness_contract.unwrap_or_default()
-				)));
-			}
+			let version = aidash_domain::projection::ProjectionVersion::Native;
 			let batch = aidash_application::execution::media::load(
 				&mut crate::apps::workspaces::repositories::media::ScopedMedia {
 					access: lease.access_mut(),
@@ -620,16 +618,41 @@ impl HarnessManagement {
 			let parts = batch.parts;
 			let request = aidash_application::execution::media::admission_request(
 				&model,
-				version,
 				json!({"run_message":input.content}),
 				parts,
 			);
-			request.validate()?;
-			crate::generation::budget::Reservation::check_request(headroom, &request)?;
-			Ok(())
+			let dispatch = Dispatch::new(Purpose::MediaCheck, &request)?;
+			let owner = model_calls::Attribution::for_run(lease.tx(), id).await?;
+			let attempt = Uuid::new_v4();
+			let model = agent.model;
+			let checked = (|| -> Result<()> {
+				request.validate()?;
+				crate::generation::budget::Reservation::check_request(headroom, &request)?;
+				Ok(())
+			})();
+			if let Err(error) = checked {
+				refused = Some((attempt, owner, model, dispatch));
+				return Err(error);
+			}
+			model_calls::start(lease.tx(), attempt, &owner, &model, &dispatch).await?;
+			model_calls::finish(lease.tx(), attempt, Outcome::Accepted, None).await
 		}
 		.await;
-		lease.finish(result).await?;
+		let finished = lease.finish(result).await;
+		// Preserve the refusal while rolling back the input and attachment rows.
+		if let Some((attempt, owner, model, dispatch)) = refused {
+			f.store
+				.control_pool
+				.atomic(
+					&aidash_application::tenancy::TenancyScope::tenant(&owner.tenant)?,
+					async |tx| {
+						model_calls::start(tx, attempt, &owner, &model, &dispatch).await?;
+						model_calls::finish(tx, attempt, Outcome::Refused, None).await
+					},
+				)
+				.await?;
+		}
+		finished?;
 		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
 	}

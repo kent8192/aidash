@@ -12,7 +12,7 @@ use aidash_domain::{
 	projection::ProjectionVersion,
 	provider::{ContentPart, InputFormat, ModelContext, ModelRequest},
 };
-use serde_json::json;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -107,23 +107,14 @@ pub fn route_selected_renditions(
 	None
 }
 /// Conservative media pre-admission in the selected provider input shape.
-/// Native plan labels use the same provenance envelopes as the final request.
-/// Other routes retain their established Chat probe for compatibility.
+/// Native labels use the same provenance envelopes as the final request.
 pub fn admission_request(
 	model: &ModelConfig,
-	projection: ProjectionVersion,
 	context: serde_json::Value,
 	content_parts: Vec<ContentPart>,
 ) -> ModelRequest {
-	let input_format = InputFormat::for_model(model, projection);
-	let context = if input_format == InputFormat::Responses {
-		ModelContext::Native(aidash_domain::projection::native::native_context(
-			&Default::default(),
-			&context,
-		))
-	} else {
-		context.into()
-	};
+	let input_format = InputFormat::for_model(model);
+	let context = ModelContext::native_data(&context);
 	ModelRequest {
 		context,
 		content_parts,
@@ -132,6 +123,24 @@ pub fn admission_request(
 	}
 }
 
+/// Budget Native media with the same wire framing as a Run request.
+pub(super) fn run_media_budget_request(
+	model: &ModelConfig,
+	_projection: ProjectionVersion,
+	content_parts: Vec<ContentPart>,
+) -> ModelRequest {
+	let input_format = InputFormat::for_model(model);
+	let context = ModelContext::Native(aidash_domain::projection::native::native_context(
+		&Default::default(),
+		&Value::Null,
+	));
+	ModelRequest {
+		input_format,
+		context,
+		content_parts,
+		..Default::default()
+	}
+}
 pub async fn authorized<S: AuthorizedMediaScope + ?Sized>(
 	scope: &mut S,
 	thread: Uuid,
@@ -155,7 +164,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 	let mut accepted: Vec<(i64, crate::ports::execution::media::MediaAttachment)> = Vec::new();
 	let mut through_seq = None;
 	let mut has_more = false;
-	let request = admission_request(model, projection, json!({}), Vec::new());
+	let request = run_media_budget_request(model, projection, Vec::new());
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(thread, *id).await?;
 		let message_bytes = attachments

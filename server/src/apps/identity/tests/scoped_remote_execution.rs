@@ -218,7 +218,7 @@ impl Pair {
 			federation: self.b.clone(),
 		};
 		// One step can include many separately bounded peer/provider calls: a
-		// single Remote Ordered `worker_once` served 20-59 peer responses in
+		// single remote semantic retrieval `worker_once` served 20-59 peer responses in
 		// 8-36s on a loaded host, and coverage instrumentation on hosted
 		// runners stretches that past any fixed wall-clock bound. Bound the
 		// step by served work instead, as `ScopedWorkerProcess::until` does,
@@ -336,8 +336,9 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 		.unwrap();
 	let mut store = aidash_server::store::Store::from_pool(pool, f.config.deployment.clone())
 		.await
-		.unwrap();
-	// A restarted node keeps its Deployment's egress and permitted Keyless origins.
+		.unwrap()
+		.with_cache_salt(f.store.cache_salt.clone());
+	// A restarted Node keeps its Deployment's network and Cache Salt configuration.
 	store.egress = f.store.egress.clone();
 	store.keyless = f.store.keyless.clone();
 	f.registry = aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment)
@@ -362,13 +363,13 @@ mod scoped_pair_composition {
 		#[default(false)] approval: bool,
 		#[default(false)] native: bool,
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
-		#[default(false)] ordered: bool,
+		#[default(false)] retrieval: bool,
 		#[default(false)] tenant_embedding: bool,
 		#[default(false)] media: bool,
 		#[default(true)] activate: bool,
 		#[future(awt)]
 		#[from(scoped_infrastructure)]
-		#[with(native, ordered)]
+		#[with(native)]
 		infrastructure: ScopedInfrastructure,
 	) -> Pair {
 		let ScopedInfrastructure {
@@ -509,8 +510,8 @@ mod scoped_pair_composition {
 		} else {
 			None
 		};
-		if ordered {
-			ordered_receiver_agent(
+		if retrieval {
+			retrieval_receiver_agent(
 				&a,
 				&b,
 				&aa,
@@ -528,7 +529,7 @@ mod scoped_pair_composition {
 			media_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
 		}
 		let agent = generation.as_ref().map_or_else(
-			|| json!({"id":if media { "research-media" } else if ordered { "research-ordered" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
+			|| json!({"id":if media { "research-media" } else if retrieval { "research-retrieval" } else if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
 			|(_, prepared)| prepared["agent"].clone(),
 		);
 		let grant = Uuid::new_v4();
@@ -548,7 +549,7 @@ mod scoped_pair_composition {
 				&token,
 				"POST",
 				&format!("/api/tasks/{task}/remote-grants"),
-				json!({"id":grant,"node_id":node_of(&b),"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
+				json!({"id":grant,"node_id":node_of(&b),"agent":agent,"ttl_seconds":if large_native_journal || retrieval {3600} else {300},"semantic":mode}),
 			)
 			.await;
 			assert_eq!(status, 200, "{prepared}");
@@ -1033,10 +1034,10 @@ async fn media_receiver_agent(
 		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 }
 
-/// A receiver Agent on the Ordered Projection Version, approved on both nodes.
+/// A receiver Agent with a semantic retrieval source, approved on both nodes.
 /// It copies the receiver's base Agent, so it keeps the Home semantic
 /// memory binding when the fixture has one.
-async fn ordered_receiver_agent(
+async fn retrieval_receiver_agent(
 	a: &Federation,
 	b: &Federation,
 	aa: &common::TestApplication,
@@ -1064,12 +1065,12 @@ async fn ordered_receiver_agent(
 		entry
 	};
 	let mut model = fetch("model").await;
-	model["id"] = json!("ordered-model");
-	model["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	model["id"] = json!("retrieval-model");
+
 	let mut agent = fetch(base_agent).await;
-	agent["id"] = json!("research-ordered");
-	agent["config"]["model"] = reference("ordered-model");
-	agent["config"]["projection_version"] = json!("ordered");
+	agent["id"] = json!("research-retrieval");
+	agent["config"]["model"] = reference("retrieval-model");
+	agent["config"]["projection_version"] = json!("native");
 	for entry in [model, agent] {
 		let id = entry["id"].as_str().unwrap().to_owned();
 		let (status, body) = request(ba, &receiver_token, "POST", "/api/registry", entry).await;
@@ -1084,7 +1085,7 @@ async fn ordered_receiver_agent(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let subject = aidash_domain::agent_subject(&node_of(b), "research-ordered", "1.0.0");
+	let subject = aidash_domain::agent_subject(&node_of(b), "research-retrieval", "1.0.0");
 	for (runtime, app) in [(b, ba), (a, aa)] {
 		let (_, mut policy) = request(
 			app,
@@ -1620,9 +1621,8 @@ async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
 	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
 	let requests = p.requests.lock().await;
 	assert_eq!(requests.len(), 1, "{run:?}");
-	let context: Value =
-		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
-	let semantic = &context["current"]["semantic_memory"];
+	let context: Value = crate::common::captured_context(&requests[0]);
+	let semantic = &context["snapshot"]["semantic_memory"];
 	assert_eq!(semantic["home_node"], node_of(&p.a), "{context}");
 	let encoded = serde_json::to_string(semantic).unwrap();
 	assert!(encoded.contains("ochre falcon"));
@@ -1672,9 +1672,8 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	assert_eq!(requests.len(), 1, "{run:?}");
 	// Whether memory_mutate is offered is no longer this test's concern: it is a candidate a
 	// remote Run may be offered, and the Federation tool lists decide each call (ADR 0139).
-	let context: Value =
-		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
-	let semantic = &context["current"]["semantic_memory"];
+	let context: Value = crate::common::captured_context(&requests[0]);
+	let semantic = &context["snapshot"]["semantic_memory"];
 	assert_eq!(semantic["home_node"], node_of(&p.a), "{context}");
 	assert_eq!(
 		semantic["executor"],
@@ -1828,15 +1827,10 @@ async fn advance_semantic_retry(p: &Pair) {
 	.await
 	.unwrap();
 }
-/// The `semantic_memory` an Ordered model request carried in its volatile part.
-async fn ordered_semantic_memory(p: &Pair, request: usize) -> Value {
+/// The `semantic_memory` a Native model request carried in its current step.
+async fn request_semantic_memory(p: &Pair, request: usize) -> Value {
 	let requests = p.requests.lock().await;
-	let parts = requests[request - 1]["messages"][1]["content"]
-		.as_array()
-		.expect("an Ordered request")
-		.clone();
-	let volatile: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
-	volatile["semantic_memory"].clone()
+	common::captured_context(&requests[request - 1])["snapshot"]["semantic_memory"].clone()
 }
 /// Home embedding calls so far, failed ones included.
 async fn home_embeddings(p: &Pair) -> usize {
@@ -1848,9 +1842,9 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 		.contains(text)
 }
 
-/// A remote Ordered Run reuses its Home retrieval while the Home corpus is
+/// A remote Run reuses its Home retrieval while the Home corpus is
 /// unchanged and retrieves again after an entry is inserted or edited, as a
-/// local Ordered Run does. The receiver sees the change in the corpus digest
+/// local Run does. The receiver sees the change in the corpus digest
 /// and retrieves before it infers.
 ///
 /// The edited entry is one this executor never received: editing a disclosed
@@ -1858,7 +1852,7 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 /// `consumed_home_semantic_revision_blocks_next_remote_inference`).
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
+async fn remote_run_retrieves_again_after_the_home_corpus_changes(
 	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -2012,11 +2006,11 @@ async fn home_corpus_digests(p: &Pair) -> Vec<Option<String>> {
 	.unwrap()
 }
 
-/// A remote Ordered Run with an unchanged Home corpus retrieves once. Each
+/// A remote Run with an unchanged Home corpus retrieves once. Each
 /// later step cites that retrieval's operation, and the Home admits it (#222).
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_ordered_run_reuses_one_retrieval_across_steps(
+async fn remote_run_reuses_one_retrieval_across_steps(
 	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -2046,7 +2040,7 @@ async fn remote_ordered_run_reuses_one_retrieval_across_steps(
 /// the stale reuse, and the Run retrieves once more instead of pausing.
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
+async fn remote_run_retrieves_again_when_the_home_corpus_changed(
 	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -2073,7 +2067,7 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 	p.close().await;
 }
 
-/// Issue #236: a remote Ordered Run keeps reusing its Home retrieval through an
+/// Issue #236: a remote Run keeps reusing its Home retrieval through an
 /// outage of the Home embedding provider while its Retrieval Key holds. A Run
 /// message changes the key's query inputs; a pending entry changes its Home
 /// corpus digest. Only a step that needs a new retrieval follows the outage
@@ -2083,7 +2077,7 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 #[case::run_message(false)]
 #[case::pending_index(true)]
 #[tokio::test]
-async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+async fn remote_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
 	#[case] pending_entry: bool,
 	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
@@ -2096,7 +2090,7 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 	// Arrange: the first step retrieves while the Home provider is healthy.
 	step_to_model_request(&p, 1).await;
 	assert_eq!(remote_retrievals(&p).await, 1);
-	let retrieved = ordered_semantic_memory(&p, 1).await;
+	let retrieved = request_semantic_memory(&p, 1).await;
 	assert!(!retrieved.is_null(), "step 1 carries semantic context");
 
 	// Act: the Home provider goes down; the next steps keep the same key.
@@ -2106,7 +2100,7 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 		step_to_model_request(&p, step).await;
 		// Assert: the reuse reaches inference with the same bytes, untouched.
 		assert_eq!(
-			ordered_semantic_memory(&p, step).await,
+			request_semantic_memory(&p, step).await,
 			retrieved,
 			"step {step}"
 		);
@@ -2196,8 +2190,8 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 	step_to_model_request(&p, 5).await;
 	assert_eq!(remote_retrievals(&p).await, 2, "step 5 reuses step 4");
 	assert_eq!(
-		ordered_semantic_memory(&p, 5).await,
-		ordered_semantic_memory(&p, 4).await
+		request_semantic_memory(&p, 5).await,
+		request_semantic_memory(&p, 4).await
 	);
 	p.close().await;
 }
@@ -2208,7 +2202,7 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 #[case::grant_revoked("revoked", Some("authority"))]
 #[case::consumed_source_edited("edited", Some("invalidated"))]
 #[tokio::test]
-async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
+async fn remote_reuse_stops_after_revocation_or_a_consumed_source_edit(
 	#[case] fault: &str,
 	#[case] reason: Option<&str>,
 	#[with(true, false, false, false, (false, false, 32), true)]
@@ -2553,15 +2547,14 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 	p.step().await;
 	let requests = p.requests.lock().await;
 	assert_eq!(requests.len(), 1, "{:?}", p.run().await);
-	let body: Value =
-		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let body: Value = crate::common::captured_context(&requests[0]);
 	assert!(
-		body["current"]["semantic_memory"]
+		body["snapshot"]["semantic_memory"]
 			.to_string()
 			.contains("cobalt raven")
 	);
 	assert_eq!(
-		body["current"]["semantic_memory"]["sources"]
+		body["snapshot"]["semantic_memory"]["sources"]
 			.as_array()
 			.unwrap()
 			.len(),
@@ -6145,10 +6138,9 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 	}
 	let requests = pair.requests.lock().await;
 	assert_eq!(requests.len(), 1, "{:?}", pair.run().await);
-	let input: Value =
-		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let input: Value = crate::common::captured_context(&requests[0]);
 	assert!(
-		input["current"]["semantic_memory"]
+		input["snapshot"]["semantic_memory"]
 			.to_string()
 			.contains("ochre falcon")
 	);
@@ -8202,7 +8194,6 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
 fn scoped_runtime(
 	#[default(false)] native: bool,
 	#[default("aidash://execution-test")] node: &str,
-	#[default(false)] ordered: bool,
 	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
 	#[from(recovery_directory)] directory: Arc<tempfile::TempDir>,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
@@ -8214,19 +8205,6 @@ fn scoped_runtime(
 		f.config.deployment = node.clone();
 		f.store.deployment = node.clone();
 		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
-		if ordered {
-			// A node without Cache Salt Keys creates only Legacy Runs.
-			f.store = f.store.clone().with_cache_salt(Some(
-				aidash_integrations::inference::CacheSaltKeys::new(
-					&[aidash_integrations::inference::CacheSaltKey {
-						version: 1,
-						secret: "fixture-cache-salt-secret".into(),
-					}],
-					1,
-				)
-				.unwrap(),
-			));
-		}
 		if native {
 			f.store = aidash_server::semantic::services::memory_recovery::initialize(
 				&f.store,
@@ -8340,11 +8318,10 @@ type ScopedApplicationFuture = futures_util::future::Shared<BoxFuture<'static, S
 fn scoped_application(
 	#[default(false)] _native: bool,
 	#[default("aidash://execution-test")] _node: &str,
-	#[default(false)] _ordered: bool,
 	#[from(recovery_directory)] directory: Arc<tempfile::TempDir>,
 	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
 	#[from(scoped_runtime)]
-	#[with(_native,_node,_ordered,listener.clone(),directory.clone())]
+	#[with(_native,_node,listener.clone(),directory.clone())]
 	runtime: common::RuntimeFuture,
 	#[from(common::native_application)]
 	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),runtime.clone())]
@@ -8467,10 +8444,9 @@ mod scoped_peer_composition {
 	pub(super) fn scoped_peer(
 		#[default(false)] _native: bool,
 		#[default("aidash://execution-test")] _node: &str,
-		#[default(false)] _ordered: bool,
 		#[default(RouterObservers::default())] _observers: RouterObservers,
 		#[from(scoped_application)]
-		#[with(_native, _node, _ordered)]
+		#[with(_native, _node)]
 		application: ScopedApplicationFuture,
 		#[from(scoped_router)]
 		#[with(application.clone(),_observers.clone())]
@@ -8494,15 +8470,14 @@ mod scoped_peer_composition {
 	#[rstest::fixture]
 	pub(super) fn scoped_infrastructure(
 		#[default(false)] _native: bool,
-		#[default(false)] _ordered: bool,
 		scoped_model: BoxFuture<'static, ScopedModel>,
 		#[from(reply_state)] drop_reply: Arc<Mutex<Option<String>>>,
 		#[from(peer_activity)] peers: Arc<PeerActivity>,
 		#[from(scoped_peer)]
-		#[with(_native,"aidash://execution-test",false,RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
+		#[with(_native,"aidash://execution-test",RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
 		source: BoxFuture<'static, ScopedPeer>,
 		#[from(scoped_peer)]
-		#[with(_native,"aidash://scoped-receiver",_ordered,RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
+		#[with(_native,"aidash://scoped-receiver",RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
 		receiver: BoxFuture<'static, ScopedPeer>,
 		embedding_provider: BoxFuture<'static, EmbeddingProvider>,
 	) -> BoxFuture<'static, ScopedInfrastructure> {

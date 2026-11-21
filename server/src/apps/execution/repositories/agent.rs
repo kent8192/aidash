@@ -514,6 +514,18 @@ impl ExecutionStore for RunStore {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn complete_model_call(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		usage: &UsageOutcome,
+		outcome: aidash_domain::model_call::Outcome,
+	) -> Result<()> {
+		self.store
+			.complete_model_call(&self.scope, run, attempt, usage, outcome)
+			.await
+			.map_err(Into::into)
+	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		Store::run_message_has_media(&self.store, &self.scope, messages)
 			.await
@@ -1420,8 +1432,11 @@ impl ExecutionEnvironment for Environment<'_> {
 			conversation_memory: config.conversation_memory,
 			context_policy: config.context_policy,
 			tool_parallelism: usize::from(config.tool_parallelism),
-			projection_version: config.projection_version.unwrap_or_default(),
-			harness_contract: config.harness_contract.unwrap_or_default(),
+			harness_contract: aidash_domain::registry::execution_contract(
+				config.projection_version,
+				config.harness_contract,
+			)
+			.map_err(aidash_application::Error::ProjectionRetired)?,
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
 			completion: config.completion,
 		})
@@ -1430,7 +1445,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		Some(&self.federation.store.tool_slots)
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
-		// Carries this node's Cache Salt Keys for salted Projection Versions.
+		// Carries this node's Cache Salt Keys for Native Runs.
 		// The Provider Credential pin is read in the step's own Tenant scope
 		// (#521); without an admitted authority no Tenant is usable.
 		crate::bootstrap::admitted_model_provider(
@@ -1714,7 +1729,7 @@ impl ExecutionEnvironment for Environment<'_> {
 	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope> {
 		let keys = self.federation.store.cache_salt.as_ref().ok_or_else(|| {
 			aidash_application::Error::Invalid(
-				"this node has no Cache Salt Key for salted Projection Versions".into(),
+				"this node has no Cache Salt Key for Native Runs".into(),
 			)
 		})?;
 		// The executing node's local Tenant: the worker's Access for scoped and

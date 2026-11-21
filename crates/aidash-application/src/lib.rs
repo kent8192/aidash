@@ -13,6 +13,7 @@ pub mod federation;
 pub mod flows;
 pub mod lifecycle;
 pub mod memory;
+pub mod model_calls;
 pub mod nodes;
 pub mod oauth_connections;
 pub mod org_chart;
@@ -186,13 +187,9 @@ pub enum Error {
 	/// Provider-proven Context Overflow. Only this enters compact-and-retry.
 	#[error("the provider reported that the request exceeded its context window")]
 	ContextOverflow,
-	/// A request rendered under a Projection Version that its model does not
-	/// declare. It is never retried or rendered under another version.
-	#[error("model {model} does not support Projection Version {version}")]
-	UnsupportedProjection {
-		model: String,
-		version: aidash_domain::projection::ProjectionVersion,
-	},
+	/// A stored Binding snapshot pins a retired Projection Version or Harness Contract.
+	#[error("PROJECTION_RETIRED: {0}")]
+	ProjectionRetired(String),
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	/// Running work did not finish within the limit of an Authority Change,

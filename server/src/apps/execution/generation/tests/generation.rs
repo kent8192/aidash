@@ -2625,8 +2625,8 @@ fn provider_4_router() -> upstream_fixtures::RouterFuture {
 
 	let server=reinhardt::test::stub::StubRouter::new()
 .route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
-        let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let child=context["current"]["thread"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
+        let context:Value=crate::common::captured_context(&body);
+        let child=context["snapshot"]["thread"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["snapshot"]["task"]["id"]);
         let (name,arguments)=if let Some(child)=child {("task_assign",json!({"task_id":child["id"],"policy_id":"research","reason":"nested specialist"}))}else{("task_create",json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}))};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
     }})).into_server_router();
@@ -2846,7 +2846,7 @@ fn provider_7_router(
 	let server=reinhardt::test::stub::StubRouter::new()
 .route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()}}))
 .route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
-            let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let context:Value=crate::common::captured_context(&body);
             let message=if context["history"].as_array().unwrap().iter().any(|e|e["kind"]=="tool") {json!({"role":"assistant","content":"Approved tool completed"})}
             else {json!({"role":"assistant","content":null,"tool_calls":[{"id":"generated-effect","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})};
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()

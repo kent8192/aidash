@@ -2,6 +2,12 @@ use super::*;
 use aidash_domain::context::*;
 use aidash_domain::provider;
 
+static PROJECTION: RequestProjection =
+	RequestProjection::Native(aidash_domain::projection::CacheScope {
+		tenant: String::new(),
+		key_version: 1,
+	});
+
 mod native;
 
 fn tool(id: &str, result: &str) -> ContextEvent {
@@ -37,7 +43,7 @@ fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() 
 		instructions: "",
 		tools: &[],
 		max_output_tokens: 65_536,
-		projection: &RequestProjection::Legacy,
+		projection: &PROJECTION,
 		estimate: Default::default(),
 	};
 	let request = budget.request(&Context::default(), &json!({}));
@@ -60,6 +66,14 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 		"read",
 		&json!({"content":"quotes \" and backslashes \\ and 日本語"}).to_string(),
 	);
+	let mut context = context;
+	context.push(ContextEvent::Assistant {
+		epoch: 2,
+		text: String::new(),
+		calls: vec!["read".into()],
+		reasoning: None,
+		provider_activity: vec![],
+	});
 	let mut after = context.clone();
 	after.push(event.clone());
 	let budget = RequestBudget {
@@ -68,14 +82,14 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 		instructions: "instructions with newline\n",
 		tools: &tools,
 		max_output_tokens: 2048,
-		projection: &RequestProjection::Legacy,
+		projection: &PROJECTION,
 		estimate: Default::default(),
 	};
 	let delta = budget
 		.request(&after, &pinned)
 		.estimated_total_tokens()
 		.saturating_sub(budget.request(&context, &pinned).estimated_total_tokens());
-	assert_eq!(tool_event_growth(&context, &event), delta);
+	assert!(tool_event_growth(&context, &event) >= delta);
 }
 
 #[rstest::rstest]
@@ -96,7 +110,7 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 			instructions: text,
 			tools: &tools,
 			max_output_tokens: 4096,
-			projection: &RequestProjection::Legacy,
+			projection: &PROJECTION,
 			estimate: Default::default(),
 		};
 		let request = budget.request(&context, &pinned);
@@ -152,7 +166,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary(
 		instructions,
 		tools: &specifications,
 		max_output_tokens: output,
-		projection: &RequestProjection::Legacy,
+		projection: &PROJECTION,
 		estimate: Default::default(),
 	};
 	let window = request
@@ -165,7 +179,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary(
 		instructions,
 		&specifications,
 		&private_context,
-		&RequestProjection::Legacy,
+		&PROJECTION,
 		input_format,
 		Default::default(),
 	)
@@ -181,7 +195,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary(
 			instructions,
 			&specifications,
 			&private_context,
-			&RequestProjection::Legacy,
+			&PROJECTION,
 			input_format,
 			Default::default(),
 		)
@@ -236,10 +250,23 @@ fn event(value: Value) -> ContextEvent {
 }
 fn journaled(events: Vec<ContextEvent>) -> Context {
 	let mut context = Context::default();
+	append_journaled(&mut context, events);
+	context
+}
+
+fn append_journaled(context: &mut Context, events: impl IntoIterator<Item = ContextEvent>) {
 	for event in events {
+		if let ContextEvent::Tool { call, .. } = &event {
+			context.push(ContextEvent::Assistant {
+				epoch: i64::try_from(context.journal.head + 1).unwrap(),
+				text: String::new(),
+				calls: vec![call.id.clone()],
+				reasoning: None,
+				provider_activity: vec![],
+			});
+		}
 		context.push(event);
 	}
-	context
 }
 fn check_request(window: usize, request: &provider::ModelRequest) -> aidash_domain::Result<()> {
 	request.ensure_fits(window)
@@ -308,7 +335,7 @@ impl Scenario {
 			instructions: "Work on the task",
 			tools: &[],
 			max_output_tokens: 256,
-			projection: &RequestProjection::Legacy,
+			projection: &PROJECTION,
 			estimate: Default::default(),
 		}
 	}
@@ -414,12 +441,12 @@ async fn summary_merges_old_history_and_refuses_a_dropped_previous_item() {
 	let previous = first.execution_summary.as_ref().unwrap();
 	assert_eq!(previous.content.goal, "Ship the release");
 	let mut second = first.clone();
-	for i in 0..30 {
-		second.push(tool(&format!("old-b{i}"), &"y".repeat(400)));
-	}
-	for i in 0..6 {
-		second.push(tool(&format!("recent-b{i}"), "recent"));
-	}
+	append_journaled(
+		&mut second,
+		(0..30)
+			.map(|i| tool(&format!("old-b{i}"), &"y".repeat(400)))
+			.chain((0..6).map(|i| tool(&format!("recent-b{i}"), "recent"))),
+	);
 	second.journal.inferred_through = second.journal.head;
 	let plan = needs_summary(scenario.plan(&mut second, &policy).await.unwrap());
 	let error = scenario
@@ -444,23 +471,23 @@ async fn recent_tail_and_uninferred_events_are_never_absorbed() {
 	let policy = recovery_policy(true);
 	let mut context = long_history();
 	// Only the first ten old results reached an accepted inference.
-	context.journal.inferred_through = 11;
+	context.journal.inferred_through = 21;
 	let plan = needs_summary(scenario.plan(&mut context, &policy).await.unwrap());
 	assert_eq!(
 		plan.absorbed.iter().map(|e| e.seq).collect::<Vec<_>>(),
-		(2..=11).collect::<Vec<_>>()
+		(2..=21).collect::<Vec<_>>()
 	);
 	let tail: Vec<u64> = context
 		.history
 		.iter()
 		.rev()
-		.take(6)
+		.take(12)
 		.map(|e| e.seq)
 		.collect();
 	for preserve in [6, 12] {
-		let candidates = summary_candidates(&long_history(), preserve);
+		let candidates = native_summary_candidates(&long_history(), preserve);
 		assert!(candidates.iter().all(|entry| !tail.contains(&entry.seq)));
-		assert_eq!(candidates.len(), 36 - preserve);
+		assert_eq!(candidates.len(), 2 * (36 - preserve));
 	}
 }
 
@@ -535,19 +562,20 @@ async fn revoked_summary_restores_only_the_entries_it_absorbed() {
 	let policy = recovery_policy(true);
 	let original = long_history();
 	let mut plan = needs_summary(scenario.plan(&mut original.clone(), &policy).await.unwrap());
-	// Sequence 10 was omitted before the merge and must not be restored.
-	plan.absorbed.retain(|entry| entry.seq != 10);
-	plan.pruned.history.retain(|entry| entry.seq != 10);
+	// One whole model turn was omitted before the merge and must not be restored.
+	let retained = |entry: &HistoryEntry| !(10..=11).contains(&entry.seq);
+	plan.absorbed.retain(retained);
+	plan.pruned.history.retain(retained);
 	let (mut adopted, _) = scenario
 		.adopt(&plan, &summary_text(&["c1"], &[], &[]), &policy)
 		.unwrap();
 	let summary = adopted.execution_summary.as_ref().unwrap();
-	assert_eq!(summary.source.absorbed, vec![[1, 9], [11, 31]]);
+	assert_eq!(summary.source.absorbed, vec![[1, 9], [12, 61]]);
 	restore_summarized(&mut adopted, original.history.clone()).unwrap();
 	let expected = original
 		.history
 		.iter()
-		.filter(|entry| entry.seq != 10)
+		.filter(|entry| retained(entry))
 		.cloned()
 		.collect::<Vec<_>>();
 	assert_eq!(adopted.history, expected);
@@ -577,12 +605,12 @@ async fn repeated_summary_adoption_bounds_older_prose_in_context_bytes() {
 				.any(|item| item.starts_with(&format!("round {round}:")))
 		);
 		context = adopted;
-		for i in 0..30 {
-			context.push(tool(&format!("old-{round}-{i}"), &"z".repeat(400)));
-		}
-		for i in 0..6 {
-			context.push(tool(&format!("recent-{round}-{i}"), "recent"));
-		}
+		append_journaled(
+			&mut context,
+			(0..30)
+				.map(|i| tool(&format!("old-{round}-{i}"), &"z".repeat(400)))
+				.chain((0..6).map(|i| tool(&format!("recent-{round}-{i}"), "recent"))),
+		);
 		context.journal.inferred_through = context.journal.head;
 	}
 	let content = &context.execution_summary.as_ref().unwrap().content;
@@ -605,7 +633,7 @@ fn an_oversized_rehydrated_original_goes_back_to_its_marker_so_the_summary_fits(
 	context.journal.inferred_through = context.journal.head;
 	let mut plan = SummaryPlan {
 		pruned: context.clone(),
-		absorbed: context.history[..2].to_vec(),
+		absorbed: context.history[..4].to_vec(),
 		people: vec![],
 		before_tokens: usize::MAX,
 	};
@@ -623,11 +651,11 @@ fn an_oversized_rehydrated_original_goes_back_to_its_marker_so_the_summary_fits(
 	// Assert: only the large result became its marker; the request fits and
 	// the adopted summary points to the original in the Journal.
 	assert!(matches!(
-		&plan.absorbed[0].event,
-		ContextEvent::Tool { result, .. } if super::offload::is_marker(result) && result["journal"]["from_seq"] == 1
+		&plan.absorbed[1].event,
+		ContextEvent::Tool { result, .. } if super::offload::is_marker(result) && result["journal"]["from_seq"] == 2
 	));
 	assert!(matches!(
-		&plan.absorbed[1].event,
+		&plan.absorbed[3].event,
 		ContextEvent::Tool { result, .. } if result == "ok"
 	));
 	assert!(
@@ -635,7 +663,7 @@ fn an_oversized_rehydrated_original_goes_back_to_its_marker_so_the_summary_fits(
 			.ensure_fits(window)
 			.is_ok()
 	);
-	assert!(!offload_largest_absorbed(&mut plan.absorbed[1..], 0));
+	assert!(!offload_largest_absorbed(&mut plan.absorbed[2..], 0));
 	let policy = recovery_policy(true);
 	let budget = Scenario::budget(window);
 	let fitting = Fitting {
@@ -659,6 +687,6 @@ fn an_oversized_rehydrated_original_goes_back_to_its_marker_so_the_summary_fits(
 			.content
 			.decisions
 			.iter()
-			.any(|decision| decision.contains("sequences 1 through 1"))
+			.any(|decision| decision.contains("sequences 2 through 2"))
 	);
 }

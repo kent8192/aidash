@@ -445,28 +445,13 @@ fn agent_on(id: &str, model: &str, version: &str) -> Value {
 
 #[rstest]
 #[tokio::test]
-async fn projection_versions_persist_and_gate_agent_registration(
+async fn native_definitions_register_and_retired_fields_are_refused(
 	#[future] endpoint: EndpointFixture,
 	timeout_model: Value,
 ) {
-	// Arrange
 	let app = endpoint.await;
 	let registrar = tenant_subject(&app, "registrar").await;
 	let mut connection = app.database.lease.handle();
-	let mut declared = timeout_model.clone();
-	declared["id"] = json!("ordered-model");
-	declared["config"]["projection_versions"] = json!(["legacy", "ordered"]);
-	let mut native_model = timeout_model.clone();
-	native_model["id"] = json!("native-model");
-	native_model["config"]["projection_versions"] = json!(["legacy", "native"]);
-	// Act
-	let created = assert_json(
-		registrar
-			.post("/api/registry", &declared, "json")
-			.await
-			.unwrap(),
-		200,
-	);
 	assert_json(
 		registrar
 			.post("/api/registry", &timeout_model, "json")
@@ -474,57 +459,44 @@ async fn projection_versions_persist_and_gate_agent_registration(
 			.unwrap(),
 		200,
 	);
-	let accepted = assert_json(
-		registrar
-			.post(
-				"/api/registry",
-				&agent_on("ordered-agent", "ordered-model", "ordered"),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
-	let undeclared = registrar
-		.post(
-			"/api/registry",
-			&agent_on("undeclared-agent", "timeout-model", "ordered"),
-			"json",
-		)
+	let mut obsolete_model = timeout_model.clone();
+	obsolete_model["id"] = json!("obsolete-model");
+	obsolete_model["config"]["projection_versions"] = json!(["native"]);
+	let failure = registrar
+		.post("/api/registry", &obsolete_model, "json")
 		.await
 		.unwrap();
-	let undeclared_native = registrar
-		.post(
-			"/api/registry",
-			&agent_on("undeclared-native-agent", "ordered-model", "native"),
-			"json",
-		)
-		.await
-		.unwrap();
-	assert_json(
+	assert_json(failure, 400);
+	let mut agent = agent_on("native-agent", "timeout-model", "native");
+	agent["config"]
+		.as_object_mut()
+		.unwrap()
+		.remove("projection_version");
+	let stored = assert_json(
 		registrar
-			.post("/api/registry", &native_model, "json")
+			.post("/api/registry", &agent, "json")
 			.await
 			.unwrap(),
 		200,
 	);
-	let native = assert_json(
-		registrar
-			.post(
-				"/api/registry",
-				&agent_on("native-agent", "native-model", "native"),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
-	// Assert
-	assert_eq!(created["config"], declared["config"]);
-	assert_eq!(accepted["config"]["projection_version"], "ordered");
-	assert_eq!(native["config"]["projection_version"], "native");
-	assert_json(undeclared, 400);
-	assert_json(undeclared_native, 400);
+	assert_eq!(stored["config"]["projection_version"], "native");
+	assert_eq!(stored["config"]["harness_contract"], "structured@4");
+	for (field, value) in [
+		("projection_version", "legacy"),
+		("projection_version", "ordered"),
+		("harness_contract", "legacy@1"),
+	] {
+		let mut agent = agent_on("retired-agent", "timeout-model", "native");
+		agent["config"][field] = json!(value);
+		assert_json(
+			registrar
+				.post("/api/registry", &agent, "json")
+				.await
+				.unwrap(),
+			400,
+		);
+	}
+	// The historical constraint still lets original model rows coexist with new ones.
 	for (index, versions) in [json!("ordered"), json!(["v4"]), json!([1]), json!(null)]
 		.into_iter()
 		.enumerate()

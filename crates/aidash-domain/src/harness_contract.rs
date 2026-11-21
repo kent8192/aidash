@@ -3,21 +3,11 @@
 //! Unlike the Projection Version, which decides how a Context Projection
 //! renders, the Harness Contract decides which instruction text the Harness
 //! itself supplies. An Agent definition names it and a Run pins it through the
-//! Binding snapshot, like `projection_version`; absent means `legacy@1`.
-//! `legacy@1` is today's text for each Projection Version, byte for byte.
+//! Binding snapshot, like `projection_version`; absent means `structured@4`.
 
-use crate::{projection::ProjectionVersion, standing_instructions::StandingInstructions};
+use crate::standing_instructions::StandingInstructions;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// The label legacy text uses before the Agent's own instructions.
-pub const ADDITIONAL_INSTRUCTIONS_LABEL: &str = "\nAdditional user instructions:\n";
-/// The label legacy text uses before the Tenant Instructions (#1010).
-pub const TENANT_INSTRUCTIONS_LABEL: &str = "\nTenant instructions:\n";
-/// The label legacy text uses before the Node Instructions (#1010).
-pub const NODE_INSTRUCTIONS_LABEL: &str = "\nNode instructions:\n";
-/// The label legacy text uses before a Duty's mission and procedure (#1011).
-pub const DUTY_LABEL: &str = "\nDuty:\n";
 
 #[derive(
 	Debug,
@@ -35,11 +25,6 @@ pub const DUTY_LABEL: &str = "\nDuty:\n";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum HarnessContract {
-	/// Version 1: today's unversioned text, chosen by Projection Version.
-	/// Definitions and snapshots without the field use it, byte for byte.
-	#[default]
-	#[serde(rename = "legacy@1")]
-	Legacy,
 	// Versions 2 and 3 (`structured@1` and `structured@2`) lost the #532
 	// comparison and were removed before any deployment; their names and
 	// numbers are never reused.
@@ -51,43 +36,22 @@ pub enum HarnessContract {
 	/// Version 5: `structured@3` with Instruction precedence stated, so the
 	/// model ranks Tenant Instructions, Node Instructions and a Duty's mission
 	/// and procedure (#1007, #1010). Native Projection Version only.
+	#[default]
 	#[serde(rename = "structured@4")]
 	Structured4,
 }
 
 impl HarnessContract {
-	/// Whether this build can render the version. A version added later is
-	/// rejected by registration and Run creation until its renderer exists.
-	pub fn is_implemented(&self) -> bool {
-		matches!(self, Self::Legacy | Self::Structured3 | Self::Structured4)
-	}
-
-	/// Whether this version renders with the Projection Version.
-	pub fn supports(&self, projection: ProjectionVersion) -> bool {
-		match self {
-			Self::Legacy => true,
-			Self::Structured3 | Self::Structured4 => projection == ProjectionVersion::Native,
-		}
-	}
-
 	/// The version number recorded on Usage Records.
 	pub fn number(self) -> u8 {
 		match self {
-			Self::Legacy => 1,
 			Self::Structured3 => 4,
 			Self::Structured4 => 5,
 		}
 	}
 
-	/// Whether Harness requirements travel in a trust `aidash` envelope rather
-	/// than in the step's data envelope.
-	pub fn leaves_data_envelopes(self) -> bool {
-		!matches!(self, Self::Legacy)
-	}
-
 	fn text(self) -> &'static str {
 		match self {
-			Self::Legacy => "",
 			Self::Structured3 => STRUCTURED3,
 			Self::Structured4 => STRUCTURED4,
 		}
@@ -97,63 +61,45 @@ impl HarnessContract {
 impl std::fmt::Display for HarnessContract {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.write_str(match self {
-			Self::Legacy => "legacy@1",
 			Self::Structured3 => "structured@3",
 			Self::Structured4 => "structured@4",
 		})
 	}
 }
 
+/// The contract pin as written in a stored definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HarnessContractPin {
+	Active(HarnessContract),
+	Retired(RetiredHarnessContract),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RetiredHarnessContract {
+	#[serde(rename = "legacy@1")]
+	V1,
+}
+
+impl std::fmt::Display for RetiredHarnessContract {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("legacy@1")
+	}
+}
+
 /// The system text of one request. This is the only composition: budgeting
 /// and dispatch both call it, so measured and sent text cannot drift.
 ///
-/// `fragments` are the Instructions-phase source texts in send order, keyed by
-/// their contribution slot; `index` is the deferred capability index. Under
-/// `legacy@1` every fragment keeps today's place after the boilerplate. Under
-/// `structured@*` the Agent instructions move before the Skill bodies, and the
-/// resident Skills follow the deferred capability index.
-///
-/// `standing` holds the Tenant and Node Instructions the Run pinned at claim.
-/// Each appears only when it says something, so a Tenant without them keeps
-/// every version's text byte for byte: under `legacy@1` they come just before
-/// the Agent's own instructions, and under `structured@*` between the
-/// contract text and the Agent instructions, Tenant first (#1010).
+/// Instructions-phase fragments follow the Agent and Duty instructions.
+/// Resident Skills follow the deferred capability index.
+/// Tenant and Node Instructions appear before Agent instructions.
 pub fn system_text(
 	contract: HarnessContract,
-	projection: ProjectionVersion,
 	standing: &StandingInstructions,
 	instructions: &str,
 	fragments: &[(&str, &str)],
 	index: &str,
 ) -> String {
-	// Registration, publication, installation and Run creation reject an
-	// unsupported pairing; the contract never renders as another version.
-	debug_assert!(
-		contract.supports(projection),
-		"Harness Contract {contract} does not render with Projection Version {projection}"
-	);
-	if !contract.leaves_data_envelopes() {
-		let mut text = crate::context::versioned_agent_instructions(projection, "");
-		for (_, fragment) in fragments {
-			text.push_str(fragment);
-		}
-		text.push_str(index);
-		if !standing.tenant.trim().is_empty() {
-			text.push_str(TENANT_INSTRUCTIONS_LABEL);
-			text.push_str(&standing.tenant);
-		}
-		if !standing.node.trim().is_empty() {
-			text.push_str(NODE_INSTRUCTIONS_LABEL);
-			text.push_str(&standing.node);
-		}
-		text.push_str(ADDITIONAL_INSTRUCTIONS_LABEL);
-		text.push_str(instructions);
-		if !standing.duty.trim().is_empty() {
-			text.push_str(DUTY_LABEL);
-			text.push_str(&standing.duty);
-		}
-		return text;
-	}
 	let mut text = contract.text().to_owned();
 	if !standing.tenant.trim().is_empty() {
 		text.push_str("\n\n# Tenant instructions\n\n");
@@ -193,14 +139,10 @@ pub fn system_text(
 /// text come before it and are never mistaken for it.
 pub fn fragments_start(
 	contract: HarnessContract,
-	projection: ProjectionVersion,
 	standing: &StandingInstructions,
 	instructions: &str,
 ) -> usize {
-	if !contract.leaves_data_envelopes() {
-		return crate::context::versioned_agent_instructions(projection, "").len();
-	}
-	system_text(contract, projection, standing, instructions, &[], "").len()
+	system_text(contract, standing, instructions, &[], "").len()
 }
 
 /// Append one structured-contract block with a blank line between it and the
@@ -219,7 +161,7 @@ fn push_block(text: &mut String, block: &str) {
 	text.push_str(block);
 }
 
-/// `structured@3`: found by a GEPA search (#532) seeded with `legacy@1`, scored
+/// `structured@3`: found by a GEPA search (#532) seeded with the original contract, scored
 /// on replayed Native requests of the fixed-task corpus with two models and
 /// selected on held-out tasks. It names the forms injected directions take,
 /// asks why an action is needed before taking it, and keeps task-authorized

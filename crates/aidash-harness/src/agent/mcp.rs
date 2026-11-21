@@ -472,7 +472,7 @@ impl Executor<'_> {
 					.catalog()
 					.get_for_run(run, &call.agent.model.id, &call.agent.model.version)
 					.await?;
-				let model: ModelConfig = serde_json::from_value(model_entry.config)?;
+				let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
 				let sample = SamplingRequest::parse(
 					&request.params,
 					limits.sampling_tokens.min(model.output_token_limit()),
@@ -644,6 +644,7 @@ impl Executor<'_> {
 		call.guard.inference().await?;
 		let request = ModelRequest {
 			instructions: sample.system_prompt,
+			input_format: aidash_domain::provider::InputFormat::for_model(&model),
 			context: ModelContext::Sampling(SamplingContext {
 				sampling_messages: sample.messages,
 			}),
@@ -654,6 +655,10 @@ impl Executor<'_> {
 		request
 			.ensure_fits(model.context_window)
 			.map_err(|_| Error::Invalid("MCP_SAMPLING_REQUEST_LIMIT".into()))?;
+		let model_call = aidash_domain::model_call::Dispatch::new(
+			aidash_domain::model_call::Purpose::McpSampling,
+			&request,
+		)?;
 		let provider = self.environment.provider(model.clone())?;
 		let attempt = InferenceAttemptId::new();
 		let input_reservation = request
@@ -685,11 +690,11 @@ impl Executor<'_> {
 					response_epoch: run.state.tool()?.response_epoch,
 					model_id: call.agent.model.id.clone(),
 					model_version: call.agent.model.version.clone(),
-					projection_version: aidash_domain::projection::ProjectionVersion::Legacy
-						.number(),
+					projection_version: request.context.projection_version().number(),
 					harness_contract: call.agent.harness_contract.number(),
 					upstream_model: model.model_id.clone(),
 					purpose: UsagePurpose::Main,
+					model_call: Some(model_call),
 					requested_route: model.provider_route.as_ref().map(|route| route.tag.clone()),
 					// Sampling does not render the Run's context projection.
 					shadow_estimates: Vec::new(),
@@ -713,12 +718,13 @@ impl Executor<'_> {
 		.await;
 		if let Err(error) = preparing {
 			store
-				.complete_usage_record(
+				.complete_model_call(
 					run,
 					attempt.0,
 					&UsageOutcome::Rejected {
 						class: "not_dispatched".into(),
 					},
+					aidash_domain::model_call::Outcome::Refused,
 				)
 				.await?;
 			if let Some(reservation) = reservation {
@@ -750,7 +756,22 @@ impl Executor<'_> {
 			},
 		};
 		store
-			.complete_usage_record(run, attempt.0, &outcome)
+			.complete_model_call(
+				run,
+				attempt.0,
+				&outcome,
+				if matches!(
+					&result,
+					Err(Error::TerminalResponse(
+						aidash_domain::context::recovery::Failure::OutputTruncated,
+						_
+					))
+				) {
+					aidash_domain::model_call::Outcome::Accepted
+				} else {
+					aidash_application::model_calls::outcome(&result)
+				},
+			)
 			.await?;
 		if let Some(reservation) = reservation {
 			match &result {

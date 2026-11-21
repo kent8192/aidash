@@ -542,14 +542,6 @@ fn a_native_summary_request_continues_the_main_request() {
 			.unwrap()
 			.contains("Do not call tools")
 	);
-	// Other Projection Versions keep the standalone request.
-	let legacy = super::Scenario::budget(usize::MAX);
-	let legacy_fitting = Fitting {
-		budget: &legacy,
-		pinned: &pinned,
-		policy: &policy,
-	};
-	assert!(summary_continuation(&plan, &legacy_fitting, 2048).is_none());
 }
 
 #[test]

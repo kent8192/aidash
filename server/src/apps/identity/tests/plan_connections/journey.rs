@@ -137,7 +137,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 		"name":{"en":"Native plan model"},"description":{"en":"Admission journey"},
 		"config":{"provider":"chatgpt","model_id":"gpt-5.5","endpoint":"https://api.openai.com/v1",
 			"plan_connection":"chatgpt","context_window":128000,"max_output_tokens":1024,
-			"projection_versions":["native"],"modalities":["text"],"cost":{}}
+			"modalities":["text"],"cost":{}}
 	}))
 	.unwrap();
 	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({
