@@ -4967,7 +4967,14 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 						.unwrap();
 					}
 				}
-				let context = native_request::captured_context(&input);
+				// A reflection Model Call sends its own JSON payload. Run steps
+				// provide the recalled context in Native envelopes.
+				let reflection = input["messages"][1]["content"]
+					.as_str()
+					.and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
+					.filter(|payload| reflect && payload["context"].is_array());
+				let context =
+					reflection.unwrap_or_else(|| native_request::captured_context(&input));
 				let mut calls = received.lock().unwrap();
 				calls.push(context);
 				let (name, arguments) = if calls.len() == 1 {
