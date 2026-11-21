@@ -186,6 +186,15 @@ async fn read_result(p: &Pair, round: usize) -> Value {
 	panic!("tool result not recorded: {:?}", p.run().await);
 }
 
+fn assert_unavailable(result: &Value, message: &str) {
+	assert_eq!(result["status"], "blocked", "{result}");
+	assert_eq!(
+		result["error"],
+		json!({"code":"NOT_FOUND","message":message,"retryable":false}),
+		"{result}"
+	);
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_librarian_reads_only_its_pinned_references_and_stops_on_withdrawal(
@@ -285,8 +294,7 @@ async fn remote_librarian_reads_only_its_pinned_references_and_stops_on_withdraw
 	let read = read_result(&p, 2).await;
 	assert_eq!(read["content"], "receiver-only index");
 	for round in [3, 4] {
-		let denied = read_result(&p, round).await;
-		assert_eq!(denied["error"], "file unavailable", "{denied}");
+		assert_unavailable(&read_result(&p, round).await, "file unavailable");
 	}
 
 	let inferences = p.requests.lock().await.len();
@@ -352,8 +360,7 @@ async fn a_remote_legacy_run_lists_and_loads_only_its_bound_skill(
 	assert_eq!(skills[0]["skill_id"], json!(skill.skill_id));
 	let loaded = read_result(&p, 2).await;
 	assert_eq!(loaded["content"], skill.instructions);
-	let refused = read_result(&p, 3).await;
-	assert_eq!(refused["error"], "skill unavailable", "{refused}");
+	assert_unavailable(&read_result(&p, 3).await, "skill unavailable");
 	p.close().await;
 }
 
