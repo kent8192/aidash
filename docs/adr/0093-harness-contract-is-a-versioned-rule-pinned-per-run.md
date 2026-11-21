@@ -30,3 +30,7 @@ The default for new Agent definitions is now `structured@3` on `native` (#532). 
 ## Amendment (2026-11-01)
 
 `structured@1` and `structured@2` are removed (#532). They lost the comparison to `structured@3`, and on gpt-oss-20b they followed injected tool-result directions more often than `legacy@1`. Nothing is deployed, so keeping them renderable for stored pins bought nothing. Their names and Usage Record numbers 2 and 3 are never reused, and `structured@3` keeps its name and number 4. Stored pins are not rewritten to `structured@3`: a Run Binding snapshot keeps a digest of each pinned definition that a migration cannot recompute. The registry migration instead refuses to upgrade a database whose Agent definitions, Marketplace packages or Run snapshots still declare a removed version. This ends the promise above that every pinned version stays renderable for these two versions only; `legacy@1` and `structured@3` keep it.
+
+## Amendment (2026-11-21, #1068)
+
+`legacy@1` is removed with the Legacy Projection Version (ADR 0144). An Agent definition or snapshot without `harness_contract` is read with the current structured contract.
