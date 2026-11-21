@@ -387,12 +387,14 @@ pub async fn resolve(
 					};
 
 					tracing::warn!(%error, operation = %descriptor.operation, "remote tool binding refused");
-					let tool = matches!(
-						contract.identity,
-						aidash_domain::tool::ToolIdentity::Builtin(_)
-					)
-					.then(|| PublicTool::new(&descriptor.operation))
-					.flatten();
+					let tool =
+						if aidash_domain::tool::providers::core_provider(&descriptor.operation)
+							== Some(descriptor.provider.as_str())
+						{
+							PublicTool::new(&descriptor.operation)
+						} else {
+							None
+						};
 					Error::RemoteExecutionRefused(Refusal::ReceiverRefused(
 						ReceiverRefusal::ToolNeverRemote { tool },
 					))

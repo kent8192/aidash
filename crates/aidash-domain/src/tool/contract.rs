@@ -318,10 +318,19 @@ impl ToolContract {
 	}
 	/// A remote Run without mounted Skills keeps its existing default exclusions.
 	pub fn legacy_skill_reach(&self) -> Option<Self> {
-		(self.reach == ToolReach::ReceiverMaterial
-			&& matches!(&self.identity, ToolIdentity::Builtin(name)
-				if matches!(name.as_str(), "builtin:skill_list" | "builtin:skill_load")))
-		.then(|| Self {
+		let legacy_skill = match &self.identity {
+			ToolIdentity::Builtin(name) => {
+				matches!(name.as_str(), "builtin:skill_list" | "builtin:skill_load")
+			}
+			ToolIdentity::Descriptor(reference) => {
+				matches!(
+					reference.id.as_str(),
+					"aidash.skill_list" | "aidash.skill_load"
+				)
+			}
+			_ => false,
+		};
+		(self.reach == ToolReach::ReceiverMaterial && legacy_skill).then(|| Self {
 			reach: ToolReach::Never,
 			..self.clone()
 		})

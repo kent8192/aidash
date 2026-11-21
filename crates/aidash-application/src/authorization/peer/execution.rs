@@ -278,10 +278,11 @@ fn required_binding_tools(snapshot: &BindingSnapshot) -> Result<BTreeSet<&str>> 
 		.bindings
 		.iter()
 		.filter(|binding| {
-			matches!(
-				binding.origin,
-				BindingOrigin::Required | BindingOrigin::SkillSupport
-			)
+			binding.definition.kind == "tool"
+				&& matches!(
+					binding.origin,
+					BindingOrigin::Required | BindingOrigin::SkillSupport
+				)
 		})
 		.filter_map(|binding| binding.identity.id.strip_prefix("aidash."))
 		.collect();
