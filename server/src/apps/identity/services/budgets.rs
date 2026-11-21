@@ -34,10 +34,14 @@ async fn may_manage(
 	strict: bool,
 ) -> Result<bool> {
 	let tenant = administrator.tenant().to_owned();
-	let decide = async |tx: &mut dyn TransactionExecutor, action: &str, id: &str| -> Result<bool> {
+	let decide = async |tx: &mut dyn TransactionExecutor,
+	                    action: &str,
+	                    id: &str,
+	                    attributes: serde_json::Value|
+	       -> Result<bool> {
 		if strict {
 			administrator
-				.require(tx, snapshot, action, id, json!({}))
+				.require(tx, snapshot, action, id, attributes)
 				.await
 				.map(|()| true)
 				.or_else(|error| match error {
@@ -46,7 +50,7 @@ async fn may_manage(
 				})
 		} else {
 			administrator
-				.allowed(tx, snapshot, action, id, json!({}))
+				.allowed(tx, snapshot, action, id, attributes)
 				.await
 		}
 	};
@@ -63,14 +67,23 @@ async fn may_manage(
 			Scope::Node { node } => {
 				match crate::apps::identity::repositories::nodes::get_live(tx, &tenant, node).await
 				{
-					Ok(_) => decide(tx, NODE_ADMINISTER, node).await?,
+					// Judge the Node with its stored `label` and `default`, as
+					// the Node management endpoints do.
+					Ok(found) => {
+						let attributes =
+							crate::apps::identity::repositories::nodes::policy_attributes(
+								&found.label,
+								found.default,
+							);
+						decide(tx, NODE_ADMINISTER, node, attributes).await?
+					}
 					Err(Error::NotFound(_)) => false,
 					Err(error) => return Err(error),
 				}
 			}
 			Scope::Tenant => false,
 		};
-	Ok(scope_right || decide(tx, BUDGET_MANAGE, &tenant).await?)
+	Ok(scope_right || decide(tx, BUDGET_MANAGE, &tenant, json!({})).await?)
 }
 
 async fn view(tx: &mut dyn TransactionExecutor, budget: Budget) -> Result<BudgetView> {

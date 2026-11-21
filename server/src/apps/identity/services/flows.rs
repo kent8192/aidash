@@ -20,7 +20,6 @@ use aidash_application::{
 use aidash_domain::identity::tenant_administration::NODE_ADMINISTER;
 use aidash_domain::{ControlSource, RunControlAction};
 use chrono::Utc;
-use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -254,7 +253,10 @@ impl TenantAdministrations {
 				};
 			}
 			if !allowed {
-				let resource = access.resource("node", &node, json!({}));
+				// The same Node resource the Node management endpoints judge,
+				// with its stored `label` and `default`.
+				let name = aidash_domain::nodes::NodeName::parse(&node)?;
+				let resource = access.node_resource(&name).await?;
 				allowed = access.decide(&resource, NODE_ADMINISTER).await?;
 			}
 			if !allowed {

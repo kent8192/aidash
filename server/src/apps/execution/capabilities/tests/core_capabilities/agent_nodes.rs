@@ -451,6 +451,72 @@ async fn thread_reads_and_streams_use_the_nodes_policy_attributes(
 	c.close().await;
 }
 
+/// Stopping a flow and setting a Node Budget judge `node.administer` on the
+/// same Node resource the Node endpoints use, with its stored `label` and
+/// `default` (Codex review of PR #1014).
+#[rstest::rstest]
+#[case::default_node_denied("default", json!(true), "deny", 403)]
+#[case::label_grants_access("label", json!("Flow policy fixture"), "allow", 200)]
+#[tokio::test]
+async fn flow_stops_and_node_budgets_use_the_nodes_policy_attributes(
+	#[future] capability_fixture: CoreFixture,
+	#[case] attribute: &str,
+	#[case] value: Value,
+	#[case] effect: &str,
+	#[case] expected: u16,
+) {
+	let c = capability_fixture.await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let relabel = Query::update()
+		.table(Alias::new("nodes"))
+		.value(Alias::new("label"), "Flow policy fixture")
+		.and_where(Expr::col("tenant").eq("acme"))
+		.and_where(Expr::col("name").eq(node.as_str()))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&relabel)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let mut policies = vec![json!({
+		"id": "conditional", "effect": effect, "subjects": {"ids": ["bob"]},
+		"actions": ["node.administer"], "resources": {"kinds": ["node"]},
+		"condition": {"op": "eq", "left": {"source": "resource", "path": format!("/{attribute}")},
+			"right": {"source": "literal", "value": value}},
+	})];
+	if effect == "deny" {
+		policies.push(json!({
+			"id": "administer", "effect": "allow", "subjects": {"ids": ["bob"]},
+			"actions": ["node.administer"], "resources": {"kinds": ["node"]},
+		}));
+	}
+	let mut policy = c.policy.clone();
+	policy["policies"] = json!(policies);
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let bob = common::BrowserMapping::new(&c.f, "acme", "bob").await;
+
+	let (budget_status, budget) = bob
+		.send(
+			"POST",
+			"/api/tenants/acme/budgets",
+			json!({
+				"scope": {"kind": "node", "node": node.as_str()},
+				"hard_limit_nanocredits": 5_000_000_000_i64,
+				"on_hard_limit": "sleep",
+			}),
+		)
+		.await;
+	let (stop_status, stopped) = bob
+		.send(
+			"POST",
+			&format!("/api/tenants/acme/flows/{}/stop", c.task),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(budget_status, expected, "{budget}");
+	assert_eq!(stop_status, expected, "{stopped}");
+	c.close().await;
+}
+
 /// The state and end reason of a Subnode.
 async fn subnode_end(c: &CoreFixture, subnode: Uuid) -> (String, Option<String>) {
 	sqlx::query_as("SELECT state, ended_reason FROM subnodes WHERE id = $1")
