@@ -73,9 +73,9 @@ async fn approve(p: &Pair, reference: &EntityRef, revision: i64, enabled: bool) 
 		.unwrap();
 }
 
-async fn bind_source(p: &Pair, source: &Value) -> (EntityRef, EntityRef) {
+async fn register_source(p: &Pair, id: &str, source: &Value) -> EntityRef {
 	let source_id = EntityRef {
-		id: "receiver-material".into(),
+		id: id.into(),
 		version: "1.0.0".into(),
 	};
 	let (status, saved) = request(
@@ -88,17 +88,12 @@ async fn bind_source(p: &Pair, source: &Value) -> (EntityRef, EntityRef) {
 	.await;
 	assert_eq!(status, 200, "{saved}");
 	approve(p, &source_id, 0, true).await;
+	source_id
+}
 
-	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
-	let mut entry =
-		p.b.registry
-			.get(&tenant, "research", "1.0.0")
-			.await
-			.unwrap();
-	entry.id = "receiver-research".into();
-	entry.binding_normalization = None;
-	entry.config["max_steps"] = json!(200);
-	entry.config["remove_default"] = json!([]);
+async fn bind_source(p: &Pair, source: &Value) -> (EntityRef, EntityRef) {
+	let source_id = register_source(p, "receiver-material", source).await;
+	let mut entry = receiver_agent(p).await;
 	entry.config["bindings"].as_array_mut().unwrap().push(json!({
 		"kind":"source","target":{"registry_deployment":p.b.config.deployment,"id":source_id.id,"version":source_id.version}
 	}));
@@ -321,6 +316,18 @@ async fn a_remote_legacy_run_lists_and_loads_only_its_bound_skill(
 		&json!({"adapter":"skill_attachments","attachments":[skill]}),
 	)
 	.await;
+	let unbound = aidash_domain::capabilities::skills::imported(
+		"fixture".into(),
+		"---\nname: unbound-skill\ndescription: Unbound instructions\n---\nThis Skill belongs to another Source.\n".into(),
+		vec![],
+	)
+	.unwrap();
+	register_source(
+		&p,
+		"unbound-skill",
+		&json!({"adapter":"skill_attachments","attachments":[unbound]}),
+	)
+	.await;
 	let mut tools = DEFAULT_TOOLS.to_vec();
 	tools.extend(["skill_list", "skill_load"]);
 	set_lists(&p.a, &p.b, &tools, 1).await;
@@ -336,7 +343,7 @@ async fn a_remote_legacy_run_lists_and_loads_only_its_bound_skill(
 		),
 		(
 			"skill_load".into(),
-			json!({"skill_id":Uuid::new_v4(),"expected_digest":skill.digest}),
+			json!({"skill_id":unbound.skill_id,"expected_digest":unbound.digest}),
 		),
 	]);
 	let listed = read_result(&p, 1).await;
@@ -481,6 +488,32 @@ async fn a_list_holder_can_answer_a_real_remote_tool_ask(
 	assert_eq!(answered["choice"], choice);
 	assert_eq!(answered["resumed"], true);
 	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+
+	let (request, allowance, block): (Value, Value, Value) = sqlx::query_as(
+		"SELECT tool_request, tool_allowance, tool_block FROM node_registrations WHERE source_node = $1",
+	)
+	.bind(node_of(peer))
+	.fetch_one(local.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let list = if home { &request["tools"] } else { &allowance };
+	let key = json!("thread_message");
+	assert_eq!(list.as_array().unwrap().contains(&key), choice == "add");
+	assert_eq!(block.as_array().unwrap().contains(&key), choice == "block");
+	let additions_sql = if home {
+		"SELECT COALESCE(tool_request_additions, '[]'::jsonb) FROM authorization_remote_grants WHERE id = $1"
+	} else {
+		"SELECT COALESCE(run_tool_allowance, '[]'::jsonb) FROM authorization_remote_admissions WHERE id = $1"
+	};
+	let additions: Value = sqlx::query_scalar(additions_sql)
+		.bind(id)
+		.fetch_one(local.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		additions.as_array().unwrap().contains(&key),
+		choice == "run_only"
+	);
 	let (status, listed) = administrator.send("GET", &asks, Value::Null).await;
 	assert_eq!(status, 200, "{listed}");
 	assert_eq!(listed, json!({"asks":[]}));
