@@ -511,14 +511,14 @@ async fn a_local_worker_that_finds_a_predecessor_releases_its_lease(
 		Query::update()
 			.table(Alias::new("core_runs"))
 			.value(Alias::new("asleep"), asleep)
-			.and_where(Expr::col("run_id").eq(first.id))
+			.and_where(Expr::col("run_id").eq(Expr::value(first.id)))
 			.to_string(PostgresQueryBuilder)
 	};
 	sqlx::query(&set_asleep(true)).execute(pool).await.unwrap();
 	let area = Query::select()
 		.column(Alias::new("area_id"))
 		.from(Alias::new("core_runs"))
-		.and_where(Expr::col("run_id").eq(first.id))
+		.and_where(Expr::col("run_id").eq(Expr::value(first.id)))
 		.to_owned();
 	let lock = Query::select()
 		.column(Alias::new("id"))
@@ -563,7 +563,7 @@ async fn a_local_worker_that_finds_a_predecessor_releases_its_lease(
 	let stints = Query::select()
 		.expr(Expr::cust("COUNT(*)"))
 		.from(Alias::new("stints"))
-		.and_where(Expr::col("run_id").eq(second.id))
+		.and_where(Expr::col("run_id").eq(Expr::value(second.id)))
 		.to_string(PostgresQueryBuilder);
 	let stints: i64 = sqlx::query_scalar(&stints).fetch_one(pool).await.unwrap();
 	assert_eq!(stints, 0);

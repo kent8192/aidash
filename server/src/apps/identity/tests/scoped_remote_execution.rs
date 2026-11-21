@@ -669,7 +669,7 @@ async fn remote_run_waits_for_its_receiving_area(
 	let stints = Query::select()
 		.expr(Expr::cust("COUNT(*)"))
 		.from(Alias::new("stints"))
-		.and_where(Expr::col("run_id").eq(second))
+		.and_where(Expr::col("run_id").eq(Expr::value(second)))
 		.to_string(PostgresQueryBuilder);
 	let stint_count = async || -> i64 {
 		sqlx::query_scalar(&stints)
@@ -731,7 +731,7 @@ async fn remote_run_waits_for_its_receiving_area(
 	let expiry = Query::update()
 		.table(Alias::new("authorization_remote_grants"))
 		.value(Alias::new("expires_at"), due)
-		.and_where(Expr::col("id").eq(grant))
+		.and_where(Expr::col("id").eq(Expr::value(grant)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expiry)
 		.execute(p.a.store.pool.fixture_driver())
@@ -743,7 +743,7 @@ async fn remote_run_waits_for_its_receiving_area(
 	let expiry = Query::select()
 		.column(Alias::new("expires_at"))
 		.from(Alias::new("authorization_remote_grants"))
-		.and_where(Expr::col("id").eq(grant))
+		.and_where(Expr::col("id").eq(Expr::value(grant)))
 		.to_string(PostgresQueryBuilder);
 	let renewed: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(&expiry)
 		.fetch_one(p.a.store.pool.fixture_driver())
