@@ -2228,7 +2228,7 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 			.iter()
 			.filter(|call| **call == "authority.human_read")
 			.count(),
-		3
+		6
 	);
 	assert!(!calls.contains(&"provider.infer"));
 }
