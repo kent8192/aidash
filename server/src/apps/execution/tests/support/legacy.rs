@@ -977,7 +977,7 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 #[path = "native_request.rs"]
 mod native_request;
 #[allow(unused_imports)]
-pub use native_request::captured_context;
+pub use native_request::{captured_context, current_chat_parts};
 
 #[path = "state.rs"]
 mod state;

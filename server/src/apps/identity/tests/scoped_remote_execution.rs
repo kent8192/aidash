@@ -336,8 +336,9 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 		.unwrap();
 	let mut store = aidash_server::store::Store::from_pool(pool, f.config.deployment.clone())
 		.await
-		.unwrap();
-	// A restarted node keeps its Deployment's egress and permitted Keyless origins.
+		.unwrap()
+		.with_cache_salt(f.store.cache_salt.clone());
+	// A restarted Node keeps its Deployment's network and Cache Salt configuration.
 	store.egress = f.store.egress.clone();
 	store.keyless = f.store.keyless.clone();
 	f.registry = aidash_server::registry::Registry::new(store.pool.clone(), &f.config.deployment)

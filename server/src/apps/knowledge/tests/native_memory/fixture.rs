@@ -3,7 +3,7 @@ use super::DatabaseFixture;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::Tenant,
+	apps::{execution::serializers::cache_salt::CacheSaltSettings, identity::models::Tenant},
 	registry::{Entry, Registry},
 	store::Store,
 };
@@ -204,12 +204,19 @@ async fn setup_endpoint_policy_with_window(
 	diversity_lambda_millionths: Option<u32>,
 ) -> (Store, Registry, Uuid) {
 	let (flags, context_window, thread_owner) = settings;
+	let cache_salt = CacheSaltSettings {
+		keys: Vec::new(),
+		current: None,
+	}
+	.node_keys("native-memory-fixture")
+	.unwrap();
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
 		aidash_domain::nodes::DeploymentId::parse("aidash://native-memory").unwrap(),
 	)
 	.await
-	.unwrap();
+	.unwrap()
+	.with_cache_salt(cache_salt);
 	let store = aidash_server::semantic::services::memory_recovery::initialize(
 		&store,
 		database.recovery_directory.path().to_owned(),

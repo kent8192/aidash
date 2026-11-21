@@ -386,6 +386,9 @@ which the ledger reserves or the evaluator cancels.
 | `prompt-cache`        | Ordered → Ordered with `prompt_cache: explicit`        | #142       |
 | `exposure`            | Legacy exposure → `exposure: {version: deferred@1}`    | #115       |
 
+The corpus retains retired projection arms for replaying historical results.
+Live Runs require Native (ADR 0144).
+
 `completion-gate` (#112), `repository-rules` (#117) and `acp-adapter` (#121)
 are reported as `feature-not-available`. `context-recovery` (#113),
 `parallel-read-tools` (#119) and `streaming` (#120) remain `not-measured` as

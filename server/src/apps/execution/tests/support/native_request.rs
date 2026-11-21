@@ -5,6 +5,7 @@ use serde_json::{Map, Value, json};
 /// Extract the inputs supplied to the model and the tool results it can act on.
 pub fn captured_context(body: &Value) -> Value {
 	let mut snapshot = Map::new();
+	let mut step = Map::new();
 	let mut history = Vec::new();
 	let mut calls = Map::new();
 	for message in body["messages"].as_array().expect("Chat request messages") {
@@ -40,7 +41,13 @@ pub fn captured_context(body: &Value) -> Value {
 			.filter_map(|text| serde_json::from_str::<Envelope>(text).ok())
 		{
 			match envelope.source {
-				Source::Step | Source::Evidence | Source::Harness => {
+				Source::Step if envelope.provenance["scope"] == "step" => {
+					step = envelope.content.as_object().expect("step state").clone();
+				}
+				Source::Harness => {
+					step.extend(envelope.content.as_object().expect("harness state").clone());
+				}
+				Source::Step | Source::Evidence => {
 					if let Value::Object(fields) = envelope.content {
 						for (key, value) in fields {
 							match (snapshot.get_mut(&key), value) {
@@ -78,5 +85,17 @@ pub fn captured_context(body: &Value) -> Value {
 			}
 		}
 	}
+	snapshot.extend(step);
 	json!({"snapshot":snapshot,"history":history})
+}
+
+/// Native Chat requests send current media after attachments and Model Turns.
+#[allow(dead_code)] // Some integration targets inspect only the envelope data.
+pub fn current_chat_parts(request: &Value) -> &[Value] {
+	request["messages"]
+		.as_array()
+		.and_then(|messages| messages.last())
+		.and_then(|message| message["content"].as_array())
+		.map(Vec::as_slice)
+		.unwrap_or_default()
 }

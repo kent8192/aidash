@@ -84,7 +84,7 @@ impl Model {
 			.filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
 			.collect();
 		self.offered.lock().unwrap().push(offered.clone());
-		let context: Value = crate::native_request::captured_context(&body);
+		let context: Value = common::captured_context(&body);
 		let called = context["history"]
 			.as_array()
 			.unwrap()
@@ -1775,6 +1775,3 @@ async fn thread_api_binds_a_selected_existing_scratch_space(
 	drop(world);
 	cleanup(f, &url, &schema).await;
 }
-
-#[path = "support/native_request.rs"]
-mod native_request;

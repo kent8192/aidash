@@ -249,7 +249,7 @@ Lines are added while they fit `metadata_bytes`; the rest are replaced by
 
 Each request records `context.usage.exposure`:
 `{"metadata_bytes", "schema_bytes", "skill_bytes", "exposed": [[alias, digest], …]}`.
-Legacy requests omit it.
+Requests with eager Exposure omit it.
 
 ### Capability tools
 

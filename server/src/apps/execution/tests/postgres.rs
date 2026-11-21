@@ -276,15 +276,16 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 #[case::old_contract("harness_contract", "legacy@1")]
 #[tokio::test]
 async fn a_run_with_a_retired_pin_fails_at_the_next_worker_step(
-	#[from(store)] fixture: StoreFuture,
+	#[from(store)] _fixture: StoreFuture,
 	#[from(authenticated_runtime)]
-	#[with(fixture.clone())]
+	#[with(_fixture.clone())]
 	runtime: common::RuntimeFuture,
 	#[case] field: &str,
 	#[case] retired: &str,
 ) {
-	let (store, url, schema) = fixture.await.parts();
-	let federation = runtime.await.federation;
+	let runtime = runtime.await;
+	let (federation, url, schema) = runtime.parts();
+	let store = federation.store.clone();
 	let agent = seed(&federation.registry).await;
 	let thread = store
 		.create_thread(&ACME, "alice", "Retired rendering")

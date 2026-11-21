@@ -1154,7 +1154,7 @@ async fn deferred_exposure_survives_fresh_harness_instances_without_duplication(
 	assert_eq!(requests.len(), 6);
 	for (index, body) in requests.iter().enumerate() {
 		let text = instructions(body);
-		assert_eq!(text.matches("Additional user instructions:").count(), 1);
+		assert_eq!(text.matches("# Agent instructions").count(), 1);
 		assert_eq!(text.matches(INDEX_HEADER).count(), 1);
 		assert_eq!(
 			text.matches("Follow the scripted capability journey.")
@@ -1252,17 +1252,22 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(
 	let finished = d.drive(run.id).await;
 	completed(&finished);
 	let requests = d.requests().await;
-	let (catch_up, ordinary): (Vec<_>, Vec<_>) = requests
-		.iter()
-		.partition(|body| instructions(body).contains(CATCH_UP));
+	let (catch_up, ordinary): (Vec<_>, Vec<_>) = requests.iter().partition(|body| {
+		common::captured_context(body)["snapshot"]["turn_instructions"]
+			.to_string()
+			.contains(CATCH_UP)
+	});
 	assert!(!catch_up.is_empty() && !ordinary.is_empty(), "{requests:?}");
 	for body in &catch_up {
 		assert_eq!(tool_names(body), BTreeSet::from(["thread_read".to_owned()]));
 	}
+	// The resumed step can also read the Native journal recorded during catch-up.
+	let mut expected = expected_initial();
+	expected.extend(["journal_read", "journal_search"].map(str::to_owned));
 	for body in &ordinary {
 		let names = tool_names(body);
 		assert!(names.contains("human_request") && names.contains("thread_read"));
-		assert_eq!(names, expected_initial());
+		assert_eq!(names, expected);
 	}
 	d.close().await;
 }

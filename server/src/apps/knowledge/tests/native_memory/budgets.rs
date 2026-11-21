@@ -206,7 +206,8 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 	let (spent, unpriced) = ledger(&store).await;
 	assert_eq!(spent, 1 + 200_000);
 	assert_eq!(unpriced, indexed_unpriced + 1);
-	let calls: Vec<(String, Option<Uuid>, Option<Uuid>, String, i64)> = sqlx::query_as(
+	type ReflectionUsage = (String, Option<Uuid>, Option<Uuid>, String, i64);
+	let calls: Vec<ReflectionUsage> = sqlx::query_as(
 		"SELECT m.node, m.run_id, m.stint_id, m.outcome, u.cost_nanocredits
 		 FROM model_calls m JOIN inference_usage u ON u.model_call_id = m.id
 		 WHERE m.tenant = 'acme' AND m.purpose = 'memory_role'",

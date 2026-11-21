@@ -169,9 +169,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	{
 		let requests = requests.lock().unwrap();
 		assert_eq!(requests.len(), 2, "{requests:?}");
-		let parts = requests[1]["messages"][1]["content"]
-			.as_array()
-			.unwrap_or_else(|| panic!("selected media missing from inference: {:?}", requests[1]));
+		let parts = crate::common::current_chat_parts(&requests[1]);
 		let actual_images = parts
 			.iter()
 			.filter_map(|part| part["image_url"]["url"].as_str())
@@ -181,8 +179,15 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 		assert_eq!(actual_images, expected_images);
 		let labels = parts
 			.iter()
-			.filter_map(|part| part["text"].as_str())
-			.filter(|text| text.starts_with("Selected file: "))
+			.filter_map(|part| {
+				use aidash_domain::projection::native::{Envelope, Trust};
+				let envelope: Envelope = serde_json::from_str(part["text"].as_str()?).ok()?;
+				if envelope.provenance["scope"] != "media" {
+					return None;
+				}
+				assert_eq!(envelope.trust, Trust::Data);
+				envelope.content.as_str().map(str::to_owned)
+			})
 			.collect::<Vec<_>>();
 		assert_eq!(
 			labels,
