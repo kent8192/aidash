@@ -44,7 +44,7 @@ impl Context {
 	}
 }
 
-/// `key` is present for an Ordered Run. Its boundary is then the Retrieval Key
+/// When supplied, the Retrieval Key is the recall operation boundary
 /// itself, without step or Run revision, so a re-retrieval under the same key
 /// replays the same recall operation and envelope bytes.
 #[allow(clippy::too_many_arguments)]

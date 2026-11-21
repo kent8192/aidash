@@ -63,23 +63,21 @@ source is `plan_connection: "chatgpt"`; do not combine it
 with `provider_credential` or an environment key. The Responses endpoint is
 `https://api.openai.com/v1`.
 
-A model's context window, maximum output tokens, modalities and projection
-versions remain explicit Registry metadata. Review any manually entered
-defaults before approving a model. The provider model slug must be one the
-owner's connection can use. Registering or approving a model never shares a
-Plan Connection with another subject.
+A model's context window, maximum output tokens and modalities are Registry
+metadata. Review any manually entered defaults before approving a model. The
+provider model slug must be one the owner's connection can use. Registering or
+approving a model never shares a Plan Connection with another subject.
 
 The Agent form first selects a provider and credential source, then a versioned
 model definition from the Tenant's Registry. The ChatGPT group links to personal
 settings when the current subject has no active connection. Tenant Provider
 Credentials, personal Plan Connections and Keyless endpoints stay distinct.
 
-Legacy, Ordered and Native projection are supported. Native maps messages,
-function calls and matching function outputs to Responses items. Every call
-supplies its projected history with `store: false` and `stream: true`; it does
-not depend on provider-stored history or `previous_response_id`. Encrypted
-reasoning is not retained or replayed (ADR 0083). Reasoning continuity and cache
-benefits from encrypted-reasoning replay are not promised.
+Native projection maps messages, function calls and matching function outputs
+to Responses items. Aidash reconstructs the projected history for each call
+and sends it with `store: false` and `stream: true`. Encrypted reasoning is
+not retained or replayed (ADR 0083). Reasoning continuity and cache benefits
+from encrypted-reasoning replay are not promised.
 
 Plan usage accepts function tools, text and supported image input. Audio and
 OpenRouter-specific media routes or explicit cache breakpoints are unavailable.

@@ -466,6 +466,7 @@ pub async fn recover(
 		store.save(&current, token, "execution.retrying").await?;
 		return Ok(true);
 	} else if current.control != RunControl::Cancelled
+		&& !matches!(failure, ExecutionFailure::ProjectionRetired(_))
 		&& let Some(need) = aidash_application::connection_wait::failure_need(&current)
 		&& let Some(policy) = store.connection_wait_policy(&current).await?
 	{

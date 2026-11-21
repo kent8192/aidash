@@ -90,7 +90,7 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				return Err(Error::Forbidden);
 			}
 			let config: aidash_domain::model::ModelConfig =
-				serde_json::from_value(definition.metadata.config.clone())?;
+				aidash_domain::model::ModelConfig::from_stored(definition.metadata.config.clone())?;
 			let valid = if usage.purpose == Purpose::Summary {
 				let policy =
 					aidash_domain::context::policy::Effective::of(agent.context_policy.as_ref());

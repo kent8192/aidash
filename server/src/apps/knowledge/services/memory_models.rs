@@ -888,7 +888,7 @@ impl Models {
 		purpose: MaintenancePurpose,
 	) -> Result<Produced<T>> {
 		let config: ModelConfig =
-			serde_json::from_value(self.role(reference, "model")?.config.clone())?;
+			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?;
 		let input = instruction
 			.len()
 			.checked_add(serde_json::to_string(&context)?.len())
@@ -917,10 +917,7 @@ impl Models {
 				.then_some(self.run)
 				.flatten(),
 			disable_provider_transforms: false,
-			input_format: InputFormat::for_model(
-				&config,
-				aidash_domain::projection::ProjectionVersion::Native,
-			),
+			input_format: InputFormat::for_model(&config),
 			estimate: Default::default(),
 		};
 		request.ensure_fits(config.context_window)?;

@@ -529,20 +529,6 @@ impl ModelProvider for OpenRouterProvider {
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
 
-			// A Run's pinned version was checked at registration and Run
-			// creation; a request forced past them still never reaches the
-			// provider, and never falls back to Legacy (ADR 0015). Standalone
-			// calls have no Run projection declaration (ADR 0144).
-			let version = request.context.projection_version();
-			if !request.context.is_standalone()
-				&& !version.is_legacy()
-				&& !self.config.supports_projection(version)
-			{
-				return Err(Error::UnsupportedProjection {
-					model: self.config.model_id.clone(),
-					version,
-				});
-			}
 			// Unsupported routes never receive `cache_control` (ADR 0019).
 			if request.cache_breakpoints && !self.config.accepts_cache_breakpoints() {
 				return Err(Error::Invalid(format!(
@@ -711,9 +697,9 @@ fn billed_usage(result: &Result<ModelResponse>) -> Option<&ModelResponse> {
 	}
 }
 
-/// The sticky-routing id every step of a salted Run sends (ADR 0115), on the
+/// The sticky-routing id every Run step sends (ADR 0115), on the
 /// Chat and the Responses transport alike. Absent without a Cache Scope, a Run
-/// or the node's Cache Salt Keys, so Legacy and auxiliary requests send none.
+/// or the node's Cache Salt Keys, so standalone Model Calls send none.
 pub(crate) fn routing_session(
 	keys: Option<&CacheSaltKeys>,
 	request: &ModelRequest,
@@ -766,14 +752,8 @@ fn request_body(
 	}
 	if config.explicit_cache_only() {
 		body["prompt_cache_options"] = json!({"mode": "explicit"});
-		// Only Native put a history breakpoint on the previous step. An Ordered
-		// request splices provider activity after `system`, where no
-		// breakpoint ever sat, so marking there would pay a write nothing reads.
 		if request.cache_breakpoints
-			&& matches!(
-				request.context,
-				aidash_domain::provider::ModelContext::Native(_)
-			) && let Some(messages) = body["messages"].as_array_mut()
+			&& let Some(messages) = body["messages"].as_array_mut()
 		{
 			mark_previous_step(messages);
 		}
@@ -784,8 +764,7 @@ fn request_body(
 /// Explicit mode looks up only the breakpoints in the request itself, so the
 /// entry the previous step wrote is read only if its position is marked again:
 /// the last message with content before the last Model Turn, which is where
-/// Native put the history breakpoint on that step (ADR 0115). Native layout
-/// only: the caller must not apply it to an Ordered request.
+/// the history breakpoint sat on that step (ADR 0115).
 fn mark_previous_step(messages: &mut [Value]) {
 	let Some(assistant) = messages
 		.iter()

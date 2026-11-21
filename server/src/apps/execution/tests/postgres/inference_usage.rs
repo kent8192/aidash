@@ -69,8 +69,8 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		response_epoch: 3,
 		model_id: "model".into(),
 		model_version: "1.0.0".into(),
-		projection_version: ProjectionVersion::Legacy.number(),
-		harness_contract: aidash_domain::harness_contract::HarnessContract::Legacy.number(),
+		projection_version: ProjectionVersion::Native.number(),
+		harness_contract: aidash_domain::harness_contract::HarnessContract::Structured4.number(),
 		upstream_model: "vendor/model".into(),
 		purpose: UsagePurpose::Main,
 		model_call: None,
@@ -608,7 +608,7 @@ async fn complete_sample_attempts_record_anonymous_calibration_samples(
 		)
 	);
 	let samples = store
-		.calibration_samples("vendor/model", ProjectionVersion::Legacy.number())
+		.calibration_samples("vendor/model", ProjectionVersion::Native.number())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -620,7 +620,7 @@ async fn complete_sample_attempts_record_anonymous_calibration_samples(
 	);
 	assert!(
 		store
-			.calibration_samples("vendor/model", ProjectionVersion::Ordered.number())
+			.calibration_samples("vendor/model", 2)
 			.await
 			.unwrap()
 			.is_empty()
@@ -686,7 +686,7 @@ async fn calibration_samples_keep_only_the_newest_window_per_key(
 
 	// Act
 	let samples = store
-		.calibration_samples("vendor/model", ProjectionVersion::Legacy.number())
+		.calibration_samples("vendor/model", ProjectionVersion::Native.number())
 		.await
 		.unwrap();
 
@@ -703,7 +703,7 @@ async fn calibration_samples_keep_only_the_newest_window_per_key(
 	);
 	assert_eq!(
 		store
-			.calibration_samples("other/model", ProjectionVersion::Legacy.number())
+			.calibration_samples("other/model", ProjectionVersion::Native.number())
 			.await
 			.unwrap()
 			.len(),
@@ -846,7 +846,7 @@ async fn summary_usage_is_independent_from_main_and_keeps_prompt_free_evidence(
 	);
 	assert!(
 		store
-			.calibration_samples("vendor/model", ProjectionVersion::Legacy.number())
+			.calibration_samples("vendor/model", ProjectionVersion::Native.number())
 			.await
 			.unwrap()
 			.is_empty()

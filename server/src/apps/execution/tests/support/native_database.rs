@@ -277,7 +277,8 @@ impl DatabaseFixture {
 			.unwrap_or_else(|error| panic!("{error}"));
 		let mut restarted = aidash_server::store::Store::from_pool(pool, store.deployment.clone())
 			.await
-			.unwrap();
+			.unwrap()
+			.with_cache_salt(store.cache_salt.clone());
 		// Deployment configuration survives a crash; only process state is lost.
 		restarted.keyless = store.keyless.clone();
 		aidash_server::semantic::services::memory_recovery::attach(

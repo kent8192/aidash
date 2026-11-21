@@ -12,7 +12,7 @@ use aidash_domain::{
 	projection::ProjectionVersion,
 	provider::{ContentPart, InputFormat, ModelContext, ModelRequest},
 };
-use serde_json::json;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -113,7 +113,7 @@ pub fn admission_request(
 	context: serde_json::Value,
 	content_parts: Vec<ContentPart>,
 ) -> ModelRequest {
-	let input_format = InputFormat::for_model(model, ProjectionVersion::Native);
+	let input_format = InputFormat::for_model(model);
 	let context = ModelContext::native_data(&context);
 	ModelRequest {
 		context,
@@ -123,21 +123,17 @@ pub fn admission_request(
 	}
 }
 
-/// Ordinary media estimates follow the pinned Run renderer during the transition.
+/// Budget Native media with the same wire framing as a Run request.
 pub(super) fn run_media_budget_request(
 	model: &ModelConfig,
-	projection: ProjectionVersion,
+	_projection: ProjectionVersion,
 	content_parts: Vec<ContentPart>,
 ) -> ModelRequest {
-	let input_format = InputFormat::for_model(model, projection);
-	let context = if input_format == InputFormat::Responses {
-		ModelContext::Native(aidash_domain::projection::native::native_context(
-			&Default::default(),
-			&json!({}),
-		))
-	} else {
-		json!({}).into()
-	};
+	let input_format = InputFormat::for_model(model);
+	let context = ModelContext::Native(aidash_domain::projection::native::native_context(
+		&Default::default(),
+		&Value::Null,
+	));
 	ModelRequest {
 		input_format,
 		context,

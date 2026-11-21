@@ -3,14 +3,10 @@
 use super::*;
 use aidash_domain::projection::native::{NativeMessage, check_model_turns};
 
-fn native(fixture: &mut Fixture) {
-	Arc::get_mut(&mut fixture.backend.0).unwrap().projection = ProjectionVersion::Native;
-}
-
 fn native_context(request: &ModelRequest) -> &aidash_domain::projection::native::NativeContext {
 	match &request.context {
 		ModelContext::Native(native) => native,
-		ModelContext::Legacy(_) | ModelContext::Ordered(_) | ModelContext::Sampling(_) => {
+		ModelContext::Sampling(_) => {
 			panic!("expected a Native request")
 		}
 	}
@@ -140,7 +136,6 @@ fn multi_round_journal() -> Context {
 #[tokio::test]
 async fn native_request_bytes_match_the_multi_round_golden_fixture(mut canonical: Fixture) {
 	// Arrange
-	native(&mut canonical);
 	canonical.run.context = multi_round_journal();
 	// Act
 	assert!(advance_sources(&mut canonical).await.is_err());
@@ -194,7 +189,6 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 	#[case] plan: bool,
 ) {
 	// Arrange
-	native(&mut canonical);
 	Arc::get_mut(&mut canonical.backend.0)
 		.unwrap()
 		.plan_connection = plan;
@@ -272,7 +266,7 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 #[tokio::test]
 async fn explicit_native_requests_mark_system_and_the_last_history_message(mut canonical: Fixture) {
 	// Arrange
-	explicit_cache(&mut canonical, ProjectionVersion::Native);
+	explicit_cache(&mut canonical);
 	canonical.run.context = multi_round_journal();
 	// Act
 	assert!(advance_sources(&mut canonical).await.is_err());
@@ -295,10 +289,16 @@ async fn explicit_native_requests_mark_system_and_the_last_history_message(mut c
 	);
 	assert!(last_history["content"][0].get("cache_control").is_some());
 	assert!(
-		messages[messages.len() - 3]["content"]
+		messages[messages.len() - 3]["content"][0]["text"]
 			.as_str()
 			.unwrap()
 			.contains(r#""source":"step","provenance":{"scope":"step"}"#)
+	);
+	assert!(
+		messages[messages.len() - 3]["content"][1]["text"]
+			.as_str()
+			.unwrap()
+			.contains(r#""trust":"aidash""#)
 	);
 	assert_eq!(messages[messages.len() - 4]["role"], "assistant");
 	assert!(messages[messages.len() - 1]["content"].is_string());
@@ -307,7 +307,6 @@ async fn explicit_native_requests_mark_system_and_the_last_history_message(mut c
 #[rstest]
 #[tokio::test]
 async fn native_system_prompt_names_envelopes_and_keeps_data_out(mut canonical: Fixture) {
-	native(&mut canonical);
 	canonical.run.context = multi_round_journal();
 	assert!(advance_sources(&mut canonical).await.is_err());
 	let requests = canonical.backend.0.requests.lock().unwrap();
@@ -338,7 +337,6 @@ async fn execute_two_calls(fixture: &mut Fixture) {
 #[tokio::test]
 async fn a_native_run_records_one_model_turn_before_its_tool_events(mut fixture: Fixture) {
 	// Arrange
-	native(&mut fixture);
 	// Act
 	execute_two_calls(&mut fixture).await;
 	// Assert
@@ -361,33 +359,9 @@ async fn a_native_run_records_one_model_turn_before_its_tool_events(mut fixture:
 }
 
 #[rstest]
-#[case::legacy(ProjectionVersion::Legacy)]
-#[case::ordered(ProjectionVersion::Ordered)]
-#[tokio::test]
-async fn legacy_and_ordered_runs_never_record_model_turns(
-	mut fixture: Fixture,
-	#[case] projection: ProjectionVersion,
-) {
-	// Arrange
-	Arc::get_mut(&mut fixture.backend.0).unwrap().projection = projection;
-	// Act
-	execute_two_calls(&mut fixture).await;
-	// Assert
-	assert_eq!(fixture.run.context.events().len(), 2);
-	assert!(
-		!fixture
-			.run
-			.context
-			.events()
-			.any(|event| matches!(event, ContextEvent::Assistant { .. }))
-	);
-}
-
-#[rstest]
 #[tokio::test]
 async fn a_native_final_answer_is_a_model_turn_without_calls(mut fixture: Fixture) {
 	// Arrange
-	native(&mut fixture);
 	respond(&mut fixture.run, vec![]);
 	fixture.run.state.tool_mut().unwrap().response.text = "Final answer".into();
 	fixture.run.state.tool_mut().unwrap().response_epoch = 5;
@@ -406,7 +380,6 @@ async fn a_native_final_answer_is_a_model_turn_without_calls(mut fixture: Fixtur
 #[tokio::test]
 async fn a_recovered_native_run_resumes_with_identical_request_bytes(mut canonical: Fixture) {
 	// Arrange
-	native(&mut canonical);
 	canonical.run.context = multi_round_journal();
 	assert!(advance_sources(&mut canonical).await.is_err());
 	// Act: the saved Run is decoded again, as a new worker would after a restart.
@@ -425,7 +398,6 @@ async fn a_recovered_native_run_resumes_with_identical_request_bytes(mut canonic
 #[rstest]
 #[tokio::test]
 async fn native_usage_records_carry_projection_version_three(mut canonical: Fixture) {
-	native(&mut canonical);
 	assert!(advance_sources(&mut canonical).await.is_err());
 	let usage = canonical.backend.0.usage.lock().unwrap();
 	let [(dispatch, _)] = usage.as_slice() else {
@@ -434,21 +406,15 @@ async fn native_usage_records_carry_projection_version_three(mut canonical: Fixt
 	assert_eq!(dispatch.projection_version, 3);
 	assert_eq!(
 		dispatch.harness_contract,
-		aidash_domain::harness_contract::HarnessContract::Legacy.number()
+		aidash_domain::harness_contract::HarnessContract::Structured4.number()
 	);
 }
 
 #[rstest]
-#[case::legacy(ProjectionVersion::Legacy)]
-#[case::ordered(ProjectionVersion::Ordered)]
-#[case::native(ProjectionVersion::Native)]
 #[tokio::test]
 async fn usage_records_carry_the_stable_prefix_cache_identity_of_salted_runs(
 	mut canonical: Fixture,
-	#[case] projection: ProjectionVersion,
 ) {
-	// Arrange
-	Arc::get_mut(&mut canonical.backend.0).unwrap().projection = projection;
 	// Act: two steps with the same instructions and tools, then new instructions.
 	assert!(advance_sources(&mut canonical).await.is_err());
 	canonical.run.step += 1;
@@ -461,10 +427,6 @@ async fn usage_records_carry_the_stable_prefix_cache_identity_of_salted_runs(
 		.iter()
 		.map(|(dispatch, _)| dispatch.cache_identity.clone())
 		.collect::<Vec<_>>();
-	if projection.is_legacy() {
-		assert_eq!(identities, [None, None, None]);
-		return;
-	}
 	let requests = canonical.backend.0.requests.lock().unwrap();
 	assert_eq!(identities[0], requests[0].cache_identity());
 	assert!(identities[0].is_some());
@@ -600,7 +562,6 @@ fn native_estimate_counts_the_complete_request_near_the_window(#[case] turns: u3
 /// A Native Run over its window: a Human answer, 40 old Model Turns with
 /// large results and 6 recent ones, all already inferred.
 fn native_thinking_over_the_window(fixture: &mut Fixture) {
-	native(fixture);
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	fixture.run.context.push(ContextEvent::Human {
 		request: "Any constraints?".into(),
@@ -675,7 +636,6 @@ async fn evidence_offloaded_in_its_own_step_is_journaled_whole(mut fixture: Fixt
 	// Arrange: a Run over its window whose older turns hold nothing worth
 	// offloading, and a small protected tail, so this step's new thread
 	// evidence is the one item compaction offloads.
-	native(&mut fixture);
 	let large = "q".repeat(60_000);
 	{
 		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
@@ -751,7 +711,6 @@ async fn evidence_offloaded_in_its_own_step_is_journaled_whole(mut fixture: Fixt
 }
 
 fn structured(fixture: &mut Fixture, contract: aidash_domain::harness_contract::HarnessContract) {
-	native(fixture);
 	Arc::get_mut(&mut fixture.backend.0)
 		.unwrap()
 		.harness_contract = contract;
@@ -785,7 +744,6 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	let request = &requests[0];
 	let expected = aidash_domain::harness_contract::system_text(
 		aidash_domain::harness_contract::HarnessContract::Structured3,
-		ProjectionVersion::Native,
 		&aidash_domain::standing_instructions::StandingInstructions::default(),
 		"Do the task",
 		&[],
@@ -870,7 +828,6 @@ async fn a_native_turn_records_reasoning_unless_the_route_turns_it_off(
 	#[case] recorded: bool,
 ) {
 	// Arrange
-	native(&mut fixture);
 	let reasoning = aidash_domain::provider::reasoning::Reasoning::ChatDetails {
 		details: vec![
 			json!({"type":"reasoning.encrypted","data":"opaque","format":"google-gemini-v1","index":0}),
@@ -915,7 +872,6 @@ fn native_summary_due(fixture: &mut Fixture, prefix: Vec<ContextEvent>) {
 		state.model_reasoning = true;
 		*state.summary_text.lock().unwrap() = Some(valid_summary());
 	}
-	native(fixture);
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	for event in prefix {
 		fixture.run.context.push(event);
@@ -1063,7 +1019,6 @@ async fn pinned_standing_instructions_reach_the_system_text(mut canonical: Fixtu
 	let requests = canonical.backend.0.requests.lock().unwrap();
 	let expected = aidash_domain::harness_contract::system_text(
 		aidash_domain::harness_contract::HarnessContract::Structured4,
-		ProjectionVersion::Native,
 		&standing,
 		"Do the task",
 		&[],

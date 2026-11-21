@@ -84,8 +84,7 @@ impl Model {
 			.filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
 			.collect();
 		self.offered.lock().unwrap().push(offered.clone());
-		let context: Value =
-			serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+		let context: Value = common::captured_context(&body);
 		let called = context["history"]
 			.as_array()
 			.unwrap()

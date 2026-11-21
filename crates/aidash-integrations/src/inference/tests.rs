@@ -38,23 +38,17 @@ fn permitting(endpoint: &str) -> aidash_application::provider_access::KeylessAcc
 	)
 }
 
-#[rstest::rstest]
-#[case::legacy(ProjectionVersion::Legacy)]
-// Native envelopes text labels as data, so the label grows by its envelope
-// and a second level of JSON escaping.
-#[case::native(ProjectionVersion::Native)]
-fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionVersion) {
+// Native envelopes text labels as data, adding a layer of JSON escaping.
+#[test]
+fn media_reservation_covers_complete_request_growth() {
 	let history = json!({"history":"quoted \\\"text\\\" and 日本語"});
-	let context = match version {
-		ProjectionVersion::Native => aidash_domain::provider::ModelContext::Native(NativeContext {
-			standalone: false,
-			attachments: Vec::new(),
-			history: Vec::new(),
-			volatile: history.to_string(),
-			harness: None,
-		}),
-		_ => history.into(),
-	};
+	let context = aidash_domain::provider::ModelContext::Native(NativeContext {
+		standalone: false,
+		attachments: Vec::new(),
+		history: Vec::new(),
+		volatile: history.to_string(),
+		harness: None,
+	});
 	let mut request = ModelRequest {
 		provider_tools: vec![],
 		instructions: "Inspect the media".into(),
@@ -87,7 +81,7 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 			<= without_media.saturating_add(
 				ModelRequest::content_parts_reservation(
 					&request.content_parts,
-					version,
+					ProjectionVersion::Native,
 					Default::default(),
 				)
 				.unwrap()
@@ -893,10 +887,7 @@ fn only_context_policy_requests_disable_openrouter_transforms(
 
 mod cache_salt {
 	use super::*;
-	use aidash_domain::{
-		projection::CacheScope,
-		provider::{ModelContext, OrderedContext},
-	};
+	use aidash_domain::{projection::CacheScope, provider::ModelContext};
 	use axum::{Json, Router, routing::post};
 
 	const SECRET_ONE: &str = "fixture-cache-salt-secret-one";
@@ -959,7 +950,7 @@ mod cache_salt {
 				"context_window": 100_000,
 				"modalities": ["text"],
 				"cost": {},
-				"projection_versions": ["legacy", "ordered", "native"]
+
 			});
 			if let Some(mode) = cache_mode {
 				config["cache_mode"] = json!(mode);
@@ -1009,7 +1000,7 @@ mod cache_salt {
 		}
 	}
 
-	fn legacy() -> ModelRequest {
+	fn standalone() -> ModelRequest {
 		ModelRequest {
 			provider_tools: vec![],
 			instructions: "Shared instructions".into(),
@@ -1024,17 +1015,6 @@ mod cache_salt {
 			disable_provider_transforms: false,
 			input_format: Default::default(),
 			estimate: Default::default(),
-		}
-	}
-
-	fn ordered(scope: CacheScope) -> ModelRequest {
-		ModelRequest {
-			context: ModelContext::Ordered(OrderedContext {
-				stable: r#"{"identity":"fixture"}"#.into(),
-				volatile: r#"{"thread":{}}"#.into(),
-			}),
-			cache_scope: Some(scope),
-			..legacy()
 		}
 	}
 
@@ -1062,7 +1042,7 @@ mod cache_salt {
 				&json!({"identity":"fixture","thread":{}}),
 			)),
 			cache_scope: Some(scope),
-			..legacy()
+			..standalone()
 		}
 	}
 
@@ -1076,9 +1056,9 @@ mod cache_salt {
 
 	#[rstest::rstest]
 	#[tokio::test]
-	async fn legacy_requests_are_sent_without_a_salt() {
+	async fn standalone_requests_are_sent_without_a_salt() {
 		let mut upstream = Upstream::start().await;
-		let request = legacy();
+		let request = standalone();
 		for keys in [Some(keys()), None] {
 			upstream
 				.provider(keys)
@@ -1096,9 +1076,9 @@ mod cache_salt {
 
 	#[rstest::rstest]
 	#[tokio::test]
-	async fn ordered_requests_start_system_with_the_tenant_salt() {
+	async fn native_requests_start_system_with_the_tenant_salt() {
 		let mut upstream = Upstream::start().await;
-		let request = ordered(scope("tenant-a", 1));
+		let request = native(scope("tenant-a", 1));
 		upstream
 			.provider(Some(keys()))
 			.infer(request.clone(), &aidash_application::ports::NoProgress)
@@ -1143,7 +1123,7 @@ mod cache_salt {
 			scope("tenant-a", 1),
 		] {
 			provider
-				.infer(ordered(scope), &aidash_application::ports::NoProgress)
+				.infer(native(scope), &aidash_application::ports::NoProgress)
 				.await
 				.unwrap();
 		}
@@ -1171,7 +1151,7 @@ mod cache_salt {
 		let error = upstream
 			.provider(keys)
 			.infer(
-				ordered(scope("tenant-a", version)),
+				native(scope("tenant-a", version)),
 				&aidash_application::ports::NoProgress,
 			)
 			.await
@@ -1189,7 +1169,7 @@ mod cache_salt {
 		let marked = ModelRequest {
 			cache_breakpoints: true,
 			disable_provider_transforms: false,
-			..ordered(scope("tenant-a", 1))
+			..native(scope("tenant-a", 1))
 		};
 		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
 		// Act
@@ -1199,7 +1179,7 @@ mod cache_salt {
 			.unwrap();
 		provider
 			.infer(
-				ordered(scope("tenant-a", 1)),
+				native(scope("tenant-a", 1)),
 				&aidash_application::ports::NoProgress,
 			)
 			.await
@@ -1212,11 +1192,11 @@ mod cache_salt {
 			json!([{"type":"text","text":format!("{expected_line}Shared instructions"),"cache_control":ephemeral}])
 		);
 		let parts = bodies[0]["messages"][1]["content"].as_array().unwrap();
+		assert!(parts[0].get("cache_control").is_none());
 		assert_eq!(
-			parts[0]["cache_control"], ephemeral,
-			"the Stable Prefix part"
+			bodies[0]["messages"][3]["content"][0]["cache_control"], ephemeral,
+			"the last tool result marks the Stable Prefix"
 		);
-		assert!(parts[1].get("cache_control").is_none(), "the volatile part");
 		assert_eq!(bodies[0]["messages"][1], marked.input_body()["messages"][1]);
 		assert_eq!(bodies[0]["provider"]["zdr"], true);
 		assert!(!bodies[1].to_string().contains("cache_control"));
@@ -1269,7 +1249,7 @@ mod cache_salt {
 			"modalities": ["text"],
 			"cost": {},
 			"cache_mode": "explicit",
-			"projection_versions": ["legacy", "ordered"]
+
 		});
 		let provider = salted_provider(
 			test_clients(),
@@ -1284,7 +1264,7 @@ mod cache_salt {
 			.infer(
 				ModelRequest {
 					cache_breakpoints: breakpoints,
-					..ordered(scope("tenant-a", 1))
+					..native(scope("tenant-a", 1))
 				},
 				&aidash_application::ports::NoProgress,
 			)
@@ -1318,7 +1298,7 @@ mod cache_salt {
 		let marked = ModelRequest {
 			cache_breakpoints: true,
 			disable_provider_transforms: false,
-			..ordered(scope("tenant-a", 1))
+			..native(scope("tenant-a", 1))
 		};
 		// Act
 		let error = upstream
@@ -1339,7 +1319,7 @@ mod cache_salt {
 		let keys = keys();
 		let line = keys.line(&scope("tenant-a", 2)).unwrap();
 		let digest = line.trim_end().rsplit(':').next().unwrap().to_owned();
-		let request = ordered(scope("tenant-a", 2));
+		let request = native(scope("tenant-a", 2));
 		let rendered = [
 			format!("{keys:?}"),
 			format!(
@@ -1409,45 +1389,6 @@ mod cache_salt {
 		assert_eq!(attachment.last().unwrap()["cache_control"], ephemeral);
 		assert_eq!(messages[3]["content"][0]["cache_control"], ephemeral);
 		assert_eq!(body.to_string().matches("cache_control").count(), 3);
-	}
-
-	/// Only Native has a previous-step position to mark. An Ordered Agent's
-	/// provider activity is spliced in after `system`, and those messages were
-	/// never breakpoints, so marking one would pay a write nothing reads.
-	#[tokio::test]
-	async fn an_ordered_request_on_a_gpt_route_marks_no_previous_step() {
-		// Arrange
-		let mut upstream = Upstream::start().await;
-		let provider = upstream.route(Some(keys()), "openai/gpt-6.1-terra", Some("explicit"));
-		let activity = |text: &str| json!({"kind":"assistant","text":text,"provider_activity":[{"type":"datetime_call"}]});
-		let marked = ModelRequest {
-			context: ModelContext::Ordered(OrderedContext {
-				stable:
-					json!({"identity":"fixture","history":[activity("first"), activity("second")]})
-						.to_string(),
-				volatile: r#"{"thread":{}}"#.into(),
-			}),
-			cache_breakpoints: true,
-			..ordered(scope("tenant-a", 1))
-		};
-		// Act
-		provider
-			.infer(marked, &aidash_application::ports::NoProgress)
-			.await
-			.unwrap();
-		// Assert: system and the Stable Prefix part only, not the spliced turns.
-		let bodies = upstream.bodies();
-		let body = &bodies[0];
-		assert_eq!(body["prompt_cache_options"], json!({"mode":"explicit"}));
-		let messages = body["messages"].as_array().unwrap();
-		let roles: Vec<&str> = messages
-			.iter()
-			.map(|m| m["role"].as_str().unwrap())
-			.collect();
-		assert_eq!(roles, ["system", "assistant", "assistant", "user"]);
-		assert!(messages[1]["content"].is_string());
-		assert!(messages[2]["content"].is_string());
-		assert_eq!(body.to_string().matches("cache_control").count(), 2);
 	}
 
 	#[rstest::rstest]
@@ -1526,7 +1467,7 @@ mod cache_salt {
 	}
 
 	#[rstest::rstest]
-	#[case::legacy_has_no_scope(legacy(), Some(uuid::Uuid::from_u128(7)))]
+	#[case::legacy_has_no_scope(standalone(), Some(uuid::Uuid::from_u128(7)))]
 	#[case::outside_a_run(native(scope("tenant-a", 1)), None)]
 	#[tokio::test]
 	async fn requests_without_a_scope_or_a_run_send_no_session_id(
@@ -1591,54 +1532,6 @@ mod cache_salt {
 			marked.input_body()["messages"].as_array().unwrap()[1..]
 		);
 		assert_eq!(body["provider"]["zdr"], true);
-	}
-
-	#[rstest::rstest]
-	#[case::undeclared(json!(["legacy", "ordered"]))]
-	#[case::legacy_only(json!(null))]
-	#[tokio::test]
-	async fn a_forced_unsupported_projection_fails_typed_before_any_request(
-		#[case] versions: Value,
-	) {
-		// Arrange
-		let mut upstream = Upstream::start().await;
-		let mut config = json!({
-			"provider": "openrouter",
-			"model_id": "fixture",
-			"endpoint": upstream.endpoint,
-			"context_window": 100_000,
-			"modalities": ["text"],
-			"cost": {}
-		});
-		if !versions.is_null() {
-			config["projection_versions"] = versions;
-		}
-		let provider = salted_provider(
-			test_clients(),
-			serde_json::from_value(config).unwrap(),
-			Arc::new(permitting(&upstream.endpoint)),
-			Default::default(),
-			Some(keys()),
-		)
-		.unwrap();
-		// Act
-		let error = provider
-			.infer(
-				native(scope("tenant-a", 1)),
-				&aidash_application::ports::NoProgress,
-			)
-			.await
-			.unwrap_err();
-		// Assert
-		assert!(
-			matches!(
-				&error,
-				Error::UnsupportedProjection { model, version }
-					if model == "fixture" && *version == aidash_domain::projection::ProjectionVersion::Native
-			),
-			"{error:?}"
-		);
-		assert!(upstream.bodies().is_empty());
 	}
 }
 

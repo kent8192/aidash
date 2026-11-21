@@ -118,7 +118,7 @@ pub struct Store {
 	pub(crate) tenancies: std::sync::Arc<tenancies::Tenancies>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
-	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
+	/// This node's Cache Salt Keys (ADR 0016); `None` prevents Run admission.
 	pub cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
 	/// Where Execution Pod time and storage samples go. The build installs it;
 	/// Community's reports nowhere.
@@ -455,16 +455,23 @@ impl Store {
 		)?)
 	}
 
-	/// Run creation re-checks the Projection Version pinned by the Binding
-	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
-	/// pinned model and, when salted, backed by this node's Cache Salt Key.
-	/// Legacy Projection Versions are never affected; nothing falls back to
-	/// Legacy.
-	pub(crate) fn require_projection(
+	/// Run admission requires a supported rendering and this Node's Cache Salt Key.
+	pub(crate) fn require_run_projection(
 		&self,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<()> {
-		require_projection(snapshot, self.cache_salt.is_some())
+		let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
+		aidash_domain::registry::execution_contract(
+			agent.projection_version,
+			agent.harness_contract,
+		)
+		.map_err(Error::Invalid)?;
+		if self.cache_salt.is_none() {
+			return Err(Error::Invalid(
+				"this node has no Cache Salt Key for Native Runs".into(),
+			));
+		}
+		Ok(())
 	}
 
 	/// The view of one Run's executor, in the Run's Tenant scope.
@@ -1412,7 +1419,7 @@ impl Store {
 				.await?
 			};
 			snapshot.validate()?;
-			self.require_projection(&snapshot)?;
+			self.require_run_projection(&snapshot)?;
 			let tenant: String = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("tenant"))
@@ -6022,56 +6029,6 @@ impl Store {
 		}
 		Ok(h)
 	}
-}
-
-fn require_projection(
-	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
-	cache_salt: bool,
-) -> Result<()> {
-	let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
-	let version = agent.projection_version.unwrap_or_default();
-	let contract = agent.harness_contract.unwrap_or_default();
-	if !contract.is_implemented() {
-		return Err(Error::Invalid(format!(
-			"Harness Contract {contract} is not implemented"
-		)));
-	}
-	if !contract.supports(version) {
-		return Err(Error::Invalid(format!(
-			"Harness Contract {contract} does not support Projection Version {version}"
-		)));
-	}
-	if version.is_legacy() {
-		return Ok(());
-	}
-	if !version.is_implemented() {
-		return Err(Error::Invalid(format!(
-			"Projection Version {version} is not implemented"
-		)));
-	}
-	let model = snapshot
-		.definitions
-		.iter()
-		.find(|d| {
-			d.identity.id == agent.model.id
-				&& d.identity.version == agent.model.version
-				&& d.identity.registry_deployment == snapshot.agent.registry_deployment
-		})
-		.ok_or_else(|| Error::Invalid("pinned model is outside the Binding snapshot".into()))?;
-	let model: aidash_domain::model::ModelConfig =
-		serde_json::from_value(model.definition.config.clone())?;
-	if !model.supports_projection(version) {
-		return Err(Error::Invalid(format!(
-			"model {} does not support Projection Version {version}",
-			model.model_id
-		)));
-	}
-	if version.salted() && !cache_salt {
-		return Err(Error::Invalid(format!(
-			"this node has no Cache Salt Key for Projection Version {version}"
-		)));
-	}
-	Ok(())
 }
 
 #[cfg(test)]

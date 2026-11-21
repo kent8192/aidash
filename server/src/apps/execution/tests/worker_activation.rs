@@ -1432,7 +1432,8 @@ async fn child_runtime(
 		aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
 	)
 	.await
-	.unwrap();
+	.unwrap()
+	.with_cache_salt(Some(common::fixture_cache_salt()));
 	Federation {
 		sandbox: Default::default(),
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)

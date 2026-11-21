@@ -9,7 +9,7 @@ use aidash_domain::context::{
 		absorbable,
 	},
 };
-use aidash_domain::projection::{ProjectionVersion, native::model_turns};
+use aidash_domain::projection::native::model_turns;
 use aidash_domain::provider::{ModelContext, ModelRequest};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,10 +41,6 @@ impl Fitting<'_> {
 	}
 	pub fn fits(&self, context: &Context) -> bool {
 		self.size(context) <= self.budget.window
-	}
-	/// Native Runs summarize by Model Turn (ADR 0015).
-	pub fn native(&self) -> bool {
-		self.budget.projection.version() == ProjectionVersion::Native
 	}
 }
 
@@ -163,13 +159,8 @@ fn summary_plan(candidate: Context, fitting: &Fitting<'_>) -> Result<Box<Summary
 		.window
 		.saturating_mul(usize::from(fitting.policy.protected_tail_permille))
 		/ 1000;
-	let absorbed = if fitting.native() {
-		let preserve = bounded_native_tail(&candidate, fitting.policy.preserve_recent, tail_limit);
-		native_summary_candidates(&candidate, preserve)
-	} else {
-		let preserve = bounded_event_tail(&candidate, fitting.policy.preserve_recent, tail_limit);
-		summary_candidates(&candidate, preserve)
-	};
+	let preserve = bounded_native_tail(&candidate, fitting.policy.preserve_recent, tail_limit);
+	let absorbed = native_summary_candidates(&candidate, preserve);
 	if absorbed.is_empty() {
 		return Err(Error::Context(Failure::ContextUnreducible));
 	}
@@ -231,21 +222,6 @@ fn without_old_reasoning(context: &Context, fitting: &Fitting<'_>) -> Context {
 	context
 }
 
-fn bounded_event_tail(context: &Context, requested: usize, limit: usize) -> usize {
-	let mut total = 0usize;
-	let mut count = 0;
-	for entry in context.history.iter().rev().take(requested) {
-		let bytes = serde_json::to_string(&entry.event).expect("history is JSON");
-		let size = context.estimate.current().tokens_for_bytes(bytes.len());
-		if count > 0 && total.saturating_add(size) > limit {
-			break;
-		}
-		total = total.saturating_add(size);
-		count += 1;
-	}
-	count
-}
-
 fn bounded_native_tail(context: &Context, requested: usize, limit: usize) -> usize {
 	let turns = model_turns(&context.history);
 	let mut sizes = BTreeMap::<usize, usize>::new();
@@ -269,33 +245,9 @@ fn bounded_native_tail(context: &Context, requested: usize, limit: usize) -> usi
 	count
 }
 
-/// Absorbable entries older than the protected tail that already reached an
-/// accepted inference. The set is prefix-closed: it stops at the first
-/// absorbable entry not yet inferred, so later merges never skip one.
-pub fn summary_candidates(context: &Context, preserve_recent: usize) -> Vec<HistoryEntry> {
-	let tail = context.history.len().saturating_sub(preserve_recent);
-	let after = context
-		.execution_summary
-		.as_ref()
-		.map_or(0, |summary| summary.source.through_seq);
-	let mut absorbed = vec![];
-	for entry in &context.history[..tail] {
-		if !absorbable(&entry.event) || entry.seq <= after {
-			continue;
-		}
-		if entry.seq > context.journal.inferred_through {
-			break;
-		}
-		absorbed.push(entry.clone());
-	}
-	absorbed
-}
-
-/// Native form of `summary_candidates`: whole Model Turns older than the
-/// latest `preserve_recent` turns. A turn is absorbed only when every entry of
-/// it reached an accepted inference, and the set stops at the first turn that
-/// did not, so no summary or projection ever holds part of a turn. Events
-/// outside turns stay verbatim, as for Legacy.
+/// Whole Model Turns older than the protected tail. Each turn must have
+/// reached accepted inference, and the candidate stops at the first that has
+/// yet to reach one. Events outside turns stay verbatim.
 pub fn native_summary_candidates(context: &Context, preserve_recent: usize) -> Vec<HistoryEntry> {
 	let turns = model_turns(&context.history);
 	let total = turns.iter().flatten().max().map_or(0, |last| last + 1);
@@ -422,17 +374,13 @@ const CONTINUATION_INSTRUCTIONS: &str = "Stop working on the task for this reque
 /// request's instructions, tools, attachments and history through the last
 /// folded entry, then only the fold request and the summary instruction, so
 /// the provider reads the shared prefix from its cache. The summarizer is
-/// the Agent's own model, so nothing reaches a new recipient. `None` for
-/// other Projection Versions, which keep [`summary_request`], and when the
-/// main request offers provider tools.
+/// the Agent's own model. If the main request offers provider tools, the
+/// summary uses [`summary_request`] instead.
 pub fn summary_continuation(
 	plan: &SummaryPlan,
 	fitting: &Fitting<'_>,
 	max_output_tokens: u32,
 ) -> Option<ModelRequest> {
-	if !fitting.native() {
-		return None;
-	}
 	continue_request(
 		fitting.budget.request(&plan.pruned, fitting.pinned),
 		plan,

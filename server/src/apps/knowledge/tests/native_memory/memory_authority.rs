@@ -356,12 +356,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		"both calls must reach the model continuation"
 	);
 	let requests = state.member_requests.lock().unwrap();
-	let context: serde_json::Value = serde_json::from_str(
-		requests.last().unwrap()["messages"][1]["content"]
-			.as_str()
-			.unwrap(),
-	)
-	.unwrap();
+	let context = native_request::captured_context(requests.last().unwrap());
 	let history = context["history"].as_array().unwrap();
 	let result = |id: &str| {
 		&history

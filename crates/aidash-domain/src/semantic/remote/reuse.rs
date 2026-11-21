@@ -1,4 +1,4 @@
-//! A remote Ordered Run reuses one semantic retrieval across steps (ADR 0020).
+//! A remote Run reuses one semantic retrieval across steps (ADR 0020).
 //! A reuse step creates no semantic operation, so its usage admission cites the
 //! operation whose retrieval it reuses. Each node judges the citation against
 //! its own journal; neither ever trusts the citing peer's account of it.

@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 
 pub mod native;
 
-/// Named by an Agent definition and fixed for a Run through its Binding
-/// snapshot. Each value is a complete, frozen rendering.
 #[derive(
 	Debug,
 	Clone,
@@ -22,50 +20,47 @@ pub mod native;
 	JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+/// The rendering used for Run steps and recorded on Usage Records.
 pub enum ProjectionVersion {
-	/// Version 1: one alphabetical JSON user message. Definitions and
-	/// snapshots without the field use it, byte for byte.
-	#[default]
-	Legacy,
-	/// Version 2: one user message with a Stable Prefix part and a volatile
-	/// part, and a Tenant Cache Salt at the start of `system` (#172).
-	Ordered,
 	/// Version 3: model-native assistant and tool messages, with Model Turns
 	/// recorded in the Context Journal (#178).
+	#[default]
 	Native,
 }
 
 impl ProjectionVersion {
-	pub fn is_legacy(&self) -> bool {
-		*self == Self::Legacy
-	}
-
-	/// Whether this build can render the version. A version added later is
-	/// rejected by registration and Run creation until its renderer exists.
-	pub fn is_implemented(&self) -> bool {
-		matches!(self, Self::Legacy | Self::Ordered | Self::Native)
-	}
-
-	pub fn salted(&self) -> bool {
-		!self.is_legacy()
-	}
-
 	/// The version number recorded on Usage Records (ADR 0015 numbering).
 	pub fn number(self) -> u8 {
-		match self {
-			Self::Legacy => 1,
-			Self::Ordered => 2,
-			Self::Native => 3,
-		}
+		3
 	}
 }
 
 impl std::fmt::Display for ProjectionVersion {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("native")
+	}
+}
+
+/// A definition can still carry a retired pin in its immutable JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProjectionPin {
+	Active(ProjectionVersion),
+	Retired(RetiredProjection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetiredProjection {
+	Legacy,
+	Ordered,
+}
+
+impl std::fmt::Display for RetiredProjection {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.write_str(match self {
 			Self::Legacy => "legacy",
 			Self::Ordered => "ordered",
-			Self::Native => "native",
 		})
 	}
 }
@@ -124,8 +119,8 @@ mod tests {
 	#[test]
 	fn versions_use_stable_names() {
 		assert_eq!(
-			serde_json::to_string(&ProjectionVersion::Ordered).unwrap(),
-			"\"ordered\""
+			serde_json::to_string(&ProjectionVersion::Native).unwrap(),
+			"\"native\""
 		);
 		assert!(serde_json::from_str::<ProjectionVersion>("2").is_err());
 	}

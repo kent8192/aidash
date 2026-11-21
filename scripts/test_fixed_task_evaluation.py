@@ -199,11 +199,11 @@ class ProjectionCampaignTest(unittest.TestCase):
     def test_primary_live_preflight_rejects_changed_caps_estimator_or_model_within_route(self):
         value = evaluation.load_corpus()
         planned = evaluation.plan(value, ["structured-data-overdue-totals", "long-conversation-corrections"],
-                                  ["projection"])
+                                  ["projection"], ["native"])
         mapping = {"standard": "standard@1", "small-window": "small@1"}
         models = {reference: {"model_id": "provider/same-model", "provider": "openrouter", "endpoint": "https://p/v1",
                               "provider_credential": "openrouter", "reasoning_effort": "medium",
-                              "request_estimator": "bytes", "projection_versions": ["legacy", "ordered", "native"],
+                              "request_estimator": "bytes",
                               "provider_route": {"tag": "groq", "source": "https://openrouter.ai/api/v1/endpoints/zdr",
                                   "verified_at": "2000-01-01T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z"},
                               **value["models"][name]} for name, reference in mapping.items()}
@@ -211,7 +211,6 @@ class ProjectionCampaignTest(unittest.TestCase):
         changes = [("context_window", 128000, "must match frozen corpus"),
                    ("request_estimator", "calibrated", "request_estimator=bytes"),
                    ("reasoning_effort", "high", "reasoning_effort=medium"),
-                   ("projection_versions", ["legacy", "ordered"], "support projection native"),
                    ("model_id", "provider/other-model", "one matched model"),
                    ("provider_route", None, "provider_route"),
                    ("provider_route", {"tag": "other", "source": "catalog", "verified_at": "2000-01-01T00:00:00Z",
@@ -824,15 +823,10 @@ class AgentConfigTest(unittest.TestCase):
         item = value["tasks"][0]
         return runner.agent_config(value, item, {"id": "m", "version": "1"}, [], fields)
 
-    def test_omitted_fields_pin_legacy_projection_without_a_contract(self):
+    def test_omitted_fields_pin_native_and_the_current_contract(self):
         config = self.config({})
-        self.assertEqual(config["projection_version"], "legacy")
-        self.assertNotIn("harness_contract", config)
-
-    def test_native_arm_without_a_contract_pins_legacy_at_1(self):
-        # Registration would otherwise default it to structured@3, while the evidence
-        # loader expects contract 1 for an arm that names none.
-        self.assertEqual(self.config({"projection_version": "native"})["harness_contract"], "legacy@1")
+        self.assertEqual(config["projection_version"], "native")
+        self.assertEqual(config["harness_contract"], "structured@4")
 
     def test_native_arm_keeps_its_named_contract(self):
         config = self.config({"projection_version": "native", "harness_contract": "structured@3"})

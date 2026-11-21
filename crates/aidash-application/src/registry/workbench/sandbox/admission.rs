@@ -177,7 +177,7 @@ async fn prepare(
 	let snapshot = scope.bindings(&draft, &entry).await?.for_workbench_test();
 	let config = AgentConfig::from_snapshot(&snapshot)?;
 	let model = scope.effective(&config.model).await?;
-	let model_config: ModelConfig = serde_json::from_value(model.config)?;
+	let model_config: ModelConfig = ModelConfig::from_stored(model.config)?;
 	let limits = scope.limits(&draft.tenant).await?;
 	super::validate_limits(admission.repository, &limits)?;
 	let profile = if input.mode == "real" {
@@ -243,7 +243,13 @@ async fn prepare(
 				.map(|alias| (alias.clone(), b.identity.local()))
 		})
 		.collect();
-	let mut instructions = aidash_domain::context::agent_instructions("");
+	let mut instructions = aidash_domain::harness_contract::system_text(
+		Default::default(),
+		&Default::default(),
+		"",
+		&[],
+		"",
+	);
 	if input.mode == "real" {
 		instructions.push_str("\n\nSandbox: only tools in the selected test connection profile can reach its isolated endpoint. Other tools need an explicit fixture; never claim an unprovided result.\n");
 	} else {
@@ -303,10 +309,7 @@ async fn prepare(
 		context: ModelContext::native_data(&data),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
-		input_format: InputFormat::for_model(
-			&model_config,
-			aidash_domain::projection::ProjectionVersion::Native,
-		),
+		input_format: InputFormat::for_model(&model_config),
 		..Default::default()
 	};
 	let serialized_bytes = request.model_input_body()?.to_string().len();

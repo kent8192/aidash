@@ -62,17 +62,9 @@ impl aidash_application::ports::ExecutionRecoveryStore for Backend {
 }
 
 #[rstest]
-#[case::legacy(false)]
-#[case::ordered(true)]
 #[tokio::test]
-async fn a_thread_success_is_durable_before_memory_failure_reloads_the_run(
-	mut canonical: Fixture,
-	#[case] is_ordered: bool,
-) {
+async fn a_thread_success_is_durable_before_memory_failure_reloads_the_run(mut canonical: Fixture) {
 	use aidash_application::{ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
-	if is_ordered {
-		ordered(&mut canonical);
-	}
 	canonical
 		.run
 		.recovery
@@ -132,16 +124,8 @@ async fn a_thread_success_is_durable_before_memory_failure_reloads_the_run(
 }
 
 #[rstest]
-#[case::legacy(false)]
-#[case::ordered(true)]
 #[tokio::test]
-async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
-	mut canonical: Fixture,
-	#[case] is_ordered: bool,
-) {
-	if is_ordered {
-		ordered(&mut canonical);
-	}
+async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(mut canonical: Fixture) {
 	*canonical.backend.0.memory_value.lock().unwrap() = degraded_envelope();
 	assert!(advance_sources(&mut canonical).await.is_err());
 
@@ -169,24 +153,16 @@ async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
 	assert_eq!(observed.len(), 1);
 	assert!(!observed[0].recovery.degraded.outage);
 	assert_eq!(observed[0].recovery.degraded.count, 1);
-	if is_ordered {
-		let requests = canonical.backend.0.requests.lock().unwrap();
-		assert_eq!(semantic_memory(&requests[0]), degraded_envelope());
-		assert_eq!(semantic_memory(&requests[1]), json!({"fact":"recovered"}));
-	}
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(semantic_memory(&requests[0]), degraded_envelope());
+	assert_eq!(semantic_memory(&requests[1]), json!({"fact":"recovered"}));
 }
 
 #[rstest]
-#[case::legacy(false)]
-#[case::ordered(true)]
 #[tokio::test]
 async fn a_step_that_degrades_again_saves_one_degradation_and_no_observation(
 	mut canonical: Fixture,
-	#[case] is_ordered: bool,
 ) {
-	if is_ordered {
-		ordered(&mut canonical);
-	}
 	*canonical.backend.0.memory_value.lock().unwrap() = degraded_envelope();
 	assert!(advance_sources(&mut canonical).await.is_err());
 	// The same step is entered again, as after a worker crash.
