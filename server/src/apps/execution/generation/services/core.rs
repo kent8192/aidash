@@ -47,15 +47,17 @@ pub(crate) async fn assign_in_restricted(
 	task_id: Uuid,
 	policy_id: &str,
 	reason: &str,
+	draft: Option<&aidash_domain::generation::policy::Draft>,
 	members: Option<&[aidash_domain::registry::EntityRef]>,
 ) -> Result<Assignment> {
-	aidash_application::generation::assignment::assign_in_restricted(
+	aidash_application::generation::assignment::assign_in_drafted(
 		&mut crate::bootstrap::generation_assignment_scope(f, access),
 		task_id,
 		policy_id,
 		reason,
 		&crate::bootstrap::registry_validation_for(&f.store),
 		members,
+		draft,
 	)
 	.await
 	.map_err(Into::into)

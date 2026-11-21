@@ -4,7 +4,6 @@ use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 struct SharedThread {
 	c: CoreFixture,
-	workspace: Uuid,
 	thread: Uuid,
 	bob: String,
 	areas: Vec<Value>,
@@ -18,21 +17,12 @@ fn shared_thread(
 	let capability_fixture = Box::pin(capability_fixture);
 	async move {
 		let c = capability_fixture.await;
-		let workspace =
+		let thread =
 			c.f.store
 				.task(&TEST_FIXTURE, c.task)
 				.await
 				.unwrap()
-				.workspace_id;
-		let root = source(&c, workspace, "Shared conversation; private working files").await;
-		let (_, thread) = common::post(
-			&c.app,
-			&c.token,
-			&format!("/api/workspaces/{workspace}/threads"),
-			json!({"root_message_id":root}),
-		)
-		.await;
-		let thread: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+				.thread_id;
 		let (_, credential) = async {
 			(
 				200_u16,
@@ -44,7 +34,7 @@ fn shared_thread(
 		let mut areas = vec![];
 		let mut runs = vec![];
 		for (owner, token) in [("alice", &c.token), ("bob", &bob)] {
-			let (status, area) = common::post(&c.app, token, &format!("/api/workspaces/{workspace}/threads/{thread}/agents/research/runs"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Private work","description":"One owner's files"})).await;
+			let (status, area) = common::post(&c.app, token, &format!("/api/threads/{thread}/agents/research/executions"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Private work","description":"One owner's files"})).await;
 			assert_eq!(status, 200, "{owner}: {area}");
 			let (_, session) = common::get(
 				&c.app,
@@ -58,14 +48,17 @@ fn shared_thread(
 			let run: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
 			let (status, patch) = common::post(&c.app, token, &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"private.txt":null},"patch":format!("*** Begin Patch\n*** Add File: private.txt\n+{owner}-only\n*** End Patch")})).await;
 			assert_eq!(status, 200, "{patch}");
-			let (_, area) =
-				common::get(&c.app, token, &format!("/api/runs/{run}/working-area")).await;
+			let (_, area) = common::get(
+				&c.app,
+				token,
+				&format!("/api/executions/{run}/working-area"),
+			)
+			.await;
 			areas.push(area);
 			runs.push(run);
 		}
 		SharedThread {
 			c,
-			workspace,
 			thread,
 			bob,
 			areas,
@@ -82,7 +75,7 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let f = Box::pin(shared_thread).await;
 	assert_ne!(f.areas[0]["id"], f.areas[1]["id"]);
 	assert_ne!(f.runs[0], f.runs[1]);
-	let run_path = format!("/api/runs/{}", f.runs[0]);
+	let run_path = format!("/api/executions/{}", f.runs[0]);
 	assert_eq!(common::get(&f.c.app, &f.c.token, &run_path).await.0, 200);
 	let (status, denied) = common::get(&f.c.app, &f.bob, &run_path).await;
 	assert!(
@@ -94,13 +87,13 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let hidden = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/runs/{}/working-area", f.runs[0]),
+		&format!("/api/executions/{}/working-area", f.runs[0]),
 	)
 	.await;
 	let absent = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/runs/{}/working-area", Uuid::new_v4()),
+		&format!("/api/executions/{}/working-area", Uuid::new_v4()),
 	)
 	.await;
 	assert_eq!(hidden.0, 403);
@@ -115,7 +108,7 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	)
 	.await;
 	assert_eq!(visible["items"].as_array().unwrap().len(), 1);
-	let (status, deleted) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/delete", f.workspace, f.thread), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]})).await;
+	let (status, deleted) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/delete", f.thread), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]})).await;
 	assert_eq!(status, 200, "{deleted}");
 	assert_eq!(deleted["file_operations"].as_array().unwrap().len(), 1);
 	assert!(
@@ -144,6 +137,23 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 			.unwrap(),
 		b"bob-only\n"
 	);
+	// The Thread is deleted now. Bob still downloads from his Area; a file
+	// administrator manages another person's Area but never reads it.
+	let download = |area: &Value| {
+		format!(
+			"/api/working-areas/{}/files/{}/download",
+			area["id"].as_str().unwrap(),
+			area["manifest"][0]["file_id"].as_str().unwrap()
+		)
+	};
+	let mut policy = f.c.policy.clone();
+	policy["subjects"]["alice"]["attributes"] = json!({"file_administrator": true});
+	common::replace_policy(&f.c.f.store, "acme", policy).await;
+	let (status, foreign) = common::get(&f.c.app, &f.c.token, &download(&f.areas[1])).await;
+	assert!(matches!(status, 403 | 404), "{foreign}");
+	assert!(!foreign.to_string().contains("bob-only"));
+	let (status, _) = common::get(&f.c.app, &f.bob, &download(&f.areas[1])).await;
+	assert_eq!(status, 200);
 	f.c.close().await;
 }
 
@@ -154,7 +164,7 @@ fn successor_fixture(
 	let shared_thread = Box::pin(shared_thread);
 	async move {
 		let f = shared_thread.await;
-		let (_, queued) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
+		let (_, queued) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/research/executions", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
 		assert_eq!(queued["id"], f.areas[0]["id"]);
 		// Model the predecessor's committed terminal transition, before the
 		// next Worker executes. The endpoint must honor the live queue owner.
@@ -162,7 +172,7 @@ fn successor_fixture(
 			let query_bind_1 = f.runs[0];
 			sqlx::query(
 				&Query::update()
-					.table(Alias::new("runs"))
+					.table(Alias::new("task_executions"))
 					.value(Alias::new("phase"), "COMPLETED")
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 					.to_string(PostgresQueryBuilder),
@@ -196,7 +206,7 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	let (status, rejected) = common::post(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/runs/{}/files/materialize", f.runs[0]),
+		&format!("/api/executions/{}/files/materialize", f.runs[0]),
 		input.clone(),
 	)
 	.await;
@@ -205,7 +215,7 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	let (_, before) = common::get(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/runs/{successor}/working-area"),
+		&format!("/api/executions/{successor}/working-area"),
 	)
 	.await;
 	assert_eq!(before["manifest"], f.areas[0]["manifest"]);
@@ -213,7 +223,7 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	let (status, copied) = common::post(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/runs/{successor}/files/materialize"),
+		&format!("/api/executions/{successor}/files/materialize"),
 		input,
 	)
 	.await;
@@ -272,7 +282,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 	let (status, child) = common::post(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/workspaces/{}/tasks", f.workspace),
+		&format!("/api/threads/{}/tasks", f.thread),
 		json!({"title":"Child","description":"Inherit Bob's live thread","parent_id":parent.task_id}),
 	)
 	.await;
@@ -286,41 +296,19 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	#[future] delegated_thread_child: (SharedThread, Uuid),
 ) {
-	use reinhardt::query::LockType;
 	let (f, child) = Box::pin(delegated_thread_child).await;
-	let mut blocker = f.c.f.store.pool.fixture_driver().begin().await.unwrap();
-	let _: Uuid = {
-		let query_bind_1 = f.thread;
-		sqlx::query_scalar(
-			&Query::select()
-				.column(Alias::new("id"))
-				.from(Alias::new("channel_threads"))
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					),
-				)
-				.lock(LockType::Update)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(&mut *blocker)
-		.await
-	}
-	.unwrap();
+	// Hold the Thread row while the delete request queues first; the child's
+	// admission must wait behind it, then observe the committed deletion.
+	let (blocker, blocker_pid) =
+		super::lifecycle_tests::hold_thread_lock(f.c.f.store.pool.fixture_driver(), f.thread).await;
 	let app = f.c.app.clone();
 	let token = f.c.token.clone();
-	let path = format!(
-		"/api/workspaces/{}/threads/{}/delete",
-		f.workspace, f.thread
-	);
+	let path = format!("/api/threads/{}/delete", f.thread);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]});
 	let deleting = tokio::spawn(async move { common::post(&app, &token, &path, input).await });
-	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(
+	let delete_pid = super::lifecycle_tests::wait_for_blocked_connection(
 		f.c.f.store.pool.fixture_driver(),
-		1,
+		blocker_pid,
 	)
 	.await;
 	let app = f.c.app.clone();
@@ -331,9 +319,9 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	let child_path = path.clone();
 	let child_input = input.clone();
 	let admitting = tokio::spawn(async move { common::post(&app, &token, &path, input).await });
-	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(
+	super::lifecycle_tests::wait_for_blocked_connection(
 		f.c.f.store.pool.fixture_driver(),
-		2,
+		delete_pid,
 	)
 	.await;
 	blocker.commit().await.unwrap();
@@ -341,12 +329,12 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	assert_eq!(status, 200, "{deleted}");
 	let (status, denied) = admitting.await.unwrap();
 	assert_eq!(status, 404, "{denied}");
-	assert_eq!(
-		common::post(&f.c.app, &f.bob, &child_path, child_input)
-			.await
-			.0,
-		404,
-		"a child must also be denied after deletion has already committed"
+	// Once the deletion has committed the Thread is gone, so the refusal may
+	// come from its hidden Thread before any tombstone check.
+	let (status, denied) = common::post(&f.c.app, &f.bob, &child_path, child_input).await;
+	assert!(
+		matches!(status, 403 | 404),
+		"a child must also be denied after deletion has already committed: {denied}"
 	);
 	let areas: i64 = sqlx::query_scalar(
 		&Query::select()
@@ -365,5 +353,3 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
-
-use reinhardt::query::SimpleExpr;

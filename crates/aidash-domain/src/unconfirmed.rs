@@ -58,7 +58,9 @@ pub struct Unconfirmed {
 	/// The silent Node, except in graph responses where this is the answering Node.
 	pub node: String,
 	pub kind: Kind,
-	pub workspace_id: Uuid,
+	/// Stored remote receipts say `workspace_id` before #1008.
+	#[serde(alias = "workspace_id")]
+	pub thread_id: Uuid,
 	pub count: u64,
 }
 
@@ -74,11 +76,11 @@ impl Tally {
 		Self::default()
 	}
 
-	/// One row of `kind` in `workspace` that `node`'s silence left unconfirmed.
-	pub fn record(&mut self, node: &str, kind: Kind, workspace: Uuid) {
+	/// One row of `kind` in `thread` that `node`'s silence left unconfirmed.
+	pub fn record(&mut self, node: &str, kind: Kind, thread: Uuid) {
 		let count = self
 			.counts
-			.entry((node.to_owned(), kind, workspace))
+			.entry((node.to_owned(), kind, thread))
 			.or_default();
 		*count = count.saturating_add(1);
 	}
@@ -91,11 +93,11 @@ impl Tally {
 		&mut self,
 		silence: Option<String>,
 		kind: Kind,
-		workspace: Uuid,
+		thread: Uuid,
 		visible: bool,
 	) -> bool {
 		if !visible && let Some(node) = silence {
-			self.record(&node, kind, workspace);
+			self.record(&node, kind, thread);
 		}
 		visible
 	}
@@ -106,25 +108,25 @@ impl Tally {
 		for entry in entries {
 			let total = tally
 				.counts
-				.entry((entry.node, entry.kind, entry.workspace_id))
+				.entry((entry.node, entry.kind, entry.thread_id))
 				.or_default();
 			*total = total.saturating_add(entry.count);
 		}
 		tally
 	}
 
-	/// [`Self::settle`] for an item that may sit in no Workspace, such as a
+	/// [`Self::settle`] for an item that may sit in no Thread, such as a
 	/// Tenant-level event. Such an item depends on no Node, so it is never
 	/// recorded (#770).
 	pub fn settle_in(
 		&mut self,
 		silence: Option<String>,
 		kind: Kind,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: bool,
 	) -> bool {
-		match workspace {
-			Some(workspace) => self.settle(silence, kind, workspace, visible),
+		match thread {
+			Some(thread) => self.settle(silence, kind, thread, visible),
 			None => visible,
 		}
 	}
@@ -135,20 +137,20 @@ impl Tally {
 
 	/// Add the rows another tally recorded.
 	pub fn merge(&mut self, other: Tally) {
-		for ((node, kind, workspace), count) in other.counts {
-			let total = self.counts.entry((node, kind, workspace)).or_default();
+		for ((node, kind, thread), count) in other.counts {
+			let total = self.counts.entry((node, kind, thread)).or_default();
 			*total = total.saturating_add(count);
 		}
 	}
 
-	/// The entries, ordered by Node, kind and Workspace so a response is stable.
+	/// The entries, ordered by Node, kind and Thread so a response is stable.
 	pub fn into_entries(self) -> Vec<Unconfirmed> {
 		self.counts
 			.into_iter()
-			.map(|((node, kind, workspace_id), count)| Unconfirmed {
+			.map(|((node, kind, thread_id), count)| Unconfirmed {
 				node,
 				kind,
-				workspace_id,
+				thread_id,
 				count,
 			})
 			.collect()
@@ -163,29 +165,29 @@ mod tests {
 
 	#[test]
 	fn only_rows_a_silent_node_left_unconfirmed_are_counted() {
-		let workspace = Uuid::from_u128(1);
+		let thread = Uuid::from_u128(1);
 		let mut tally = Tally::new();
 		for _ in 0..3 {
-			assert!(!tally.settle(Some(NODE.into()), Kind::Task, workspace, false));
+			assert!(!tally.settle(Some(NODE.into()), Kind::Task, thread, false));
 		}
 		for _ in 0..5 {
-			assert!(!tally.settle(None, Kind::Task, workspace, false));
+			assert!(!tally.settle(None, Kind::Task, thread, false));
 		}
-		assert!(tally.settle(None, Kind::Task, workspace, true));
-		assert!(tally.settle(Some(NODE.into()), Kind::Task, workspace, true));
+		assert!(tally.settle(None, Kind::Task, thread, true));
+		assert!(tally.settle(Some(NODE.into()), Kind::Task, thread, true));
 		assert_eq!(
 			tally.into_entries(),
 			vec![Unconfirmed {
 				node: NODE.into(),
 				kind: Kind::Task,
-				workspace_id: workspace,
+				thread_id: thread,
 				count: 3,
 			}]
 		);
 	}
 
 	#[test]
-	fn entries_are_sorted_by_node_kind_and_workspace() {
+	fn entries_are_sorted_by_node_kind_and_thread() {
 		let mut tally = Tally::new();
 		tally.record("aidash://local/b", Kind::Run, Uuid::from_u128(2));
 		tally.record("aidash://local/a", Kind::Task, Uuid::from_u128(2));
@@ -194,7 +196,7 @@ mod tests {
 		let order: Vec<_> = tally
 			.into_entries()
 			.into_iter()
-			.map(|entry| (entry.node, entry.kind, entry.workspace_id.as_u128()))
+			.map(|entry| (entry.node, entry.kind, entry.thread_id.as_u128()))
 			.collect();
 		assert_eq!(
 			order,
@@ -223,7 +225,7 @@ mod tests {
 		let entry = Unconfirmed {
 			node: NODE.into(),
 			kind: Kind::MemoryUnit,
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			count: 2,
 		};
 		let mut left_out = serde_json::json!({"matches": [], "unconfirmed": [entry.clone()]});
@@ -241,7 +243,7 @@ mod tests {
 		let mut tally = Tally::from_entries(vec![Unconfirmed {
 			node: NODE.into(),
 			kind: Kind::SemanticEntry,
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			count: 2,
 		}]);
 		tally.record(NODE, Kind::SemanticEntry, Uuid::from_u128(1));

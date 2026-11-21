@@ -7,11 +7,15 @@ pub mod connection_wait;
 pub mod context;
 pub mod decision;
 pub mod deployment;
+pub mod duties;
 pub mod execution;
 pub mod federation;
+pub mod flows;
 pub mod lifecycle;
 pub mod memory;
+pub mod nodes;
 pub mod oauth_connections;
+pub mod org_chart;
 pub mod plan_connections;
 pub mod plugin_stdio;
 pub mod plugin_tools;
@@ -24,7 +28,6 @@ pub mod recovery;
 pub mod research;
 pub mod route_refusal;
 pub mod safety_stop;
-pub mod schedules;
 pub mod scratch;
 pub mod tenancy;
 pub mod tenant_secrets;
@@ -148,6 +151,11 @@ pub enum Error {
 	/// (ADR 0129).
 	#[error("native memory is closed until its last write is reconciled; it reopens by itself")]
 	MemoryClosed,
+	/// A Budget that covers the Run is at its Hard Limit (#1012). `stop`
+	/// pauses the Run for a person; otherwise it sleeps until the Budget has
+	/// room again.
+	#[error("{message}")]
+	BudgetExhausted { stop: bool, message: String },
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	/// An authenticated authority identified the suspension epoch stopping a Run.
@@ -243,7 +251,7 @@ pub mod tools;
 
 pub mod registry;
 
-pub mod workspaces;
+pub mod threads;
 
 pub mod marketplace;
 

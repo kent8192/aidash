@@ -54,7 +54,7 @@ fn repository() -> Repository {
 				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				id: id(1),
 				task_id: id(2),
-				workspace_id: id(3),
+				thread_id: id(3),
 				home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 				agent_id: "producer".into(),
 				agent_version: "1".into(),
@@ -109,19 +109,19 @@ impl RunDetailsScope for Scope {
 		state.record("run")?;
 		Ok(state.raw.clone())
 	}
-	async fn workspace(&mut self, key: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, key: Uuid) -> Result<Resource> {
 		assert_eq!(key, id(3));
-		self.state.lock().unwrap().record("workspace")?;
+		self.state.lock().unwrap().record("thread")?;
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			id: key.to_string(),
 			attributes: json!({"current":true}),
 		})
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		assert_eq!(action, "workspace.read");
-		assert_eq!(resource.kind, "workspace");
+		assert_eq!(action, "thread.read");
+		assert_eq!(resource.kind, "thread");
 		let mut state = self.state.lock().unwrap();
 		assert_eq!(state.context, Some(json!({"current":true})));
 		state.record(action)?;
@@ -173,7 +173,7 @@ impl RunDetailsScope for Scope {
 	) -> Result<Option<aidash_domain::memory::Binding>> {
 		assert_eq!(run.agent_id, "producer");
 		assert_eq!(run.agent_version, "1");
-		assert_eq!(run.workspace_id, id(3));
+		assert_eq!(run.thread_id, id(3));
 		let mut state = self.state.lock().unwrap();
 		state.record("memory")?;
 		Ok(state.memory.clone())
@@ -215,7 +215,7 @@ impl Scope {
 fn expected(local: bool) -> Vec<&'static str> {
 	let mut calls = vec!["begin", "run"];
 	if local {
-		calls.extend(["workspace", "workspace.read"]);
+		calls.extend(["thread", "thread.read"]);
 	}
 	calls.extend(["visible", "invocations", "memory", "routes", "commit"]);
 	calls
@@ -258,7 +258,7 @@ async fn authorized_inspection_preserves_the_native_page_and_projection(
 }
 #[rstest]
 #[tokio::test]
-async fn a_foreign_run_uses_its_run_visibility_instead_of_local_workspace_authority(
+async fn a_foreign_run_uses_its_run_visibility_instead_of_local_thread_authority(
 	repository: Repository,
 ) {
 	repository
@@ -326,7 +326,7 @@ async fn inspecting_a_run_hidden_by_its_reads_says_why_but_a_plain_check_does_no
 }
 #[rstest]
 #[tokio::test]
-async fn revoked_workspace_read_stops_before_run_disclosure(repository: Repository) {
+async fn revoked_thread_read_stops_before_run_disclosure(repository: Repository) {
 	repository.0.lock().unwrap().deny = true;
 	assert!(matches!(
 		inspect(&repository, id(1), 0).await,
@@ -334,7 +334,7 @@ async fn revoked_workspace_read_stops_before_run_disclosure(repository: Reposito
 	));
 	assert_eq!(
 		repository.0.lock().unwrap().calls,
-		vec!["begin", "run", "workspace", "workspace.read", "rollback"]
+		vec!["begin", "run", "thread", "thread.read", "rollback"]
 	);
 }
 #[rstest]
@@ -365,8 +365,8 @@ async fn corrupt_context_remains_a_diagnostic_after_current_disclosure_authoriza
 #[rstest]
 #[case::begin("begin")]
 #[case::run("run")]
-#[case::workspace("workspace")]
-#[case::read_authority("workspace.read")]
+#[case::thread("thread")]
+#[case::read_authority("thread.read")]
 #[case::visibility("visible")]
 #[case::invocations("invocations")]
 #[case::memory("memory")]
@@ -426,20 +426,13 @@ async fn visibility_alone_decides_like_inspection_without_reading_diagnostics(
 	assert_eq!(run.id, id(1));
 	assert_eq!(
 		repository.0.lock().unwrap().calls,
-		vec![
-			"begin",
-			"run",
-			"workspace",
-			"workspace.read",
-			"visible",
-			"commit"
-		]
+		vec!["begin", "run", "thread", "thread.read", "visible", "commit"]
 	);
 }
 #[rstest]
 #[case::missing("missing")]
 #[case::invisible("invisible")]
-#[case::workspace_denied("denied")]
+#[case::thread_denied("denied")]
 #[tokio::test]
 async fn visibility_alone_refuses_what_inspection_refuses(
 	repository: Repository,
@@ -489,13 +482,13 @@ impl RunDetailsScope for Many {
 			.cloned()
 			.collect())
 	}
-	async fn workspace(&mut self, key: Uuid) -> Result<Resource> {
-		self.calls.push(format!("workspace {}", key.as_u128()));
+	async fn thread(&mut self, key: Uuid) -> Result<Resource> {
+		self.calls.push(format!("thread {}", key.as_u128()));
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			id: key.to_string(),
-			attributes: json!({"workspace": key}),
+			attributes: json!({"thread": key}),
 		})
 	}
 	async fn require(&mut self, resource: &Resource, _: &str) -> Result<()> {
@@ -513,7 +506,7 @@ impl RunDetailsScope for Many {
 	async fn run_visible(&mut self, run: &aidash_domain::RunInspection) -> Result<bool> {
 		let expected = run
 			.is_local(self.node_id())
-			.then(|| json!({"workspace": run.workspace_id}));
+			.then(|| json!({"thread": run.thread_id}));
 		assert_eq!(self.context, expected, "Run {}", run.id);
 		Ok(run.id != self.hidden)
 	}
@@ -544,12 +537,12 @@ impl RunDetailsScope for Many {
 }
 #[rstest]
 #[tokio::test]
-async fn many_runs_are_read_once_and_prepared_once_per_workspace(repository: Repository) {
+async fn many_runs_are_read_once_and_prepared_once_per_thread(repository: Repository) {
 	let template = repository.0.lock().unwrap().raw.clone().unwrap();
-	let raw = |run: u128, workspace: u128, home: &str| {
+	let raw = |run: u128, thread: u128, home: &str| {
 		let mut raw = template.clone();
 		raw.metadata.id = id(run);
-		raw.metadata.workspace_id = id(workspace);
+		raw.metadata.thread_id = id(thread);
 		raw.metadata.home_node = home.into();
 		raw
 	};
@@ -582,9 +575,9 @@ async fn many_runs_are_read_once_and_prepared_once_per_workspace(repository: Rep
 		vec![
 			"runs",
 			"prepare [13]",
-			"workspace 100",
+			"thread 100",
 			"prepare [10, 11, 14]",
-			"workspace 101",
+			"thread 101",
 		]
 	);
 }

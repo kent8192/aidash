@@ -138,7 +138,7 @@ pub struct Description {
 }
 
 /// The Home's reply to a describe request: the Description a receiver pins at
-/// admission, plus the current digest of the Workspace's semantic corpus (#191).
+/// admission, plus the current digest of the Thread's semantic corpus (#191).
 ///
 /// The digest rides beside the Description, not inside it. Admission and every
 /// refresh compare the whole Description with the pinned copy, and the corpus

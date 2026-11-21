@@ -122,7 +122,7 @@ async fn paths(c: &CoreFixture, token: &str, run: Uuid) -> Vec<String> {
 		&c.app,
 		token,
 		"POST",
-		&format!("/api/runs/{run}/files/search"),
+		&format!("/api/executions/{run}/files/search"),
 		json!({"query":"","mode":"path","scope":"references"}),
 	)
 	.await;
@@ -166,7 +166,7 @@ async fn an_agent_with_no_reference_action_reads_the_files_its_version_binds(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"注文を作成","mode":"literal","scope":"references"}),
 	)
 	.await;
@@ -177,7 +177,7 @@ async fn an_agent_with_no_reference_action_reads_the_files_its_version_binds(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":found["matches"][0]["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -211,7 +211,7 @@ async fn another_person_can_run_the_agent_but_cannot_download_its_files(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", run.workspace_id),
+		&format!("/api/threads/{}/tasks", run.thread_id),
 		json!({"title":"Bob's work","description":"Read the plan"}),
 	)
 	.await;
@@ -246,7 +246,7 @@ async fn another_person_can_run_the_agent_but_cannot_download_its_files(
 		&c.app,
 		&bob,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -255,7 +255,7 @@ async fn another_person_can_run_the_agent_but_cannot_download_its_files(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"","mode":"path","scope":"references"}),
 	)
 	.await;
@@ -607,7 +607,7 @@ async fn revoking_a_file_does_not_lock_an_area_that_never_copied_it(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -643,7 +643,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"needle","mode":"literal","scope":"references"}),
 	)
 	.await;
@@ -676,7 +676,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":gone["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -686,7 +686,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"needle","mode":"literal","scope":"references"}),
 	)
 	.await;
@@ -702,7 +702,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":kept["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -711,7 +711,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -720,7 +720,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/materialize", run.id),
+		&format!("/api/executions/{}/files/materialize", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":gone["file_id"],"expected_digest":gone["digest"]}}),
 	)
 	.await;
@@ -747,7 +747,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"","mode":"path","scope":"references"}),
 	)
 	.await;
@@ -757,7 +757,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -792,7 +792,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 			&c.app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/{route}", run.id),
+			&format!("/api/executions/{}/{route}", run.id),
 			input,
 		)
 		.await;
@@ -807,7 +807,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":plan["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -829,12 +829,12 @@ async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
 	let bob = credential["token"].as_str().unwrap().to_owned();
 	let (status, _) = start(&c, &alice, c.task).await;
 	assert_eq!(status, 200);
-	let workspace = latest_run(&c).await.workspace_id;
+	let thread = latest_run(&c).await.thread_id;
 	let (status, task) = request(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Bob's work","description":"Copy the plan"}),
 	)
 	.await;
@@ -854,7 +854,7 @@ async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
 		&c.app,
 		&bob,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -863,7 +863,7 @@ async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"","mode":"path","scope":"references"}),
 	)
 	.await;
@@ -873,7 +873,7 @@ async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/runs/{}/files/materialize", run.id),
+		&format!("/api/executions/{}/files/materialize", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":found["matches"][0]["file_id"],"expected_digest":found["matches"][0]["digest"]}}),
 	)
 	.await;
@@ -911,7 +911,7 @@ async fn an_agent_can_write_the_same_path_as_a_reference_file_without_losing_eit
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -935,7 +935,7 @@ async fn an_agent_can_write_the_same_path_as_a_reference_file_without_losing_eit
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"my notes","mode":"literal","scope":"working"}),
 	)
 	.await;
@@ -1010,7 +1010,7 @@ async fn ninety_documents_register_and_a_run_finds_a_passage_within_budget(
 		&c.app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"marker-89","mode":"literal","scope":"references"}),
 	)
 	.await;
@@ -1056,7 +1056,7 @@ async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1122,7 +1122,7 @@ async fn publication_batches_new_revision_references_without_rewriting_the_old_r
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;

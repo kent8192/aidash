@@ -168,20 +168,17 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 	common::approve_agent(&fixture.f, "alpha", &agent).await;
 	let credential = common::issued_credential(&fixture.f.store, "alpha", "alice").await;
 	let token = credential["token"].as_str().unwrap();
-	let workspace = owner_request(
+	let thread = owner_request(
 		&fixture,
 		token,
-		"/api/workspaces",
-		json!({"title":"Plan journey","goal":"Read two files"}),
+		"/api/threads",
+		json!({"title":"Plan journey"}),
 	)
 	.await;
 	let task = owner_request(
 		&fixture,
 		token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Two files","description":"Inspect both files"}),
 	)
 	.await;
@@ -218,7 +215,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 		credential["credential"]["id"].as_str().unwrap()
 	);
 	assert_eq!(grant.task_id(), run.task_id);
-	assert_eq!(grant.workspace_id(), run.workspace_id);
+	assert_eq!(grant.thread_id(), run.thread_id);
 	let pin = pinned(
 		&fixture.f.store.control_pool,
 		"alpha",
@@ -327,7 +324,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 	fixture
 		.f
 		.store
-		.save_run(&TEST_FIXTURE, &leased, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	drop(leased);

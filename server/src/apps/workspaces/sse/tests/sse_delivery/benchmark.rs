@@ -20,8 +20,8 @@ async fn servers(
 	processes
 }
 fn scope(index: usize, fixture: &Fixture) -> Option<Uuid> {
-	// Nine filtered clients per Workspace, plus ten all-Workspace clients.
-	(index < 90).then(|| fixture.workspaces[index % 10])
+	// Nine filtered clients per Thread, plus ten all-Thread clients.
+	(index < 90).then(|| fixture.threads[index % 10])
 }
 async fn observers(
 	processes: &[Process],
@@ -64,15 +64,15 @@ async fn metrics_all(processes: &[Process]) -> Vec<String> {
 	snapshots
 }
 async fn prime(fixture: &Fixture, received: &mut mpsc::UnboundedReceiver<Received>) {
-	for workspace in &fixture.workspaces {
+	for thread in &fixture.threads {
 		fixture
 			.f
 			.store
 			.emit(
 				&TEST_FIXTURE,
-				Some(*workspace),
-				"workspace.updated",
-				json!({"id":workspace,"warmup":true}),
+				Some(*thread),
+				"thread.updated",
+				json!({"id":thread,"warmup":true}),
 			)
 			.await
 			.unwrap();
@@ -179,7 +179,7 @@ async fn accepted_load_and_idle_reduction(
 		let mut resources_during = Vec::new();
 		for sample in 0..300 {
 			tokio::time::sleep_until(window + Duration::from_millis(sample * 100)).await;
-			let ws = fixture.workspaces[sample as usize % 10];
+			let ws = fixture.threads[sample as usize % 10];
 			let mut barrier = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 			sqlx::query(
 				&Query::select()
@@ -190,9 +190,9 @@ async fn accepted_load_and_idle_reduction(
 			.await
 			.unwrap();
 			let mutation = client
-				.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
+				.patch(format!("{}/api/threads/{ws}", processes[0].endpoint))
 				.bearer_auth(&fixture.token)
-				.json(&json!({"revision": sample / 10,"state":{"sample":sample}}));
+				.json(&json!({"revision": sample / 10,"title":format!("Sample {sample}")}));
 			let operation = tokio::spawn(async move { mutation.send().await.unwrap() });
 			// Wait until writer A is actually at its durable event/commit boundary.
 			tokio::time::timeout(Duration::from_secs(3), async {
@@ -249,11 +249,16 @@ async fn accepted_load_and_idle_reduction(
 		let mut seen = std::collections::HashSet::new();
 		let mut correctness = true;
 		for event in observations {
-			let sample = event.data["data"]["state"]["sample"].as_u64().unwrap() as usize;
+			let sample: usize = event.data["data"]["title"]
+				.as_str()
+				.and_then(|title| title.strip_prefix("Sample "))
+				.unwrap()
+				.parse()
+				.unwrap();
 			let latency = event.at.duration_since(starts[sample]).as_secs_f64() * 1000.0;
 			let expected_scope = scope(event.client, &fixture);
 			correctness &=
-				expected_scope.is_none() || expected_scope == Some(fixture.workspaces[sample % 10]);
+				expected_scope.is_none() || expected_scope == Some(fixture.threads[sample % 10]);
 			correctness &= event.id > last_id[event.client] && seen.insert((event.client, sample));
 			last_id[event.client] = event.id;
 			latest[sample] = latest[sample].max(latency);
@@ -262,7 +267,7 @@ async fn accepted_load_and_idle_reduction(
 		for sample in 0..300 {
 			for n in 0..100 {
 				if scope(n, &fixture).is_none()
-					|| scope(n, &fixture) == Some(fixture.workspaces[sample % 10])
+					|| scope(n, &fixture) == Some(fixture.threads[sample % 10])
 				{
 					correctness &= seen.contains(&(n, sample));
 				}

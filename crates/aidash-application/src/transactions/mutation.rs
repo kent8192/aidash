@@ -20,16 +20,16 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 	}
 	for mutation in &participant(manifest, node)?.mutations {
 		match mutation {
-			Mutation::WorkspaceState {
-				workspace_id,
+			Mutation::ThreadTitle {
+				thread_id,
 				expected_revision,
-				state,
+				title,
 			} => {
-				let workspace = scope
-					.replace_workspace(*workspace_id, *expected_revision, state.clone())
+				let thread = scope
+					.replace_thread(*thread_id, *expected_revision, title.clone())
 					.await?;
 				scope
-					.append_event(Some(*workspace_id), "workspace.updated", json!(workspace))
+					.append_event(Some(*thread_id), "thread.updated", json!(thread))
 					.await?;
 			}
 			Mutation::CompleteTask {
@@ -52,12 +52,12 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 				let (saved, created) = scope.complete_task(&task, artifact, &key).await?;
 				if let Some(run) = scope.source_run(task.id).await? {
 					scope
-						.record_output(run, task.workspace_id, "artifact", created.id)
+						.record_output(run, task.thread_id, "artifact", created.id)
 						.await?;
 				}
 				scope
 					.append_event(
-						Some(task.workspace_id),
+						Some(task.thread_id),
 						"task.completed",
 						json!({"task":saved,"artifact":created}),
 					)
@@ -78,7 +78,7 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 				let run = &raw.metadata;
 				rules::validate_home_completion(participant(manifest, &run.home_node)?, *task_id)?;
 				scope.complete_run(*run_id).await?;
-				scope.append_event(run.is_local(aidash_domain::nodes::deployment_of(node)).then_some(run.workspace_id), "run.completed", json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
+				scope.append_event(run.is_local(aidash_domain::nodes::deployment_of(node)).then_some(run.thread_id), "execution.completed", json!({"run_id":run.id,"task_id":run.task_id,"thread_id":run.thread_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
 			}
 		}
 	}

@@ -18,6 +18,10 @@ pub enum Actor {
 	TenantAdministrator,
 	/// A Deployment Administrator, through the bearer token or a browser session.
 	DeploymentAdministrator,
+	/// An Agent's chain, acting as the person at its root (#1012, ADR 0143).
+	/// It deletes only Nodes, never a Tenant; a Tenant Administrator restores
+	/// what it deleted.
+	Agent,
 }
 
 impl Actor {
@@ -25,6 +29,7 @@ impl Actor {
 		match self {
 			Self::TenantAdministrator => "tenant_administrator",
 			Self::DeploymentAdministrator => "deployment_administrator",
+			Self::Agent => "agent",
 		}
 	}
 
@@ -32,6 +37,7 @@ impl Actor {
 		match value {
 			"tenant_administrator" => Ok(Self::TenantAdministrator),
 			"deployment_administrator" => Ok(Self::DeploymentAdministrator),
+			"agent" => Ok(Self::Agent),
 			other => Err(Error::Invalid(format!("unknown deletion actor: {other}"))),
 		}
 	}

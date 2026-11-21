@@ -834,7 +834,7 @@ async fn an_every_allow_rule_is_effective_on_the_real_targets_the_policy_names(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_template(
+async fn a_generation_allow_rule_never_takes_effect(
 	#[future(awt)]
 	#[from(approval_application)]
 	application: common::ApplicationFixture,
@@ -894,7 +894,9 @@ async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_templat
 	assert_eq!(created.status(), 201, "{body}");
 	assert_eq!(body["effective"], false, "{body}");
 
-	// Granting catalog approval on that definition makes the rule effective.
+	// Even with catalog approval on that definition, an allow rule never
+	// approves a generated definition: a person makes that Catalog Approval
+	// (#1012, ADR 0143).
 	amend(&fixture.f, |bundle| {
 		bundle["policies"].as_array_mut().unwrap().push(policy(
 			"member-catalog",
@@ -916,7 +918,7 @@ async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_templat
 		)
 		.await,
 	);
-	assert_eq!(listed["rules"][0]["effective"], true, "{listed}");
+	assert_eq!(listed["rules"][0]["effective"], false, "{listed}");
 	fixture.cleanup().await;
 }
 
@@ -932,11 +934,7 @@ async fn subject_credentials_and_deployment_administrators_never_reach_them(
 	let people = people(&fixture).await;
 	let administrator = fixture.f.config.api_token.clone();
 	let credential = common::subject_credential(&fixture.f.store, TENANT, "member").await;
-	let thread = format!(
-		"/api/workspaces/{}/threads/{}/approval-mode",
-		Uuid::new_v4(),
-		Uuid::new_v4()
-	);
+	let thread = format!("/api/threads/{}/approval-mode", Uuid::new_v4());
 
 	// Act + Assert: bearers are refused on every route.
 	for token in [&credential, &administrator] {
@@ -1162,7 +1160,7 @@ async fn a_thread_mode_is_the_callers_own_and_needs_read_access_to_the_thread(
 	#[from(approval_application)]
 	application: common::ApplicationFixture,
 ) {
-	// Arrange: the member starts a Workspace and a Thread.
+	// Arrange: the member starts a Thread and a Thread.
 	let fixture = Fixture::new(application);
 	let people = people(&fixture).await;
 	let created = send(
@@ -1170,38 +1168,15 @@ async fn a_thread_mode_is_the_callers_own_and_needs_read_access_to_the_thread(
 		Person::Member,
 		&people.member,
 		"POST",
-		"/api/workspaces",
-		json!({"title": "Approvals", "goal": "Thread modes"}),
+		"/api/threads",
+		json!({"title": "Approvals"}),
 	)
 	.await;
-	let workspace = json_body(&created)["id"].as_str().unwrap().to_owned();
+	let thread = json_body(&created)["id"].as_str().unwrap().to_owned();
 	assert_eq!(created.status(), 200);
-	let message = send(
-		&fixture,
-		Person::Member,
-		&people.member,
-		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
-		json!({"content": "Which mode?", "idempotency_key": Uuid::new_v4()}),
-	)
-	.await;
-	let message_body = json_body(&message);
-	assert_eq!(message.status(), 200, "{message_body}");
-	let thread = send(
-		&fixture,
-		Person::Member,
-		&people.member,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id": message_body["message"]["id"]}),
-	)
-	.await;
-	let thread_body = json_body(&thread);
-	assert_eq!(thread.status(), 200, "{thread_body}");
-	let path = format!(
-		"/api/workspaces/{workspace}/threads/{}/approval-mode",
-		thread_body["id"].as_str().unwrap()
-	);
+	// The Approval Mode belongs to the Thread itself (#1008): there are no
+	// reply threads to set it on.
+	let path = format!("/api/threads/{thread}/approval-mode");
 
 	// Act + Assert: nothing is set, so the default applies.
 	let fresh = send(
@@ -1334,14 +1309,14 @@ async fn a_thread_mode_is_the_callers_own_and_needs_read_access_to_the_thread(
 	);
 	assert_eq!(mine["mode"], Value::Null);
 
-	// Someone who cannot read the Workspace neither reads nor sets a mode for its Thread,
+	// Someone who cannot read the Thread neither reads nor sets a mode for its Thread,
 	// and a Thread that is not there is not found.
 	amend(&fixture.f, |bundle| {
 		bundle["policies"].as_array_mut().unwrap().push(policy(
-			"no-workspace-read",
+			"no-thread-read",
 			"deny",
 			json!({"ids": ["other"]}),
-			"workspace.read",
+			"thread.read",
 			"*",
 		));
 	})
@@ -1371,10 +1346,7 @@ async fn a_thread_mode_is_the_callers_own_and_needs_read_access_to_the_thread(
 		Person::Member,
 		&people.member,
 		"GET",
-		&format!(
-			"/api/workspaces/{workspace}/threads/{}/approval-mode",
-			Uuid::new_v4()
-		),
+		&format!("/api/threads/{}/approval-mode", Uuid::new_v4()),
 		Value::Null,
 	)
 	.await;

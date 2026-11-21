@@ -57,8 +57,8 @@ pub(crate) async fn list(
 							]
 							.map(Alias::new),
 						)
-						.from(Alias::new("runs"))
-						.and_where(Expr::col("workspace_id").eq(Expr::value(subnode.workspace_id)))
+						.from(Alias::new("task_executions"))
+						.and_where(Expr::col("thread_id").eq(Expr::value(subnode.thread_id)))
 						.order_by(Alias::new("id"), Order::Asc)
 						.to_string(PostgresQueryBuilder),
 				)
@@ -90,7 +90,7 @@ pub(crate) async fn list(
 			result.push(SubnodeView {
 				id: subnode.id.0,
 				title: subnode.title,
-				workspace_id: subnode.workspace_id,
+				thread_id: subnode.thread_id,
 				leader: subnode.leader,
 				members: subnode
 					.members

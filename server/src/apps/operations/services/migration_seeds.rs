@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 21] {
+fn assets() -> [(&'static str, String); 33] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -74,12 +74,12 @@ fn assets() -> [(&'static str, String); 21] {
 			"identity/sql/forward/0080_schedule_member_policy.sql",
 			format!(
 				"SET LOCAL aidash.scope = 'deployment';\n{};\n",
-				crate::apps::identity::services::schedule_policy_backfill::forward()
+				crate::apps::identity::services::duty_policy_backfill::forward()
 			),
 		),
 		(
 			"identity/sql/backward/0080_schedule_member_policy.sql",
-			crate::apps::identity::services::schedule_policy_backfill::backward(),
+			crate::apps::identity::services::duty_policy_backfill::backward(),
 		),
 		(
 			"identity/sql/forward/0082_remove_package_index_approvals.sql",
@@ -111,6 +111,54 @@ fn assets() -> [(&'static str, String); 21] {
 		(
 			"execution/sql/backward/0141_remove_research_records.sql",
 			crate::apps::execution::services::research_record_cleanup::backward(),
+		),
+		(
+			"identity/sql/forward/0098_duty_member_policy.sql",
+			crate::apps::identity::services::duty_actions_backfill::forward(),
+		),
+		(
+			"identity/sql/backward/0098_duty_member_policy.sql",
+			crate::apps::identity::services::duty_actions_backfill::backward(),
+		),
+		(
+			"identity/sql/forward/0110_reply_thread_modes.sql",
+			crate::apps::workspaces::services::thread_backfill::reply_thread_modes(),
+		),
+		(
+			"identity/sql/forward/0111_thread_member_policy.sql",
+			crate::apps::identity::services::thread_policy_backfill::forward(),
+		),
+		(
+			"identity/sql/backward/0111_thread_member_policy.sql",
+			crate::apps::identity::services::thread_policy_backfill::backward(),
+		),
+		(
+			"identity/sql/backward/0113_budget_notice_delivery.sql",
+			crate::apps::identity::repositories::budgets::rollback_notices(),
+		),
+		(
+			"execution/sql/forward/0148_duplicate_areas.sql",
+			crate::apps::workspaces::services::thread_backfill::duplicate_areas(),
+		),
+		(
+			"workspaces/sql/forward/0033_duty_halts.sql",
+			crate::apps::workspaces::services::duty_halt_backfill::forward(),
+		),
+		(
+			"workspaces/sql/backward/0033_duty_halts.sql",
+			crate::apps::workspaces::services::duty_halt_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0150_execution_events.sql",
+			crate::apps::execution::services::execution_event_backfill::forward(),
+		),
+		(
+			"execution/sql/backward/0150_execution_events.sql",
+			crate::apps::execution::services::execution_event_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0153_area_queue_sleep_backfill.sql",
+			crate::apps::execution::services::area_queue_sleep_backfill::forward(),
 		),
 	]
 }
@@ -235,12 +283,19 @@ mod tests {
 		assert!(migration.database_only);
 		assert!(matches!(migration.operations.as_slice(),
 			[Operation::RunSQL { sql, reverse_sql: Some(reverse) }] if sql == &expected[12].1 && reverse == &expected[13].1));
-		// The data rewrites of #962, #963 and #987 run beside typed and
+		// The data rewrites of #962, #963, #987 and #1008 run beside typed and
 		// handwritten DDL operations of the same migrations.
 		for (app, name, forward, backward) in [
 			("identity", "0083_data_protection_switches", 16, Some(17)),
 			("identity", "0085_remove_research_approvals", 18, None),
 			("execution", "0141_remove_research", 19, Some(20)),
+			("identity", "0098_duty_member_policy", 21, Some(22)),
+			// The Thread rewrites of #1008.
+			("identity", "0110_threads", 23, None),
+			("identity", "0111_thread_member_policy", 24, Some(25)),
+			("execution", "0148_threads", 26, None),
+			("workspaces", "0033_duty_checks", 27, Some(28)),
+			("execution", "0150_task_executions", 29, Some(30)),
 		] {
 			let migration = FilesystemSource::new(&root)
 				.get_migration(app, name)

@@ -22,26 +22,29 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
-/// How far up a Subnode chain a Run's lists are looked for: a member may itself create one.
-const MAXIMUM_DEPTH: usize = 8;
-
 /// The Run whose lists bound `run`'s work. A Subnode member's Run uses at most what the Run
 /// that created its Subnode may use, so it is bounded by that creator, and by the creator's own
-/// creator when that one is a member too. Any other Run is its own.
+/// creator when that one is a member too. Any other Run is its own. Subnodes nest without a
+/// depth limit (#1012, ADR 0143), so the walk goes all the way up: stopping part way would hand
+/// a deep member a Run of this Tenant with no lists, which would bound nothing. A Run whose
+/// own Thread is a Subnode it created, which the schema allows, bounds itself. Any longer
+/// cycle, which creation never makes, is refused: ending the walk on it would hand back a
+/// member Run whose lists are none, and skip the lists of a Run in the cycle that has them.
 pub(crate) async fn bounding_run(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
 ) -> NativeResult<Uuid> {
 	let mut current = run;
-	for _ in 0..MAXIMUM_DEPTH {
+	let mut seen = std::collections::HashSet::from([run]);
+	loop {
 		let (sql, values) = Query::select()
 			.column(Alias::new("creator_run_id"))
 			.from(Alias::new("subnodes"))
 			.and_where(
-				Expr::col("workspace_id").in_subquery(
+				Expr::col("thread_id").in_subquery(
 					Query::select()
-						.column(Alias::new("workspace_id"))
-						.from(Alias::new("runs"))
+						.column(Alias::new("thread_id"))
+						.from(Alias::new("task_executions"))
 						.and_where(Expr::col("id").eq(Expr::value(current)))
 						.to_owned(),
 				),
@@ -52,8 +55,10 @@ pub(crate) async fn bounding_run(
 			.await?
 			.and_then(|row| QueryRow::from_backend_row(row).get("creator_run_id"));
 		match creator {
-			Some(creator) if creator != current => current = creator,
-			_ => break,
+			None => break,
+			Some(creator) if creator == current => break,
+			Some(creator) if seen.insert(creator) => current = creator,
+			Some(_) => return Err(Error::Forbidden),
 		}
 	}
 	Ok(current)
@@ -176,4 +181,86 @@ pub(crate) async fn home_hosts(
 			.map_err(Error::from)?
 			.map(|request| request.hosts),
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::apps::execution::test_database::{DatabaseFixture, database, fixture_scratch_space};
+	use rstest::rstest;
+	use uuid::Uuid;
+
+	/// A Run in a Thread of its own.
+	async fn run(driver: &sqlx::PgPool, node: &str) -> (Uuid, Uuid) {
+		let scratch = fixture_scratch_space(driver, "acme", node, "reader").await;
+		let (thread, task, run) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+		sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Fixture',1,$3,'reader')").bind(thread).bind(node).bind(scratch).execute(driver).await.unwrap();
+		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(thread).execute(driver).await.unwrap();
+		let pending = aidash_domain::run_state::encode(
+			&aidash_domain::run_state::RunState::Completed(
+				aidash_domain::run_state::TerminalState {},
+			),
+			&aidash_domain::run_state::RecoveryState::default(),
+		)
+		.unwrap();
+		sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,'aidash://origin-fixture','fixture','1.0.0','COMPLETED',$5,1)").bind(run).bind(task).bind(thread).bind(node).bind(pending).execute(driver).await.unwrap();
+		(run, thread)
+	}
+
+	/// Makes `thread` a Subnode that the Run `creator` created.
+	async fn subnode(driver: &sqlx::PgPool, thread: Uuid, creator: Uuid) {
+		let id = Uuid::new_v4();
+		sqlx::query(
+			"INSERT INTO subnodes (id, tenant, node, creator_run_id, creator_task_id, \
+			  creator_agent_id, creator_agent_version, leader_agent_id, leader_agent_version, \
+			  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
+			 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
+			  $2, $3, 'Cycle', 'active', now(), $1::text, $1::text \
+			 FROM task_executions WHERE id = $4",
+		)
+		.bind(id)
+		.bind(serde_json::json!({"tools":[],"secrets":[]}))
+		.bind(thread)
+		.bind(creator)
+		.execute(driver)
+		.await
+		.unwrap();
+	}
+
+	/// The walk up a member's creators refuses a cycle, which would otherwise
+	/// end on a member Run with no lists; a Run whose own Thread is a Subnode
+	/// it created still bounds itself.
+	#[rstest]
+	#[tokio::test]
+	async fn a_cycle_of_subnode_creators_is_refused(#[future] database: DatabaseFixture) {
+		// Arrange
+		let database = database.await;
+		let scope = database.tenant("acme").await;
+		let pool = database.pool().await;
+		let driver = pool.fixture_driver().clone();
+		let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+		let (own, own_thread) = run(&driver, &node).await;
+		subnode(&driver, own_thread, own).await;
+		let (first, first_thread) = run(&driver, &node).await;
+		let (second, second_thread) = run(&driver, &node).await;
+		subnode(&driver, first_thread, second).await;
+		subnode(&driver, second_thread, first).await;
+
+		// Act
+		let mut tx = database.begin_in(&scope).await;
+		let itself = super::bounding_run(&mut *tx, own).await;
+		let cycle = [
+			super::bounding_run(&mut *tx, first).await,
+			super::bounding_run(&mut *tx, second).await,
+		];
+		tx.rollback().await.unwrap();
+
+		// Assert
+		assert_eq!(itself.unwrap(), own);
+		for refused in cycle {
+			assert!(
+				matches!(refused, Err(crate::Error::Forbidden)),
+				"{refused:?}"
+			);
+		}
+	}
 }

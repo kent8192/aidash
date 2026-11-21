@@ -42,7 +42,7 @@ pub async fn assemble(
 			Some(PermissionInput {
 				tenant,
 				subject,
-				workspace_id: query.workspace_id,
+				thread_id: query.thread_id,
 			})
 		}
 		Principal::DeploymentAdministrator => return Err(Error::Forbidden),

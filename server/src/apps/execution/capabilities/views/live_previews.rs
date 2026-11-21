@@ -12,7 +12,7 @@ use reinhardt::{Depends, Path, Request, Response, get, http::ViewResult, post, p
 use uuid::Uuid;
 
 #[get(
-	"/api/runs/{id}/live-preview",
+	"/api/executions/{id}/live-preview",
 	name = "!core_live_preview",
 	auth = "protected"
 )]
@@ -25,7 +25,7 @@ pub async fn live_preview(
 }
 
 #[post(
-	"/api/runs/{id}/live-preview/stop",
+	"/api/executions/{id}/live-preview/stop",
 	name = "!core_live_preview_stop",
 	auth = "protected"
 )]

@@ -6,7 +6,7 @@ themselves establish release acceptance; see the [traceability matrix](memory-tr
 
 `scripts/evaluate-native-memory.py` runs the frozen English/Japanese fixtures in
 `tests/fixtures/native_memory_evaluation.toml` through the authorized native API.
-Use an isolated Workspace with the selected exact Agent, memory policy and
+Use an isolated Thread with the selected exact Agent, memory policy and
 PostgreSQL index configured, and a running Home maintenance worker. Each case
 creates a fresh participant; the runner corrects only its own synthetic source.
 
@@ -51,7 +51,7 @@ do not approve production thresholds.
 For actual completed-Run-to-human-review acceptance, run
 `scripts/test-cluster.sh kubernetes native-memory learning-ui` with web
 dependencies, a built frontend and Chromium. A local browser selects the actual
-Workspace/bank and admits a real pending candidate through the live Home API,
+Thread/bank and admits a real pending candidate through the live Home API,
 in en-US/ja-JP for ordinary/generated Agents. Authentication presentation uses
 the authorized bearer-session shim; memory, Registry and state requests are
 real. This does not test OIDC login. Generated review/indexing retain the
@@ -69,7 +69,7 @@ committed together only after the complete tool result or combined inference
 context succeeds and fits its delivery budget. The enclosing delivery transaction
 owns that commit; failed commit, later-bank retrieval, or reflection leaves no
 journal entries for the abandoned operation.
-Retention excludes banks with active Workspace or settings readers before its
+Retention excludes banks with active Thread or settings readers before its
 32-bank page limit, so busy banks cannot starve later maintenance candidates or
 block an indexer's nested origin authority check.
 Remote journals record only native Units retained in the final budget-fitted
@@ -85,7 +85,7 @@ charged model receipt and does not consume a model failure attempt.
 `scripts/evaluate-run-memory-supply.py` checks that memory actually reaches a
 live Run, which the matrix above does not: it operates banks directly. For each
 case in `tests/evaluation/memory-supply.toml` and each arm it creates a
-Workspace with a semantic index and a fresh participant, seeds the bank (then
+Thread with a semantic index and a fresh participant, seeds the bank (then
 applies the case's corrections and deletions), waits until every live Unit is
 `READY`, assigns the participant to a new Task and claims it.
 
@@ -212,11 +212,11 @@ purge retain their complete visible-unit boundary. Dormant Units count toward
 record capacity. A policy-version mismatch or disabled dormancy makes stored
 flags inert; maintenance reevaluates them with its persisted clock and cursor.
 
-The existing authorized HTTP `POST /api/workspaces/{workspace}/memory/operate`
+The existing authorized HTTP `POST /api/threads/{thread}/memory/operate`
 and its OpenAPI Operation schema expose these additional actions:
 
-- `pin` and `unpin`, with `id`, require `memory.pin` and the participant or a Workspace administrator acting as a person.
-- `reactivate`, with `id`, requires `memory.reactivate` and the participant or a Workspace administrator acting as a person.
+- `pin` and `unpin`, with `id`, require `memory.pin` and the participant or a Thread administrator acting as a person.
+- `reactivate`, with `id`, requires `memory.reactivate` and the participant or a Thread administrator acting as a person.
 - `dormant` lists Dormant Units under `memory.read_dormant`.
 - `recall_including_dormant`, with `query`, requires `memory.read_dormant`
   in addition to ordinary read authority. Active and Dormant snapshots each
@@ -229,6 +229,6 @@ of these operations. Successful explicit local Delivery, correction, selection
 as live derived support and Pinning reactivate a Unit. Keyword/entity hits do
 not automatically reactivate it.
 
-For these controls, Workspace ownership or the existing `workspace.update`
+For these controls, Thread ownership or the existing `thread.update`
 authority identifies administration; a bare memory-action grant to another
 person does not grant administration of a participant Bank.

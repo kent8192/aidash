@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { abandonable } from "../src/collaboration/workspace-model.ts";
+import { abandonable } from "../src/collaboration/thread-model.ts";
 
 test("failed, blocked and cancelled tasks can be abandoned whatever ran", () => {
   for (const status of ["FAILED", "BLOCKED", "CANCELLED"]) {

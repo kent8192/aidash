@@ -18,7 +18,7 @@ pub(crate) async fn require_in(
 	let raw: RawRun = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(cached.id)))
 			.and_where(Expr::col("tenant").eq(tenant))
 			.to_string(PostgresQueryBuilder),
@@ -28,7 +28,7 @@ pub(crate) async fn require_in(
 	if raw.metadata.node != cached.node
 		|| raw.metadata.home_node != cached.home_node
 		|| raw.metadata.task_id != cached.task_id
-		|| raw.metadata.workspace_id != cached.workspace_id
+		|| raw.metadata.thread_id != cached.thread_id
 	{
 		return Err(Error::Forbidden);
 	}

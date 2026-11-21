@@ -56,17 +56,14 @@ pub(crate) async fn embed_before_registration(
 			let jobs = crate::bootstrap::generation_embedding_authority_scope(&mut access)
 				.requests(store.deployment.as_str())
 				.await?;
-			let workspace = jobs
-				.first()
-				.map(|job| job.workspace_id)
-				.unwrap_or(Uuid::nil());
-			if jobs.iter().any(|job| job.workspace_id != workspace) {
+			let thread = jobs.first().map(|job| job.thread_id).unwrap_or(Uuid::nil());
+			if jobs.iter().any(|job| job.thread_id != thread) {
 				return Err(Error::Forbidden);
 			}
 			let reservation = crate::generation::embedding::reserve_input(
 				&mut access,
 				store,
-				workspace,
+				thread,
 				&config,
 				input,
 				crate::generation::embedding::Origin::Reference,
@@ -259,7 +256,7 @@ pub(crate) async fn reference_image_context(
 	let vector = crate::semantic::service::embed_input(
 		store,
 		&mut crate::semantic::service::Lease::Inherited(access),
-		run.workspace_id,
+		run.thread_id,
 		&config,
 		query,
 		crate::generation::embedding::Origin::ReferenceQuery(run.id),

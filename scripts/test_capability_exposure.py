@@ -33,13 +33,15 @@ expected_tool = "lookup"
                 nonlocal reads
                 if path == "/api/registry" or path.endswith("/delegate"):
                     return 200, {}
-                if path == "/api/workspaces":
+                if path == "/api/threads":
+                    # ThreadInput refuses unknown fields and a request without a target.
+                    self.assertEqual(set(body), {"title"})
                     return 200, {"id": "ws"}
-                if path == "/api/workspaces/ws/tasks":
+                if path == "/api/threads/ws/tasks":
                     return 200, {"id": "task"}
-                if path == "/api/tasks/task/runs":
+                if path == "/api/tasks/task/executions":
                     return 200, {"items": [{"id": "run"}], "next_cursor": None}
-                if path == "/api/runs/run":
+                if path == "/api/executions/run":
                     reads += 1
                     return 200, {"run": {"id": "run", "phase": "WAITING" if reads % 2 else "COMPLETED"}}
                 if path == "/api/human-requests?run=run":
@@ -51,7 +53,7 @@ expected_tool = "lookup"
                     return 200, {}
                 if path.startswith("/api/capabilities/approvals?"):
                     return 200, {"items": [], "next_cursor": None}
-                if path == "/api/workspaces/ws":
+                if path == "/api/threads/ws":
                     return 200, {"events": []}
                 raise AssertionError(path)
 

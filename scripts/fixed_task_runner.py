@@ -282,9 +282,9 @@ def tool_calls_from(context):
     return calls
 
 
-def final_answer(api, token, workspace, run):
+def final_answer(api, token, thread, run):
     """The published final answer: the Run's output artifact, else its final context text."""
-    detail = api.get(f"/api/workspaces/{workspace}", token)
+    detail = api.get(f"/api/threads/{thread}", token)
     produced = [artifact for artifact in detail.get("artifacts", [])
                 if artifact.get("run_id") == run["id"] or artifact.get("task_id") == run.get("task_id")]
     for artifact in reversed(produced):
@@ -313,7 +313,7 @@ def approves(task, card, approve_fixture_tools, prefix):
 
 
 def blank_observation():
-    return {"run_id": None, "workspace": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
+    return {"run_id": None, "thread": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
             "final_answer": None, "steps": None, "compactions": None, "requests": None, "context_reason": None,
             "usage_records": None, "interrupted": False, "infrastructure_error": None, "cancellation_failed": False,
             "wall_ms": 0.0}
@@ -345,7 +345,7 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
     grace_deadline = clock() + CANCEL_GRACE
     grace = api.until(grace_deadline, clock, sleep)
     while run_id is None:
-        runs = [] if token is None else grace.get(f"/api/tasks/{task_uuid}/runs", token)["items"]
+        runs = [] if token is None else grace.get(f"/api/tasks/{task_uuid}/executions", token)["items"]
         run_id = next((run["id"] for run in runs), None)
         if run_id is not None:
             break
@@ -355,12 +355,12 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
             raise RuntimeError(f"a claim of Task {task_uuid} may have admitted a Run that did not appear within "
                                f"{CANCEL_GRACE}s, so it could not be cancelled")
         sleep(min(1.0, max(0.0, grace_deadline - clock())))
-    run = grace.get(f"/api/runs/{run_id}", token)["run"]
+    run = grace.get(f"/api/executions/{run_id}", token)["run"]
     if run["phase"] in TERMINAL:
         return run
-    grace.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
+    grace.post(f"/api/executions/{run_id}/control", {"action": "cancel"}, token)
     while True:
-        run = grace.get(f"/api/runs/{run_id}", token)["run"]
+        run = grace.get(f"/api/executions/{run_id}", token)["run"]
         if run["phase"] in TERMINAL:
             return run
         if clock() >= grace_deadline:
@@ -430,9 +430,9 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
     try:
         try:
             title = f"{experiment.prefix} {task['id']} {planned['label']} r{repeat}"
-            workspace = bounded.post("/api/workspaces", {"title": title, "goal": task["title"]}, token)["id"]
-            observation["workspace"] = workspace
-            created = bounded.post(f"/api/workspaces/{workspace}/tasks", {
+            thread = bounded.post("/api/threads", {"title": title}, token)["id"]
+            observation["thread"] = thread
+            created = bounded.post(f"/api/threads/{thread}/tasks", {
                 "title": task["title"], "description": task_description(planned["corpus"], task), "requirements": {},
                 "dependencies": [], "parent_id": None}, token)
             task_uuid = created["id"]
@@ -458,11 +458,11 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                         raise DeadlineExceeded(f"retrying the claim of Task {task_uuid} would pass the deadline") \
                             from error
                     sleep(delay)
-                    if bounded.get(f"/api/tasks/{task_uuid}/runs", token)["items"]:
+                    if bounded.get(f"/api/tasks/{task_uuid}/executions", token)["items"]:
                         break
             run_id = None
             while run_id is None:
-                run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task_uuid}/runs", token)["items"]), None)
+                run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task_uuid}/executions", token)["items"]), None)
                 if run_id is None:
                     if clock() > deadline:
                         raise RuntimeError(f"no Run appeared for Task {task_uuid}")
@@ -472,7 +472,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             if after_claim is not None:
                 after_claim(bounded)
             while True:
-                run = bounded.get(f"/api/runs/{run_id}", token)["run"]
+                run = bounded.get(f"/api/executions/{run_id}", token)["run"]
                 if run["phase"] in TERMINAL:
                     break
                 if clock() > deadline:
@@ -540,7 +540,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
         reader = api.until(max(deadline, clock() + CANCEL_GRACE), clock, sleep)
         record_final_state(observation, run)
         if run["phase"] == "COMPLETED":
-            observation["final_answer"] = final_answer(reader, token, observation["workspace"], run)
+            observation["final_answer"] = final_answer(reader, token, observation["thread"], run)
         if fixture is not None:
             observation["requests"] = fixture.observed(task_uuid)
         if task.get("fixture_record_pages"):
@@ -587,7 +587,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             try:
                 observation["usage_records"] = usage_reader(observation["run_id"])
                 try:
-                    events = compaction_events(api, token, observation["workspace"], observation["run_id"])
+                    events = compaction_events(api, token, observation["thread"], observation["run_id"])
                 except Exception:
                     events = []
                 mark_compaction(observation["usage_records"], events)
@@ -691,18 +691,18 @@ def unit_content(text):
             "entities": [], "evidence": [], "links": [], "mental_model": None}
 
 
-def run_memory_scenario(api, token, workspace, provider, bank, scenario):
+def run_memory_scenario(api, token, thread, provider, bank, scenario):
     """Apply a scenario's ordered actions to one isolated bank; return checks."""
     units = {source["id"]: str(uuid.uuid4()) for source in scenario.get("sources", [])}
     texts = {source["id"]: expand(source["text"]) for source in scenario.get("sources", [])}
     sent = {}
     checks = []
-    path = f"/api/workspaces/{workspace}/memory/units/mutate"
+    path = f"/api/threads/{thread}/memory/units/mutate"
     for index, action in enumerate(scenario["actions"]):
         op = action["op"]
         name = action.get("label") or f"{index}:{op}"
         if op == "query":
-            listed = api.post(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank},
+            listed = api.post(f"/api/threads/{thread}/memory/units/query", {"provider": provider, "bank": bank},
                               token)["units"]
             visible = {}
             for unit in listed:
@@ -790,15 +790,15 @@ def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     return main + summary + (auxiliary or {}).get("worst_case_nanocredits", 0)
 
 
-def observed_provider_work(api, token, workspace, run_id):
-    """Accepted inference attempts the Node reported for a Run, from its Workspace events.
+def observed_provider_work(api, token, thread, run_id):
+    """Accepted inference attempts the Node reported for a Run, from its Thread events.
 
     Informational only. `model.completed` is emitted for accepted attempts, so
     interrupted or retried attempts do not appear, and its payload carries no
     provider-reported model or route. The ledger therefore never prices a Run
     from this list.
     """
-    events = api.get(f"/api/workspaces/{workspace}", token).get("events", [])
+    events = api.get(f"/api/threads/{thread}", token).get("events", [])
     attempts = []
     for event in events:
         data = event.get("data") or {}
@@ -810,20 +810,22 @@ def observed_provider_work(api, token, workspace, run_id):
     return attempts
 
 
-def compaction_events(api, token, workspace, run_id):
+def compaction_events(api, token, thread, run_id):
     """Read chronological events past the snapshot's 100-event limit."""
     cursor = 0
     completed = []
     while True:
-        events = api.get(f"/api/events?workspace_id={quote(str(workspace), safe='')}&after={cursor}", token)
+        # GET /api/events answers a page: {"events": [...], "unconfirmed": [...]} (#770).
+        page = api.get(f"/api/events?thread_id={quote(str(thread), safe='')}&after={cursor}", token)
+        events = page.get("events") if isinstance(page, dict) else None
         if not isinstance(events, list):
-            raise ValueError("invalid workspace event page")
+            raise ValueError("invalid Thread event page")
         if not events:
             return completed
         for event in events:
             sequence = event.get("sequence")
             if type(sequence) is not int or sequence <= cursor:
-                raise ValueError("workspace events are not ordered")
+                raise ValueError("Thread events are not ordered")
             cursor = sequence
             data = event.get("data") or {}
             if event.get("kind") == "model.completed" and data.get("run_id") == run_id:
@@ -831,7 +833,7 @@ def compaction_events(api, token, workspace, run_id):
 
 
 def mark_compaction(records, events):
-    """Match accepted attempts to workspace events; leave uncertain matches unknown."""
+    """Match accepted attempts to Thread events; leave uncertain matches unknown."""
     main = [r for r in records if r.get("purpose") == "main"]
     for record in main:
         record["after_compaction"] = None
@@ -860,7 +862,7 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     Each Run is reserved at its worst case before dispatch; a refusal stops all
     further dispatch. Every Run, completed or not, stays charged at its full
     reservation as uncertain: Usage Records have no HTTP read endpoint yet, and
-    the Workspace events omit interrupted and retried attempts, so no observed
+    the Thread events omit interrupted and retried attempts, so no observed
     cost may release headroom under the hard ceiling.
 
     `binding_check(api)` raises GuardRefusal unless the Tenant's Provider
@@ -917,11 +919,11 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
             if observation.get("cancellation_failed"):
                 stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
                              "or the Deployment Administrator token")
-            if observation["run_id"] and observation.get("workspace"):
+            if observation["run_id"] and observation.get("thread"):
                 try:
                     attempt["provider_work"] = [{k: v for k, v in item.items() if k != "context_usage"}
                                                 for item in observed_provider_work(api, experiment.token,
-                                                                                   observation["workspace"],
+                                                                                   observation["thread"],
                                                                                    observation["run_id"])]
                 except Exception as error:  # Informational only; the reservation stays charged.
                     attempt["provider_work_error"] = f"{type(error).__name__}: {error}"

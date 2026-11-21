@@ -6,13 +6,13 @@ use serde_json::Value;
 pub fn retains_lease(event: &str) -> bool {
 	matches!(
 		event,
-		"run.sources_observed"
-			| "run.semantic_degraded"
-			| "run.semantic_recovered"
-			| "run.estimate_pinned"
-			| "run.plugin_tools_pinned"
-			| "run.mcp_checkpoint"
-			| "run.unassigned_tasks_abandoned"
+		"execution.sources_observed"
+			| "execution.semantic_degraded"
+			| "execution.semantic_recovered"
+			| "execution.estimate_pinned"
+			| "execution.plugin_tools_pinned"
+			| "execution.mcp_checkpoint"
+			| "execution.unassigned_tasks_abandoned"
 			| "context.summary_revoked"
 	)
 }
@@ -25,13 +25,13 @@ impl Run {
 		let mut recovery = self.recovery.clone();
 		let retrying = matches!(
 			event,
-			"run.retrying"
-				| "run.semantic_retrying"
-				| "run.decider_retrying"
-				| "run.node_retrying"
-				| "run.outage_waiting"
-				| "run.outage_resumed"
-				| "run.failure_pending"
+			"execution.retrying"
+				| "execution.semantic_retrying"
+				| "execution.decider_retrying"
+				| "execution.node_retrying"
+				| "execution.outage_waiting"
+				| "execution.outage_resumed"
+				| "execution.failure_pending"
 		);
 		if !retrying {
 			recovery.retry = None;
@@ -39,14 +39,14 @@ impl Run {
 		// Only a scheduled Decider retry carries its count to the next lease.
 		if !matches!(
 			event,
-			"run.decider_retrying" | "run.outage_waiting" | "run.outage_resumed"
+			"execution.decider_retrying" | "execution.outage_waiting" | "execution.outage_resumed"
 		) {
 			recovery.decider_retry = 0;
 		}
 		// Likewise a scheduled Node retry (#751).
 		if !matches!(
 			event,
-			"run.node_retrying" | "run.outage_waiting" | "run.outage_resumed"
+			"execution.node_retrying" | "execution.outage_waiting" | "execution.outage_resumed"
 		) {
 			recovery.node_retry = 0;
 		}
@@ -64,7 +64,7 @@ impl Run {
 			recovery.lease_recoveries = 0;
 		}
 		let pending = encode(&self.state, &recovery)?;
-		let error = if retrying || event == "run.failed" {
+		let error = if retrying || event == "execution.failed" {
 			self.error.as_deref()
 		} else {
 			None

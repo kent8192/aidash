@@ -31,7 +31,7 @@ pub(crate) async fn offloaded_range(
 	};
 	units::current(
 		lease,
-		bank.workspace,
+		bank.thread,
 		std::slice::from_ref(proof),
 		bounds.max_graph_visits,
 	)
@@ -142,7 +142,7 @@ pub(crate) async fn input(
 ) -> Result<(String, Vec<Evidence>)> {
 	units::current(
 		lease,
-		bank.workspace,
+		bank.thread,
 		std::slice::from_ref(proof),
 		bounds.max_graph_visits,
 	)
@@ -155,7 +155,7 @@ pub(crate) async fn input(
 	let run: Run = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(*id)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),
@@ -294,7 +294,7 @@ async fn canonical_source(
 	match kind {
 		"message" => {
 			let row = disclosure
-				.message(id, bank.workspace)
+				.message(id, bank.thread)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if disclosure.scoped() && !disclosure.message_visible(&row).await? {
@@ -309,7 +309,7 @@ async fn canonical_source(
 		}
 		"artifact" => {
 			let row = disclosure
-				.artifact(id, bank.workspace)
+				.artifact(id, bank.thread)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if disclosure.scoped() && !disclosure.artifact_visible(&row).await? {

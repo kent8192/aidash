@@ -82,6 +82,12 @@ pub enum ExecutionFailure {
 	/// The ChatGPT plan's usage limit is reached. OpenAI gives no reset time, so
 	/// the Run waits and tries again every hour (ADR 0129, amending ADR 0007).
 	PlanAllowance(String),
+	/// A Budget at its Hard Limit (#1012): pause for a person when `stop`,
+	/// otherwise sleep and recheck every hour. Neither spends an attempt.
+	Budget {
+		stop: bool,
+		message: String,
+	},
 	Deferred,
 	/// The database could not serve the step. The Run waits and resumes for as
 	/// long as that lasts, spending none of its attempts (#728).
@@ -121,6 +127,7 @@ impl ExecutionFailure {
 			Self::Authority(failure) => failure.reason(),
 			Self::MediaRoute(message)
 			| Self::PlanAllowance(message)
+			| Self::Budget { message, .. }
 			| Self::Inference { message, .. }
 			| Self::Other(message) => message.clone(),
 			Self::Deferred => "execution state is temporarily unavailable".into(),

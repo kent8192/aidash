@@ -21,7 +21,7 @@ export interface Unconfirmed {
   /** The silent Node's address, `aidash://<deployment>/<node name>`. */
   node: string;
   kind: UnconfirmedKind;
-  workspace_id: string;
+  thread_id: string;
   count: number;
 }
 
@@ -40,19 +40,18 @@ export function readUnconfirmed(body: unknown): Unconfirmed[] {
 
 /**
  * What a list says: for each silent Node, how many rows of `kinds` in the
- * Workspaces in view were left out. Counts of one Node add up, and the Nodes
+ * Threads in view were left out. Counts of one Node add up, and the Nodes
  * are ordered by address so the lines do not move between refreshes.
  */
 export function unconfirmedFor(
   entries: readonly Unconfirmed[] | null | undefined,
   kinds: readonly UnconfirmedKind[],
-  workspaceIds: Iterable<string>,
+  threadIds: Iterable<string>,
 ): UnconfirmedLine[] {
-  const workspaces = new Set(workspaceIds);
+  const threads = new Set(threadIds);
   const counts = new Map<string, number>();
   for (const entry of entries ?? []) {
-    if (!kinds.includes(entry.kind) || !workspaces.has(entry.workspace_id))
-      continue;
+    if (!kinds.includes(entry.kind) || !threads.has(entry.thread_id)) continue;
     if (!Number.isFinite(entry.count) || entry.count <= 0) continue;
     counts.set(entry.node, (counts.get(entry.node) ?? 0) + entry.count);
   }

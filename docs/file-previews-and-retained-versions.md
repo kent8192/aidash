@@ -16,7 +16,7 @@ and
 
 A File version is one immutable File of a Working Area at one path. Opening a
 File preview, like downloading it, checks current authority over the Working
-Area: the Workspace read permission, the `file.read` action of the
+Area: the Thread read permission, the `file.read` action of the
 `working_area` resource, and the authority of every message or reference the
 Area was built from. A File preview always opens the exact File version
 selected; it never substitutes a newer one.
@@ -311,9 +311,9 @@ outside a Run.
 - The Pod mounts the revision current at start and never publishes what its
   server writes. It does not take the Area's writer slot, so a later turn can
   run while the preview keeps serving.
-- `live_preview_stop {}` and `POST /api/runs/{id}/live-preview/stop` stop it.
+- `live_preview_stop {}` and `POST /api/executions/{id}/live-preview/stop` stop it.
   The Run's requester and whoever may cancel the Run may stop it; viewing
-  alone does not allow it. `GET /api/runs/{id}/live-preview` reports
+  alone does not allow it. `GET /api/executions/{id}/live-preview` reports
   `may_stop` under the viewer's authority so the dashboard shows Stop only to
   them.
 

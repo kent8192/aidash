@@ -247,8 +247,8 @@ impl DecisionAuthority for Authority<'_> {
 
 /// A leased Run whose journaled context holds ten large tool results.
 async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uuid) {
-	let (status, created) = request(app, token, "POST", "/api/conversations", json!({
-		"title":"Decisions", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	let (status, created) = request(app, token, "POST", "/api/threads", json!({
+		"title":"Decisions", "request":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	}))
 	.await;
 	assert_eq!(status, 200, "{created}");
@@ -271,7 +271,7 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 	}
 	let run = f
 		.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	(run, worker)

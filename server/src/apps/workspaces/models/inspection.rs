@@ -1,5 +1,5 @@
 //! Transaction-bound records used by authorization and factual inspection.
-use super::{Artifact, Conversation, Message, Task, Workspace};
+use super::{Artifact, Conversation, Message, Task, Thread};
 use crate::domain;
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -17,11 +17,11 @@ impl Task {
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<domain::Task>> {
 		Ok(Self::objects()
 			.filter(Self::field_id().eq(id))
-			.filter(Self::field_workspace_id().eq(workspace))
+			.filter(Self::field_thread_id().eq(thread))
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?
@@ -71,7 +71,7 @@ impl Artifact {
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		lock: bool,
 	) -> Result<Option<domain::Artifact>> {
 		let mut query = Query::select();
@@ -79,7 +79,7 @@ impl Artifact {
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)));
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)));
 		if lock {
 			query.lock(LockType::Share);
 		}
@@ -104,7 +104,7 @@ impl Message {
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		lock: bool,
 	) -> Result<Option<domain::Message>> {
 		let mut query = Query::select();
@@ -112,7 +112,7 @@ impl Message {
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)));
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)));
 		if lock {
 			query.lock(LockType::Share);
 		}
@@ -137,13 +137,13 @@ impl Conversation {
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<domain::Conversation>> {
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.build(PostgresQueryBuilder);
 		Ok(tx
 			.fetch_optional(&sql, convert_values(values))
@@ -153,10 +153,10 @@ impl Conversation {
 	}
 }
 
-impl Workspace {
+impl Thread {
 	pub(crate) async fn snapshot_rows<E: OrmExecutor>(
 		db: &mut E,
-		workspace: Uuid,
+		thread: Uuid,
 		collection: &str,
 		after: Option<Uuid>,
 	) -> Result<Vec<(Uuid, Value)>> {
@@ -167,7 +167,7 @@ impl Workspace {
 		source
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(collection))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)));
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)));
 		if collection == "events" {
 			source
 				.order_by(Alias::new("sequence"), Order::Desc)

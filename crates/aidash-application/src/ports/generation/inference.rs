@@ -15,7 +15,9 @@ pub trait GenerationInferenceSession: Send {
 	async fn reserve(&mut self, request: Uuid, attempt: Uuid, run: Uuid, amount: i64)
 	-> Result<()>;
 	async fn refund(&mut self, request: Uuid, amount: i64) -> Result<()>;
-	async fn released_policy(&mut self, request: Uuid) -> Result<Option<(String, String)>>;
+	/// The Tenant and policy of a request whose quota was already released,
+	/// with the token limit it was recorded with.
+	async fn released_policy(&mut self, request: Uuid) -> Result<Option<(String, String, i64)>>;
 	async fn refund_allocated(&mut self, tenant: &str, policy: &str, amount: i64) -> Result<()>;
 	async fn report(&mut self, request: Uuid, attempt: Uuid, reported: Option<i64>) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;

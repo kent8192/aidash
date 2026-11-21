@@ -197,7 +197,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		bounds.max_model_calls = 8;
 		bounds.max_model_tokens = 24; // Four conservatively charged six-byte queries.
 	}
-	let (store, registry, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let agent = reference("a");
 	let authorization = Authorization {
 		pool: store.pool.clone(),
@@ -242,7 +242,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 	let participant = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: agent.clone(),
 		},
@@ -268,7 +268,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&NewTask {
 				title: "Tokyo transport".into(),
 				description: "Find the way around".into(),
@@ -284,7 +284,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 	memory::assign_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		task.id,
 		memory::AssignmentChange {
 			task_revision: task.revision,
@@ -386,7 +386,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 	let cycle: i32 = aidash_server::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("semantic_retry_cycle"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)

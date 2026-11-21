@@ -52,7 +52,7 @@ impl Reader {
 			id: Uuid::from_u128(3),
 			task_id: task().id,
 			task_revision: task().revision,
-			workspace_id: task().workspace_id,
+			thread_id: task().thread_id,
 			node_id: "aidash://receiver".into(),
 			tenant: "tenant".into(),
 			credential_id: Uuid::from_u128(4),
@@ -69,6 +69,7 @@ impl Reader {
 			task_id: task().id,
 			task_revision: task().revision,
 			initial_task: json!(task()),
+			activated: true,
 		};
 		let mut base = Scope::new();
 		base.subjects = vec!["viewer".into()];
@@ -115,8 +116,8 @@ impl SourceAuthorityScope for Producer<'_> {
 	) -> Result<()> {
 		self.base.generation_home(task, node, generation).await
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.base.source_workspace(id).await
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.base.source_thread(id).await
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.base.source_task_resource(task).await
@@ -358,14 +359,14 @@ async fn required_home_disclosure_recheck_restores_admitted_provider_attributes(
 		.await
 		.unwrap()
 	);
-	let (_, workspace, _) = reader
+	let (_, thread, _) = reader
 		.base
 		.calls
 		.iter()
 		.find(|(action, ..)| action == "semantic.disclose")
 		.unwrap();
-	assert!(workspace.attributes.get("inference_model").is_some());
-	assert!(workspace.attributes.get("summarizer").is_none());
+	assert!(thread.attributes.get("inference_model").is_some());
+	assert!(thread.attributes.get("summarizer").is_none());
 }
 #[rstest]
 #[tokio::test]

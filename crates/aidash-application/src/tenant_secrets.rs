@@ -435,6 +435,13 @@ fn validate_value(value: &SecretString) -> Result<()> {
 			"a Tenant Secret value is 1 to 4096 printable ASCII characters without surrounding spaces".into(),
 		));
 	}
+	// An Aidash Subject Credential stored here would let a Tenant tool, and so
+	// an Agent's chain, call Aidash's own API (#1012, ADR 0143).
+	if value.contains(aidash_domain::identity::credentials::SUBJECT_PREFIX) {
+		return Err(Error::Invalid(
+			"a Tenant Secret cannot hold an Aidash Subject Credential".into(),
+		));
+	}
 	Ok(())
 }
 fn unavailable() -> Error {

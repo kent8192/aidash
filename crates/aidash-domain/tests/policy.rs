@@ -12,7 +12,7 @@ fn document() -> Value {
 		"roles":{"reader":{},"editor":{"inherits":["reader"]}},
 		"policies":[{
 			"id":"read","effect":"allow","subjects":{"roles":["reader"]},
-			"actions":["workspace.read"],"resources":{"kinds":["workspace"]},
+			"actions":["thread.read"],"resources":{"kinds":["thread"]},
 			"condition":{"op":"all","conditions":[
 				{"op":"eq","left":{"source":"subject","path":"/team"},"right":{"source":"resource","path":"/team"}},
 				{"op":"contains","left":{"source":"literal","value":["office","vpn"]},"right":{"source":"environment","path":"/network"}}
@@ -22,8 +22,8 @@ fn document() -> Value {
 }
 
 fn input() -> Evaluation {
-	serde_json::from_value(json!({"subject":"alice","action":"workspace.read",
-        "resource":{"tenant":"acme","kind":"workspace","id":"w1","attributes":{"team":"research"}},
+	serde_json::from_value(json!({"subject":"alice","action":"thread.read",
+        "resource":{"tenant":"acme","kind":"thread","id":"w1","attributes":{"team":"research"}},
         "environment":{"network":"vpn"}}))
 	.unwrap()
 }

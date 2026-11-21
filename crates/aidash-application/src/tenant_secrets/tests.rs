@@ -1514,6 +1514,25 @@ async fn a_personal_broker_source_keeps_its_row_and_rechecks_hosts() {
 	assert!(matches!(source.route().await, Err(Error::Invalid(code)) if code == UNAVAILABLE));
 }
 
+#[tokio::test]
+async fn an_aidash_subject_credential_is_never_a_tenant_secret() {
+	let (s, _, _) = service();
+	for value in [
+		"aidash_subject_owner.0123456789abcdef",
+		"Bearer aidash_subject_owner.0123456789abcdef",
+	] {
+		let result = s
+			.put(
+				"alpha",
+				"aidash",
+				put(Some(value), Some(&["a.example"]), 0),
+				"actor",
+			)
+			.await;
+		assert!(invalid(&result), "{value}: {result:?}");
+	}
+}
+
 /// The domain mirrors the broker's header rule because it cannot depend on the
 /// capability crate. Agent Plugin server secrets and External services rely on
 /// the two agreeing, so a header the domain accepts is one the broker attaches.

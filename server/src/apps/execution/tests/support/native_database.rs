@@ -69,7 +69,7 @@ pub(super) async fn wait_for_pgroonga(pool: &PgPool, timeout: Duration) -> Resul
 	}
 }
 
-/// Give a fixture Workspace a valid Scratch Space on the same Tenant and Node.
+/// Give a fixture Thread a valid Scratch Space on the same Tenant and Node.
 #[allow(dead_code)] // This support module is shared by independently compiled suites.
 pub async fn fixture_scratch_space(
 	pool: &PgPool,

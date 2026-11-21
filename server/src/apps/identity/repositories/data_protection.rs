@@ -78,7 +78,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 			}
 			let (sql, values) = Query::select()
 				.columns(["tenant", "task_id"].map(Alias::new))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.build(PostgresQueryBuilder);
 			let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
@@ -402,8 +402,8 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 		.await?;
 	// Serialize concurrent calls of the same Run so the disclosure is recorded once.
 	let (sql, values) = Query::select()
-		.columns(["id", "task_id", "workspace_id", "home_node", "node"].map(Alias::new))
-		.from(Alias::new("runs"))
+		.columns(["id", "task_id", "thread_id", "home_node", "node"].map(Alias::new))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
 		.lock(reinhardt::query::LockType::Update)
 		.build(PostgresQueryBuilder);
@@ -414,8 +414,8 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 	let task: uuid::Uuid = row
 		.get("task_id")
 		.map_err(reinhardt::core::exception::Error::from)?;
-	let workspace: uuid::Uuid = row
-		.get("workspace_id")
+	let thread: uuid::Uuid = row
+		.get("thread_id")
 		.map_err(reinhardt::core::exception::Error::from)?;
 	let home: String = row
 		.get("home_node")
@@ -427,7 +427,7 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 	let (sql, values) = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("events"))
-		.and_where(Expr::col("kind").eq(Expr::value("run.plan_connection_used")))
+		.and_where(Expr::col("kind").eq(Expr::value("execution.plan_connection_used")))
 		.and_where(
 			Expr::col("data")
 				.binary(
@@ -446,8 +446,8 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 		crate::apps::execution::models::event_records::append_run(
 			tx.as_mut(),
 			run,
-			local.then_some(workspace),
-			"run.plan_connection_used",
+			local.then_some(thread),
+			"execution.plan_connection_used",
 			serde_json::json!({"run_id":run,"task_id":task}),
 		)
 		.await?;

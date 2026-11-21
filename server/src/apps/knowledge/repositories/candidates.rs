@@ -97,7 +97,7 @@ pub(crate) async fn list(
 			unexpired(lease, bank, &row).await?;
 			units::current(
 				lease,
-				bank.workspace,
+				bank.thread,
 				&value.content.evidence,
 				bounds.max_graph_visits,
 			)
@@ -129,7 +129,7 @@ pub(crate) async fn propose(
 	content: &[Content],
 	bounds: &Bounds,
 ) -> Result<Vec<Candidate>> {
-	repository::lock_workspace(lease, bank.workspace, true).await?;
+	repository::lock_thread(lease, bank.thread, true).await?;
 	units::authorize(lease, bank, "memory.candidate.propose").await?;
 	let Evidence::Run { id: run_id, .. } = run else {
 		return Err(Error::Invalid("learning needs a complete Run proof".into()));
@@ -159,7 +159,7 @@ pub(crate) async fn propose(
 	}
 	units::current(
 		lease,
-		bank.workspace,
+		bank.thread,
 		std::slice::from_ref(run),
 		bounds.max_graph_visits,
 	)
@@ -178,13 +178,7 @@ pub(crate) async fn propose(
 				"candidate must retain unverified complete Run provenance".into(),
 			));
 		}
-		units::current(
-			lease,
-			bank.workspace,
-			&item.evidence,
-			bounds.max_graph_visits,
-		)
-		.await?;
+		units::current(lease, bank.thread, &item.evidence, bounds.max_graph_visits).await?;
 		let digest = aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(&(
 			run_id, item,
 		))?);
@@ -285,7 +279,7 @@ pub(crate) async fn review(
 	bounds: &Bounds,
 ) -> Result<Option<Unit>> {
 	human(lease)?;
-	repository::lock_workspace(lease, bank.workspace, true).await?;
+	repository::lock_thread(lease, bank.thread, true).await?;
 	units::authorize(lease, bank, "memory.candidate.review").await?;
 	let bank_id = repository::bank_id(lease, bank, false)
 		.await?
@@ -328,7 +322,7 @@ pub(crate) async fn review(
 			units::unexpired(lease, &unit).await?;
 			units::current(
 				lease,
-				bank.workspace,
+				bank.thread,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
 			)
@@ -408,7 +402,7 @@ pub(crate) async fn review(
 		};
 		units::current(
 			lease,
-			bank.workspace,
+			bank.thread,
 			&item.content.evidence,
 			bounds.max_graph_visits,
 		)

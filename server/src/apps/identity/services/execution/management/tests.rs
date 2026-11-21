@@ -19,7 +19,7 @@ fn inspection(
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::now_v7(),
 			task_id: Uuid::now_v7(),
-			workspace_id: Uuid::now_v7(),
+			thread_id: Uuid::now_v7(),
 			home_node: "home".into(),
 			agent_id: "agent".into(),
 			agent_version: "1.0.0".into(),

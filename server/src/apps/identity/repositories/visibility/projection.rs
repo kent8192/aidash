@@ -3,10 +3,10 @@ use super::Reads;
 use crate::Result as NativeResult;
 use aidash_application::{
 	Result,
-	ports::authorization::{projection::WorkspaceProjection, visibility::RunVerdicts},
+	ports::authorization::{projection::ThreadProjection, visibility::RunVerdicts},
 };
 use aidash_domain::{
-	Artifact, Event, Message, Task, Workspace, WorkspaceSnapshot, policy::Resource,
+	Artifact, Event, Message, Task, Thread, ThreadSnapshot, policy::Resource,
 	provider::progress::MARKER_PREFIX,
 };
 use async_trait::async_trait;
@@ -16,19 +16,14 @@ use reinhardt::query::{
 };
 use serde_json::json;
 use uuid::Uuid;
-pub(crate) fn event_scope(
-	include_marketplace: bool,
-	tenant: &str,
-	workspaces: &[Uuid],
-) -> Condition {
-	let scope = Condition::any().add(
-		Expr::col(Alias::new("workspace_id")).is_in(workspaces.iter().copied().map(Expr::value)),
-	);
+pub(crate) fn event_scope(include_marketplace: bool, tenant: &str, threads: &[Uuid]) -> Condition {
+	let scope = Condition::any()
+		.add(Expr::col(Alias::new("thread_id")).is_in(threads.iter().copied().map(Expr::value)));
 	if include_marketplace {
 		scope
 			.add(
 				Condition::all()
-					.add(Expr::col(Alias::new("workspace_id")).is_null())
+					.add(Expr::col(Alias::new("thread_id")).is_null())
 					.add(Expr::col(Alias::new("kind")).is_in([
 						"provider_credential.created",
 						"provider_credential.rotated",
@@ -41,7 +36,7 @@ pub(crate) fn event_scope(
 			)
 			.add(
 				Condition::all()
-					.add(Expr::col(Alias::new("workspace_id")).is_null())
+					.add(Expr::col(Alias::new("thread_id")).is_null())
 					.add(Expr::col(Alias::new("kind")).like("marketplace.%"))
 					.add(
 						Expr::col(Alias::new("kind"))
@@ -77,7 +72,7 @@ pub(crate) fn event_scope(
 	}
 }
 #[async_trait]
-impl WorkspaceProjection for Reads<'_> {
+impl ThreadProjection for Reads<'_> {
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		Box::pin(self.access.task_visible(row))
 			.await
@@ -90,10 +85,10 @@ impl WorkspaceProjection for Reads<'_> {
 	}
 	async fn message_attachments(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		messages: &[Uuid],
 	) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
-		super::attachment_metadata(self.access, workspace, messages).await
+		super::attachment_metadata(self.access, thread, messages).await
 	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		Box::pin(self.access.message_visible(row))
@@ -105,8 +100,8 @@ impl WorkspaceProjection for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -120,21 +115,21 @@ impl WorkspaceProjection for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()> {
+	async fn track(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
 		self.access
 			.track_snapshot(snapshot)
 			.await
 			.map_err(Into::into)
 	}
-	async fn task_rows(&mut self, workspaces: &[Uuid], cursor: u64) -> Result<Vec<Task>> {
+	async fn task_rows(&mut self, threads: &[Uuid], cursor: u64) -> Result<Vec<Task>> {
 		let result: NativeResult<Vec<Task>> = async {
 			let rows: Vec<Task> = aidash_server::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
 					.from(Alias::new("tasks"))
 					.and_where(
-						Expr::col(Alias::new("workspace_id"))
-							.is_in(workspaces.iter().copied().map(Expr::value)),
+						Expr::col(Alias::new("thread_id"))
+							.is_in(threads.iter().copied().map(Expr::value)),
 					)
 					.order_by(Alias::new("created_at"), Order::Desc)
 					.order_by(Alias::new("id"), Order::Desc)
@@ -153,7 +148,7 @@ impl WorkspaceProjection for Reads<'_> {
 	/// a full Run visibility evaluation per projection.
 	async fn event_rows(
 		&mut self,
-		workspaces: &[Uuid],
+		threads: &[Uuid],
 		include_marketplace: bool,
 		cursor: i64,
 		page_size: usize,
@@ -166,7 +161,7 @@ impl WorkspaceProjection for Reads<'_> {
 					.and_where(event_scope(
 						include_marketplace,
 						&self.access.identity.tenant,
-						workspaces,
+						threads,
 					))
 					.and_where(
 						Expr::col(Alias::new("kind"))
@@ -184,13 +179,13 @@ impl WorkspaceProjection for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn message_rows(&mut self, workspace: Uuid, offset: u64) -> Result<Vec<Message>> {
+	async fn message_rows(&mut self, thread: Uuid, offset: u64) -> Result<Vec<Message>> {
 		let result: NativeResult<Vec<Message>> = async {
 			let rows: Vec<Message> = aidash_server::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
 					.from(Alias::new("messages"))
-					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 					.order_by(Alias::new("created_at"), Order::Desc)
 					.order_by(Alias::new("id"), Order::Desc)
 					.limit(100)
@@ -204,14 +199,14 @@ impl WorkspaceProjection for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn workspace_row(&mut self, id: Uuid) -> Result<Workspace> {
-		let result: NativeResult<Workspace> = async {
+	async fn thread_row(&mut self, id: Uuid) -> Result<Thread> {
+		let result: NativeResult<Thread> = async {
 			Ok({
 				let query_bind_1 = id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
-						.from(Alias::new("workspaces"))
+						.from(Alias::new("threads"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -229,7 +224,7 @@ impl WorkspaceProjection for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn workspace_tasks(&mut self, id: Uuid) -> Result<Vec<Task>> {
+	async fn thread_tasks(&mut self, id: Uuid) -> Result<Vec<Task>> {
 		let result: NativeResult<Vec<Task>> = async {
 			Ok({
 				let query_bind_1 = id;
@@ -238,13 +233,11 @@ impl WorkspaceProjection for Reads<'_> {
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("tasks"))
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								)),
 						)
 						.order_by(Alias::new("created_at"), Order::Asc)
 						.order_by(Alias::new("id"), Order::Asc)
@@ -257,7 +250,7 @@ impl WorkspaceProjection for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn workspace_artifacts(&mut self, id: Uuid) -> Result<Vec<Artifact>> {
+	async fn thread_artifacts(&mut self, id: Uuid) -> Result<Vec<Artifact>> {
 		let result: NativeResult<Vec<Artifact>> = async {
 			Ok({
 				let query_bind_1 = id;
@@ -266,13 +259,11 @@ impl WorkspaceProjection for Reads<'_> {
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("artifacts"))
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								)),
 						)
 						.order_by(Alias::new("created_at"), Order::Asc)
 						.order_by(Alias::new("id"), Order::Asc)
@@ -287,7 +278,7 @@ impl WorkspaceProjection for Reads<'_> {
 	}
 }
 
-/// Scan state events without first listing every authorized Workspace, and
+/// Scan state events without first listing every authorized Thread, and
 /// count the events left out because a Node did not answer (#770).
 pub(crate) async fn state_events(
 	reads: &mut Reads<'_>,
@@ -297,16 +288,15 @@ pub(crate) async fn state_events(
 	use aidash_domain::unconfirmed::{Kind, Tally};
 	use std::collections::HashMap;
 	let tenant = reads.access.identity.tenant.clone();
-	let mut workspace_query = Query::select();
-	workspace_query
+	let mut thread_query = Query::select();
+	thread_query
 		.column(Alias::new("id"))
-		.from(Alias::new("workspaces"))
+		.from(Alias::new("threads"))
 		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.clone())));
 	if let Some(node) = node {
-		workspace_query.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())));
+		thread_query.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())));
 	}
-	let tenant_workspaces =
-		Expr::col(Alias::new("workspace_id")).in_subquery(workspace_query.to_owned());
+	let tenant_threads = Expr::col(Alias::new("thread_id")).in_subquery(thread_query.to_owned());
 	let mut result = Vec::new();
 	let mut unconfirmed = Tally::new();
 	let mut checked = HashMap::new();
@@ -320,7 +310,7 @@ pub(crate) async fn state_events(
 		query
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("events"))
-			.cond_where(event_scope(true, &tenant, &[]).add(tenant_workspaces.clone()))
+			.cond_where(event_scope(true, &tenant, &[]).add(tenant_threads.clone()))
 			.and_where(
 				Expr::col(Alias::new("kind")).not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
 			)
@@ -343,10 +333,10 @@ pub(crate) async fn state_events(
 		scanned += rows.len();
 		reads
 			.access
-			.prepare_state_workspaces(
+			.prepare_state_threads(
 				&rows
 					.iter()
-					.filter_map(|row| row.workspace_id)
+					.filter_map(|row| row.thread_id)
 					.collect::<Vec<_>>(),
 			)
 			.await
@@ -358,7 +348,7 @@ pub(crate) async fn state_events(
 					.data
 					.get("run_id")
 					.or_else(|| {
-						(event.kind == "run.created")
+						(event.kind == "execution.created")
 							.then(|| event.data.get("id"))
 							.flatten()
 					})
@@ -369,7 +359,7 @@ pub(crate) async fn state_events(
 		if !ids.is_empty() {
 			let query = Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").is_in(ids.into_iter().map(Expr::value)))
 				.to_string(PostgresQueryBuilder);
 			let candidates: Vec<aidash_domain::RunMetadata> =
@@ -408,18 +398,18 @@ pub(crate) async fn state_events(
 		}
 		for row in rows {
 			cursor = row.sequence;
-			if let Some(id) = row.workspace_id {
+			if let Some(id) = row.thread_id {
 				let allowed = if let Some(value) = checked.get(&id) {
 					*value
 				} else {
 					let value = reads
 						.access
-						.allowed(id, "workspace.read")
+						.allowed(id, "thread.read")
 						.await
 						.map_err(aidash_application::Error::from)?
 						&& reads
 							.access
-							.allowed(id, "workspace.events")
+							.allowed(id, "thread.events")
 							.await
 							.map_err(aidash_application::Error::from)?;
 					checked.insert(id, value);
@@ -429,12 +419,12 @@ pub(crate) async fn state_events(
 					continue;
 				}
 			}
-			// Counted only after the reader's own `workspace.read` and
-			// `workspace.events` passed above.
+			// Counted only after the reader's own `thread.read` and
+			// `thread.events` passed above.
 			reads.begin_row();
-			let visible = WorkspaceProjection::event_visible(reads, &row, &mut runs).await?;
+			let visible = ThreadProjection::event_visible(reads, &row, &mut runs).await?;
 			let silence = reads.take_row_silence();
-			if unconfirmed.settle_in(silence, Kind::Event, row.workspace_id, visible) {
+			if unconfirmed.settle_in(silence, Kind::Event, row.thread_id, visible) {
 				result.push(row);
 			}
 			if result.len() == 100 {

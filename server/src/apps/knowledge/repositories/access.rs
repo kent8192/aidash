@@ -29,7 +29,7 @@ pub(crate) enum Lease<'a> {
 impl Lease<'_> {
 	/// Begin as `actor`. A Subject works in its own Tenant; a Deployment
 	/// Administrator has no knowledge authority.
-	pub(crate) async fn begin(store: &Store, actor: &Actor, _workspace: Uuid) -> Result<Self> {
+	pub(crate) async fn begin(store: &Store, actor: &Actor, _thread: Uuid) -> Result<Self> {
 		match actor {
 			// Knowledge is Tenant content: a Deployment Administrator has none (#484).
 			Actor::DeploymentAdministrator => Err(Error::Forbidden),
@@ -47,21 +47,21 @@ impl Lease<'_> {
 	pub(crate) async fn deployment(store: &Store, reason: DeploymentScopeReason) -> Result<Self> {
 		Self::within(store, &TenancyScope::Deployment(reason)).await
 	}
-	/// Restore the authority saved with work on `workspace`.
-	pub(crate) async fn restore(store: &Store, authority: Value, workspace: Uuid) -> Result<Self> {
-		Self::restore_with_mode(store, authority, workspace, false).await
+	/// Restore the authority saved with work on `thread`.
+	pub(crate) async fn restore(store: &Store, authority: Value, thread: Uuid) -> Result<Self> {
+		Self::restore_with_mode(store, authority, thread, false).await
 	}
 	pub(crate) async fn restore_proof(
 		store: &Store,
 		authority: Value,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Self> {
-		Self::restore_with_mode(store, authority, workspace, true).await
+		Self::restore_with_mode(store, authority, thread, true).await
 	}
 	async fn restore_with_mode(
 		store: &Store,
 		authority: Value,
-		workspace: Uuid,
+		thread: Uuid,
 		proof: bool,
 	) -> Result<Self> {
 		let authority: SavedAuthority = serde_json::from_value(authority)?;
@@ -72,7 +72,7 @@ impl Lease<'_> {
 			{
 				let tx = store
 					.pool
-					.begin(&store.workspace_tenancy(workspace).await?)
+					.begin(&store.thread_tenancy(thread).await?)
 					.await?;
 				Ok(if proof {
 					Self::ProofWithoutSubject(tx)
@@ -154,10 +154,10 @@ impl Lease<'_> {
 		&mut self,
 		node: &str,
 		kind: aidash_domain::unconfirmed::Kind,
-		workspace: Uuid,
+		thread: Uuid,
 	) {
 		if let Some(access) = self.access() {
-			access.leave_out(node, kind, workspace);
+			access.leave_out(node, kind, thread);
 		}
 	}
 	/// What native read loops left out since the last call.
@@ -212,25 +212,22 @@ impl Lease<'_> {
 			| Self::BorrowedProofWithoutSubject(_) => result,
 		}
 	}
-	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
+	pub(crate) async fn thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
 		if self.access().is_none() {
 			if action == super::mutations::SEMANTIC_INDEX_MANAGE {
-				crate::authorization::remote::deployment_administrator::workspace_tenant(
+				crate::authorization::remote::deployment_administrator::thread_tenant(
 					self.tx(),
-					workspace,
+					thread,
 				)
 				.await?;
 			} else {
-				crate::authorization::remote::deployment_administrator::require(
-					self.tx(),
-					workspace,
-				)
-				.await?;
+				crate::authorization::remote::deployment_administrator::require(self.tx(), thread)
+					.await?;
 			}
 		}
 		if let Some(a) = self.access() {
-			let resource = a.workspace(workspace).await?;
-			a.require(&resource, "workspace.read").await?;
+			let resource = a.thread(thread).await?;
+			a.require(&resource, "thread.read").await?;
 			a.require(&resource, action).await?;
 		}
 		Ok(())
@@ -244,14 +241,10 @@ impl Lease<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	pub(crate) async fn source(
-		&mut self,
-		workspace: Uuid,
-		source: &Source,
-	) -> Result<Option<String>> {
+	pub(crate) async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
 		aidash_application::semantic::visibility::source(
 			&mut crate::bootstrap::semantic_disclosure_scope(self),
-			workspace,
+			thread,
 			source,
 		)
 		.await

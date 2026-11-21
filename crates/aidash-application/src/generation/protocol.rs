@@ -135,7 +135,7 @@ async fn cited(lease: &mut dyn GenerationProtocolLease, id: Uuid) -> Result<Cite
 ///   step is not after the step being admitted (`Forbidden`);
 /// - the grant is still live (`Forbidden`) and no source it consumed changed
 ///   or was revoked (`Invalidated`, the existing follow-up Task path);
-/// - the Workspace corpus digest equals the one recorded before the cited
+/// - the Thread corpus digest equals the one recorded before the cited
 ///   retrieval (`Stale`: the Run retrieves again).
 ///
 /// The Home sees only the step the executing peer claims; that peer's own

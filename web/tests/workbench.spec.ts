@@ -465,9 +465,9 @@ for (const [viewport, locale] of [
             entry,
             source_node: "aidash://home",
             observed_at: "2026-09-25T00:00:00Z",
-            workspaces: [
+            threads: [
               {
-                workspace_id: "workspace-one",
+                thread_id: "thread-one",
                 title: "Research",
                 current: true,
                 latest_run_at: "2026-09-25T00:00:00Z",
@@ -484,7 +484,7 @@ for (const [viewport, locale] of [
           json: {
             tenant: "acme",
             subject: "alice",
-            workspace_id: null,
+            thread_id: null,
             policy_revision: 1,
             observed_at: "2026-09-25T00:00:00Z",
             requested_capabilities: [],
@@ -830,7 +830,7 @@ for (const width of [1280, 390]) {
             entry,
             source_node: "aidash://home",
             observed_at: "2026-09-25T00:00:00Z",
-            workspaces: [],
+            threads: [],
             test_evidence: [],
             usage_truncated: false,
             external_assessment_available: false,
@@ -1001,7 +1001,7 @@ test("Creator offers an approval request when a new version cannot carry", async
         entry: drafts[0].entry,
         source_node: "aidash://home",
         observed_at: "2026-09-25T00:00:00Z",
-        workspaces: [],
+        threads: [],
         usage_truncated: false,
         external_assessment_available: false,
       },
@@ -1302,7 +1302,7 @@ for (const [width, locale] of [
               entry: configuredEntry,
               source_node: "aidash://home",
               observed_at: "2026-09-25T00:00:00Z",
-              workspaces: [],
+              threads: [],
               test_evidence: [],
               usage_truncated: false,
               external_assessment_available: false,
@@ -1314,7 +1314,7 @@ for (const [width, locale] of [
             json: {
               tenant: "acme",
               subject: "alice",
-              workspace_id: null,
+              thread_id: null,
               policy_revision: 1,
               observed_at: "2026-09-25T00:00:00Z",
               requested_capabilities: configuredEntry.capabilities,

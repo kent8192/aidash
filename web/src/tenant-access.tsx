@@ -1,4 +1,8 @@
 import { DataProtectionSettings } from "./data-protection";
+import { StandingInstructionsSettings } from "./standing-instructions";
+import { BudgetSettings } from "./budgets";
+import { OrgChartPanel } from "./org-chart";
+import { ExecutionSettings } from "./execution-settings";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
 import { ScopeCeilings } from "./connections/ceilings";
@@ -58,6 +62,22 @@ export function TenantAccess({
           <ApprovalObservationReportPanel tenant={tenant} />
         </>
       )}
+      <StandingInstructionsSettings
+        key={`instructions-${tenant}`}
+        tenant={tenant}
+        canUpdate={can("tenant.instructions.update")}
+      />
+      <BudgetSettings
+        key={`budgets-${tenant}`}
+        tenant={tenant}
+        subject={subject}
+      />
+      <OrgChartPanel key={`org-chart-${tenant}`} tenant={tenant} />
+      <ExecutionSettings
+        key={`execution-${tenant}`}
+        tenant={tenant}
+        canUpdate={can("tenant.update")}
+      />
       {can("policy.read") && (
         <DataProtectionSettings
           key={tenant}

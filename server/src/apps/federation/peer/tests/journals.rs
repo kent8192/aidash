@@ -17,10 +17,10 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 	let app = Box::pin(endpoint).await;
 	let mut db = app.database.lease.handle();
 	let scope = crate::endpoint::tenant_scope(&app.runtime.store, "acme").await;
-	let workspace = app
+	let thread = app
 		.runtime
 		.store
-		.create_workspace(&scope, "alice", "Journal", "Bounded observation")
+		.create_thread(&scope, "alice", "Journal")
 		.await
 		.unwrap();
 	crate::endpoint::register_fixture_agent(&app, "agent").await;
@@ -32,7 +32,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 			.store
 			.create_task(
 				&scope,
-				workspace.id,
+				thread.id,
 				&NewTask {
 					title: home.into(),
 					description: "Journal fixture".into(),
@@ -92,7 +92,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 		let human = HumanRequest::build()
 			.tenant("acme")
 			.id(Uuid::new_v4())
-			.workspace_id(workspace.id)
+			.thread_id(thread.id)
 			.run(run.id)
 			.kind(HumanRequestKind::Question)
 			.prompt("p".repeat(4096))
@@ -108,7 +108,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 	let (member, _) = crate::endpoint::tenant_member(&app).await;
 	let first = assert_json(
 		member
-			.get(&format!("/api/runs/{observed_run}"))
+			.get(&format!("/api/executions/{observed_run}"))
 			.await
 			.unwrap(),
 		200,
@@ -120,7 +120,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 	);
 	let next = assert_json(
 		member
-			.get(&format!("/api/runs/{observed_run}?offset=100"))
+			.get(&format!("/api/executions/{observed_run}?offset=100"))
 			.await
 			.unwrap(),
 		200,

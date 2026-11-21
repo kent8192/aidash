@@ -52,7 +52,7 @@ def answer_json(value):
 
 
 def observation(**overrides):
-    value = {"run_id": "run", "workspace": "ws", "phase": "COMPLETED", "error": None, "human_answers": [],
+    value = {"run_id": "run", "thread": "ws", "phase": "COMPLETED", "error": None, "human_answers": [],
              "tool_calls": [], "final_answer": None, "steps": 2, "compactions": 0, "requests": None,
              "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 10.0}
     value.update(overrides)
@@ -927,7 +927,7 @@ class OfflineCalibrationTest(unittest.TestCase):
         fixture = fixture_module.Fixture({"fixture/m": 128000})
         task_uuid = "00000000-0000-0000-0000-0000000000aa"
         fixture.register(task_uuid, item, "offline")
-        tools = ["human_request", "workspace_read"] + [tool["alias"] for tool in evaluation.task_tools(value, item)]
+        tools = ["human_request", "thread_read"] + [tool["alias"] for tool in evaluation.task_tools(value, item)]
         history, calls, answers = [], [], []
         human = iter(item.get("human_answers", []))
         for _ in range(16):
@@ -971,11 +971,16 @@ class CacheReuseTest(unittest.TestCase):
         class Api:
             def get(self, path, token):
                 after = int(path.split("after=")[1])
+                self.paths.append(path)
                 if after == 0:
-                    return [{"sequence": i, "kind": "model.completed", "data": {"run_id": "r", "context_usage": {"compactions": 0}}} for i in range(1, 151)]
-                return []
-        events = runner.compaction_events(Api(), "token", "w", "r")
+                    return {"events": [{"sequence": i, "kind": "model.completed", "data": {"run_id": "r", "context_usage": {"compactions": 0}}} for i in range(1, 151)],
+                            "unconfirmed": []}
+                return {"events": [], "unconfirmed": []}
+        api = Api()
+        api.paths = []
+        events = runner.compaction_events(api, "token", "w", "r")
         self.assertEqual(len(events), 150)
+        self.assertEqual(api.paths, ["/api/events?thread_id=w&after=0", "/api/events?thread_id=w&after=150"])
 
     def test_probe_dry_run_preserves_reasoning_and_pins_route(self):
         script = Path(__file__).resolve().parent / "prompt_cache_route_probe.py"
@@ -1050,7 +1055,7 @@ class CacheReuseTest(unittest.TestCase):
         self.assertAlmostEqual(metric["summary_hit"], 100 / 120)
         self.assertIsNone(evaluation.summarize_usage(None)["cache_reuse"]["overall_hit"])
 
-    def test_compaction_markers_follow_accepted_workspace_events(self):
+    def test_compaction_markers_follow_accepted_thread_events(self):
         records = [{"purpose": "main", "outcome": "completed"} for _ in range(3)]
         events = [{"context_usage": {"compactions": n}} for n in (0, 1, 1)]
         runner.mark_compaction(records, events)
@@ -1178,18 +1183,18 @@ class FakeNode:
     def call(self, method, path, body, token, timeout=None):
         if method == "GET" and path.startswith("/api/tenants/") and path.endswith("/nodes"):
             return 200, [{"name": "default-12345678", "address": "aidash://live/default-12345678", "default": True}]
-        if path == "/api/workspaces" and method == "POST":
+        if path == "/api/threads" and method == "POST":
             return 200, {"id": "ws-1"}
         if path.endswith("/tasks"):
             return 200, {"id": "task-uuid", "revision": 0}
         if path.endswith("/claim"):
             return 200, {}
-        if path == "/api/tasks/task-uuid/runs":
+        if path == "/api/tasks/task-uuid/executions":
             return 200, {"items": [{"id": "run-1", "task_id": "task-uuid"}], "next_cursor": None}
         if path == "/api/human-requests?run=run-1":
             requests = [self.human] if self.human and not self.answers else []
             return 200, {"items": requests, "next_cursor": None}
-        if path == "/api/runs/run-1":
+        if path == "/api/executions/run-1":
             phase = self.phases.pop(0) if len(self.phases) > 1 else self.phases[0]
             return 200, {"run": {"id": "run-1", "task_id": "task-uuid", "phase": phase, "step": 3,
                                  "context": {"compactions": 0, "history": [
@@ -1212,7 +1217,7 @@ class FakeNode:
             self.cancelled = True
             self.phases = ["CANCELLED"]
             return 200, {}
-        if path == "/api/workspaces/ws-1":
+        if path == "/api/threads/ws-1":
             return 200, {"artifacts": [{"run_id": "run-1", "content": self.artifact}], "events": [
                 {"kind": "model.completed", "data": {"run_id": "run-1", "step": 1,
                                                      "context_usage": {"input_tokens": 10, "output_tokens": 5}}}]}
@@ -1332,7 +1337,7 @@ class RunnerTest(unittest.TestCase):
         failed = []
 
         def failing_once(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1" and not failed:
+            if method == "GET" and path == "/api/executions/run-1" and not failed:
                 failed.append(path)
                 return 500, {"error": "internal"}
             return node.call(method, path, body, token)
@@ -1372,7 +1377,7 @@ class RunnerTest(unittest.TestCase):
                 def late(method, path, body, token, timeout=None, node=node, reads=reads, appears=appears):
                     if path.endswith("/claim"):
                         return 504, {"error": "gateway timeout"}  # It may still have committed.
-                    if path == "/api/tasks/task-uuid/runs":
+                    if path == "/api/tasks/task-uuid/executions":
                         reads.append(path)
                         if not appears or len(reads) < 3:
                             return 200, {"items": [], "next_cursor": None}
@@ -1403,7 +1408,7 @@ class RunnerTest(unittest.TestCase):
 
         def blocked(method, path, body, token, timeout=None):
             status, payload = node.call(method, path, body, token)
-            if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+            if method == "GET" and path == "/api/executions/run-1" and payload["run"]["phase"] == active_phase:
                 payload["run"]["recovery"] = {"context_reason": context_reason}
                 if reason:
                     payload["run"]["state_error"] = reason
@@ -1442,7 +1447,7 @@ class RunnerTest(unittest.TestCase):
 
                 def plain(method, path, body, token, timeout=None, node=node, recovery=recovery):
                     status, payload = node.call(method, path, body, token)
-                    if method == "GET" and path == "/api/runs/run-1" and recovery is not None:
+                    if method == "GET" and path == "/api/executions/run-1" and recovery is not None:
                         payload["run"]["recovery"] = recovery
                     return status, payload
 
@@ -1507,7 +1512,7 @@ class RunnerTest(unittest.TestCase):
         failed, controls = [], []
 
         def subject_cannot_cancel(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1" and not failed:
+            if method == "GET" and path == "/api/executions/run-1" and not failed:
                 failed.append(path)
                 return 500, {"error": "internal"}
             if path.endswith("/control"):
@@ -2125,7 +2130,7 @@ class LiveGuardTest(unittest.TestCase):
 
                 def interrupting(method, path, body, token, timeout=None, call=call, controls=controls,
                                  raised=raised, stop=stop):
-                    if path == "/api/runs/run-1" and not raised:
+                    if path == "/api/executions/run-1" and not raised:
                         raised.append(path)
                         raise stop()
                     if path.endswith("/control"):
@@ -2187,7 +2192,7 @@ class LiveGuardTest(unittest.TestCase):
 
         def compacting(method, path, body, token, timeout=None):
             status, value = call(method, path, body, token)
-            if path == "/api/runs/run-1":
+            if path == "/api/executions/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
         status, result = self.run_live(compacting, ceiling="700000")
@@ -2317,11 +2322,11 @@ class LiveGuardTest(unittest.TestCase):
         failed = []
 
         def failing_then_compacted(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1" and not failed:
+            if method == "GET" and path == "/api/executions/run-1" and not failed:
                 failed.append(path)
                 return 500, {"error": "internal"}
             status, value = call(method, path, body, token)
-            if path == "/api/runs/run-1":
+            if path == "/api/executions/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
         status, result = self.run_live(failing_then_compacted, ceiling="700000")
@@ -2336,7 +2341,7 @@ class LiveGuardTest(unittest.TestCase):
         controls = []
 
         def unreachable(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1":
+            if method == "GET" and path == "/api/executions/run-1":
                 return 500, {"error": "internal"}
             if path.endswith("/control"):
                 controls.append(token)
@@ -3121,7 +3126,7 @@ class DeadlineTest(unittest.TestCase):
         stalled = []
 
         def stalling(method, path, body, token, timeout=None):
-            if path == "/api/runs/run-1" and not stalled:
+            if path == "/api/executions/run-1" and not stalled:
                 stalled.append(timeout)
                 clock.now += timeout  # the transport times out exactly at the deadline
                 raise TimeoutError("timed out")

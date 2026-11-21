@@ -199,15 +199,15 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 #[test]
 fn remote_space_identity_is_stable_and_scoped_to_the_receiver_and_person() {
 	let node = NodeName::derived("receiver");
-	let workspace = Uuid::new_v4();
-	let id = remote_space_id("tenant", &node, "aidash://home/node", workspace, "alice");
+	let thread = Uuid::new_v4();
+	let id = remote_space_id("tenant", &node, "aidash://home/node", thread, "alice");
 	assert_eq!(
 		id,
-		remote_space_id("tenant", &node, "aidash://home/node", workspace, "alice")
+		remote_space_id("tenant", &node, "aidash://home/node", thread, "alice")
 	);
 	assert_ne!(
 		id,
-		remote_space_id("other", &node, "aidash://home/node", workspace, "alice")
+		remote_space_id("other", &node, "aidash://home/node", thread, "alice")
 	);
 	assert_ne!(
 		id,
@@ -215,17 +215,17 @@ fn remote_space_identity_is_stable_and_scoped_to_the_receiver_and_person() {
 			"tenant",
 			&NodeName::derived("other"),
 			"aidash://home/node",
-			workspace,
+			thread,
 			"alice"
 		)
 	);
 	assert_ne!(
 		id,
-		remote_space_id("tenant", &node, "aidash://home/node", workspace, "bob")
+		remote_space_id("tenant", &node, "aidash://home/node", thread, "bob")
 	);
 	assert_ne!(
 		id,
-		remote_space_id("tenant", &node, "aidash://other/node", workspace, "alice")
+		remote_space_id("tenant", &node, "aidash://other/node", thread, "alice")
 	);
 	assert_ne!(
 		id,
@@ -287,7 +287,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 	let node = NodeName::derived(tenant);
 	let credential = Uuid::new_v4();
 	let tasks = [Uuid::new_v4(), Uuid::new_v4()];
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let run_ids = [Uuid::new_v4(), Uuid::new_v4()];
 	let peer_credentials = [Uuid::new_v4(), Uuid::new_v4()];
 	let bundle: aidash_domain::policy::PolicyBundle = serde_json::from_value(json!({
@@ -359,13 +359,13 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(vals)).await.unwrap();
 		let (sql, vals) = Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",
 					"tenant",
 					"task_id",
-					"workspace_id",
+					"thread_id",
 					"home_node",
 					"node",
 					"created_at",
@@ -378,7 +378,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 				id.into_value(),
 				tenant.into_value(),
 				task.into_value(),
-				workspace.into_value(),
+				thread.into_value(),
 				"aidash://home".into_value(),
 				node.as_str().into_value(),
 				Utc::now().into_value(),
@@ -430,7 +430,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 		.zip(peer_credentials)
 	{
 		let raw: aidash_domain::RawRun = serde_json::from_value(json!({
-			"id":id, "task_id":task, "workspace_id":workspace, "node":node,
+			"id":id, "task_id":task, "thread_id":thread, "node":node,
 			"home_node":"aidash://home", "agent_id":"agent", "agent_version":"1",
 			"phase":"READY", "control":"ACTIVE", "step":0, "revision":0,
 			"observed_input_seq":0, "ledger_worker_ready":true, "error":null,
@@ -504,10 +504,10 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 			mapped_kind != "agent"
 		);
 		if mapped_kind == "service" {
-			let dedicated = aidash_application::scratch::select_for_workspace(
+			let dedicated = aidash_application::scratch::select_for_thread(
 				&mut adapter,
 				&node,
-				"Service workspace",
+				"Service thread",
 				None,
 				Utc::now(),
 			)
@@ -556,7 +556,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 
 #[rstest]
 #[tokio::test]
-async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
+async fn thread_run_loses_scratch_authority_when_starter_is_removed(
 	#[future] database: DatabaseFixture,
 ) {
 	use crate::apps::identity::services::{access::Access, identity::SubjectIdentity};
@@ -565,10 +565,10 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 	use serde_json::json;
 
 	let database = database.await;
-	let tenant = "workspace-scratch-revoke";
+	let tenant = "thread-scratch-revoke";
 	let scope = database.tenant(tenant).await;
 	let node = NodeName::derived(tenant);
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let now = Utc::now();
 	let mut space = ScratchSpace {
 		id: Uuid::new_v4(),
@@ -586,15 +586,13 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 	let mut tx = database.begin_in(&scope).await;
 	insert(&mut *tx, tenant, &space).await.unwrap();
 	let (sql, values) = Query::insert()
-		.into_table(Alias::new("workspaces"))
+		.into_table(Alias::new("threads"))
 		.columns(
 			[
 				"id",
 				"tenant",
 				"node",
 				"title",
-				"goal",
-				"state",
 				"revision",
 				"scratch_space_id",
 				"created_by",
@@ -602,12 +600,10 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 			.map(Alias::new),
 		)
 		.values_panic([
-			workspace.into_value(),
+			thread.into_value(),
 			tenant.into_value(),
 			node.as_str().into_value(),
 			"Shared work".into_value(),
-			"Work".into_value(),
-			json!({}).into_value(),
 			0_i64.into_value(),
 			space.id.into_value(),
 			"bob".into_value(),
@@ -641,7 +637,7 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 	access.subjects = vec!["alice".into()];
 	access.audit = false;
 	let raw: aidash_domain::RawRun = serde_json::from_value(json!({
-		"id":Uuid::new_v4(), "task_id":Uuid::new_v4(), "workspace_id":workspace, "node":node,
+		"id":Uuid::new_v4(), "task_id":Uuid::new_v4(), "thread_id":thread, "node":node,
 		"home_node":format!("aidash://receiver/{node}"), "agent_id":"agent", "agent_version":"1",
 		"phase":"READY", "control":"ACTIVE", "step":0, "revision":0, "observed_input_seq":0,
 		"ledger_worker_ready":true, "error":null, "lease_owner":null, "lease_until":null,

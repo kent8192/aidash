@@ -19,7 +19,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
-		workspace_id: id(3),
+		thread_id: id(3),
 		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
@@ -73,7 +73,7 @@ fn generated() -> Request {
 		prepared: false,
 		grant_id: None,
 		admission_id: None,
-		workspace_id: id(3),
+		thread_id: id(3),
 		credential_id: id(8),
 		root_subject: "root".into(),
 		subject_chain: vec!["root".into(), "producer".into()],
@@ -93,7 +93,7 @@ struct Scope {
 	node: String,
 	principal: ExecutionPrincipal,
 	subjects: Vec<String>,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	subnode_members: Option<Vec<EntityRef>>,
 	task: Task,
 	origin: CreatedTaskOrigin,
@@ -117,11 +117,11 @@ fn scope() -> Scope {
 			credential_id: id(8),
 		},
 		subjects: vec!["root".into(), "producer".into()],
-		workspace: Some(id(3)),
+		thread: Some(id(3)),
 		subnode_members: None,
 		task: Task {
 			id: id(4),
-			workspace_id: id(3),
+			thread_id: id(3),
 			title: "saved child".into(),
 			description: "saved description".into(),
 			status: TaskStatus::Open,
@@ -177,7 +177,7 @@ impl Scope {
 		ExecutionGrant {
 			run_id: id(7),
 			task_id: id(4),
-			workspace_id: id(3),
+			thread_id: id(3),
 			tenant: "tenant".into(),
 			credential_id: id(8),
 			root_subject: "root".into(),
@@ -207,10 +207,10 @@ impl WorkerTaskScope for Scope {
 	fn subjects(&self) -> &[String] {
 		&self.subjects
 	}
-	async fn task_workspace(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+	async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>> {
 		assert_eq!(task, self.task.id);
-		self.touch("task_workspace")?;
-		Ok(self.workspace)
+		self.touch("task_thread")?;
+		Ok(self.thread)
 	}
 	async fn assign(
 		&mut self,
@@ -218,6 +218,7 @@ impl WorkerTaskScope for Scope {
 		policy: &str,
 		reason: &str,
 		_: Option<&[EntityRef]>,
+		_: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Assignment> {
 		assert_eq!(task, self.task.id);
 		assert_eq!(policy, "policy");
@@ -233,13 +234,13 @@ impl WorkerTaskScope for Scope {
 			_ => panic!("unknown output"),
 		})?;
 		self.outputs
-			.push((source.id, source.workspace_id, kind.into(), value));
+			.push((source.id, source.thread_id, kind.into(), value));
 		Ok(())
 	}
-	async fn workspace(&mut self, value: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, value: Uuid) -> Result<Resource> {
 		assert_eq!(value, id(3));
-		self.touch("workspace")?;
-		Ok(self.resource("workspace", value, json!({"owner":"saved-owner"})))
+		self.touch("thread")?;
+		Ok(self.resource("thread", value, json!({"owner":"saved-owner"})))
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		assert_eq!(resource.tenant, "tenant");
@@ -251,22 +252,22 @@ impl WorkerTaskScope for Scope {
 			_ => panic!("unexpected policy action"),
 		})
 	}
-	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()> {
-		assert_eq!(workspace, id(3));
+	async fn related_tasks(&mut self, thread: Uuid, input: &NewTask) -> Result<()> {
+		assert_eq!(thread, id(3));
 		assert_eq!(input.dependencies, vec![id(2)]);
 		assert_eq!(input.parent_id, Some(id(2)));
 		self.touch("related")
 	}
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: &str,
 	) -> Result<Task> {
 		self.touch("create")?;
 		self.creations.push((
-			workspace,
+			thread,
 			serde_json::to_value(input).unwrap(),
 			creator.into(),
 			key.into(),
@@ -278,7 +279,7 @@ impl WorkerTaskScope for Scope {
 		Ok(self.resource(
 			"task",
 			task.id,
-			json!({"created_by":task.created_by,"workspace_id":task.workspace_id}),
+			json!({"created_by":task.created_by,"thread_id":task.thread_id}),
 		))
 	}
 	async fn insert_origin(&mut self, task: Uuid, source: Uuid) -> Result<()> {
@@ -323,7 +324,7 @@ async fn assignment_records_every_output_before_returning_it(
 		};
 	}
 	let expected = serde_json::to_value(&scope.assignment).unwrap();
-	let output = assign(&mut scope, &run, id(4), "policy", "reason")
+	let output = assign(&mut scope, &run, id(4), "policy", "reason", None)
 		.await
 		.unwrap();
 	assert_eq!(serde_json::to_value(output).unwrap(), expected);
@@ -347,13 +348,13 @@ async fn assignment_records_every_output_before_returning_it(
 #[case::missing_delegate(None, true)]
 #[case::foreign_delegate(Some(id(99)), true)]
 #[tokio::test]
-async fn worker_effects_cannot_target_tasks_outside_the_source_workspace(
+async fn worker_effects_cannot_target_tasks_outside_the_source_thread(
 	mut scope: Scope,
 	run: RunMetadata,
-	#[case] workspace: Option<Uuid>,
+	#[case] thread: Option<Uuid>,
 	#[case] delegation: bool,
 ) {
-	scope.workspace = workspace;
+	scope.thread = thread;
 	let denied = if delegation {
 		matches!(
 			delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await,
@@ -361,16 +362,16 @@ async fn worker_effects_cannot_target_tasks_outside_the_source_workspace(
 		)
 	} else {
 		matches!(
-			assign(&mut scope, &run, id(4), "policy", "reason").await,
+			assign(&mut scope, &run, id(4), "policy", "reason", None).await,
 			Err(Error::Refused(message)) if message.contains("not found or is not visible")
 		)
 	};
 	assert!(denied);
-	assert_eq!(scope.calls, vec!["task_workspace"]);
+	assert_eq!(scope.calls, vec!["task_thread"]);
 	assert!(scope.outputs.is_empty());
 }
 #[rstest]
-#[case::workspace("task_workspace")]
+#[case::thread("task_thread")]
 #[case::assignment("assign")]
 #[case::task_journal("output.task")]
 #[case::generation_journal("output.generation")]
@@ -384,7 +385,7 @@ async fn assignment_faults_do_not_disclose_a_partial_assignment(
 		generation: Box::new(generated()),
 	};
 	scope.fail = Some(fail);
-	let Error::Port(error) = assign(&mut scope, &run, id(4), "policy", "reason")
+	let Error::Port(error) = assign(&mut scope, &run, id(4), "policy", "reason", None)
 		.await
 		.err()
 		.unwrap()
@@ -423,7 +424,7 @@ async fn a_child_task_retains_the_final_delegated_creator_key_and_producer(
 	assert_eq!(
 		scope.calls,
 		vec![
-			"workspace",
+			"thread",
 			"task.create",
 			"related",
 			"create",
@@ -446,7 +447,7 @@ async fn an_empty_delegated_chain_is_rejected_after_related_task_authority(
 		create_task(&mut scope, &run, "key", &input()).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(scope.calls, vec!["workspace", "task.create", "related"]);
+	assert_eq!(scope.calls, vec!["thread", "task.create", "related"]);
 	assert!(scope.creations.is_empty());
 	assert!(scope.origin_writes.is_empty());
 }
@@ -483,8 +484,8 @@ async fn retries_cannot_rebind_an_existing_child_task_origin(
 	assert_eq!(scope.origin_writes, vec![(id(4), id(1))]);
 }
 #[rstest]
-#[case::creation("task.create",vec!["workspace","task.create"])]
-#[case::disclosure("task.read",vec!["workspace","task.create","related","create","task_resource","task.read"])]
+#[case::creation("task.create",vec!["thread","task.create"])]
+#[case::disclosure("task.read",vec!["thread","task.create","related","create","task_resource","task.read"])]
 #[tokio::test]
 async fn child_task_creation_and_returned_record_are_both_authorized(
 	mut scope: Scope,
@@ -502,7 +503,7 @@ async fn child_task_creation_and_returned_record_are_both_authorized(
 	assert!(scope.origin_writes.is_empty());
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::creation_policy("task.create")]
 #[case::related("related")]
 #[case::insert("create")]
@@ -566,7 +567,7 @@ async fn a_matching_existing_grant_returns_the_original_delegation_without_readm
 	assert_eq!(
 		scope.calls,
 		vec![
-			"task_workspace",
+			"task_thread",
 			"task_read",
 			"task_resource",
 			"task.delegate",
@@ -622,7 +623,7 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 	assert_eq!(
 		scope.calls,
 		vec![
-			"task_workspace",
+			"task_thread",
 			"task_read",
 			"task_resource",
 			"task.delegate",
@@ -647,17 +648,12 @@ async fn delegation_denial_precedes_grant_presence_or_any_external_effect(
 	));
 	assert_eq!(
 		scope.calls,
-		vec![
-			"task_workspace",
-			"task_read",
-			"task_resource",
-			"task.delegate"
-		]
+		vec!["task_thread", "task_read", "task_resource", "task.delegate"]
 	);
 	assert!(!scope.calls.contains(&"grant"));
 }
 #[rstest]
-#[case::workspace("task_workspace")]
+#[case::thread("task_thread")]
 #[case::task("task_read")]
 #[case::resource("task_resource")]
 #[case::policy("task.delegate")]

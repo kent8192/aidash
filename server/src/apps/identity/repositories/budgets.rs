@@ -1,0 +1,845 @@
+//! Budgets, their Soft Limit notices and the spend ledger (#1012, ADR 0143).
+use crate::database::native::{self, Pool};
+use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_domain::budgets::{self as domain, Definition, Gate, OnHardLimit, Period, Scope};
+use chrono::{DateTime, Utc};
+use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, LockBehavior, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _, SimpleExpr,
+};
+use uuid::Uuid;
+
+/// Spend that belongs to no Duty is filed under the nil UUID.
+const NO_DUTY: Uuid = Uuid::nil();
+
+/// One Budget as stored.
+#[derive(Debug, Clone)]
+pub(crate) struct Budget {
+	pub id: Uuid,
+	pub tenant: String,
+	pub definition: Definition,
+	pub revision: i64,
+	pub created_at: DateTime<Utc>,
+	pub created_by: String,
+	pub updated_at: DateTime<Utc>,
+}
+
+const COLUMNS: [&str; 13] = [
+	"id",
+	"tenant",
+	"scope_kind",
+	"scope_key",
+	"period",
+	"soft_limit_nanocredits",
+	"hard_limit_nanocredits",
+	"on_hard_limit",
+	"recipients",
+	"revision",
+	"created_at",
+	"created_by",
+	"updated_at",
+];
+
+fn from_row(row: &native::Row) -> Result<Budget> {
+	let text = |name: &str| -> Result<String> { row.try_get(name) };
+	Ok(Budget {
+		id: row.try_get("id")?,
+		tenant: text("tenant")?,
+		definition: Definition {
+			scope: Scope::from_parts(&text("scope_kind")?, &text("scope_key")?)?,
+			period: Period::parse(&text("period")?)?,
+			soft_limit_nanocredits: row.try_get("soft_limit_nanocredits")?,
+			hard_limit_nanocredits: row.try_get("hard_limit_nanocredits")?,
+			on_hard_limit: OnHardLimit::parse(&text("on_hard_limit")?)?,
+			recipients: row.try_get("recipients")?,
+		},
+		revision: row.try_get("revision")?,
+		created_at: row.try_get("created_at")?,
+		created_by: text("created_by")?,
+		updated_at: row.try_get("updated_at")?,
+	})
+}
+
+fn select() -> reinhardt::query::SelectStatement {
+	let mut query = Query::select();
+	query
+		.columns(COLUMNS.map(Alias::new))
+		.from(Alias::new("budgets"));
+	query
+}
+
+pub(crate) async fn list(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<Budget>> {
+	native::query(
+		&select()
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.order_by(Alias::new("created_at"), Order::Asc)
+			.order_by(Alias::new("id"), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut *tx)
+	.await?
+	.iter()
+	.map(from_row)
+	.collect()
+}
+
+pub(crate) async fn get(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+	lock: bool,
+) -> Result<Budget> {
+	let mut query = select();
+	query
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("id").eq(Expr::value(id)));
+	if lock {
+		query.lock(reinhardt::query::LockType::Update);
+	}
+	let row = native::query(&query.to_string(PostgresQueryBuilder))
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or_else(|| Error::NotFound("budget not found".into()))?;
+	from_row(&row)
+}
+
+pub(crate) async fn insert(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	definition: &Definition,
+	by: &str,
+) -> Result<Budget> {
+	let id = Uuid::now_v7();
+	let now = Utc::now();
+	let inserted = native::query(
+		&Query::insert()
+			.into_table(Alias::new("budgets"))
+			.columns(COLUMNS.map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(id))
+					.expr(Expr::value(tenant.to_owned()))
+					.expr(Expr::value(definition.scope.kind()))
+					.expr(Expr::value(definition.scope.key()))
+					.expr(Expr::value(definition.period.as_str()))
+					.expr(Expr::value(definition.soft_limit_nanocredits))
+					.expr(Expr::value(definition.hard_limit_nanocredits))
+					.expr(Expr::value(definition.on_hard_limit.as_str()))
+					.expr(crate::database::text_array(definition.recipients.clone()))
+					.expr(Expr::value(1_i64))
+					.expr(Expr::value(now))
+					.expr(Expr::value(by.to_owned()))
+					.expr(Expr::value(now))
+					.to_owned(),
+			)
+			.on_conflict(
+				OnConflict::columns(["tenant", "scope_kind", "scope_key"].map(Alias::new))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?
+	.rows_affected();
+	if inserted == 0 {
+		return Err(Error::Conflict(
+			"this scope already has a Budget; change that one".into(),
+		));
+	}
+	get(tx, tenant, id, false).await
+}
+
+pub(crate) async fn update(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+	definition: &Definition,
+	expected_revision: i64,
+	by: &str,
+) -> Result<Budget> {
+	let current = get(tx, tenant, id, true).await?;
+	if current.revision != expected_revision {
+		return Err(Error::Conflict("budget revision changed".into()));
+	}
+	if current.definition.scope != definition.scope {
+		return Err(Error::Invalid("a Budget's scope cannot change".into()));
+	}
+	native::query(
+		&Query::update()
+			.table(Alias::new("budgets"))
+			.value_expr(
+				Alias::new("period"),
+				Expr::value(definition.period.as_str()),
+			)
+			.value_expr(
+				Alias::new("soft_limit_nanocredits"),
+				Expr::value(definition.soft_limit_nanocredits),
+			)
+			.value_expr(
+				Alias::new("hard_limit_nanocredits"),
+				Expr::value(definition.hard_limit_nanocredits),
+			)
+			.value_expr(
+				Alias::new("on_hard_limit"),
+				Expr::value(definition.on_hard_limit.as_str()),
+			)
+			.value_expr(
+				Alias::new("recipients"),
+				crate::database::text_array(definition.recipients.clone()),
+			)
+			.value_expr(Alias::new("revision"), Expr::value(current.revision + 1))
+			// Whoever sets a Budget last is who may change it without
+			// `budget.manage` (see the service).
+			.value_expr(Alias::new("created_by"), Expr::value(by.to_owned()))
+			.value_expr(Alias::new("updated_at"), Expr::value(Utc::now()))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	get(tx, tenant, id, false).await
+}
+
+pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: Uuid) -> Result<()> {
+	let deleted = native::query(
+		&Query::delete()
+			.from_table(Alias::new("budgets"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?
+	.rows_affected();
+	if deleted == 0 {
+		return Err(Error::NotFound("budget not found".into()));
+	}
+	Ok(())
+}
+
+/// Spend and calls without a reported cost in a Budget's current window.
+pub(crate) async fn spent(
+	tx: &mut dyn TransactionExecutor,
+	budget: &Budget,
+	now: DateTime<Utc>,
+) -> Result<(i64, i64)> {
+	let since = budget
+		.definition
+		.period
+		.window_start(budget.created_at, now);
+	// The ledger is daily: a Total Budget counts its whole first day.
+	let since = since
+		.date_naive()
+		.and_hms_opt(0, 0, 0)
+		.expect("midnight")
+		.and_utc();
+	let mut query = Query::select();
+	query
+		.expr_as(
+			Expr::cust("COALESCE(SUM(spent_nanocredits), 0)::bigint"),
+			Alias::new("spent"),
+		)
+		.expr_as(
+			Expr::cust("COALESCE(SUM(unpriced_calls), 0)::bigint"),
+			Alias::new("unpriced"),
+		)
+		.from(Alias::new("budget_spend"))
+		.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+		.and_where(Expr::col("day").gte(Expr::value(since)));
+	// A Duty or Node Budget counts the spend of what was created below it
+	// too: that work is carved out of it (#1012 decision 33).
+	match &budget.definition.scope {
+		Scope::Tenant => {}
+		Scope::Node { node } => {
+			let mut nodes = descendants(tx, &budget.tenant, Lineage::Node, node).await?;
+			nodes.push(node.clone());
+			query.and_where(Expr::col("node").is_in(nodes));
+		}
+		Scope::Duty { duty_id } => {
+			let mut duties = vec![*duty_id];
+			for duty in descendants(tx, &budget.tenant, Lineage::Duty, &duty_id.to_string()).await?
+			{
+				duties.push(
+					Uuid::parse_str(&duty)
+						.map_err(|_| Error::Invalid("a Duty lineage names no Duty".into()))?,
+				);
+			}
+			query.and_where(Expr::col("duty_id").is_in(duties.into_iter().map(Expr::value)));
+		}
+		Scope::Person { subject } => {
+			query.and_where(Expr::col("root_subject").eq(subject.clone()));
+		}
+	}
+	let row = native::query(&query.to_string(PostgresQueryBuilder))
+		.fetch_one(&mut *tx)
+		.await?;
+	Ok((row.try_get("spent")?, row.try_get("unpriced")?))
+}
+
+/// What a model call by `run` is charged to.
+pub(crate) struct Charge {
+	pub tenant: String,
+	pub node: String,
+	pub root_subject: String,
+	pub duty: Uuid,
+}
+
+pub(crate) async fn charge_of(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+) -> Result<Option<Charge>> {
+	let row = native::query(
+		&Query::select()
+			.column((Alias::new("r"), Alias::new("tenant")))
+			.column((Alias::new("r"), Alias::new("node")))
+			.expr_as(
+				SimpleExpr::CustomWithExpr(
+					"COALESCE((SELECT e.root_subject FROM authorization_execution e WHERE e.run_id = r.id), '')".to_owned(),
+					vec![],
+				),
+				Alias::new("root_subject"),
+			)
+			.expr_as(
+				SimpleExpr::CustomWithExpr(
+					"COALESCE((SELECT t.duty_id FROM tasks t WHERE t.id = r.task_id AND t.tenant = r.tenant), ?::uuid)".to_owned(),
+					vec![Expr::value(NO_DUTY).into()],
+				),
+				Alias::new("duty_id"),
+			)
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
+			.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut *tx)
+	.await?;
+	row.map(|row| {
+		Ok(Charge {
+			tenant: row.try_get("tenant")?,
+			node: row.try_get("node")?,
+			root_subject: row.try_get("root_subject")?,
+			duty: row.try_get("duty_id")?,
+		})
+	})
+	.transpose()
+}
+
+/// What a model call outside any Run is charged to: background work on a
+/// Thread, such as memory maintenance, goes to its Tenant and its Thread's
+/// Node, with no root person or Duty (#1012).
+pub(crate) async fn thread_charge(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	thread: Uuid,
+) -> Result<Charge> {
+	Ok(Charge {
+		tenant: tenant.to_owned(),
+		node: crate::apps::workspaces::repositories::duties::thread_node(tx, tenant, thread)
+			.await?,
+		root_subject: String::new(),
+		duty: NO_DUTY,
+	})
+}
+
+/// The refusal a closed gate gives a model call (#1012): Stop pauses the Run
+/// until a person resumes it, Sleep lets it wait until the Budget recovers.
+pub(crate) fn admit(gate: Gate) -> Result<()> {
+	match gate {
+		Gate::Open => Ok(()),
+		Gate::Stop { budget } => Err(Error::BudgetExhausted {
+			stop: true,
+			message: format!("Budget {budget} is at its Hard Limit; raise it, then resume the Run"),
+		}),
+		Gate::Sleep { budget, until } => Err(Error::BudgetExhausted {
+			stop: false,
+			message: match until {
+				Some(until) => format!(
+					"Budget {budget} is at its Hard Limit; the Run sleeps until {until} or until the limit is raised"
+				),
+				None => format!(
+					"Budget {budget} is at its Hard Limit; the Run sleeps until the limit is raised"
+				),
+			},
+		}),
+	}
+}
+
+/// Adds one model call to the ledger: its reported cost, or one unpriced call.
+pub(crate) async fn record_spend(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	cost: Option<i64>,
+	now: DateTime<Utc>,
+) -> Result<()> {
+	let Some(charge) = charge_of(tx, run).await? else {
+		return Ok(());
+	};
+	record_charge(tx, &charge, cost, now).await
+}
+
+/// Adds one model call charged as `charge` to the ledger.
+pub(crate) async fn record_charge(
+	tx: &mut dyn TransactionExecutor,
+	charge: &Charge,
+	cost: Option<i64>,
+	now: DateTime<Utc>,
+) -> Result<()> {
+	let day = now
+		.date_naive()
+		.and_hms_opt(0, 0, 0)
+		.expect("midnight")
+		.and_utc();
+	let key = [
+		("tenant", Expr::value(charge.tenant.clone())),
+		("day", Expr::value(day)),
+		("node", Expr::value(charge.node.clone())),
+		("root_subject", Expr::value(charge.root_subject.clone())),
+		("duty_id", Expr::value(charge.duty)),
+	];
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("budget_spend"))
+			.columns(
+				[
+					"tenant",
+					"day",
+					"node",
+					"root_subject",
+					"duty_id",
+					"spent_nanocredits",
+					"unpriced_calls",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery({
+				let mut row = Query::select();
+				for (_, value) in &key {
+					row.expr(value.clone());
+				}
+				row.expr(Expr::value(0_i64))
+					.expr(Expr::value(0_i64))
+					.to_owned()
+			})
+			.on_conflict(
+				OnConflict::columns(
+					["tenant", "day", "node", "root_subject", "duty_id"].map(Alias::new),
+				)
+				.do_nothing()
+				.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	let mut update = Query::update();
+	update.table(Alias::new("budget_spend"));
+	match cost {
+		Some(cost) => {
+			update.value_expr(
+				Alias::new("spent_nanocredits"),
+				Expr::col("spent_nanocredits").add(Expr::value(cost)),
+			);
+		}
+		None => {
+			update.value_expr(
+				Alias::new("unpriced_calls"),
+				Expr::col("unpriced_calls").add(Expr::value(1_i64)),
+			);
+		}
+	}
+	for (column, value) in key {
+		update.and_where(Expr::col(column).eq(value));
+	}
+	native::query(&update.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?;
+	Ok(())
+}
+
+/// The Budgets with a Hard Limit that cover a Run, and the gate they set on
+/// its next model call.
+pub(crate) async fn gate(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	now: DateTime<Utc>,
+) -> Result<(Gate, Vec<Budget>)> {
+	let Some(charge) = charge_of(tx, run).await? else {
+		return Ok((Gate::Open, vec![]));
+	};
+	gate_for(tx, &charge, now).await
+}
+
+/// The gate the Budgets set on work charged as `charge`; a Duty asks it
+/// before starting a Task (#1012 decision 33).
+pub(crate) async fn gate_for(
+	tx: &mut dyn TransactionExecutor,
+	charge: &Charge,
+	now: DateTime<Utc>,
+) -> Result<(Gate, Vec<Budget>)> {
+	let mut covering = vec![];
+	let budgets = list(tx, &charge.tenant).await?;
+	if budgets
+		.iter()
+		.all(|budget| budget.definition.hard_limit_nanocredits.is_none())
+	{
+		return Ok((Gate::Open, vec![]));
+	}
+	// The Budgets of the Duties and Nodes above the charged ones cover it
+	// too: what an Agent creates draws on its creator's Budget (#1012
+	// decision 33).
+	let mut duties = vec![];
+	if charge.duty != NO_DUTY {
+		duties.push(charge.duty.to_string());
+		duties
+			.extend(ancestors(tx, &charge.tenant, Lineage::Duty, &charge.duty.to_string()).await?);
+	}
+	let mut nodes = vec![charge.node.clone()];
+	nodes.extend(ancestors(tx, &charge.tenant, Lineage::Node, &charge.node).await?);
+	for budget in budgets {
+		if budget.definition.hard_limit_nanocredits.is_none() {
+			continue;
+		}
+		let covers = match &budget.definition.scope {
+			Scope::Tenant => true,
+			Scope::Node { node } => nodes.contains(node),
+			Scope::Duty { duty_id } => duties.contains(&duty_id.to_string()),
+			Scope::Person { subject } => *subject == charge.root_subject,
+		};
+		if covers {
+			let (spent, _) = spent(tx, &budget, now).await?;
+			covering.push((budget, spent));
+		}
+	}
+	let gate = domain::gate(
+		covering
+			.iter()
+			.map(|(budget, spent)| (budget.id, &budget.definition, *spent)),
+		now,
+	);
+	Ok((
+		gate,
+		covering.into_iter().map(|(budget, _)| budget).collect(),
+	))
+}
+
+/// What a lineage row names: Duties by id, or Nodes by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lineage {
+	Duty,
+	Node,
+}
+
+impl Lineage {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Duty => "duty",
+			Self::Node => "node",
+		}
+	}
+}
+
+async fn lineage(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	by: &str,
+	select: &str,
+	value: &str,
+) -> Result<Vec<String>> {
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new(select))
+			.from(Alias::new("budget_lineage"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("kind").eq(kind.as_str()))
+			.and_where(Expr::col(Alias::new(by)).eq(value.to_owned()))
+			.order_by(Alias::new(select), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut *tx)
+	.await
+}
+
+/// Every Duty or Node above `child`: the one whose Run created it, and so on
+/// up.
+pub(crate) async fn ancestors(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	child: &str,
+) -> Result<Vec<String>> {
+	lineage(tx, tenant, kind, "child", "ancestor", child).await
+}
+
+/// Every Duty or Node created below `ancestor`, however deep.
+pub(crate) async fn descendants(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	ancestor: &str,
+) -> Result<Vec<String>> {
+	lineage(tx, tenant, kind, "ancestor", "child", ancestor).await
+}
+
+/// Records that a Run of `parent` created `child` (#1012 decision 33):
+/// `child` sits below `parent` and everything above it, so their Budgets
+/// cover it. Written once, when `child` is created; the rows outlive both.
+pub(crate) async fn record_lineage(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	kind: Lineage,
+	child: &str,
+	parent: &str,
+) -> Result<()> {
+	if child == parent {
+		return Ok(());
+	}
+	let mut above = ancestors(tx, tenant, kind, parent).await?;
+	above.push(parent.to_owned());
+	for ancestor in above.into_iter().filter(|ancestor| ancestor != child) {
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new("budget_lineage"))
+				.columns(["tenant", "kind", "child", "ancestor"].map(Alias::new))
+				.values_panic([
+					Expr::value(tenant.to_owned()),
+					Expr::value(kind.as_str()),
+					Expr::value(child.to_owned()),
+					Expr::value(ancestor),
+				])
+				.on_conflict(
+					OnConflict::columns(["tenant", "kind", "child", "ancestor"].map(Alias::new))
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+	}
+	Ok(())
+}
+
+/// The Budgets that cover a Duty: its own and those of every Duty above it
+/// (#1012 decision 33), for a Duty's deletion to refuse lifting a limit
+/// someone else set (PR #1014 review; the Duty deletion fix reads it).
+#[allow(dead_code)]
+pub(crate) async fn covering_duty(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<Vec<Budget>> {
+	let mut duties = vec![duty.to_string()];
+	duties.extend(ancestors(tx, tenant, Lineage::Duty, &duty.to_string()).await?);
+	Ok(list(tx, tenant)
+		.await?
+		.into_iter()
+		.filter(|budget| match &budget.definition.scope {
+			Scope::Duty { duty_id } => duties.contains(&duty_id.to_string()),
+			_ => false,
+		})
+		.collect())
+}
+
+/// Every Budget with a Soft Limit, across Tenants, for the notice pass.
+pub(crate) async fn with_soft_limits(pool: &Pool) -> Result<Vec<Budget>> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::Retention);
+	pool.scoped(&scope, async |tx| {
+		native::query(
+			&select()
+				.and_where(Expr::col("soft_limit_nanocredits").is_not_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(&mut **tx)
+		.await?
+		.iter()
+		.map(from_row)
+		.collect()
+	})
+	.await
+}
+
+/// An SMTP attempt has a shorter deadline than the lease, so an expired
+/// claim is safe for another replica to acquire.
+const NOTICE_LEASE_END: &str = "clock_timestamp() + interval '5 minutes'";
+
+pub(crate) struct NoticeClaim {
+	id: Uuid,
+	window_start: DateTime<Utc>,
+	pub spent: i64,
+}
+
+pub(crate) enum NoticeDelivery {
+	Sent,
+	Skipped,
+	Retry,
+}
+
+/// Records the threshold crossing before sending. The unique window key
+/// elects one replica when several discover the same crossing.
+pub(crate) async fn claim_notice(
+	tx: &mut dyn TransactionExecutor,
+	budget: &Budget,
+	window_start: DateTime<Utc>,
+	spent: i64,
+) -> Result<Option<NoticeClaim>> {
+	let id = Uuid::new_v4();
+	let inserted = native::query(
+		&Query::insert()
+			.into_table(Alias::new("budget_notices"))
+			.columns(
+				[
+					"budget_id",
+					"window_start",
+					"tenant",
+					"claim_id",
+					"claim_until",
+					"spent_nanocredits",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(budget.id))
+					.expr(Expr::value(window_start))
+					.expr(Expr::value(budget.tenant.clone()))
+					.expr(Expr::value(id))
+					.expr(Expr::cust(NOTICE_LEASE_END))
+					.expr(Expr::value(spent))
+					.to_owned(),
+			)
+			.on_conflict(
+				OnConflict::columns(["budget_id", "window_start"].map(Alias::new))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?
+	.rows_affected();
+	Ok((inserted == 1).then_some(NoticeClaim {
+		id,
+		window_start,
+		spent,
+	}))
+}
+
+/// Reclaims an unsent window after a send error or an expired lease, even if
+/// its month ended while the sending replica was down.
+pub(crate) async fn reclaim_notice(
+	tx: &mut dyn TransactionExecutor,
+	budget: &Budget,
+) -> Result<Option<NoticeClaim>> {
+	let row: Option<(DateTime<Utc>, i64)> = native::query_as(
+		&Query::select()
+			.columns(["window_start", "spent_nanocredits"].map(Alias::new))
+			.from(Alias::new("budget_notices"))
+			.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+			.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
+			.and_where(Expr::col("sent_at").is_null())
+			.and_where(Expr::col("skipped").eq(false))
+			.and_where(
+				Expr::col("claim_until")
+					.is_null()
+					.or(Expr::col("claim_until").lte(Expr::cust("clock_timestamp()"))),
+			)
+			.order_by(Alias::new("window_start"), Order::Asc)
+			.limit(1)
+			.lock(LockType::Update)
+			.lock_behavior(LockBehavior::SkipLocked)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["window_start", "spent_nanocredits"])
+	.fetch_optional(&mut *tx)
+	.await?;
+	let Some((window_start, spent)) = row else {
+		return Ok(None);
+	};
+	let id = Uuid::new_v4();
+	native::query(
+		&Query::update()
+			.table(Alias::new("budget_notices"))
+			.value_expr(Alias::new("claim_id"), Expr::value(id))
+			.value_expr(Alias::new("claim_until"), Expr::cust(NOTICE_LEASE_END))
+			.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+			.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
+			.and_where(Expr::col("window_start").eq(Expr::value(window_start)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(Some(NoticeClaim {
+		id,
+		window_start,
+		spent,
+	}))
+}
+
+/// Only a claim's owner may finish it. A retry releases its lease and keeps
+/// the pending row. A window with no SMTP configuration is recorded as skipped.
+pub(crate) async fn finish_notice(
+	tx: &mut dyn TransactionExecutor,
+	budget: &Budget,
+	claim: &NoticeClaim,
+	delivery: NoticeDelivery,
+) -> Result<bool> {
+	let mut update = Query::update();
+	update
+		.table(Alias::new("budget_notices"))
+		.value_expr(Alias::new("claim_id"), Expr::value(Option::<Uuid>::None))
+		.value_expr(
+			Alias::new("claim_until"),
+			Expr::value(Option::<DateTime<Utc>>::None),
+		)
+		.and_where(Expr::col("tenant").eq(budget.tenant.clone()))
+		.and_where(Expr::col("budget_id").eq(Expr::value(budget.id)))
+		.and_where(Expr::col("window_start").eq(Expr::value(claim.window_start)))
+		.and_where(Expr::col("claim_id").eq(Expr::value(claim.id)));
+	match delivery {
+		NoticeDelivery::Sent => {
+			update.value_expr(Alias::new("sent_at"), Expr::cust("clock_timestamp()"));
+		}
+		NoticeDelivery::Skipped => {
+			update.value_expr(Alias::new("skipped"), Expr::value(true));
+		}
+		NoticeDelivery::Retry => {}
+	}
+	Ok(native::query(&update.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?
+		.rows_affected()
+		== 1)
+}
+
+/// Reverse asset for identity/0113. The previous schema can only store
+/// completed deliveries, so discard pending and skipped windows on rollback.
+pub(crate) fn rollback_notices() -> String {
+	let delete = Query::delete()
+		.from_table(Alias::new("budget_notices"))
+		.and_where(Expr::col("sent_at").is_null())
+		.to_string(PostgresQueryBuilder);
+	format!("SET LOCAL aidash.scope = 'deployment';\n{delete};\n")
+}
+
+/// Removes the Budgets of a Duty with the Duty; its spend stays in the ledger.
+pub(crate) async fn delete_for_duty(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<()> {
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("budgets"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("scope_kind").eq("duty"))
+			.and_where(Expr::col("scope_key").eq(duty.to_string()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}

@@ -35,32 +35,32 @@ impl aidash_application::ports::authorization::visibility::RowOutcome for Retrie
 }
 #[async_trait]
 impl SemanticRetrievalSession for Retrieval<'_, '_> {
-	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		self.entries.workspace(workspace, action).await
+	async fn thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
+		self.entries.thread(thread, action).await
 	}
-	async fn index(&mut self, workspace: Uuid) -> Result<Index> {
-		self.entries.index(workspace, false).await
+	async fn index(&mut self, thread: Uuid) -> Result<Index> {
+		self.entries.index(thread, false).await
 	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		self.entries.permits(entry, action).await
 	}
-	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
-		self.entries.source(workspace, source).await
+	async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
+		self.entries.source(thread, source).await
 	}
 	async fn image_pointer(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		source: &Source,
 	) -> Result<Option<serde_json::Value>> {
 		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::pointer(self.entries.lease, workspace, source)
+			return super::attachment_images::pointer(self.entries.lease, thread, source)
 				.await
 				.map_err(Into::into);
 		}
 		let Some(access) = self.entries.lease.access() else {
 			return Ok(None);
 		};
-		let Some(file) = super::image_files::current(access, workspace, source).await? else {
+		let Some(file) = super::image_files::current(access, thread, source).await? else {
 			return Ok(None);
 		};
 		Ok(Some(
@@ -69,7 +69,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 	}
 	async fn query_image(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &aidash_domain::semantic::retrieval::ImageQuery,
 		max_bytes: usize,
 	) -> Result<aidash_application::ports::semantic::IndexImage> {
@@ -81,7 +81,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 			.ok_or(aidash_application::Error::Forbidden)?
 			.tenancy()?;
 		let run = self.store.run(&scope, input.run_id).await?;
-		if run.workspace_id != workspace {
+		if run.thread_id != thread {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let access = self
@@ -100,7 +100,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 			file_id: input.file_id,
 			path: input.path.clone(),
 		};
-		let file = super::image_files::current(access, workspace, &source)
+		let file = super::image_files::current(access, thread, &source)
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)?;
 		if file.digest != input.expected_digest {
@@ -143,7 +143,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 	}
 	async fn query_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
 		max_bytes: usize,
 	) -> Result<aidash_application::ports::semantic::IndexImage> {
@@ -154,22 +154,16 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 			.ok_or(aidash_application::Error::Forbidden)?
 			.tenancy()?;
 		let run = self.store.run(&scope, input.run_id).await?;
-		if run.workspace_id != workspace {
+		if run.thread_id != thread {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		super::attachment_images::query(
-			&self.store,
-			self.entries.lease,
-			workspace,
-			input,
-			max_bytes,
-		)
-		.await
-		.map_err(Into::into)
+		super::attachment_images::query(&self.store, self.entries.lease, thread, input, max_bytes)
+			.await
+			.map_err(Into::into)
 	}
 	async fn embed_image(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		image: &aidash_application::ports::semantic::IndexImage,
 		run: Option<Uuid>,
@@ -177,7 +171,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		service::embed_input(
 			&self.store,
 			self.entries.lease,
-			workspace,
+			thread,
 			config,
 			image.input(),
 			crate::generation::embedding::Origin::Query(run),
@@ -185,17 +179,17 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn configured(&mut self, workspace: Uuid) -> Result<Option<Index>> {
+	async fn configured(&mut self, thread: Uuid) -> Result<Option<Index>> {
 		let lease = &mut *self.entries.lease;
 		let result: NativeResult<Option<native::Index>> = async {
 			let configured: Option<native::Index> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_indexes"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ?)".to_owned(),
+							"(thread_id = ?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.lock(LockType::Share)
@@ -212,11 +206,11 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 			.map(|index| index.map(Into::into))
 			.map_err(Into::into)
 	}
-	async fn candidates(&mut self, workspace: Uuid) -> Result<Vec<Entry>> {
+	async fn candidates(&mut self, thread: Uuid) -> Result<Vec<Entry>> {
 		let lease = &mut *self.entries.lease;
 		let result: NativeResult<Vec<native::Entry>> = async {
 			let rows: Vec<native::Entry> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
@@ -224,7 +218,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 						))
 						.from(reinhardt::query::Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted AND (source->>'kind' NOT IN ('working_image', 'attachment_image') OR state = 'READY'))".to_owned(),
+							"(thread_id = ? AND NOT deleted AND (source->>'kind' NOT IN ('working_image', 'attachment_image') OR state = 'READY'))".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.order_by_expr(
@@ -274,7 +268,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 	}
 	async fn embed(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		text: &str,
 		run: Option<Uuid>,
@@ -282,7 +276,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		service::embed(
 			&self.store,
 			self.entries.lease,
-			workspace,
+			thread,
 			config,
 			text,
 			crate::generation::embedding::Origin::Query(run),

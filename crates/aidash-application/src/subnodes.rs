@@ -1,13 +1,17 @@
 //! Authorized use cases for Run-scoped Subnodes.
-use crate::{Error, Result, ports::subnodes::CreateScope};
+use crate::{
+	Error, Result,
+	ports::subnodes::{CreateScope, EndScope},
+};
 use aidash_domain::{
-	RunMetadata,
+	ControlSource, RunControlAction, RunMetadata,
 	policy::Evaluation,
 	registry::EntityRef,
 	subnodes::{self, Allowance, Subnode},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,19 +58,13 @@ pub async fn create(
 		));
 		return Err(Error::Forbidden);
 	}
-	subnodes::check_can_create(scope.workspace_is_subnode(run.workspace_id).await?)
-		.map_err(refused)?;
+	// Subnodes nest, and neither their number nor their members are capped
+	// (#1012, ADR 0143). A Run a Remote Grant started needs no setting of its
+	// own either: `subnode_create` in both Federation tool lists is what lets
+	// it reach this point (ADR 0139).
 	if let Some(existing) = scope.replay(run, key, input).await? {
 		return Ok(existing);
 	}
-	// A Run a Remote Grant started needs no setting of its own: `subnode_*` in both Federation
-	// tool lists is what lets it reach this point (ADR 0139), and the receiving Tenant's limits
-	// below apply to it as to any Run.
-	let limits = scope.limits().await?;
-	limits
-		.check_create(scope.active_count(run.id).await?)
-		.map_err(refused)?;
-	limits.check_members(input.members.len()).map_err(refused)?;
 	if !input.members.contains(&input.leader) {
 		return Err(refused(subnodes::Refusal::LeaderNotMember));
 	}
@@ -142,7 +140,7 @@ fn creator(subnode: &Subnode, run: &RunMetadata) -> Result<()> {
 }
 
 fn member(subnode: &Subnode, run: &RunMetadata) -> bool {
-	subnode.workspace_id == run.workspace_id
+	subnode.thread_id == run.thread_id
 		&& subnode.members.iter().any(|member| {
 			member.agent_id == run.agent_id && member.agent_version == run.agent_version
 		})
@@ -173,11 +171,6 @@ pub async fn add_member(
 			agent.id.clone(),
 		)));
 	}
-	scope
-		.limits(&subnode.tenant)
-		.await?
-		.check_members(subnode.members.len() + 1)
-		.map_err(refused)?;
 	let creator_authority = scope.creator_authority(&subnode).await?;
 	subnodes::allowance_within(&creator_authority, &subnode.allowance).map_err(refused)?;
 	let required = scope.approved_member_authority(&subnode, agent).await?;
@@ -216,13 +209,28 @@ pub async fn task(
 		.await
 }
 
+/// Deletes a Subnode (`delete_subnode`). The creating Agent may do so from any
+/// Run of the same flow, not only the creating Run (#1012 decision 46): the
+/// Subnode outlives that Run. Another flow does not, even of the same person;
+/// that flow's root person and Tenant Administrators delete it from a browser
+/// session. Its records stay readable.
 pub async fn dissolve(
 	scope: &mut dyn crate::ports::subnodes::ManageScope,
 	run: &RunMetadata,
 	id: subnodes::SubnodeId,
 ) -> Result<()> {
 	let subnode = active(scope, id).await?;
-	creator(&subnode, run)?;
+	if creator(&subnode, run).is_err() {
+		let same_agent = subnode.creator_agent.id == run.agent_id
+			&& subnode.creator_agent.version == run.agent_version;
+		let roots = scope
+			.flow_roots(&[run.task_id, subnode.creator_task_id])
+			.await?;
+		let flow = roots.get(&run.task_id);
+		if !same_agent || flow.is_none() || flow != roots.get(&subnode.creator_task_id) {
+			return Err(Error::Forbidden);
+		}
+	}
 	scope
 		.dissolve(&subnode, subnodes::EndReason::Dissolved)
 		.await
@@ -243,52 +251,104 @@ pub async fn message(
 	scope.message_creator(&subnode, run, key, content).await
 }
 
-/// Lock a creator's active Subnodes, then their active Runs: the order an end
-/// takes them. A write holds the shared Subnode lock and then takes the event
-/// lock, and a member's next step holds its Run row and then takes the event
-/// lock, so an end that appended an event before it had these locks would
-/// deadlock with either. A caller that has appended an event itself calls this
-/// before the first one.
-pub async fn lock_end(
-	scope: &mut dyn crate::ports::subnodes::EndScope,
-	creator: uuid::Uuid,
+#[derive(Default)]
+struct Descendants {
+	subnodes: Vec<(subnodes::SubnodeId, Uuid)>,
+	runs: Vec<Uuid>,
+}
+
+/// Lock from the creator down, with every Subnode held before its member
+/// Runs. Writers and workers take those locks before the event lock, so the
+/// whole walk must finish before a control or dissolution appends an event.
+async fn lock_descendants(
+	scope: &mut dyn EndScope,
+	creator: Uuid,
+	resuming: bool,
+) -> Result<Descendants> {
+	let mut descendants = Descendants::default();
+	let mut pending = VecDeque::from([creator]);
+	let mut seen = BTreeSet::from([creator]);
+	while let Some(creator) = pending.pop_front() {
+		for (id, thread) in scope.active_subnodes(creator).await? {
+			descendants.subnodes.push((id, thread));
+			for (run, controllable) in scope.member_runs(thread, resuming).await? {
+				if seen.insert(run) {
+					pending.push_back(run);
+					if controllable {
+						descendants.runs.push(run);
+					}
+				}
+			}
+		}
+	}
+	Ok(descendants)
+}
+
+/// A caller that appends an event before cascading locks descendants first.
+pub async fn lock_end(scope: &mut dyn EndScope, creator: Uuid) -> Result<()> {
+	lock_descendants(scope, creator, false).await?;
+	Ok(())
+}
+
+/// Propagate a creator control while retaining its Run lock. A pause or resume
+/// keeps the Subnodes active. Cancellation ends them and cancels their members.
+pub async fn control_for_creator(
+	scope: &mut dyn EndScope,
+	creator: Uuid,
+	action: RunControlAction,
+	source: ControlSource,
+	reason: Option<subnodes::EndReason>,
 ) -> Result<()> {
-	for (_, workspace) in scope.active_subnodes(creator).await? {
-		scope.active_runs(workspace).await?;
+	if reason.is_some() != (action == RunControlAction::Cancel) {
+		return Err(Error::Invalid(
+			"Subnode cancellation requires an end reason".into(),
+		));
+	}
+	let descendants = lock_descendants(scope, creator, action == RunControlAction::Resume).await?;
+	if let Some(reason) = reason {
+		for (id, thread) in descendants.subnodes {
+			scope.mark_ended(id, thread, reason).await?;
+		}
+	}
+	for run in descendants.runs {
+		scope.control_run(run, action, source).await?;
 	}
 	Ok(())
 }
 
-/// Propagate a creator control while retaining its Run lock. A pause keeps the
-/// Subnode active; a cancel or terminal transition ends it and cancels members.
-pub async fn control_for_creator(
-	scope: &mut dyn crate::ports::subnodes::EndScope,
+/// Deletes a creating Run's active Subnodes when its Agent version is
+/// definitely unusable on their Node (#1012: disabling or removing the
+/// creating Agent deletes its Subnodes). Called after a Catalog Approval is
+/// withdrawn or disabled, or a policy that may disable an Agent subject is
+/// saved; the scope re-reads both under lock, so a decision made from a stale
+/// read never ends a Subnode whose creator was approved again meanwhile.
+///
+/// Every Subnode of one creating Run has that Run's Agent and Node, so the
+/// whole set ends together, through the same cascade a creator's own end
+/// takes ([`control_for_creator`]): marked `creator_agent_removed`, member Runs
+/// cancelled, records kept. Returns whether anything ended.
+pub async fn end_if_creator_removed(
+	scope: &mut dyn crate::ports::subnodes::CreatorRemovalScope,
 	creator: uuid::Uuid,
-	action: aidash_domain::RunControlAction,
-	source: aidash_domain::ControlSource,
-	reason: Option<subnodes::EndReason>,
-) -> Result<()> {
-	if reason.is_some() && action != aidash_domain::RunControlAction::Cancel {
-		return Err(Error::Invalid(
-			"ending a Subnode requires cancellation".into(),
-		));
+) -> Result<bool> {
+	let Some((agent, node)) = scope.lock_creator(creator).await? else {
+		return Ok(false);
+	};
+	let catalog = scope.catalog_enabled(&node, &agent).await?;
+	let subject = aidash_domain::agent_subject(&node, &agent.id, &agent.version);
+	let subject = scope.subject_enabled(&subject).await?;
+	if !subnodes::creator_removed(catalog, subject) {
+		return Ok(false);
 	}
-	if reason.is_none() && action != aidash_domain::RunControlAction::Pause {
-		return Err(Error::Invalid(
-			"a nonterminal Subnode control must pause".into(),
-		));
-	}
-	// Mark nothing ended, which appends an event, before every lock is held.
-	lock_end(scope, creator).await?;
-	for (id, workspace) in scope.active_subnodes(creator).await? {
-		if let Some(reason) = reason {
-			scope.mark_ended(id, workspace, reason).await?;
-		}
-		for run in scope.active_runs(workspace).await? {
-			scope.control_run(run, action, source).await?;
-		}
-	}
-	Ok(())
+	control_for_creator(
+		scope,
+		creator,
+		aidash_domain::RunControlAction::Cancel,
+		aidash_domain::ControlSource::Tenant,
+		Some(subnodes::EndReason::CreatorAgentRemoved),
+	)
+	.await?;
+	Ok(true)
 }
 
 /// Arguments after the built-in tool's schema and agent references are parsed.

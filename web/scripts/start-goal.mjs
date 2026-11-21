@@ -1,5 +1,6 @@
 import { chromium, expect } from "@playwright/test";
-// Only a Tenant subject submits goals (#371); golden_path.py passes its credential.
+// Only a Tenant subject sends requests (#371); golden_path.py passes its credential.
+// A request with a coordinator opens a Thread and its Root Task (`POST /api/threads`, #1008).
 const token = process.env.AIDASH_E2E_TOKEN;
 const tenant = process.env.AIDASH_E2E_TENANT;
 const subject = process.env.AIDASH_E2E_SUBJECT;
@@ -40,10 +41,7 @@ try {
       ...request.headers(),
       authorization: `Bearer ${token}`,
     };
-    if (
-      request.url().endsWith("/api/conversations") &&
-      request.method() === "POST"
-    ) {
+    if (request.url().endsWith("/api/threads") && request.method() === "POST") {
       // Capture the real response before the UI can navigate away and Chromium
       // discards its body. Forward the same response to the submitting UI.
       const response = await route.fetch({ headers });
@@ -54,25 +52,26 @@ try {
     }
   });
   await page.goto(process.env.AIDASH_E2E_URL ?? "http://127.0.0.1:18080");
-  await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
+  await page
+    .getByRole("button", { name: "新しい依頼", exact: true })
+    .first()
+    .click();
   const dialog = page.getByRole("dialog");
   await dialog
     .getByLabel("タイトル", { exact: true })
     .fill("Rustフレームワークの競合調査");
   await dialog
-    .getByLabel("ゴール", { exact: true })
+    .getByLabel("依頼", { exact: true })
     .fill("Rust製Webフレームワークについて競合調査して");
   await dialog
     .getByRole("combobox", { name: "コーディネーター" })
     .selectOption("research-cluster@1.0.0");
   const created = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/api/conversations") &&
+      response.url().endsWith("/api/threads") &&
       response.request().method() === "POST",
   );
-  await dialog
-    .getByRole("button", { name: "新しいゴール", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "依頼する", exact: true }).click();
   const response = await created;
   expect(response.status()).toBe(200);
   await expect(dialog).not.toBeVisible({ timeout: 30000 });

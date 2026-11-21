@@ -225,7 +225,7 @@ fn over_budget_catalog_keeps_non_mandatory_definitions_out_of_the_request() {
 	assert!(selection.usage.schema_bytes <= DEFAULT_SCHEMA_BYTES);
 	assert_eq!(selection.usage.exposed.len(), mandatory_aliases().len());
 	assert!(selection.index.contains("tool_00 [tool]: Large tool\n"));
-	assert!(!selection.index.contains("workspace_read [tool]"));
+	assert!(!selection.index.contains("thread_read [tool]"));
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn search_scores_orders_and_pages() {
 		item["digest"],
 		capability(&catalog, "weather_lookup").digest
 	);
-	let mandatory = search(&catalog, &state, "workspace_read", None).unwrap();
+	let mandatory = search(&catalog, &state, "thread_read", None).unwrap();
 	assert_eq!(mandatory["results"][0]["loaded"], true);
 
 	let first = search(&catalog, &state, "", None).unwrap();
@@ -408,12 +408,12 @@ fn already_exposed_capabilities_return_identity_without_body_or_update() {
 	let catalog = run.catalog();
 	let budget = DeferredBudgets::default();
 	let state = ExposureState::default();
-	let required = capability(&catalog, "workspace_read");
+	let required = capability(&catalog, "thread_read");
 	let output = load(
 		&budget,
 		&catalog,
 		&state,
-		"workspace_read",
+		"thread_read",
 		&required.digest,
 		1,
 	)
@@ -458,7 +458,7 @@ fn eager_capabilities_can_be_unloaded_and_reloaded() {
 			.contains("lookup")
 	);
 	assert_eq!(
-		unload(&catalog, &state, "workspace_read"),
+		unload(&catalog, &state, "thread_read"),
 		Err(Error::Invalid("MANDATORY_EXPOSURE".into()))
 	);
 	assert_eq!(
@@ -615,14 +615,11 @@ fn restricted_selection_measures_only_the_sent_tools() {
 		&ExposureState::default(),
 	)
 	.unwrap();
-	let sent = [run.specs["workspace_read"].clone()];
+	let sent = [run.specs["thread_read"].clone()];
 	// Act
 	selection.restrict_tools(&sent).unwrap();
 	// Assert
-	assert_eq!(
-		selection.tools.iter().collect::<Vec<_>>(),
-		["workspace_read"]
-	);
+	assert_eq!(selection.tools.iter().collect::<Vec<_>>(), ["thread_read"]);
 	assert_eq!(selection.usage.schema_bytes, tool_bytes(&sent[0]).unwrap());
 	assert_eq!(
 		selection
@@ -631,7 +628,7 @@ fn restricted_selection_measures_only_the_sent_tools() {
 			.iter()
 			.map(|(alias, _)| alias.as_str())
 			.collect::<Vec<_>>(),
-		["workspace_read"]
+		["thread_read"]
 	);
 }
 

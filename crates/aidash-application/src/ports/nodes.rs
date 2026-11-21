@@ -8,9 +8,9 @@ use async_trait::async_trait;
 pub trait TierLimits: Send + Sync {
 	/// The most Nodes `tenant`'s Tier allows, or `None` when the Tier sets no limit.
 	async fn nodes(&self, tenant: &TenantName) -> Result<Option<u32>>;
-	/// The most Schedules `tenant`'s Tier allows, or `None` when the Tier sets
-	/// no limit. It only lowers the Tenant's own limit (#557 decision 16).
-	async fn schedules(&self, _tenant: &TenantName) -> Result<Option<u32>> {
+	/// The most Duties `tenant`'s Tier allows, or `None` when the Tier sets no
+	/// limit, which is the only count limit on Duties (#1012).
+	async fn duties(&self, _tenant: &TenantName) -> Result<Option<u32>> {
 		Ok(None)
 	}
 }

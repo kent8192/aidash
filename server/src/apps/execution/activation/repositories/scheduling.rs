@@ -107,7 +107,7 @@ fn selectable_by(capabilities: &[PersistedCapability]) -> Condition {
 /// Runs no live lease holds that are runnable now, before the capability filter.
 fn leasable() -> SelectStatement {
 	Query::select()
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 		.and_where(Expr::col("control").ne(Expr::value("PAUSED")))
 		.and_where(Expr::col("revision").lt(Expr::value(i64::MAX - 2)))
@@ -150,7 +150,7 @@ impl<E: Executor> Scope<E> {
 		error: Option<&str>,
 	) -> Result<()> {
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("phase"), "WAITING")
 			.value(
 				Alias::new("pending"),
@@ -242,10 +242,43 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.collect::<Result<_>>()
 			.map_err(Into::into)
 	}
+	async fn lease_recovery_limit(&mut self, run: Uuid) -> aidash_application::Result<u32> {
+		// The Tenant's own limit (#1009), else the default.
+		let settings = Alias::new("tenant_execution_settings");
+		let query = Query::select()
+			.column((settings.clone(), Alias::new("lease_recovery_limit")))
+			.from(Alias::new("task_executions"))
+			.inner_join(
+				settings.clone(),
+				Expr::col((settings, Alias::new("tenant")))
+					.equals((Alias::new("task_executions"), Alias::new("tenant"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("task_executions"), Alias::new("id"))).eq(Expr::value(run)),
+			)
+			.to_owned();
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		let row = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?;
+		Ok(match row {
+			Some(row) => {
+				let limit: i32 = row
+					.get("lease_recovery_limit")
+					.map_err(FrameworkError::from)
+					.map_err(Error::from)?;
+				u32::try_from(limit).unwrap_or(aidash_domain::run_state::LEASE_RECOVERY_LIMIT)
+			}
+			None => aidash_domain::run_state::LEASE_RECOVERY_LIMIT,
+		})
+	}
 	async fn unblocked(&mut self, id: Uuid) -> aidash_application::Result<bool> {
 		let candidate = Query::select()
 			.expr(Expr::value(1_i64))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(run_unblocked())
 			.to_owned();
@@ -289,7 +322,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.await
 			.map_err(aidash_application::Error::from)?)
 	}
-	async fn workspace_event_after(
+	async fn thread_event_after(
 		&mut self,
 		run: Uuid,
 		cursor: i64,
@@ -299,7 +332,11 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.from(Alias::new("run_activations"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("generation").gt(Expr::value(cursor)))
-			.and_where(Expr::col("reason").like("workspace_task:%"))
+			.cond_where(
+				Condition::any()
+					.add(Expr::col("reason").like("thread_task:%"))
+					.add(Expr::col("reason").like("duty_event:%")),
+			)
 			.order_by(Alias::new("generation"), Order::Asc)
 			.limit(1)
 			.build(PostgresQueryBuilder);
@@ -377,6 +414,49 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.map_err(Error::from)
 			.map_err(Into::into)
 	}
+	async fn rejoin(&mut self, run: Uuid) -> aidash_application::Result<bool> {
+		use crate::apps::execution::repositories::store::run_state::{
+			asleep_in, lock_queue_tail, rejoin_queue,
+		};
+		let (sql, values) = asleep_in(run).build(PostgresQueryBuilder);
+		let Some(area) = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?
+		else {
+			// Awake in its queue, or no core Run: the candidate query ordered it.
+			return Ok(true);
+		};
+		let area: Uuid = area
+			.get("area_id")
+			.map_err(FrameworkError::from)
+			.map_err(Error::from)?;
+		let (sql, values) = lock_queue_tail(area).build(PostgresQueryBuilder);
+		let Some(tail) = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?
+		else {
+			return Ok(false);
+		};
+		let tail: i64 = tail
+			.get("next_sequence")
+			.map_err(FrameworkError::from)
+			.map_err(Error::from)?;
+		for statement in rejoin_queue(run, area, tail) {
+			let (sql, values) = statement.build(PostgresQueryBuilder);
+			self.tx
+				.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(Error::from)?;
+		}
+		self.unblocked(run).await
+	}
 	async fn lease(
 		&mut self,
 		run: &Run,
@@ -385,7 +465,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		node: &str,
 	) -> aidash_application::Result<Option<Run>> {
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("pending"), run.stored_pending()?)
 			.value(Alias::new("lease_owner"), token)
 			.value_expr(
@@ -418,14 +498,14 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			// Commit claim-time evidence before an Isolated Step can abort the process.
 			let (sql, values) = Query::insert()
 				.into_table(Alias::new("events"))
-				.columns([Alias::new("id"), Alias::new("node"), Alias::new("workspace_id"), Alias::new("kind"), Alias::new("data"), Alias::new("tenant")])
+				.columns([Alias::new("id"), Alias::new("node"), Alias::new("thread_id"), Alias::new("kind"), Alias::new("data"), Alias::new("tenant")])
 				.from_subquery(Query::select()
 					.expr(Expr::value(Uuid::new_v4()))
 					.expr(Expr::value(run.is_local(node).then(|| run.node.to_string())))
-					.expr(Expr::value(run.is_local(node).then_some(run.workspace_id)))
-					.expr(Expr::value("run.lease_recovery_claimed"))
+					.expr(Expr::value(run.is_local(node).then_some(run.thread_id)))
+					.expr(Expr::value("execution.lease_recovery_claimed"))
 					.expr(Expr::value(json!({"run_id": run.id, "task_id": run.task_id, "lease_recoveries": run.recovery.lease_recoveries, "isolated": true})))
-					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+					.expr(crate::database::scope::tenant_of("task_executions", "id", run.id))
 					.to_owned())
 				.build(PostgresQueryBuilder);
 			self.tx
@@ -452,7 +532,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		seconds: i32,
 	) -> aidash_application::Result<Option<RunMetadata>> {
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("lease_owner"), token)
 			.value_expr(
 				Alias::new("lease_until"),
@@ -503,7 +583,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.columns([
 				Alias::new("id"),
 				Alias::new("node"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
 				Alias::new("tenant"),
@@ -514,14 +594,16 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value(
 						owned.is_local(node).then(|| owned.node.to_string()),
 					))
-					.expr(Expr::value(
-						owned.is_local(node).then_some(owned.workspace_id),
-					))
-					.expr(Expr::value("run.invalid_state"))
+					.expr(Expr::value(owned.is_local(node).then_some(owned.thread_id)))
+					.expr(Expr::value("execution.invalid_state"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"category":reason}),
 					))
-					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						owned.id,
+					))
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);
@@ -549,7 +631,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.columns([
 				Alias::new("id"),
 				Alias::new("node"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
 				Alias::new("tenant"),
@@ -560,14 +642,16 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value(
 						owned.is_local(node).then(|| owned.node.to_string()),
 					))
-					.expr(Expr::value(
-						owned.is_local(node).then_some(owned.workspace_id),
-					))
-					.expr(Expr::value("run.crash_loop"))
+					.expr(Expr::value(owned.is_local(node).then_some(owned.thread_id)))
+					.expr(Expr::value("execution.crash_loop"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"lease_recoveries":lease_recoveries}),
 					))
-					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						owned.id,
+					))
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);

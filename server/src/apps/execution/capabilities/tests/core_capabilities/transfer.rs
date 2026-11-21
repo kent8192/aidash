@@ -3,6 +3,7 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::http::ViewResult;
 use reinhardt::{Handler, Request, Response, ServerRouter};
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Notify;
 
 #[rstest::rstest]
 #[case::from_default(false)]
@@ -13,7 +14,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	#[case] reverse: bool,
 	#[from(worker_control)] control: WorkerControl,
 ) {
-	// Arrange: each Node has its own Workspace and admitted file Agent.
+	// Arrange: each Node has its own Thread and admitted file Agent.
 	let c = Box::pin(capability_fixture).await;
 	let home = common::default_node(&c.f.store, "acme").await;
 	let sender = admit(&c).await;
@@ -50,21 +51,18 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.1.0")] =
 		json!({"kind":"agent", "node": name});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
-	let (status, workspace) = common::post(
+	let (status, thread) = common::post(
 		&c.app,
 		&c.token,
-		"/api/workspaces",
-		json!({"title":"Sibling files","goal":"Receive selected files","node":name}),
+		"/api/threads",
+		json!({"title":"Sibling files","node":name}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&c.app,
 		&c.token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Sibling recipient","description":"Receive selected files"}),
 	)
 	.await;
@@ -91,7 +89,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		let (status, area) = common::get(
 			&c.app,
 			&c.token,
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
@@ -111,7 +109,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		assert!(
 			items
 				.iter()
-				.all(|item| item["thread_id"] == expected.task_id.to_string()),
+				.all(|item| item["thread_id"] == expected.thread_id.to_string()),
 			"{page}"
 		);
 	}
@@ -138,18 +136,18 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		(&sender, &receiver)
 	};
 	let target_address = format!("{}/{}", c.f.config.deployment, target.node);
-	let (status, patched) = common::post(&c.app, &c.token, &format!("/api/runs/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
+	let (status, patched) = common::post(&c.app, &c.token, &format!("/api/executions/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{patched}");
 	let (status, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", source.id),
+		&format!("/api/executions/{}/working-area", source.id),
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
 	let file = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":target_address,"agent_id":target.agent_id,"agent_version":target.agent_version,"thread_id":target.task_id}});
-	let path = format!("/api/runs/{}/files/share", source.id);
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":target_address,"agent_id":target.agent_id,"agent_version":target.agent_version,"thread_id":target.thread_id}});
+	let path = format!("/api/executions/{}/files/share", source.id);
 	let mut denied = policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-transfer","effect":"deny","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"]}}));
 	common::replace_policy(&c.f.store, "acme", denied).await;
@@ -183,7 +181,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	let (status, received) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/files/read", target.id),
+		&format!("/api/executions/{}/files/read", target.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -198,7 +196,7 @@ struct TransferFixture {
 	sender: aidash_server::domain::Run,
 	receiver: aidash_server::domain::Run,
 	servers: Vec<tokio::task::JoinHandle<()>>,
-	lose_commit_reply: Arc<AtomicBool>,
+	commit_reply_loss: Arc<CommitReplyLoss>,
 }
 impl TransferFixture {
 	async fn restart_servers(&mut self) {
@@ -244,7 +242,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	let (_, area) = common::get(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/working-area", c.sender.id),
+		&format!("/api/executions/{}/working-area", c.sender.id),
 	)
 	.await;
 	// Explicit immutable transport fixture: 4 MiB plus a final short chunk.
@@ -306,11 +304,11 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 		json!([file]),
 	)
 	.await;
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.receiver.thread_id}});
 	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/files/share", c.sender.id),
+		&format!("/api/executions/{}/files/share", c.sender.id),
 		input.clone(),
 	)
 	.await;
@@ -379,7 +377,7 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	let (_, hidden) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(hidden["manifest"], json!([]));
@@ -413,14 +411,19 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 		c.a.f.clone(),
 		rx,
 	));
-	let observed = until_transfer(c, &fixture.input, &["completed"]).await;
+	let transfer = identity["transfer_id"].as_str().unwrap();
+	let observed = completed_transfer(c, transfer).await;
 	assert_eq!(observed["receipt"], receipt["receipt"]);
+	assert_eq!(
+		replay_share(c, &fixture.input).await["receipt"],
+		receipt["receipt"]
+	);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
@@ -526,7 +529,7 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(
@@ -542,7 +545,7 @@ async fn two_nodes(#[future(awt)] connected_nodes: ConnectedNodes) -> TransferFi
 		a,
 		b,
 		servers,
-		lose_commit_reply,
+		commit_reply_loss,
 	} = connected_nodes;
 	let sender = admit(&a).await;
 	let receiver = admit(&b).await;
@@ -552,25 +555,31 @@ async fn two_nodes(#[future(awt)] connected_nodes: ConnectedNodes) -> TransferFi
 		sender,
 		receiver,
 		servers,
-		lose_commit_reply,
+		commit_reply_loss,
 	}
 }
 pub(super) struct ConnectedNodes {
 	pub(super) a: CoreFixture,
 	pub(super) b: CoreFixture,
 	pub(super) servers: Vec<tokio::task::JoinHandle<()>>,
-	pub(super) lose_commit_reply: Arc<AtomicBool>,
+	pub(super) commit_reply_loss: Arc<CommitReplyLoss>,
+}
+#[derive(Default)]
+pub(super) struct CommitReplyLoss {
+	armed: AtomicBool,
+	observed: Notify,
 }
 struct CommitReplyFault {
 	router: Arc<ServerRouter>,
-	fault: Arc<AtomicBool>,
+	fault: Arc<CommitReplyLoss>,
 }
 #[async_trait::async_trait]
 impl Handler for CommitReplyFault {
 	async fn handle(&self, request: Request) -> ViewResult<Response> {
 		let commit = request.uri.path().ends_with("/files/commit");
 		let result = self.router.handle(request).await?;
-		if commit && result.status.is_success() && self.fault.swap(false, Ordering::SeqCst) {
+		if commit && result.status.is_success() && self.fault.armed.swap(false, Ordering::SeqCst) {
+			self.fault.observed.notify_one();
 			Ok(Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
 				.with_body("lost final acknowledgment"))
 		} else {
@@ -584,8 +593,8 @@ fn peer_listener() -> BoxFuture<'static, tokio::net::TcpListener> {
 	async { tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap() }.boxed()
 }
 #[rstest::fixture]
-fn lost_commit_reply() -> Arc<AtomicBool> {
-	Arc::new(AtomicBool::new(false))
+fn lost_commit_reply() -> Arc<CommitReplyLoss> {
+	Arc::default()
 }
 #[rstest::fixture]
 pub(super) fn connected_nodes(
@@ -599,7 +608,7 @@ pub(super) fn connected_nodes(
 	#[with(_recipient)]
 	b: CoreFuture,
 	#[from(peer_listeners)] _state: PeerListeners,
-	#[from(lost_commit_reply)] lose_commit_reply: Arc<AtomicBool>,
+	#[from(lost_commit_reply)] commit_reply_loss: Arc<CommitReplyLoss>,
 ) -> BoxFuture<'static, ConnectedNodes> {
 	let PeerListeners {
 		source_listener,
@@ -620,7 +629,7 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
   settings.deployment.id=node.f.config.deployment.to_string();settings.deployment.endpoint=node.f.config.endpoint.clone();settings.deployment.api_token=node.f.config.api_token.clone();settings.deployment.web_dir=node.f.config.web_dir.clone();settings.deployment.lease_seconds=node.f.config.lease_seconds;node.app.context.set_singleton(settings);
  }
  let a_router:Arc<dyn Handler>=a.app.native_router();
- let b_router:Arc<dyn Handler>=Arc::new(CommitReplyFault {router:b.app.native_router(),fault:lose_commit_reply.clone()});
+ let b_router:Arc<dyn Handler>=Arc::new(CommitReplyFault {router:b.app.native_router(),fault:commit_reply_loss.clone()});
  let mut servers=Vec::new();
  for (listener,router,context) in [(al,a_router,a.app.context.clone()),(bl,b_router,b.app.context.clone())] {
   servers.push(tokio::spawn(async move {
@@ -640,7 +649,7 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 		assert_eq!(status, 200, "{result}");
 	}
 
- ConnectedNodes {a,b,servers,lose_commit_reply}
+ ConnectedNodes {a,b,servers,commit_reply_loss}
 }.boxed()
 }
 
@@ -664,20 +673,20 @@ async fn peer_request(
 	.await
 }
 async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
-	let (status, value) = common::post(&c.a.app, &c.a.token, &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+immutable 東京\n*** End Patch"})).await;
+	let (status, value) = common::post(&c.a.app, &c.a.token, &format!("/api/executions/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+immutable 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
 	let (_, area) = common::get(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/working-area", c.sender.id),
+		&format!("/api/executions/{}/working-area", c.sender.id),
 	)
 	.await;
 	let file = area["manifest"][0].clone();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.receiver.thread_id}});
 	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/files/share", c.sender.id),
+		&format!("/api/executions/{}/files/share", c.sender.id),
 		input.clone(),
 	)
 	.await;
@@ -685,27 +694,38 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 	assert_eq!(pending["status"], "pending");
 	(input, pending)
 }
-async fn until_transfer(c: &TransferFixture, input: &Value, states: &[&str]) -> Value {
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-	loop {
-		let (status, result) = common::post(
-			&c.a.app,
-			&c.a.token,
-			&format!("/api/runs/{}/files/share", c.sender.id),
-			input.clone(),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
-		if states.contains(&result["status"].as_str().unwrap()) {
-			return result;
+async fn completed_transfer(c: &TransferFixture, id: &str) -> Value {
+	let path = format!("/api/file-transfers/{id}");
+	let mut last_state = Value::Null;
+	tokio::time::timeout(std::time::Duration::from_secs(30), async {
+		loop {
+			let (status, state) = common::get(&c.a.app, &c.a.token, &path).await;
+			assert_eq!(status, 200, "{state}");
+			match state["status"].as_str() {
+				Some("completed") => return state,
+				Some("pending" | "transferring" | "committing") => last_state = state,
+				_ => panic!("transfer {id} cannot complete: {state}"),
+			}
+			tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 		}
-		assert!(
-			tokio::time::Instant::now() < deadline,
-			"transfer not at {states:?}: {result}"
-		);
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	}
+	})
+	.await
+	.unwrap_or_else(|_| panic!("transfer {id} did not complete: {last_state}"))
 }
+
+async fn replay_share(c: &TransferFixture, input: &Value) -> Value {
+	let (status, result) = common::post(
+		&c.a.app,
+		&c.a.token,
+		&format!("/api/executions/{}/files/share", c.sender.id),
+		input.clone(),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["status"], "completed", "{result}");
+	result
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
@@ -717,28 +737,31 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	let (_, source) = common::get(
 		&c.a.app,
 		&c.a.token,
-		&format!("/api/runs/{}/working-area", c.sender.id),
+		&format!("/api/executions/{}/working-area", c.sender.id),
 	)
 	.await;
-	let (status, result) = common::post(&c.a.app, &c.a.token, &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
+	let (status, result) = common::post(&c.a.app, &c.a.token, &format!("/api/executions/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
-	c.lose_commit_reply.store(true, Ordering::SeqCst);
+	c.commit_reply_loss.armed.store(true, Ordering::SeqCst);
 	let WorkerControl { stop, receiver: rx } = control_1;
 	// Act: reconcile only after editing the source and arming the lost-receipt fault.
 	let worker = tokio::spawn(aidash_server::capabilities::transfer::run(
 		c.a.f.clone(),
 		rx,
 	));
-	let receipt = until_transfer(&c, &input, &["completed"]).await;
-	assert!(
-		!c.lose_commit_reply.load(Ordering::SeqCst),
-		"fault must run after a real committed receiver transaction"
-	);
+	// Measure reconciliation from the dropped reply, after the receiver commits.
+	tokio::time::timeout(
+		std::time::Duration::from_secs(60),
+		c.commit_reply_loss.observed.notified(),
+	)
+	.await
+	.expect("the receiver committed and the final reply was dropped");
+	let receipt = completed_transfer(&c, pending["transfer_id"].as_str().unwrap()).await;
 	assert_eq!(receipt["transfer_id"], pending["transfer_id"]);
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(
@@ -752,14 +775,14 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	let (status, content) = common::post(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/files/read", c.receiver.id),
+		&format!("/api/executions/{}/files/read", c.receiver.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{content}");
 	assert_eq!(content["content"], "immutable 東京\n");
 	assert_eq!(
-		until_transfer(&c, &input, &["completed"]).await["receipt"],
+		replay_share(&c, &input).await["receipt"],
 		receipt["receipt"]
 	);
 	stop.send(true).unwrap();
@@ -825,7 +848,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]), "staging is not visible");
@@ -840,7 +863,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		&format!("/api/runs/{}/working-area", c.receiver.id),
+		&format!("/api/executions/{}/working-area", c.receiver.id),
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]));
@@ -926,7 +949,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		a,
 		b,
 		servers,
-		lose_commit_reply,
+		commit_reply_loss,
 	} = peers;
 	let sender = marketplace_admit(&a).await;
 	let receiver = marketplace_admit(&b).await;
@@ -959,7 +982,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		sender,
 		receiver,
 		servers,
-		lose_commit_reply,
+		commit_reply_loss,
 	};
 	let (_, pending) = prepare_file(&c).await;
 	let data: Value = {
@@ -1064,7 +1087,7 @@ async fn inbound_file_transfers_use_the_receiving_nodes_policy_resource(
 	let receiver = common::default_node(&c.b.f.store, "acme").await;
 	let mut policy = c.b.policy.clone();
 	policy["policies"] = json!([
-		{"id":"files","effect":"allow","subjects":{"any":true},"actions":["node.use","workspace.read","file.receive","registry.read","agent.execute","tool.invoke"],"resources":{"kinds":["*"]}},
+		{"id":"files","effect":"allow","subjects":{"any":true},"actions":["node.use","thread.read","file.receive","registry.read","agent.execute","tool.invoke"],"resources":{"kinds":["*"]}},
 		{"id":"receiver","effect":"allow","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"],"ids":[receiver.node]}},
 	]);
 	if let Some((path, value)) = condition {
@@ -1157,21 +1180,18 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	policy["subjects"][aidash_domain::agent_subject(sibling_address, "research", "1.1.0")] =
 		json!({"kind":"agent", "node": sibling_name});
 	common::replace_policy(&c.a.f.store, "acme", policy.clone()).await;
-	let (status, workspace) = common::post(
+	let (status, thread) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"/api/workspaces",
-		json!({"title":"Source","goal":"Share from sibling","node":sibling_name}),
+		"/api/threads",
+		json!({"title":"Source","node":sibling_name}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&c.a.app,
 		&c.a.token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Share","description":"Find recipients"}),
 	)
 	.await;
@@ -1243,7 +1263,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|item| item["thread_id"] == c.receiver.task_id.to_string()),
+			.any(|item| item["thread_id"] == c.receiver.thread_id.to_string()),
 		"{body}"
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-source-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[sibling_name]}}));

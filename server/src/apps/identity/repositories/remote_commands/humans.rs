@@ -76,7 +76,7 @@ pub(crate) async fn create_in(
 	tx: &mut dyn TransactionExecutor,
 	grant: Uuid,
 	admission: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 	prompt: &str,
 	key: &str,
@@ -102,7 +102,7 @@ pub(crate) async fn create_in(
 	if let Some(previous) = requests.iter().find(|r| r.key == key) {
 		let previous = &previous.request;
 		if previous.run_id != admission
-			|| previous.workspace_id != workspace
+			|| previous.thread_id != thread
 			|| previous.kind != kind
 			|| previous.prompt != prompt
 		{
@@ -119,7 +119,7 @@ pub(crate) async fn create_in(
 	}
 	let request = HumanRequest {
 		id: Uuid::new_v4(),
-		workspace_id: workspace,
+		thread_id: thread,
 		run_id: admission,
 		kind: kind.into(),
 		prompt: prompt.into(),
@@ -260,12 +260,12 @@ pub(crate) async fn create(
 	tx: &mut dyn TransactionExecutor,
 	grant: Uuid,
 	admission: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 	prompt: &str,
 	key: &str,
 ) -> Result<HumanRequest> {
-	create_in(tx, grant, admission, workspace, kind, prompt, key).await
+	create_in(tx, grant, admission, thread, kind, prompt, key).await
 }
 pub(crate) async fn read(
 	tx: &mut dyn TransactionExecutor,

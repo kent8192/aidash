@@ -26,7 +26,7 @@ pub trait ReceiverScope: TransferScope {
 	async fn finish_pending(&mut self, digest: &str) -> Result<(Uuid, String)>;
 	async fn read_file(&mut self, file: &MountedFile) -> Result<Vec<u8>>;
 	async fn publish(&mut self, area: &mut Area) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: serde_json::Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: serde_json::Value) -> Result<()>;
 }
 /// A Home taking a delivery from a Run executing for another Home (ADR 0139, decision 20). The
 /// delivery's own admission (the live Remote Grant, its Binding and the tool the Run called)
@@ -41,7 +41,7 @@ pub struct DeliveryMode {
 impl DeliveryMode {
 	/// Whether the files land in the delegating Run's Working Area, which then anchors their
 	/// staging: its state, its quota and its generation. A message's files become Thread
-	/// Attachments of the grant's Workspace instead, so they stage in no Area, bounded by the
+	/// Attachments of the grant's Thread instead, so they stage in no Area, bounded by the
 	/// delivery's own budgets and the storage reservation, and need no delegating Run.
 	pub fn into_area(&self) -> bool {
 		self.bound_operation.is_some()

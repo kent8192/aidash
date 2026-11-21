@@ -29,7 +29,7 @@ pub struct SubnodeRecord {
 	#[field]
 	pub allowance: Json<Value>,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field(field_type = "text", null = true)]
 	pub title: Option<String>,
 	#[field(field_type = "text")]
@@ -47,26 +47,26 @@ pub struct SubnodeRecord {
 }
 
 impl SubnodeRecord {
-	/// The Workspaces of the Subnodes `run` created or works in, ended ones included.
-	pub(crate) async fn workspaces_of_run(
+	/// The Threads of the Subnodes `run` created or works in, ended ones included.
+	pub(crate) async fn threads_of_run(
 		tx: impl crate::database::native::Executor,
 		tenant: &str,
 		run: Uuid,
 	) -> crate::Result<Vec<Uuid>> {
 		let own = Query::select()
-			.column(Alias::new("workspace_id"))
+			.column(Alias::new("thread_id"))
 			.from(Alias::new("authorization_execution"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.to_owned();
 		crate::database::native::query_scalar(
 			&Query::select()
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.from(Alias::new("subnodes"))
 				.and_where(Expr::col("tenant").eq(tenant))
 				.and_where(
 					Expr::col("creator_run_id")
 						.eq(Expr::value(run))
-						.or(Expr::col("workspace_id").in_subquery(own)),
+						.or(Expr::col("thread_id").in_subquery(own)),
 				)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -74,18 +74,18 @@ impl SubnodeRecord {
 		.await
 	}
 
-	/// The Run that created the Subnode owning `workspace`, if a Subnode owns it.
-	pub(crate) async fn creator_of_workspace(
+	/// The Run that created the Subnode owning `thread`, if a Subnode owns it.
+	pub(crate) async fn creator_of_thread(
 		tx: impl crate::database::native::Executor,
 		tenant: &str,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> crate::Result<Option<Uuid>> {
 		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("creator_run_id"))
 				.from(Alias::new("subnodes"))
 				.and_where(Expr::col("tenant").eq(tenant))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(tx)
@@ -116,10 +116,6 @@ pub struct SubnodeLimitRecord {
 	#[field(primary_key = true, field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub members_per_subnode: i32,
-	#[field]
-	pub subnodes_per_run: i32,
-	#[field]
 	pub remote_runs_may_create: bool,
 	#[field]
 	pub updated_at: DateTime<Utc>,
@@ -146,7 +142,7 @@ fn framework(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 }
 
 impl SubnodeRecord {
-	/// Caller holds the transaction and its workspace or creator lock.
+	/// Caller holds the transaction and its thread or creator lock.
 	pub(crate) async fn domain(self, tx: &mut dyn TransactionExecutor) -> Result<Subnode> {
 		let members = SubnodeMemberRecord::objects()
 			.filter(SubnodeMemberRecord::field_tenant().eq(self.tenant.clone()))
@@ -188,7 +184,7 @@ impl SubnodeRecord {
 			},
 			members,
 			allowance: serde_json::from_value(self.allowance.0)?,
-			workspace_id: self.workspace_id,
+			thread_id: self.thread_id,
 			title: self.title,
 			state,
 			created_at: self.created_at,
@@ -213,20 +209,6 @@ impl SubnodeRecord {
 			.pop())
 	}
 
-	pub(crate) async fn active_count(
-		tx: &mut dyn TransactionExecutor,
-		tenant: &str,
-		run: Uuid,
-	) -> Result<usize> {
-		Self::objects()
-			.filter(Self::field_tenant().eq(tenant.to_owned()))
-			.filter(Self::field_creator_run_id().eq(run))
-			.filter(Self::field_state().eq("active"))
-			.count_with_executor(tx)
-			.await
-			.map_err(framework)
-	}
-
 	pub(crate) async fn insert_active(
 		tx: &mut dyn TransactionExecutor,
 		value: &Subnode,
@@ -248,7 +230,7 @@ impl SubnodeRecord {
 			leader_agent_id: value.leader.id.clone(),
 			leader_agent_version: value.leader.version.clone(),
 			allowance: Json(serde_json::to_value(&value.allowance)?),
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			title: value.title.clone(),
 			state: "active".into(),
 			created_at: value.created_at,
@@ -314,17 +296,9 @@ impl SubnodeLimitRecord {
 		else {
 			return Ok(SubnodeLimits::default());
 		};
-		let limits = SubnodeLimits {
-			members_per_subnode: u32::try_from(row.members_per_subnode)
-				.map_err(|_| Error::Invalid("invalid Subnode limits".into()))?,
-			subnodes_per_run: u32::try_from(row.subnodes_per_run)
-				.map_err(|_| Error::Invalid("invalid Subnode limits".into()))?,
+		Ok(SubnodeLimits {
 			remote_runs_may_create: row.remote_runs_may_create,
-		};
-		limits
-			.validate()
-			.map_err(|error| Error::Invalid(error.to_string()))?;
-		Ok(limits)
+		})
 	}
 	pub(crate) async fn put(
 		tx: &mut dyn TransactionExecutor,
@@ -332,17 +306,12 @@ impl SubnodeLimitRecord {
 		updated_by: &str,
 		limits: SubnodeLimits,
 	) -> Result<SubnodeLimits> {
-		limits
-			.validate()
-			.map_err(|error| Error::Invalid(error.to_string()))?;
 		Self::lock_tenant(tx, tenant, true).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("subnode_limits"))
 			.columns(
 				[
 					"tenant",
-					"members_per_subnode",
-					"subnodes_per_run",
 					"remote_runs_may_create",
 					"updated_at",
 					"updated_by",
@@ -351,21 +320,13 @@ impl SubnodeLimitRecord {
 			)
 			.values_panic([
 				IntoValue::into_value(tenant),
-				IntoValue::into_value(limits.members_per_subnode as i32),
-				IntoValue::into_value(limits.subnodes_per_run as i32),
 				IntoValue::into_value(limits.remote_runs_may_create),
 				IntoValue::into_value(Utc::now()),
 				IntoValue::into_value(updated_by),
 			])
 			.on_conflict(
 				OnConflict::columns(["tenant"])
-					.update_columns([
-						"members_per_subnode",
-						"subnodes_per_run",
-						"remote_runs_may_create",
-						"updated_at",
-						"updated_by",
-					])
+					.update_columns(["remote_runs_may_create", "updated_at", "updated_by"])
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);

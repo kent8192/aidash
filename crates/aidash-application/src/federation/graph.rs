@@ -40,16 +40,16 @@ async fn linked_candidates(
 	for item in candidate.nodes(node, options) {
 		seen.insert(item.id);
 	}
-	let mut workspace_ids = Vec::new();
+	let mut thread_ids = Vec::new();
 	let mut task_ids = Vec::new();
 	let mut registry = Vec::<(String, String, String)>::new();
 	match candidate {
-		Candidate::Workspace(_) => {}
-		Candidate::Task(task) if options.scope_workspace.is_none() => {
-			if (kind_allowed("workspace", options) || kind_allowed("goal", options))
+		Candidate::Thread(_) => {}
+		Candidate::Task(task) if options.scope_thread.is_none() => {
+			if (kind_allowed("thread", options) || kind_allowed("goal", options))
 				&& relation_allowed("contains", options)
 			{
-				workspace_ids.push(task.workspace_id);
+				thread_ids.push(task.thread_id);
 			}
 			if kind_allowed("task", options) {
 				if relation_allowed("contains", options) {
@@ -60,13 +60,13 @@ async fn linked_candidates(
 				}
 			}
 		}
-		Candidate::Artifact(artifact) if options.scope_workspace.is_none() => {
+		Candidate::Artifact(artifact) if options.scope_thread.is_none() => {
 			if kind_allowed("task", options) && relation_allowed("produces", options) {
 				task_ids.push(artifact.task_id);
 			}
 		}
 		Candidate::Run(run) if relation_allowed("executes", options) => {
-			if options.scope_workspace.is_none() && kind_allowed("task", options) {
+			if options.scope_thread.is_none() && kind_allowed("task", options) {
 				task_ids.push(run.task_id);
 			}
 			if kind_allowed("agent", options) {
@@ -77,9 +77,9 @@ async fn linked_candidates(
 				));
 			}
 		}
-		Candidate::Conversation(conversation) if options.scope_workspace.is_none() => {
-			if kind_allowed("workspace", options) && relation_allowed("contains", options) {
-				workspace_ids.push(conversation.workspace_id);
+		Candidate::Conversation(conversation) if options.scope_thread.is_none() => {
+			if kind_allowed("thread", options) && relation_allowed("contains", options) {
+				thread_ids.push(conversation.thread_id);
 			}
 			if relation_allowed("participates", options)
 				&& kind_allowed(&conversation.target_kind, options)
@@ -124,8 +124,8 @@ async fn linked_candidates(
 	}
 	task_ids.truncate(options.limit as usize);
 	registry.truncate(options.limit as usize);
-	for id in workspace_ids {
-		if let Some(item) = authority.linked_workspace(id).await? {
+	for id in thread_ids {
+		if let Some(item) = authority.linked_thread(id).await? {
 			let new_nodes = item.nodes(node, options);
 			if new_nodes.iter().any(|node| !seen.contains(&node.id))
 				&& authority.visible(&item, false).await?
@@ -217,7 +217,7 @@ pub async fn project(
 			cursor.offset += 1;
 			scanned += 1;
 			let allowed_kind = kind_allowed(candidate.kind(), options)
-				|| matches!(&candidate, Candidate::Workspace(_)) && kind_allowed("goal", options);
+				|| matches!(&candidate, Candidate::Thread(_)) && kind_allowed("goal", options);
 			if !allowed_kind {
 				continue;
 			}
@@ -230,20 +230,20 @@ pub async fn project(
 			}
 			scope.begin_row();
 			let visible = scope
-				.visible(&candidate, options.scope_workspace.is_some())
+				.visible(&candidate, options.scope_thread.is_some())
 				.await?;
 			let silent = scope.take_row_silence().is_some();
 			if !visible {
 				if silent {
 					use aidash_domain::unconfirmed::Kind;
 					let row = match &candidate {
-						Candidate::Task(row) => Some((Kind::Task, row.workspace_id)),
-						Candidate::Run(row) => Some((Kind::Run, row.workspace_id)),
-						Candidate::Artifact(row) => Some((Kind::Artifact, row.workspace_id)),
+						Candidate::Task(row) => Some((Kind::Task, row.thread_id)),
+						Candidate::Run(row) => Some((Kind::Run, row.thread_id)),
+						Candidate::Artifact(row) => Some((Kind::Artifact, row.thread_id)),
 						_ => None,
 					};
-					if let Some((kind, workspace)) = row {
-						unconfirmed.record(&node_id, kind, workspace);
+					if let Some((kind, thread)) = row {
+						unconfirmed.record(&node_id, kind, thread);
 					}
 				}
 				continue;

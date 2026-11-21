@@ -70,7 +70,7 @@ A `native` request has this shape:
    `tool_call_id`. A Human answer becomes a user message. Media observations
    become user messages.
 4. One trailing user message with this step's volatile content (agent state,
-   workspace observation, run messages, `semantic_memory`, deferred reads and
+   thread observation, run messages, `semantic_memory`, deferred reads and
    the continuation markers no rendered Model Turn has answered yet) and this
    step's media parts. It is never stored in history. A citation correction
    asks for a corrected answer, so it stays through tool-call turns that
@@ -136,7 +136,7 @@ adapter adds the salt just before sending. Request metadata, compaction input,
 logs and diagnostics show only the key version. A remote Run is salted with the
 receiving node's local Tenant and that node's key. Because the salt needs a
 Tenant, `ordered` Runs are created only through Tenant-scoped execution. Legacy
-claims and legacy remote admission run in Workspaces without a Tenant, so they
+claims and legacy remote admission run in Threads without a Tenant, so they
 reject `ordered` Agents even on a node that has keys.
 
 ## What stays stable
@@ -145,7 +145,7 @@ The Stable Prefix part holds `identity`, `task`, `reference_documents`,
 `run_message_summary`, the adopted Execution Summary as `summary` (only when a
 Context Policy's Summary Stage produced one), and `history`, in that order. The
 volatile part follows:
-it holds the agent state, workspace observation, run messages, deferred markers,
+it holds the agent state, thread observation, run messages, deferred markers,
 `semantic_memory` and per-turn instructions such as run-message catch-up and
 media intake. Two consecutive steps share their bytes through all earlier
 history.
@@ -165,7 +165,7 @@ These events legitimately end the shared prefix:
 For `ordered` and `native` Runs, a semantic retrieval is reused across steps while its
 Retrieval Key is unchanged. The key covers the query inputs, a Run-fixed budget,
 the binding, the authorization scope, and the policy, index and memory-binding
-revisions. It also covers a digest of the Workspace's semantic entries and of
+revisions. It also covers a digest of the Thread's semantic entries and of
 the revisions of the memory banks the Run recalls. An inserted, edited, deleted
 or reindexed entry, or a changed memory unit, therefore triggers a fresh
 retrieval. A remote Run can't read the Home's database, so the Home returns the
@@ -183,7 +183,7 @@ step, so the Home has no semantic operation for the current step. Its inference
 and compaction admissions therefore cite the operation whose receipt the step
 reuses. The Home admits a cited operation only when it is READY for the same
 Run and grant at or before the current step, the grant is live, no source the
-Run consumed changed, and the Workspace corpus digest still equals the one
+Run consumed changed, and the Thread corpus digest still equals the one
 recorded before that retrieval. A revoked grant pauses the Run, and an edited
 consumed source invalidates it as before (a follow-up Task continues the work).
 Any other corpus change, such as a new entry, answers `stale`: the Run drops the

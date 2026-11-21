@@ -30,7 +30,7 @@ pub trait TransactionAuthorityScope: Send {
 		coordinator: &str,
 	) -> Result<Option<SourceAdmission>>;
 	async fn run(&mut self, id: Uuid) -> Result<RunMetadata>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource>;

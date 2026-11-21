@@ -23,7 +23,7 @@ async fn registry_reads(f: &aidash_server::federation::Federation) -> Vec<(Strin
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_live_runs_continue_to_an_older_paused_run(
+async fn thread_live_runs_continue_to_an_older_paused_run(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -31,7 +31,7 @@ async fn workspace_live_runs_continue_to_an_older_paused_run(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
 		.bind(task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
@@ -45,13 +45,13 @@ async fn workspace_live_runs_continue_to_an_older_paused_run(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let old: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	let old: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	sqlx::query(
-		"UPDATE runs SET control = 'PAUSED', updated_at = now() - interval '30 days' WHERE id = $1",
+		"UPDATE task_executions SET control = 'PAUSED', updated_at = now() - interval '30 days' WHERE id = $1",
 	)
 	.bind(old)
 	.execute(f.store.pool.fixture_driver())
@@ -62,7 +62,7 @@ async fn workspace_live_runs_continue_to_an_older_paused_run(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/workspaces/{workspace}/tasks"),
+			&format!("/api/threads/{thread}/tasks"),
 			json!({"title":"New task", "description":"New run"}),
 		)
 		.await;
@@ -81,7 +81,7 @@ async fn workspace_live_runs_continue_to_an_older_paused_run(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/runs?live=true"),
+		&format!("/api/threads/{thread}/executions?live=true"),
 		Value::Null,
 	)
 	.await;
@@ -92,7 +92,7 @@ async fn workspace_live_runs_continue_to_an_older_paused_run(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/runs?live=true&cursor={cursor}"),
+		&format!("/api/threads/{thread}/executions?live=true&cursor={cursor}"),
 		Value::Null,
 	)
 	.await;
@@ -117,13 +117,13 @@ async fn a_walk_over_two_runs_with_one_binding_decides_each_definition_once(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, first) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	// A second Task of the same Workspace, claimed by the same Agent, so both Runs name one Binding.
+	// A second Task of the same Thread, claimed by the same Agent, so both Runs name one Binding.
 	let run = |task: Uuid| {
 		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}).to_string()
 			+ &task.to_string()
 	};
 	let _ = run;
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
 		.bind(first)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
@@ -132,7 +132,7 @@ async fn a_walk_over_two_runs_with_one_binding_decides_each_definition_once(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Second","description":"Same Binding"}),
 	)
 	.await;
@@ -154,11 +154,11 @@ async fn a_walk_over_two_runs_with_one_binding_decides_each_definition_once(
 	let (read, reader) = (runs[0].id, runs[1].id);
 	// The second Run read the first, so reading the second walks both.
 	sqlx::query(
-		"INSERT INTO authorization_run_reads (run_id, tenant, workspace_id, resource_kind, resource_id) \
+		"INSERT INTO authorization_run_reads (run_id, tenant, thread_id, resource_kind, resource_id) \
 		 VALUES ($1, 'acme', $2, 'run', $3)",
 	)
 	.bind(reader)
-	.bind(workspace)
+	.bind(thread)
 	.bind(read)
 	.execute(f.store.pool.fixture_driver())
 	.await
@@ -169,7 +169,7 @@ async fn a_walk_over_two_runs_with_one_binding_decides_each_definition_once(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/runs/{reader}"),
+		&format!("/api/executions/{reader}"),
 		Value::Null,
 	)
 	.await;
@@ -251,7 +251,7 @@ async fn one_worker_boundary_writes_the_registry_read_rows_it_wrote_before(
 /// A larger Tenant must not increase the decision cost of a dashboard read.
 #[rstest::rstest]
 #[tokio::test]
-async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
+async fn state_decisions_stay_bounded_when_threads_and_runs_double(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -270,19 +270,19 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 	.await;
 	assert_eq!(status, 200, "{first_run}");
 
-	let run_id: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	let run_id: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(first_task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
 		.bind(first_task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let request_id = Uuid::new_v4();
-	sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'old-request', now() - interval '30 days')")
-        .bind(request_id).bind(workspace).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'old-request', now() - interval '30 days')")
+        .bind(request_id).bind(thread).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let deadline = chrono::Utc::now() + chrono::Duration::days(2);
 	let waiting = aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
 		request_id,
@@ -290,7 +290,7 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 		resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
 	}));
 	let pending = aidash_domain::run_state::encode(&waiting, &Default::default()).unwrap();
-	sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1, created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'WAITING', pending = $1, created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $2")
 		.bind(pending).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let count = || async {
 		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM authorization_decisions")
@@ -302,22 +302,22 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 	let mut decision_breakdowns = Vec::new();
 	for batch in [59, 60] {
 		for _ in 0..batch {
-			let (status, workspace) = common::request(
+			let (status, thread) = common::request(
 				&app,
 				&token,
 				"POST",
-				"/api/workspaces",
-				json!({"title":"Window", "goal":"Bounded state"}),
+				"/api/threads",
+				json!({"title":"Window"}),
 			)
 			.await;
-			assert_eq!(status, 200, "{workspace}");
-			let workspace = workspace["id"].as_str().unwrap();
+			assert_eq!(status, 200, "{thread}");
+			let thread = thread["id"].as_str().unwrap();
 			if !measurements.is_empty() {
 				// Add older history while keeping the current windows identical.
 				sqlx::query(
-					"UPDATE workspaces SET created_at = created_at - interval '1 year' WHERE id = $1",
+					"UPDATE threads SET created_at = created_at - interval '1 year' WHERE id = $1",
 				)
-				.bind(Uuid::parse_str(workspace).unwrap())
+				.bind(Uuid::parse_str(thread).unwrap())
 				.execute(f.store.pool.fixture_driver())
 				.await
 				.unwrap();
@@ -326,7 +326,7 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 				&app,
 				&token,
 				"POST",
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				json!({"title":"Window task", "description":"Create a run"}),
 			)
 			.await;
@@ -341,15 +341,15 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.await;
 			assert_eq!(status, 200, "{run}");
 		}
-		// Keep the newest Task and Run windows aligned with the newest Workspace
+		// Keep the newest Task and Run windows aligned with the newest Thread
 		// window: otherwise scheduler updates can change how many distinct
-		// Workspaces the windows happen to reference between the measurements.
-		sqlx::query("UPDATE tasks SET created_at = workspaces.created_at FROM workspaces WHERE tasks.workspace_id = workspaces.id AND tasks.tenant = 'acme'")
+		// Threads the windows happen to reference between the measurements.
+		sqlx::query("UPDATE tasks SET created_at = threads.created_at FROM threads WHERE tasks.thread_id = threads.id AND tasks.tenant = 'acme'")
 			.execute(f.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("UPDATE runs SET updated_at = tasks.created_at FROM tasks WHERE runs.task_id = tasks.id AND runs.tenant = 'acme' AND runs.id <> $1")
+		sqlx::query("UPDATE task_executions SET updated_at = tasks.created_at FROM tasks WHERE task_executions.task_id = tasks.id AND task_executions.tenant = 'acme' AND task_executions.id <> $1")
 			.bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 		// Hold the independent event projection constant while changing the sizes
-		// of the Workspace and Run collections.
+		// of the Thread and Run collections.
 		sqlx::query("DELETE FROM events WHERE tenant = 'acme'")
 			.execute(f.store.pool.fixture_driver())
 			.await
@@ -400,29 +400,29 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 		let after = count().await;
 		decision_breakdowns.push(sqlx::query_as::<_, (String, i64)>("SELECT action, COUNT(*) FROM authorization_decisions WHERE sequence > $1 GROUP BY action ORDER BY action")
 			.bind(sequence).fetch_all(f.store.pool.fixture_driver()).await.unwrap());
-		assert!(state["next_cursors"]["workspaces"].is_string());
+		assert!(state["next_cursors"]["threads"].is_string());
 		assert!(state["next_cursors"]["runs"].is_string());
 		measurements.push(after - before);
-		let cursor = state["next_cursors"]["workspaces"].as_str().unwrap();
-		let node = state["workspaces"][0]["node"].as_str().unwrap();
+		let cursor = state["next_cursors"]["threads"].as_str().unwrap();
+		let node = state["threads"][0]["node"].as_str().unwrap();
 		let (status, page) = common::request(
 			&app,
 			&token,
 			"GET",
-			&format!("/api/workspaces?node={node}&cursor={cursor}"),
+			&format!("/api/threads?node={node}&cursor={cursor}"),
 			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{page}");
-		let workspaces = page["items"].as_array().unwrap();
-		assert!(!workspaces.is_empty());
-		assert!(workspaces.len() <= 50);
+		let threads = page["items"].as_array().unwrap();
+		assert!(!threads.is_empty());
+		assert!(threads.len() <= 50);
 		assert!(
-			workspaces
+			threads
 				.iter()
 				.all(|row| row["node"] == node && row["id"] != cursor)
 		);
-		assert_eq!(page["next_cursor"].is_string(), workspaces.len() == 50);
+		assert_eq!(page["next_cursor"].is_string(), threads.len() == 50);
 	}
 	assert_eq!(
 		measurements[0], measurements[1],
@@ -443,9 +443,9 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, state) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200, "{state}");
-	let workspace = &state["workspaces"][0];
-	let node = workspace["node"].as_str().unwrap();
-	assert!(state["next_cursors"]["workspaces"].is_null());
+	let thread = &state["threads"][0];
+	let node = thread["node"].as_str().unwrap();
+	assert!(state["next_cursors"]["threads"].is_null());
 	let (status, scoped) = common::request(
 		&app,
 		&token,
@@ -456,7 +456,7 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 	.await;
 	assert_eq!(status, 200, "{scoped}");
 	assert!(
-		scoped["workspaces"]
+		scoped["threads"]
 			.as_array()
 			.unwrap()
 			.iter()
@@ -470,11 +470,11 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 			.all(|row| row["node"].is_null() || row["node"] == node)
 	);
 	assert!(
-		scoped["workspaces"]
+		scoped["threads"]
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|row| row["id"] == workspace["id"])
+			.any(|row| row["id"] == thread["id"])
 	);
 	let (status, absent) = common::request(
 		&app,
@@ -486,7 +486,7 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 	.await;
 	assert_eq!(status, 200, "{absent}");
 	for field in [
-		"workspaces",
+		"threads",
 		"tasks",
 		"runs",
 		"artifacts",
@@ -503,7 +503,7 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 		common::request(&app, &f.config.api_token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200, "{admin}");
 	for field in [
-		"workspaces",
+		"threads",
 		"tasks",
 		"runs",
 		"artifacts",

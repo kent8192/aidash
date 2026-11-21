@@ -38,7 +38,10 @@ pub enum Continuation {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResultFitting {
-	WorkspaceRecord,
+	/// Serialized under its name before #1008: admitted Runs pin the contract
+	/// digest over these bytes.
+	#[serde(rename = "WorkspaceRecord")]
+	ThreadRecord,
 	SkillText,
 	JournalText,
 	JournalSearch,
@@ -115,7 +118,7 @@ pub struct AgentPluginTool {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResourceTarget {
-	Workspace,
+	Thread,
 	Task,
 	Agent,
 	Run,
@@ -175,6 +178,13 @@ pub struct ToolBehavior {
 	/// The output's `"exposure_update"` changes the Run's Exposure set.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub exposure_update: bool,
+	/// The call may change the Tenant's policy, an Authority Change (ADR 0121),
+	/// such as creating a Node, which copies Agent subjects into the policy. The
+	/// Run releases its own authority lease while the call runs, so the change
+	/// never waits on the Run that asked for it (#1012). Omitted when false so
+	/// pinned contracts keep their digest.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub authority_change: bool,
 }
 impl ToolBehavior {
 	/// A call of a Tenant's HTTP or MCP tool, whose result is external data: it
@@ -192,9 +202,9 @@ impl ToolBehavior {
 	}
 	pub fn fitting_for(&self, input: &Value) -> Option<ResultFitting> {
 		match self.fitting {
-			Some(ResultFitting::WorkspaceRecord) if input["kind"] == "attachment" => None,
+			Some(ResultFitting::ThreadRecord) if input["kind"] == "attachment" => None,
 			Some(ResultFitting::SkillText) if input.get("skill").is_none() => None,
-			Some(ResultFitting::WorkspaceRecord) if input["kind"] == "file" => None,
+			Some(ResultFitting::ThreadRecord) if input["kind"] == "file" => None,
 			other => other,
 		}
 	}
@@ -209,8 +219,7 @@ impl ToolBehavior {
 	) -> Option<crate::media::ModelMedia> {
 		use crate::media::{ModelFileSelection, ModelMedia, WorkingImageSelection};
 		if !(self.yields_model_media
-			|| self.fitting == Some(ResultFitting::WorkspaceRecord)
-				&& input["kind"] == "attachment")
+			|| self.fitting == Some(ResultFitting::ThreadRecord) && input["kind"] == "attachment")
 		{
 			return None;
 		}
@@ -240,7 +249,12 @@ impl ToolBehavior {
 			return serde_json::from_value::<ModelFileSelection>(serde_json::json!({
 				"file_id": input["file_id"],
 				"expected_digest": input["expected_digest"],
-				"workspace_id": input["workspace_id"],
+				// `workspace_read`, which saved Agents pin, names it `workspace_id`.
+				"thread_id": if input["thread_id"].is_null() {
+					input["workspace_id"].clone()
+				} else {
+					input["thread_id"].clone()
+				},
 				"area_id": input["area_id"],
 			}))
 			.ok()
@@ -309,7 +323,7 @@ impl ToolContract {
 		if self.digest()? == digest {
 			return Ok(Some(self));
 		}
-		if self.behavior.fitting == Some(ResultFitting::WorkspaceRecord)
+		if self.behavior.fitting == Some(ResultFitting::ThreadRecord)
 			&& self.behavior.yields_model_media
 		{
 			let mut previous = self.clone();
@@ -434,12 +448,14 @@ fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavi
 		read_only_operation: false,
 		concurrency: Concurrency::Sequential,
 		exposure_update: false,
+		authority_change: false,
 	}
 }
 
 /// The Reach of every builtin, listed by name with no default so a new tool must be classified.
+/// A Workspace tool a saved Agent pins reaches what its Thread tool does (#1008).
 pub fn builtin_reach(name: &str) -> Option<ToolReach> {
-	Some(match name {
+	Some(match crate::tool::thread_tools::current(name) {
 		"journal_read"
 		| "journal_search"
 		| "journal_query"
@@ -447,12 +463,14 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		| "capability_describe"
 		| "capability_load"
 		| "capability_unload"
-		| "workspace_wait" => ToolReach::Run,
-		"task_create" | "task_assign" | "artifact_publish" | "workspace_message"
-		| "workspace_read" | "workspace_observe" | "workspace_search" | "memory_recall"
-		| "memory_reflect" | "memory_mutate" | "file_share" | "attachment_copy" => {
-			ToolReach::HomeWorkspace
-		}
+		| "task_wait" => ToolReach::Run,
+		"task_create" | "task_assign" | "artifact_publish" | "thread_message" | "thread_read"
+		| "thread_observe" | "thread_search" | "memory_recall" | "memory_reflect"
+		| "memory_mutate" | "file_share" | "attachment_copy" => ToolReach::HomeWorkspace,
+		// A remote Run discovers through its Home and hands a Task on through
+		// it: the Home serves both commands and grants every onward hop under
+		// the whole chain (#654, #1013), so they reach the Home's Thread.
+		"agent_discover" | "task_delegate" => ToolReach::HomeWorkspace,
 		"skill_read" | "skill_asset_read" | "file_read" | "file_search" => {
 			ToolReach::ReceiverMaterial
 		}
@@ -461,6 +479,7 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		| "subnode_add_member"
 		| "subnode_remove_member"
 		| "subnode_dissolve"
+		| "delete_subnode"
 		| "subnode_message" => ToolReach::ReceiverAgents,
 		"human_request" | "connection_request" => ToolReach::People,
 		"outbound_get" => ToolReach::ExternalServices,
@@ -468,11 +487,12 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		| "python_cancel" | "apply_patch" | "file_save" | "file_remove" | "file_copy"
 		| "process_list" | "process_log" | "process_stop" | "live_preview_start"
 		| "live_preview_stop" => ToolReach::Execution,
-		"agent_discover" | "task_delegate" | "skill_list" | "skill_load" => ToolReach::Never,
-		// An Agent Plugin's stdio MCP server is never remote (ADR 0100), and a Schedule acts
-		// as one person of its own Tenant (ADR 0134), which a remote Run cannot be.
-		"mcp_stdio" | "schedule_create" | "schedule_update" | "schedule_delete"
-		| "schedule_list" => ToolReach::Never,
+		"skill_list" | "skill_load" => ToolReach::Never,
+		// An Agent Plugin's stdio MCP server is never remote (ADR 0100), a Duty acts as one
+		// person of its own Tenant (ADR 0134), which a remote Run cannot be, and Node tools
+		// and node events act as that person too (#1012, #1013).
+		"mcp_stdio" | "duty_create" | "duty_update" | "duty_delete" | "duty_list"
+		| "duty_notify" | "node_create" | "node_delete" => ToolReach::Never,
 		_ => return None,
 	})
 }
@@ -502,6 +522,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
+			authority_change: false,
 		},
 		disclosure: DisclosureBoundary::Home,
 		reach,
@@ -513,6 +534,8 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		kind,
 		target,
 	};
+	// A Workspace tool a saved Agent pins has its Thread tool's contract.
+	let name = crate::tool::thread_tools::current(name);
 	match name {
 		"journal_read" | "journal_search" | "journal_query" => {
 			behavior.effect = ToolEffect::ReadOnly;
@@ -528,12 +551,13 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		| "subnode_task"
 		| "subnode_add_member"
 		| "subnode_remove_member"
+		| "delete_subnode"
 		| "subnode_dissolve" => {}
 		"subnode_message" => {}
 		"task_create" => {
 			auth.flag = Some(AgentFlag::TaskCreation);
 			auth.requirements
-				.push(resource("task.create", "workspace", Workspace));
+				.push(resource("task.create", "thread", Thread));
 		}
 		"task_assign" => {
 			auth.flag = Some(AgentFlag::Delegation);
@@ -554,9 +578,9 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.requirements
 				.push(resource("artifact.create", "artifact", Task));
 		}
-		"workspace_message" => {
+		"thread_message" => {
 			auth.requirements
-				.push(resource("message.create", "workspace", Workspace));
+				.push(resource("message.create", "thread", Thread));
 		}
 		"attachment_copy" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
@@ -590,21 +614,21 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"agent_discover" => {
 			behavior.effect = ToolEffect::ReadOnly;
 		}
-		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_search" => {
+		"thread_read" | "thread_observe" | "task_wait" | "thread_search" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
 			behavior.effect = ToolEffect::ReadOnly;
 			match name {
-				"workspace_read" => {
-					behavior.fitting = Some(ResultFitting::WorkspaceRecord);
+				"thread_read" => {
+					behavior.fitting = Some(ResultFitting::ThreadRecord);
 					behavior.catch_up = true;
 					behavior.media_pending = true;
 					behavior.yields_model_media = true;
 				}
-				"workspace_observe" => {
+				"thread_observe" => {
 					behavior.fitting = Some(ResultFitting::Observation);
 					behavior.media_pending = true;
 				}
-				"workspace_wait" => behavior.continuation = Continuation::Wait,
+				"task_wait" => behavior.continuation = Continuation::Wait,
 				_ => {}
 			}
 		}
@@ -706,22 +730,43 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::Unsafe;
 			contract.disclosure = DisclosureBoundary::Local;
 		}
-		// Schedules act as the person at the root of the Run's chain (ADR 0134).
+		// Duties act as the person at the root of the Run's chain (ADR 0134).
 		// A change passes that person's Approval Mode and Approval Rules as a
 		// Tool call approval; the use case checks `schedule.create` as them.
-		"schedule_create" | "schedule_update" | "schedule_delete" => {
+		"duty_create" | "duty_update" | "duty_delete" => {
 			behavior.effect = ToolEffect::Unsafe;
 			behavior.tool_call_approval = true;
 		}
-		"schedule_list" => {
+		"duty_list" => {
 			behavior.effect = ToolEffect::ReadOnly;
+		}
+		// An Agent creates and deletes Nodes as the person at the root of its
+		// Run's chain, who must hold `node.create` (#1012, ADR 0143). A call
+		// passes that person's Approval Mode and Approval Rules as a Tool call
+		// approval. Creating a Node copies the Tenant's Catalog Approvals and
+		// their Agent subjects into the policy, and deleting one fences its
+		// admissions, so both are Authority Changes the Run must not block.
+		"node_create" | "node_delete" => {
+			behavior.effect = ToolEffect::Unsafe;
+			behavior.tool_call_approval = true;
+			behavior.authority_change = true;
+		}
+		// An event for another Node's Duty (#1013) carries data out of this
+		// Node, so the person at the root of the chain approves it like a
+		// change of their Duties. It is input there, never a requester.
+		"duty_notify" => {
+			behavior.effect = ToolEffect::Unsafe;
+			behavior.tool_call_approval = true;
+			contract.disclosure = DisclosureBoundary::External;
 		}
 		_ => return None,
 	}
 	Some(contract)
 }
 
-/// Every builtin `builtin_contract` knows; `builtin_reach` has no default.
+/// Every builtin `builtin_contract` knows under its current name; `builtin_reach` has no
+/// default. The Workspace tools saved Agents pin ([`crate::tool::thread_tools::WORKSPACE_TOOLS`])
+/// are known too, with their Thread tool's contract and Reach (#1008).
 pub const ALL_BUILTINS: &[&str] = &[
 	"journal_read",
 	"journal_search",
@@ -730,14 +775,14 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"capability_describe",
 	"capability_load",
 	"capability_unload",
-	"workspace_wait",
+	"task_wait",
 	"task_create",
 	"task_assign",
 	"artifact_publish",
-	"workspace_message",
-	"workspace_read",
-	"workspace_observe",
-	"workspace_search",
+	"thread_message",
+	"thread_read",
+	"thread_observe",
+	"thread_search",
 	"memory_recall",
 	"memory_reflect",
 	"memory_mutate",
@@ -752,6 +797,7 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"subnode_add_member",
 	"subnode_remove_member",
 	"subnode_dissolve",
+	"delete_subnode",
 	"subnode_message",
 	"human_request",
 	"connection_request",
@@ -776,10 +822,13 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"skill_list",
 	"skill_load",
 	"mcp_stdio",
-	"schedule_create",
-	"schedule_update",
-	"schedule_delete",
-	"schedule_list",
+	"duty_create",
+	"duty_update",
+	"duty_delete",
+	"duty_list",
+	"duty_notify",
+	"node_create",
+	"node_delete",
 ];
 
 #[cfg(test)]
@@ -838,10 +887,10 @@ mod tests {
 	#[test]
 	fn schedule_changes_need_a_tool_call_approval_and_stay_at_home() {
 		for (name, approval, effect) in [
-			("schedule_create", true, ToolEffect::Unsafe),
-			("schedule_update", true, ToolEffect::Unsafe),
-			("schedule_delete", true, ToolEffect::Unsafe),
-			("schedule_list", false, ToolEffect::ReadOnly),
+			("duty_create", true, ToolEffect::Unsafe),
+			("duty_update", true, ToolEffect::Unsafe),
+			("duty_delete", true, ToolEffect::Unsafe),
+			("duty_list", false, ToolEffect::ReadOnly),
 		] {
 			let contract = builtin_contract(name).unwrap();
 			assert_eq!(contract.behavior.tool_call_approval, approval, "{name}");
@@ -851,9 +900,45 @@ mod tests {
 			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
 			assert_eq!(
 				crate::tool::providers::core_provider(name),
-				Some("core.schedules@1")
+				Some("core.duties@1")
 			);
 		}
+	}
+	#[test]
+	fn node_tools_need_a_tool_call_approval_and_release_the_run_lease() {
+		for name in ["node_create", "node_delete"] {
+			// Act
+			let contract = builtin_contract(name).unwrap();
+			// Assert
+			assert!(contract.behavior.tool_call_approval, "{name}");
+			assert!(contract.behavior.authority_change, "{name}");
+			assert_eq!(contract.behavior.effect, ToolEffect::Unsafe, "{name}");
+			assert_eq!(contract.reach, ToolReach::Never, "{name}");
+			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
+			assert_eq!(
+				crate::tool::providers::core_provider(name),
+				Some("core.nodes@1")
+			);
+			let encoded = serde_json::to_value(&contract).unwrap();
+			assert_eq!(encoded["behavior"]["authority_change"], true, "{name}");
+		}
+		// Every other contract keeps its pinned digest: the flag is omitted.
+		let encoded = serde_json::to_value(builtin_contract("duty_create").unwrap()).unwrap();
+		assert!(encoded["behavior"].get("authority_change").is_none());
+	}
+
+	#[test]
+	fn a_node_event_leaves_the_node_only_with_the_persons_approval() {
+		let contract = builtin_contract("duty_notify").unwrap();
+		assert!(contract.behavior.tool_call_approval);
+		assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
+		assert_eq!(contract.disclosure, DisclosureBoundary::External);
+		// A Run that arrived through Federation never sends one.
+		assert_eq!(contract.reach, ToolReach::Never);
+		assert_eq!(
+			crate::tool::providers::core_provider("duty_notify"),
+			Some("core.duties@1")
+		);
 	}
 	#[test]
 	fn every_builtin_has_an_explicit_reach() {
@@ -880,7 +965,7 @@ mod tests {
 				"capability_describe",
 				"capability_load",
 				"capability_unload",
-				"workspace_wait"
+				"task_wait"
 			])
 		);
 		assert_eq!(
@@ -889,15 +974,17 @@ mod tests {
 				"task_create",
 				"task_assign",
 				"artifact_publish",
-				"workspace_message",
-				"workspace_read",
-				"workspace_observe",
-				"workspace_search",
+				"thread_message",
+				"thread_read",
+				"thread_observe",
+				"thread_search",
 				"memory_recall",
 				"memory_reflect",
 				"memory_mutate",
 				"file_share",
-				"attachment_copy"
+				"attachment_copy",
+				"agent_discover",
+				"task_delegate"
 			])
 		);
 		assert_eq!(
@@ -917,6 +1004,7 @@ mod tests {
 				"subnode_add_member",
 				"subnode_remove_member",
 				"subnode_dissolve",
+				"delete_subnode",
 				"subnode_message"
 			])
 		);
@@ -951,18 +1039,28 @@ mod tests {
 		assert_eq!(
 			by_reach(ToolReach::Never),
 			sorted(vec![
-				"agent_discover",
-				"task_delegate",
 				"skill_list",
 				"skill_load",
-				// UNCLASSIFIED (lead decides): held back until classified.
 				"mcp_stdio",
-				"schedule_create",
-				"schedule_update",
-				"schedule_delete",
-				"schedule_list"
+				"duty_create",
+				"duty_update",
+				"duty_delete",
+				"duty_list",
+				"duty_notify",
+				"node_create",
+				"node_delete"
 			])
 		);
+		// A pinned Workspace tool reaches what its Thread tool does (#1008).
+		for (current, former) in crate::tool::thread_tools::RENAMED {
+			assert!(!ALL_BUILTINS.contains(&former), "{former}");
+			assert_eq!(builtin_reach(former), builtin_reach(current), "{former}");
+			assert_eq!(
+				builtin_contract(former).unwrap().reach,
+				builtin_contract(current).unwrap().reach,
+				"{former}"
+			);
+		}
 		// A name outside the table has neither a Reach nor a contract.
 		assert_eq!(builtin_reach("memory_write"), None);
 		assert!(ToolReach::Execution.listable());
@@ -1152,9 +1250,9 @@ mod tests {
 	#[test]
 	fn subnode_model_media_keeps_the_area_needed_for_authorization() {
 		let file = uuid::Uuid::new_v4();
-		let workspace = uuid::Uuid::new_v4();
+		let thread = uuid::Uuid::new_v4();
 		let area = uuid::Uuid::new_v4();
-		let input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input","workspace_id":workspace,"area_id":area});
+		let input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input","thread_id":thread,"area_id":area});
 		let output = serde_json::json!({"status":"completed","metadata":{"file_id":file}});
 		let selected = builtin_contract("file_read")
 			.unwrap()
@@ -1163,7 +1261,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(
 			serde_json::to_value(selected).unwrap(),
-			serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","workspace_id":workspace,"area_id":area})
+			serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","thread_id":thread,"area_id":area})
 		);
 		let old_input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input"});
 		let old = builtin_contract("file_read")
@@ -1181,7 +1279,7 @@ mod tests {
 		// Admitted Runs pin `provider_contract_digest` over these bytes.
 		let contract = builtin_contract("workspace_read")
 			.unwrap()
-			.pinned(PINNED_WORKSPACE_READ_DIGEST)
+			.pinned(PINNED_THREAD_READ_DIGEST)
 			.unwrap()
 			.unwrap();
 		assert_eq!(
@@ -1190,11 +1288,11 @@ mod tests {
 		);
 		assert_eq!(
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
-			PINNED_WORKSPACE_READ_DIGEST
+			PINNED_THREAD_READ_DIGEST
 		);
 	}
 	#[test]
-	fn admitted_workspace_reader_descriptor_keeps_its_original_contract() {
+	fn admitted_thread_reader_descriptor_keeps_its_original_contract() {
 		let identity =
 			crate::registry::bindings::QualifiedRef::builtin("aidash://node", "workspace_read");
 		let descriptor =
@@ -1218,7 +1316,7 @@ mod tests {
 		assert_eq!(current.pinned(&old.digest().unwrap()).unwrap(), Some(old));
 	}
 	#[test]
-	fn workspace_image_selection_requires_the_exact_returned_file_version() {
+	fn thread_image_selection_requires_the_exact_returned_file_version() {
 		let behavior = builtin_contract("workspace_read").unwrap().behavior;
 		let id = uuid::Uuid::from_u128(1);
 		let area = uuid::Uuid::from_u128(2);
@@ -1356,7 +1454,7 @@ mod tests {
 				.tenant_tool_call()
 		);
 	}
-	const PINNED_WORKSPACE_READ_DIGEST: &str =
+	const PINNED_THREAD_READ_DIGEST: &str =
 		"sha256:5ba171e3a421d6ff3f7d254e152b1efbc019e936f77d65e7fc140197b5f66465";
 	#[test]
 	fn admitted_read_only_definitions_keep_their_approval_gated_contract() {

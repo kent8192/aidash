@@ -356,7 +356,7 @@ pub struct Home {
 	pub(crate) authority: Option<crate::authorization::execution::WorkerAuthority>,
 	/// The authority a Run executing for another Home holds on this Node (ADR 0139): its mapped
 	/// subject within the Remote Grant. It acts only on this Node's own tables, so core tools and
-	/// Subnodes use it; every call that would act on the Home's Workspace still goes to the Home
+	/// Subnodes use it; every call that would act on the Home's Thread still goes to the Home
 	/// as a command, so it never fills `authority`.
 	pub(crate) receiver: Option<crate::authorization::execution::WorkerAuthority>,
 }
@@ -489,19 +489,27 @@ impl Home {
 		self.authority.as_ref().or(self.receiver.as_ref())
 	}
 	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
-		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
-			.await?
-			.is_some()
-		{
-			return Err(Error::Invalid(
-				"a Run started by a Remote Grant is limited to one hop and cannot discover agents"
-					.into(),
-			));
-		}
 		let Some(authority) = &self.authority else {
 			return Err(Error::Forbidden);
 		};
 		authority.discover(&self.federation, search).await
+	}
+	/// Discovery as a model sees it. A Run started by a Remote Grant discovers
+	/// through its Home, the Node every Task it hands on is granted from
+	/// (#654, ADR 0109); only cards come back.
+	pub async fn discover_cards(
+		&self,
+		search: &Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return self.command("discover", json!({"search": search})).await;
+		}
+		Ok(aidash_domain::federation::DiscoveryCards::from(
+			&self.discover(search).await?,
+		))
 	}
 	pub fn owner(&self) -> String {
 		self.run
@@ -648,7 +656,7 @@ impl Home {
 	) -> Result<Option<T>> {
 		self.command(op, data).await.map(Some)
 	}
-	pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
+	pub async fn snapshot(&self) -> Result<ThreadSnapshot> {
 		let scope = self.tenancy().await?;
 		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
 			.await?
@@ -657,15 +665,15 @@ impl Home {
 			return self.command("snapshot", json!({})).await;
 		}
 		if let Some(authority) = &self.authority {
-			authority.snapshot(self.run.workspace_id).await
+			authority.snapshot(self.run.thread_id).await
 		} else if self.local() {
 			self.federation
 				.store
-				.snapshot(&scope, self.run.workspace_id)
+				.snapshot(&scope, self.run.thread_id)
 				.await
 		} else {
-			let mut snapshot = WorkspaceSnapshot {
-				workspace: self.command("snapshot_workspace", json!({})).await?,
+			let mut snapshot = ThreadSnapshot {
+				thread: self.command("snapshot_thread", json!({})).await?,
 				tasks: self.snapshot_collection("tasks").await?,
 				artifacts: self.snapshot_collection("artifacts").await?,
 				events: self.snapshot_collection("events").await?,
@@ -685,11 +693,11 @@ impl Home {
 			Ok(snapshot)
 		}
 	}
-	/// The Workspace view the model's observe tool reads: every event.
+	/// The Thread view the model's observe tool reads: every event.
 	pub async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		self.observe(offset, limit, None).await
 	}
-	/// The Workspace view a Run's step pins as evidence. It leaves out the
+	/// The Thread view a Run's step pins as evidence. It leaves out the
 	/// Run's own events, which its history already holds and which every step
 	/// renews, so the evidence and its page counts stay put (#942).
 	pub async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
@@ -703,7 +711,7 @@ impl Home {
 	) -> Result<Value> {
 		if let Some(authority) = &self.authority {
 			return authority
-				.workspace_observation(self.run.workspace_id, offset, limit, exclude_run)
+				.workspace_observation(self.run.thread_id, offset, limit, exclude_run)
 				.await;
 		}
 		if !self.local() {
@@ -735,7 +743,7 @@ impl Home {
 	{
 		if let Some(authority) = &self.authority {
 			return authority
-				.workspace_observation_fitted(self.run.workspace_id, offset, limit, fits)
+				.workspace_observation_fitted(self.run.thread_id, offset, limit, fits)
 				.await;
 		}
 		if !self.local() {
@@ -770,22 +778,20 @@ impl Home {
 		if let Some(authority) = &self.authority {
 			let id = id
 				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
-			return authority
-				.workspace_record(self.run.workspace_id, kind, id)
-				.await;
+				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
+			return authority.thread_record(self.run.thread_id, kind, id).await;
 		}
 		if self.local() {
 			let id = id
 				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			return self
 				.federation
 				.store
-				.workspace_record(&scope, self.run.workspace_id, kind, id)
+				.thread_record(&scope, self.run.thread_id, kind, id)
 				.await;
 		}
-		self.command("workspace_record", json!({"kind":kind,"id":id}))
+		self.command("thread_record", json!({"kind":kind,"id":id}))
 			.await
 	}
 	pub async fn read_record_chunk(
@@ -799,9 +805,9 @@ impl Home {
 		if let Some(authority) = &self.authority {
 			let id = id
 				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			let record = authority
-				.workspace_record(self.run.workspace_id, kind, id)
+				.thread_record(self.run.thread_id, kind, id)
 				.await?;
 			return crate::context::observation::chunk_record(
 				record,
@@ -814,11 +820,11 @@ impl Home {
 		if self.local() {
 			let id = id
 				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			let record = self
 				.federation
 				.store
-				.workspace_record(&scope, self.run.workspace_id, kind, id)
+				.thread_record(&scope, self.run.thread_id, kind, id)
 				.await?;
 			return crate::context::observation::chunk_record(
 				record,
@@ -830,16 +836,16 @@ impl Home {
 		}
 		let id = id
 			.parse::<Uuid>()
-			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 		self.command(
-			"workspace_record_chunk",
+			"thread_record_chunk",
 			json!({"kind":kind,"id":id,"offset":offset,"max_chars":max_chars.min(16000)}),
 		)
 		.await
 	}
 	pub(crate) async fn read_subnode_record_chunk(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: &str,
 		offset: usize,
@@ -847,11 +853,11 @@ impl Home {
 	) -> Result<Value> {
 		let id = id
 			.parse::<Uuid>()
-			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
-		// The creating Run, remote or not, reads its own Subnode's Workspace on this Node.
+			.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
+		// The creating Run, remote or not, reads its own Subnode's Thread on this Node.
 		let authority = self.tool_authority().ok_or(Error::Forbidden)?;
 		let record = authority
-			.subnode_workspace_record(self.execution_run()?, workspace, kind, id)
+			.subnode_thread_record(self.execution_run()?, thread, kind, id)
 			.await?;
 		crate::context::observation::chunk_record(record, kind, &id.to_string(), offset, max_chars)
 	}
@@ -859,17 +865,17 @@ impl Home {
 		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
-				.workspace_child_summary(self.run.workspace_id, parent)
+				.thread_child_summary(self.run.thread_id, parent)
 				.await;
 		}
 		if self.local() {
 			return self
 				.federation
 				.store
-				.child_task_summary(&scope, self.run.workspace_id, parent)
+				.child_task_summary(&scope, self.run.thread_id, parent)
 				.await;
 		}
-		self.command("workspace_children", json!({"parent_id":parent}))
+		self.command("thread_children", json!({"parent_id":parent}))
 			.await
 	}
 	async fn snapshot_collection<T: DeserializeOwned>(&self, collection: &str) -> Result<Vec<T>> {
@@ -1051,6 +1057,7 @@ impl Home {
 		task: Uuid,
 		policy: &str,
 		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<crate::generation::Assignment> {
 		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
 		authority
@@ -1060,6 +1067,7 @@ impl Home {
 				task,
 				policy,
 				reason,
+				draft,
 			)
 			.await
 	}
@@ -1068,7 +1076,7 @@ impl Home {
 		key: &str,
 		command: &aidash_application::subnodes::Command,
 	) -> Result<Value> {
-		// The Subnode, its Workspace and its members live on this Node, so a remote creator acts
+		// The Subnode, its Thread and its members live on this Node, so a remote creator acts
 		// under its receiver authority, never the Home's (ADR 0110, ADR 0139).
 		let authority = self.tool_authority().ok_or(Error::Forbidden)?;
 		authority
@@ -1095,13 +1103,7 @@ impl Home {
 		if self.local() {
 			self.federation
 				.store
-				.create_task(
-					&scope,
-					self.run.workspace_id,
-					input,
-					&self.owner(),
-					Some(key),
-				)
+				.create_task(&scope, self.run.thread_id, input, &self.owner(), Some(key))
 				.await
 		} else {
 			self.command("create_task", json!({"key":key,"task":input}))
@@ -1127,15 +1129,8 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
-		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
-			.await?
-			.is_some()
-		{
-			return Err(Error::Invalid(
-				"a Run started by a Remote Grant is limited to one hop and cannot delegate tasks"
-					.into(),
-			));
-		}
+		// A Run started by a Remote Grant has no local authority: its Home owns
+		// the Task and hands it on, to its own Node or to any other (#654).
 		let _scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
@@ -1253,7 +1248,7 @@ impl Home {
 		if self.local() {
 			self.federation
 				.store
-				.message(&scope, self.run.workspace_id, "human", content, Some(key))
+				.message(&scope, self.run.thread_id, "human", content, Some(key))
 				.await
 		} else {
 			self.command::<Value>("human_message", json!({"key":key,"content":content}))

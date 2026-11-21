@@ -16,7 +16,7 @@ pub(crate) fn page(rows: Vec<(Uuid, Value)>, after: Option<Uuid>) -> Result<Snap
 		if size + item_size > 3_145_728 {
 			if page.items.is_empty() {
 				return Err(Error::Invalid(
-					"individual workspace resource exceeds the 3 MiB federation page limit".into(),
+					"individual thread resource exceeds the 3 MiB federation page limit".into(),
 				));
 			}
 			page.next = last;

@@ -41,11 +41,8 @@ pub trait GenerationCreationScope: Send {
 	fn subjects(&self) -> &[String];
 	fn bundle(&self) -> &PolicyBundle;
 	fn node_id(&self) -> &str;
-	/// The address of the Node the Workspace belongs to.
-	async fn workspace_node(
-		&mut self,
-		workspace: Uuid,
-	) -> Result<aidash_domain::nodes::NodeAddress>;
+	/// The address of the Node the Thread belongs to.
+	async fn thread_node(&mut self, thread: Uuid) -> Result<aidash_domain::nodes::NodeAddress>;
 	fn now(&self) -> DateTime<Utc>;
 	fn request_id(&self) -> Uuid;
 	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
@@ -55,7 +52,7 @@ pub trait GenerationCreationScope: Send {
 	async fn allocate(&mut self, policy: &Policy, allowances: &Allowances) -> Result<()>;
 	async fn budget(&mut self, id: Uuid, policy: &Policy, allowances: &Allowances) -> Result<()>;
 	async fn history(&mut self, id: Uuid, status: &str, reason: &str) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn visible(&mut self, job: &Request) -> Result<bool>;
 	/// The Approval Mode and Approval Rules of the person the chain starts at.
 	/// `None` unless that person is an enabled User subject of this Tenant
@@ -77,7 +74,7 @@ pub trait GenerationAssignmentScope: GenerationCreationScope {
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<bool>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
@@ -89,6 +86,13 @@ pub trait GenerationAssignmentScope: GenerationCreationScope {
 	) -> Result<Option<(String, String, Vec<String>)>>;
 	async fn catalog(&mut self, search: &Search) -> Result<Vec<Entry>>;
 	async fn generated(&mut self, entry: &Entry) -> Result<bool>;
+	/// Whether a generated `entry` is reused here: a live, local agent that a
+	/// chain of this scope's root person generated (#1012 decision 49). The
+	/// adapter share-locks its generation request until the transaction ends,
+	/// so the agent is not retired while this assignment commits.
+	async fn reusable(&mut self, _entry: &Entry) -> Result<bool> {
+		Ok(false)
+	}
 	async fn delegate(&mut self, task_id: Uuid, agent: &EntityRef) -> Result<Delegation>;
 }
 #[async_trait]

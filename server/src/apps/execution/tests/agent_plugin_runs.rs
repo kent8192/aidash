@@ -301,16 +301,16 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 	}
 
 	let token = common::subject_credential(&f.store, "acme", "alice").await;
-	let (status, workspace) = request(
+	let (status, thread) = request(
 		&app,
 		&token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Plugin work","goal":"Use the docs server"}),
+		"/api/threads",
+		json!({"title":"Plugin work"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
-	// A Workspace created without a conversation has a dedicated space before
+	assert_eq!(status, 200, "{thread}");
+	// A Thread created without a conversation has a dedicated space before
 	// its Run reaches worker admission.
 	let node = aidash_domain::nodes::NodeName::derived("acme");
 	let (status, spaces) = request(
@@ -333,10 +333,7 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 		&app,
 		&token,
 		"POST",
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Research","description":"Look it up, then update it"}),
 	)
 	.await;
@@ -396,7 +393,7 @@ async fn events(world: &World, kind: &str) -> Vec<Value> {
 	world
 		.f
 		.store
-		.events(&TEST_FIXTURE, 0, Some(world.run.workspace_id), 1000)
+		.events(&TEST_FIXTURE, 0, Some(world.run.thread_id), 1000)
 		.await
 		.unwrap()
 		.into_iter()
@@ -551,7 +548,7 @@ async fn a_run_pins_the_plugin_tools_asks_before_the_tool_that_is_not_read_only_
 	};
 
 	let waiting = step_until(&harness, &world, |run| awaited_tool_call(run).is_some()).await;
-	let pinned = events(&world, "run.plugin_tools_pinned").await;
+	let pinned = events(&world, "execution.plugin_tools_pinned").await;
 	assert_eq!(pinned.len(), 1, "{pinned:?}");
 	assert_eq!(pinned[0]["skipped"], json!([]));
 	assert_eq!(
@@ -678,7 +675,7 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 
 	let finished = step_until(&harness, &world, |run| run.phase().as_str() == "COMPLETED").await;
 
-	let pinned = events(&world, "run.plugin_tools_pinned").await;
+	let pinned = events(&world, "execution.plugin_tools_pinned").await;
 	assert_eq!(pinned.len(), 1, "{pinned:?}");
 	assert_eq!(
 		pinned[0]["skipped"],
@@ -1142,7 +1139,7 @@ async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_comm
 				.api_http
 				.request(
 					"POST".parse().unwrap(),
-					&format!("/api/runs/{}/{endpoint}", world.run.id),
+					&format!("/api/executions/{}/{endpoint}", world.run.id),
 				)
 				.header(
 					"Authorization",
@@ -1168,7 +1165,7 @@ async fn a_paused_or_cancelled_run_ends_its_retained_sessions_after_control_comm
 				&world.app,
 				&world.token,
 				"POST",
-				&format!("/api/runs/{}/{endpoint}", world.run.id),
+				&format!("/api/executions/{}/{endpoint}", world.run.id),
 				json!({"action":action}),
 			)
 			.await
@@ -1693,7 +1690,7 @@ async fn worker_loss_during_a_live_callback_reconciles_the_original_send_once(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_api_binds_a_selected_existing_scratch_space(
+async fn thread_api_binds_a_selected_existing_scratch_space(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: ApplicationFixture,
@@ -1722,19 +1719,19 @@ async fn workspace_api_binds_a_selected_existing_scratch_space(
 			.clone(),
 	)
 	.unwrap();
-	let (status, workspace) = request(
+	let (status, thread) = request(
 		&world.app,
 		&world.token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Reuse","goal":"Use existing space","scratch_space_id":selected}),
+		"/api/threads",
+		json!({"title":"Reuse","scratch_space_id":selected}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
-	let id: uuid::Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+	assert_eq!(status, 200, "{thread}");
+	let id: uuid::Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
 	let query = Query::select()
 		.column(Alias::new("scratch_space_id"))
-		.from(Alias::new("workspaces"))
+		.from(Alias::new("threads"))
 		.and_where(Expr::col("id").eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
 	let (bound,): (uuid::Uuid,) = sqlx::query_as(&query)

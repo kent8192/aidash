@@ -27,7 +27,22 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain([SKILL_ASSET_READ, TASK_ASSIGN])
 		.chain(SUBNODE_TOOLS.iter().copied())
 		.chain(JOURNAL_TOOLS.iter().copied())
+		.chain(NODE_TOOLS.iter().copied())
+		.chain(NOTIFY_TOOLS.iter().copied())
+		// The Workspace tools the Thread tools replace (#1008): saved Agent
+		// versions pin them, so they stay declared with their original bytes.
+		.chain(aidash_domain::tool::thread_tools::WORKSPACE_TOOLS)
 }
+
+/// Sending an event to another Node's Duty (#1013). An Agent definition binds
+/// it explicitly; it is not a default tool, so no saved Agent changes.
+pub const NOTIFY_TOOLS: &[&str] = &["duty_notify"];
+
+/// The `core.nodes@1` operations (#1012, ADR 0143). An Agent definition binds
+/// them explicitly, like the Subnode tools: they are not default tools, so
+/// they cost no request bytes for the many Agents whose root person cannot
+/// create Nodes.
+pub const NODE_TOOLS: &[&str] = &["node_create", "node_delete"];
 
 /// Journal retrieval is seeded for later exposure after offloading.
 pub const JOURNAL_TOOLS: &[&str] = aidash_domain::context::journal_query::TOOLS;
@@ -47,6 +62,8 @@ pub const SUBNODE_TOOLS: &[&str] = &[
 	"subnode_task",
 	"subnode_add_member",
 	"subnode_remove_member",
+	"delete_subnode",
+	// The former name of `delete_subnode`, kept so pinned Agents resolve it.
 	"subnode_dissolve",
 	"subnode_message",
 ];
@@ -192,7 +209,10 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 		.filter(|entry| {
 			matches!(
 				entry.id.as_str(),
-				"aidash.memory_mutate" | "aidash.subnode_task"
+				"aidash.memory_mutate"
+					| "aidash.subnode_task"
+					| "aidash.task_assign"
+					| "aidash.workspace_wait"
 			)
 		})
 		.collect::<Vec<_>>();
@@ -204,6 +224,22 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 			}
 			"aidash.subnode_task" => {
 				json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":{"type":"string"},"title":{"type":"string"},"request":{"type":"string"}},"additionalProperties":false})
+			}
+			// Before free-form generation added `draft` (#1012).
+			"aidash.task_assign" => {
+				entry.description = std::collections::BTreeMap::from([(
+					"en".into(),
+					"Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.".into(),
+				)]);
+				json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":{"type":"string"},"policy_id":{"type":"string"},"reason":{"type":"string"}},"additionalProperties":false})
+			}
+			// Before Duty Triggers could be booked and waits reached 30 days (#1011).
+			"aidash.workspace_wait" => {
+				entry.description = std::collections::BTreeMap::from([(
+					"en".into(),
+					"Wait without inference for a Task you created or delegated to finish, block or fail, or for a message or person. The default is 60 minutes while your Tasks remain unfinished and 5 minutes otherwise; the maximum is 60 minutes. The result summarizes changes. For remote Tasks, use workspace_observe to read details after a change.".into(),
+				)]);
+				json!({"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":3600}},"additionalProperties":false})
 			}
 			_ => unreachable!(),
 		};
@@ -410,6 +446,8 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.task_assign"
+				| "aidash.workspace_wait"
 		) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(

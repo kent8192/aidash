@@ -20,68 +20,47 @@ impl SemanticEntries {
 	pub async fn configure(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		input: ConfigureIndex,
 	) -> Result<Index> {
 		let f = self.runtime.clone();
-		service::configure(&f.store, &actor, workspace, input).await
+		service::configure(&f.store, &actor, thread, input).await
 	}
-	pub async fn index(&self, actor: Actor, workspace: Uuid) -> Result<Index> {
+	pub async fn index(&self, actor: Actor, thread: Uuid) -> Result<Index> {
 		let f = self.runtime.clone();
-		service::get_index(&f.store, &actor, workspace).await
+		service::get_index(&f.store, &actor, thread).await
 	}
-	pub async fn put(&self, actor: Actor, workspace: Uuid, input: PutEntry) -> Result<Entry> {
+	pub async fn put(&self, actor: Actor, thread: Uuid, input: PutEntry) -> Result<Entry> {
 		let f = self.runtime.clone();
-		service::put(&f.store, &actor, workspace, input).await
+		service::put(&f.store, &actor, thread, input).await
 	}
 	pub async fn entries(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<crate::apps::knowledge::serializers::contracts::EntryList> {
 		let f = self.runtime.clone();
-		service::entries_counted(&f.store, &actor, workspace).await
+		service::entries_counted(&f.store, &actor, thread).await
 	}
 	pub async fn delete(
 		&self,
 		actor: Actor,
-		(workspace, id): (Uuid, Uuid),
+		(thread, id): (Uuid, Uuid),
 		input: Revision,
 	) -> Result<Entry> {
 		let f = self.runtime.clone();
-		service::change(
-			&f.store,
-			&actor,
-			workspace,
-			id,
-			input.expected_revision,
-			true,
-		)
-		.await
+		service::change(&f.store, &actor, thread, id, input.expected_revision, true).await
 	}
 	pub async fn reindex(
 		&self,
 		actor: Actor,
-		(workspace, id): (Uuid, Uuid),
+		(thread, id): (Uuid, Uuid),
 		input: Revision,
 	) -> Result<Entry> {
 		let f = self.runtime.clone();
-		service::change(
-			&f.store,
-			&actor,
-			workspace,
-			id,
-			input.expected_revision,
-			false,
-		)
-		.await
+		service::change(&f.store, &actor, thread, id, input.expected_revision, false).await
 	}
-	pub async fn search(
-		&self,
-		actor: Actor,
-		workspace: Uuid,
-		input: Search,
-	) -> Result<SearchResult> {
+	pub async fn search(&self, actor: Actor, thread: Uuid, input: Search) -> Result<SearchResult> {
 		let f = self.runtime.clone();
 		// Reserve effect/audit capacity independently from API revokers waiting on
 		// this search's credential and policy lease.
@@ -91,24 +70,24 @@ impl SemanticEntries {
 			.await
 			.expect("search capacity stays open");
 		let worker = f.for_workers().await?;
-		let result = service::search(&worker.store, &actor, workspace, input).await;
+		let result = service::search(&worker.store, &actor, thread, input).await;
 		worker.store.pool.close().await;
 		worker.store.control_pool.close().await;
 		result
 	}
-	pub async fn history(&self, actor: Actor, workspace: Uuid) -> Result<Vec<History>> {
+	pub async fn history(&self, actor: Actor, thread: Uuid) -> Result<Vec<History>> {
 		let f = self.runtime.clone();
-		service::history_list(&f.store, &actor, workspace).await
+		service::history_list(&f.store, &actor, thread).await
 	}
-	/// The Workspace's cleanup state, under `semantic.read` for a Subject.
-	pub async fn cleanup(&self, actor: Actor, workspace: Uuid) -> Result<CleanupStatus> {
+	/// The Thread's cleanup state, under `semantic.read` for a Subject.
+	pub async fn cleanup(&self, actor: Actor, thread: Uuid) -> Result<CleanupStatus> {
 		let store = &self.runtime.store;
-		let mut lease = Lease::begin(store, &actor, workspace).await?;
+		let mut lease = Lease::begin(store, &actor, thread).await?;
 		let result = async {
 			if lease.access().is_some() {
-				lease.workspace(workspace, "semantic.read").await?;
+				lease.thread(thread, "semantic.read").await?;
 			}
-			cleanup::status(&mut **lease.tx(), workspace).await
+			cleanup::status(&mut **lease.tx(), thread).await
 		}
 		.await;
 		lease.finish(result).await

@@ -87,7 +87,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;

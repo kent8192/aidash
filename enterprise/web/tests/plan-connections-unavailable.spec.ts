@@ -64,7 +64,7 @@ test("hosted bundles omit personal Plan entrypoints and never call Plan endpoint
             skills: [],
             schema: {},
           })),
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
@@ -72,7 +72,7 @@ test("hosted bundles omit personal Plan entrypoints and never call Plan endpoint
           conversations: [],
           human_requests: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,

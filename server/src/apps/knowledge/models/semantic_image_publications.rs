@@ -18,11 +18,11 @@ pub struct SemanticImagePublication {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "semantic_image_publications_workspace_fkey",
+		db_constraint = "semantic_image_publications_thread_fkey",
 		db_index = false,
 		on_delete = Cascade
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field]
 	pub area_id: Uuid,
 	#[field]

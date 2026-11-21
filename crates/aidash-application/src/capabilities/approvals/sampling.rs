@@ -127,7 +127,7 @@ pub async fn request(
 		.await?;
 	scope
 		.event(
-			run.workspace_id,
+			run.thread_id,
 			"capability.approval_requested",
 			json!({"id":id,"run_id":run.id,"kind":SAMPLING,"status":state,"targets":record.data["targets"]}),
 		)

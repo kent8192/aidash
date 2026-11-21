@@ -44,31 +44,30 @@ pub async fn poll_events(
 		scope.begin_row();
 		let allowed = if event.kind.starts_with("marketplace.") {
 			visible(scope, &event, node).await?
-		} else if event.workspace_id.is_none()
+		} else if event.thread_id.is_none()
 			&& (event.kind.starts_with("provider_credential.")
 				|| event.kind.starts_with("provider_credential_binding."))
 		{
 			// Global Tenant metadata still rechecks current Tenant and read policy
-			// at handoff, just as workspace events do.
-			scope.workspace_event_visible(&event).await?
-		} else if let Some(workspace) = event.workspace_id {
-			scope.workspace_allowed(workspace, "workspace.read").await?
-				&& scope
-					.workspace_allowed(workspace, "workspace.events")
-					.await? && scope.workspace_event_visible(&event).await?
+			// at handoff, just as thread events do.
+			scope.thread_event_visible(&event).await?
+		} else if let Some(thread) = event.thread_id {
+			scope.thread_allowed(thread, "thread.read").await?
+				&& scope.thread_allowed(thread, "thread.events").await?
+				&& scope.thread_event_visible(&event).await?
 		} else {
 			false
 		};
 		// This is the second filter of a read: an event the first one passed can
 		// meet a Node that has since stopped answering (#770).
 		let silence = scope.take_row_silence();
-		if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, allowed) {
+		if unconfirmed.settle_in(silence, Kind::Event, event.thread_id, allowed) {
 			output.push(recipient_event(event));
 		}
 	}
 	Ok((output, unconfirmed))
 }
-/// State already includes authorized workspace events; Marketplace events still
+/// State already includes authorized thread events; Marketplace events still
 /// require current distribution authority and recipient projection.
 pub async fn state_events(
 	scope: &mut dyn EventScope,

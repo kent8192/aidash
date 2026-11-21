@@ -102,7 +102,7 @@ pub(super) async fn viable(
 		}
 		match units::current(
 			lease,
-			unit.bank.workspace,
+			unit.bank.thread,
 			sources,
 			policy.bounds.max_graph_visits,
 		)

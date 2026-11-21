@@ -96,7 +96,7 @@ impl Models {
 		let record: aidash_domain::Run = crate::database::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -106,7 +106,7 @@ impl Models {
 				.in_scope(&self.store.run_tenancy(run).await?),
 		)
 		.await?;
-		if record.home_node != self.bank.home || record.workspace_id != self.bank.workspace {
+		if record.home_node != self.bank.home || record.thread_id != self.bank.thread {
 			return Err(Error::Forbidden);
 		}
 		if let Some(mut parent) =
@@ -221,7 +221,7 @@ impl Models {
 			&mut accesses,
 			&self.store,
 			aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
-			self.bank.workspace,
+			self.bank.thread,
 			config,
 			text,
 			origin,

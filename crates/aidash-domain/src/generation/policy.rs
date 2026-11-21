@@ -23,12 +23,110 @@ pub struct Permissions {
 #[schemars(rename = "GenerationLimits")]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
-	pub max_agents: i64,
-	pub max_concurrent: i64,
-	pub max_depth: i32,
-	pub token_budget: i64,
-	pub tokens_per_agent: i64,
-	pub lifetime_seconds: i64,
+	/// How many agents the policy may generate in all; absent means no cap
+	/// (#1012, ADR 0143).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_agents: Option<i64>,
+	/// How many may be active at once; absent means no cap.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_concurrent: Option<i64>,
+	/// How deeply generated agents may generate in turn; absent means no cap.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_depth: Option<i32>,
+	/// How many tokens the policy's generated agents may use in all; absent
+	/// means no token limit. Money Budgets are the limit then (#1012
+	/// decision 41, ADR 0143).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub token_budget: Option<i64>,
+	/// How many tokens one generated agent may use; absent means no token
+	/// limit. Required with `token_budget`, which it is reserved against.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tokens_per_agent: Option<i64>,
+	/// How long a generated agent lasts; absent means as long as its Task, with
+	/// no maximum.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub lifetime_seconds: Option<i64>,
+}
+
+/// The lifetime recorded for a generated agent whose policy names none: one
+/// hundred years, so it lasts as long as its Task.
+pub const UNBOUNDED_LIFETIME_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
+
+/// The token limit recorded for a generated agent whose policy names none:
+/// more than any policy may set (10^15), and still exact as a JSON number.
+/// A request recorded with it reserved nothing of its policy's tokens.
+pub const UNBOUNDED_TOKENS: i64 = 1_000_000_000_000_000;
+
+/// What a refund of `refund` tokens to a request recorded with `token_limit`
+/// gives back to its policy: all of it, unless the request reserved nothing
+/// of the policy because it had no token limit. Every policy refund path
+/// (release at the end, a late inference settlement, a remote settlement)
+/// passes through this, so an unbounded request never inflates the tokens
+/// left for bounded ones. A recorded `token_limit` is the unbounded limit
+/// exactly when nothing was reserved: policies cap `tokens_per_agent` far
+/// below it.
+pub fn policy_refund(token_limit: i64, refund: i64) -> i64 {
+	if token_limit >= UNBOUNDED_TOKENS {
+		0
+	} else {
+		refund
+	}
+}
+
+impl Limits {
+	/// The lifetime to record for a generated agent.
+	pub fn lifetime(&self) -> i64 {
+		self.lifetime_seconds.unwrap_or(UNBOUNDED_LIFETIME_SECONDS)
+	}
+
+	/// The token limit to record for a generated agent.
+	pub fn agent_token_limit(&self) -> i64 {
+		self.tokens_per_agent.unwrap_or(UNBOUNDED_TOKENS)
+	}
+
+	/// What one generated agent reserves of the policy's tokens: nothing
+	/// when the policy sets no per-agent limit.
+	pub fn reserved_tokens(&self) -> i64 {
+		self.tokens_per_agent.unwrap_or(0)
+	}
+}
+
+/// A Generation policy's free-form mode (#1012, ADR 0143): the Agent writes the
+/// instructions and picks components within what a person set here, instead of
+/// copying the template unchanged. The template still supplies everything the
+/// draft does not name.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "GenerationFreeForm")]
+#[serde(deny_unknown_fields)]
+pub struct FreeForm {
+	/// Any tool, Skill or model already Catalog-approved for the Node may be
+	/// picked; the Catalog Approval checks still run on every pick.
+	#[serde(default)]
+	pub any_approved: bool,
+	/// Otherwise only these.
+	#[serde(default)]
+	pub components: Vec<EntityRef>,
+}
+
+impl FreeForm {
+	pub fn allows(&self, reference: &EntityRef) -> bool {
+		self.any_approved || self.components.contains(reference)
+	}
+}
+
+/// What an Agent writes for a free-form generated agent.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "GenerationDraft")]
+#[serde(deny_unknown_fields)]
+pub struct Draft {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub name: Option<String>,
+	pub instructions: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub model: Option<EntityRef>,
+	/// Tools and Skills, each bound under its own id.
+	#[serde(default)]
+	pub components: Vec<EntityRef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -53,6 +151,8 @@ pub struct Spec {
 	pub approval_required: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub embedding: Option<Embedding>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub free_form: Option<FreeForm>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -87,27 +187,23 @@ pub struct Allowances {
 	pub embedding_calls: i64,
 }
 impl Policy {
-	pub fn reservation(
-		&self,
-		active: i64,
-		depth: i32,
-		subject_count: usize,
-	) -> crate::Result<Allowances> {
+	pub fn reservation(&self, active: i64, depth: i32) -> crate::Result<Allowances> {
 		let limits = &self.spec.limits;
 		let embedding_calls = self.spec.embedding_limits().map_or(0, |(calls, _)| calls);
 		if self.spec.embedding_limits().is_some_and(|(calls, budget)| {
 			self.allocated_embedding_calls
 				.checked_add(calls)
 				.is_none_or(|n| n > budget)
-		}) || self.generated_count >= limits.max_agents
-			|| active >= limits.max_concurrent
-			|| depth > limits.max_depth
-			|| subject_count >= 32
-			|| self
-				.allocated_tokens
-				.checked_add(limits.tokens_per_agent)
-				.is_none_or(|n| n > limits.token_budget)
-		{
+		}) || limits
+			.max_agents
+			.is_some_and(|max| self.generated_count >= max)
+			|| limits.max_concurrent.is_some_and(|max| active >= max)
+			|| limits.max_depth.is_some_and(|max| depth > max)
+			|| limits.token_budget.is_some_and(|budget| {
+				self.allocated_tokens
+					.checked_add(limits.reserved_tokens())
+					.is_none_or(|n| n > budget)
+			}) {
 			return Err(crate::Error::Conflict(
 				"generation count, concurrency, depth, token or embedding budget exceeded".into(),
 			));
@@ -149,5 +245,76 @@ mod removed_compaction_tests {
 		assert!(serde_json::from_value::<Spec>(input.clone()).is_err());
 		input.as_object_mut().unwrap().remove("summary");
 		assert!(serde_json::from_value::<Spec>(input).is_ok());
+	}
+}
+
+#[cfg(test)]
+mod token_limit_tests {
+	use super::*;
+	use rstest::rstest;
+
+	fn policy(token_budget: Option<i64>, tokens_per_agent: Option<i64>, allocated: i64) -> Policy {
+		let spec: Spec = serde_json::from_value(serde_json::json!({
+			"enabled":true,
+			"template":{"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{}},
+			"permissions":{},
+			"limits":{"token_budget":token_budget,"tokens_per_agent":tokens_per_agent},
+			"approval_required":false
+		}))
+		.unwrap();
+		Policy {
+			tenant: "acme".into(),
+			id: "policy".into(),
+			revision: 1,
+			spec,
+			generated_count: 3,
+			allocated_tokens: allocated,
+			allocated_embedding_calls: 0,
+		}
+	}
+
+	/// Without token limits a policy generates past what an old token budget
+	/// allowed; Budgets limit its spend instead (#1012 decision 41).
+	#[rstest]
+	#[case::no_token_limits(None, None, 1_000_000_000, true)]
+	#[case::per_agent_only(None, Some(1000), 1_000_000_000, true)]
+	#[case::within_the_budget(Some(3000), Some(1000), 2000, true)]
+	#[case::past_the_budget(Some(3000), Some(1000), 2001, false)]
+	fn a_token_budget_limits_generation_only_when_set(
+		#[case] token_budget: Option<i64>,
+		#[case] tokens_per_agent: Option<i64>,
+		#[case] allocated: i64,
+		#[case] allowed: bool,
+	) {
+		// Act
+		let reservation = policy(token_budget, tokens_per_agent, allocated).reservation(0, 1);
+		// Assert
+		assert_eq!(reservation.is_ok(), allowed);
+	}
+
+	#[rstest]
+	#[case::bounded(200_000, 70, 70)]
+	#[case::unbounded(UNBOUNDED_TOKENS, 70, 0)]
+	fn only_a_request_that_reserved_tokens_refunds_its_policy(
+		#[case] token_limit: i64,
+		#[case] refund: i64,
+		#[case] expected: i64,
+	) {
+		assert_eq!(policy_refund(token_limit, refund), expected);
+	}
+
+	#[test]
+	fn an_agent_without_a_token_limit_records_the_unbounded_limit_and_reserves_nothing() {
+		// Arrange
+		let limits = policy(None, None, 0).spec.limits;
+		// Act / Assert
+		assert_eq!(limits.agent_token_limit(), UNBOUNDED_TOKENS);
+		assert_eq!(limits.reserved_tokens(), 0);
+		assert!(
+			serde_json::to_value(&limits)
+				.unwrap()
+				.get("token_budget")
+				.is_none()
+		);
 	}
 }

@@ -69,7 +69,7 @@ pub trait FileScopePort: Send {
 	async fn subnode_area(
 		&mut self,
 		_run: &RunMetadata,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_area: Uuid,
 	) -> Result<Area> {
 		Err(crate::Error::Forbidden)
@@ -104,7 +104,7 @@ pub trait FileScopePort: Send {
 	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>>;
 	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)>;
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Value>;
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Value>;
 	async fn documents(&mut self, entry: &Entry) -> Result<Value>;
 	async fn text_file(
 		&mut self,
@@ -118,7 +118,7 @@ pub trait FileScopePort: Send {
 	async fn previous_generation(&mut self, area: &Area) -> Result<i64>;
 	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()>;
 	async fn persist_manifest(&mut self, area: &Area) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 	/// Persist ordered image changes in the same transaction as File publication.
 	async fn image_publication(
 		&mut self,

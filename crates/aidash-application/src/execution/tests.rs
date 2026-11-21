@@ -243,7 +243,7 @@ fn encoded_message_text_consumes_media_headroom() {
 
 #[rstest::rstest]
 
-fn selected_media_defers_workspace_mutations_until_the_next_inference() {
+fn selected_media_defers_thread_mutations_until_the_next_inference() {
 	for name in ["file_read", "file_search", "workspace_read", "skill_read"] {
 		assert!(super::read_only_after_model_media_selection(name));
 	}
@@ -332,7 +332,7 @@ fn uninformed_responses_may_only_read_required_unread_messages() {
 	));
 	let mutation = aidash_domain::provider::ToolCall {
 		name: "workspace_message".into(),
-		arguments: json!({"content":"change the workspace"}),
+		arguments: json!({"content":"change the thread"}),
 		..read_required.clone()
 	};
 	assert!(!super::is_required_message_read(
@@ -373,7 +373,7 @@ fn uninformed_responses_may_only_read_required_unread_messages() {
 
 #[rstest::rstest]
 
-fn tight_windows_leave_room_for_the_pinned_workspace_context() {
+fn tight_windows_leave_room_for_the_pinned_thread_context() {
 	for slack in [2048, 4096, 8192] {
 		let minimum_request = 20_000;
 		let request_window =
@@ -388,14 +388,14 @@ fn tight_windows_leave_room_for_the_pinned_workspace_context() {
 		let mut pinned = serde_json::json!({
 			"identity":{"node_id":"node-1","agent_id":"agent-1","agent_version":"1"},
 			"task":{"id":"00000000-0000-0000-0000-000000000001","title":"task"},
-			"workspace":{"workspace":{"id":"00000000-0000-0000-0000-000000000002","title":"workspace"}}
+			"thread":{"thread":{"id":"00000000-0000-0000-0000-000000000002","title":"thread"}}
 		});
 		aidash_domain::context::bound_snapshot(&mut pinned, snapshot_budget).unwrap();
 		assert!(aidash_domain::context::estimated_tokens(&pinned.to_string()) <= snapshot_budget);
 		assert_eq!(pinned["identity"]["agent_id"], "agent-1");
 		assert_eq!(pinned["task"]["id"], "00000000-0000-0000-0000-000000000001");
 		assert_eq!(
-			pinned["workspace"]["workspace"]["id"],
+			pinned["thread"]["thread"]["id"],
 			"00000000-0000-0000-0000-000000000002"
 		);
 	}
@@ -422,7 +422,7 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 	assert!(full_growth > minimum_growth);
 	let request_window = 100_000;
 	let request_tokens = request_window - (full_growth + minimum_growth) / 2;
-	let budget = super::WorkspaceReadFitBudget {
+	let budget = super::ThreadReadFitBudget {
 		requested: 16000,
 		offset: 0,
 		request_tokens,
@@ -447,7 +447,7 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 			&context,
 			&call,
 			&output,
-			super::WorkspaceReadFitBudget {
+			super::ThreadReadFitBudget {
 				request_tokens: request_window,
 				..budget
 			}
@@ -489,7 +489,7 @@ fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 		&context,
 		&call,
 		&output,
-		super::WorkspaceReadFitBudget {
+		super::ThreadReadFitBudget {
 			requested: 1,
 			offset: 0,
 			request_tokens,
@@ -527,7 +527,7 @@ fn skill_asset_pages_fit_and_continue_from_the_cut() {
 
 #[rstest::rstest]
 
-fn workspace_read_chunks_fit_remaining_complete_request_budget() {
+fn thread_read_chunks_fit_remaining_complete_request_budget() {
 	let call = aidash_domain::provider::ToolCall {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
@@ -552,11 +552,11 @@ fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 	let request_window = super::request_context_window(window, 4_000);
 	let allowed = request_window - 2 * super::TOOL_EVENT_RESERVE;
 	let request_tokens = request_window - 4_000;
-	let chars = super::fit_workspace_read_chars(
+	let chars = super::fit_thread_read_chars(
 		&context,
 		&call,
 		&output,
-		super::WorkspaceReadFitBudget {
+		super::ThreadReadFitBudget {
 			requested: 16_000,
 			offset: 0,
 			request_tokens,
@@ -569,14 +569,14 @@ fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 	assert!(chars > 0 && chars < 16000);
 	let mut bounded_call = call.clone();
 	bounded_call.arguments["max_chars"] = serde_json::json!(chars);
-	let result = super::workspace_read_result(&output, 16000, 0, chars);
+	let result = super::thread_read_result(&output, 16000, 0, chars);
 	let event = typed_event(serde_json::json!({"kind":"tool","call":bounded_call,"result":result}));
 	assert!(
 		request_tokens + aidash_domain::context::tool_event_growth(&context, &event) <= allowed
 	);
 	let mut old_quota_call = call.clone();
 	old_quota_call.arguments["max_chars"] = serde_json::json!(chars + 1);
-	let old_quota_result = super::workspace_read_result(&output, 16000, 0, chars + 1);
+	let old_quota_result = super::thread_read_result(&output, 16000, 0, chars + 1);
 	let old_quota_event = typed_event(
 		serde_json::json!({"kind":"tool","call":old_quota_call,"result":old_quota_result}),
 	);
@@ -592,14 +592,14 @@ fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 	);
 	let mut too_large = call;
 	too_large.arguments["max_chars"] = serde_json::json!(chars + 1);
-	let result = super::workspace_read_result(&output, 16000, 0, chars + 1);
+	let result = super::thread_read_result(&output, 16000, 0, chars + 1);
 	let event = typed_event(serde_json::json!({"kind":"tool","call":too_large,"result":result}));
 	assert!(request_tokens + aidash_domain::context::tool_event_growth(&context, &event) > allowed);
 }
 
 #[rstest::rstest]
 
-fn workspace_read_fit_uses_the_persisted_request_window() {
+fn thread_read_fit_uses_the_persisted_request_window() {
 	let call = aidash_domain::provider::ToolCall {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
@@ -622,11 +622,11 @@ fn workspace_read_fit_uses_the_persisted_request_window() {
 	let hard_window = 32_000;
 	let request_window = super::request_context_window(hard_window, 8_000);
 	let request_tokens = request_window - 2_000;
-	let chars = super::fit_workspace_read_chars(
+	let chars = super::fit_thread_read_chars(
 		&context,
 		&call,
 		&output,
-		super::WorkspaceReadFitBudget {
+		super::ThreadReadFitBudget {
 			requested: 16_000,
 			offset: 0,
 			request_tokens,
@@ -686,37 +686,37 @@ fn workspace_observation_fit_includes_the_adjusted_call_and_following_events() {
 
 #[rstest::rstest]
 
-fn workspace_read_rejects_negative_offset_before_fitting() {
+fn thread_read_rejects_negative_offset_before_fitting() {
 	let call = aidash_domain::provider::ToolCall {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
 		arguments: serde_json::json!({"kind":"event","id":"event-id","offset":-1}),
 	};
 	assert!(matches!(
-		super::workspace_read_range(&call),
+		super::thread_read_range(&call),
 		Err(crate::Error::Invalid(message)) if message.contains("offset")
 	));
 }
 
 #[rstest::rstest]
 
-fn workspace_read_rejects_oversized_max_chars_before_fitting() {
+fn thread_read_rejects_oversized_max_chars_before_fitting() {
 	let call = aidash_domain::provider::ToolCall {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
 		arguments: serde_json::json!({"kind":"event","id":"event-id","max_chars":16001}),
 	};
 	assert!(matches!(
-		super::workspace_read_range(&call),
+		super::thread_read_range(&call),
 		Err(crate::Error::Invalid(message)) if message.contains("16000")
 	));
 }
 
 #[rstest::rstest]
 
-fn cached_workspace_read_plans_still_validate_the_original_call() {
+fn cached_thread_read_plans_still_validate_the_original_call() {
 	let pending = pending(serde_json::json!({
-		"workspace_read_plan": {
+		"thread_read_plan": {
 			"step": 4,
 			"cursor": 0,
 			"call":{"id":"read-1","name":"workspace_read","arguments":{}},
@@ -729,14 +729,14 @@ fn cached_workspace_read_plans_still_validate_the_original_call() {
 		arguments: serde_json::json!({"kind":"event","id":"event-id","offset":-1}),
 	};
 	assert!(matches!(
-		super::workspace_read_plan_result(&call, 4, 0, &pending),
+		super::thread_read_plan_result(&call, 4, 0, &pending),
 		Err(crate::Error::Invalid(message)) if message.contains("offset")
 	));
 
 	call.arguments["offset"] = serde_json::json!(0);
 	call.arguments["max_chars"] = serde_json::json!(16001);
 	assert!(matches!(
-		super::workspace_read_plan_result(&call, 4, 0, &pending),
+		super::thread_read_plan_result(&call, 4, 0, &pending),
 		Err(crate::Error::Invalid(message)) if message.contains("16000")
 	));
 }
@@ -750,7 +750,7 @@ fn prepared_result_views_share_fences_and_deferral() {
 		arguments: json!({"offset":0, "max_chars":3}),
 	};
 	for fitting in [
-		ResultFitting::WorkspaceRecord,
+		ResultFitting::ThreadRecord,
 		ResultFitting::SkillText,
 		ResultFitting::JournalText,
 		ResultFitting::JournalSearch,
@@ -793,22 +793,24 @@ fn prepared_result_views_share_fences_and_deferral() {
 			None
 		);
 		let (next, event) = super::defer_result(fitting, &call, vec![]);
-		assert!(next.force_workspace_read_compaction);
+		assert!(next.force_thread_read_compaction);
 		let (deferred, expected_event) = match fitting {
-			ResultFitting::WorkspaceRecord => (next.deferred_workspace_read, "run.read_deferred"),
+			ResultFitting::ThreadRecord => (next.deferred_thread_read, "execution.read_deferred"),
 			ResultFitting::SkillText | ResultFitting::SkillAsset => {
-				(next.deferred_skill_read, "run.skill_read_deferred")
+				(next.deferred_skill_read, "execution.skill_read_deferred")
 			}
 			ResultFitting::JournalText | ResultFitting::JournalSearch => {
-				(next.deferred_skill_read, "run.journal_read_deferred")
+				(next.deferred_skill_read, "execution.journal_read_deferred")
 			}
 			ResultFitting::CapabilityDescription => {
-				(next.deferred_skill_read, "run.description_deferred")
+				(next.deferred_skill_read, "execution.description_deferred")
 			}
-			ResultFitting::CapabilitySearch => (next.deferred_skill_read, "run.search_deferred"),
+			ResultFitting::CapabilitySearch => {
+				(next.deferred_skill_read, "execution.search_deferred")
+			}
 			ResultFitting::Observation => (
-				next.deferred_workspace_observation,
-				"run.observation_deferred",
+				next.deferred_thread_observation,
+				"execution.observation_deferred",
 			),
 		};
 		assert_eq!(event, expected_event);
@@ -878,14 +880,14 @@ fn zero_length_envelope_is_checked_before_deferring_a_read() {
 		16000,
 	)
 	.unwrap();
-	let zero = super::workspace_read_result(&output, 16000, 0, 0);
+	let zero = super::thread_read_result(&output, 16000, 0, 0);
 	assert_eq!(zero["deferred"], true);
 	assert!(
-		super::fit_workspace_read_chars(
+		super::fit_thread_read_chars(
 			&context,
 			&call,
 			&output,
-			super::WorkspaceReadFitBudget {
+			super::ThreadReadFitBudget {
 				requested: 16_000,
 				offset: 0,
 				request_tokens: 0,
@@ -896,10 +898,10 @@ fn zero_length_envelope_is_checked_before_deferring_a_read() {
 		.unwrap()
 		.is_none()
 	);
-	let next_window = super::force_workspace_read_compaction_window(32_000, 8_000);
+	let next_window = super::force_thread_read_compaction_window(32_000, 8_000);
 	assert_eq!(next_window, 32_000 - super::POST_TOOL_CONTEXT_RESERVE);
 	assert!(next_window < 32_000);
-	let deferred = super::deferred_workspace_read(&call);
+	let deferred = super::deferred_thread_read(&call);
 	assert_eq!(json!(deferred.call)["arguments"]["offset"], 0);
 	assert_eq!(
 		json!(deferred.call)["arguments"]["id"],

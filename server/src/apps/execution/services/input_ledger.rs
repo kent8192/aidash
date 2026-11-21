@@ -11,7 +11,7 @@ pub(crate) fn input_size(sender: &str, content: &str) -> usize {
 }
 
 pub(crate) fn reference_size(sender: &str, message: Uuid) -> usize {
-	serde_json::to_string(&json!({"seq":i64::MAX,"sender":sender,"record":{"kind":"message","id":message},"requires_workspace_read":true}))
+	serde_json::to_string(&json!({"seq":i64::MAX,"sender":sender,"record":{"kind":"message","id":message},"requires_thread_read":true}))
 		.map_or(usize::MAX, |value| crate::context::estimated_tokens(&value))
 }
 

@@ -100,7 +100,7 @@ async fn expand(
 		"POST",
 		"/api/federation/graph",
 		json!({
-			"node_id":target,"scope_workspace":null,"mode":"mesh",
+			"node_id":target,"scope_thread":null,"mode":"mesh",
 			"kinds":kinds,"relations":["goal","contains","tool","model"],
 			"hours":0,"limit":2,"cursor":cursor,
 		}),
@@ -157,7 +157,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	b_policy["subjects"]["bob"] = json!({"kind":"user"});
 	b_policy["policies"] = json!([
 		{"id":"alice-full","effect":"allow","subjects":{"ids":["alice"]},"actions":["*"],"resources":{"kinds":["*"]}},
-		{"id":"bob-graph","effect":"allow","subjects":{"ids":["bob"]},"actions":["federation.graph.read","workspace.read","task.read"],"resources":{"kinds":["*"]}},
+		{"id":"bob-graph","effect":"allow","subjects":{"ids":["bob"]},"actions":["federation.graph.read","thread.read","task.read"],"resources":{"kinds":["*"]}},
 	]);
 	assert_eq!(
 		request(
@@ -212,7 +212,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		&target,
 		&alice_a,
 		None,
-		&["workspace", "goal", "task", "agent", "tool", "model"],
+		&["thread", "goal", "task", "agent", "tool", "model"],
 	)
 	.await;
 	assert_eq!(status, 200, "{alice_page}");
@@ -228,7 +228,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			&target,
 			&alice_a,
 			Some(&token),
-			&["workspace", "goal", "task", "agent", "tool", "model"],
+			&["thread", "goal", "task", "agent", "tool", "model"],
 		)
 		.await;
 		assert_eq!(status, 200, "{page}");
@@ -243,7 +243,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert!(
 		alice_nodes
 			.iter()
-			.any(|node| node["kind"] == "goal" && node["goal_body"] == "Use exactly one tool")
+			.any(|node| node["kind"] == "thread" && node["name"]["en"] == "Approved task")
 	);
 	assert!(
 		!alice_nodes
@@ -258,7 +258,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			&target,
 			&bob_a,
 			Some(stolen),
-			&["workspace", "goal", "task", "agent", "tool", "model"]
+			&["thread", "goal", "task", "agent", "tool", "model"]
 		)
 		.await
 		.0,
@@ -276,7 +276,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			&target,
 			&alice_a,
 			Some(stolen),
-			&["workspace", "goal", "task", "agent", "tool", "model"]
+			&["thread", "goal", "task", "agent", "tool", "model"]
 		)
 		.await
 		.0,
@@ -290,7 +290,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			&target,
 			&bob_a,
 			cursor.as_deref(),
-			&["workspace", "goal", "task", "agent", "tool", "model"],
+			&["thread", "goal", "task", "agent", "tool", "model"],
 		)
 		.await;
 		assert_eq!(status, 200, "{page}");
@@ -300,7 +300,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			break;
 		}
 	}
-	assert!(bob_nodes.iter().any(|node| node["kind"] == "workspace"));
+	assert!(bob_nodes.iter().any(|node| node["kind"] == "thread"));
 	assert!(!bob_nodes.iter().any(|node| node["kind"] == "agent"));
 	aidash_server::authorization::Authorization {
 		pool: b.f.store.pool.clone(),
@@ -324,7 +324,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 			&target,
 			&alice_a,
 			Some(stolen),
-			&["workspace", "goal", "task", "agent", "tool", "model"]
+			&["thread", "goal", "task", "agent", "tool", "model"]
 		)
 		.await
 		.0,

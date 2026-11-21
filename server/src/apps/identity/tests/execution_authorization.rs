@@ -127,7 +127,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", run.workspace_id),
+		&format!("/api/threads/{}/tasks", run.thread_id),
 		json!({"title":"Child", "description":"Delegate to sibling", "parent_id":task}),
 	)
 	.await;
@@ -142,7 +142,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 	let pending = common::tool_pending(
 		json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}),
 	);
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(run.id)
 		.execute(f.store.pool.fixture_driver())
@@ -382,7 +382,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		);
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -519,7 +519,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -559,7 +559,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -603,7 +603,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
 	assert_eq!(
 		f.store
-			.snapshot(&TEST_FIXTURE, run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -630,7 +630,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
 	// The Tenant's three approved definitions, current built-in declarations,
-	// workspace observation Source, the approval Decider, and Built-in
+	// thread observation Source, the approval Decider, and Built-in
 	// Memory's provider, reranker and tokenizer (#852). Legacy versions are
 	// preserved for pinned Runs but are not automatically listed.
 	assert_eq!(catalog.as_array().unwrap().len(), 8 + builtin_count);
@@ -698,7 +698,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(status, 200, "{other_catalog}");
 	let other_catalog = other_catalog.as_array().unwrap();
 	// The current declarations are listed for every Tenant: the built-in
-	// tools, the approval Decider, the workspace observation Source and
+	// tools, the approval Decider, the thread observation Source and
 	// Built-in Memory's three definitions.
 	assert_eq!(other_catalog.len(), builtin_count + 5);
 	assert!(
@@ -810,7 +810,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		let query_bind_2 = json!({"private":"unreadable-run-journal"});
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("context"),
 					SimpleExpr::CustomWithExpr(
@@ -867,7 +867,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	.unwrap();
 	{
 		let query_bind_1 = aidash_domain::nodes::NodeName::derived("acme").to_string();
-		let query_bind_2 = run.workspace_id;
+		let query_bind_2 = run.thread_id;
 		let query_bind_3 = json!({"run_id":run.id,"private":"unreadable-run-journal"});
 		sqlx::query(
 			&reinhardt::query::Query::insert()
@@ -875,7 +875,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				.columns([
 					reinhardt::query::Alias::new("id"),
 					reinhardt::query::Alias::new("node"),
-					reinhardt::query::Alias::new("workspace_id"),
+					reinhardt::query::Alias::new("thread_id"),
 					reinhardt::query::Alias::new("kind"),
 					reinhardt::query::Alias::new("data"),
 					reinhardt::query::Alias::new("tenant"),
@@ -914,7 +914,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	f.store
 		.message(
 			&TEST_FIXTURE,
-			run.workspace_id,
+			run.thread_id,
 			"alice",
 			"permitted message after rejected events",
 			Some("execution-authorization-unrelated-message"),
@@ -939,7 +939,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			&app,
 			&token,
 			"GET",
-			&format!("/api/runs/{}", run.id),
+			&format!("/api/executions/{}", run.id),
 			Value::Null
 		)
 		.await
@@ -948,7 +948,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	);
 	for path in [
 		"/api/state".to_owned(),
-		format!("/api/workspaces/{}", run.workspace_id),
+		format!("/api/threads/{}", run.thread_id),
 		format!("/api/events?after={after}"),
 	] {
 		let (status, value) = request(&app, &token, "GET", &path, Value::Null).await;
@@ -976,8 +976,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.request(
 			Method::GET,
 			app.url(format!(
-				"/api/events/stream?workspace_id={}&after={after}",
-				run.workspace_id
+				"/api/events/stream?thread_id={}&after={after}",
+				run.thread_id
 			)),
 		)
 		.header("authorization", format!("Bearer {token}"))
@@ -1000,7 +1000,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		&app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/control", run.id),
+		&format!("/api/executions/{}/control", run.id),
 		json!({"action":"pause"}),
 	)
 	.await;
@@ -1024,8 +1024,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", run.workspace_id),
-		json!({"title":"observe","description":"inspect the permitted workspace"}),
+		&format!("/api/threads/{}/tasks", run.thread_id),
+		json!({"title":"observe","description":"inspect the permitted thread"}),
 	)
 	.await;
 	let second_id: Uuid = second["id"].as_str().unwrap().parse().unwrap();
@@ -1049,7 +1049,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.into_iter()
 		.find(|r| r.task_id == second_id)
 		.unwrap();
-	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
+	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"thread_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
         .execute(f.store.pool.fixture_driver()).await }.unwrap();
 	Harness {
 		federation: f.clone(),
@@ -1217,7 +1217,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", parent_run.workspace_id),
+		&format!("/api/threads/{}/tasks", parent_run.thread_id),
 		json!({"title":"Child","description":"Delegated work","parent_id":task_id}),
 	)
 	.await;
@@ -1228,7 +1228,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1374,7 +1374,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", parent_run.id),
+			&format!("/api/executions/{}/control", parent_run.id),
 			json!({"action":"pause"})
 		)
 		.await
@@ -1388,7 +1388,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1470,7 +1470,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			&app,
 			fresh["token"].as_str().unwrap(),
 			"POST",
-			&format!("/api/runs/{}/control", child_run.id),
+			&format!("/api/executions/{}/control", child_run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -1513,7 +1513,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		&app,
 		&f.config.api_token,
 		"GET",
-		&format!("/api/runs/{}/management?tenant=acme", child_run.id),
+		&format!("/api/executions/{}/management?tenant=acme", child_run.id),
 		Value::Null,
 	)
 	.await;
@@ -1522,7 +1522,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.api_http
 		.request(
 			"POST".parse().unwrap(),
-			&format!("/api/runs/{}/management", child_run.id),
+			&format!("/api/executions/{}/management", child_run.id),
 		)
 		.header("Authorization", format!("Bearer {}", f.config.api_token))
 		.header("Idempotency-Key", Uuid::new_v4().to_string())
@@ -1637,7 +1637,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1906,7 +1906,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
-	use aidash_server::authorization::{Authorization, identity::Actor, workspace::Workspaces};
+	use aidash_server::authorization::{Authorization, identity::Actor, thread::Threads};
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -1927,11 +1927,11 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 	{
 		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
 		let mut insert = Query::insert();
-		insert.into_table(Alias::new("runs")).columns(
+		insert.into_table(Alias::new("task_executions")).columns(
 			[
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -1947,7 +1947,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 				.values_expr(vec![
 					IntoValue::into_value(*id).into(),
 					IntoValue::into_value(Uuid::new_v4()).into(),
-					IntoValue::into_value(visible.workspace_id).into(),
+					IntoValue::into_value(visible.thread_id).into(),
 					IntoValue::into_value(
 						aidash_domain::nodes::NodeAddress::derived(
 							f.config.deployment.as_str(),
@@ -1996,7 +1996,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 		&app,
 		&token,
 		"GET",
-		&format!("/api/tasks/{task}/runs"),
+		&format!("/api/tasks/{task}/executions"),
 		Value::Null,
 	)
 	.await;
@@ -2015,8 +2015,8 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 		.store
 		.emit(
 			&TEST_FIXTURE,
-			Some(visible.workspace_id),
-			"run.tool_recorded",
+			Some(visible.thread_id),
+			"execution.tool_recorded",
 			json!({"run_id":denied[0]}),
 		)
 		.await
@@ -2029,7 +2029,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 	.unwrap() else {
 		panic!("subject expected")
 	};
-	let scope = Workspaces {
+	let scope = Threads {
 		store: f.store.clone(),
 		identity,
 	};
@@ -2081,7 +2081,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2157,7 +2157,7 @@ async fn run_with_pending_call(
 	};
 	let mut update = reinhardt::query::Query::update();
 	update
-		.table(reinhardt::query::Alias::new("runs"))
+		.table(reinhardt::query::Alias::new("task_executions"))
 		.value_expr(
 			reinhardt::query::Alias::new("phase"),
 			reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2266,17 +2266,12 @@ async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_deni
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let (status, hidden) = request(
 		&app,
 		&token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Hidden","description":"Policy hides this task from Runs"}),
 	)
 	.await;
@@ -2322,7 +2317,7 @@ async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_deni
 		.as_str()
 		.unwrap_or_else(|| panic!("{}", context["history"]))
 		.to_owned();
-	assert!(error.contains("was not found in this Workspace"), "{error}");
+	assert!(error.contains("was not found in this Thread"), "{error}");
 	let denials: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
@@ -2374,7 +2369,7 @@ async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -2445,7 +2440,7 @@ async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check
 	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
 	let blocked: Vec<_> = events
 		.iter()
-		.filter(|event| event.kind == "run.authorization_blocked")
+		.filter(|event| event.kind == "execution.authorization_blocked")
 		.collect();
 	assert_eq!(blocked.len(), 1, "{events:?}");
 	assert_eq!(
@@ -2532,7 +2527,7 @@ async fn decision_cursor_follows_transaction_commit_order(
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
-	let evaluation:Evaluation=serde_json::from_value(json!({"subject":"alice","action":"workspace.read","resource":{"tenant":"acme","kind":"workspace","id":"cursor-test","attributes":{}},"environment":{}})).unwrap();
+	let evaluation:Evaluation=serde_json::from_value(json!({"subject":"alice","action":"thread.read","resource":{"tenant":"acme","kind":"thread","id":"cursor-test","attributes":{}},"environment":{}})).unwrap();
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	Authorization::evaluate_in_transaction(&mut tx, "acme", &evaluation)
 		.await
@@ -2923,7 +2918,7 @@ struct ToolCallApprovals {
 	script: Arc<AtomicUsize>,
 	/// When set, the model's first call is `human_request`, a question for a person.
 	question: Arc<AtomicBool>,
-	/// When set, the model's first call is `schedule_create` (#557).
+	/// When set, the model's first call is `duty_create` (#557).
 	schedule: Arc<AtomicBool>,
 	judge: Arc<Judge>,
 }
@@ -3057,7 +3052,7 @@ fn tool_call_router(
 						let name = if asks {
 							"human_request"
 						} else if schedules {
-							"schedule_create"
+							"duty_create"
 						} else if reads_first {
 							"plugin_1"
 						} else {
@@ -3066,7 +3061,7 @@ fn tool_call_router(
 						let arguments = if asks {
 							json!({"kind":"QUESTION","prompt":"Which one?"})
 						} else if schedules {
-							json!({"title":"Weekly digest","request":"Summarize the week.","trigger":{"kind":"cron","expression":"0 9 * * 1","time_zone":"UTC"}})
+							json!({"title":"Weekly digest","mission":"Summarize the week.","trigger":{"kind":"cron","expression":"0 9 * * 1","time_zone":"UTC"}})
 						} else {
 							json!({"call":called + 1})
 						};
@@ -3379,7 +3374,7 @@ async fn allow_for_this_run_covers_the_next_call_of_the_tool_after_new_user_inpu
 		app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/message", run.id),
+		&format!("/api/executions/{}/message", run.id),
 		json!({"content":"Call it once more"}),
 	)
 	.await;
@@ -3674,7 +3669,7 @@ async fn a_pending_tool_call_approval_closes_when_its_run_ends(
 			app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"cancel"})
 		)
 		.await
@@ -3834,25 +3829,6 @@ mod approval_modes {
 						.expr(Expr::val(mode))
 						.expr(Expr::val(1_i64))
 						.expr(Expr::cust("clock_timestamp()"))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.await;
-	}
-
-	/// Binds a task to a Thread the way `thread_run` does.
-	async fn bind(f: &aidash_server::federation::Federation, task: Uuid, thread: Uuid) {
-		execute(
-			f,
-			Query::insert()
-				.into_table(Alias::new("core_task_sessions"))
-				.columns(["task_id", "tenant", "thread_id"].map(Alias::new))
-				.from_subquery(
-					Query::select()
-						.expr(Expr::val(task))
-						.expr(Expr::val("acme"))
-						.expr(Expr::val(thread))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -4121,7 +4097,7 @@ mod approval_modes {
 		execute(
 			f,
 			Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(
 					Alias::new("pending"),
 					Expr::cust(
@@ -4435,8 +4411,8 @@ mod approval_modes {
 		t.script.store(2, Ordering::SeqCst);
 		let (f, url, schema) = t.application.runtime.parts();
 		let (token, run) = claimed_run(&t, &f, |_| {}).await;
-		let thread = Uuid::new_v4();
-		bind(&f, run.task_id, thread).await;
+		// A Task's Approval Mode is its own Thread's (#1008).
+		let thread = run.thread_id;
 		let harness = Harness {
 			federation: f.clone(),
 		};
@@ -4473,8 +4449,8 @@ mod approval_modes {
 		let t = tool_call_approvals;
 		let (f, url, schema) = t.application.runtime.parts();
 		let (_, run) = claimed_run(&t, &f, |_| {}).await;
-		let thread = Uuid::new_v4();
-		bind(&f, run.task_id, thread).await;
+		// A Task's Approval Mode is its own Thread's (#1008).
+		let thread = run.thread_id;
 		prefer(&f, "dont_ask", false).await;
 		thread_mode(&f, thread, "manual").await;
 		let harness = Harness {
@@ -5129,7 +5105,7 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 ) {
 	use aidash_application::federation::inbound::{Inbound, Proof, RequestDigest, accept};
 	use aidash_domain::{federation::route::Sender, nodes::NodeName, tenancy::TenantName};
-	use aidash_server::authorization::{Authorization, identity::Actor, workspace::Workspaces};
+	use aidash_server::authorization::{Authorization, identity::Actor, thread::Threads};
 	use futures_util::StreamExt;
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
@@ -5145,16 +5121,16 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 	.await;
 	assert_eq!(status, 201, "{sibling}");
 	let sibling = NodeName::parse(sibling["name"].as_str().unwrap()).unwrap();
-	let (status, workspace) = request(
+	let (status, thread) = request(
 		&app,
 		&token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Sibling", "goal":"Independent", "node":sibling}),
+		"/api/threads",
+		json!({"title":"Sibling", "node":sibling}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
-	let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	assert_eq!(status, 200, "{thread}");
+	let thread = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 	policy["subjects"]["node-service"] = json!({"kind":"service", "node":target});
 	assert_eq!(
 		request(
@@ -5178,11 +5154,11 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 	let Actor::Subject(identity) = auth.authenticate(&credential.token).await.unwrap() else {
 		panic!("subject")
 	};
-	let cached = Workspaces {
+	let cached = Threads {
 		store: f.store.clone(),
 		identity,
 	};
-	assert!(cached.snapshot(workspace).await.is_ok());
+	assert!(cached.snapshot(thread).await.is_ok());
 	assert_eq!(
 		request(
 			&app,
@@ -5247,9 +5223,7 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 		.clone()
 		.request(
 			Method::GET,
-			app.url(format!(
-				"/api/events/stream?workspace_id={workspace}&after=0"
-			)),
+			app.url(format!("/api/events/stream?thread_id={thread}&after=0")),
 		)
 		.header("authorization", format!("Bearer {}", credential.token))
 		.send()
@@ -5288,7 +5262,7 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 			&app,
 			&token,
 			"GET",
-			&format!("/api/workspaces/{workspace}"),
+			&format!("/api/threads/{thread}"),
 			Value::Null
 		)
 		.await
@@ -5298,8 +5272,8 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 	match boundary {
 		"credential" => {
 			assert!(
-				cached.snapshot(workspace).await.is_err(),
-				"a cached service identity must lose authority even on a live sibling Workspace"
+				cached.snapshot(thread).await.is_err(),
+				"a cached service identity must lose authority even on a live sibling Thread"
 			);
 			auth.revoke_credential("acme", credential.credential.id)
 				.await
@@ -5316,7 +5290,7 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 				200
 			);
 			assert!(
-				cached.snapshot(workspace).await.is_err(),
+				cached.snapshot(thread).await.is_err(),
 				"restoration cannot undo independent credential revocation"
 			);
 		}
@@ -5550,23 +5524,13 @@ async fn an_agent_version_restriction_admits_only_the_named_run_starter(
 	// authority (#484).
 	let credential = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = credential["token"].as_str().unwrap();
-	let (status, workspace) = request(
-		&app,
-		bob,
-		"POST",
-		"/api/workspaces",
-		json!({"title":"Bob","goal":"Denied"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{workspace}");
+	let (status, thread) = request(&app, bob, "POST", "/api/threads", json!({"title":"Bob"})).await;
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = request(
 		&app,
 		bob,
 		"POST",
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Denied","description":"Not named"}),
 	)
 	.await;
@@ -5608,23 +5572,14 @@ async fn a_dependency_restriction_follows_the_using_agent_not_the_person(
 	let model = json!({"id":"model","version":"1.0.0"});
 	let claim = json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}});
 	let new_task = async |title: &str| -> Uuid {
-		let (status, workspace) = request(
-			&app,
-			&alice,
-			"POST",
-			"/api/workspaces",
-			json!({"title":title,"goal":"Dependency restriction"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{workspace}");
+		let (status, thread) =
+			request(&app, &alice, "POST", "/api/threads", json!({"title":title})).await;
+		assert_eq!(status, 200, "{thread}");
 		let (status, task) = request(
 			&app,
 			&alice,
 			"POST",
-			&format!(
-				"/api/workspaces/{}/tasks",
-				workspace["id"].as_str().unwrap()
-			),
+			&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 			json!({"title":title,"description":title}),
 		)
 		.await;
@@ -5948,7 +5903,7 @@ async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then
 		&app,
 		&alice,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", parent_run.workspace_id),
+		&format!("/api/threads/{}/tasks", parent_run.thread_id),
 		json!({"title":"Child","description":"Delegated work","parent_id":task_id}),
 	)
 	.await;
@@ -5960,7 +5915,7 @@ async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -7377,7 +7332,7 @@ impl SubnodeRig {
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
-					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_dissolve","version":"1.0.0"},"alias":"subnode_dissolve","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.delete_subnode","version":"1.0.0"},"alias":"delete_subnode","narrow":{}}),
 				]);
 			} else {
 				entry["config"]["bindings"] = json!([]);
@@ -7390,14 +7345,14 @@ impl SubnodeRig {
 					.unwrap();
 				// Keep member defaults within the deliberately narrow test allowance.
 				let narrow: &[&str] = if files {
-					&["skill_list", "skill_load", "skill_read", "workspace_search"]
+					&["skill_list", "skill_load", "skill_read", "thread_search"]
 				} else {
 					&[
 						"skill_list",
 						"skill_load",
 						"skill_read",
 						"attachment_copy",
-						"workspace_search",
+						"thread_search",
 					]
 				};
 				for name in narrow
@@ -7455,7 +7410,7 @@ impl SubnodeRig {
 			json!({"response":response,"response_epoch":self.epoch.get(),"included_input_seq":included_input_seq,"cursor":0,"request_window":120000,"request_tokens":0}),
 		);
 		let sql = reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("phase"),
 				Expr::value("TOOL_CALL"),
@@ -7496,7 +7451,7 @@ impl SubnodeRig {
 	}
 
 	async fn set_run_control(&self, run: Uuid, control: &str) {
-		sqlx::query("UPDATE runs SET control = $1 WHERE id = $2")
+		sqlx::query("UPDATE task_executions SET control = $1 WHERE id = $2")
 			.bind(control)
 			.bind(run)
 			.execute(self.f.store.pool.fixture_driver())
@@ -7505,7 +7460,7 @@ impl SubnodeRig {
 	}
 }
 
-/// #754 decision 6 for a local delegation: the Subnode's task is in another Workspace, so the
+/// #754 decision 6 for a local delegation: the Subnode's task is in another Thread, so the
 /// creator hears "not found or is not visible" and its Run goes on. A delegation of the creator's
 /// own task after `subnode_task` is no longer refused (#755, see `subnode_read_boundary`).
 #[rstest::rstest]
@@ -7515,7 +7470,7 @@ async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
-	// Arrange: the creating Run made a Subnode and a task in the Subnode's Workspace.
+	// Arrange: the creating Run made a Subnode and a task in the Subnode's Thread.
 	let (f, url, schema) = fixture.runtime.parts();
 	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
 	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
@@ -7538,7 +7493,7 @@ async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
 		.find(|run| run.task_id.to_string() == child_task)
 		.expect("leader Run admitted");
 	rig.set_run_control(leader.id, "PAUSED").await;
-	// Act: the creator delegates a task that is not in its own Workspace.
+	// Act: the creator delegates a task that is not in its own Thread.
 	assert!(
 		rig.script(
 			rig.creator_run,
@@ -7576,7 +7531,7 @@ async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
 	cleanup(f, &url, &schema).await;
 }
 
-/// #754 decision 6 for a delegation to another Node: a task in another Workspace reads "not found
+/// #754 decision 6 for a delegation to another Node: a task in another Thread reads "not found
 /// or is not visible", and the Run goes on. The check fails before any peer is called. (A task
 /// that does not exist at all is refused earlier, at the tool gate.)
 #[rstest::rstest]
@@ -7586,7 +7541,7 @@ async fn a_cross_node_task_delegate_of_a_task_the_run_cannot_see_reaches_the_mod
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
-	// Arrange: the creating Run made a Subnode and a task in the Subnode's Workspace.
+	// Arrange: the creating Run made a Subnode and a task in the Subnode's Thread.
 	let (f, url, schema) = fixture.runtime.parts();
 	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
 	let elsewhere =
@@ -7609,8 +7564,8 @@ async fn a_cross_node_task_delegate_of_a_task_the_run_cannot_see_reaches_the_mod
 		.find(|run| run.task_id.to_string() == child_task)
 		.expect("leader Run admitted");
 	rig.set_run_control(leader.id, "PAUSED").await;
-	// Act: the creator delegates a task in another Workspace to another Node.
-	let call = "delegate-other-workspace";
+	// Act: the creator delegates a task in another Thread to another Node.
+	let call = "delegate-other-thread";
 	assert!(
 		rig.script(
 			rig.creator_run,
@@ -7750,12 +7705,12 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 			.unwrap_or_else(|| panic!("creation: {created}")),
 	)
 	.unwrap();
-	let workspace = Uuid::parse_str(created["workspace_id"].as_str().unwrap()).unwrap();
+	let thread = Uuid::parse_str(created["thread_id"].as_str().unwrap()).unwrap();
 	let (status, unrelated) = request(
 		app,
 		token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Unrelated","description":"No creating Run origin"}),
 	)
 	.await;
@@ -7797,16 +7752,16 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.into_iter()
 		.find(|run| run.task_id == child_task)
 		.expect("leader Run admitted");
-	assert_eq!(child.workspace_id, workspace);
-	// Select the creator for its workspace read before exercising the member.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	assert_eq!(child.thread_id, thread);
+	// Select the creator for its thread read before exercising the member.
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let read = inject(
-		"workspace_read",
-		json!({"workspace_id":workspace,"kind":"task","id":child_task}),
+		"thread_read",
+		json!({"thread_id":thread,"kind":"task","id":child_task}),
 		"read-subnode-task",
 	)
 	.await;
@@ -7814,13 +7769,13 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		read.to_string().contains("Investigate"),
 		"creator read: {read}"
 	);
-	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	// Fence the creator in this fixture so worker_once selects the member Run.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7828,7 +7783,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	let pending = common::tool_pending(
 		json!({"response":{"text":"","tool_calls":[{"id":"message-creator","name":"subnode_message","arguments":{"content":"Investigation complete"}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0}),
 	);
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
@@ -7843,7 +7798,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(creator_run)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),
@@ -7874,18 +7829,18 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	let member = child.executor_subject(f.config.deployment.as_str());
 	assert_eq!(input.sender, member);
 	assert_eq!(serde_json::to_value(input).unwrap()["is_data"], true);
-	// The creating Run's Workspace names the Agent and keeps the member's Run.
+	// The creating Run's Thread names the Agent and keeps the member's Run.
 	let home = f
 		.store
 		.run(&TEST_FIXTURE, creator_run)
 		.await
 		.unwrap()
-		.workspace_id;
+		.thread_id;
 	let (status, history) = request(
 		app,
 		token,
 		"GET",
-		&format!("/api/workspaces/{home}/message-history"),
+		&format!("/api/threads/{home}/message-history"),
 		Value::Null,
 	)
 	.await;
@@ -7898,43 +7853,43 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.unwrap_or_else(|| panic!("member message in history: {history}"));
 	assert_eq!(message["message"]["sender"], json!(member));
 	assert_eq!(message["message"]["run_id"], json!(child.id));
-	// A citation in that text opens from the member's Run in the Subnode's Workspace.
+	// A citation in that text opens from the member's Run in the Subnode's Thread.
 	let (status, body) = request(
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{}", child.id),
+		&format!("/api/executions/{}", child.id),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "member Run: {body}");
-	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 		.bind(creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	// The creator now writes to its Workspace and observes it, events included. The
-	// member's message event names a Run of the Subnode's Workspace, which the
+	// The creator now writes to its Thread and observes it, events included. The
+	// member's message event names a Run of the Subnode's Thread, which the
 	// creator's recorded reads must not treat as a vanished source.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let note = inject(
-		"workspace_message",
+		"thread_message",
 		json!({"content":"Creator note"}),
 		"creator-note",
 	)
 	.await;
 	assert!(note["error"].is_null(), "creator message: {note}");
-	let observed = inject("workspace_observe", json!({"limit":50}), "creator-observe").await;
+	let observed = inject("thread_observe", json!({"limit":50}), "creator-observe").await;
 	assert!(
 		observed["events"].to_string().contains("message.created")
 			&& observed.to_string().contains("Investigation complete"),
 		"creator observation: {observed}"
 	);
-	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7943,7 +7898,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{creator_run}"),
+		&format!("/api/executions/{creator_run}"),
 		Value::Null,
 	)
 	.await;
@@ -7952,7 +7907,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/workspaces/{home}/message-history"),
+		&format!("/api/threads/{home}/message-history"),
 		Value::Null,
 	)
 	.await;
@@ -7975,7 +7930,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{}/subnodes", creator_run),
+		&format!("/api/executions/{}/subnodes", creator_run),
 		Value::Null,
 	)
 	.await;
@@ -7987,7 +7942,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(child.id)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),
@@ -8001,7 +7956,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 			app,
 			token,
 			"POST",
-			&format!("/api/runs/{}/control", creator_run),
+			&format!("/api/executions/{}/control", creator_run),
 			json!({"action":"cancel"}),
 		),
 	)
@@ -8015,7 +7970,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{}/subnodes", creator_run),
+		&format!("/api/executions/{}/subnodes", creator_run),
 		Value::Null,
 	)
 	.await;
@@ -8024,11 +7979,11 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Too late","description":"Must not be written"}),
 	)
 	.await;
-	assert_eq!(status, 403, "dissolved Workspace must be read-only: {body}");
+	assert_eq!(status, 403, "dissolved Thread must be read-only: {body}");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -8040,9 +7995,9 @@ async fn subnode_rows(f: &aidash_server::federation::Federation) -> i64 {
 }
 
 const SUBNODE_TOOLS: [&str; 6] = [
-	"workspace_read",
-	"workspace_observe",
-	"workspace_wait",
+	"thread_read",
+	"thread_observe",
+	"task_wait",
 	"artifact_publish",
 	"human_request",
 	"connection_request",
@@ -8070,45 +8025,35 @@ async fn subnode_refuses_member_with_broader_outbound_binding(
 	cleanup(f, &url, &schema).await;
 }
 
-/// An agent that only has the default policy cannot create a Subnode, because
-/// `subnode.create` is an explicit action that no default group confers.
+/// An agent with only the default policy creates a Subnode: `subnode.create`
+/// is an ordinary member action (#1012, ADR 0143).
 #[rstest::rstest]
 #[tokio::test]
-async fn subnode_creation_is_refused_without_an_explicit_grant(
+async fn a_default_member_agent_creates_a_subnode(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], false).await;
-	rig.script(
-		rig.creator_run,
-		"subnode_create",
-		json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}}),
-		"ungranted-create",
-	)
-	.await;
-	// A policy denial is not a model-correctable result: the Run pauses.
-	assert!(
-		rig.result_of(rig.creator_run, "ungranted-create")
-			.await
-			.is_none(),
-		"a denied call must not record a tool result"
-	);
-	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
-	assert_eq!(run.control, aidash_domain::RunControl::Paused);
-	assert_eq!(
-		run.error.as_deref(),
-		Some("subnode_create: subnode.create was denied")
-	);
-	assert_eq!(subnode_rows(&f).await, 0, "no Subnode may be created");
+	let created = rig
+		.inject(
+			"subnode_create",
+			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}}),
+			"default-create",
+		)
+		.await;
+	assert!(created["subnode_id"].is_string(), "creation: {created}");
+	assert_eq!(subnode_rows(&f).await, 1);
 	cleanup(f, &url, &schema).await;
 }
 
-/// The Tenant limits bound member count and the active Subnodes of one Run.
+/// Subnodes are not capped per Run or in members (#1012, ADR 0143): one Run
+/// creates several, each with several members. Only the receiving Tenant's
+/// consent to remote creation remains in its settings.
 #[rstest::rstest]
 #[tokio::test]
-async fn subnode_limits_bound_members_and_active_subnodes_per_run(
+async fn a_run_creates_several_subnodes_with_several_members(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -8129,50 +8074,40 @@ async fn subnode_limits_bound_members_and_active_subnodes_per_run(
 			json!({"members_per_subnode":1,"subnodes_per_run":1,"remote_runs_may_create":false}),
 		)
 		.await;
-	assert_eq!(status, 200, "limits: {body}");
+	assert_eq!(
+		status, 422,
+		"the removed caps are refused as unknown fields: {body}"
+	);
 	let allowance = json!({"tools":SUBNODE_TOOLS,"secrets":[]});
-	let too_many = rig
-		.inject(
-			"subnode_create",
-			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0","subnode-second@1.0.0"],"allowance":allowance}),
-			"too-many-members",
-		)
-		.await;
-	assert_eq!(
-		too_many["error"],
-		json!("Subnode member limit reached"),
-		"member limit: {too_many}"
-	);
-	assert_eq!(subnode_rows(&f).await, 0);
-	let created = rig
-		.inject(
-			"subnode_create",
-			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":allowance}),
-			"first-subnode",
-		)
-		.await;
-	assert!(created["subnode_id"].is_string(), "creation: {created}");
-	let second = rig
-		.inject(
-			"subnode_create",
-			json!({"leader":"subnode-second@1.0.0","members":["subnode-second@1.0.0"],"allowance":allowance}),
-			"second-subnode",
-		)
-		.await;
-	assert_eq!(
-		second["error"],
-		json!("active Subnode limit reached"),
-		"active limit: {second}"
-	);
-	assert_eq!(subnode_rows(&f).await, 1, "only the first Subnode exists");
+	for (index, leader) in [
+		"subnode-leader@1.0.0",
+		"subnode-second@1.0.0",
+		"subnode-leader@1.0.0",
+	]
+	.into_iter()
+	.enumerate()
+	{
+		let created = rig
+			.inject(
+				"subnode_create",
+				json!({"leader":leader,"members":["subnode-leader@1.0.0","subnode-second@1.0.0"],"allowance":allowance}),
+				&format!("subnode-{index}"),
+			)
+			.await;
+		assert!(
+			created["subnode_id"].is_string(),
+			"creation {index}: {created}"
+		);
+	}
+	assert_eq!(subnode_rows(&f).await, 3);
 	cleanup(f, &url, &schema).await;
 }
 
-/// A member Run works in the Subnode Workspace and cannot read the creating
-/// Run's Workspace.
+/// A member Run works in the Subnode Thread and cannot read the creating
+/// Run's Thread.
 #[rstest::rstest]
 #[tokio::test]
-async fn subnode_member_cannot_read_the_creating_runs_workspace(
+async fn subnode_member_cannot_read_the_creating_runs_thread(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -8187,8 +8122,8 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 			"create-subnode",
 		)
 		.await;
-	let workspace = Uuid::parse_str(created["workspace_id"].as_str().unwrap()).unwrap();
-	assert_ne!(workspace, creator.workspace_id);
+	let thread = Uuid::parse_str(created["thread_id"].as_str().unwrap()).unwrap();
+	assert_ne!(thread, creator.thread_id);
 	let task = rig
 		.inject(
 			"subnode_task",
@@ -8208,11 +8143,11 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 		.id;
 	// Fence the creator so worker_once selects the member Run.
 	rig.set_run_control(rig.creator_run, "PAUSED").await;
-	// Without `workspace_id` the read stays in the Run's own Workspace.
+	// Without `thread_id` the read stays in the Run's own Thread.
 	assert!(
 		rig.script(
 			member,
-			"workspace_read",
+			"thread_read",
 			json!({"kind":"task","id":child_task}),
 			"member-reads-own",
 		)
@@ -8221,13 +8156,12 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 	let own = rig
 		.result_of(member, "member-reads-own")
 		.await
-		.expect("the member reads its own Workspace");
+		.expect("the member reads its own Thread");
 	assert!(own.to_string().contains("Member work"), "own read: {own}");
-	// Neither the creating Run's Task nor its named Workspace is reachable: the
+	// Neither the creating Run's Task nor its named Thread is reachable: the
 	// denial pauses the member without recording a tool result.
 	let denied = async |arguments: Value, call_id: &str| {
-		rig.script(member, "workspace_read", arguments, call_id)
-			.await;
+		rig.script(member, "thread_read", arguments, call_id).await;
 		assert!(
 			rig.result_of(member, call_id).await.is_none(),
 			"a denied call must not record a tool result"
@@ -8236,7 +8170,7 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 		assert_eq!(run.control, aidash_domain::RunControl::Paused, "{call_id}");
 		assert_eq!(
 			run.error.as_deref(),
-			Some("workspace_read: an authority check refused this step")
+			Some("thread_read: an authority check refused this step")
 		);
 		rig.set_run_control(member, "ACTIVE").await;
 	};
@@ -8246,22 +8180,22 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 	)
 	.await;
 	denied(
-		json!({"workspace_id":creator.workspace_id,"kind":"task","id":creator.task_id}),
-		"member-names-creator-workspace",
+		json!({"thread_id":creator.thread_id,"kind":"task","id":creator.task_id}),
+		"member-names-creator-thread",
 	)
 	.await;
 	cleanup(f, &url, &schema).await;
 }
 
-/// A pixel a person posts in the Subnode's Workspace for a member to copy.
+/// A pixel a person posts in the Subnode's Thread for a member to copy.
 const LATE_PIXEL: &[u8] = include_bytes!("../../execution/tests/support/media/pixel.png");
 
 /// The member's tools: the coordination tools need no entry, and the file tools
 /// give each member Run a Working Area.
 const SUBNODE_FILE_TOOLS: [&str; 9] = [
-	"workspace_read",
-	"workspace_observe",
-	"workspace_wait",
+	"thread_read",
+	"thread_observe",
+	"task_wait",
 	"artifact_publish",
 	"human_request",
 	"connection_request",
@@ -8274,7 +8208,7 @@ const SUBNODE_FILE_TOOLS: [&str; 9] = [
 /// Subnode ended.
 struct LateSubnode {
 	subnode: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	member: aidash_server::domain::Run,
 }
 
@@ -8294,7 +8228,7 @@ async fn late_subnode(rig: &SubnodeRig, allowance: &[&str]) -> LateSubnode {
 			.unwrap_or_else(|| panic!("creation: {created}")),
 	)
 	.unwrap();
-	let workspace = Uuid::parse_str(created["workspace_id"].as_str().unwrap()).unwrap();
+	let thread = Uuid::parse_str(created["thread_id"].as_str().unwrap()).unwrap();
 	let task = rig
 		.inject(
 			"subnode_task",
@@ -8320,7 +8254,7 @@ async fn late_subnode(rig: &SubnodeRig, allowance: &[&str]) -> LateSubnode {
 	rig.set_run_control(rig.creator_run, "PAUSED").await;
 	LateSubnode {
 		subnode,
-		workspace,
+		thread,
 		member,
 	}
 }
@@ -8331,7 +8265,7 @@ async fn end_subnode(rig: &SubnodeRig) -> (u16, Value) {
 		&rig.app,
 		&rig.token,
 		"POST",
-		&format!("/api/runs/{}/control", rig.creator_run),
+		&format!("/api/executions/{}/control", rig.creator_run),
 		json!({"action":"cancel"}),
 	)
 	.await
@@ -8351,15 +8285,15 @@ impl LateFiles {
 			&rig.app,
 			&rig.token,
 			"GET",
-			&format!("/api/runs/{}/working-area", late.member.id),
+			&format!("/api/executions/{}/working-area", late.member.id),
 			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "working area: {area}");
 		let area = Uuid::parse_str(area["id"].as_str().unwrap()).unwrap();
 		let path = format!(
-			"/api/workspaces/{}/attachments?filename=pixel.png&media_type=image%2Fpng&idempotency_key={}",
-			late.workspace,
+			"/api/threads/{}/attachments?filename=pixel.png&media_type=image%2Fpng&idempotency_key={}",
+			late.thread,
 			Uuid::new_v4()
 		);
 		let response = rig
@@ -8379,7 +8313,7 @@ impl LateFiles {
 			&rig.app,
 			&rig.token,
 			"POST",
-			&format!("/api/workspaces/{}/thread-messages", late.workspace),
+			&format!("/api/threads/{}/channel-messages", late.thread),
 			json!({"content":"A pixel","idempotency_key":Uuid::new_v4(),"attachment_ids":[attachment_id]}),
 		)
 		.await;
@@ -8424,7 +8358,7 @@ impl LateFiles {
 	async fn stage(&self, rig: &SubnodeRig, call: LateCall) {
 		let (name, arguments) = match call {
 			LateCall::Message => (
-				"workspace_message",
+				"thread_message",
 				json!({"content":"Late file","files":["sent.png"],"image_descriptions":{"sent.png":"A single pixel"}}),
 			),
 			LateCall::Copy => (
@@ -8443,17 +8377,17 @@ impl LateFiles {
 		match call {
 			LateCall::Message => {
 				let messages: i64 = sqlx::query_scalar(
-					"SELECT count(*) FROM messages WHERE workspace_id = $1 AND run_id = $2",
+					"SELECT count(*) FROM messages WHERE thread_id = $1 AND run_id = $2",
 				)
-				.bind(self.late.workspace)
+				.bind(self.late.thread)
 				.bind(self.late.member.id)
 				.fetch_one(driver)
 				.await
 				.unwrap();
 				let attachments: i64 = sqlx::query_scalar(
-					"SELECT count(*) FROM channel_attachments WHERE workspace_id = $1",
+					"SELECT count(*) FROM channel_attachments WHERE thread_id = $1",
 				)
-				.bind(self.late.workspace)
+				.bind(self.late.thread)
 				.fetch_one(driver)
 				.await
 				.unwrap();
@@ -8467,7 +8401,7 @@ impl LateFiles {
 
 #[derive(Clone, Copy, Debug)]
 enum LateCall {
-	/// `workspace_message` with `files`.
+	/// `thread_message` with `files`.
 	Message,
 	/// `attachment_copy`.
 	Copy,
@@ -8551,7 +8485,7 @@ fn start_end(
 					&app,
 					&token,
 					"POST",
-					&format!("/api/runs/{creator}/control"),
+					&format!("/api/executions/{creator}/control"),
 					json!({"action":"cancel"}),
 				)
 				.await
@@ -8673,8 +8607,8 @@ async fn a_call_after_the_end_is_refused(fixture: common::ApplicationFixture, ca
 	}
 	let revision = files.area_revision(&rig).await;
 	let attachments_before: i64 =
-		sqlx::query_scalar("SELECT count(*) FROM channel_attachments WHERE workspace_id = $1")
-			.bind(files.late.workspace)
+		sqlx::query_scalar("SELECT count(*) FROM channel_attachments WHERE thread_id = $1")
+			.bind(files.late.thread)
 			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -8719,7 +8653,7 @@ async fn a_call_after_the_end_is_refused(fixture: common::ApplicationFixture, ca
 			.all(|query| query.contains("subnodes") && query.contains("FOR SHARE")),
 		"the call must wait at the Subnode check: {waiting:?}"
 	);
-	sqlx::query("UPDATE runs SET control = 'CANCELLED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'CANCELLED' WHERE id = $1")
 		.bind(files.late.member.id)
 		.execute(&mut *ending)
 		.await
@@ -8731,8 +8665,8 @@ async fn a_call_after_the_end_is_refused(fixture: common::ApplicationFixture, ca
 		"a call after the end must write nothing"
 	);
 	let attachments_after: i64 =
-		sqlx::query_scalar("SELECT count(*) FROM channel_attachments WHERE workspace_id = $1")
-			.bind(files.late.workspace)
+		sqlx::query_scalar("SELECT count(*) FROM channel_attachments WHERE thread_id = $1")
+			.bind(files.late.thread)
 			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -8790,7 +8724,7 @@ async fn node_deletion_waits_for_a_subnode_write_before_publishing_run_controls(
 	let node = rig.node.node.to_string();
 	let browser = common::BrowserMapping::new(&f, "acme", "alice").await;
 	// Put the creating Run after its member in the physical scan of pending Runs.
-	sqlx::query("UPDATE runs SET revision = revision WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET revision = revision WHERE id = $1")
 		.bind(rig.creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -8827,10 +8761,10 @@ async fn node_deletion_waits_for_a_subnode_write_before_publishing_run_controls(
 		published.is_ok(),
 		"the write must not deadlock: {published:?}"
 	);
-	sqlx::query("INSERT INTO events (id, tenant, node, workspace_id, kind, data) VALUES ($1, 'acme', $2, $3, 'message.created', '{}')")
+	sqlx::query("INSERT INTO events (id, tenant, node, thread_id, kind, data) VALUES ($1, 'acme', $2, $3, 'message.created', '{}')")
 		.bind(Uuid::new_v4())
 		.bind(rig.node.node.as_str())
-		.bind(subnode.workspace)
+		.bind(subnode.thread)
 		.execute(&mut *write)
 		.await
 		.unwrap();
@@ -10063,7 +9997,7 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 		federation: f.clone(),
 	};
 	let count = || async {
-		sqlx::query_scalar::<_, i64>("SELECT count(*) FROM schedules")
+		sqlx::query_scalar::<_, i64>("SELECT count(*) FROM duties")
 			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap()
@@ -10072,7 +10006,7 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
 	let (approval, call) = awaited_tool_call(&waiting).unwrap();
 	// Assert: nothing is registered before the decision.
-	assert_eq!(call.name, "schedule_create");
+	assert_eq!(call.name, "duty_create");
 	assert_eq!(count().await, 0);
 	let pending = approval_cards(
 		&t.application.application,
@@ -10101,7 +10035,7 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 		finished.error
 	);
 	let (registrant, registered_by, title): (String, Option<Uuid>, String) =
-		sqlx::query_as("SELECT registrant, created_by_run_id, title FROM schedules")
+		sqlx::query_as("SELECT requester, created_by_run_id, title FROM duties")
 			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -10138,11 +10072,313 @@ async fn a_denied_schedule_tool_call_registers_nothing(
 	})
 	.await;
 	// Assert
-	let registered: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules")
+	let registered: i64 = sqlx::query_scalar("SELECT count(*) FROM duties")
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(registered, 0);
 	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A claim pins the Tenant and Node Instructions of the Node that executes the
+/// Run, and editing them afterwards leaves the claimed Run unchanged (#1010).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_claim_pins_tenant_and_node_instructions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let write = |table: &'static str, text: &'static str| {
+		let node = node.clone();
+		let driver = f.store.pool.fixture_driver();
+		async move {
+			let sql = if table == "tenant_instructions" {
+				format!(
+					"INSERT INTO tenant_instructions (tenant, text, revision, updated_at, updated_by) \
+					 VALUES ('acme', '{text}', 1, now(), 'test') \
+					 ON CONFLICT (tenant) DO UPDATE SET text = EXCLUDED.text"
+				)
+			} else {
+				format!(
+					"INSERT INTO node_instructions (tenant, node, text, revision, updated_at, updated_by) \
+					 VALUES ('acme', '{node}', '{text}', 1, now(), 'test') \
+					 ON CONFLICT (tenant, node) DO UPDATE SET text = EXCLUDED.text"
+				)
+			};
+			sqlx::query(&sql).execute(driver).await.unwrap();
+		}
+	};
+	write("tenant_instructions", "Reply in Japanese.").await;
+	write("node_instructions", "Open pull requests as drafts.").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let pinned = aidash_domain::standing_instructions::StandingInstructions {
+		tenant: "Reply in Japanese.".into(),
+		node: "Open pull requests as drafts.".into(),
+		duty: String::new(),
+	};
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(run.context.standing_instructions.as_ref(), Some(&pinned));
+	// Edits after the claim reach later Runs only.
+	write("tenant_instructions", "Reply in English.").await;
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(run.context.standing_instructions.as_ref(), Some(&pinned));
+	cleanup(f, &url, &schema).await;
+}
+
+/// A claim opens a Stint; entering a wait the Agent cannot move forward
+/// itself ends it with the wait's name; waking opens the next one; a failure
+/// delivery wait keeps the Stint open (#1009, ADR 0141).
+#[rstest::rstest]
+#[tokio::test]
+async fn stints_follow_waking_and_sleeping(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let driver = f.store.pool.fixture_driver();
+	let stints = async |run: Uuid| -> Vec<(bool, Option<String>)> {
+		sqlx::query_as::<_, (bool, Option<String>)>(&format!(
+			"SELECT ended_at IS NOT NULL, end_reason FROM stints WHERE run_id = '{run}' ORDER BY started_at, id"
+		))
+		.fetch_all(driver)
+		.await
+		.unwrap()
+	};
+	let set = async |phase: &str, reason: Option<&str>| {
+		let pending = match reason {
+			Some(reason) => {
+				format!("jsonb_set(pending, '{{data}}', jsonb_build_object('reason', '{reason}'))")
+			}
+			None => "pending".to_owned(),
+		};
+		sqlx::query(&format!(
+			"UPDATE task_executions SET phase = '{phase}', pending = {pending} WHERE id = '{}'",
+			run.id
+		))
+		.execute(driver)
+		.await
+		.unwrap();
+	};
+	assert_eq!(stints(run.id).await, [(false, None)]);
+	set("WAITING", Some("failure_delivery")).await;
+	assert_eq!(
+		stints(run.id).await,
+		[(false, None)],
+		"failure delivery keeps it"
+	);
+	set("WAITING", Some("human")).await;
+	assert_eq!(stints(run.id).await, [(true, Some("human".into()))]);
+	set("READY", None).await;
+	assert_eq!(
+		stints(run.id).await,
+		[(true, Some("human".into())), (false, None)]
+	);
+	set("COMPLETED", None).await;
+	assert_eq!(
+		stints(run.id).await,
+		[
+			(true, Some("human".into())),
+			(true, Some("completed".into()))
+		]
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A Stint records the last worker lease and every takeover of a lease its
+/// holder never released (Lease Recovery); the next Stint counts from zero
+/// (#1009, ADR 0141 amendment of 2026-11-20).
+#[rstest::rstest]
+#[tokio::test]
+async fn stints_record_the_last_lease_holder_and_lease_recoveries(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: a claimed Run whose open Stint has no lease taken over yet.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let driver = f.store.pool.fixture_driver();
+	// Lease writes pass the input ledger gate as an upgraded worker's do.
+	let lease = async |owner: Option<Uuid>| {
+		let (owner, until) = match owner {
+			Some(owner) => (
+				format!("'{owner}'"),
+				"CURRENT_TIMESTAMP + interval '5 minutes'".to_owned(),
+			),
+			None => ("NULL".to_owned(), "NULL".to_owned()),
+		};
+		let mut tx = driver.begin().await.unwrap();
+		sqlx::query("SELECT set_config('aidash.input_ledger_worker', 'true', true)")
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		sqlx::query(&format!(
+			"UPDATE task_executions SET lease_owner = {owner}, lease_until = {until} WHERE id = '{}'",
+			run.id
+		))
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+	};
+	let stints = async || -> Vec<(bool, Option<String>, i32)> {
+		sqlx::query_as::<_, (bool, Option<String>, i32)>(&format!(
+			"SELECT ended_at IS NOT NULL, lease_owner::text, lease_recoveries FROM stints WHERE run_id = '{}' ORDER BY started_at, id",
+			run.id
+		))
+		.fetch_all(driver)
+		.await
+		.unwrap()
+	};
+	lease(None).await;
+	let [first, second, third] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+	// Act: a worker leases the Run, then two others take the lease over
+	// before the last one releases it.
+	lease(Some(first)).await;
+	assert_eq!(stints().await, [(false, Some(first.to_string()), 0)]);
+	lease(Some(second)).await;
+	lease(Some(third)).await;
+	lease(None).await;
+
+	// Assert
+	assert_eq!(stints().await, [(false, Some(third.to_string()), 2)]);
+	sqlx::query(&format!(
+		"UPDATE task_executions SET phase = 'WAITING', pending = jsonb_set(pending, '{{data}}', jsonb_build_object('reason', 'human')) WHERE id = '{}'",
+		run.id
+	))
+	.execute(driver)
+	.await
+	.unwrap();
+	sqlx::query(&format!(
+		"UPDATE task_executions SET phase = 'READY' WHERE id = '{}'",
+		run.id
+	))
+	.execute(driver)
+	.await
+	.unwrap();
+	assert_eq!(
+		stints().await,
+		[(true, Some(third.to_string()), 2), (false, None, 0)],
+		"the next Stint counts its own Lease Recoveries"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A pause ends the Stint, since the Agent cannot move a paused Task forward
+/// itself; writes while paused open none; a resume opens the next one through
+/// the phase rule; a paused Run that is cancelled opens none (#1009, ADR 0141
+/// amendment of 2026-11-20).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_pause_ends_the_stint_and_a_resume_opens_the_next(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: a claimed Run with its Stint open.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let driver = f.store.pool.fixture_driver();
+	let stints = async || -> Vec<(bool, Option<String>)> {
+		sqlx::query_as::<_, (bool, Option<String>)>(&format!(
+			"SELECT ended_at IS NOT NULL, end_reason FROM stints WHERE run_id = '{}' ORDER BY started_at, id",
+			run.id
+		))
+		.fetch_all(driver)
+		.await
+		.unwrap()
+	};
+	let control = async |action: &str| {
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/executions/{}/control", run.id),
+			json!({ "action": action }),
+		)
+		.await;
+		assert_eq!(status, 200, "{action}: {body}");
+	};
+	assert_eq!(stints().await, [(false, None)]);
+
+	// Act and Assert: a person pauses the Run.
+	control("pause").await;
+	assert_eq!(stints().await, [(true, Some("paused".into()))]);
+	sqlx::query(&format!(
+		"UPDATE task_executions SET pending = pending WHERE id = '{}'",
+		run.id
+	))
+	.execute(driver)
+	.await
+	.unwrap();
+	assert_eq!(
+		stints().await,
+		[(true, Some("paused".into()))],
+		"a write while paused opens no Stint"
+	);
+	// The resume opens the next Stint.
+	control("resume").await;
+	assert_eq!(
+		stints().await,
+		[(true, Some("paused".into())), (false, None)]
+	);
+	// Paused again, then cancelled: the cancellation is delivered without the
+	// Agent, so no Stint opens.
+	control("pause").await;
+	control("cancel").await;
+	assert_eq!(
+		stints().await,
+		[(true, Some("paused".into())), (true, Some("paused".into()))]
+	);
 	cleanup(f, &url, &schema).await;
 }

@@ -17,7 +17,7 @@ import { useI18n } from "./ui";
 import { Alert, Hint, Loading } from "./components/patterns";
 import type { State } from "./types";
 import { useQuery } from "@tanstack/react-query";
-import { workspaceGet } from "./generated/aidash";
+import { threadGet } from "./generated/aidash";
 import { ArtifactList } from "./collaboration/channel";
 import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { ChannelFiles } from "./collaboration/attachments";
@@ -170,7 +170,7 @@ export function ConversationTools({
   stateError,
   nodeId,
   deploymentAdministrator,
-  workspace,
+  thread,
   close,
 }: {
   view?: "files" | "progress";
@@ -178,7 +178,7 @@ export function ConversationTools({
   stateError?: string;
   nodeId: string;
   deploymentAdministrator: boolean;
-  workspace?: string;
+  thread?: string;
   close: () => void;
 }) {
   const { locale } = useI18n();
@@ -218,9 +218,7 @@ export function ConversationTools({
           <Suspense
             fallback={<Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>}
           >
-            {view === "files" && workspace && (
-              <RequestFiles workspace={workspace} />
-            )}
+            {view === "files" && thread && <RequestFiles thread={thread} />}
             {view === "files" &&
               (deploymentAdministrator ? (
                 <Hint role="status">
@@ -229,7 +227,7 @@ export function ConversationTools({
                     : "Connect with a user account to manage working files."}
                 </Hint>
               ) : (
-                <WorkingFileSettings workspace={workspace} />
+                <WorkingFileSettings thread={thread} />
               ))}
             {view === "progress" && (
               <>
@@ -254,11 +252,11 @@ export function ConversationTools({
   );
 }
 
-function RequestFiles({ workspace }: { workspace: string }) {
+function RequestFiles({ thread }: { thread: string }) {
   const { locale } = useI18n();
   const query = useQuery({
-    queryKey: ["workspace", workspace],
-    queryFn: ({ signal }) => workspaceGet(workspace, { signal }),
+    queryKey: ["thread", thread],
+    queryFn: ({ signal }) => threadGet(thread, { signal }),
     retry: false,
   });
   return (
@@ -278,11 +276,11 @@ function RequestFiles({ workspace }: { workspace: string }) {
           unconfirmed={unconfirmedFor(
             readUnconfirmed(query.data),
             ["artifact"],
-            [workspace],
+            [thread],
           )}
         />
       )}
-      <ChannelFiles workspace={workspace} />
+      <ChannelFiles thread={thread} />
     </div>
   );
 }

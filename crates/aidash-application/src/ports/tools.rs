@@ -257,7 +257,13 @@ pub trait ToolOperations: Send + Sync {
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>>;
 	async fn discover(&self, search: &Search) -> Result<Value>;
 	async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task>;
-	async fn assign(&self, id: Uuid, policy: &str, reason: &str) -> Result<Value>;
+	async fn assign(
+		&self,
+		id: Uuid,
+		policy: &str,
+		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value>;
 	async fn delegate_with_key(
 		&self,
 		key: &str,
@@ -302,7 +308,7 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value>;
 	async fn read_subnode_record_chunk(
 		&self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_kind: &str,
 		_id: &str,
 		_offset: usize,
@@ -310,24 +316,39 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// Resolve a Workspace File pointer under the Run's current authority.
-	async fn workspace_image(
+	/// Resolve a Thread File pointer under the Run's current authority.
+	async fn thread_image(
 		&self,
 		_selection: &aidash_domain::media::WorkingImageSelection,
 		_representation: &str,
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// Search the Run's Workspace under its current authority.
-	async fn workspace_search(&self, _input: Value) -> Result<Value> {
+	/// Search the Run's Thread under its current authority.
+	async fn thread_search(&self, _input: Value) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// A Schedule tool call (#557, ADR 0134). The Home acts for the person at
-	/// the root of the Run's chain and refuses a federated Run, a Run whose
-	/// chain starts at no person and, for changes, a Run a Schedule started.
-	async fn schedule(&self, _key: &str, _operation: &str, _input: Value) -> Result<Value> {
+	/// Books the next event of a Duty Trigger for this Run (#1011, decision
+	/// B): the event then wakes this Run instead of starting a new Task.
+	async fn book_trigger(&self, _trigger: Uuid) -> Result<Value> {
 		Err(crate::Error::Invalid(
-			"Schedules are unavailable to this Run".into(),
+			"Duty events are unavailable to this Run".into(),
+		))
+	}
+	/// A Duty tool call (#1011, ADR 0134). The Home acts for the person at the
+	/// root of the Run's chain and refuses a federated Run and a Run whose
+	/// chain starts at no person.
+	async fn duty(&self, _key: &str, _operation: &str, _input: Value) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"Duties are unavailable to this Run".into(),
+		))
+	}
+	/// A Node tool call (#1012, ADR 0143). The Home acts for the person at the
+	/// root of the Run's chain and refuses a federated Run and a Run whose
+	/// chain starts at no person.
+	async fn node(&self, _key: &str, _operation: &str, _input: Value) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"Nodes are unavailable to this Run".into(),
 		))
 	}
 	async fn memory_mutate(

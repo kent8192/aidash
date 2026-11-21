@@ -14,7 +14,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 	// Arrange: Alice selects private evidence for disclosure; an Administrator
 	// later depends on it, optionally disclosing that dependent a second time.
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
@@ -62,7 +62,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 	let private = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -92,7 +92,7 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 	let dependent_bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

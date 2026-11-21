@@ -16,7 +16,7 @@ pub const TOOL_EVENT_RESERVE: usize = 512;
 pub const RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT: u32 = 2048;
 
 #[derive(Clone, Copy)]
-pub struct WorkspaceReadFitBudget {
+pub struct ThreadReadFitBudget {
 	pub requested: usize,
 	pub offset: usize,
 	pub request_tokens: usize,
@@ -25,7 +25,7 @@ pub struct WorkspaceReadFitBudget {
 }
 
 #[derive(Clone, Copy)]
-pub struct WorkspaceReadRange {
+pub struct ThreadReadRange {
 	pub offset: usize,
 	pub requested: usize,
 }
@@ -74,7 +74,7 @@ pub fn run_message_page(
 		let full_size = full.to_string().len();
 		let reference = run_message_value(
 			input,
-			json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true}),
+			json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_thread_read":true}),
 		);
 		let mut reference_only = references_only || input.reference_only;
 		let mut entry = if reference_only {
@@ -128,14 +128,14 @@ pub fn message_read_range(event: &ContextEvent) -> Option<(Uuid, usize, usize, u
 	message_read_range_for(&contract, event)
 }
 
-/// Message a workspace-record read targets. Summary dependencies key on the
+/// Message a thread-record read targets. Summary dependencies key on the
 /// call because Jev truncation may replace the structured result with its
 /// leading text, which still carries message content.
 pub fn message_read_target(
 	contract: &ToolContract,
 	call: &aidash_domain::provider::ToolCall,
 ) -> Option<Uuid> {
-	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
+	if contract.behavior.fitting != Some(ResultFitting::ThreadRecord)
 		|| call.arguments["kind"] != "message"
 	{
 		return None;
@@ -154,7 +154,7 @@ pub fn message_read_range_for(
 	else {
 		return None;
 	};
-	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
+	if contract.behavior.fitting != Some(ResultFitting::ThreadRecord)
 		|| call.arguments["kind"] != "message"
 		|| output["kind"] != "message"
 		|| output["encoding"] != "json"
@@ -269,7 +269,7 @@ pub fn is_required_message_read_for(
 	required_reads: &[Uuid],
 	context: &Context,
 ) -> bool {
-	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
+	if contract.behavior.fitting != Some(ResultFitting::ThreadRecord)
 		|| call.arguments["kind"] != "message"
 	{
 		return false;
@@ -297,48 +297,46 @@ pub fn is_required_message_read_for(
 	call.arguments["offset"].as_u64().unwrap_or(0) as usize == next_offset
 }
 
-pub fn workspace_read_range(
-	call: &aidash_domain::provider::ToolCall,
-) -> Result<WorkspaceReadRange> {
+pub fn thread_read_range(call: &aidash_domain::provider::ToolCall) -> Result<ThreadReadRange> {
 	let offset = match call.arguments.get("offset") {
 		None => 0,
 		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
-			Error::Invalid("workspace read offset must be a nonnegative integer".into())
+			Error::Invalid("thread read offset must be a nonnegative integer".into())
 		})?)
-		.map_err(|_| Error::Invalid("workspace read offset is too large".into()))?,
+		.map_err(|_| Error::Invalid("thread read offset is too large".into()))?,
 	};
 	let requested = match call.arguments.get("max_chars") {
 		None => 8000,
 		Some(value) => {
 			let requested = usize::try_from(value.as_u64().ok_or_else(|| {
-				Error::Invalid("workspace read max_chars must be a nonnegative integer".into())
+				Error::Invalid("thread read max_chars must be a nonnegative integer".into())
 			})?)
-			.map_err(|_| Error::Invalid("workspace read max_chars is too large".into()))?;
+			.map_err(|_| Error::Invalid("thread read max_chars is too large".into()))?;
 			if requested > 16_000 {
 				return Err(Error::Invalid(
-					"workspace read max_chars must not exceed 16000".into(),
+					"thread read max_chars must not exceed 16000".into(),
 				));
 			}
 			requested
 		}
 	};
-	Ok(WorkspaceReadRange { offset, requested })
+	Ok(ThreadReadRange { offset, requested })
 }
 
-pub fn workspace_read_plan_result(
+pub fn thread_read_plan_result(
 	call: &aidash_domain::provider::ToolCall,
 	step: i32,
 	cursor: usize,
 	pending: &ToolCallState,
-) -> Result<(WorkspaceReadRange, Option<Value>)> {
-	tool_result_plan(pending, ResultFitting::WorkspaceRecord, call, step, cursor)
+) -> Result<(ThreadReadRange, Option<Value>)> {
+	tool_result_plan(pending, ResultFitting::ThreadRecord, call, step, cursor)
 }
 
-pub fn fit_workspace_read_chars(
+pub fn fit_thread_read_chars(
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
 	output: &Value,
-	budget: WorkspaceReadFitBudget,
+	budget: ThreadReadFitBudget,
 ) -> Result<Option<usize>> {
 	Ok(fit_tool_result(
 		context,
@@ -346,7 +344,7 @@ pub fn fit_workspace_read_chars(
 		"max_chars",
 		budget,
 		0,
-		|chars| workspace_read_result(output, budget.requested, budget.offset, chars),
+		|chars| thread_read_result(output, budget.requested, budget.offset, chars),
 	))
 }
 
@@ -357,7 +355,7 @@ pub fn tool_result_fits(
 	parameter: &str,
 	size: usize,
 	output: Value,
-	budget: WorkspaceReadFitBudget,
+	budget: ThreadReadFitBudget,
 ) -> bool {
 	let mut bounded = call.clone();
 	bounded.arguments[parameter] = json!(size);
@@ -369,7 +367,7 @@ pub fn tool_result_fits(
 pub fn tool_event_fits(
 	context: &Context,
 	event: &ContextEvent,
-	budget: WorkspaceReadFitBudget,
+	budget: ThreadReadFitBudget,
 ) -> bool {
 	let maximum = budget
 		.request_window
@@ -385,7 +383,7 @@ pub fn fit_tool_result(
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
 	parameter: &str,
-	budget: WorkspaceReadFitBudget,
+	budget: ThreadReadFitBudget,
 	minimum: usize,
 	result: impl Fn(usize) -> Value,
 ) -> Option<usize> {
@@ -450,7 +448,7 @@ pub fn fit_capability_search(
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
 	output: &Value,
-	budget: WorkspaceReadFitBudget,
+	budget: ThreadReadFitBudget,
 ) -> Option<Value> {
 	fit_capability_search_page(output, budget.offset, |page| {
 		tool_event_fits(
@@ -473,12 +471,7 @@ pub fn fit_capability_search_page(
 	largest_fit(returned.min(1), returned, |kept| fits(&page(kept))).map(page)
 }
 
-pub fn workspace_read_result(
-	output: &Value,
-	requested: usize,
-	offset: usize,
-	chars: usize,
-) -> Value {
+pub fn thread_read_result(output: &Value, requested: usize, offset: usize, chars: usize) -> Value {
 	let mut result = output.clone();
 	let content: String = output["content"]
 		.as_str()
@@ -522,7 +515,7 @@ fn read_argument(
 		.transpose()
 }
 
-pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
+pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<ThreadReadRange> {
 	let offset = read_argument(call, "Skill read", "offset")?.unwrap_or(0);
 	let requested = read_argument(call, "Skill read", "max_chars")?.unwrap_or(8000);
 	if requested > 16_000 {
@@ -530,10 +523,10 @@ pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<Work
 			"Skill read max_chars must not exceed 16000".into(),
 		));
 	}
-	Ok(WorkspaceReadRange { offset, requested })
+	Ok(ThreadReadRange { offset, requested })
 }
 
-pub fn journal_read_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
+pub fn journal_read_range(call: &aidash_domain::provider::ToolCall) -> Result<ThreadReadRange> {
 	let offset = read_argument(call, "Journal read", "offset")?.unwrap_or(0);
 	let requested = read_argument(call, "Journal read", "max_chars")?.unwrap_or(4000);
 	if requested > 4000 {
@@ -541,13 +534,13 @@ pub fn journal_read_range(call: &aidash_domain::provider::ToolCall) -> Result<Wo
 			"Journal read max_chars must not exceed 4000".into(),
 		));
 	}
-	Ok(WorkspaceReadRange { offset, requested })
+	Ok(ThreadReadRange { offset, requested })
 }
 
 /// Without `max_chars` the configured read limit bounds the page, so the fitted
 /// size is clamped to the returned content instead.
-pub fn skill_asset_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
-	Ok(WorkspaceReadRange {
+pub fn skill_asset_range(call: &aidash_domain::provider::ToolCall) -> Result<ThreadReadRange> {
+	Ok(ThreadReadRange {
 		offset: read_argument(call, "Skill asset read", "offset")?.unwrap_or(0),
 		requested: read_argument(call, "Skill asset read", "max_chars")?.unwrap_or(usize::MAX),
 	})
@@ -603,22 +596,25 @@ pub fn fit_skill_read_chars(
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
 	output: &Value,
-	budget: WorkspaceReadFitBudget,
+	budget: ThreadReadFitBudget,
 ) -> Option<usize> {
 	fit_tool_result(context, call, "max_chars", budget, 1, |chars| {
 		skill_read_result(output, chars)
 	})
 }
 
-pub fn force_workspace_read_compaction_window(window: usize, minimum_request: usize) -> usize {
+pub fn force_thread_read_compaction_window(window: usize, minimum_request: usize) -> usize {
 	window
 		.saturating_sub(POST_TOOL_CONTEXT_RESERVE)
 		.max(minimum_request.min(window))
 }
 
-pub fn deferred_workspace_read(call: &aidash_domain::provider::ToolCall) -> Box<DeferredRead> {
+pub fn deferred_thread_read(call: &aidash_domain::provider::ToolCall) -> Box<DeferredRead> {
 	Box::new(DeferredRead {
-		message: "Retry this workspace_read after reducing the retained context; its result envelope did not fit.".into(),
+		message: format!(
+			"Retry this {} after reducing the retained context; its result envelope did not fit.",
+			call.name
+		),
 		call: call.clone(),
 	})
 }
@@ -653,11 +649,12 @@ pub fn deferred_capability_search(call: &aidash_domain::provider::ToolCall) -> B
 	})
 }
 
-pub fn deferred_workspace_observation(
-	call: &aidash_domain::provider::ToolCall,
-) -> Box<DeferredRead> {
+pub fn deferred_thread_observation(call: &aidash_domain::provider::ToolCall) -> Box<DeferredRead> {
 	Box::new(DeferredRead {
-		message: "Retry this workspace_observe after reducing the retained context; its page did not fit.".into(),
+		message: format!(
+			"Retry this {} after reducing the retained context; its page did not fit.",
+			call.name
+		),
 		call: call.clone(),
 	})
 }
@@ -669,22 +666,22 @@ pub fn tool_result_plan(
 	call: &aidash_domain::provider::ToolCall,
 	step: i32,
 	cursor: usize,
-) -> Result<(WorkspaceReadRange, Option<Value>)> {
+) -> Result<(ThreadReadRange, Option<Value>)> {
 	let range = match fitting {
-		ResultFitting::WorkspaceRecord => workspace_read_range(call)?,
+		ResultFitting::ThreadRecord => thread_read_range(call)?,
 		ResultFitting::SkillText => skill_read_range(call)?,
 		ResultFitting::JournalText => journal_read_range(call)?,
 		ResultFitting::SkillAsset => skill_asset_range(call)?,
 		// A description is recorded whole, so it has no range to narrow.
-		ResultFitting::CapabilityDescription => WorkspaceReadRange {
+		ResultFitting::CapabilityDescription => ThreadReadRange {
 			offset: 0,
 			requested: 0,
 		},
-		ResultFitting::CapabilitySearch | ResultFitting::JournalSearch => WorkspaceReadRange {
+		ResultFitting::CapabilitySearch | ResultFitting::JournalSearch => ThreadReadRange {
 			offset: capability_search_offset(call),
 			requested: aidash_domain::exposure::SEARCH_PAGE_SIZE,
 		},
-		ResultFitting::Observation => WorkspaceReadRange {
+		ResultFitting::Observation => ThreadReadRange {
 			offset: call.arguments["offset"].as_u64().unwrap_or(0) as usize,
 			requested: call.arguments["limit"]
 				.as_u64()
@@ -700,7 +697,7 @@ pub fn tool_result_plan(
 
 pub fn result_plan(pending: &ToolCallState, fitting: ResultFitting) -> &Option<ReadPlan> {
 	match fitting {
-		ResultFitting::WorkspaceRecord => &pending.workspace_read_plan,
+		ResultFitting::ThreadRecord => &pending.thread_read_plan,
 		// Skill and capability reads share one prepared slot; a plan matches only its call.
 		ResultFitting::SkillText
 		| ResultFitting::JournalText
@@ -716,7 +713,7 @@ pub fn result_plan_mut(
 	fitting: ResultFitting,
 ) -> &mut Option<ReadPlan> {
 	match fitting {
-		ResultFitting::WorkspaceRecord => &mut pending.workspace_read_plan,
+		ResultFitting::ThreadRecord => &mut pending.thread_read_plan,
 		ResultFitting::SkillText
 		| ResultFitting::JournalText
 		| ResultFitting::JournalSearch
@@ -732,41 +729,41 @@ pub fn defer_result(
 	selected_media: Vec<aidash_domain::media::ModelMedia>,
 ) -> (ThinkingState, &'static str) {
 	let mut state = ThinkingState {
-		force_workspace_read_compaction: true,
+		force_thread_read_compaction: true,
 		selected_media,
 		..Default::default()
 	};
 	let event = match fitting {
-		ResultFitting::WorkspaceRecord => {
-			state.deferred_workspace_read = Some(deferred_workspace_read(call));
-			"run.read_deferred"
+		ResultFitting::ThreadRecord => {
+			state.deferred_thread_read = Some(deferred_thread_read(call));
+			"execution.read_deferred"
 		}
 		ResultFitting::SkillText => {
 			state.deferred_skill_read = Some(deferred_skill_read(call));
-			"run.skill_read_deferred"
+			"execution.skill_read_deferred"
 		}
 		ResultFitting::JournalText | ResultFitting::JournalSearch => {
 			state.deferred_skill_read = Some(Box::new(DeferredRead {
 				message: "Retry this Journal read after reducing the retained context; its result envelope did not fit.".into(),
 				call: call.clone(),
 			}));
-			"run.journal_read_deferred"
+			"execution.journal_read_deferred"
 		}
 		ResultFitting::SkillAsset => {
 			state.deferred_skill_read = Some(deferred_skill_asset_read(call));
-			"run.skill_read_deferred"
+			"execution.skill_read_deferred"
 		}
 		ResultFitting::CapabilityDescription => {
 			state.deferred_skill_read = Some(deferred_capability_description(call));
-			"run.description_deferred"
+			"execution.description_deferred"
 		}
 		ResultFitting::CapabilitySearch => {
 			state.deferred_skill_read = Some(deferred_capability_search(call));
-			"run.search_deferred"
+			"execution.search_deferred"
 		}
 		ResultFitting::Observation => {
-			state.deferred_workspace_observation = Some(deferred_workspace_observation(call));
-			"run.observation_deferred"
+			state.deferred_thread_observation = Some(deferred_thread_observation(call));
+			"execution.observation_deferred"
 		}
 	};
 	(state, event)
@@ -787,7 +784,7 @@ pub fn workspace_observation_event_fits(
 		"limit",
 		limit,
 		output.clone(),
-		WorkspaceReadFitBudget {
+		ThreadReadFitBudget {
 			requested: limit,
 			offset: 0,
 			request_tokens,

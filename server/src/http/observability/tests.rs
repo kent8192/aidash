@@ -34,14 +34,14 @@ fn pending(handle: &PrometheusHandle, expected: u8) {
 #[rstest]
 #[case::parameter(
 	"GET",
-	"/api/workspaces/7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb?token=private",
+	"/api/threads/7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb?token=private",
 	"GET",
-	"/api/workspaces/{id}"
+	"/api/threads/{id}"
 )]
-#[case::static_route("POST", "/api/workspaces?token=private", "POST", "/api/workspaces")]
-#[case::slash_fallback("POST", "/api/workspaces/", "POST", "/api/workspaces")]
+#[case::static_route("POST", "/api/threads?token=private", "POST", "/api/threads")]
+#[case::slash_fallback("POST", "/api/threads/", "POST", "/api/threads")]
 #[case::unmatched("POST", "/unknown/private-value", "POST", "unmatched")]
-#[case::unknown_method("PRIVATE_METHOD", "/api/workspaces", "UNKNOWN", "unmatched")]
+#[case::unknown_method("PRIVATE_METHOD", "/api/threads", "UNKNOWN", "unmatched")]
 #[case::asset("GET", "/assets/private-filename.js", "GET", "/{<path:asset>}")]
 fn request_labels_only_contain_registered_templates_and_bounded_methods(
 	#[case] method: &str,
@@ -190,7 +190,7 @@ fn response_log_has_method_and_route_without_raw_request_values() {
 	// Act
 	let response = observe(
 		"GET",
-		"/api/workspaces/7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb?token=private",
+		"/api/threads/7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb?token=private",
 	)
 	.finish(Response::not_found(), "request-fixture");
 	drop(response);
@@ -199,7 +199,7 @@ fn response_log_has_method_and_route_without_raw_request_values() {
 	for field in [
 		"HTTP response",
 		"method=\"GET\"",
-		"route=\"/api/workspaces/{id}\"",
+		"route=\"/api/threads/{id}\"",
 		"status=404",
 		"duration_ms=",
 		"request-fixture",

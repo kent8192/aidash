@@ -18,4 +18,11 @@ pub trait Definitions: Send + Sync {
 	/// Resolve the current capability profile after definition and knowledge reads.
 	fn validation(&self) -> DefinitionValidation;
 	async fn pinned_headroom(&self, run: Uuid) -> Result<usize>;
+	/// The Tenant and Node Instructions the Run pinned at claim (#1010).
+	async fn standing_instructions(
+		&self,
+		_run: &RunMetadata,
+	) -> Result<aidash_domain::standing_instructions::StandingInstructions> {
+		Ok(Default::default())
+	}
 }

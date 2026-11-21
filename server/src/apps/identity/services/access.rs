@@ -20,11 +20,11 @@ use uuid::Uuid;
 #[path = "visibility.rs"]
 mod visibility;
 
-pub(super) fn subnode_workspace_write(action: &str) -> bool {
+pub(super) fn subnode_thread_write(action: &str) -> bool {
 	matches!(
 		action,
-		"workspace.update"
-			| "workspace.share"
+		"thread.update"
+			| "thread.share"
 			| "task.create"
 			| "task.update"
 			| "task.claim"
@@ -102,7 +102,7 @@ impl RecordedKey {
 
 /// A repeated read hands over nothing a recorded row does not already say.
 fn read_action(action: &str) -> bool {
-	action.ends_with(".read") || action == "workspace.events"
+	action.ends_with(".read") || action == "thread.events"
 }
 
 #[derive(Default)]
@@ -117,11 +117,16 @@ pub(crate) struct AccessTransaction {
 	// valid only while this transaction retains its policy lease.
 	live_nodes: std::collections::BTreeSet<(String, String)>,
 	live_nodes_epoch: u64,
-	// One walk reaches the same Workspace once per read. Its owner is held by the
-	// share lock when `lock` was asked for, and neither fact changes for a live row.
-	workspace_owners: std::collections::BTreeMap<(Uuid, bool), String>,
-	workspace_nodes: std::collections::BTreeMap<Uuid, String>,
-	workspaces_epoch: u64,
+	// One walk reaches the same Thread once per read. Its owner is held by the
+	// share lock when `lock` was asked for, and neither fact changes for a live
+	// row. Its Duty is read in the same statement but is not locked: a Duty
+	// deleted while this transaction runs may still show here (#1008).
+	thread_owners: std::collections::BTreeMap<
+		(Uuid, bool),
+		aidash_application::ports::authorization::threads::ThreadOwner,
+	>,
+	thread_nodes: std::collections::BTreeMap<Uuid, String>,
+	threads_epoch: u64,
 }
 
 impl AccessTransaction {
@@ -132,9 +137,9 @@ impl AccessTransaction {
 			admissions_epoch: 0,
 			live_nodes: Default::default(),
 			live_nodes_epoch: 0,
-			workspace_owners: Default::default(),
-			workspace_nodes: Default::default(),
-			workspaces_epoch: 0,
+			thread_owners: Default::default(),
+			thread_nodes: Default::default(),
+			threads_epoch: 0,
 		}
 	}
 
@@ -161,48 +166,64 @@ impl AccessTransaction {
 		debug_assert!(self.transaction.is_none());
 		self.admissions.clear();
 		self.live_nodes.clear();
-		self.forget_workspaces();
+		self.forget_threads();
 		self.transaction = Some(transaction);
 	}
 
-	fn forget_workspaces(&mut self) {
-		self.workspace_owners.clear();
-		self.workspace_nodes.clear();
+	fn forget_threads(&mut self) {
+		self.thread_owners.clear();
+		self.thread_nodes.clear();
 	}
 
 	/// A savepoint rollback may have released the locks these facts rest on.
-	fn current_workspaces(&mut self) {
+	fn current_threads(&mut self) {
 		let epoch = self
 			.transaction
 			.as_ref()
 			.map_or(0, |transaction| transaction.lock_epoch());
-		if epoch != self.workspaces_epoch {
-			self.forget_workspaces();
-			self.workspaces_epoch = epoch;
+		if epoch != self.threads_epoch {
+			self.forget_threads();
+			self.threads_epoch = epoch;
 		}
 	}
 
-	pub(crate) fn workspace_owner(&mut self, id: Uuid, lock: bool) -> Option<String> {
-		self.current_workspaces();
-		self.workspace_owners
+	pub(crate) fn thread_owner(
+		&mut self,
+		id: Uuid,
+		lock: bool,
+	) -> Option<aidash_application::ports::authorization::threads::ThreadOwner> {
+		self.current_threads();
+		self.thread_owners
 			.get(&(id, lock))
 			.or_else(|| {
 				(!lock)
-					.then(|| self.workspace_owners.get(&(id, true)))
+					.then(|| self.thread_owners.get(&(id, true)))
 					.flatten()
 			})
 			.cloned()
 	}
 
-	pub(crate) fn remember_workspace_owner(&mut self, id: Uuid, lock: bool, owner: &str) {
-		self.current_workspaces();
-		self.workspace_owners.insert((id, lock), owner.to_owned());
+	pub(crate) fn remember_thread_owner(
+		&mut self,
+		id: Uuid,
+		lock: bool,
+		owner: &aidash_application::ports::authorization::threads::ThreadOwner,
+	) {
+		self.current_threads();
+		self.thread_owners.insert((id, lock), owner.clone());
+	}
+
+	/// Forgets the owner held for a Thread whose owner this transaction just
+	/// changed (#1011), so the next check reads the new one.
+	pub(crate) fn forget_thread_owner(&mut self, id: Uuid) {
+		self.thread_owners.remove(&(id, false));
+		self.thread_owners.remove(&(id, true));
 	}
 
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {
 		self.admissions.clear();
 		self.live_nodes.clear();
-		self.forget_workspaces();
+		self.forget_threads();
 		self.transaction.take()
 	}
 
@@ -319,18 +340,18 @@ pub(crate) struct Access {
 	/// disclosure check holds none, so its remote proofs are unavailable.
 	pub(crate) wire: Option<crate::apps::federation::remote::services::wire::Wire>,
 	pub(crate) node_id: String,
-	/// The Node of the Workspace or Run this authority serves, once known.
+	/// The Node of the Thread or Run this authority serves, once known.
 	/// Catalog Approvals are per Node; an Access with no Node yet uses the
 	/// Tenant's default Node.
 	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
 	/// The address of `node`, which Federation references name Nodes by.
 	pub(crate) node_address: Option<String>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
-	/// The Subnode Workspaces a Read Recheck in progress has opened, one entry per
+	/// The Subnode Threads a Read Recheck in progress has opened, one entry per
 	/// Run it is checking, and what each Run opens.
-	pub(crate) recheck_workspaces: Vec<Vec<Uuid>>,
-	pub(crate) subnode_workspaces: std::collections::BTreeMap<Uuid, Vec<Uuid>>,
-	/// Which Run created the Subnode that owns a Workspace, if any.
+	pub(crate) recheck_threads: Vec<Vec<Uuid>>,
+	pub(crate) subnode_threads: std::collections::BTreeMap<Uuid, Vec<Uuid>>,
+	/// Which Run created the Subnode that owns a Thread, if any.
 	pub(crate) subnode_creators: std::collections::BTreeMap<Uuid, Option<Uuid>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
@@ -363,7 +384,7 @@ pub(crate) struct Access {
 	pub read_grant: Option<Uuid>,
 	/// A batchable read loads its Working Area and records without excluding concurrent reads.
 	pub shared_area: bool,
-	/// A remote worker's Home Workspace corpus digest, from the describe reply
+	/// A remote worker's Home Thread corpus digest, from the describe reply
 	/// that refreshed this authority (#191). `None` for every other Access.
 	pub(crate) home_corpus_digest: Option<String>,
 	/// The tools the Home's Description requests, from the same reply. `None` when it carries
@@ -479,7 +500,7 @@ impl Access {
 		&self.pool
 	}
 	// The same compound operation can narrow its subject chain or change the
-	// workspace context. Never reuse a read decision from its earlier authority.
+	// thread context. Never reuse a read decision from its earlier authority.
 	pub(crate) fn authority_context(&self) -> String {
 		crate::registry::digest(
 			&json!({"subjects":self.subjects,"context":self.context,"environment":self.environment}),
@@ -674,8 +695,8 @@ impl Access {
 			read_verdicts: Default::default(),
 			read_block: None,
 			dependency_frontier: None,
-			recheck_workspaces: Default::default(),
-			subnode_workspaces: Default::default(),
+			recheck_threads: Default::default(),
+			subnode_threads: Default::default(),
 			subnode_creators: Default::default(),
 			wire,
 			node_id: node.to_owned(),
@@ -844,8 +865,8 @@ impl Access {
 			read_verdicts: Default::default(),
 			read_block: None,
 			dependency_frontier: None,
-			recheck_workspaces: Default::default(),
-			subnode_workspaces: Default::default(),
+			recheck_threads: Default::default(),
+			subnode_threads: Default::default(),
 			subnode_creators: Default::default(),
 			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
@@ -984,13 +1005,13 @@ impl Access {
 		self.environment["transport"] = json!("worker");
 	}
 
-	pub async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		let resource = aidash_application::authorization::workspaces::resource(
+	pub async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		let resource = aidash_application::authorization::threads::resource(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
 		.await?;
-		let node = self.workspace_node(id).await?;
+		let node = self.thread_node(id).await?;
 		self.set_node(node);
 		Ok(resource)
 	}
@@ -1019,7 +1040,10 @@ impl Access {
 		Ok(self.resource(
 			"node",
 			node.name.as_str(),
-			json!({"label":node.label,"default":node.default}),
+			crate::apps::identity::repositories::nodes::policy_attributes(
+				&node.label,
+				node.default,
+			),
 		))
 	}
 
@@ -1042,25 +1066,25 @@ impl Access {
 		Ok(())
 	}
 
-	/// The Node of a Workspace of this Access's Tenant.
-	pub(crate) async fn workspace_node(
+	/// The Node of a Thread of this Access's Tenant.
+	pub(crate) async fn thread_node(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<aidash_domain::nodes::NodeName> {
-		self.tx.current_workspaces();
-		let name: String = match self.tx.workspace_nodes.get(&workspace) {
+		self.tx.current_threads();
+		let name: String = match self.tx.thread_nodes.get(&thread) {
 			Some(name) => name.clone(),
 			None => {
 				let name: String = crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("node"))
-						.from(Alias::new("workspaces"))
-						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+						.from(Alias::new("threads"))
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_one(&mut **self.tx)
 				.await?;
-				self.tx.workspace_nodes.insert(workspace, name.clone());
+				self.tx.thread_nodes.insert(thread, name.clone());
 				name
 			}
 		};
@@ -1070,7 +1094,7 @@ impl Access {
 		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
 	}
 
-	/// The Node whose Catalog Approvals apply: the Workspace's or Run's once an
+	/// The Node whose Catalog Approvals apply: the Thread's or Run's once an
 	/// operation has named it, the Tenant's default Node otherwise.
 	pub(crate) async fn catalog_node(&mut self) -> Result<aidash_domain::nodes::NodeName> {
 		if let Some(node) = &self.node {
@@ -1108,19 +1132,19 @@ impl Access {
 		})
 	}
 
-	/// A dissolved Subnode Workspace is retained for reading and citations.
+	/// A dissolved Subnode Thread is retained for reading and citations.
 	/// User mutations hold a shared Subnode lock until their transaction commits;
 	/// dissolution takes the exclusive lock. A Run's writes are not checked here
 	/// (see `decide`): each path that writes for a Run must call
 	/// `subnodes::require_writable` first in its own transaction.
-	pub(crate) async fn ensure_subnode_writable(&mut self, workspace: Uuid) -> Result<()> {
+	pub(crate) async fn ensure_subnode_writable(&mut self, thread: Uuid) -> Result<()> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		use reinhardt::query::LockType;
 		let (sql, values) = Query::select()
 			.column(Alias::new("state"))
 			.from(Alias::new("subnodes"))
 			.and_where(Expr::col("tenant").eq(self.identity.tenant.clone()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.lock(LockType::Share)
 			.build(PostgresQueryBuilder);
 		if let Some(row) = self
@@ -1149,7 +1173,7 @@ impl Access {
 		// Within one authority, a repeated allow needs no second evaluation. A
 		// denial is evaluated and recorded every time. So is a write a Subnode can
 		// fence: the fence closes between two identical checks.
-		let repeat = (self.audit_class(action).1 && !subnode_workspace_write(action))
+		let repeat = (self.audit_class(action).1 && !subnode_thread_write(action))
 			.then(|| self.repeat_key(resource, action));
 		if let Some(key) = &repeat
 			&& self.read_lookups.allowed.contains(key)
@@ -1170,40 +1194,60 @@ impl Access {
 				}
 			}
 		}
-		// A Subnode creator reads, but never writes, the Subnode's Workspace.
-		if self.inherited_lease && subnode_workspace_write(action) {
-			let workspace = resource
+		// A Subnode creator reads, but never writes, the Subnode's Thread.
+		if self.inherited_lease && subnode_thread_write(action) {
+			let thread = resource
 				.attributes
-				.get("workspace_id")
+				.get("thread_id")
 				.and_then(Value::as_str)
-				.or_else(|| (resource.kind == "workspace").then_some(resource.id.as_str()))
+				.or_else(|| (resource.kind == "thread").then_some(resource.id.as_str()))
 				.and_then(|id| Uuid::parse_str(id).ok());
-			if workspace.is_some_and(|workspace| {
-				aidash_application::authorization::workspaces::subnode_read_workspace(
+			if thread.is_some_and(|thread| {
+				aidash_application::authorization::threads::subnode_read_thread(
 					&self.context,
-					workspace,
+					thread,
 				)
 			}) {
 				return Ok(Verdict::SubnodeReadOnly);
 			}
 		}
-		if self.read_run.is_none() && subnode_workspace_write(action) {
-			let workspace = resource
+		if self.read_run.is_none() && subnode_thread_write(action) {
+			let thread = resource
 				.attributes
-				.get("workspace_id")
+				.get("thread_id")
 				.and_then(Value::as_str)
-				.or_else(|| (resource.kind == "workspace").then_some(resource.id.as_str()))
+				.or_else(|| (resource.kind == "thread").then_some(resource.id.as_str()))
 				.and_then(|id| Uuid::parse_str(id).ok());
-			if let Some(workspace) = workspace {
-				self.ensure_subnode_writable(workspace).await?;
+			if let Some(thread) = thread {
+				self.ensure_subnode_writable(thread).await?;
 			}
 		}
-		let allowed = aidash_application::authorization::lease::decide(
+		let mut allowed = aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			resource,
 			action,
 		)
 		.await?;
+		// A Node administrator reads every Thread of their Node and its events
+		// (#1008, ADR 0140), unless a policy denies them the Thread by name. It
+		// is a person's view: a Run's chain stays confined to its own Thread.
+		if !allowed
+			&& !self.inherited_lease
+			&& self.read_run.is_none()
+			&& resource.kind == "thread"
+			&& matches!(action, "thread.read" | "thread.events")
+			&& !self.last_policy_explicit_deny
+			&& let Ok(thread) = Uuid::parse_str(&resource.id)
+		{
+			let node = self.thread_node(thread).await?;
+			let node = self.node_resource(&node).await?;
+			allowed = aidash_application::authorization::lease::decide(
+				&mut crate::bootstrap::run_visibility_scope(self),
+				&node,
+				aidash_domain::identity::tenant_administration::NODE_ADMINISTER,
+			)
+			.await?;
+		}
 		if allowed && let Some(key) = repeat {
 			self.read_lookups.allowed.insert(key);
 		}
@@ -1804,9 +1848,9 @@ impl Access {
 		&mut self,
 		node: &str,
 		kind: aidash_domain::unconfirmed::Kind,
-		workspace: Uuid,
+		thread: Uuid,
 	) {
-		self.unconfirmed.record(node, kind, workspace);
+		self.unconfirmed.record(node, kind, thread);
 	}
 	/// What native read loops have left out since the last call.
 	pub(crate) fn take_unconfirmed(&mut self) -> aidash_domain::unconfirmed::Tally {
@@ -1844,7 +1888,7 @@ impl Access {
 	}
 }
 impl NativeAccess {
-	pub(crate) fn workspace_context(&self) -> &Value {
+	pub(crate) fn thread_context(&self) -> &Value {
 		&self.access.context
 	}
 }

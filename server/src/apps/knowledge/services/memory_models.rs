@@ -54,14 +54,14 @@ pub(crate) enum Prepared<T> {
 	Cached(Produced<T>),
 	Reserved(Reservation),
 }
-/// A Run reads another Workspace's bank only through Built-in Memory, inside
+/// A Run reads another Thread's bank only through Built-in Memory, inside
 /// its own Tenant, while the Tenant shares memory per Agent (#852 decision 6).
 /// Which Units it may see is filtered afterwards by `sharing::agent_unit`.
 async fn tenant_agent_reader(
 	lease: &mut Lease<'_>,
 	provider: &EntityRef,
 	bank: &Bank,
-	run_workspace: Uuid,
+	run_thread: Uuid,
 ) -> Result<bool> {
 	use aidash_domain::registry::bindings::memory_defaults;
 	if provider.id != memory_defaults::MEMORY_ID || provider.version != memory_defaults::VERSION {
@@ -70,8 +70,8 @@ async fn tenant_agent_reader(
 	let tenant: Option<String> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("tenant"))
-			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(run_workspace)))
+			.from(Alias::new("authorization_threads"))
+			.and_where(Expr::col("thread_id").eq(Expr::value(run_thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **lease.tx())
@@ -233,15 +233,15 @@ impl Models {
 			let record: aidash_domain::Run = crate::database::query_as(
 				&Query::select()
 					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **lease.tx())
 			.await?;
 			if record.home_node != bank.home
-				|| (record.workspace_id != bank.workspace
-					&& !tenant_agent_reader(lease, &provider, &bank, record.workspace_id).await?)
+				|| (record.thread_id != bank.thread
+					&& !tenant_agent_reader(lease, &provider, &bank, record.thread_id).await?)
 			{
 				return Err(Error::Forbidden);
 			}
@@ -351,7 +351,7 @@ impl Models {
 		let record: aidash_domain::Run = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -373,6 +373,124 @@ impl Models {
 		drop(generation);
 		Ok(())
 	}
+	/// What this memory work's model calls are charged to (#1012): its Run's
+	/// chain, or, for background work without a Run, its Tenant and its
+	/// Thread's Node. `None` for a Run this Deployment does not hold.
+	async fn charge(
+		&self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	) -> Result<Option<crate::apps::identity::repositories::budgets::Charge>> {
+		use crate::apps::identity::repositories::budgets;
+		match self.run {
+			Some(run) => budgets::charge_of(tx, run).await,
+			None => budgets::thread_charge(tx, &self.bank.tenant, self.bank.thread)
+				.await
+				.map(Some),
+		}
+	}
+
+	/// Every model call passes the Budgets that cover it, memory roles and
+	/// embeddings included (#1012, ADR 0143): a Hard Limit refuses the call
+	/// before it is sent, as it refuses a Run's own model call.
+	async fn admit_budget(&self) -> Result<()> {
+		use crate::apps::identity::repositories::budgets;
+		let scope = aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?;
+		let gate = self
+			.store
+			.control_pool
+			.atomic(&scope, async |tx| {
+				let Some(charge) = self.charge(tx).await? else {
+					return Ok(aidash_domain::budgets::Gate::Open);
+				};
+				Ok(budgets::gate_for(tx, &charge, Utc::now()).await?.0)
+			})
+			.await?;
+		budgets::admit(gate)
+	}
+
+	/// Passes the Budgets for a call `prepare` reserved. A refused call was
+	/// never sent, so its reservation goes back whole: the attempt is removed
+	/// and the operation's totals return, and a Budget refusal spends none of
+	/// the operation's retries or call budget (#1012).
+	async fn admit_reserved(&self, reservation: &Reservation) -> Result<()> {
+		let Err(refused) = self.admit_budget().await else {
+			return Ok(());
+		};
+		let mut tx = self
+			.store
+			.control_pool
+			.begin(&aidash_application::tenancy::TenancyScope::tenant(
+				&self.bank.tenant,
+			)?)
+			.await?;
+		// The lock order of `prepare`: the bank's ledger gate, then the rows.
+		let gate = i64::from_be_bytes(self.bank_id.as_bytes()[..8].try_into().unwrap()) ^ 125_0015;
+		native::query(
+			&Query::select()
+				.expr(reinhardt::query::SimpleExpr::CustomWithExpr(
+					"pg_advisory_xact_lock(?)".into(),
+					vec![Expr::value(gate).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		let removed = native::query(
+			&Query::delete()
+				.from_table(Alias::new("memory_model_attempts"))
+				.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
+				.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
+				.and_where(Expr::col("state").eq("pending"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?
+		.rows_affected();
+		if removed == 1 {
+			native::query(
+				&Query::update()
+					.table(Alias::new("memory_model_operations"))
+					.value_expr(
+						Alias::new("calls"),
+						Expr::col("calls").sub(Expr::value(1_i64)),
+					)
+					.value_expr(
+						Alias::new("tokens"),
+						Expr::col("tokens").sub(Expr::value(reservation.tokens as i64)),
+					)
+					.value_expr(
+						Alias::new("cost_micros"),
+						Expr::col("cost_micros").sub(Expr::value(reservation.cost as i64)),
+					)
+					.and_where(Expr::col("id").eq(Expr::value(self.operation)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+		Err(refused)
+	}
+
+	/// Adds a finished call to the Budget ledger: the cost its provider
+	/// reported, or one unpriced call.
+	async fn record_budget_spend(
+		&self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		cost: Option<i64>,
+	) -> Result<()> {
+		if let Some(charge) = self.charge(tx).await? {
+			crate::apps::identity::repositories::budgets::record_charge(
+				tx,
+				&charge,
+				cost,
+				Utc::now(),
+			)
+			.await?;
+		}
+		Ok(())
+	}
+
 	pub fn role(&self, reference: &EntityRef, kind: &str) -> Result<&Entry> {
 		self.roles
 			.iter()
@@ -805,6 +923,7 @@ impl Models {
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 		};
+		self.admit_reserved(&reservation).await?;
 		let origin = self
 			.reserve_model(reservation.id, input, output as u32)
 			.await?;
@@ -858,20 +977,34 @@ impl Models {
 				"upstream_cost_nanocredits": usage.cost.and_then(|cost| cost.upstream_nanocredits),
 				"provider_identity": usage.provider_identity,
 			});
-			native::query(
-				&Query::update()
-					.table(Alias::new("memory_model_attempts"))
-					.value_expr(Alias::new("provider_usage"), Expr::value(reported))
-					.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
-					.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
-					.and_where(Expr::col("provider_usage").is_null())
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(self.store.control_pool.in_scope(
-				&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
-			))
-			.await
-			.map(|_| ())
+			// The Budget ledger takes the call once, with its usage record.
+			let cost = usage.cost.map(|cost| cost.nanocredits);
+			self.store
+				.control_pool
+				.atomic(
+					&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
+					async |tx| {
+						let recorded = native::query(
+							&Query::update()
+								.table(Alias::new("memory_model_attempts"))
+								.value_expr(Alias::new("provider_usage"), Expr::value(reported))
+								.and_where(Expr::col("id").eq(Expr::value(reservation.id)))
+								.and_where(
+									Expr::col("operation_id").eq(Expr::value(self.operation)),
+								)
+								.and_where(Expr::col("provider_usage").is_null())
+								.to_string(PostgresQueryBuilder),
+						)
+						.execute(&mut *tx)
+						.await?
+						.rows_affected();
+						if recorded == 1 {
+							self.record_budget_spend(tx, cost).await?;
+						}
+						Ok(())
+					},
+				)
+				.await
 		} else {
 			Ok(())
 		};
@@ -941,6 +1074,7 @@ impl Models {
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 		};
+		self.admit_reserved(&reservation).await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
@@ -986,6 +1120,15 @@ impl Models {
 			}
 			error => error.into(),
 		})?;
+		// Embedding providers report no cost: the Budget ledger counts the
+		// call as unpriced.
+		self.store
+			.control_pool
+			.atomic(
+				&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
+				async |tx| self.record_budget_spend(tx, None).await,
+			)
+			.await?;
 		if let Some(local) = local {
 			local.settle(output.tokens).await?;
 		}

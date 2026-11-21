@@ -2,12 +2,14 @@
 pub mod accounts;
 pub mod agent_plugin;
 pub mod approval_rules;
+pub mod budgets;
 pub mod catalog;
 pub mod completion;
 pub mod context;
 pub mod data_protection;
 pub mod decision;
 pub mod deployment;
+pub mod duties;
 pub mod entities;
 pub mod exposure;
 pub mod identity;
@@ -27,7 +29,6 @@ pub mod provider_credentials;
 pub mod run_input;
 pub mod run_state;
 pub mod safety_stop;
-pub mod schedules;
 pub mod scratch;
 pub mod subnodes;
 pub mod unassigned;
@@ -69,13 +70,15 @@ pub mod federation;
 
 pub mod configuration;
 
-pub mod workspaces;
+pub mod threads;
 
 pub mod marketplace;
 
 pub mod generation;
 
 pub mod harness_contract;
+
+pub mod standing_instructions;
 
 pub mod invocation;
 

@@ -401,7 +401,7 @@ impl PeerAdmissionScope for Owned {
 		grant: Uuid,
 	) -> Result<bool> {
 		let result:NativeResult<bool>=async {let access=&mut *self.access;let input=crate::apps::identity::serializers::peer_admission::Input {grant_id:grant};Ok({ let query_bind_1 = source; let query_bind_2 = description.task.id; let query_bind_3 = input.grant_id; crate::database::native::query_scalar(&reinhardt::query::Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM runs r WHERE home_node = ? AND task_id = ? AND NOT EXISTS(SELECT 1 FROM authorization_remote_admissions a WHERE a.id = r.id AND a.source_node = r.home_node AND a.grant_id = ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
+				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM task_executions r WHERE home_node = ? AND task_id = ? AND NOT EXISTS(SELECT 1 FROM authorization_remote_admissions a WHERE a.id = r.id AND a.source_node = r.home_node AND a.grant_id = ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
 		.scalar_one(&mut **access.tx)
 		.await? })}.await;
@@ -756,19 +756,28 @@ impl PeerAdmissionScope for Owned {
 				aidash_application::usage::Work::Run,
 			)
 			.await?;
+			// The receiver executes the Run, so its own Tenant and Node
+			// Instructions apply, pinned with the admission (#1010).
+			let standing = super::standing_instructions::standing(
+				&mut **access.tx,
+				&access.identity.tenant,
+				self.receiver.as_str(),
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
+				standing_instructions: Some(standing).filter(|standing| !standing.is_empty()),
 				..Default::default()
 			};
 			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				Query::insert()
-					.into_table(Alias::new("runs"))
+					.into_table(Alias::new("task_executions"))
 					.columns(
 						[
 							"id",
 							"task_id",
-							"workspace_id",
+							"thread_id",
 							"home_node",
 							"node",
 							"agent_id",
@@ -796,7 +805,7 @@ impl PeerAdmissionScope for Owned {
 			))
 			.bind(id)
 			.bind(d.task.id)
-			.bind(d.task.workspace_id)
+			.bind(d.task.thread_id)
 			.bind(source)
 			.bind(&d.inspection.agent.id)
 			.bind(&d.inspection.agent.version)
@@ -828,7 +837,7 @@ impl PeerAdmissionScope for Owned {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -1040,7 +1049,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id=? AND home_node=?)".to_owned(),
 							vec![
@@ -1159,7 +1168,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 		let run: Option<aidash_domain::run_state::RawRun> = crate::database::query_as(
 			&Query::select()
 				.column(Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.and_where(Expr::col("tenant").eq(tenant))
 				.lock(LockType::Update)

@@ -19,7 +19,7 @@ pub async fn permits(
 			other => other,
 		};
 		if !matches!(decoded, Source::Memory { .. } | Source::WorkingImage { .. })
-			&& source(scope, entry.workspace_id, &decoded).await?.is_none()
+			&& source(scope, entry.thread_id, &decoded).await?.is_none()
 		{
 			return Ok(false);
 		}
@@ -36,14 +36,14 @@ pub async fn permits_resource(
 	let scoped = scope.scoped();
 	if !scoped
 		&& !scope
-			.deployment_administrator_visible(entry.workspace_id)
+			.deployment_administrator_visible(entry.thread_id)
 			.await?
 	{
 		return Ok(false);
 	}
 	if scoped {
-		let workspace = scope.workspace_resource(entry.workspace_id).await?;
-		let mut attributes = workspace.attributes;
+		let thread = scope.thread_resource(entry.thread_id).await?;
+		let mut attributes = thread.attributes;
 		attributes["created_by"] = json!(entry.created_by);
 		attributes["agent"] = json!(entry.agent);
 		attributes["metadata"] = entry.metadata.clone();
@@ -56,19 +56,19 @@ pub async fn permits_resource(
 }
 pub async fn source(
 	scope: &mut dyn SemanticDisclosureScope,
-	workspace: Uuid,
+	thread: Uuid,
 	source: &Source,
 ) -> Result<Option<String>> {
-	if !scope.scoped() && !scope.deployment_administrator_visible(workspace).await? {
+	if !scope.scoped() && !scope.deployment_administrator_visible(thread).await? {
 		return Ok(None);
 	}
 	match source {
-		Source::Unit { id } => scope.unit(*id, workspace).await,
+		Source::Unit { id } => scope.unit(*id, thread).await,
 		// Images are disclosed only as pointers, through their own read paths.
 		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => Ok(None),
 		Source::Memory { text } => Ok(Some(text.clone())),
 		Source::Artifact { id } => {
-			let Some(row) = scope.artifact(*id, workspace).await? else {
+			let Some(row) = scope.artifact(*id, thread).await? else {
 				return Ok(None);
 			};
 			if scope.scoped() && !scope.artifact_visible(&row).await? {
@@ -77,7 +77,7 @@ pub async fn source(
 			Ok(Some(serde_json::to_string(&row.content)?))
 		}
 		Source::Message { id } => {
-			let Some(row) = scope.message(*id, workspace).await? else {
+			let Some(row) = scope.message(*id, thread).await? else {
 				return Ok(None);
 			};
 			if scope.scoped() && !scope.message_visible(&row).await? {

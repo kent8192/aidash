@@ -10,7 +10,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let mut provider = registry
 		.get(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -33,7 +33,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	memory::operate(
@@ -217,11 +217,11 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 ) {
 	bounds.max_retries = max_attempts;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -470,11 +470,11 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let private = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

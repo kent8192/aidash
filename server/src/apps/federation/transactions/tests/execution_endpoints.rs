@@ -47,18 +47,18 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 			.unwrap(),
 		200,
 	);
-	let workspace = app
+	let thread = app
 		.runtime
 		.store
 		.task(&TEST_FIXTURE, execution.task)
 		.await
 		.unwrap()
-		.workspace_id;
+		.thread_id;
 	let sent = assert_json(
 		execution
 			.subject
 			.post(
-				&format!("/api/workspaces/{workspace}/messages"),
+				&format!("/api/threads/{thread}/messages"),
 				&json!({"content":"Protected source for the atomic result"}),
 				"json",
 			)
@@ -68,7 +68,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	);
 	assert_eq!(sent, json!({"sent":true}));
 	let source_id = Message::objects()
-		.filter(Message::field_workspace_id().eq(workspace))
+		.filter(Message::field_thread_id().eq(thread))
 		.filter(Message::field_content().eq("Protected source for the atomic result"))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
@@ -249,7 +249,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 			.as_str(),
 		"COMPLETED"
 	);
-	let path = format!("/api/workspaces/{}", task.workspace_id);
+	let path = format!("/api/threads/{}", task.thread_id);
 	let visible = assert_json(execution.subject.get(&path).await.unwrap(), 200);
 	assert_eq!(visible["artifacts"].as_array().unwrap().len(), 1);
 	assert_eq!(visible["artifacts"][0]["id"], json!(artifacts[0].id));

@@ -13,7 +13,7 @@ use aidash_domain::{
 				Activation, Admission, Declined, Message, MessageReceipt, RemoteExecutionControl,
 				RemoteExecutionControlState,
 			},
-			home::{FollowUpInput, Grant, Status},
+			home::{FollowUpInput, Grant, Liveness, Status},
 		},
 	},
 	nonempty,
@@ -87,7 +87,7 @@ pub async fn message<R: HomeRepository>(
 	let mut scope = repository.begin().await?;
 	let result = async {
 		let task = scope.task_read(task).await?;
-		let resource = scope.workspace(task.workspace_id).await?;
+		let resource = scope.thread(task.thread_id).await?;
 		scope.require(&resource, "message.create").await?;
 		let binding = scope.binding(id).await?.ok_or(Error::Forbidden)?;
 		let run = scope.resource("run", binding.admission_id, resource.attributes);
@@ -98,7 +98,7 @@ pub async fn message<R: HomeRepository>(
 	let admission = finish(scope, result).await?;
 	let receipt: MessageReceipt = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/messages"),
 			&json!({"grant_id":id,"message":input}),
@@ -149,19 +149,14 @@ pub async fn decline_call<R: HomeRepository>(
 				},
 			)
 			.await?;
-		Ok((binding.admission_id, task.workspace_id))
+		Ok((binding.admission_id, task.thread_id))
 	}
 	.await;
-	let (admission, workspace) = finish(scope, result).await?;
+	let (admission, thread) = finish(scope, result).await?;
 	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
 		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
 		let result = authority
-			.resume_semantic(
-				id,
-				admission,
-				description.task.workspace_id,
-				&identity.subject,
-			)
+			.resume_semantic(id, admission, description.task.thread_id, &identity.subject)
 			.await;
 		finish(authority, result).await?;
 	}
@@ -171,7 +166,7 @@ pub async fn decline_call<R: HomeRepository>(
 	}
 	let declined: Declined = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
 			&input,
@@ -188,7 +183,7 @@ pub async fn decline_call<R: HomeRepository>(
 	let mut scope = repository.begin().await?;
 	let result = scope
 		.call_declined(
-			workspace,
+			thread,
 			json!({
 				"task_id": task,
 				"grant_id": id,
@@ -232,13 +227,13 @@ async fn resume_grant<R: HomeRepository>(
 	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
 		let (mut authority, description) = repository.description(&grant.node_id, grant.id).await?;
 		let result = authority
-			.resume_semantic(grant.id, admission, description.task.workspace_id, by)
+			.resume_semantic(grant.id, admission, description.task.thread_id, by)
 			.await;
 		finish(authority, result).await?;
 	}
 	let activation: Activation = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/control"),
 			&json!({"grant_id":grant.id,"action":RemoteExecutionControl::Resume}),
@@ -281,18 +276,13 @@ pub async fn decline_tool_ask<R: HomeRepository>(
 	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
 		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
 		let result = authority
-			.resume_semantic(
-				id,
-				admission,
-				description.task.workspace_id,
-				&identity.subject,
-			)
+			.resume_semantic(id, admission, description.task.thread_id, &identity.subject)
 			.await;
 		finish(authority, result).await?;
 	}
 	let declined: Declined = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
 			&json!({"grant_id":id,"call":call}),
@@ -308,7 +298,7 @@ pub async fn decline_tool_ask<R: HomeRepository>(
 	let mut scope = repository.begin().await?;
 	let result = scope
 		.call_declined(
-			grant.workspace_id,
+			grant.thread_id,
 			json!({
 				"task_id": task,
 				"grant_id": id,
@@ -360,18 +350,13 @@ pub async fn control<R: HomeRepository>(
 	{
 		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
 		let result = authority
-			.resume_semantic(
-				id,
-				admission,
-				description.task.workspace_id,
-				&identity.subject,
-			)
+			.resume_semantic(id, admission, description.task.thread_id, &identity.subject)
 			.await;
 		finish(authority, result).await?;
 	}
 	let result = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/control"),
 			&json!({"grant_id":id,"action":action}),
@@ -483,7 +468,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		let mut status: Result<Option<Activation>> = tokio::time::timeout_at(
 			deadline,
 			repository.request(
-				grant.workspace_id,
+				grant.thread_id,
 				&grant.node_id,
 				"/scoped/execution/status",
 				&json!({"grant_id":grant.id}),
@@ -619,7 +604,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			let status: Result<Option<Activation>> = tokio::time::timeout(
 				std::time::Duration::from_secs(2),
 				repository.request(
-					grant.workspace_id,
+					grant.thread_id,
 					&grant.node_id,
 					"/scoped/execution/status",
 					&json!({"grant_id":grant.id}),
@@ -687,7 +672,7 @@ async fn holder_may_decline<R: HomeRepository>(
 		let Some(found) = scope.task_grant(task, grant).await? else {
 			return Ok(false);
 		};
-		if found.revoked || found.expires_at <= chrono::Utc::now() {
+		if found.revoked {
 			return Ok(false);
 		}
 		let identity = scope.identity();
@@ -699,6 +684,9 @@ async fn holder_may_decline<R: HomeRepository>(
 		let Some(binding) = scope.binding(grant).await? else {
 			return Ok(false);
 		};
+		if !Liveness::of(&found, Some(&binding), Some(&task)).live(chrono::Utc::now()) {
+			return Ok(false);
+		}
 		let run = scope.resource("run", binding.admission_id, resource.attributes);
 		scope.may(&run, "run.decline_call").await
 	}
@@ -761,7 +749,7 @@ async fn activate_as<R: HomeRepository>(
 	// Admission performs fresh source and receiver checks after the first scope is completed.
 	let admission: Admission = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			"/scoped/execution/admissions",
 			&json!({"grant_id":id}),
@@ -770,7 +758,7 @@ async fn activate_as<R: HomeRepository>(
 	// From here on the target Node has acted, so the tool hears a refusal of any later step as a
 	// partial effect.
 	let source = repository
-		.node_address(grant.workspace_id)
+		.node_address(grant.thread_id)
 		.await
 		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
 	if admission.grant_id != id || admission.source_node != source || admission.task_id != task {
@@ -802,7 +790,7 @@ async fn activate_as<R: HomeRepository>(
 		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
 	let activation: Activation = repository
 		.request(
-			grant.workspace_id,
+			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{}/activate", admission.id),
 			&json!({"grant_id":id}),
@@ -924,10 +912,10 @@ pub async fn follow_up<R: HomeRepository>(
 	let mut scope = repository.begin().await?;
 	let result = async {
 		let prior = managed_task(&mut scope, task, false).await?;
-		let workspace = scope.workspace(prior.workspace_id).await?;
-		scope.require(&workspace, "task.create").await?;
+		let thread = scope.thread(prior.thread_id).await?;
+		scope.require(&thread, "task.create").await?;
 		let binding = scope.binding(id).await?.ok_or(Error::Forbidden)?;
-		let run = scope.resource("run", binding.admission_id, workspace.attributes);
+		let run = scope.resource("run", binding.admission_id, thread.attributes);
 		scope.require(&run, "run.control").await?;
 		let key = format!("remote-follow-up:{}:{}", grant.id, input.id);
 		// Independent intent avoids importing invalid producer context through parent or dependency links.
@@ -939,7 +927,7 @@ pub async fn follow_up<R: HomeRepository>(
 			parent_id: None,
 		};
 		scope
-			.create_task(prior.workspace_id, &input, &identity.subject, &key)
+			.create_task(prior.thread_id, &input, &identity.subject, &key)
 			.await
 	}
 	.await;
@@ -976,13 +964,15 @@ pub async fn answer_human<R: HomeRepository>(
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		managed_task(&mut scope, task, true).await?;
+		let read = managed_task(&mut scope, task, true).await?;
 		let current = scope
 			.requester_grant(task, grant)
 			.await?
 			.ok_or(Error::Forbidden)?;
 		let bound = scope.binding(grant).await?.ok_or(Error::Forbidden)?;
-		if current.revoked || current.expires_at <= chrono::Utc::now() {
+		// A Run asleep on this question keeps its grant while its Task is open
+		// (#1013), however long the person takes to answer.
+		if !Liveness::of(&current, Some(&bound), Some(&read)).live(chrono::Utc::now()) {
 			// Preserve the revoked-grant boundary except for a known closed
 			// question; answer_human still checks the person's answer authority.
 			let closed = scope

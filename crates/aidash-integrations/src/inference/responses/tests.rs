@@ -35,7 +35,7 @@ fn request() -> ModelRequest {
 		context: json!({"task":"summarize"}).into(),
 		tools: vec![aidash_domain::provider::ToolSpec {
 			name: "search".into(),
-			description: "Search the workspace".into(),
+			description: "Search the thread".into(),
 			parameters: json!({"type":"object","properties":{"q":{"type":"string"}}}),
 		}],
 		max_output_tokens: 4096,
@@ -91,7 +91,7 @@ fn plan_keeps_its_request_bytes_and_ignores_openrouter_only_events_and_usage() {
 	let body = request_body(&config(), &request(), Some("salt-line\n")).unwrap();
 	assert_eq!(
 		body.to_string(),
-		r#"{"include":["reasoning.encrypted_content"],"input":[{"content":[{"text":"{\"task\":\"summarize\"}","type":"input_text"}],"role":"user"}],"instructions":"salt-line\nBe precise.","model":"gpt-fixture","reasoning":{"effort":"high"},"store":false,"stream":true,"tools":[{"description":"Tools of this Aidash agent.","name":"aidash","tools":[{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"},"type":"function"}],"type":"namespace"}]}"#
+		r#"{"include":["reasoning.encrypted_content"],"input":[{"content":[{"text":"{\"task\":\"summarize\"}","type":"input_text"}],"role":"user"}],"instructions":"salt-line\nBe precise.","model":"gpt-fixture","reasoning":{"effort":"high"},"store":false,"stream":true,"tools":[{"description":"Tools of this Aidash agent.","name":"aidash","tools":[{"description":"Search the thread","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"},"type":"function"}],"type":"namespace"}]}"#
 	);
 	let mut terminal = completed_event(
 		json!([{"type":"message","content":[{"type":"output_text","text":"complete"}]}]),
@@ -142,7 +142,7 @@ fn requests_carry_the_projected_context_without_server_state() {
 	// Plan usage accepts function tools only inside a namespace.
 	assert_eq!(
 		body["tools"],
-		json!([{"type":"namespace","name":"aidash","description":"Tools of this Aidash agent.","tools":[{"type":"function","name":"search","description":"Search the workspace","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}])
+		json!([{"type":"namespace","name":"aidash","description":"Tools of this Aidash agent.","tools":[{"type":"function","name":"search","description":"Search the thread","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}])
 	);
 	assert_eq!(body["text"]["format"]["type"], "json_schema");
 	assert_eq!(body["text"]["format"]["name"], "execution_summary");
@@ -1834,7 +1834,7 @@ mod openrouter {
 			assert_eq!(
 				seen.lock().unwrap().as_slice(),
 				[
-					r#"{"max_tokens":512,"messages":[{"content":"Be precise.","role":"system"},{"content":"{\"task\":\"summarize\"}","role":"user"}],"model":"vendor/model","provider":{"allow_fallbacks":true,"only":["vendor/route"],"require_parameters":true,"zdr":true},"reasoning":{"effort":"high"},"tools":[{"function":{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"}},"type":"function"}]}"#
+					r#"{"max_tokens":512,"messages":[{"content":"Be precise.","role":"system"},{"content":"{\"task\":\"summarize\"}","role":"user"}],"model":"vendor/model","provider":{"allow_fallbacks":true,"only":["vendor/route"],"require_parameters":true,"zdr":true},"reasoning":{"effort":"high"},"tools":[{"function":{"description":"Search the thread","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"}},"type":"function"}]}"#
 				]
 			);
 		}

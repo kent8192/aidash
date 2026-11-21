@@ -18,11 +18,11 @@ pub async fn admit(
 	let task = scope.task(task_id).await?.ok_or(Error::Forbidden)?;
 	scope.subnode_admission(&task, agent).await?;
 	let inherited = super::inherit(scope, task_id).await?;
-	let workspace = scope.workspace(task.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
+	let thread = scope.thread(task.thread_id).await?;
+	scope.set_context(thread.attributes.clone());
 	let task_resource = scope.task_resource(&task).await?;
 	scope.require(&task_resource, "task.read").await?;
-	scope.require(&workspace, "workspace.read").await?;
+	scope.require(&thread, "thread.read").await?;
 	if task.status != TaskStatus::Open {
 		return Err(Error::Conflict("task is already assigned".into()));
 	}
@@ -30,18 +30,13 @@ pub async fn admit(
 		scope.require(&task_resource, "task.delegate").await?;
 	}
 	scope.require_live_agent(task_id, agent).await?;
-	let node = scope.workspace_node(task.workspace_id).await?;
+	let node = scope.thread_node(task.thread_id).await?;
 	let subject = qualified_agent(&node, &agent.id, &agent.version);
 	super::require_agent(scope.bundle(), &subject)?;
-	if scope.subjects().len() >= 32 {
-		return Err(Error::Invalid(
-			"execution delegation depth exceeds 32".into(),
-		));
-	}
 	let mut subjects = scope.subjects().to_vec();
 	subjects.push(subject.clone());
 	scope.set_subjects(subjects);
-	scope.require(&workspace, "workspace.read").await?;
+	scope.require(&thread, "thread.read").await?;
 	let entry = scope.executable_entry(agent).await?;
 	if !scope.active_installation(&entry).await? {
 		return Err(Error::Forbidden);
@@ -69,7 +64,7 @@ pub async fn admit(
 	let grant = ExecutionGrant {
 		run_id,
 		task_id: task.id,
-		workspace_id: task.workspace_id,
+		thread_id: task.thread_id,
 		tenant: identity.tenant,
 		credential_id: identity.credential_id,
 		root_subject: identity.subject,
@@ -97,7 +92,7 @@ pub async fn delegate(
 	let admitted = admit(scope, task, None, agent, true).await?;
 	let delegation = scope.local_delegation(task, agent).await?;
 	scope
-		.delegation_event(admitted.workspace_id, &delegation)
+		.delegation_event(admitted.thread_id, &delegation)
 		.await?;
 	Ok(delegation)
 }

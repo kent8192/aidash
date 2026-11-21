@@ -1,24 +1,23 @@
 use super::*;
-use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Workspace};
+use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Thread};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
 use serde_json::json;
-fn snapshot() -> WorkspaceSnapshot {
-	WorkspaceSnapshot {
-		workspace: Workspace {
+fn snapshot() -> ThreadSnapshot {
+	ThreadSnapshot {
+		thread: Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
-			title: "workspace".into(),
-			goal: "goal".into(),
-			state: json!({}),
+			title: "thread".into(),
+			created_by: "subject".into(),
 			revision: 1,
 			created_at: Utc::now(),
 		},
 		tasks: vec![Task {
 			id: Uuid::from_u128(7),
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			title: "task".into(),
 			description: "task".into(),
 			status: TaskStatus::Open,
@@ -32,7 +31,7 @@ fn snapshot() -> WorkspaceSnapshot {
 		}],
 		artifacts: vec![Artifact {
 			id: Uuid::from_u128(6),
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(7),
 			kind: "text".into(),
 			name: "artifact".into(),
@@ -44,7 +43,7 @@ fn snapshot() -> WorkspaceSnapshot {
 		}],
 		messages: vec![Message {
 			id: Uuid::from_u128(5),
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			sender: "saved".into(),
 			content: "saved".into(),
 			idempotency_key: None,
@@ -60,7 +59,7 @@ fn event(kind: &str, data: Value) -> Event {
 		sequence: 1,
 		id: Uuid::from_u128(99),
 		node: None,
-		workspace_id: Some(Uuid::from_u128(1)),
+		thread_id: Some(Uuid::from_u128(1)),
 		kind: kind.into(),
 		data,
 		created_at: Utc::now(),
@@ -79,8 +78,8 @@ struct Scope {
 	grant: Option<Uuid>,
 	calls: Vec<&'static str>,
 	legacy: Vec<Uuid>,
-	/// The Runs the Workspace holds, as `runs_in_workspace` reports them.
-	workspace_runs: Vec<Uuid>,
+	/// The Runs the Thread holds, as `runs_in_thread` reports them.
+	thread_runs: Vec<Uuid>,
 	lookups: Vec<LegacyLookup>,
 	records: Vec<RecordedSources>,
 	registry: Vec<(Uuid, Vec<String>, Vec<String>)>,
@@ -104,7 +103,7 @@ fn scope() -> Scope {
 			Uuid::from_u128(14),
 			Uuid::from_u128(15),
 		],
-		workspace_runs: vec![],
+		thread_runs: vec![],
 		lookups: vec![],
 		records: vec![],
 		registry: vec![],
@@ -135,35 +134,35 @@ impl ReadJournalScope for Scope {
 	}
 	async fn legacy_messages(
 		&mut self,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		sender: Option<&str>,
 		content: Option<&str>,
 	) -> Result<Vec<Uuid>> {
 		self.touch("legacy")?;
 		self.lookups.push((
-			workspace,
+			thread,
 			sender.map(str::to_owned),
 			content.map(str::to_owned),
 		));
 		Ok(self.legacy.clone())
 	}
-	async fn runs_in_workspace(&mut self, workspace: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>> {
-		assert_eq!(workspace, Uuid::from_u128(1));
+	async fn runs_in_thread(&mut self, thread: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>> {
+		assert_eq!(thread, Uuid::from_u128(1));
 		self.touch("runs")?;
 		Ok(runs
 			.iter()
 			.copied()
-			.filter(|run| self.workspace_runs.contains(run))
+			.filter(|run| self.thread_runs.contains(run))
 			.collect())
 	}
 	async fn record_sources(
 		&mut self,
 		membership: ReadMembership,
-		workspace: Uuid,
+		thread: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
 		self.touch("sources_commit")?;
-		self.records.push((membership, workspace, sources.to_vec()));
+		self.records.push((membership, thread, sources.to_vec()));
 		Ok(())
 	}
 	async fn record_registry(
@@ -197,12 +196,12 @@ impl GrantJournalScope for Scope {
 	}
 	async fn source_visible(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 		pending: &mut Vec<Uuid>,
 	) -> Result<bool> {
-		assert_eq!(workspace, Uuid::from_u128(1));
+		assert_eq!(thread, Uuid::from_u128(1));
 		self.touch("source_policy")?;
 		self.source_checks.push(id);
 		if kind == "run" {
@@ -278,7 +277,7 @@ async fn conflicting_local_and_remote_membership_denies_before_any_journal_io(mu
 #[case::conversation("conversation.started", "conversation")]
 #[case::conversation_end("conversation.completed", "conversation")]
 #[case::generation("generation.started", "generation")]
-#[case::run_created("run.created", "run")]
+#[case::run_created("execution.created", "run")]
 #[case::unknown("extension.created", "run")]
 #[tokio::test]
 async fn event_membership_keeps_the_original_source_selector(
@@ -317,8 +316,8 @@ async fn only_the_current_local_run_is_excluded_from_recursive_membership(
 	}
 	let mut snapshot = snapshot();
 	snapshot.events = vec![
-		event("run.created", json!({"id":Uuid::from_u128(42)})),
-		event("run.phase", json!({"run_id":Uuid::from_u128(43)})),
+		event("execution.created", json!({"id":Uuid::from_u128(42)})),
+		event("execution.phase", json!({"run_id":Uuid::from_u128(43)})),
 	];
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
 	assert_eq!(
@@ -356,7 +355,7 @@ async fn malformed_event_references_keep_workspace_events_without_inventing_sour
 #[case::local(false)]
 #[case::remote(true)]
 #[tokio::test]
-async fn a_message_run_of_this_workspace_stays_a_recorded_source(
+async fn a_message_run_of_this_thread_stays_a_recorded_source(
 	mut scope: Scope,
 	#[case] remote: bool,
 ) {
@@ -364,7 +363,7 @@ async fn a_message_run_of_this_workspace_stays_a_recorded_source(
 		scope.run = None;
 		scope.grant = Some(Uuid::from_u128(8));
 	}
-	scope.workspace_runs = vec![Uuid::from_u128(13)];
+	scope.thread_runs = vec![Uuid::from_u128(13)];
 	let mut snapshot = snapshot();
 	snapshot.events = vec![event(
 		"message.created",
@@ -382,7 +381,7 @@ async fn a_message_run_of_this_workspace_stays_a_recorded_source(
 #[case::local(false)]
 #[case::remote(true)]
 #[tokio::test]
-async fn a_message_run_of_another_workspace_is_not_a_recorded_source(
+async fn a_message_run_of_another_thread_is_not_a_recorded_source(
 	mut scope: Scope,
 	#[case] remote: bool,
 ) {
@@ -390,7 +389,7 @@ async fn a_message_run_of_another_workspace_is_not_a_recorded_source(
 		scope.run = None;
 		scope.grant = Some(Uuid::from_u128(8));
 	}
-	// Provenance resolves a source Run in the reading Workspace only, so a Run
+	// Provenance resolves a source Run in the reading Thread only, so a Run
 	// elsewhere would read as vanished. The message itself stays a source.
 	let mut snapshot = snapshot();
 	snapshot.events = vec![event(
@@ -408,7 +407,7 @@ async fn a_message_run_of_another_workspace_is_not_a_recorded_source(
 #[rstest]
 #[tokio::test]
 async fn message_runs_are_looked_up_once_for_the_whole_page(mut scope: Scope) {
-	scope.workspace_runs = vec![Uuid::from_u128(13)];
+	scope.thread_runs = vec![Uuid::from_u128(13)];
 	let mut snapshot = snapshot();
 	snapshot.events = vec![
 		event(
@@ -435,7 +434,7 @@ async fn message_runs_are_looked_up_once_for_the_whole_page(mut scope: Scope) {
 }
 #[rstest]
 #[tokio::test]
-async fn other_events_keep_their_run_without_a_workspace_lookup(mut scope: Scope) {
+async fn other_events_keep_their_run_without_a_thread_lookup(mut scope: Scope) {
 	let mut snapshot = snapshot();
 	snapshot.events = vec![event(
 		"artifact.published",
@@ -484,7 +483,7 @@ async fn legacy_message_membership_keeps_every_matching_immutable_row(mut scope:
 async fn legacy_message_null_fields_are_forwarded_without_normalization(mut scope: Scope) {
 	let mut snapshot = snapshot();
 	let mut old = event("message.created", json!({"sender":9,"content":null}));
-	old.workspace_id = None;
+	old.thread_id = None;
 	snapshot.events = vec![old];
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
 	assert_eq!(scope.lookups, vec![(None, None, None)]);

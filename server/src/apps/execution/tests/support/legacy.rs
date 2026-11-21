@@ -845,12 +845,12 @@ async fn bootstrap_with_policy(
 	// The first Subject Credential of a Tenant comes from the host, never from
 	// administrator authority over HTTP (#484, #301).
 	let token = subject_credential(&f.store, "acme", "alice").await;
-	let (status, workspace) = request(
+	let (status, thread) = request(
 		app,
 		&token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Approved task","goal":"Use exactly one tool"}),
+		"/api/threads",
+		json!({"title":"Approved task"}),
 	)
 	.await;
 	assert_eq!(status, 200);
@@ -858,10 +858,7 @@ async fn bootstrap_with_policy(
 		app,
 		&token,
 		"POST",
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Research","description":"Use approved tools"}),
 	)
 	.await;

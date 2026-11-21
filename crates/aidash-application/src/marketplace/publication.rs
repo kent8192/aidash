@@ -190,8 +190,21 @@ pub async fn publish(
 	);
 	let version = prepare(scope, validation, input, node).await?;
 	scope.audit_resource(json!({"key":version.key,"repository":version.repository,"owner_tenant":version.owner_tenant,"package_id":version.package_id,"version":version.version,"digest":version.digest,"source":version.source}));
-	let fingerprint = key(input);
-	let replay = scope.publication_replay(input.idempotency_key).await?;
+	record(scope, &version, key(input), input.idempotency_key, node).await
+}
+
+/// Saves a prepared version once, or returns what an earlier request with
+/// the same idempotency key saved. A version is immutable: the same key with
+/// other content, and a package id already used for another kind, conflict.
+/// Shared by Registry packages and Duty templates (#1011 D4).
+pub(super) async fn record(
+	scope: &mut dyn PublicationScope,
+	version: &Version,
+	fingerprint: String,
+	idempotency_key: Uuid,
+	node: &str,
+) -> Result<Value> {
+	let replay = scope.publication_replay(idempotency_key).await?;
 	if let Some(saved) = replay {
 		// Revalidate the saved disclosure path before exposing either a result
 		// or a conflicting-input diagnostic; revocation can hide both.
@@ -221,14 +234,14 @@ pub async fn publish(
 			return Err(conflict());
 		}
 	} else {
-		let kind = scope.package_kind(node, &input.package_id).await?;
+		let kind = scope.package_kind(node, &version.package_id).await?;
 		if kind.is_some_and(|kind| kind != version.kind) {
 			return Err(conflict());
 		}
 		scope
 			.insert_version(
-				&version,
-				&aidash_domain::marketplace::publication::initial_audience(&version),
+				version,
+				&aidash_domain::marketplace::publication::initial_audience(version),
 			)
 			.await?;
 		scope
@@ -240,7 +253,7 @@ pub async fn publish(
 	}
 	let result = json!({"key":version.key,"digest":version.digest});
 	scope
-		.remember_publication(input.idempotency_key, fingerprint, result.clone())
+		.remember_publication(idempotency_key, fingerprint, result.clone())
 		.await?;
 	Ok(result)
 }

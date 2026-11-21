@@ -54,18 +54,18 @@ pub trait SemanticVisibility: Send {}
 #[async_trait]
 pub trait SemanticIndexingSession: Send {
 	fn durable(&mut self);
-	async fn workspace_write(&mut self, workspace: Uuid) -> Result<()>;
-	async fn plan(&mut self, workspace: Uuid) -> Result<IndexingPlan>;
+	async fn thread_write(&mut self, thread: Uuid) -> Result<()>;
+	async fn plan(&mut self, thread: Uuid) -> Result<IndexingPlan>;
 	/// Keep the original update/skip-locked selection and database-time due fence.
 	async fn lock_entry(&mut self, id: Uuid) -> Result<Option<IndexingEntry>>;
 	async fn authority(&mut self, id: Uuid) -> Result<Value>;
 	/// Decide the requested action for the entry held by this scope.
 	async fn permits(&mut self, action: &str) -> Result<bool>;
-	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>>;
+	async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>>;
 	/// Fetch only a current, authorized image and refuse reads beyond `max_bytes`.
 	async fn image(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_source: &Source,
 		_max_bytes: usize,
 	) -> Result<Option<IndexImageRead>> {
@@ -73,7 +73,7 @@ pub trait SemanticIndexingSession: Send {
 	}
 	async fn embed_image(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_config: &EmbeddingConfig,
 		_image: &IndexImage,
 		_entry: Uuid,
@@ -87,7 +87,7 @@ pub trait SemanticIndexingSession: Send {
 	async fn retire_points(&mut self, id: Uuid) -> Result<()>;
 	async fn history(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 		revision: i64,
 		state: &str,
@@ -100,7 +100,7 @@ pub trait SemanticIndexingSession: Send {
 	/// Retain the same restored authority through generation allowance accounting.
 	async fn embed(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		text: &str,
 		entry: Uuid,
@@ -130,13 +130,13 @@ pub trait SemanticIndexingRepository: Send + Sync {
 	/// Return at most 32 entries ordered by the original due time and ID.
 	async fn due(&self) -> Result<Vec<Uuid>>;
 	async fn initial(&self, id: Uuid) -> Result<Option<(Uuid, Value)>>;
-	/// Restore the authority saved with an entry of `workspace`.
+	/// Restore the authority saved with an entry of `thread`.
 	async fn restore(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		authority: &Value,
 	) -> Result<Box<dyn SemanticIndexingSession>>;
-	async fn revoke(&self, workspace: Uuid, id: Uuid, authority: &Value) -> Result<()>;
+	async fn revoke(&self, thread: Uuid, id: Uuid, authority: &Value) -> Result<()>;
 	async fn cleanup_due(&self) -> Result<CleanupBatch>;
 	async fn begin_cleanup(&self) -> Result<Box<dyn SemanticCleanupSession>>;
 }

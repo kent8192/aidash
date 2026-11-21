@@ -18,10 +18,10 @@ pub struct SemanticEntry {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "semantic_entries_workspace_id_fkey",
+		db_constraint = "semantic_entries_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::knowledge::models::SemanticIndexe>,
+	pub thread: ForeignKeyField<crate::apps::knowledge::models::SemanticIndexe>,
 	#[field(field_type = "text")]
 	pub key: String,
 	#[field]

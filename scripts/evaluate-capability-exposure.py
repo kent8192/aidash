@@ -26,14 +26,14 @@ import tool_call_approvals
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
-EVENT_WINDOW = 100  # GET /api/workspaces/{id} returns at most this many recent events.
+EVENT_WINDOW = 100  # GET /api/threads/{id} returns at most this many recent events.
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
 DISPATCH_REJECTIONS = ("unavailable tool ", "capability ")
 # Harness refusals of an alias outside the Exposure set of the call's request.
 UNEXPOSED_SUFFIXES = ("use capability_load", "call it after the next model request")
 LIMITATIONS = [
     "context.usage holds only the latest provider response; per-request token counts come from "
-    "model.completed events in the Run's Workspace, which GET /api/workspaces/{id} caps at 100.",
+    "model.completed events in the Run's Thread, which GET /api/threads/{id} caps at 100.",
     "Legacy requests record no tool-definition or Skill-body bytes; context.usage.exposure exists "
     "only for deferred@1 requests.",
     "The tool definitions and instructions sent in each request are not exposed by the API.",
@@ -107,9 +107,8 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
     def run_task(case, variant, agent_id):
         nonlocal phase
         phase = f"{case['id']}:{variant}:admission"
-        workspace = api("/api/workspaces", {"title": f"{prefix} {case['id']} {variant}",
-                                            "goal": "Capability exposure measurement"})["id"]
-        task = api(f"/api/workspaces/{workspace}/tasks", {
+        thread = api("/api/threads", {"title": f"{prefix} {case['id']} {variant}"})["id"]
+        task = api(f"/api/threads/{thread}/tasks", {
             "title": f"{case['id']} ({variant})", "description": case["task"], "requirements": {},
             "dependencies": [], "parent_id": None})["id"]
         api(f"/api/tasks/{task}/delegate", {"node_id": node, "agent": {"id": agent_id, "version": "1.0.0"}})
@@ -117,20 +116,20 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         deadline = time.monotonic() + timeout
         run_id = None
         while run_id is None:
-            run_id = next((run["id"] for run in api(f"/api/tasks/{task}/runs")["items"]), None)
+            run_id = next((run["id"] for run in api(f"/api/tasks/{task}/executions")["items"]), None)
             if run_id is None:
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"no Run appeared for task {task}")
                 time.sleep(interval)
         answers, timed_out = [], False
         while True:
-            run = api(f"/api/runs/{run_id}")["run"]
+            run = api(f"/api/executions/{run_id}")["run"]
             if run["phase"] in TERMINAL:
                 break
             if time.monotonic() > deadline:
-                api(f"/api/runs/{run_id}/control", {"action": "cancel"})
+                api(f"/api/executions/{run_id}/control", {"action": "cancel"})
                 timed_out = True
-                run = api(f"/api/runs/{run_id}")["run"]
+                run = api(f"/api/executions/{run_id}")["run"]
                 break
             if run["phase"] == "WAITING":
                 for request in human_requests(run_id):
@@ -144,10 +143,10 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
                                     "call": card.get("call"), "answer": {"approved": approve}})
             time.sleep(interval)
         phase = f"{case['id']}:{variant}:inspection"
-        events = api(f"/api/workspaces/{workspace}")["events"]
-        return workspace, task, run, events, answers, timed_out
+        events = api(f"/api/threads/{thread}")["events"]
+        return thread, task, run, events, answers, timed_out
 
-    def measure(case, variant, agent_id, policy, workspace, task, run, events, answers, timed_out):
+    def measure(case, variant, agent_id, policy, thread, task, run, events, answers, timed_out):
         context = run.get("context") or {}
         usage = context.get("usage") or {}
         completions = [event["data"] for event in events
@@ -178,7 +177,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         final_exposure = usage.get("exposure")
         return {
             "variant": variant, "agent": {"id": agent_id, "version": "1.0.0"}, "exposure_policy": policy,
-            "workspace": workspace, "task": task, "run_id": run["id"], "phase": run["phase"],
+            "thread": thread, "task": task, "run_id": run["id"], "phase": run["phase"],
             "error": run.get("error"), "state_error": run.get("state_error"), "step": run.get("step"),
             "timed_out": timed_out, "compactions": context.get("compactions"),
             "provider_usage": {

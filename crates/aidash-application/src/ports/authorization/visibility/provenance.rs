@@ -15,9 +15,9 @@ use uuid::Uuid;
 pub type RecordedRead = (Uuid, String, Uuid);
 #[async_trait]
 pub trait ReadProvenanceScope: ResourceVisibilityScope {
-	/// Open the Subnode Workspaces that `run` created or works in while its reads
+	/// Open the Subnode Threads that `run` created or works in while its reads
 	/// are checked. An inherited authority otherwise reaches only its own
-	/// Workspace, and a Run's reads may lie in those (ADR 0110). Returns whether
+	/// Thread, and a Run's reads may lie in those (ADR 0110). Returns whether
 	/// anything opened; a caller that got `true` calls [`Self::close_run_reads`]
 	/// after that Run.
 	async fn open_run_reads(&mut self, _run: Uuid) -> Result<bool> {
@@ -58,26 +58,23 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	/// `None` means the output's remote provenance is not visible.
 	async fn output_producers(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Option<Vec<Uuid>>>;
-	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>>;
-	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>>;
-	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>>;
+	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>>;
+	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>>;
+	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>>;
 	/// Resolve an extant attachment to its parent message for current-authority checks.
 	async fn source_attachment_message(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<Message>>;
-	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>>;
-	async fn source_conversation(
-		&mut self,
-		id: Uuid,
-		workspace: Uuid,
-	) -> Result<Option<Conversation>>;
-	async fn source_generation(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Request>>;
+	async fn source_run(&mut self, id: Uuid, thread: Uuid) -> Result<Option<RunMetadata>>;
+	async fn source_conversation(&mut self, id: Uuid, thread: Uuid)
+	-> Result<Option<Conversation>>;
+	async fn source_generation(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Request>>;
 	async fn run_base_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 	/// A recorded Run dependency may have no private memory reads to protect.
 	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
@@ -95,11 +92,11 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 /// Producers retain the repository's ascending UUID order and exact resource scope.
 #[async_trait]
 pub trait LocalOutputScope: Send + super::RowOutcome {
-	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>>;
+	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>>;
 	async fn producer_reads_visible(&mut self, run: Uuid) -> Result<bool>;
 }
 #[async_trait]
 pub trait OutputScope: LocalOutputScope {
-	async fn remote_grants(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>>;
+	async fn remote_grants(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>>;
 	async fn grant_visible(&mut self, grant: Uuid) -> Result<bool>;
 }

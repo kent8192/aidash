@@ -32,7 +32,7 @@ export function chooseNode<
 
 /**
  * What one Node of a Tenant holds. State lists every Node of the Tenant, but a
- * person works in one at a time: its Workspaces and the Tasks, Runs, requests,
+ * person works in one at a time: its Threads and the Tasks, Runs, requests,
  * Conversations and Artifacts beneath them. `node.id` becomes the Node's
  * address, because every comparison of a Run's Home with the local Node means
  * that Node. The Registry belongs to the Tenant and stays whole.
@@ -51,30 +51,28 @@ export function nodeView(
       unconfirmed: state.unconfirmed ?? [],
       node: { id: deployment, endpoint },
     };
-  const workspaces = state.workspaces.filter(
-    (workspace) => workspace.node === node.name,
-  );
-  const ids = new Set(workspaces.map((workspace) => workspace.id));
+  const threads = state.threads.filter((thread) => thread.node === node.name);
+  const ids = new Set(threads.map((thread) => thread.id));
   return {
     ...state,
     node: { id: node.address, endpoint },
-    workspaces,
-    tasks: state.tasks.filter((task) => ids.has(task.workspace_id)),
-    runs: state.runs.filter((run) => ids.has(run.workspace_id)),
+    threads,
+    tasks: state.tasks.filter((task) => ids.has(task.thread_id)),
+    runs: state.runs.filter((run) => ids.has(run.thread_id)),
     human_requests: state.human_requests.filter((request) =>
-      ids.has(request.workspace_id),
+      ids.has(request.thread_id),
     ),
     conversations: state.conversations.filter((conversation) =>
-      ids.has(conversation.workspace_id),
+      ids.has(conversation.thread_id),
     ),
     events: state.events.filter(
       (event) => event.node === null || event.node === node.name,
     ),
     artifacts: state.artifacts.filter((artifact) =>
-      ids.has(artifact.workspace_id),
+      ids.has(artifact.thread_id),
     ),
     unconfirmed: (state.unconfirmed ?? []).filter((entry) =>
-      ids.has(entry.workspace_id),
+      ids.has(entry.thread_id),
     ),
   };
 }

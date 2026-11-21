@@ -15,12 +15,12 @@ function entry(id, kind = null, scope = "home:one", signature = String(kind)) {
     signature,
     kind,
     detail: id,
-    workspaceTitle: scope,
+    threadTitle: scope,
     target: {
       kind: ["input", "approval"].includes(kind) ? "human" : "task",
       node: scope.split(":")[0],
       id,
-      workspace: scope.split(":")[1],
+      thread: scope.split(":")[1],
     },
   };
 }
@@ -283,7 +283,7 @@ test("a capability approval stays in the pending view after its toast", () => {
   store.observe(frame([]));
   const approval = {
     ...entry("grant", "capability"),
-    target: { kind: "approval", node: "home", id: "grant", workspace: "one" },
+    target: { kind: "approval", node: "home", id: "grant", thread: "one" },
   };
   store.observe(frame([approval]));
   assert.deepEqual(
@@ -334,15 +334,15 @@ test("connection notifications carry the complete resource and consent scopes in
 test("a stopped Schedule waits in the pending section and announces once", () => {
   const store = new NoticeStore();
   const stopped = {
-    ...entry("weekly", "schedule_stopped", "home:schedules", "failures:t1"),
-    target: { kind: "schedule", node: "home", id: "weekly", workspace: "one" },
+    ...entry("weekly", "duty_stopped", "home:duties", "failures:t1"),
+    target: { kind: "duty", node: "home", id: "weekly", thread: "one" },
   };
-  store.observe(frame([], ["home:schedules"]));
-  store.observe(frame([stopped], ["home:schedules"]));
+  store.observe(frame([], ["home:duties"]));
+  store.observe(frame([stopped], ["home:duties"]));
   assert.equal(store.getSnapshot().pending.length, 1);
-  assert.equal(store.getSnapshot().pending[0].kind, "schedule_stopped");
+  assert.equal(store.getSnapshot().pending[0].kind, "duty_stopped");
   assert.equal(store.takeBatch(0).length, 1);
-  store.observe(frame([stopped], ["home:schedules"]));
+  store.observe(frame([stopped], ["home:duties"]));
   assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), []);
   assert.equal(store.getSnapshot().recent.length, 0);
 });
@@ -383,7 +383,7 @@ test("an invitation approval is announced to an administrator once", () => {
       kind: "administration",
       node: "home",
       id: "invitation-1",
-      workspace: "",
+      thread: "",
     },
   };
   store.observe(frame([approval], [scope]));
@@ -402,7 +402,7 @@ test("an existing invitation approval remains visible after a notification cente
       kind: "administration",
       node: "home",
       id: "old-invitation",
-      workspace: "",
+      thread: "",
     },
   };
   store.observe(frame([approval], [scope]));
@@ -415,7 +415,7 @@ function join(id, occurredAt, scope = "tenant:team") {
   return {
     ...entry(id, "joined", scope),
     occurredAt,
-    target: { kind: "administration", node: "home", id, workspace: "" },
+    target: { kind: "administration", node: "home", id, thread: "" },
   };
 }
 
@@ -483,11 +483,11 @@ test("each Node's task events have their own baseline, seeded silently", () => {
   // Mirrors the frames notifications.tsx builds from Node-scoped State.
   const nodeFrame = (node, events) => {
     const eventScope = taskEventScope("home", node);
-    const workspace = `home:${node}-workspace`;
+    const thread = `home:${node}-thread`;
     return {
-      scopes: [workspace, eventScope],
+      scopes: [thread, eventScope],
       entries: events.map(([id, sequence]) => ({
-        ...entry(id, "completed", workspace),
+        ...entry(id, "completed", thread),
         eventId: `${node}-${id}`,
         eventScope,
         eventSequence: sequence,

@@ -34,16 +34,16 @@ fn unavailable(result: Result<()>) -> bool {
 
 #[test]
 fn the_home_serves_a_tool_its_request_names() {
-	let request = asking(&["workspace_search", "memory_*"]);
-	require_requested(Some(&request), "workspace_search").unwrap();
+	let request = asking(&["thread_search", "memory_*"]);
+	require_requested(Some(&request), "thread_search").unwrap();
 	require_requested(Some(&request), "memory_mutate").unwrap();
 }
 
 #[test]
 fn the_home_refuses_a_tool_its_request_does_not_name_whatever_the_receiver_sent() {
-	let request = asking(&["workspace_message"]);
+	let request = asking(&["thread_message"]);
 	for tool in [
-		"workspace_search",
+		"thread_search",
 		"task_assign",
 		"memory_mutate",
 		"connection_request",
@@ -61,7 +61,7 @@ fn the_home_refuses_a_tool_its_request_does_not_name_whatever_the_receiver_sent(
 fn a_run_only_answer_inside_the_request_is_served() {
 	// The Home's "this Run only" answer joins the Request the Description carries.
 	let run_only = ToolList::new([ToolPattern::new("outbound_get").unwrap()]).unwrap();
-	let request = asking(&["workspace_message"])
+	let request = asking(&["thread_message"])
 		.with_run_tools(&run_only)
 		.unwrap();
 	require_requested(Some(&request), "outbound_get").unwrap();
@@ -70,10 +70,7 @@ fn a_run_only_answer_inside_the_request_is_served() {
 #[test]
 fn reach_never_and_unknown_tools_are_refused_even_under_a_wildcard() {
 	let request = asking(&["*"]);
-	assert!(unavailable(require_requested(
-		Some(&request),
-		"task_delegate"
-	)));
+	assert!(unavailable(require_requested(Some(&request), "duty_list")));
 	assert!(unavailable(require_requested(
 		Some(&request),
 		"no_such_tool"
@@ -82,6 +79,6 @@ fn reach_never_and_unknown_tools_are_refused_even_under_a_wildcard() {
 
 #[test]
 fn a_receiver_of_the_homes_own_tenant_has_no_lists() {
-	require_requested(None, "workspace_search").unwrap();
+	require_requested(None, "thread_search").unwrap();
 	require_requested(None, "outbound_get").unwrap();
 }

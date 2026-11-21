@@ -15,7 +15,7 @@ fn embedding(text: &str) -> [f32; 3] {
 async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32>) -> Vec<String> {
 	let mut bounds = bounds();
 	bounds.max_results = 2;
-	let (store, _, workspace) = setup_endpoint_policy(
+	let (store, _, thread) = setup_endpoint_policy(
 		database,
 		bounds,
 		endpoint,
@@ -28,7 +28,7 @@ async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

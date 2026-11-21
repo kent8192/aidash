@@ -6,7 +6,7 @@ use serde_json::json;
 fn binding() -> (Record, ExecutionPrincipal, Description) {
 	let task = crate::Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: String::new(),
 		status: crate::TaskStatus::Open,
@@ -143,7 +143,7 @@ fn the_admission_keeps_the_request_the_home_last_described(
 		serde_json::from_value::<Description>(record.description.clone()).unwrap()
 	};
 	// The Home answers an ask by adding `shell` and a host.
-	let widened = described(request(&["shell", "workspace_*"], &["example.com"]));
+	let widened = described(request(&["shell", "thread_*"], &["example.com"]));
 	record.description = record.with_tool_request(&widened).unwrap().unwrap();
 	assert_eq!(
 		stored(&record).authorization_details,
@@ -154,7 +154,7 @@ fn the_admission_keeps_the_request_the_home_last_described(
 	// Described again unchanged: nothing to write.
 	assert!(record.with_tool_request(&widened).unwrap().is_none());
 	// The Home narrows its tools and hosts.
-	let narrowed = described(request(&["workspace_*"], &[]));
+	let narrowed = described(request(&["thread_*"], &[]));
 	record.description = record.with_tool_request(&narrowed).unwrap().unwrap();
 	assert_eq!(
 		stored(&record).authorization_details,
@@ -313,4 +313,48 @@ fn cancelled_admission_keeps_original_binding_but_rejects_fresh_authority(
 			.unwrap()
 	);
 	assert_eq!(record.view(&description).id, record.id);
+}
+
+#[rstest::rstest]
+#[case::thinking(crate::RunPhase::Thinking, 3, true)]
+#[case::waiting_past_its_lifetime(crate::RunPhase::Waiting, 7, true)]
+#[case::never_started(crate::RunPhase::Ready, 0, false)]
+fn a_receiver_serves_its_home_for_a_started_run_past_the_lifetime(
+	#[case] phase: crate::RunPhase,
+	#[case] step: i32,
+	#[case] served: bool,
+) {
+	let now = chrono::Utc::now();
+	let lapsed = now - chrono::Duration::seconds(1);
+	assert_eq!(
+		serves_home(phase, crate::RunControl::Active, step, lapsed, now),
+		served
+	);
+	// Within its lifetime even a Run that never started is served.
+	assert!(serves_home(
+		crate::RunPhase::Ready,
+		crate::RunControl::Active,
+		0,
+		now + chrono::Duration::hours(1),
+		now
+	));
+}
+
+#[rstest::rstest]
+#[case::completed(crate::RunPhase::Completed, crate::RunControl::Active)]
+#[case::failed(crate::RunPhase::Failed, crate::RunControl::Active)]
+#[case::cancelled_phase(crate::RunPhase::Cancelled, crate::RunControl::Active)]
+#[case::cancelled_control(crate::RunPhase::Waiting, crate::RunControl::Cancelled)]
+fn a_receiver_never_serves_its_home_for_an_ended_run(
+	#[case] phase: crate::RunPhase,
+	#[case] control: crate::RunControl,
+) {
+	let now = chrono::Utc::now();
+	assert!(!serves_home(
+		phase,
+		control,
+		5,
+		now + chrono::Duration::hours(1),
+		now
+	));
 }

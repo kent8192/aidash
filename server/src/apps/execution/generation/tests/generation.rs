@@ -63,15 +63,15 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 		.0,
 		409
 	);
-	let (_, workspace) = request(
+	let (_, thread) = request(
 		&app,
 		&token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Missing agent","goal":"Specialist research"}),
+		"/api/threads",
+		json!({"title":"Missing agent"}),
 	)
 	.await;
-	let (_,task)=request(&app,&token,"POST",&format!("/api/workspaces/{}/tasks",workspace["id"].as_str().unwrap()),json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
+	let (_,task)=request(&app,&token,"POST",&format!("/api/threads/{}/tasks",thread["id"].as_str().unwrap()),json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
 	let path = format!(
 		"/api/generation/acme/tasks/{}/assign",
 		task["id"].as_str().unwrap()
@@ -155,12 +155,12 @@ async fn missing_task(app: &common::TestApplication, token: &str) -> String {
 		app,
 		token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Generated work","goal":"Special research"}),
+		"/api/threads",
+		json!({"title":"Generated work"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{ws}");
-	let (status, task) = request(app, token, "POST", &format!("/api/workspaces/{}/tasks", ws["id"].as_str().unwrap()), json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
+	let (status, task) = request(app, token, "POST", &format!("/api/threads/{}/tasks", ws["id"].as_str().unwrap()), json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
 	assert_eq!(status, 200, "{task}");
 	task["id"].as_str().unwrap().to_owned()
 }
@@ -585,6 +585,180 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	cleanup(f, &url, &schema).await;
 }
 
+/// A generated agent is reused in another chain of the person whose chain
+/// generated it, refused to another person, and stays live while either chain
+/// uses it (#1012 decision 49).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_it(
+	#[future(awt)]
+	#[from(provider_1)]
+	fixture: Provider1Fixture,
+) {
+	// Arrange: alice's request generated an agent for her first Task.
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	common::replace_policy(&f.store, "acme", policy).await;
+	let bob = common::subject_credential(&f.store, "acme", "bob").await;
+	let mut spec = definition(&app, &token).await;
+	spec["approval_required"] = json!(false);
+	spec["limits"]["lifetime_seconds"] = Value::Null;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			"/api/generation/acme/policies/research",
+			json!({"expected_revision":0,"spec":spec})
+		)
+		.await
+		.0,
+		200
+	);
+	let first = missing_task(&app, &token).await;
+	let (status, generated) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{first}/assign"),
+		json!({"policy_id":"research","reason":"specialist missing"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{generated}");
+	assert_eq!(generated["kind"], "generated");
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+	assert_eq!(runs.len(), 1);
+	let agent = json!({"id": runs[0].agent_id, "version": runs[0].agent_version});
+	// Act: alice's second Task finds the generated agent; bob's may not use it.
+	let second = missing_task(&app, &token).await;
+	let (status, reused) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{second}/assign"),
+		json!({"policy_id":"research","reason":"same specialist"}),
+	)
+	.await;
+	let bobs = missing_task(&app, &bob).await;
+	let (bob_status, refused) = request(
+		&app,
+		&bob,
+		"POST",
+		&format!("/api/tasks/{bobs}/delegate"),
+		json!({"node_id": f.config.deployment, "agent": agent}),
+	)
+	.await;
+	// Assert: no second generation request; bob's delegation is refused.
+	assert_eq!(status, 200, "{reused}");
+	assert_eq!(reused["kind"], "existing", "{reused}");
+	assert_eq!(reused["delegation"]["agent_id"], agent["id"]);
+	let (_, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
+	assert_ne!(bob_status, 200, "{refused}");
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+	assert_eq!(runs.len(), 2);
+	// The Run it was generated for ends: the other chain still uses it.
+	let original = runs
+		.iter()
+		.find(|run| run.task_id.to_string() == first)
+		.unwrap()
+		.id;
+	let other = runs
+		.iter()
+		.find(|run| run.task_id.to_string() == second)
+		.unwrap()
+		.id;
+	let complete = |run: uuid::Uuid| {
+		let pool = f.store.pool.fixture_driver().clone();
+		async move {
+			sqlx::query(
+				"UPDATE task_executions SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
+			)
+			.bind(run)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+	};
+	complete(original).await;
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let (_, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(jobs[0]["status"], "ACTIVE", "{jobs}");
+	// The reused Run makes its model calls under the generated agent and
+	// finishes its own Task.
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..12 {
+		if f.store
+			.run(&TEST_FIXTURE, other)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
+			break;
+		}
+		worker.worker_once().await.unwrap();
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, other)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, second.parse().unwrap())
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"COMPLETED"
+	);
+	// Once no chain uses it, it retires as before.
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let (_, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(jobs[0]["status"], "COMPLETED", "{jobs}");
+	drop(server);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
@@ -776,6 +950,15 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	}
 	.unwrap();
 	assert_eq!(origin.len(), 2);
+	// A live generated agent of the same person would take the child itself
+	// (#1012 decision 49), so the parent's agent first reaches the end of its
+	// lifetime: the child then needs a generation of its own, one level deeper.
+	sqlx::query(
+		"UPDATE generation_requests SET expires_at = CLOCK_TIMESTAMP() - INTERVAL '1 second' WHERE tenant = 'acme'",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	let (status, body) = request(
 		&app,
 		&token,
@@ -1028,6 +1211,9 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 		Value::Null,
 	)
 	.await;
+	// The worker's nested `task_assign` never gets its own generated agent
+	// back (#1012 decision 49 reuses agents across a person's chains, not
+	// inside the chain that asks), so it generates one level deeper.
 	assert_eq!(jobs.as_array().unwrap().len(), 2, "{jobs}");
 	let child = jobs
 		.as_array()
@@ -1304,12 +1490,20 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A policy without token limits (#1012 decision 41) reserves nothing for its
+/// agent, so neither the stop's release nor the late settlement of the call
+/// in flight gives tokens back to it; a bounded policy keeps what the call
+/// used.
 #[rstest::rstest]
+#[case::bounded(true, 20)]
+#[case::without_token_limits(false, 0)]
 #[tokio::test]
 async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	#[future(awt)]
 	#[from(provider_5)]
 	fixture: Provider5Fixture,
+	#[case] token_limits: bool,
+	#[case] allocated: i64,
 ) {
 	let (f, url, schema) = fixture.application.runtime.parts();
 	let app = fixture.application.application;
@@ -1320,6 +1514,11 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
+	if !token_limits {
+		let limits = spec["limits"].as_object_mut().unwrap();
+		limits.remove("token_budget");
+		limits.remove("tokens_per_agent");
+	}
 	assert_eq!(
 		request(
 			&app,
@@ -1344,6 +1543,18 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
+	let (_, policies) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/policies",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		policies[0]["allocated_tokens"],
+		if token_limits { 200000 } else { 0 }
+	);
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -1398,7 +1609,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	assert_eq!(run.phase().as_str(), "CANCELLED");
 	assert!(
 		f.store
-			.snapshot(&TEST_FIXTURE, run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -1412,7 +1623,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 		Value::Null,
 	)
 	.await;
-	assert_eq!(policies[0]["allocated_tokens"], 20);
+	assert_eq!(policies[0]["allocated_tokens"], allocated);
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }
@@ -1550,7 +1761,7 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	bundle["policies"][0]["resources"]["kinds"] = json!([
-		"workspace",
+		"thread",
 		"generation_policy",
 		"agent",
 		"model",
@@ -1807,10 +2018,10 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[case("max_agents")]
 #[case("max_concurrent")]
 #[case("token_budget")]
+#[tokio::test]
 async fn count_concurrency_and_total_token_limits_are_independent(
 	#[future(awt)]
 	#[from(common::native_application)]
@@ -1998,7 +2209,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -2067,7 +2278,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 			let child = uuid::Uuid::new_v4();
 			let source = Query::select()
 				.expr(Expr::value(child))
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.expr(Expr::val("Hidden"))
 				.expr(Expr::val("Fixture"))
 				.expr(Expr::cust("'{}'::jsonb"))
@@ -2086,7 +2297,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 					.columns(
 						[
 							"id",
-							"workspace_id",
+							"thread_id",
 							"title",
 							"description",
 							"requirements",
@@ -2108,7 +2319,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				"policy_id",
 				"policy_revision",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"credential_id",
 				"root_subject",
 				"subject_chain",
@@ -2123,7 +2334,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				"node",
 				"home_node",
 				"local_task_id",
-				"local_workspace_id",
+				"local_thread_id",
 			];
 			let mut source = Query::select();
 			for field in fields {
@@ -2131,8 +2342,8 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 					"local_task_id" => {
 						source.expr(Expr::value(child));
 					}
-					"local_workspace_id" => {
-						source.column(Alias::new("workspace_id"));
+					"local_thread_id" => {
+						source.column(Alias::new("thread_id"));
 					}
 					"id" => {
 						source.expr(Expr::cust("gen_random_uuid()"));
@@ -2180,16 +2391,16 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	);
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	{
-		let query_bind_1 = run.workspace_id;
+		let query_bind_1 = run.thread_id;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("authorization_workspaces"))
+				.table(reinhardt::query::Alias::new("authorization_threads"))
 				.value_expr(
 					reinhardt::query::Alias::new("owner_subject"),
 					reinhardt::query::Expr::cust("'bob'"),
 				)
 				.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -2238,7 +2449,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	f.store
 		.event(
 			&mut tx,
-			Some(job["workspace_id"].as_str().unwrap().parse().unwrap()),
+			Some(job["thread_id"].as_str().unwrap().parse().unwrap()),
 			"generation.changed",
 			json!({"id":job_id}),
 		)
@@ -2247,8 +2458,8 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	f.store
 		.event(
 			&mut tx,
-			Some(run.workspace_id),
-			"run.updated",
+			Some(run.thread_id),
+			"execution.updated",
 			json!({"run_id":run.id}),
 		)
 		.await
@@ -2415,7 +2626,7 @@ fn provider_4_router() -> upstream_fixtures::RouterFuture {
 	let server=reinhardt::test::stub::StubRouter::new()
 .route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
         let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let child=context["current"]["workspace"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
+        let child=context["current"]["thread"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
         let (name,arguments)=if let Some(child)=child {("task_assign",json!({"task_id":child["id"],"policy_id":"research","reason":"nested specialist"}))}else{("task_create",json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}))};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
     }})).into_server_router();

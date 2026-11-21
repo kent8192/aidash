@@ -21,7 +21,7 @@ export type GraphNode = {
   name: Record<string, string>;
   resource_id: string | null;
   version: string | null;
-  workspace_id: string | null;
+  thread_id: string | null;
   status: string | null;
   goal_body: string | null;
   at: string | null;
@@ -46,7 +46,7 @@ export type GraphRequest = {
   node_id: string;
   /** The Node of the viewer's Tenant that asks; its default Node when null. */
   sending_node: string | null;
-  scope_workspace: string | null;
+  scope_thread: string | null;
   depth: 1;
   mode: MeshMode;
   kinds: readonly MeshKind[];
@@ -75,7 +75,6 @@ export type RemoteExpansion = {
 const projectedKinds = new Set<string>(meshKinds);
 const projectedRelations = new Set<MeshRelation>([
   "contains",
-  "goal",
   "depends",
   "produces",
   "executes",
@@ -138,8 +137,8 @@ export function validateGraphPage(page: GraphPage, peer: string): boolean {
           (item) =>
             item.node !== peer ||
             !["task", "run", "artifact"].includes(item.kind) ||
-            typeof item.workspace_id !== "string" ||
-            !item.workspace_id ||
+            typeof item.thread_id !== "string" ||
+            !item.thread_id ||
             !Number.isSafeInteger(item.count) ||
             item.count <= 0,
         ))) ||
@@ -242,12 +241,11 @@ export function mergeGraphPages(
         homeNodeId: nodes.get(item.id)?.homeNodeId,
         available: true,
         resourceId: item.resource_id ?? undefined,
-        workspaceId: item.workspace_id ?? undefined,
+        threadId: item.thread_id ?? undefined,
         entity: item.version
           ? { id: item.resource_id!, version: item.version }
           : undefined,
         status: item.status ?? undefined,
-        goalBody: item.goal_body ?? undefined,
         at: item.at ?? undefined,
         remote: true,
         projected: true,

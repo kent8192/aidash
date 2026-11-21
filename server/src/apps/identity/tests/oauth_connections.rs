@@ -26,7 +26,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status,created)=common::post(&app, &token, "/api/conversations", json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status,created)=common::post(&app, &token, "/api/threads", json!({"title":"Connect MCP","request":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let run = f.store.runs(&scope).await.unwrap().pop().unwrap();
@@ -61,7 +61,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 				[
 					"id",
 					"tenant",
-					"workspace_id",
+					"thread_id",
 					"run_id",
 					"kind",
 					"prompt",
@@ -74,7 +74,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 			.values_panic([
 				(*id).into_value(),
 				"acme".into_value(),
-				run.workspace_id.into_value(),
+				run.thread_id.into_value(),
 				run.id.into_value(),
 				(if index == 4 {
 					"QUESTION"
@@ -99,7 +99,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 			resume: aidash_domain::ResumeState::Thinking(Default::default()),
 		}));
 	let (sql, values) = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value(Alias::new("phase"), "WAITING")
 		.value(Alias::new("pending"), waiting_run.stored_pending().unwrap())
 		.and_where(reinhardt::query::ExprTrait::eq(
@@ -589,7 +589,7 @@ async fn oauth_connections_refusal_checkpoint_is_lease_fenced_and_preserves_othe
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status,created)=common::post(&app, &token, "/api/conversations", json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status,created)=common::post(&app, &token, "/api/threads", json!({"title":"Connect MCP","request":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let worker = Uuid::now_v7();

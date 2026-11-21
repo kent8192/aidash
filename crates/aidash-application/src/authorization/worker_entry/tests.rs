@@ -13,7 +13,7 @@ use uuid::Uuid;
 #[fixture]
 fn run() -> Run {
 	serde_json::from_value::<RawRun>(json!({
-		"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
+		"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),
 		"node":"brave-otter-k3m9q2xa","home_node":"aidash://home","agent_id":"agent","agent_version":"1",
 		"phase":"READY","control":"ACTIVE","step":4,"revision":7,
 		"observed_input_seq":9,"ledger_worker_ready":true,"error":null,
@@ -113,7 +113,7 @@ impl WorkerEntryRepository<Scope> for Repository {
 		read_context: bool,
 	) -> Result<AgentConfig> {
 		assert!(!scope.remote);
-		assert_eq!(run.workspace_id, Uuid::from_u128(3));
+		assert_eq!(run.thread_id, Uuid::from_u128(3));
 		self.step(if read_context {
 			"authorize_execution"
 		} else {

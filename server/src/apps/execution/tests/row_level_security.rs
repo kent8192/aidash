@@ -279,13 +279,13 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 /// parents; what the test asks is how the policy treats the row.
 #[rstest]
 #[case::runs(
-	"runs",
-	"id, tenant, task_id, workspace_id, home_node, node, agent_id, agent_version",
+	"task_executions",
+	"id, tenant, task_id, thread_id, home_node, node, agent_id, agent_version",
 	"gen_random_uuid(), $1, gen_random_uuid(), gen_random_uuid(), 'n', 'n', 'a', '1'"
 )]
 #[case::messages(
 	"messages",
-	"id, tenant, workspace_id, sender, content",
+	"id, tenant, thread_id, sender, content",
 	"gen_random_uuid(), $1, gen_random_uuid(), 'alice', 'text'"
 )]
 #[case::events(
@@ -393,7 +393,7 @@ fn nodes(plan: &Value, found: &mut Vec<Value>) {
 #[case::run_load_grant(
 	"SELECT EXISTS (SELECT 1 FROM authorization_execution \
 	 WHERE run_id = '00000000-0000-0000-0000-000000000001' \
-	 AND workspace_id = '00000000-0000-0000-0000-000000000002')",
+	 AND thread_id = '00000000-0000-0000-0000-000000000002')",
 	"authorization_execution_pkey"
 )]
 #[case::policy_revision(
@@ -409,9 +409,9 @@ fn nodes(plan: &Value, found: &mut Vec<Value>) {
 	"generation_requests_pkey"
 )]
 #[case::event_replay(
-	"SELECT * FROM events WHERE workspace_id = '00000000-0000-0000-0000-000000000001' \
+	"SELECT * FROM events WHERE thread_id = '00000000-0000-0000-0000-000000000001' \
 	 AND sequence > 0 ORDER BY sequence LIMIT 100",
-	"events_workspace"
+	"events_thread"
 )]
 #[case::server_sent_event_read(
 	"SELECT * FROM events WHERE sequence > 0 ORDER BY sequence LIMIT 100",

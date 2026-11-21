@@ -113,7 +113,7 @@ pub(crate) async fn access_for_run(
 }
 
 /// A recovery proof must be read-only before binding the worker, whose initial
-/// workspace check would otherwise persist an authorization decision.
+/// thread check would otherwise persist an authorization decision.
 pub(crate) async fn proof_for_run(
 	store: &Store,
 	run: &crate::domain::RunMetadata,
@@ -292,7 +292,7 @@ pub async fn delegate(
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
 		let current = access.task_read(task).await?;
-		let home = access.workspace_node(current.workspace_id).await?;
+		let home = access.thread_node(current.thread_id).await?;
 		if target.as_ref().is_none_or(|target| target.node == home) {
 			delegate_in(f, &mut access, task, agent).await.map(Some)
 		} else {
@@ -376,9 +376,9 @@ impl StepAuthority {
 	}
 }
 
-fn unavailable_workspace_search(workspace: Uuid, disabled: bool) -> Value {
-	let mut result = json!({"workspace_id":workspace, "matches":[], "estimated_tokens":0,
-		"truncated":false, "workspace":{"status":"unavailable", "cause":if disabled {"disabled"} else {"missing"}}});
+fn unavailable_thread_search(thread: Uuid, disabled: bool) -> Value {
+	let mut result = json!({"thread_id":thread, "matches":[], "estimated_tokens":0,
+		"truncated":false, "thread":{"status":"unavailable", "cause":if disabled {"disabled"} else {"missing"}}});
 	result["estimated_tokens"] =
 		json!(aidash_domain::context::estimated_tokens(&result.to_string()) + 16);
 	result
@@ -389,10 +389,10 @@ fn append_reference_matches(result: &mut Value, reference: Value, max_tokens: us
 		.as_array()
 		.cloned()
 		.ok_or_else(|| Error::Invalid("invalid reference matches".into()))?;
-	let workspace_tokens = result["estimated_tokens"].as_u64().unwrap_or(0) as usize;
+	let thread_tokens = result["estimated_tokens"].as_u64().unwrap_or(0) as usize;
 	let (reference, truncated) = aidash_domain::registry::knowledge::fit_reference_matches(
 		reference,
-		workspace_tokens,
+		thread_tokens,
 		max_tokens,
 	);
 	result["reference_matches"] = json!(reference);
@@ -404,9 +404,9 @@ fn append_reference_matches(result: &mut Value, reference: Value, max_tokens: us
 mod image_search_tests {
 	use super::*;
 	#[test]
-	fn missing_or_disabled_workspace_keeps_the_separate_reference_results() {
+	fn missing_or_disabled_thread_keeps_the_separate_reference_results() {
 		for disabled in [false, true] {
-			let mut result = unavailable_workspace_search(Uuid::nil(), disabled);
+			let mut result = unavailable_thread_search(Uuid::nil(), disabled);
 			append_reference_matches(
 				&mut result,
 				json!([{"document":{"name":"diagram.png"}}]),
@@ -414,9 +414,9 @@ mod image_search_tests {
 			)
 			.unwrap();
 			assert_eq!(result["matches"], json!([]));
-			assert_eq!(result["workspace"]["status"], "unavailable");
+			assert_eq!(result["thread"]["status"], "unavailable");
 			assert_eq!(
-				result["workspace"]["cause"],
+				result["thread"]["cause"],
 				if disabled { "disabled" } else { "missing" }
 			);
 			assert_eq!(
@@ -438,7 +438,7 @@ impl WorkerAuthority {
 		.await
 		.map_err(Into::into)
 	}
-	pub(crate) async fn workspace_search(
+	pub(crate) async fn thread_search(
 		&self,
 		store: &Store,
 		run: &Run,
@@ -448,11 +448,11 @@ impl WorkerAuthority {
 		// A search leaves a Node that did not answer alone for a while, like the
 		// lists a person reads; the Run's other reads still ask it (#770, Q16).
 		let lists = std::mem::replace(&mut access.lists, true);
-		let result = Self::workspace_search_in(&mut access, store, run, input).await;
+		let result = Self::thread_search_in(&mut access, store, run, input).await;
 		access.lists = lists;
 		result
 	}
-	async fn workspace_search_in(
+	async fn thread_search_in(
 		access: &mut Access,
 		store: &Store,
 		run: &Run,
@@ -490,7 +490,7 @@ impl WorkerAuthority {
 		};
 		let mut lease = crate::semantic::service::Lease::Inherited(access);
 		lease.durable();
-		lease.workspace(run.workspace_id, "semantic.search").await?;
+		lease.thread(run.thread_id, "semantic.search").await?;
 		let reference = run
 			.context
 			.binding_snapshot
@@ -519,7 +519,7 @@ impl WorkerAuthority {
 		}
 		let index = crate::apps::knowledge::models::SemanticIndexe::locked(
 			&mut **lease.tx(),
-			run.workspace_id,
+			run.thread_id,
 			false,
 		)
 		.await?;
@@ -561,7 +561,7 @@ impl WorkerAuthority {
 				crate::semantic::service::search_in(
 					store,
 					&mut lease,
-					run.workspace_id,
+					run.thread_id,
 					search,
 					Some(run.id),
 					None,
@@ -569,12 +569,12 @@ impl WorkerAuthority {
 				.await?,
 			)?
 		} else {
-			unavailable_workspace_search(run.workspace_id, spec.is_some())
+			unavailable_thread_search(run.thread_id, spec.is_some())
 		};
 		if reference.is_some() {
 			use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession;
 			let limit = limit.min(8);
-			// The same image query, read under the same rules as the Workspace
+			// The same image query, read under the same rules as the Thread
 			// search, against this agent version's private Reference Documents.
 			let max_bytes = aidash_domain::semantic::indexing::default_max_image_bytes();
 			let read = async |lease: &mut crate::semantic::service::Lease<'_>| -> Result<
@@ -582,11 +582,7 @@ impl WorkerAuthority {
 			> {
 				let mut scope = crate::bootstrap::semantic_retrieval_scope(store, lease);
 				Ok(if let Some(image) = &image {
-					Some(
-						scope
-							.query_image(run.workspace_id, image, max_bytes)
-							.await?,
-					)
+					Some(scope.query_image(run.thread_id, image, max_bytes).await?)
 				} else if let Some(attachment) = &attachment {
 					if !scope.attachment_seen(attachment).await? {
 						return Err(
@@ -595,7 +591,7 @@ impl WorkerAuthority {
 					}
 					Some(
 						scope
-							.query_attachment(run.workspace_id, attachment, max_bytes)
+							.query_attachment(run.thread_id, attachment, max_bytes)
 							.await?,
 					)
 				} else {
@@ -642,7 +638,7 @@ impl WorkerAuthority {
 		aidash_domain::unconfirmed::for_tool(&mut result);
 		Ok(result)
 	}
-	pub(crate) async fn workspace_image(
+	pub(crate) async fn thread_image(
 		&self,
 		store: &Store,
 		run: &Run,
@@ -654,7 +650,7 @@ impl WorkerAuthority {
 		// `load` authorizes `file.read` on the selected Area itself.
 		sessions::current_own_area(&mut access, run).await?;
 		let area = sessions::load(&mut access, selection.area_id).await?;
-		if area.workspace_id != run.workspace_id || area.generation != selection.generation {
+		if area.thread_id != run.thread_id || area.generation != selection.generation {
 			return Err(Error::Forbidden);
 		}
 		let file = service::files(&area)?
@@ -682,7 +678,7 @@ impl WorkerAuthority {
 			&(&area).into(),
 			aidash_domain::capabilities::files::FileRead {
 				file_id: selection.file_id,
-				workspace_id: None,
+				thread_id: None,
 				area_id: None,
 				representation,
 				offset: None,
@@ -754,7 +750,7 @@ impl WorkerAuthority {
 			let result: Result<_> = async {
 				crate::apps::execution::repositories::subnodes::require_writable(
 					access.tx.native_mut(),
-					run.workspace_id,
+					run.thread_id,
 				)
 				.await?;
 				let mut scope = crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
@@ -844,7 +840,7 @@ impl WorkerAuthority {
 			let result: Result<_> = async {
 				crate::apps::execution::repositories::subnodes::require_writable(
 					access.tx.native_mut(),
-					run.workspace_id,
+					run.thread_id,
 				)
 				.await?;
 				let (input, area) = {
@@ -918,7 +914,7 @@ impl WorkerAuthority {
 		}
 	}
 
-	/// `workspace_message` with files by a Run executing here for another Home (ADR 0139,
+	/// `thread_message` with files by a Run executing here for another Home (ADR 0139,
 	/// decision 20): the Run's files are snapshotted here as a local message's are, and the
 	/// Home stores them as Thread Attachments of the message it posts for the Agent. No
 	/// transaction is held while the Home takes them; the receipt is cached under the call's key
@@ -944,7 +940,7 @@ impl WorkerAuthority {
 			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
 		};
 		let receipt_digest = crate::registry::digest(&json!([
-			"workspace_message_files",
+			"thread_message_files",
 			run.id,
 			content,
 			paths,
@@ -956,7 +952,7 @@ impl WorkerAuthority {
 			let result: Result<_> = async {
 				crate::apps::execution::repositories::subnodes::require_writable(
 					access.tx.native_mut(),
-					run.workspace_id,
+					run.thread_id,
 				)
 				.await?;
 				aidash_application::capabilities::files::snapshot_message_files_once(
@@ -1032,10 +1028,10 @@ impl WorkerAuthority {
 		}
 		let receipt_key = operation_id(run.id, key, 9);
 		let receipt_digest = if descriptions.is_empty() {
-			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]))
+			crate::registry::digest(&json!(["thread_message_files", run.id, content, paths]))
 		} else {
 			crate::registry::digest(&json!([
-				"workspace_message_files",
+				"thread_message_files",
 				run.id,
 				content,
 				paths,
@@ -1051,11 +1047,11 @@ impl WorkerAuthority {
 			// Subnode ended is refused even when the first attempt was recorded.
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
-			let workspace = access.workspace(run.workspace_id).await?;
-			access.require(&workspace, "message.create").await?;
+			let thread = access.thread(run.thread_id).await?;
+			access.require(&thread, "message.create").await?;
 			// Older successful posts predate the receipt below. The invocation
 			// journal has already checked this key's complete original input.
 			let principal = crate::registry::digest(
@@ -1065,7 +1061,7 @@ impl WorkerAuthority {
 				crate::registry::digest(&json!({"principal":principal,"run_id":run.id}));
 			let message_key = format!(
 				"channel:{}:{}:{}",
-				run.workspace_id,
+				run.thread_id,
 				principal,
 				operation_id(run.id, key, 8)
 			);
@@ -1076,16 +1072,16 @@ impl WorkerAuthority {
 			let previous: Option<(Uuid, String, String, Option<Uuid>)> =
 				crate::database::native::query_as(
 					&Query::select()
-						.columns(["workspace_id", "sender", "content", "run_id"].map(Alias::new))
+						.columns(["thread_id", "sender", "content", "run_id"].map(Alias::new))
 						.from(Alias::new("messages"))
 						.and_where(Expr::col("idempotency_key").eq(Expr::value(message_key)))
 						.to_string(PostgresQueryBuilder),
 				)
-				.columns(&["workspace_id", "sender", "content", "run_id"])
+				.columns(&["thread_id", "sender", "content", "run_id"])
 				.fetch_optional(&mut **access.tx)
 				.await?;
-			if let Some((workspace, sender, original, publisher)) = &previous
-				&& (*workspace != run.workspace_id
+			if let Some((thread, sender, original, publisher)) = &previous
+				&& (*thread != run.thread_id
 					|| sender != &agent
 					|| original != content
 					|| *publisher != Some(run.id))
@@ -1134,7 +1130,7 @@ impl WorkerAuthority {
 				let attachment = crate::collaboration::attachments::upload_for_run(
 					store,
 					&mut lease,
-					run.workspace_id,
+					run.thread_id,
 					input,
 					bytes,
 					Some(run.id),
@@ -1145,12 +1141,11 @@ impl WorkerAuthority {
 			let mut scope = crate::bootstrap::channel_scope(store, &mut lease);
 			scope.run_id = Some(run.id);
 			scope.agent = Some(agent);
-			aidash_application::workspaces::channels::post(
+			aidash_application::threads::channels::post(
 				&mut scope,
-				run.workspace_id,
-				aidash_application::workspaces::channels::MessageSubmission {
+				run.thread_id,
+				aidash_application::threads::channels::MessageSubmission {
 					content,
-					thread_id: None,
 					idempotency_key: operation_id(run.id, key, 8),
 					attachment_ids: &ids,
 					citations: &[],
@@ -1192,17 +1187,17 @@ impl WorkerAuthority {
 		let result: Result<Value> = async {
 			crate::apps::execution::repositories::subnodes::require_writable(
 				lease.access_mut().tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 			let record = lease
 				.access_mut()
-				.workspace_record(run.workspace_id, "attachment", attachment_id)
+				.thread_record(run.thread_id, "attachment", attachment_id)
 				.await?;
 			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
-			let (attachment, content) = aidash_application::workspaces::channels::download(
+			let (attachment, content) = aidash_application::threads::channels::download(
 				&mut crate::bootstrap::channel_scope(store, &mut lease),
-				run.workspace_id,
+				run.thread_id,
 				attachment_id,
 			)
 			.await?;
@@ -1226,7 +1221,7 @@ impl WorkerAuthority {
 		lease.finish(result).await
 	}
 	/// `attachment_copy` for a Run executing here for another Home (ADR 0139, decision 20): the
-	/// receiver pulled the Home's attachment, so there is no Workspace record to read here. The
+	/// receiver pulled the Home's attachment, so there is no Thread record to read here. The
 	/// copy lands where `copy_thread_attachment` puts it for any Run, in the Scratch Space its
 	/// commands read, or in its receiving Working Area when the Node runs no Pods.
 	pub(crate) async fn copy_pulled_thread_attachment(
@@ -1255,7 +1250,7 @@ impl WorkerAuthority {
 		let result: Result<Value> = async {
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 			aidash_application::capabilities::files::copy_thread_attachment(
@@ -1303,7 +1298,7 @@ impl WorkerAuthority {
 		let result = async {
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await
@@ -1438,7 +1433,7 @@ impl WorkerAuthority {
 				// so that a Pod can still be stopped.
 				crate::apps::execution::repositories::subnodes::require_writable(
 					access.tx.native_mut(),
-					run.workspace_id,
+					run.thread_id,
 				)
 				.await?;
 				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await
@@ -1454,7 +1449,7 @@ impl WorkerAuthority {
 				if let Err(error) =
 					crate::apps::execution::repositories::subnodes::require_writable(
 						access.tx.native_mut(),
-						run.workspace_id,
+						run.thread_id,
 					)
 					.await
 				{
@@ -1613,7 +1608,7 @@ impl WorkerAuthority {
 			}
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 			// A core Run's approval belongs to its Working Area, so its Thread
@@ -1662,7 +1657,7 @@ impl WorkerAuthority {
 			}
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 			// A core Run's approval belongs to its Working Area, so its Thread
@@ -1947,6 +1942,7 @@ impl WorkerAuthority {
 		task: Uuid,
 		policy: &str,
 		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<crate::generation::Assignment> {
 		let mut lease = self.access.write().await;
 		// Read potential references under the outer lease before opening the mutation transaction.
@@ -1958,6 +1954,7 @@ impl WorkerAuthority {
 			task,
 			policy,
 			reason,
+			draft,
 		)
 		.await
 		.map_err(Into::into);
@@ -2123,7 +2120,7 @@ impl WorkerAuthority {
 			| Command::Remove { id, .. }
 			| Command::Dissolve { id } => query.filter(SubnodeRecord::field_id().eq(id.0)),
 			Command::Message { .. } => {
-				query.filter(SubnodeRecord::field_workspace_id().eq(run.workspace_id))
+				query.filter(SubnodeRecord::field_thread_id().eq(run.thread_id))
 			}
 		};
 		let record = query
@@ -2134,7 +2131,7 @@ impl WorkerAuthority {
 			.ok_or(Error::Forbidden)?;
 		let subnode = record.domain(lease.tx.native_mut()).await?;
 		let is_creator = subnode.creator_run_id == run.id;
-		let is_member = subnode.workspace_id == run.workspace_id
+		let is_member = subnode.thread_id == run.thread_id
 			&& subnode.members.iter().any(|member| {
 				member.agent_id == run.agent_id && member.agent_version == run.agent_version
 			});
@@ -2219,7 +2216,7 @@ impl WorkerAuthority {
 		};
 		let locked = scope.lock(subnode.id).await?.ok_or(Error::Forbidden)?;
 		let creator = locked.creator_run_id == run.id;
-		let member = locked.workspace_id == run.workspace_id
+		let member = locked.thread_id == run.thread_id
 			&& locked.members.iter().any(|member| {
 				member.agent_id == run.agent_id && member.agent_version == run.agent_version
 			});
@@ -2324,28 +2321,24 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
-	pub async fn snapshot(&self, workspace: Uuid) -> Result<WorkspaceSnapshot> {
-		self.access
-			.write()
-			.await
-			.workspace_snapshot(workspace)
-			.await
+	pub async fn snapshot(&self, thread: Uuid) -> Result<ThreadSnapshot> {
+		self.access.write().await.thread_snapshot(thread).await
 	}
 
 	/// `exclude_run` leaves that Run's own events out (#942).
 	pub async fn workspace_observation(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		offset: usize,
 		limit: usize,
 		exclude_run: Option<Uuid>,
 	) -> Result<Value> {
 		let mut access = self.access.write().await;
-		// An observation lists the Workspace, so it leaves a Node that did not
+		// An observation lists the Thread, so it leaves a Node that did not
 		// answer alone for a while (#770, Q16).
 		let lists = std::mem::replace(&mut access.lists, true);
 		let result = access
-			.workspace_observation(workspace, offset, limit, exclude_run)
+			.workspace_observation(thread, offset, limit, exclude_run)
 			.await;
 		access.lists = lists;
 		result
@@ -2353,7 +2346,7 @@ impl WorkerAuthority {
 
 	pub async fn workspace_observation_fitted<F>(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		offset: usize,
 		limit: usize,
 		fits: F,
@@ -2365,7 +2358,7 @@ impl WorkerAuthority {
 		// See `workspace_observation` (#770, Q16).
 		let lists = std::mem::replace(&mut access.lists, true);
 		let result = access
-			.workspace_observation_fitted(workspace, offset, limit, fits)
+			.workspace_observation_fitted(thread, offset, limit, fits)
 			.await;
 		access.lists = lists;
 		result
@@ -2418,10 +2411,10 @@ impl WorkerAuthority {
 		crate::capabilities::skills::direct_file(store, &mut access, run, skill_id, digest, path)
 			.await
 	}
-	pub(crate) async fn subnode_workspace_record(
+	pub(crate) async fn subnode_thread_record(
 		&self,
 		run: &Run,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Value> {
@@ -2431,7 +2424,7 @@ impl WorkerAuthority {
 		let tenant = lease.identity.tenant.clone();
 		let matching = SubnodeRecord::objects()
 			.filter(SubnodeRecord::field_tenant().eq(tenant))
-			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_thread_id().eq(thread))
 			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
 			.all_with_executor(lease.tx.native_mut())
 			.await
@@ -2440,31 +2433,30 @@ impl WorkerAuthority {
 			return Err(Error::Forbidden);
 		}
 		let mut access = Access::under_lease(&lease).await?;
-		// The creator keeps its own Workspace and gains read access to this one;
+		// The creator keeps its own Thread and gains read access to this one;
 		// the producers of the Subnode's records may have read in the creator's.
-		access.context =
-			json!({"workspace_id":run.workspace_id,"subnode_read_workspaces":[workspace]});
-		let result = access.workspace_record(workspace, kind, id).await;
+		access.context = json!({"thread_id":run.thread_id,"subnode_read_threads":[thread]});
+		let result = access.thread_record(thread, kind, id).await;
 
 		access.finish(result).await
 	}
-	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
+	pub async fn thread_record(&self, thread: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
 			.write()
 			.await
-			.workspace_record(workspace, kind, id)
+			.thread_record(thread, kind, id)
 			.await
 	}
 
-	pub async fn workspace_child_summary(
+	pub async fn thread_child_summary(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
 		self.access
 			.write()
 			.await
-			.workspace_children(workspace, parent)
+			.thread_children(thread, parent)
 			.await
 	}
 
@@ -2489,7 +2481,7 @@ impl WorkerAuthority {
 				Error::Forbidden => not_visible(),
 				error => error,
 			})?;
-			if record.workspace_id != run.workspace_id {
+			if record.thread_id != run.thread_id {
 				return Err(not_visible());
 			}
 			let identity = lease.identity.clone();
@@ -2500,6 +2492,7 @@ impl WorkerAuthority {
 				runtime: f.clone(),
 				actor: Some(super::identity::Actor::Subject(identity)),
 				worker: Some(run.metadata()),
+				chain: None,
 			};
 			let result = aidash_application::authorization::home::delegate(
 				&repository,
@@ -2721,7 +2714,7 @@ impl Guard {
 	/// The authority of a Run executing for another Home, on this Node: the Peer Mapping's
 	/// mapped subject within the Remote Grant (ADR 0139). `None` for a local Run, whose authority
 	/// [`Self::local_authority`] already gives. Only core tools and Subnode operations take it;
-	/// whatever acts on the Home's own Workspace stays a Home command.
+	/// whatever acts on the Home's own Thread stays a Home command.
 	pub fn receiver_authority(&self) -> Option<WorkerAuthority> {
 		self.remote.is_some().then(|| self.authority())
 	}
@@ -2836,7 +2829,7 @@ impl Guard {
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 		degrade_on_outage: bool,
 	) -> aidash_application::ports::execution::SemanticContextRead {
-		let mut workspace_retrieved = false;
+		let mut thread_retrieved = false;
 		let result: Result<Option<Value>> = async {
 			let automatic = self
 				.run
@@ -2846,10 +2839,10 @@ impl Guard {
 				.map(|snapshot| AgentConfig::automatic_context(snapshot))
 				.transpose()?;
 			let agent = automatic.as_ref().unwrap_or(&self.agent);
-			let workspace_budget = if self.remote.is_some() {
+			let thread_budget = if self.remote.is_some() {
 				budget
 			} else {
-				crate::semantic::services::memory_context::workspace_budget(budget)?
+				crate::semantic::services::memory_context::thread_budget(budget)?
 			};
 			let query = aidash_application::execution::semantic_context::query_material(
 				&self.run,
@@ -2868,20 +2861,20 @@ impl Guard {
 				task,
 				inputs,
 				&query.text,
-				workspace_budget,
+				thread_budget,
 				// Required-Home semantic context never degrades (ADR 0059).
-				degrade_on_outage && self.remote.is_none() && agent.workspace_degrades,
+				degrade_on_outage && self.remote.is_none() && agent.thread_degrades,
 			)
 			.await
 			.map_err(Error::from)?;
-			workspace_retrieved = semantic
+			thread_retrieved = semantic
 				.as_ref()
 				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none());
 			if self.remote.is_some() {
 				return Ok(semantic);
 			}
 			let reserved =
-				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
+				serde_json::to_vec(&serde_json::json!({"thread":semantic,"memory":null}))?.len();
 			let available = budget.saturating_sub(reserved);
 			let mut access = self.access.write().await;
 			let memory = crate::semantic::services::memory_context::retrieve(
@@ -2908,7 +2901,7 @@ impl Guard {
 		aidash_application::ports::execution::SemanticContextRead {
 			selections: vec![],
 			contributions: vec![],
-			workspace_retrieved,
+			thread_retrieved,
 			result: result.map_err(Into::into),
 		}
 	}
@@ -2943,18 +2936,18 @@ impl Guard {
 		query_policy: aidash_domain::context::source::QueryPolicy,
 	) -> Result<()> {
 		let mut access = self.access.write().await;
-		let mut workspace = access.workspace(self.run.workspace_id).await?;
-		workspace.attributes["context_selection"] = json!(decider);
-		workspace.attributes["hook"] = json!("context_selection");
-		workspace.attributes["source"] = json!(source);
-		workspace.attributes["query_policy"] = json!(query_policy);
-		workspace.attributes["inference_model"] = json!(self.agent.model);
-		workspace.attributes["decider"] = json!(decider.identity);
-		workspace.attributes["selector_routes"] = json!(config.routes);
-		workspace.attributes["source_pins"] = json!(pins);
-		workspace.attributes["preview_disclosure"] = json!(true);
-		workspace.attributes["query_disclosure"] = json!(true);
-		access.require(&workspace, "semantic.disclose").await
+		let mut thread = access.thread(self.run.thread_id).await?;
+		thread.attributes["context_selection"] = json!(decider);
+		thread.attributes["hook"] = json!("context_selection");
+		thread.attributes["source"] = json!(source);
+		thread.attributes["query_policy"] = json!(query_policy);
+		thread.attributes["inference_model"] = json!(self.agent.model);
+		thread.attributes["decider"] = json!(decider.identity);
+		thread.attributes["selector_routes"] = json!(config.routes);
+		thread.attributes["source_pins"] = json!(pins);
+		thread.attributes["preview_disclosure"] = json!(true);
+		thread.attributes["query_disclosure"] = json!(true);
+		access.require(&thread, "semantic.disclose").await
 	}
 
 	pub(crate) async fn recheck_source_observation(
@@ -3024,7 +3017,7 @@ impl Guard {
 		if let Some(remote) = &self.remote {
 			let home = crate::federation::Home::new(remote.clone(), self.run.clone());
 			let request = home.human_request_by_id(id).await?;
-			if request.run_id != self.run.id || request.workspace_id != self.run.workspace_id {
+			if request.run_id != self.run.id || request.thread_id != self.run.thread_id {
 				return Err(Error::Forbidden);
 			}
 			return Ok(());
@@ -3087,7 +3080,7 @@ impl Guard {
 		let mut access = self.access.write().await;
 		aidash_application::authorization::records::messages_readable(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
-			self.run.workspace_id,
+			self.run.thread_id,
 			ids.iter().copied(),
 		)
 		.await
@@ -3133,7 +3126,7 @@ impl Guard {
 		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
 			&mut crate::bootstrap::scoped_media(&mut access, store),
-			self.run.workspace_id,
+			self.run.thread_id,
 			messages,
 			model,
 			projection,

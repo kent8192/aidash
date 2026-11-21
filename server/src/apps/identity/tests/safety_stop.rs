@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "../../execution/tests/support/late_subnode.rs"]
+mod late_subnode;
 
 /// A Tenant with one local Run and one Run it executes for another Home.
 struct World {
@@ -23,9 +25,9 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let subject = common::tenant_token(&f.store, "acme").await;
 	common::tenant_root(&f, "other").await;
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&acme, "alice", "Safety Stop", "Stop a runaway Run")
+		.create_thread(&acme, "alice", "Safety Stop")
 		.await
 		.unwrap();
 	let new_task = |title: &str| aidash_server::domain::NewTask {
@@ -37,7 +39,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	};
 	let task = f
 		.store
-		.create_task(&acme, workspace.id, &new_task("Local"), "human", None)
+		.create_task(&acme, thread.id, &new_task("Local"), "human", None)
 		.await
 		.unwrap();
 	let mut agent = None;
@@ -67,7 +69,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let run = common::admitted_run(&f, "acme", &task, &agent.unwrap()).await;
 	let received = f
 		.store
-		.create_task(&acme, workspace.id, &new_task("Received"), "human", None)
+		.create_task(&acme, thread.id, &new_task("Received"), "human", None)
 		.await
 		.unwrap();
 	let receiver = common::remote_run_in(
@@ -99,7 +101,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{run}/management{query}"),
+			&format!("/api/executions/{run}/management{query}"),
 			Value::Null,
 		)
 		.await
@@ -111,7 +113,7 @@ impl World {
 			.api_http
 			.request(
 				"POST".parse().unwrap(),
-				&format!("/api/runs/{run}/management"),
+				&format!("/api/executions/{run}/management"),
 			)
 			.header("Authorization", format!("Bearer {token}"))
 			.json(&body);
@@ -161,6 +163,105 @@ impl World {
 		let owner = common::owner_pool(self.f.store.pool.fixture_driver()).await;
 		sqlx::query(sql).execute(&owner).await.unwrap();
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_safety_stop_controls_three_levels_of_nested_subnodes(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let agent =
+		w.f.registry
+			.get(scope.tenant_name().unwrap(), "fixture-agent", "1.0.0")
+			.await
+			.unwrap();
+	let mut runs = vec![w.run];
+	let mut subnodes = vec![];
+	for depth in 1..=3 {
+		let title = format!("Subnode level {depth}");
+		let thread =
+			w.f.store
+				.create_thread(&scope, "alice", &title)
+				.await
+				.unwrap();
+		let task =
+			w.f.store
+				.create_task(
+					&scope,
+					thread.id,
+					&aidash_server::domain::NewTask {
+						title,
+						description: "A member of a nested Subnode".into(),
+						requirements: json!({}),
+						dependencies: vec![],
+						parent_id: None,
+					},
+					"human",
+					None,
+				)
+				.await
+				.unwrap();
+		let member = common::admitted_run(&w.f, "acme", &task, &agent).await;
+		let subnode = late_subnode::seed_subnode(&w.f, member.id, &[]).await;
+		// The shared fixture initially points to the member as creator.
+		// Wire each Subnode to the Run in the level above it.
+		sqlx::query("UPDATE subnodes SET creator_run_id = r.id, creator_task_id = r.task_id FROM task_executions r WHERE subnodes.id = $1 AND r.id = $2")
+			.bind(subnode)
+			.bind(runs.last().unwrap())
+			.execute(w.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		runs.push(member.id);
+		subnodes.push(subnode);
+	}
+	let expect = async |runs: &[Uuid], control: &str, source: &str, revision: i64| {
+		for run in runs {
+			let facts = w.facts(*run).await;
+			assert_eq!(facts["control"], control, "{facts}");
+			assert_eq!(facts["control_revision"], revision, "{facts}");
+			assert_eq!(facts["control_source"], source, "{facts}");
+		}
+	};
+	expect(&runs, "ACTIVE", "tenant", 0).await;
+	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 0).await;
+	assert_eq!(status, 200, "{body}");
+	expect(&runs, "PAUSED", "deployment_administrator", 1).await;
+	let resume = async || {
+		let (status, body) = common::request(
+			&w.app,
+			&w.subject,
+			"POST",
+			&format!("/api/executions/{}/control", w.run),
+			json!({"action":"resume"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	};
+	resume().await;
+	expect(&runs, "ACTIVE", "tenant", 2).await;
+	// A separate stop on an inner Run survives a later resume at the root.
+	let (status, body) = w.stop(runs[1], Uuid::new_v4(), "pause", 2).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 2).await;
+	assert_eq!(status, 200, "{body}");
+	expect(&runs, "PAUSED", "deployment_administrator", 3).await;
+	resume().await;
+	expect(&runs[..1], "ACTIVE", "tenant", 4).await;
+	expect(&runs[1..], "PAUSED", "deployment_administrator", 3).await;
+	let (status, body) = w.stop(w.run, Uuid::new_v4(), "cancel", 4).await;
+	assert_eq!(status, 200, "{body}");
+	expect(&runs[..1], "CANCELLED", "deployment_administrator", 5).await;
+	expect(&runs[1..], "CANCELLED", "deployment_administrator", 4).await;
+	let ended: i64 = sqlx::query_scalar("SELECT count(*) FROM subnodes WHERE id = ANY($1) AND state = 'dissolved' AND ended_reason = 'safety_stop'")
+		.bind(&subnodes)
+		.fetch_one(w.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(ended, 3);
 }
 
 #[rstest::rstest]
@@ -270,7 +371,7 @@ async fn a_stop_pauses_replays_and_never_resumes(
 		&w.app,
 		&w.subject,
 		"POST",
-		&format!("/api/runs/{}/control", w.run),
+		&format!("/api/executions/{}/control", w.run),
 		json!({"action":"resume"}),
 	)
 	.await;
@@ -293,12 +394,13 @@ async fn a_stop_pauses_replays_and_never_resumes(
 	assert_eq!(w.count("SELECT count(*) FROM run_safety_stops").await, 1);
 
 	// Worker progress does not make a stop stale.
-	w.execute("UPDATE runs SET revision = revision + 5").await;
+	w.execute("UPDATE task_executions SET revision = revision + 5")
+		.await;
 	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 2).await;
 	assert_eq!(status, 200, "{body}");
 	// Pausing a Run the Tenant paused is accepted; the source changes.
 	w.execute(
-		"UPDATE runs SET control = 'PAUSED', control_revision = 10, control_source = 'tenant'",
+		"UPDATE task_executions SET control = 'PAUSED', control_revision = 10, control_source = 'tenant'",
 	)
 	.await;
 	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 10).await;
@@ -331,7 +433,7 @@ async fn a_stop_pauses_replays_and_never_resumes(
 	);
 	assert_eq!(w.facts(w.run).await["control"], "CANCELLED");
 	let recorded = w
-		.count("SELECT count(*) FROM events WHERE kind = 'run.control' AND data->>'source' = 'deployment_administrator'")
+		.count("SELECT count(*) FROM events WHERE kind = 'execution.control' AND data->>'source' = 'deployment_administrator'")
 		.await;
 	assert_eq!(
 		recorded, 4,
@@ -359,7 +461,7 @@ async fn ordinary_control_refuses_every_administrator_action(
 			&w.app,
 			w.administrator(),
 			"POST",
-			&format!("/api/runs/{}/control", w.run),
+			&format!("/api/executions/{}/control", w.run),
 			json!({"action":action}),
 		)
 		.await;
@@ -420,25 +522,27 @@ async fn an_identity_outage_pause_is_not_left_for_automatic_recovery(
 ) {
 	let w = world(fixture).await;
 	w.execute(
-		"UPDATE runs SET control = 'PAUSED', error = 'identity status unavailable' WHERE id IN (SELECT id FROM runs ORDER BY id LIMIT 1)",
+		"UPDATE task_executions SET control = 'PAUSED', error = 'identity status unavailable' WHERE id IN (SELECT id FROM task_executions ORDER BY id LIMIT 1)",
 	)
 	.await;
-	let paused: Uuid =
-		sqlx::query_scalar("SELECT id FROM runs WHERE error = 'identity status unavailable'")
-			.fetch_one(w.f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+	let paused: Uuid = sqlx::query_scalar(
+		"SELECT id FROM task_executions WHERE error = 'identity status unavailable'",
+	)
+	.fetch_one(w.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	// An unaware writer of `control` still moves the revision, as the system.
 	let facts = w.facts(paused).await;
 	assert_eq!(facts["control_revision"], 1);
 	assert_eq!(facts["control_source"], "system");
 	let (status, body) = w.stop(paused, Uuid::new_v4(), "pause", 1).await;
 	assert_eq!(status, 200, "{body}");
-	let marker: Option<String> = sqlx::query_scalar("SELECT error FROM runs WHERE id = $1")
-		.bind(paused)
-		.fetch_one(w.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+	let marker: Option<String> =
+		sqlx::query_scalar("SELECT error FROM task_executions WHERE id = $1")
+			.bind(paused)
+			.fetch_one(w.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
 	assert_eq!(
 		marker, None,
 		"recovery resumes only rows that carry the outage marker"
@@ -529,7 +633,7 @@ async fn a_stop_does_not_wait_for_the_workers_own_run_references(
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(w.run)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),

@@ -31,6 +31,10 @@ pub trait SchedulingScope: Send {
 		false
 	}
 	async fn now(&mut self) -> Result<DateTime<Utc>>;
+	/// The Lease Recovery limit of the Tenant that owns `run` (#1009).
+	async fn lease_recovery_limit(&mut self, _run: Uuid) -> Result<u32> {
+		Ok(aidash_domain::run_state::LEASE_RECOVERY_LIMIT)
+	}
 	/// Oldest first, at most 128 rows, FOR UPDATE SKIP LOCKED; target is exact.
 	async fn candidates(
 		&mut self,
@@ -43,14 +47,20 @@ pub trait SchedulingScope: Send {
 	async fn input_after(&mut self, run: Uuid, seq: i64) -> Result<bool>;
 	/// An operation has reached a terminal state or no longer exists for this Run.
 	async fn operation_finished(&mut self, run: Uuid, operation: Uuid) -> Result<bool>;
-	/// First undelivered workspace event's coalesced wake time.
-	async fn workspace_event_after(
-		&mut self,
-		run: Uuid,
-		cursor: i64,
-	) -> Result<Option<DateTime<Utc>>>;
+	/// First undelivered thread event's coalesced wake time.
+	async fn thread_event_after(&mut self, run: Uuid, cursor: i64)
+	-> Result<Option<DateTime<Utc>>>;
 	async fn approval(&mut self, id: Uuid) -> Result<Option<Approval>>;
 	async fn dependencies_ready(&mut self, task: Uuid) -> Result<bool>;
+	/// Puts a waking execution back into its Working Area's queue (#1008,
+	/// ADR 0140). An execution holds its place only while it is awake: one
+	/// that slept, or was paused, re-enters at the tail before it is leased,
+	/// and may be leased only if no awake execution precedes it there. False
+	/// when it must wait (it then waits at the tail) or its Area is busy.
+	/// An adapter without Working Areas has no queue to re-enter.
+	async fn rejoin(&mut self, _run: Uuid) -> Result<bool> {
+		Ok(true)
+	}
 	/// Compare revision, install the lease, advance revision and persist recovery state.
 	async fn lease(
 		&mut self,

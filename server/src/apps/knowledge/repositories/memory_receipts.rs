@@ -59,7 +59,7 @@ pub(crate) async fn reserve(
 	if reservation.rows_affected() == 1 {
 		return Ok(true);
 	}
-	// Workspace locks are independent, but the receipt key is global. The
+	// Thread locks are independent, but the receipt key is global. The
 	// insert waits for the winner; compare its committed request and outcome.
 	let receipt = native::query(
 		&Query::select()

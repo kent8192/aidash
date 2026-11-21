@@ -75,7 +75,7 @@ fn outbox() -> Outbox {
 				sequence,
 				id: Uuid::new_v4(),
 				node: None,
-				workspace_id: None,
+				thread_id: None,
 				kind: "fixture".into(),
 				data: json!({"sequence":sequence}),
 				created_at: "2026-10-02T00:00:00Z".parse().unwrap(),

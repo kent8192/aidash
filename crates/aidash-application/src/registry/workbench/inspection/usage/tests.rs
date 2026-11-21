@@ -18,7 +18,7 @@ struct State {
 	cursors: Vec<Option<(DateTime<Utc>, Uuid)>>,
 	titles: Vec<Uuid>,
 	evidence_reads: usize,
-	workspace_reads: usize,
+	thread_reads: usize,
 }
 struct Repository {
 	principal: Principal,
@@ -68,8 +68,8 @@ fn reference() -> EntityRef {
 fn at(n: i64) -> DateTime<Utc> {
 	Utc.timestamp_opt(n, 0).unwrap()
 }
-fn run(n: u128, workspace: u128, phase: &str) -> RunMetadata {
-	serde_json::from_value(json!({"id":Uuid::from_u128(n),"task_id":Uuid::from_u128(99),"workspace_id":Uuid::from_u128(workspace),"node":"brave-otter-k3m9q2xa","home_node":"node","agent_id":"agent","agent_version":"1","phase":phase,"control":"ACTIVE","step":0,"revision":1,"observed_input_seq":0,"ledger_worker_ready":true,"error":null,"lease_owner":null,"lease_until":null,"updated_at":at(2000-n as i64)})).unwrap()
+fn run(n: u128, thread: u128, phase: &str) -> RunMetadata {
+	serde_json::from_value(json!({"id":Uuid::from_u128(n),"task_id":Uuid::from_u128(99),"thread_id":Uuid::from_u128(thread),"node":"brave-otter-k3m9q2xa","home_node":"node","agent_id":"agent","agent_version":"1","phase":phase,"control":"ACTIVE","step":0,"revision":1,"observed_input_seq":0,"ledger_worker_ready":true,"error":null,"lease_owner":null,"lease_until":null,"updated_at":at(2000-n as i64)})).unwrap()
 }
 #[async_trait]
 impl InspectionRepository for Repository {
@@ -119,20 +119,20 @@ impl InspectionScope for Scope<'_> {
 		}
 		Ok(self.0.pages.get(index).cloned().unwrap_or_default())
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		assert_ne!(self.principal(), Principal::DeploymentAdministrator);
 		let mut s = self.0.state.lock().unwrap();
 		assert!(s.active);
-		s.workspace_reads += 1;
+		s.thread_reads += 1;
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			id: id.to_string(),
 			attributes: json!({}),
 		})
 	}
 	async fn decide(&mut self, _: &Resource, action: &str) -> Result<bool> {
-		assert_eq!(action, "workspace.read");
+		assert_eq!(action, "thread.read");
 		Ok(true)
 	}
 	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
@@ -144,9 +144,9 @@ impl InspectionScope for Scope<'_> {
 		}
 		Ok(!self.0.hidden.contains(&row.id))
 	}
-	async fn workspace_title(&mut self, id: Uuid) -> Result<Option<String>> {
+	async fn thread_title(&mut self, id: Uuid) -> Result<Option<String>> {
 		self.0.state.lock().unwrap().titles.push(id);
-		Ok((id != Uuid::from_u128(3)).then(|| format!("workspace {id}")))
+		Ok((id != Uuid::from_u128(3)).then(|| format!("thread {id}")))
 	}
 	async fn registrations(&mut self, _: &EntityRef) -> Result<Vec<Registration>> {
 		Ok(vec![Registration {
@@ -244,9 +244,9 @@ async fn hidden_full_pages_do_not_consume_the_visible_usage_bound() {
 	r.hidden = (1..=501).map(Uuid::from_u128).collect();
 	let result = inspect(&r, reference()).await.unwrap();
 	assert!(!result.usage_truncated);
-	assert_eq!(result.workspaces.len(), 1);
-	assert!(result.workspaces[0].current);
-	assert_eq!(result.workspaces[0].latest_run_at, at(1498));
+	assert_eq!(result.threads.len(), 1);
+	assert!(result.threads[0].current);
+	assert_eq!(result.threads[0].latest_run_at, at(1498));
 	assert_eq!(result.source_node, "node");
 	assert!(!result.external_assessment_available);
 	let s = r.state.lock().unwrap();
@@ -274,9 +274,9 @@ async fn overflow_counts_visible_runs_and_merges_current_and_latest_usage() {
 	];
 	let result = inspect(&r, reference()).await.unwrap();
 	assert!(result.usage_truncated);
-	assert_eq!(result.workspaces.len(), 1);
-	assert!(result.workspaces[0].current);
-	assert_eq!(result.workspaces[0].latest_run_at, at(1999));
+	assert_eq!(result.threads.len(), 1);
+	assert!(result.threads[0].current);
+	assert_eq!(result.threads[0].latest_run_at, at(1999));
 	assert_eq!(r.state.lock().unwrap().titles, vec![Uuid::from_u128(1)]);
 }
 #[rstest]
@@ -291,7 +291,7 @@ async fn a_deployment_administrator_cannot_inspect_a_tenant_agent_version() {
 		"{:?}",
 		result.err()
 	);
-	assert_eq!(r.state.lock().unwrap().workspace_reads, 0);
+	assert_eq!(r.state.lock().unwrap().thread_reads, 0);
 }
 #[rstest]
 #[case(false)]
@@ -310,7 +310,7 @@ async fn forbidden_runs_are_hidden_but_authority_store_failures_are_not(#[case] 
 		assert!(matches!(result, Err(Error::External(_))));
 		assert!(!r.state.lock().unwrap().finished);
 	} else {
-		assert!(result.unwrap().workspaces.is_empty());
+		assert!(result.unwrap().threads.is_empty());
 	}
 	assert!(!r.state.lock().unwrap().active);
 }

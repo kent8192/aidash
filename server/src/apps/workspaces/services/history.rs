@@ -5,14 +5,13 @@ use uuid::Uuid;
 pub(crate) async fn page(
 	store: &Store,
 	lease: &mut Lease,
-	workspace: Uuid,
+	thread: Uuid,
 	input: ChannelHistoryQuery,
 ) -> Result<ChannelMessagePage> {
-	aidash_application::workspaces::channels::history(
+	aidash_application::threads::channels::history(
 		&mut crate::bootstrap::channel_scope(store, lease),
-		workspace,
-		aidash_application::workspaces::channels::HistoryRequest {
-			thread_id: input.thread_id,
+		thread,
+		aidash_application::threads::channels::HistoryRequest {
 			before: input.before,
 			limit: input.limit,
 		},

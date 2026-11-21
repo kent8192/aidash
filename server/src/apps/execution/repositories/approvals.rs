@@ -119,7 +119,7 @@ impl ApprovalScope for Scope<'_> {
 			let run: Run = {
 				let query_bind_1 = id;
 				aidash_server::database::query_as(
-					&sessions::select("runs")
+					&sessions::select("task_executions")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -134,8 +134,8 @@ impl ApprovalScope for Scope<'_> {
 				.await?
 			}
 			.ok_or_else(|| Error::NotFound("approval unavailable".into()))?;
-			let workspace = self.access.workspace(run.workspace_id).await?;
-			self.access.context = workspace.attributes.clone();
+			let thread = self.access.thread(run.thread_id).await?;
+			self.access.context = thread.attributes.clone();
 			Ok(run)
 		}
 		.await;
@@ -299,12 +299,12 @@ impl ApprovalScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		let store = self.store.ok_or_else(missing)?;
 		store
 			.event(
 				&mut self.access.tx,
-				store.event_workspace(self.run.as_deref(), workspace),
+				store.event_thread(self.run.as_deref(), thread),
 				kind,
 				data,
 			)

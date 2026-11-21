@@ -18,7 +18,7 @@ fn scope() -> Scope {
 		}),
 		task: Task {
 			id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
@@ -50,7 +50,7 @@ impl RemoteCommandScope for Scope {
 		panic!("a delivery has its own replay: the delivery id")
 	}
 	async fn task_resource(&mut self, _: &Task) -> Result<Resource> {
-		panic!("a delivery acts on the Area and the Workspace, not the task resource")
+		panic!("a delivery acts on the Area and the Thread, not the task resource")
 	}
 	async fn require_builtin(&mut self, tool: &str) -> Result<()> {
 		self.calls.push(format!("builtin:{tool}"));
@@ -85,11 +85,7 @@ async fn an_admitted_delivery_checks_the_binding_then_the_tool_then_the_task(mut
 #[tokio::test]
 async fn a_message_with_files_is_checked_as_the_message_tool(mut scope: Scope) {
 	verify(&mut scope, &who(1), message().tool()).await.unwrap();
-	assert!(
-		scope
-			.calls
-			.contains(&"builtin:workspace_message".to_string())
-	);
+	assert!(scope.calls.contains(&"builtin:thread_message".to_string()));
 	assert!(!scope.calls.contains(&"builtin:file_share".to_string()));
 }
 #[rstest]
@@ -186,7 +182,7 @@ fn requesting(tools: &[&str]) -> FederationToolRequest {
 }
 #[rstest]
 #[case::share("file_share")]
-#[case::message("workspace_message")]
+#[case::message("thread_message")]
 #[tokio::test]
 async fn a_delivery_the_homes_own_request_does_not_name_is_refused_before_the_binding(
 	mut scope: Scope,
@@ -206,7 +202,7 @@ async fn a_delivery_the_homes_own_request_does_not_name_is_refused_before_the_bi
 async fn a_delivery_a_run_only_answer_allows_is_admitted(mut scope: Scope) {
 	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
 	let run_only = ToolList::new([ToolPattern::new("file_share").unwrap()]).unwrap();
-	let request = requesting(&["workspace_message"])
+	let request = requesting(&["thread_message"])
 		.with_run_tools(&run_only)
 		.unwrap();
 	let mut identity = who(1);
@@ -215,9 +211,10 @@ async fn a_delivery_a_run_only_answer_allows_is_admitted(mut scope: Scope) {
 	assert_eq!(scope.calls, ["binding", "builtin:file_share", "task"]);
 }
 #[rstest]
-#[case::plain_key_only(&["workspace_message"], false)]
-#[case::files_key_too(&["workspace_message", "workspace_message:files"], true)]
-#[case::pattern(&["workspace_message*"], true)]
+#[case::plain_key_only(&["thread_message"], false)]
+#[case::files_key_too(&["thread_message", "thread_message:files"], true)]
+#[case::pattern(&["thread_message*"], true)]
+#[case::pinned_name(&["workspace_message", "workspace_message:files"], true)]
 #[tokio::test]
 async fn a_message_delivery_needs_the_files_key_in_the_homes_request(
 	mut scope: Scope,
@@ -229,4 +226,27 @@ async fn a_message_delivery_needs_the_files_key_in_the_homes_request(
 	identity.request = Some(&request);
 	let result = verify(&mut scope, &identity, message().tool()).await;
 	assert_eq!(result.is_ok(), admitted, "{result:?}");
+}
+#[rstest]
+#[tokio::test]
+async fn a_delivery_named_by_a_pinned_workspace_tool_is_checked_as_its_thread_tool(
+	mut scope: Scope,
+) {
+	// A receiving Node whose Agent pins `workspace_message` (#1008).
+	let request = requesting(&["thread_message"]);
+	let mut identity = who(1);
+	identity.request = Some(&request);
+	// The plain key alone does not admit a message with files under either name.
+	assert!(
+		verify(&mut scope, &identity, "workspace_message")
+			.await
+			.is_err()
+	);
+	let request = requesting(&["thread_message*"]);
+	identity.request = Some(&request);
+	scope.calls.clear();
+	verify(&mut scope, &identity, "workspace_message")
+		.await
+		.unwrap();
+	assert_eq!(scope.calls, ["binding", "builtin:thread_message", "task"]);
 }

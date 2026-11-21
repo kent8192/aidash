@@ -17,7 +17,7 @@ use uuid::Uuid;
 pub(crate) struct Reads<'a> {
 	pub federation: &'a Federation,
 	pub access: &'a mut Access,
-	pub task_workspace: Option<Uuid>,
+	pub task_thread: Option<Uuid>,
 	pub selected_run: Option<RunInspection>,
 	pub node: Option<&'a str>,
 }
@@ -35,7 +35,7 @@ impl Reads<'_> {
 		if !run.is_local(self.federation.config.deployment.as_str())
 			&& !self
 				.access
-				.allowed(run.workspace_id, "workspace.read")
+				.allowed(run.thread_id, "thread.read")
 				.await
 				.map_err(Error::from)?
 		{
@@ -50,7 +50,7 @@ impl Reads<'_> {
 		table: &str,
 		id: Uuid,
 		owner: Option<(&str, Uuid)>,
-		workspaces: &[Uuid],
+		threads: &[Uuid],
 	) -> Result<DateTime<Utc>> {
 		let mut query = Query::select();
 		query
@@ -64,8 +64,8 @@ impl Reads<'_> {
 		if let Some((column, owner)) = owner {
 			query.and_where(Expr::col(Alias::new(column)).eq(Expr::value(owner)));
 		}
-		if !workspaces.is_empty() {
-			query.and_where(workspace_filter(workspaces));
+		if !threads.is_empty() {
+			query.and_where(thread_filter(threads));
 		}
 		if let Some(node) = self.node {
 			query.and_where(node_filter(&self.access.identity.tenant, node));
@@ -93,26 +93,26 @@ impl aidash_application::ports::authorization::visibility::RowOutcome for Reads<
 
 #[async_trait]
 impl Scope for Reads<'_> {
-	async fn require_workspace(&mut self, id: Uuid) -> Result<()> {
+	async fn require_thread(&mut self, id: Uuid) -> Result<()> {
 		self.access
-			.require_workspace(id, "workspace.read")
+			.require_thread(id, "thread.read")
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_runs(
+	async fn thread_runs(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		live: bool,
 		cursor: Option<Uuid>,
 	) -> Result<Vec<RawRun>> {
 		let mut q = Query::select();
 		q.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(
 				Expr::col(Alias::new("tenant"))
 					.eq(Expr::value(self.access.identity.tenant.clone())),
 			)
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.order_by(Alias::new("updated_at"), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)
 			.limit(PAGE_SIZE as u64);
@@ -127,12 +127,12 @@ impl Scope for Reads<'_> {
 			let mut position = Query::select();
 			position
 				.column(Alias::new("updated_at"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(
 					Expr::col(Alias::new("tenant"))
 						.eq(Expr::value(self.access.identity.tenant.clone())),
 				)
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)));
 			let at: DateTime<Utc> =
 				crate::database::native::query_scalar(&position.to_string(PostgresQueryBuilder))
@@ -163,10 +163,10 @@ impl Scope for Reads<'_> {
 		self.access.lists = lists;
 		let task = task.map_err(Error::from)?;
 		self.access
-			.require_workspace(task.workspace_id, "workspace.read")
+			.require_thread(task.thread_id, "thread.read")
 			.await
 			.map_err(Error::from)?;
-		self.task_workspace = Some(task.workspace_id);
+		self.task_thread = Some(task.thread_id);
 		Ok(())
 	}
 	async fn require_run(&mut self, id: Uuid) -> Result<RunInspection> {
@@ -184,10 +184,10 @@ impl Scope for Reads<'_> {
 		}
 	}
 	async fn runs(&mut self, task: Uuid, cursor: Option<Uuid>) -> Result<Vec<RawRun>> {
-		let workspaces = [self.task_workspace.ok_or(Error::Forbidden)?];
+		let threads = [self.task_thread.ok_or(Error::Forbidden)?];
 		let position = match cursor {
 			Some(id) => Some((
-				self.cursor("runs", id, Some(("task_id", task)), &workspaces)
+				self.cursor("task_executions", id, Some(("task_id", task)), &threads)
 					.await?,
 				id,
 			)),
@@ -196,13 +196,13 @@ impl Scope for Reads<'_> {
 		let mut query = Query::select();
 		query
 			.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(
 				Expr::col(Alias::new("tenant"))
 					.eq(Expr::value(self.access.identity.tenant.clone())),
 			)
 			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
-			.and_where(workspace_filter(&workspaces))
+			.and_where(thread_filter(&threads))
 			.order_by(Alias::new("created_at"), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)
 			.limit(PAGE_SIZE as u64);
@@ -220,12 +220,12 @@ impl Scope for Reads<'_> {
 		state: HumanState,
 		cursor: Option<Uuid>,
 	) -> Result<Vec<HumanRequest>> {
-		let workspaces = if run.is_some() {
+		let threads = if run.is_some() {
 			vec![
 				self.selected_run
 					.as_ref()
 					.ok_or(Error::Forbidden)?
-					.workspace_id,
+					.thread_id,
 			]
 		} else {
 			vec![]
@@ -236,7 +236,7 @@ impl Scope for Reads<'_> {
 					"human_requests",
 					id,
 					run.map(|run| ("run_id", run)),
-					&workspaces,
+					&threads,
 				)
 				.await?,
 				id,
@@ -254,8 +254,8 @@ impl Scope for Reads<'_> {
 			.order_by(Alias::new("created_at"), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)
 			.limit(PAGE_SIZE as u64);
-		if !workspaces.is_empty() {
-			query.and_where(workspace_filter(&workspaces));
+		if !threads.is_empty() {
+			query.and_where(thread_filter(&threads));
 		}
 		if let Some(node) = self.node {
 			query.and_where(node_filter(&self.access.identity.tenant, node));
@@ -280,9 +280,9 @@ impl Scope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_allowed(&mut self, id: Uuid) -> Result<bool> {
+	async fn thread_allowed(&mut self, id: Uuid) -> Result<bool> {
 		self.access
-			.allowed(id, "workspace.read")
+			.allowed(id, "thread.read")
 			.await
 			.map_err(Into::into)
 	}
@@ -300,8 +300,8 @@ impl Scope for Reads<'_> {
 	}
 }
 
-fn workspace_filter(workspaces: &[Uuid]) -> SimpleExpr {
-	Expr::col(Alias::new("workspace_id")).is_in(workspaces.iter().copied().map(Expr::value))
+fn thread_filter(threads: &[Uuid]) -> SimpleExpr {
+	Expr::col(Alias::new("thread_id")).is_in(threads.iter().copied().map(Expr::value))
 }
 
 fn before(at: DateTime<Utc>, id: Uuid) -> Condition {
@@ -315,11 +315,11 @@ fn before(at: DateTime<Utc>, id: Uuid) -> Condition {
 }
 
 fn node_filter(tenant: &str, node: &str) -> SimpleExpr {
-	Expr::col(Alias::new("workspace_id"))
+	Expr::col(Alias::new("thread_id"))
 		.in_subquery(
 			Query::select()
 				.column(Alias::new("id"))
-				.from(Alias::new("workspaces"))
+				.from(Alias::new("threads"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
 				.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())))
 				.to_owned(),

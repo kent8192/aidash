@@ -8,7 +8,7 @@ use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
 use crate::apps::workspaces::models::{
 	Artifact as ArtifactRecord, Message as MessageRecord, Task as TaskRecord,
-	Workspace as WorkspaceRecord,
+	Thread as ThreadRecord,
 };
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::apps::workspaces::services::snapshots;
@@ -40,12 +40,11 @@ pub struct RunStore {
 		std::sync::Arc<std::sync::Mutex<Vec<aidash_application::context::offload::JournalRange>>>,
 }
 
-pub(crate) struct WorkspaceInsert<'a> {
+pub(crate) struct ThreadInsert<'a> {
 	pub id: Uuid,
 	pub tenant: &'a str,
 	pub node: &'a aidash_domain::nodes::NodeName,
 	pub title: &'a str,
-	pub goal: &'a str,
 	pub scratch_space_id: Uuid,
 	pub created_by: &'a str,
 }
@@ -101,10 +100,9 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
-	/// The Deployment's Schedule ceilings from `[schedules]` (#557).
-	pub schedule_ceilings: aidash_domain::schedules::Ceilings,
-	/// How often each replica looks for due Schedules.
-	pub schedule_poll: std::time::Duration,
+	/// How often each replica looks for Duties whose time trigger is due,
+	/// from `[duties]`.
+	pub duty_poll: std::time::Duration,
 	/// The build's Tier limits, which may lower a Tenant's Schedule total.
 	pub schedule_tier: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
 	/// The Deployment's ceilings on Live preview lifetimes from
@@ -115,7 +113,7 @@ pub struct Store {
 	/// The only Pod port the Preview NetworkPolicy admits.
 	pub preview_pod_port: Option<u16>,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
-	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
+	/// Tenants found for Runs, Threads, tasks and grants, shared by every
 	/// clone of this Store.
 	pub(crate) tenancies: std::sync::Arc<tenancies::Tenancies>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
@@ -220,7 +218,7 @@ pub(crate) struct RunResponseMessage<'a> {
 }
 
 pub(crate) struct RunMessageDelivery<'a> {
-	pub workspace: uuid::Uuid,
+	pub thread: uuid::Uuid,
 	pub task_id: uuid::Uuid,
 	pub run_id: uuid::Uuid,
 	pub sender: &'a str,
@@ -230,7 +228,7 @@ pub(crate) struct RunMessageDelivery<'a> {
 }
 
 pub(crate) struct FencedRunMessageOutput<'a> {
-	pub workspace: uuid::Uuid,
+	pub thread: uuid::Uuid,
 	pub task_id: uuid::Uuid,
 	pub run_id: uuid::Uuid,
 	pub included_input_seq: i64,
@@ -272,13 +270,13 @@ impl Store {
 			track_output,
 		} = request;
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.thread_id).await?;
 		RunRecord::ensure_response_current(tx.as_mut(), run.id, worker, included_input_seq).await?;
 		RunRecord::worker_context(tx.as_mut()).await?;
 		nonempty(content, "message")?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			run.workspace_id,
+			run.thread_id,
 			sender,
 			content,
 			key,
@@ -289,7 +287,7 @@ impl Store {
 			AuthorizationRunOutput::record(
 				tx.as_mut(),
 				run.id,
-				run.workspace_id,
+				run.thread_id,
 				"message",
 				message.id,
 			)
@@ -317,7 +315,7 @@ impl Store {
 		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -330,34 +328,32 @@ impl Store {
 		Ok(tenant.into())
 	}
 
-	/// The Tenant that owns a local workspace.
-	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<String> {
-		if let Some(tenant) = self.tenancies.workspace(workspace) {
+	/// The Tenant that owns a local thread.
+	pub(crate) async fn thread_tenant(&self, thread: Uuid) -> Result<String> {
+		if let Some(tenant) = self.tenancies.thread(thread) {
 			return Ok(tenant.into_inner());
 		}
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(self.pool.in_scope(scope))
 		.await?;
-		let tenant = tenant.ok_or_else(|| Error::NotFound("workspace".into()))?;
-		self.tenancies.remember_workspace(
-			workspace,
+		let tenant = tenant.ok_or_else(|| Error::NotFound("thread".into()))?;
+		self.tenancies.remember_thread(
+			thread,
 			aidash_domain::tenancy::TenantName::new(tenant.clone())?,
 		);
 		Ok(tenant)
 	}
 
-	/// The scope of a Workspace that a caller names only by id: its Tenant.
-	pub(crate) async fn workspace_tenancy(&self, workspace: Uuid) -> Result<TenancyScope> {
-		Ok(TenancyScope::tenant(
-			&self.workspace_tenant(workspace).await?,
-		)?)
+	/// The scope of a Thread that a caller names only by id: its Tenant.
+	pub(crate) async fn thread_tenancy(&self, thread: Uuid) -> Result<TenancyScope> {
+		Ok(TenancyScope::tenant(&self.thread_tenant(thread).await?)?)
 	}
 
 	/// The scope of a cross-node generation or semantic operation, found from
@@ -431,7 +427,7 @@ impl Store {
 			.pool
 			.scoped(scope, async |tx| {
 				for (table, column, id) in [
-					("runs", "id", admission),
+					("task_executions", "id", admission),
 					("authorization_remote_admissions", "id", admission),
 					("authorization_remote_grants", "id", grant),
 				] {
@@ -535,8 +531,7 @@ impl Store {
 			egress: Default::default(),
 			data_protection_floor: aidash_domain::data_protection::Level::LOWEST,
 			test_limit_ceilings: Default::default(),
-			schedule_ceilings: Default::default(),
-			schedule_poll: std::time::Duration::from_secs(15),
+			duty_poll: std::time::Duration::from_secs(15),
 			schedule_tier: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview_limits: aidash_domain::preview::live::Limits::default(),
 			preview_domain: None,
@@ -597,13 +592,8 @@ impl Store {
 		self
 	}
 
-	pub fn with_schedules(
-		mut self,
-		ceilings: aidash_domain::schedules::Ceilings,
-		poll: std::time::Duration,
-	) -> Self {
-		self.schedule_ceilings = ceilings;
-		self.schedule_poll = poll;
+	pub fn with_duties(mut self, poll: std::time::Duration) -> Self {
+		self.duty_poll = poll;
 		self
 	}
 	pub fn with_test_limit_ceilings(
@@ -688,8 +678,7 @@ impl Store {
 			egress: self.egress.clone(),
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
-			schedule_ceilings: self.schedule_ceilings,
-			schedule_poll: self.schedule_poll,
+			duty_poll: self.duty_poll,
 			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -752,8 +741,7 @@ impl Store {
 			egress: self.egress.clone(),
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
-			schedule_ceilings: self.schedule_ceilings,
-			schedule_poll: self.schedule_poll,
+			duty_poll: self.duty_poll,
 			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -779,25 +767,24 @@ impl Store {
 	pub async fn event(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
-		self.event_in_executor(&mut **tx, workspace, kind, data)
-			.await
+		self.event_in_executor(&mut **tx, thread, kind, data).await
 	}
-	/// The Workspace an event of `run` belongs to: none for a Run executing here for another
-	/// Home, whose Workspace this Node does not hold and no event row can name (ADR 0139).
-	pub(crate) fn event_workspace(&self, run: Option<&Run>, workspace: Uuid) -> Option<Uuid> {
+	/// The Thread an event of `run` belongs to: none for a Run executing here for another
+	/// Home, whose Thread this Node does not hold and no event row can name (ADR 0139).
+	pub(crate) fn event_thread(&self, run: Option<&Run>, thread: Uuid) -> Option<Uuid> {
 		match run {
 			Some(run) if !run.is_local(self.deployment.as_str()) => None,
-			_ => Some(workspace),
+			_ => Some(thread),
 		}
 	}
 	pub(crate) async fn event_in_executor(
 		&self,
 		tx: &mut dyn TransactionExecutor,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
@@ -811,7 +798,7 @@ impl Store {
 		.await?;
 		Ok({
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_3 = workspace;
+			let query_bind_3 = thread;
 			let query_bind_4 = kind;
 			let query_bind_5 = data;
 			aidash_server::database::query_as(
@@ -820,7 +807,7 @@ impl Store {
 					.columns([
 						Alias::new("id"),
 						Alias::new("node"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("kind"),
 						Alias::new("data"),
 						Alias::new("tenant"),
@@ -831,7 +818,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
 							))
-							.expr(event_records::event_node(workspace))
+							.expr(event_records::event_node(thread))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],
@@ -844,7 +831,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()],
 							))
-							.expr(crate::database::scope::event_tenant(workspace))
+							.expr(crate::database::scope::event_tenant(thread))
 							.to_owned(),
 					)
 					.returning_all()
@@ -859,37 +846,33 @@ impl Store {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		run: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
-		event_records::append_run(&mut **tx, run, workspace, kind, data).await
+		event_records::append_run(&mut **tx, run, thread, kind, data).await
 	}
 	pub async fn emit(
 		&self,
 		scope: &TenancyScope,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
 		self.pool
 			.atomic(scope, async |tx| {
-				Ok(event_records::create(tx, workspace, kind, data)
-					.await?
-					.into())
+				Ok(event_records::create(tx, thread, kind, data).await?.into())
 			})
 			.await
 	}
-	pub async fn create_workspace(
+	pub async fn create_thread(
 		&self,
 		scope: &TenancyScope,
 		owner: &str,
 		title: &str,
-		goal: &str,
-	) -> Result<Workspace> {
+	) -> Result<Thread> {
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		nonempty(title, "title")?;
-		nonempty(goal, "goal")?;
 		let mut tx = self.pool.begin(scope).await?;
 		let node: String = crate::database::native::query_scalar(
 			&Query::select()
@@ -917,79 +900,70 @@ impl Store {
 			last_used_at: now,
 		};
 		crate::apps::workspaces::repositories::scratch::insert(&mut *tx, tenant, &space).await?;
-		let workspace = self
-			.create_workspace_in(
+		let thread = self
+			.create_thread_in(
 				&mut tx,
-				WorkspaceInsert {
+				ThreadInsert {
 					id: Uuid::new_v4(),
 					tenant,
 					node: &node,
 					title,
-					goal,
 					scratch_space_id: space.id,
 					created_by: owner,
 				},
 			)
 			.await?;
-		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
+		self.record_thread_tenant_in(&mut tx, thread.id, tenant, owner)
 			.await?;
 		tx.commit().await?;
-		Ok(workspace)
+		Ok(thread)
 	}
-	pub(crate) async fn record_workspace_tenant_in(
+	pub(crate) async fn record_thread_tenant_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		tenant: &str,
 		owner: &str,
 	) -> Result<()> {
 		crate::database::native::query(
 			&Query::insert()
-				.into_table(Alias::new("authorization_workspaces"))
+				.into_table(Alias::new("authorization_threads"))
 				.columns([
-					Alias::new("workspace_id"),
+					Alias::new("thread_id"),
 					Alias::new("tenant"),
 					Alias::new("owner_subject"),
 				])
-				.values_panic([
-					Expr::value(workspace),
-					Expr::value(tenant),
-					Expr::value(owner),
-				])
+				.values_panic([Expr::value(thread), Expr::value(tenant), Expr::value(owner)])
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
 		.await?;
 		Ok(())
 	}
-	pub(crate) async fn create_workspace_in(
+	pub(crate) async fn create_thread_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		input: WorkspaceInsert<'_>,
-	) -> Result<Workspace> {
-		let WorkspaceInsert {
+		input: ThreadInsert<'_>,
+	) -> Result<Thread> {
+		let ThreadInsert {
 			id,
 			tenant,
 			node,
 			title,
-			goal,
 			scratch_space_id,
 			created_by,
 		} = input;
 		nonempty(title, "title")?;
-		nonempty(goal, "goal")?;
-		let w: Workspace = {
+		let w: Thread = {
 			let query_bind_1 = id;
 			let query_bind_2 = title;
-			let query_bind_3 = goal;
 			aidash_server::database::query_as(
 				&Query::insert()
-					.into_table(Alias::new("workspaces"))
+					.into_table(Alias::new("threads"))
 					.columns([
 						Alias::new("id"),
 						Alias::new("node"),
 						Alias::new("title"),
-						Alias::new("goal"),
 						Alias::new("tenant"),
 						Alias::new("scratch_space_id"),
 						Alias::new("created_by"),
@@ -1005,10 +979,6 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
 							.expr(Expr::value(tenant.to_owned()))
 							.expr(Expr::value(scratch_space_id))
 							.expr(Expr::value(created_by.to_owned()))
@@ -1020,57 +990,55 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		self.event(tx, Some(w.id), "workspace.created", json!(w))
+		self.event(tx, Some(w.id), "thread.created", json!(w))
 			.await?;
 		Ok(w)
 	}
-	pub async fn workspaces(&self, scope: &TenancyScope) -> Result<Vec<Workspace>> {
+	pub async fn threads(&self, scope: &TenancyScope) -> Result<Vec<Thread>> {
 		Ok(self
 			.pool
-			.atomic(scope, async |tx| WorkspaceRecord::newest_first(tx).await)
+			.atomic(scope, async |tx| ThreadRecord::newest_first(tx).await)
 			.await?
 			.into_iter()
 			.map(Into::into)
 			.collect())
 	}
-	pub async fn workspace(&self, scope: &TenancyScope, id: Uuid) -> Result<Workspace> {
+	pub async fn thread(&self, scope: &TenancyScope, id: Uuid) -> Result<Thread> {
 		Ok(self
 			.pool
-			.atomic(scope, async |tx| WorkspaceRecord::read(tx, id).await)
+			.atomic(scope, async |tx| ThreadRecord::read(tx, id).await)
 			.await?
 			.into())
 	}
-	pub async fn update_state(
+	pub async fn update_title(
 		&self,
 		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
-		state: Value,
-	) -> Result<Workspace> {
+		title: &str,
+	) -> Result<Thread> {
 		let mut tx = self.pool.begin(scope).await?;
-		let workspace = self.update_state_in(&mut tx, id, revision, state).await?;
+		let thread = self.update_title_in(&mut tx, id, revision, title).await?;
 		tx.commit().await?;
-		Ok(workspace)
+		Ok(thread)
 	}
-	pub(crate) async fn update_state_in(
+	pub(crate) async fn update_title_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		revision: i64,
-		state: Value,
-	) -> Result<Workspace> {
-		if !state.is_object() {
-			return Err(Error::Invalid("workspace state must be an object".into()));
-		}
+		title: &str,
+	) -> Result<Thread> {
+		nonempty(title, "title")?;
 		let w = {
 			let query_bind_1 = id;
 			let query_bind_2 = revision;
-			let query_bind_3 = state;
+			let query_bind_3 = title;
 			aidash_server::database::query_as(
 				&Query::update()
-					.table(Alias::new("workspaces"))
+					.table(Alias::new("threads"))
 					.value_expr(
-						Alias::new("state"),
+						Alias::new("title"),
 						SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_3.to_owned()).into()],
@@ -1084,15 +1052,17 @@ impl Store {
 							Expr::value(query_bind_2.to_owned()).into(),
 						],
 					))
+					// Rechecked on the row a concurrent deletion wrote, so a
+					// deleted Thread is never renamed (#1008).
+					.and_where(Expr::col(Alias::new("deleted_at")).is_null())
 					.returning_all()
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **tx)
 			.await?
 		}
-		.ok_or_else(|| Error::Conflict("workspace revision changed".into()))?;
-		self.event(tx, Some(id), "workspace.updated", json!(w))
-			.await?;
+		.ok_or_else(|| Error::Conflict("thread revision changed".into()))?;
+		self.event(tx, Some(id), "thread.updated", json!(w)).await?;
 		Ok(w)
 	}
 	pub async fn task(&self, scope: &TenancyScope, id: Uuid) -> Result<Task> {
@@ -1107,11 +1077,11 @@ impl Store {
 			.atomic(scope, async |tx| TaskRecord::page(tx, offset).await)
 			.await
 	}
-	pub async fn tasks(&self, scope: &TenancyScope, workspace: Option<Uuid>) -> Result<Vec<Task>> {
+	pub async fn tasks(&self, scope: &TenancyScope, thread: Option<Uuid>) -> Result<Vec<Task>> {
 		Ok(self
 			.pool
 			.atomic(scope, async |tx| {
-				TaskRecord::chronological(tx, workspace).await
+				TaskRecord::chronological(tx, thread).await
 			})
 			.await?
 			.into_iter()
@@ -1121,14 +1091,14 @@ impl Store {
 	pub async fn create_task(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
 		let mut tx = self.pool.begin(scope).await?;
 		let task = self
-			.create_task_in(&mut tx, workspace, input, creator, key)
+			.create_task_in(&mut tx, thread, input, creator, key)
 			.await?;
 		tx.commit().await?;
 		Ok(task)
@@ -1136,7 +1106,7 @@ impl Store {
 	pub(crate) async fn create_task_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: Option<&str>,
@@ -1148,14 +1118,16 @@ impl Store {
 		}
 		let _: Search = serde_json::from_value(input.requirements.clone())
 			.map_err(|e| Error::Invalid(e.to_string()))?;
+		// No Task commits into a Thread being deleted (#1008).
+		crate::apps::workspaces::models::Thread::lock_live(&mut **tx, thread).await?;
 		for dep in input.dependencies.iter().chain(input.parent_id.iter()) {
 			let valid: bool = {
 				let query_bind_1 = dep;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
-							"(EXISTS(SELECT 1 FROM tasks WHERE id = ? AND workspace_id = ?))"
+							"(EXISTS(SELECT 1 FROM tasks WHERE id = ? AND thread_id = ?))"
 								.to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
@@ -1169,7 +1141,7 @@ impl Store {
 			};
 			if !valid {
 				return Err(Error::Invalid(
-					"dependencies and parent must belong to the same workspace".into(),
+					"dependencies and parent must belong to the same thread".into(),
 				));
 			}
 		}
@@ -1243,7 +1215,7 @@ impl Store {
 		}
 		let task: Option<Task> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = workspace;
+			let query_bind_2 = thread;
 			let query_bind_3 = &input.title;
 			let query_bind_4 = &input.description;
 			let query_bind_5 = &input.requirements;
@@ -1256,7 +1228,7 @@ impl Store {
 					.into_table(reinhardt::query::Alias::new("tasks"))
 					.columns([
 						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("title"),
 						reinhardt::query::Alias::new("description"),
 						reinhardt::query::Alias::new("requirements"),
@@ -1305,7 +1277,7 @@ impl Store {
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -1326,7 +1298,7 @@ impl Store {
 		};
 		let task = match task {
 			Some(t) => {
-				self.event(tx, Some(workspace), "task.created", json!(t))
+				self.event(tx, Some(thread), "task.created", json!(t))
 					.await?;
 				t
 			}
@@ -1348,7 +1320,7 @@ impl Store {
 					.fetch_one(&mut **tx)
 					.await?
 				};
-				if t.workspace_id != workspace
+				if t.thread_id != thread
 					|| t.title != input.title
 					|| t.description != input.description
 					|| t.requirements != input.requirements
@@ -1388,16 +1360,16 @@ impl Store {
 		tx.commit().await?;
 		Ok(claimed)
 	}
-	/// The Node of a Workspace, read in the caller's transaction.
-	pub(crate) async fn workspace_node_in(
+	/// The Node of a Thread, read in the caller's transaction.
+	pub(crate) async fn thread_node_in(
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<aidash_domain::nodes::NodeName> {
 		let name: String = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col("id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **tx)
@@ -1423,7 +1395,8 @@ impl Store {
 			));
 		}
 		let claimed: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; aidash_server::database::query_as(&Query::update().table(Alias::new("tasks")).value_expr(Alias::new("status"), Expr::cust("'CLAIMED'")).value_expr(Alias::new("owner"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND status = 'OPEN' AND NOT EXISTS(SELECT 1 FROM delegations AS d WHERE d.task_id = tasks.id AND d.node_id || '/agents/' || d.agent_id || '@' || d.agent_version <> ?) AND NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(tasks.dependencies) AND d.status <> 'COMPLETED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
-		let node = Self::workspace_node_in(tx, claimed.workspace_id).await?;
+		let node = Self::thread_node_in(tx, claimed.thread_id).await?;
+		let node_name = node.as_str().to_owned();
 		let address = self.deployment.node(node);
 		if owner == qualified_agent(&address, &agent.id, &agent.version) {
 			let snapshot = if let Some(snapshot) = admitted {
@@ -1443,8 +1416,8 @@ impl Store {
 			let tenant: String = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("tenant"))
-					.from(Alias::new("workspaces"))
-					.and_where(Expr::col("id").eq(Expr::value(claimed.workspace_id)))
+					.from(Alias::new("threads"))
+					.and_where(Expr::col("id").eq(Expr::value(claimed.thread_id)))
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_one(&mut **tx)
@@ -1455,8 +1428,24 @@ impl Store {
 				aidash_application::usage::Work::Run,
 			)
 			.await?;
+			// The Tenant and Node Instructions of the Node that executes are pinned
+			// with the claim, so later edits never change this Run (#1010).
+			let mut standing =
+				crate::apps::identity::repositories::standing_instructions::standing(
+					&mut **tx, &tenant, &node_name,
+				)
+				.await?;
+			// A Task a Duty started works under the Duty's mission and
+			// procedure, pinned the same way (#1011).
+			if let Some(duty) =
+				crate::apps::workspaces::repositories::duties::brief_of_task(&mut **tx, &tenant, id)
+					.await?
+			{
+				standing.duty = duty;
+			}
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
+				standing_instructions: Some(standing).filter(|standing| !standing.is_empty()),
 				..Default::default()
 			};
 			// Persist the local execution with the claim; no crash can strand a
@@ -1464,18 +1453,18 @@ impl Store {
 			{
 				let query_bind_1 = Uuid::new_v4();
 				let query_bind_2 = id;
-				let query_bind_3 = claimed.workspace_id;
+				let query_bind_3 = claimed.thread_id;
 				let query_bind_4 = address.to_string();
 				let query_bind_5 = &agent.id;
 				let query_bind_6 = &agent.version;
 				let query_bind_7 = serde_json::to_value(&context)?;
 				crate::database::native::query(
 					&Query::insert()
-						.into_table(Alias::new("runs"))
+						.into_table(Alias::new("task_executions"))
 						.columns([
 							Alias::new("id"),
 							Alias::new("task_id"),
-							Alias::new("workspace_id"),
+							Alias::new("thread_id"),
 							Alias::new("home_node"),
 							Alias::new("node"),
 							Alias::new("agent_id"),
@@ -1512,7 +1501,7 @@ impl Store {
 								))
 								.expr(Expr::value(query_bind_7))
 								.expr(crate::database::scope::tenant_of(
-									"workspaces",
+									"threads",
 									"id",
 									query_bind_3,
 								))
@@ -1535,7 +1524,7 @@ impl Store {
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_id"))))
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_version"))))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(home_node = ? AND task_id = ?)".to_owned(),
 							vec![
@@ -1558,17 +1547,17 @@ impl Store {
 			let run_id: Uuid = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("home_node").eq(Expr::value(address.to_string())))
 					.and_where(Expr::col("task_id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_one(&mut **tx)
 			.await?;
-			crate::apps::identity::repositories::provider_credentials::admit_workspace(
+			crate::apps::identity::repositories::provider_credentials::admit_thread(
 				&mut **tx,
 				run_id,
-				claimed.workspace_id,
+				claimed.thread_id,
 				context
 					.binding_snapshot
 					.as_deref()
@@ -1586,13 +1575,8 @@ impl Store {
 			)
 			.await?;
 		}
-		self.event(
-			tx,
-			Some(claimed.workspace_id),
-			"task.claimed",
-			json!(claimed),
-		)
-		.await?;
+		self.event(tx, Some(claimed.thread_id), "task.claimed", json!(claimed))
+			.await?;
 		Ok(claimed)
 	}
 	pub async fn transition(
@@ -1657,7 +1641,7 @@ impl Store {
 			)));
 		}
 		let t: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; let query_bind_4 = next; aidash_server::database::query_as(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("tasks")).value_expr(reinhardt::query::Alias::new("status"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.as_str()).into()])).value_expr(reinhardt::query::Alias::new("owner"), SimpleExpr::CustomWithExpr("(CASE WHEN ? = 'OPEN' THEN NULL ELSE ? END)".to_owned(), vec![Expr::value(query_bind_4.as_str()).into(), Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND (owner = ? OR (owner IS NULL AND status = 'OPEN' AND ? IN ('CANCELLED', 'FAILED'))))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.as_str()).into()])).returning_all().to_string(reinhardt::query::PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
-		self.event(tx, Some(t.workspace_id), "task.updated", json!(t))
+		self.event(tx, Some(t.thread_id), "task.updated", json!(t))
 			.await?;
 		Ok(t)
 	}
@@ -1807,7 +1791,7 @@ impl Store {
 		};
 		self.event(
 			tx,
-			Some(task.workspace_id),
+			Some(task.thread_id),
 			"task.abandoned",
 			json!({"task":updated,"previous_status":task.status,"reason":reason,"actor":actor}),
 		)
@@ -2083,14 +2067,8 @@ impl Store {
 					"completion key reused with different input".into(),
 				));
 			}
-			self.record_output_in(
-				tx,
-				publication.tracked_run(),
-				t.workspace_id,
-				"artifact",
-				a.id,
-			)
-			.await?;
+			self.record_output_in(tx, publication.tracked_run(), t.thread_id, "artifact", a.id)
+				.await?;
 			return Ok(t);
 		}
 		if t.status != crate::domain::TaskStatus::Running {
@@ -2152,7 +2130,7 @@ impl Store {
 		}
 		let a: Artifact = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = t.workspace_id;
+			let query_bind_2 = t.thread_id;
 			let query_bind_3 = id;
 			let query_bind_4 = &artifact.kind;
 			let query_bind_5 = &artifact.name;
@@ -2165,7 +2143,7 @@ impl Store {
 					.into_table(reinhardt::query::Alias::new("artifacts"))
 					.columns([
 						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("task_id"),
 						reinhardt::query::Alias::new("kind"),
 						reinhardt::query::Alias::new("name"),
@@ -2214,7 +2192,7 @@ impl Store {
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -2226,14 +2204,8 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		self.record_output_in(
-			tx,
-			publication.tracked_run(),
-			t.workspace_id,
-			"artifact",
-			a.id,
-		)
-		.await?;
+		self.record_output_in(tx, publication.tracked_run(), t.thread_id, "artifact", a.id)
+			.await?;
 		let t: Task = {
 			let query_bind_1 = id;
 			let query_bind_2 = key;
@@ -2267,7 +2239,7 @@ impl Store {
 		};
 		self.event(
 			tx,
-			Some(t.workspace_id),
+			Some(t.thread_id),
 			"task.completed",
 			json!({"task":t,"artifact":a}),
 		)
@@ -2312,16 +2284,16 @@ impl Store {
 		publication: Publication,
 	) -> Result<Artifact> {
 		input.validate()?;
-		let workspace: Uuid = crate::database::native::query_scalar(
+		let thread: Uuid = crate::database::native::query_scalar(
 			&Query::select()
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.from(Alias::new("tasks"))
 				.and_where(Expr::col("id").eq(Expr::value(task_id)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **tx)
 		.await?;
-		super::subnodes::require_writable(tx.as_mut(), workspace).await?;
+		super::subnodes::require_writable(tx.as_mut(), thread).await?;
 		let task: Task = {
 			let query_bind_1 = task_id;
 			aidash_server::database::query_as(
@@ -2343,7 +2315,7 @@ impl Store {
 		}
 		let a: Option<Artifact> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = task.workspace_id;
+			let query_bind_2 = task.thread_id;
 			let query_bind_3 = task_id;
 			let query_bind_4 = &input.kind;
 			let query_bind_5 = &input.name;
@@ -2356,7 +2328,7 @@ impl Store {
 					.into_table(Alias::new("artifacts"))
 					.columns([
 						Alias::new("id"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("task_id"),
 						Alias::new("kind"),
 						Alias::new("name"),
@@ -2405,7 +2377,7 @@ impl Store {
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -2424,7 +2396,7 @@ impl Store {
 		};
 		let a = match a {
 			Some(a) => {
-				self.event(tx, Some(task.workspace_id), "artifact.published", json!(a))
+				self.event(tx, Some(task.thread_id), "artifact.published", json!(a))
 					.await?;
 				a
 			}
@@ -2457,7 +2429,7 @@ impl Store {
 		self.record_output_in(
 			tx,
 			publication.tracked_run(),
-			task.workspace_id,
+			task.thread_id,
 			"artifact",
 			a.id,
 		)
@@ -2469,13 +2441,13 @@ impl Store {
 		&self,
 		scope: &TenancyScope,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		limit: i64,
 	) -> Result<Vec<Event>> {
 		Ok(self
 			.pool
 			.atomic(scope, async |tx| {
-				EventRecord::after(tx, after, workspace, limit).await
+				EventRecord::after(tx, after, thread, limit).await
 			})
 			.await?
 			.into_iter()
@@ -2485,37 +2457,37 @@ impl Store {
 	pub async fn snapshot_page(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		collection: &str,
 		after: Option<Uuid>,
 	) -> Result<SnapshotPage> {
 		let rows = self
 			.pool
 			.atomic(scope, async |tx| {
-				WorkspaceRecord::snapshot_rows(tx, workspace, collection, after).await
+				ThreadRecord::snapshot_rows(tx, thread, collection, after).await
 			})
 			.await?;
 		snapshots::page(rows, after)
 	}
-	/// Read one exact workspace record without relying on the bounded recent
+	/// Read one exact thread record without relying on the bounded recent
 	/// event/message collections in `snapshot`.
-	pub async fn workspace_record(
+	pub async fn thread_record(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Value> {
 		self.pool
 			.atomic(scope, async |db| match kind {
-				"workspace" if workspace == id => Ok(json!(Workspace::from(
-					WorkspaceRecord::read(db, workspace).await?
-				))),
-				"workspace" => Err(Error::Invalid("workspace record not available".into())),
+				"thread" if thread == id => {
+					Ok(json!(Thread::from(ThreadRecord::read(db, thread).await?)))
+				}
+				"thread" => Err(Error::Invalid("thread record not available".into())),
 				"event" => Ok(json!(Event::from(
-					EventRecord::in_workspace(db, workspace, id).await?
+					EventRecord::in_thread(db, thread, id).await?
 				))),
-				_ => WorkspaceRecord::record(db, workspace, kind, id).await,
+				_ => ThreadRecord::record(db, thread, kind, id).await,
 			})
 			.await
 	}
@@ -2523,16 +2495,16 @@ impl Store {
 	pub async fn child_task_summary(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
 		self.pool
 			.atomic(scope, async |tx| {
-				TaskRecord::child_summary(tx, workspace, parent).await
+				TaskRecord::child_summary(tx, thread, parent).await
 			})
 			.await
 	}
-	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<WorkspaceSnapshot> {
+	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<ThreadSnapshot> {
 		self.pool
 			.atomic(scope, async |db| {
 				if let Some(tenant) = scope.tenant_name() {
@@ -2542,14 +2514,14 @@ impl Store {
 					)
 					.await?;
 				}
-				Ok(WorkspaceSnapshot {
-					workspace: WorkspaceRecord::read(db, id).await?.into(),
+				Ok(ThreadSnapshot {
+					thread: ThreadRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
 						.await?
 						.into_iter()
 						.map(Into::into)
 						.collect(),
-					artifacts: ArtifactRecord::for_workspace(db, id)
+					artifacts: ArtifactRecord::for_thread(db, id)
 						.await?
 						.into_iter()
 						.map(Into::into)
@@ -2572,26 +2544,26 @@ impl Store {
 	pub async fn message(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<()> {
-		self.message_record(scope, workspace, sender, content, key)
+		self.message_record(scope, thread, sender, content, key)
 			.await
 			.map(|_| ())
 	}
 	pub async fn message_record(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
 		let mut tx = self.pool.begin(scope).await?;
 		let message = self
-			.message_in(&mut tx, workspace, sender, content, key)
+			.message_in(&mut tx, thread, sender, content, key)
 			.await?;
 		tx.commit().await?;
 		Ok(message)
@@ -2673,7 +2645,7 @@ impl Store {
 		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
 		let FencedRunMessageOutput {
-			workspace,
+			thread,
 			task_id,
 			run_id,
 			included_input_seq,
@@ -2702,7 +2674,7 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		if task.workspace_id != workspace {
+		if task.thread_id != thread {
 			return Err(Error::Unauthorized);
 		}
 		if matches!(
@@ -2737,7 +2709,7 @@ impl Store {
 		.scalar_one(&mut **tx)
 		.await?;
 		let message = self
-			.message_in(tx, workspace, sender, content, Some(key))
+			.message_in(tx, thread, sender, content, Some(key))
 			.await?;
 		Ok(message)
 	}
@@ -2786,7 +2758,7 @@ impl Store {
 		.await
 	}
 	/// A Subnode member's message to the Run that created the Subnode. Returns the
-	/// creator's Workspace and the copy written there, none when the creator is remote.
+	/// creator's Thread and the copy written there, none when the creator is remote.
 	pub(crate) async fn accept_member_message_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -2862,8 +2834,8 @@ impl Store {
 			let query_bind_1 = self.deployment.as_str();
 			aidash_server::database::query_as(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))
-				.from(reinhardt::query::Alias::new("runs"))
-				.and_where(SimpleExpr::CustomWithExpr("(NOT (home_node = ? || '/' || node) AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = runs.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
+				.from(reinhardt::query::Alias::new("task_executions"))
+				.and_where(SimpleExpr::CustomWithExpr("(NOT (home_node = ? || '/' || node) AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = task_executions.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.order_by(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Order::Asc)
 				.limit(1)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2976,7 +2948,7 @@ impl Store {
 					.expr(reinhardt::query::Expr::col(
 						reinhardt::query::ColumnRef::Asterisk,
 					))
-					.from(reinhardt::query::Alias::new("runs"))
+					.from(reinhardt::query::Alias::new("task_executions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id = ? AND lease_until > CURRENT_TIMESTAMP)".to_owned(),
 						vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -3024,7 +2996,7 @@ impl Store {
 			let query_bind_3 = current.stored_pending()?;
 			let mut update = reinhardt::query::Query::update();
 			update
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("pending"),
 					SimpleExpr::CustomWithExpr(
@@ -3076,10 +3048,10 @@ impl Store {
 	) -> Result<()> {
 		nonempty(content, "message")?;
 		let mut tx = self.pool.begin(scope).await?;
-		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.thread_id).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			run.workspace_id,
+			run.thread_id,
 			sender,
 			content,
 			key,
@@ -3087,14 +3059,8 @@ impl Store {
 		)
 		.await?;
 		if track_output {
-			self.record_output_in(
-				&mut tx,
-				Some(run.id),
-				run.workspace_id,
-				"message",
-				message.id,
-			)
-			.await?;
+			self.record_output_in(&mut tx, Some(run.id), run.thread_id, "message", message.id)
+				.await?;
 		}
 		tx.commit().await?;
 		Ok(())
@@ -3103,7 +3069,7 @@ impl Store {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		run: Option<Uuid>,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
@@ -3114,13 +3080,13 @@ impl Store {
 			.expr(Expr::value(1_i32))
 			.from(Alias::new("authorization_execution"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_owned();
 		let subnode = Query::select()
 			.expr(Expr::value(1_i32))
 			.from(Alias::new("subnodes"))
 			.and_where(Expr::col("creator_run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_owned();
 		let valid: bool = crate::database::native::query_scalar(
 			&Query::select()
@@ -3140,21 +3106,21 @@ impl Store {
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut **tx,
 			run,
-			workspace,
+			thread,
 			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
-		Self::insert_output_in(tx, run, workspace, kind, id).await
+		Self::insert_output_in(tx, run, thread, kind, id).await
 	}
 	/// A Subnode member Run produced the `message` it sent to the Run that created
-	/// the Subnode, in that creator's Workspace (#793). Only that case is accepted:
-	/// `workspace` must be one the creating Run works in. The member does not read its
-	/// own message there, so no self-read is journaled; its Workspace is a foreign one.
+	/// the Subnode, in that creator's Thread (#793). Only that case is accepted:
+	/// `thread` must be one the creating Run works in. The member does not read its
+	/// own message there, so no self-read is journaled; its Thread is a foreign one.
 	pub(crate) async fn record_member_message_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		member: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 	) -> Result<()> {
 		let valid: bool = crate::database::native::query_scalar(
@@ -3164,9 +3130,9 @@ impl Store {
 						.expr(Expr::value(1_i32))
 						.from(Alias::new("subnodes"))
 						.and_where(
-							Expr::col("workspace_id").in_subquery(
+							Expr::col("thread_id").in_subquery(
 								Query::select()
-									.column(Alias::new("workspace_id"))
+									.column(Alias::new("thread_id"))
 									.from(Alias::new("authorization_execution"))
 									.and_where(Expr::col("run_id").eq(Expr::value(member)))
 									.to_owned(),
@@ -3177,7 +3143,7 @@ impl Store {
 								Query::select()
 									.column(Alias::new("run_id"))
 									.from(Alias::new("authorization_execution"))
-									.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+									.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 									.to_owned(),
 							),
 						)
@@ -3190,12 +3156,12 @@ impl Store {
 		if !valid {
 			return Err(Error::Forbidden);
 		}
-		Self::insert_output_in(tx, member, workspace, "message", message).await
+		Self::insert_output_in(tx, member, thread, "message", message).await
 	}
 	async fn insert_output_in(
 		tx: &mut crate::database::native::Transaction,
 		run: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
@@ -3205,7 +3171,7 @@ impl Store {
 				.columns(
 					[
 						"run_id",
-						"workspace_id",
+						"thread_id",
 						"resource_kind",
 						"resource_id",
 						"tenant",
@@ -3215,10 +3181,14 @@ impl Store {
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(run))
-						.expr(Expr::value(workspace))
+						.expr(Expr::value(thread))
 						.expr(Expr::value(kind))
 						.expr(Expr::value(id))
-						.expr(crate::database::scope::tenant_of("runs", "id", run))
+						.expr(crate::database::scope::tenant_of(
+							"task_executions",
+							"id",
+							run,
+						))
 						.to_owned(),
 				)
 				.on_conflict(
@@ -3236,13 +3206,13 @@ impl Store {
 	pub(crate) async fn message_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
 		nonempty(content, "message")?;
-		self.message_in_with_attachments(tx, workspace, sender, content, key)
+		self.message_in_with_attachments(tx, thread, sender, content, key)
 			.await
 	}
 
@@ -3251,14 +3221,16 @@ impl Store {
 	pub(crate) async fn message_in_with_attachments(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
+		// No message commits into a Thread being deleted (#1008).
+		crate::apps::workspaces::models::Thread::lock_live(&mut **tx, thread).await?;
 		let inserted: Option<Message> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = workspace;
+			let query_bind_2 = thread;
 			let query_bind_3 = sender;
 			let query_bind_4 = content;
 			let query_bind_5 = key;
@@ -3267,7 +3239,7 @@ impl Store {
 					.into_table(Alias::new("messages"))
 					.columns([
 						Alias::new("id"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("sender"),
 						Alias::new("content"),
 						Alias::new("idempotency_key"),
@@ -3296,7 +3268,7 @@ impl Store {
 								vec![Expr::value(query_bind_5.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -3314,7 +3286,7 @@ impl Store {
 			.await?
 		};
 		let message = if let Some(message) = inserted {
-			self.event(tx, Some(workspace), "message.created", json!(message))
+			self.event(tx, Some(thread), "message.created", json!(message))
 				.await?;
 			message
 		} else {
@@ -3334,7 +3306,7 @@ impl Store {
 				.await?
 			};
 			// This path never publishes for a Run, so a Run's message is no replay.
-			if message.workspace_id != workspace
+			if message.thread_id != thread
 				|| message.sender != sender
 				|| message.content != content
 				|| message.run_id.is_some()
@@ -3361,7 +3333,7 @@ impl Store {
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("updated_at"),
@@ -3473,7 +3445,7 @@ impl Store {
 				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.column(reinhardt::query::Alias::new("id"))
-						.from(reinhardt::query::Alias::new("runs"))
+						.from(reinhardt::query::Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id = ?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -3514,7 +3486,7 @@ impl Store {
 		let retain_lease = aidash_domain::run_state::persistence::retains_lease(kind);
 		let safe_context = run.context.clone();
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &safe_context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
+				.table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3552,14 +3524,14 @@ impl Store {
 		} else {
 			Vec::new()
 		};
-		let mut data = json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage});
-		if kind == "run.semantic_degraded"
+		let mut data = json!({"run_id":saved.id,"task_id":saved.task_id,"thread_id":saved.thread_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage});
+		if kind == "execution.semantic_degraded"
 			&& let Some(degraded) = run.recovery.degraded.recent.last()
 		{
 			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
 			data["cause"] = serde_json::to_value(degraded.cause)?;
 		}
-		if kind == "run.plugin_tools_pinned" {
+		if kind == "execution.plugin_tools_pinned" {
 			// Only names and reason codes: no URL, header, finding detail or server answer (ADR 0073).
 			data["skipped"] = serde_json::to_value(
 				run.context
@@ -3570,27 +3542,25 @@ impl Store {
 			)?;
 		}
 		if saved.phase().is_terminal() {
-			let reason = match saved.phase() {
-				RunPhase::Completed => "creator_completed",
-				RunPhase::Failed => "creator_failed",
-				RunPhase::Cancelled => "creator_cancelled",
-				_ => unreachable!("terminal Run phase"),
-			};
-			self.subnode_control_in(
-				tx,
-				saved.id,
-				RunControlAction::Cancel,
-				ControlSource::System,
-				Some(reason),
-			)
-			.await?;
+			// A Subnode outlives its creator's completion or failure; only a
+			// cancellation still reaches what the creator built (#1012).
+			if saved.phase() == RunPhase::Cancelled {
+				self.subnode_control_in(
+					tx,
+					saved.id,
+					RunControlAction::Cancel,
+					ControlSource::System,
+					Some("creator_cancelled"),
+				)
+				.await?;
+			}
 			self.close_plugin_sessions_soon(saved.id);
 			self.stop_python_soon(saved.id);
 		}
 		self.run_event(
 			tx,
 			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 			kind,
 			data,
 		)
@@ -3650,7 +3620,7 @@ impl Store {
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::Alias::new("id")),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND control = 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.lock(reinhardt::query::LockType::Update)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3666,7 +3636,7 @@ impl Store {
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run.id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -3685,7 +3655,7 @@ impl Store {
 								Expr::col("tenant").in_subquery(
 									Query::select()
 										.column(Alias::new("tenant"))
-										.from(Alias::new("runs"))
+										.from(Alias::new("task_executions"))
 										.and_where(Expr::col("id").eq(Expr::value(run.id)))
 										.to_owned(),
 								),
@@ -3756,7 +3726,7 @@ impl Store {
 					.fetch_one(&mut *tx)
 					.await?
 				};
-				self.event(&mut tx, Some(run.workspace_id), "task.updated", json!(task))
+				self.event(&mut tx, Some(run.thread_id), "task.updated", json!(task))
 					.await?;
 			}
 			phase
@@ -3778,7 +3748,7 @@ impl Store {
 			)?;
 			crate::database::native::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value_expr(
 						reinhardt::query::Alias::new("phase"),
 						SimpleExpr::CustomWithExpr(
@@ -3829,27 +3799,26 @@ impl Store {
 			&mut tx,
 			run.id,
 			run.is_local(self.deployment.as_str())
-				.then_some(run.workspace_id),
+				.then_some(run.thread_id),
 			if phase == "CANCELLED" {
-				"run.cancelled"
+				"execution.cancelled"
 			} else {
-				"run.reconciled"
+				"execution.reconciled"
 			},
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;
-		self.subnode_control_in(
-			&mut tx,
-			run.id,
-			RunControlAction::Cancel,
-			ControlSource::System,
-			Some(if phase == "COMPLETED" {
-				"creator_completed"
-			} else {
-				"creator_cancelled"
-			}),
-		)
-		.await?;
+		// A completed creator leaves its Subnodes in place (#1012).
+		if phase != "COMPLETED" {
+			self.subnode_control_in(
+				&mut tx,
+				run.id,
+				RunControlAction::Cancel,
+				ControlSource::System,
+				Some("creator_cancelled"),
+			)
+			.await?;
+		}
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
 			self.deployment.as_str(),
@@ -3940,26 +3909,28 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
-		if action == RunControlAction::Cancel
-			|| (action == RunControlAction::Pause
-				&& source == ControlSource::DeploymentAdministrator)
-		{
-			// Before `run.control` appends its event; see `lock_end`.
-			super::subnodes::lock_for_end(tx, id).await?;
-		}
+		// Finish locking the cascade before `execution.control` takes the
+		// event lock. Descendant updates below use the single-Run control path.
+		let (cascade, reason) = match action {
+			RunControlAction::Cancel => {
+				super::subnodes::lock_for_end(tx, id).await?;
+				let reason = if source == ControlSource::DeploymentAdministrator {
+					"safety_stop"
+				} else {
+					"creator_cancelled"
+				};
+				(true, Some(reason))
+			}
+			RunControlAction::Pause if source == ControlSource::DeploymentAdministrator => {
+				super::subnodes::lock_for_end(tx, id).await?;
+				(true, None)
+			}
+			RunControlAction::Resume => (super::subnodes::lock_for_resume(tx, id).await?, None),
+			RunControlAction::Pause => (false, None),
+		};
 		let run = self.control_one_in_as(tx, id, action, source).await?;
-		if action == RunControlAction::Cancel {
-			let reason = if source == ControlSource::DeploymentAdministrator {
-				"safety_stop"
-			} else {
-				"creator_cancelled"
-			};
-			self.subnode_control_in(tx, id, RunControlAction::Cancel, source, Some(reason))
-				.await?;
-		} else if action == RunControlAction::Pause
-			&& source == ControlSource::DeploymentAdministrator
-		{
-			self.subnode_control_in(tx, id, RunControlAction::Pause, source, None)
+		if cascade {
+			self.subnode_control_in(tx, id, action, source, reason)
 				.await?;
 		}
 		Ok(run)
@@ -3981,12 +3952,12 @@ impl Store {
 				aidash_server::database::query_as(
 					&reinhardt::query::Query::select()
 						.column(reinhardt::query::ColumnRef::Asterisk)
-						.from(reinhardt::query::Alias::new("runs"))
+						.from(reinhardt::query::Alias::new("task_executions"))
 						.and_where(SimpleExpr::CustomWithExpr(
 							"(id=?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
-						.lock(reinhardt::query::LockType::Update)
+						.lock(reinhardt::query::LockType::NoKeyUpdate)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
 				.fetch_one(&mut *tx)
@@ -4007,7 +3978,7 @@ impl Store {
 		.scalar_one(&mut *tx)
 		.await?;
 		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; let query_bind_4 = source.as_str(); aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
+				.table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("control_revision"), reinhardt::query::Expr::cust("control_revision + 1")).value_expr(reinhardt::query::Alias::new("control_source"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -4025,15 +3996,15 @@ impl Store {
 			)
 			.await?;
 		}
-		let workspace =
-			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.workspace_id);
+		let thread =
+			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.thread_id);
 		if let Some(reason) = semantic_retry {
 			// An authorized manual retry of a semantic pause opens the Run's next
 			// Retry Cycle, so its memory operations get a fresh retry ledger while
 			// keeping their operation IDs and durable budgets (ADR 0057).
 			let cycle: i32 = crate::database::native::query_scalar(
 				&Query::update()
-					.table(Alias::new("runs"))
+					.table(Alias::new("task_executions"))
 					.value_expr(
 						Alias::new("semantic_retry_cycle"),
 						Expr::col(Alias::new("semantic_retry_cycle")).add(Expr::value(1_i32)),
@@ -4047,7 +4018,7 @@ impl Store {
 			event_records::append_run(
 				tx,
 				id,
-				workspace,
+				thread,
 				"semantic.manual_retry",
 				json!({"run_id":id,"cycle":cycle,"cause":reason,"reason":"authorized_resume"}),
 			)
@@ -4056,8 +4027,8 @@ impl Store {
 		event_records::append_run(
 			tx,
 			id,
-			workspace,
-			"run.control",
+			thread,
+			"execution.control",
 			// Only a decision of someone other than the Tenant names its source.
 			if source == ControlSource::Tenant {
 				json!({"run_id":id,"action":action})
@@ -4070,7 +4041,7 @@ impl Store {
 	}
 
 	/// Run the cascade in the creator's transaction after locking the creator.
-	async fn subnode_control_in(
+	pub(crate) async fn subnode_control_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
 		creator: Uuid,
@@ -4104,7 +4075,7 @@ impl Store {
 		// Match a Subnode end, which locks the Subnode before its member Runs:
 		// take the Subnode's share lock first, then the Run. An ended Subnode
 		// therefore refuses as Forbidden ahead of the Run's own end.
-		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.thread_id).await?;
 		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
@@ -4120,7 +4091,7 @@ impl Store {
 		request: &HumanRequest,
 		key: &str,
 	) -> Result<()> {
-		if request.run_id != run.id || request.workspace_id != run.workspace_id {
+		if request.run_id != run.id || request.thread_id != run.thread_id {
 			return Err(Error::Forbidden);
 		}
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
@@ -4148,13 +4119,13 @@ impl Store {
 	) -> Result<HumanRequest> {
 		human_interaction::validate_request(kind, prompt)?;
 		let (request, created) =
-			HumanRequestRecord::admit(tx, run.workspace_id, run.id, kind, prompt, key).await?;
+			HumanRequestRecord::admit(tx, run.thread_id, run.id, kind, prompt, key).await?;
 		human_interaction::validate_replay(&request, run, kind, prompt)?;
 		if created {
 			event_records::append_run(
 				tx,
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"human.requested",
 				json!(request),
 			)
@@ -4192,7 +4163,7 @@ impl Store {
 			let query_bind_3 = run.stored_pending()?;
 			crate::database::native::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value_expr(
 						reinhardt::query::Alias::new("pending"),
 						SimpleExpr::CustomWithExpr(
@@ -4292,7 +4263,7 @@ impl Store {
 		event_records::append_run(
 			tx,
 			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 			"human.answered",
 			json!(request),
 		)
@@ -4483,7 +4454,7 @@ impl Store {
 		run: &Run,
 		worker: Uuid,
 	) -> Result<()> {
-		// The bounded call and any prepared workspace-read chunk must survive a
+		// The bounded call and any prepared thread-read chunk must survive a
 		// worker crash once the idempotency key becomes durable. Keep this update
 		// and its derived phase in the same transaction as invocation creation.
 		let persisted = {
@@ -4492,7 +4463,7 @@ impl Store {
 			let query_bind_3 = run.stored_pending()?;
 			crate::database::native::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value(reinhardt::query::Alias::new("phase"), run.phase().as_str())
 					.value_expr(
 						reinhardt::query::Alias::new("pending"),
@@ -4589,7 +4560,11 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()]
 							))
-							.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+							.expr(crate::database::scope::tenant_of(
+								"task_executions",
+								"id",
+								run.id
+							))
 							.to_owned()
 					)
 					.to_owned()
@@ -4679,7 +4654,7 @@ impl Store {
 			self.run_event(
 				tx,
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"tool.started",
 				json!({"run_id":run.id,"tool":tool,"idempotency_key":key,"input":input}),
 			)
@@ -4725,7 +4700,7 @@ impl Store {
 			event_records::append_run(
 				tx.as_mut(),
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":failure}),
 			)
@@ -4819,7 +4794,7 @@ impl Store {
 			event_records::append_run(
 				tx.as_mut(),
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
 			)
@@ -4855,6 +4830,14 @@ impl Store {
 				"worker lease lost before dispatching inference".into(),
 			));
 		}
+		// Every model call passes the Budgets that cover its Run (#1012).
+		let (gate, _) = crate::apps::identity::repositories::budgets::gate(
+			tx.as_mut(),
+			run.id,
+			chrono::Utc::now(),
+		)
+		.await?;
+		crate::apps::identity::repositories::budgets::admit(gate)?;
 		InferenceUsage::dispatch(tx.as_mut(), run.id, dispatch).await?;
 		tx.commit().await?;
 		Ok(())
@@ -5016,13 +4999,8 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
-		self.event(
-			tx,
-			Some(updated.workspace_id),
-			"task.updated",
-			json!(updated),
-		)
-		.await?;
+		self.event(tx, Some(updated.thread_id), "task.updated", json!(updated))
+			.await?;
 		Ok(updated)
 	}
 	pub(crate) async fn run_message_delivery_in(
@@ -5031,7 +5009,7 @@ impl Store {
 		delivery: RunMessageDelivery<'_>,
 	) -> Result<Message> {
 		let RunMessageDelivery {
-			workspace,
+			thread,
 			task_id,
 			run_id,
 			sender,
@@ -5057,7 +5035,7 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		if task.workspace_id != workspace {
+		if task.thread_id != thread {
 			return Err(Error::Unauthorized);
 		}
 		let reservation: Option<(Uuid, String, bool, bool, bool)> = {
@@ -5134,7 +5112,7 @@ impl Store {
 		.scalar_one(&mut **tx)
 		.await?;
 		let message = self
-			.message_in(tx, workspace, sender, content, Some(message_key))
+			.message_in(tx, thread, sender, content, Some(message_key))
 			.await?;
 		{
 			let query_bind_1 = task_id;
@@ -5201,12 +5179,12 @@ impl Store {
 		);
 		let full_message_key = format!("{peer_node}:{task_id}:{key}");
 		let message_exists: bool = {
-			let query_bind_1 = task.workspace_id;
+			let query_bind_1 = task.thread_id;
 			let query_bind_2 = &full_message_key;
 			let query_bind_3 = format!("human@{peer_node}");
 			let query_bind_4 = content;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM messages WHERE workspace_id = ? AND idempotency_key = ? AND sender = ? AND content = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
+				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM messages WHERE thread_id = ? AND idempotency_key = ? AND sender = ? AND content = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
 		.scalar_one(&mut **tx)
 		.await?
@@ -5538,11 +5516,11 @@ impl Store {
 				let query_bind_1 = task_id;
 				let query_bind_2 = run_id;
 				let query_bind_3 = key;
-				let query_bind_4 = task.workspace_id;
+				let query_bind_4 = task.thread_id;
 				let query_bind_5 = full_key;
 				crate::database::native::query(&reinhardt::query::Query::delete()
 					.from_table(reinhardt::query::Alias::new("remote_run_message_fences"))
-					.and_where(SimpleExpr::CustomWithExpr("(task_id = ? AND run_id = ? AND idempotency_key = ? AND NOT consumed AND (expires_at IS NOT NULL OR input_seq IS NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE workspace_id = ? AND idempotency_key = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()]))
+					.and_where(SimpleExpr::CustomWithExpr("(task_id = ? AND run_id = ? AND idempotency_key = ? AND NOT consumed AND (expires_at IS NOT NULL OR input_seq IS NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ? AND idempotency_key = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()]))
 					.to_string(reinhardt::query::PostgresQueryBuilder))
 			.execute(&mut **tx)
 			.await?
@@ -5627,7 +5605,7 @@ impl Store {
 			run,
 			worker,
 			&reason.to_string(),
-			"run.semantic_blocked",
+			"execution.semantic_blocked",
 			Some(("semantic_reason", serde_json::to_value(reason)?)),
 			None,
 		)
@@ -5645,7 +5623,7 @@ impl Store {
 			run,
 			worker,
 			&reason.to_string(),
-			"run.context_blocked",
+			"execution.context_blocked",
 			Some(("context_reason", serde_json::to_value(reason)?)),
 			None,
 		)
@@ -5764,7 +5742,7 @@ impl Store {
 			None => (false, "{recovery}".to_owned(), Value::Null),
 		};
 		let changed = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = reason; crate::database::native::query(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(CASE WHEN ? AND control='ACTIVE' THEN jsonb_set(pending, ?::text[], ?::jsonb, true) ELSE pending END)".to_owned(), vec![Expr::value(query_bind_4).into(), Expr::value(query_bind_5).into(), Expr::value(query_bind_6).into()])).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust(
+				.table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(CASE WHEN ? AND control='ACTIVE' THEN jsonb_set(pending, ?::text[], ?::jsonb, true) ELSE pending END)".to_owned(), vec![Expr::value(query_bind_4).into(), Expr::value(query_bind_5).into(), Expr::value(query_bind_6).into()])).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust(
 						"CASE WHEN control = 'CANCELLED' THEN control ELSE 'PAUSED' END",
 					)).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN control = 'PAUSED' AND error IS DISTINCT FROM 'identity status unavailable' THEN error ELSE ? END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust("NULL")).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust("NULL"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
@@ -5778,7 +5756,7 @@ impl Store {
 		self.run_event(
 			&mut tx,
 			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 			event_kind,
 			// The tool and the check only; never what the call addressed.
 			match refusal {
@@ -5830,7 +5808,7 @@ impl Store {
 			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("id"))
-					.from(reinhardt::query::Alias::new("runs"))
+					.from(reinhardt::query::Alias::new("task_executions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)"
 							.to_owned(),
@@ -5923,7 +5901,7 @@ impl Store {
 		nonempty(prompt, "human request prompt")?;
 		let h: Option<HumanRequest> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = run.workspace_id;
+			let query_bind_2 = run.thread_id;
 			let query_bind_3 = run.id;
 			let query_bind_4 = kind;
 			let query_bind_5 = prompt;
@@ -5933,7 +5911,7 @@ impl Store {
 					.into_table(reinhardt::query::Alias::new("human_requests"))
 					.columns([
 						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("run_id"),
 						reinhardt::query::Alias::new("kind"),
 						reinhardt::query::Alias::new("prompt"),
@@ -5967,7 +5945,7 @@ impl Store {
 								vec![Expr::value(query_bind_6.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"runs",
+								"task_executions",
 								"id",
 								query_bind_3,
 							))
@@ -5991,7 +5969,7 @@ impl Store {
 				self.run_event(
 					tx,
 					run.id,
-					(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+					(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 					"human.requested",
 					json!(h),
 				)

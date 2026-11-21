@@ -65,7 +65,7 @@ impl Drop for Journal {
 fn task() -> Task {
 	Task {
 		id: id(1),
-		workspace_id: id(2),
+		thread_id: id(2),
 		title: "title 東京".into(),
 		description: "description".into(),
 		status: TaskStatus::Open,
@@ -123,7 +123,7 @@ fn repository() -> Repository {
 	Repository(Arc::new(Mutex::new(State {
 		remote: false,
 		local: Some(SearchResult {
-			workspace_id: id(2),
+			thread_id: id(2),
 			index_revision: 9,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -183,7 +183,7 @@ impl RunSemanticScope for Scope {
 		query: &str,
 		budget: usize,
 		_partial: bool,
-	) -> Result<WorkspaceContext> {
+	) -> Result<ThreadContext> {
 		let pending = {
 			let mut state = self.0.lock().unwrap();
 			state.record("retrieve")?;
@@ -196,8 +196,8 @@ impl RunSemanticScope for Scope {
 		}
 		let state = self.0.lock().unwrap();
 		Ok(match state.outage {
-			Some(cause) => WorkspaceContext::Unavailable(cause),
-			None => WorkspaceContext::Retrieved(state.local.clone()),
+			Some(cause) => ThreadContext::Unavailable(cause),
+			None => ThreadContext::Retrieved(state.local.clone()),
 		})
 	}
 	async fn begin_dependencies(&mut self) -> Result<Box<dyn RunSemanticJournal + '_>> {
@@ -282,7 +282,7 @@ async fn context_that_left_items_out_for_a_silent_node_says_so_to_the_model(
 		.unconfirmed = vec![aidash_domain::unconfirmed::Unconfirmed {
 		node: "aidash://other/silent".into(),
 		kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
-		workspace_id: id(2),
+		thread_id: id(2),
 		count: 2,
 	}];
 	let value = retrieve(&repository, &task, &inputs, 123, false)

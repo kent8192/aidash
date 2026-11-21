@@ -254,6 +254,11 @@ impl GenerationLive for NativeLive<'_> {
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
+	/// A Run's authority acts with its chain's credential, whose subject is
+	/// the person at the root of the chain (#1012 decision 49).
+	fn root_subject(&self) -> Option<&str> {
+		Some(&self.access.identity.subject)
+	}
 	async fn jobs(
 		&mut self,
 		node: &str,

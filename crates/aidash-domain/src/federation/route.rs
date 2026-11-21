@@ -9,7 +9,7 @@ use crate::tenancy::TenantName;
 pub struct Sender {
 	pub tenant: TenantName,
 	/// The sending Node. `None` is the Tenant's default Node, which stands in
-	/// wherever a Run or Workspace does not yet name its Node.
+	/// wherever a Run or Thread does not yet name its Node.
 	pub node: Option<NodeName>,
 	pub subject: Option<String>,
 }

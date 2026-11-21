@@ -225,6 +225,13 @@ fn probe(lab: &Arc<Lab>, name: &'static str) -> Arc<dyn ExecutionTool> {
 		}
 		"shell" | "workspace_read" => (builtin_contract(name).unwrap(), None),
 		"unsafe_test" => (builtin_contract("live_preview_start").unwrap(), None),
+		// An Authority Change, such as `node_create` (#1012), without its
+		// Tool call approval so the fixture reaches the call at once.
+		"authority_test" => {
+			let mut contract = builtin_contract("live_preview_start").unwrap();
+			contract.behavior.authority_change = true;
+			(contract, None)
+		}
 		_ => unreachable!("fixture tool {name}"),
 	};
 	Arc::new(Probe {
@@ -273,8 +280,24 @@ struct Desk {
 	finishes: Mutex<Vec<(String, Value)>>,
 	saves: Mutex<Vec<(String, Run)>>,
 	reports: Mutex<Vec<String>>,
+	/// Whether the Run may release its authority and visibility leases, as
+	/// it does only around an Authority Change; each release and resume is
+	/// then a `lease:` event. Otherwise any release is unexpected.
+	releases: std::sync::atomic::AtomicBool,
 }
 impl Bench {
+	fn lease(&self, event: &str) -> Result<()> {
+		if !self.0.releases.load(SeqCst) {
+			unexpected(event);
+		}
+		self.0
+			.lab
+			.events
+			.lock()
+			.unwrap()
+			.push(format!("lease:{event}"));
+		Ok(())
+	}
 	fn deny(&self, call: &str) {
 		self.0.denied.lock().unwrap().insert(call.into());
 	}
@@ -353,7 +376,7 @@ fn bench(
 ) -> (Bench, Run) {
 	let now = "2026-10-02T00:00:00Z".parse().unwrap();
 	let token = Uuid::new_v4();
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let task = Uuid::new_v4();
 	let tool_calls = names
 		.iter()
@@ -368,7 +391,7 @@ fn bench(
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: task,
-		workspace_id: workspace,
+		thread_id: thread,
 		home_node: "aidash://fixture".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -404,7 +427,7 @@ fn bench(
 		token,
 		task: Task {
 			id: task,
-			workspace_id: workspace,
+			thread_id: thread,
 			title: "Task".into(),
 			description: "Fixture task".into(),
 			status: TaskStatus::Running,
@@ -431,6 +454,7 @@ fn bench(
 		finishes: Mutex::new(vec![]),
 		saves: Mutex::new(vec![]),
 		reports: Mutex::new(vec![]),
+		releases: std::sync::atomic::AtomicBool::new(false),
 	};
 	(Bench(Arc::new(desk)), run)
 }
@@ -475,8 +499,8 @@ impl ExecutionStore for Bench {
 	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
 		Ok(0)
 	}
-	async fn workspace_events(&self, _: &Run, _: i64) -> Result<WorkspaceEvents> {
-		Ok(WorkspaceEvents::default())
+	async fn workspace_events(&self, _: &Run, _: i64) -> Result<ThreadEvents> {
+		Ok(ThreadEvents::default())
 	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
@@ -487,7 +511,7 @@ impl ExecutionStore for Bench {
 			.push((event.to_owned(), run.clone()));
 		Ok(())
 	}
-	async fn emit(&self, _workspace: Option<Uuid>, _kind: &str, _data: Value) -> Result<Event> {
+	async fn emit(&self, _thread: Option<Uuid>, _kind: &str, _data: Value) -> Result<Event> {
 		unexpected("ExecutionStore.emit")
 	}
 	async fn start_inference(
@@ -954,23 +978,23 @@ impl ExecutionAuthority for Bench {
 		unexpected("ExecutionAuthority.reserve_inference")
 	}
 	async fn suspend(&self) -> Result<()> {
-		unexpected("ExecutionAuthority.suspend")
+		self.lease("authority.suspend")
 	}
 	async fn recheck_inference(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.recheck_inference")
 	}
 	async fn resume(&self) -> Result<()> {
-		unexpected("ExecutionAuthority.resume")
+		self.lease("authority.resume")
 	}
 }
 
 #[async_trait]
 impl ExecutionVisibility for Bench {
 	async fn suspend(&mut self) -> Result<()> {
-		unexpected("ExecutionVisibility.suspend")
+		self.lease("visibility.suspend")
 	}
 	async fn resume(&mut self) -> Result<()> {
-		unexpected("ExecutionVisibility.resume")
+		self.lease("visibility.resume")
 	}
 }
 
@@ -994,7 +1018,7 @@ impl ExecutionEnvironment for Bench {
 		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
 		let result = match source.as_str() {
-			"workspace" => self
+			"thread" => self
 				.home(run)
 				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
@@ -1007,7 +1031,7 @@ impl ExecutionEnvironment for Bench {
 		SemanticContextRead {
 			selections: vec![],
 			contributions: vec![],
-			workspace_retrieved: false,
+			thread_retrieved: false,
 			result,
 		}
 	}
@@ -1160,7 +1184,7 @@ async fn batched_reads_execute_concurrently_and_are_adopted_once() {
 	assert_eq!(lab.events("dispatch"), keys(&run, 0..2));
 	assert_eq!(adopted(&run), expected(&[(0, read("p0")), (1, read("p1"))]));
 	assert_eq!(progress(&run), (2, None));
-	assert_eq!(bench.saved(), ["run.tool_recorded"]);
+	assert_eq!(bench.saved(), ["execution.tool_recorded"]);
 	let saves = bench.0.saves.lock().unwrap();
 	assert_eq!(progress(&saves[0].1), (2, None));
 	assert_eq!(adopted(&saves[0].1), adopted(&run));
@@ -1284,7 +1308,7 @@ async fn resumed_batch_reuses_completed_calls_and_dispatches_started_ones_once()
 	assert_eq!(bench.finished(), keys(&run, [1]));
 	assert_eq!(adopted(&run), expected(&[(0, journaled), (1, read("p1"))]));
 	assert_eq!(progress(&run), (2, None));
-	assert_eq!(bench.saved(), ["run.tool_recorded"]);
+	assert_eq!(bench.saved(), ["execution.tool_recorded"]);
 }
 
 #[tokio::test]
@@ -1504,6 +1528,63 @@ async fn an_unsafe_call_is_reexecuted_after_a_not_delivered_attempt() {
 	));
 	advance(&bench, &mut run).await.unwrap();
 	assert_eq!(lab.attempts(&key(&run, 0)), 2);
+	assert_eq!(adopted(&run), expected(&[(0, read("p0"))]));
+}
+
+/// An Authority Change takes the Tenant's policy exclusively; the Run's own
+/// shared lease would make it wait on itself, so the Run releases its leases
+/// around the call and takes them again after it, whatever the call answered
+/// (#1012).
+#[rstest::rstest]
+#[case::answered(false)]
+#[case::refused(true)]
+#[tokio::test]
+async fn an_authority_change_runs_with_the_runs_leases_released(#[case] refused: bool) {
+	// Arrange
+	let lab = Lab::new(move |_, call| {
+		async move {
+			if refused {
+				Err(Error::Invalid("the person may not create Nodes".into()))
+			} else {
+				Ok(read(&call.path))
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["authority_test"], 1, None);
+	bench.0.releases.store(true, SeqCst);
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert: released before the call, taken again after it, in that order.
+	let events: Vec<String> = lab
+		.events
+		.lock()
+		.unwrap()
+		.iter()
+		.filter(|event| event.starts_with("lease:") || event.starts_with("invoke:"))
+		.cloned()
+		.collect();
+	assert_eq!(
+		events,
+		[
+			"lease:authority.suspend".to_owned(),
+			"lease:visibility.suspend".to_owned(),
+			format!("invoke:{}", key(&run, 0)),
+			"lease:visibility.resume".to_owned(),
+			"lease:authority.resume".to_owned(),
+		]
+	);
+	assert_eq!(adopted(&run).len(), 1);
+}
+
+#[tokio::test]
+async fn an_ordinary_call_keeps_the_runs_leases() {
+	// Arrange: any release would be unexpected.
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(&lab, &["unsafe_test"], 1, None);
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert
 	assert_eq!(adopted(&run), expected(&[(0, read("p0"))]));
 }
 

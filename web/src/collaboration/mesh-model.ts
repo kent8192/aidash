@@ -7,8 +7,7 @@ import {
 
 export const meshKinds = [
   "human",
-  "workspace",
-  "goal",
+  "thread",
   "conversation",
   "task",
   "run",
@@ -29,7 +28,6 @@ export type MeshMode =
   | "topology";
 export type MeshRelation =
   | "contains"
-  | "goal"
   | "creates"
   | "assigned"
   | "executes"
@@ -52,13 +50,12 @@ export type MeshNode = {
   homeNodeId?: string;
   available: boolean;
   resourceId?: string;
-  workspaceId?: string;
+  threadId?: string;
   entity?: EntityReference;
   parent?: string;
   status?: string;
   remote?: boolean;
   projected?: boolean;
-  goalBody?: string;
   at?: string;
 };
 export type MeshEdge = {
@@ -132,7 +129,7 @@ export function buildMeshGraph(
     kind: MeshKind,
     id: string,
     name: string,
-    workspaceId?: string,
+    threadId?: string,
   ) =>
     add({
       id: resourceKey(nodeId, kind, id),
@@ -140,7 +137,7 @@ export function buildMeshGraph(
       name: { en: name },
       nodeId,
       resourceId: id,
-      workspaceId,
+      threadId,
       available: true,
     });
   const registryByIdentity = new Map(
@@ -221,21 +218,18 @@ export function buildMeshGraph(
     if (value.startsWith("aidash://")) return;
     return resource("human", value, value);
   };
-  const workspaces = data.workspaces.filter(
+  const threads = data.threads.filter(
     (w) => !options.channel || w.id === options.channel,
   );
-  const workspaceIds = new Set(workspaces.map((w) => w.id));
-  for (const w of workspaces) {
-    const id = resource("workspace", w.id, w.title, w.id);
-    if (w.goal.trim()) edge(id, resource("goal", w.id, w.goal, w.id), "goal");
-  }
-  const tasks = data.tasks.filter((t) => workspaceIds.has(t.workspace_id));
+  const threadIds = new Set(threads.map((w) => w.id));
+  // A Thread has no goal of its own (#1008): its Root Task carries the
+  // request, so every Task hangs off its Thread.
+  for (const w of threads) resource("thread", w.id, w.title, w.id);
+  const tasks = data.tasks.filter((t) => threadIds.has(t.thread_id));
   for (const task of tasks) {
-    const id = resource("task", task.id, task.title, task.workspace_id);
+    const id = resource("task", task.id, task.title, task.thread_id);
     nodes.get(id)!.status = task.status;
-    edge(resourceKey(nodeId, "workspace", task.workspace_id), id, "contains");
-    const goal = resourceKey(nodeId, "goal", task.workspace_id);
-    if (nodes.has(goal) && !task.parent_id) edge(goal, id, "contains");
+    edge(resourceKey(nodeId, "thread", task.thread_id), id, "contains");
     if (task.parent_id)
       edge(
         resourceKey(nodeId, "task", task.parent_id),
@@ -265,7 +259,7 @@ export function buildMeshGraph(
       ({ node, run }) =>
         node === nodeId &&
         (!run.home_node || run.home_node === nodeId) &&
-        workspaceIds.has(run.workspace_id) &&
+        threadIds.has(run.thread_id) &&
         (activeRun(run) || inWindow(run.updated_at, hours, now)),
     )
     .sort(
@@ -276,7 +270,7 @@ export function buildMeshGraph(
   const statusSet = new Set<string>();
   for (const { node, run } of activity) {
     // A remote Run is journaled on its executor. Keep that Node in its graph
-    // identity even when the Home supplies the Task and Workspace records.
+    // identity even when the Home supplies the Task and Thread records.
     const runNode = add({
       id: resourceKey(node, "run", run.id),
       kind: "run",
@@ -284,7 +278,7 @@ export function buildMeshGraph(
       nodeId: node,
       homeNodeId: run.home_node || nodeId,
       resourceId: run.id,
-      workspaceId: run.workspace_id,
+      threadId: run.thread_id,
       available: true,
       remote: node !== nodeId,
     });
@@ -307,13 +301,13 @@ export function buildMeshGraph(
     }
   }
   for (const artifact of data.artifacts.filter((a) =>
-    workspaceIds.has(a.workspace_id),
+    threadIds.has(a.thread_id),
   )) {
     const id = resource(
       "artifact",
       artifact.id,
       artifact.name,
-      artifact.workspace_id,
+      artifact.thread_id,
     );
     edge(
       resourceKey(nodeId, "task", artifact.task_id),
@@ -325,11 +319,11 @@ export function buildMeshGraph(
     if (author) edge(author, id, "produces", "activity");
   }
   for (const c of data.conversations.filter((c) =>
-    workspaceIds.has(c.workspace_id),
+    threadIds.has(c.thread_id),
   )) {
-    const workspace = workspaces.find((w) => w.id === c.workspace_id)!;
-    const id = resource("conversation", c.id, workspace.title, c.workspace_id);
-    edge(resourceKey(nodeId, "workspace", c.workspace_id), id, "contains");
+    const thread = threads.find((w) => w.id === c.thread_id)!;
+    const id = resource("conversation", c.id, thread.title, c.thread_id);
+    edge(resourceKey(nodeId, "thread", c.thread_id), id, "contains");
     const author = principal(c.created_by);
     if (author) edge(author, id, "participates", "activity");
     const at = c.target.lastIndexOf("@");
@@ -361,8 +355,7 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
   mesh: meshKinds,
   collaboration: [
     "human",
-    "workspace",
-    "goal",
+    "thread",
     "conversation",
     "agent",
     "cluster",
@@ -371,8 +364,7 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "remote",
   ],
   knowledge: [
-    "workspace",
-    "goal",
+    "thread",
     "conversation",
     "task",
     "agent",
@@ -383,7 +375,7 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "skill",
     "remote",
   ],
-  execution: ["human", "goal", "task", "run", "agent", "artifact", "remote"],
+  execution: ["human", "task", "run", "agent", "artifact", "remote"],
   topology: ["remote", "cluster", "agent", "tool"],
 };
 export function filterMeshGraph(
@@ -424,7 +416,6 @@ export function filterMeshGraph(
           Object.values(n.name).some((v) =>
             v.toLocaleLowerCase().includes(query),
           ) ||
-          n.goalBody?.toLocaleLowerCase().includes(query) ||
           n.entity?.id.toLocaleLowerCase().includes(query) ||
           n.resourceId?.toLocaleLowerCase().includes(query),
       )
@@ -459,7 +450,7 @@ export function filterMeshGraph(
   const candidateCount = candidates.length;
   const maxNodes = options.maxNodes ?? 180;
   // Share a crowded canvas across kinds so registry entries cannot exhaust the
-  // budget before any workspace or recorded activity becomes visible.
+  // budget before any thread or recorded activity becomes visible.
   if (candidates.length > maxNodes) {
     const priority = [...focusIds, options.pin]
       .map((id) => candidates.find((n) => n.id === id))
@@ -473,13 +464,12 @@ export function filterMeshGraph(
     }
     const ordered = [...new Set(priority)];
     const kinds: MeshKind[] = [
-      "workspace",
+      "thread",
       "agent",
       "task",
       "run",
       "artifact",
       "conversation",
-      "goal",
       "human",
       "cluster",
       "remote",
@@ -591,12 +581,6 @@ export function meshPositions(
       3,
       210,
     );
-    lane(
-      nodes.filter((n) => n.kind === "goal"),
-      930,
-      175,
-      1,
-    );
     const tasks = nodes.filter((n) => n.kind === "task");
     lane(tasks, 200, 325, 4, 270, 140);
     const runsY = 325 + Math.max(1, Math.ceil(tasks.length / 4)) * 155;
@@ -637,9 +621,9 @@ export function meshPositions(
     );
   }
   if (mode === "collaboration") {
-    const workspaces = nodes.filter((n) => n.kind === "workspace");
-    lane(workspaces, 560, 450, 2, 440, 500);
-    const others = nodes.filter((n) => n.kind !== "workspace");
+    const threads = nodes.filter((n) => n.kind === "thread");
+    lane(threads, 560, 450, 2, 440, 500);
+    const others = nodes.filter((n) => n.kind !== "thread");
     for (let offset = 0, ring = 0; offset < others.length; ring++) {
       const capacity = 14 + ring * 8;
       const members = others.slice(offset, offset + capacity);
@@ -714,26 +698,12 @@ export function meshPositions(
   lane(human, 580, 20, 4);
   const top = 145 + Math.max(0, Math.ceil(human.length / 4) - 1) * 110;
   lane(
-    nodes.filter((n) => n.kind === "workspace"),
+    nodes.filter((n) => n.kind === "thread"),
     300,
     top,
     1,
   );
-  lane(
-    nodes.filter((n) => n.kind === "goal"),
-    580,
-    top,
-    3,
-    230,
-  );
-  const taskTop =
-    top +
-    140 +
-    Math.max(
-      0,
-      Math.ceil(nodes.filter((n) => n.kind === "goal").length / 3) - 1,
-    ) *
-      110;
+  const taskTop = top + 140;
   const tasks = nodes.filter((n) => n.kind === "task");
   lane(tasks, 370, taskTop, 4, 215);
   const runsTop = taskTop + Math.max(1, Math.ceil(tasks.length / 4)) * 115 + 20;
@@ -867,7 +837,7 @@ export function nodeEvents(
         (r) =>
           node.nodeId === data.node.id &&
           (!r.home_node || r.home_node === data.node.id) &&
-          (!channel || r.workspace_id === channel) &&
+          (!channel || r.thread_id === channel) &&
           (tasks.has(r.task_id) ||
             (node.kind === "agent" &&
               r.agent_id === node.entity?.id &&
@@ -882,12 +852,11 @@ export function nodeEvents(
     .filter((e) => {
       if (
         !inWindow(e.created_at, hours, now) ||
-        (["remote", "workspace", "goal"].includes(node.kind) && !local) ||
-        (channel && e.workspace_id !== channel)
+        (["remote", "thread"].includes(node.kind) && !local) ||
+        (channel && e.thread_id !== channel)
       )
         return false;
-      if (node.kind === "workspace" || node.kind === "goal")
-        return e.workspace_id === node.workspaceId;
+      if (node.kind === "thread") return e.thread_id === node.threadId;
       if (node.kind === "remote") return local;
       const payload = eventReferences(e);
       if (node.kind === "run") return payload.run_id === node.resourceId;
@@ -925,7 +894,7 @@ export function eventReferences(event: MeshEvent): {
         : undefined),
     run_id:
       text(data.run_id) ??
-      (event.kind.startsWith("run.") ? text(data.id) : undefined),
+      (event.kind.startsWith("execution.") ? text(data.id) : undefined),
     artifact_id:
       text(data.artifact_id) ??
       (event.kind === "task.completed"

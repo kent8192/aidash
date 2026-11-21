@@ -232,12 +232,12 @@ pub(crate) async fn control(
 		} else {
 			None
 		};
-		let workspace = access.workspace(bank.workspace).await?;
+		let thread = access.thread(bank.thread).await?;
 		if participant.as_deref() != Some(access.identity.subject.as_str())
-			&& workspace.attributes["owner"].as_str() != Some(access.identity.subject.as_str())
+			&& thread.attributes["owner"].as_str() != Some(access.identity.subject.as_str())
 		{
-			// Workspace administration uses the existing workspace.update authority.
-			access.require(&workspace, "workspace.update").await?;
+			// Thread administration uses the existing thread.update authority.
+			access.require(&thread, "thread.update").await?;
 		}
 	}
 	let bank_id = repository::bank_id(lease, bank, false)
@@ -281,7 +281,7 @@ pub(crate) async fn control(
 	let policy = units::unexpired(lease, &unit).await?;
 	units::current(
 		lease,
-		bank.workspace,
+		bank.thread,
 		&unit.content.evidence,
 		policy.bounds.max_graph_visits,
 	)
@@ -447,7 +447,7 @@ async fn live_supported_evidence(
 		};
 		match units::current(
 			lease,
-			support.bank.workspace,
+			support.bank.thread,
 			&support.content.evidence,
 			policy.bounds.max_graph_visits,
 		)
@@ -622,10 +622,10 @@ pub(crate) async fn page(
 	let bank = Bank {
 		home: row.try_get("home")?,
 		tenant: row.try_get("tenant")?,
-		workspace: row.try_get("workspace_id")?,
+		thread: row.try_get("thread_id")?,
 		participant: row.try_get("participant_id")?,
 	};
-	repository::lock_workspace(lease, bank.workspace, false).await?;
+	repository::lock_thread(lease, bank.thread, false).await?;
 	units::authorize(lease, &bank, "memory.read").await?;
 	let settings = bank_settings::get(lease, &bank)
 		.await?

@@ -66,16 +66,18 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 pub fn builtin(operation: &str) -> Option<&'static str> {
 	match operation {
 		"human_request" | "human_read" => Some("human_request"),
-		"workspace_record" | "workspace_record_chunk" => Some("workspace_read"),
+		"thread_record" | "thread_record_chunk" => Some("thread_read"),
 		"artifact" => Some("artifact_publish"),
-		"message" => Some("workspace_message"),
+		"message" => Some("thread_message"),
 		"create_task" => Some("task_create"),
 		"delegate" => Some("task_delegate"),
+		"discover" => Some("agent_discover"),
+		"created_task" => Some("task_delegate"),
 		// Home-forwarded tools (ADR 0139): each op is named as its tool so the
 		// Binding and the Home's own Request ([`requested`]) are checked for the
 		// tool the Run called.
 		"task_assign" => Some("task_assign"),
-		"workspace_search" => Some("workspace_search"),
+		"thread_search" => Some("thread_search"),
 		"connection_request" => Some("connection_request"),
 		// A remote Run's outbound GET is approved by the Home's root person first (ADR 0139,
 		// decision 22): the Home asks and answers under the tool the Run called.
@@ -91,11 +93,16 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 /// the Run called that tool. The older ops also carry traffic of the Run itself that no list
 /// names (a person asked about a tool approval or a Completion Review, records read for the
 /// Run's context, tasks an Agent tool creates), so only the Binding is checked for them.
+/// `delegate` and `discover` come only from a remote Run's `task_delegate` and `agent_discover`,
+/// which hand work on through the Home (#654, #1013), so they are checked too. `created_task`
+/// only tells the receiver whether its grant made a Task, before the lists decide the call.
 pub fn requested(operation: &str) -> bool {
 	matches!(
 		operation,
-		"task_assign"
-			| "workspace_search"
+		"delegate"
+			| "discover"
+			| "task_assign"
+			| "thread_search"
 			| "connection_request"
 			| "outbound_request"
 			| "outbound_read"

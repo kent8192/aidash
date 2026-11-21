@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 pub(crate) async fn current(
 	access: &mut Access,
-	workspace: Uuid,
+	thread: Uuid,
 	source: &Source,
 ) -> Result<Option<FileEntry>> {
 	let Source::WorkingImage {
@@ -26,7 +26,7 @@ pub(crate) async fn current(
 		Err(Error::Forbidden | Error::NotFound(_)) => return Ok(None),
 		Err(error) => return Err(error),
 	};
-	if area.workspace_id != workspace || area.generation != *generation {
+	if area.thread_id != thread || area.generation != *generation {
 		return Ok(None);
 	}
 	let files: Vec<FileEntry> = serde_json::from_value(area.manifest)?;

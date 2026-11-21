@@ -44,7 +44,7 @@ pub(super) async fn configure_selector(
 	let config = DeciderConfig {
 		hook: Hook::ContextSelection,
 		answer_type: AnswerType::Noul,
-		description: "Keep relevant Workspace items".into(),
+		description: "Keep relevant Thread items".into(),
 		provider_credential: "openrouter".into(),
 		routes: vec![DeciderRoute::jev("typesafe/jev-1.14")],
 		builder: SOURCE_BUILDER.into(),
@@ -59,7 +59,7 @@ pub(super) async fn configure_selector(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 			serde_json::from_value(json!({
 				"id":"context-selector","version":"1.0.0","kind":"decider",
-				"name":{"en":"Context selector"},"description":{"en":"Select individual Workspace items"},
+				"name":{"en":"Context selector"},"description":{"en":"Select individual Thread items"},
 				"config":config
 			}))
 			.unwrap(),
@@ -81,17 +81,14 @@ pub(super) async fn configure_selector(
 	assert_eq!(status, 200, "approve selector: {body}");
 }
 
-fn workspace_read(f: &aidash_server::federation::Federation) -> QualifiedRef {
-	QualifiedRef {
-		version: "1.1.0".into(),
-		..QualifiedRef::builtin(f.config.deployment.as_str(), "workspace_read")
-	}
+fn thread_read(f: &aidash_server::federation::Federation) -> QualifiedRef {
+	QualifiedRef::builtin(f.config.deployment.as_str(), "thread_read")
 }
 
 pub(super) fn declaration(f: &aidash_server::federation::Federation, case: SelectionCase) -> Value {
 	json!({
 		"provider":"aidash.native-context/1","operation":"workspace_retrieval",
-		"tools":{"read":[workspace_read(f)],"write":[],"detail":workspace_read(f)},
+		"tools":{"read":[thread_read(f)],"write":[],"detail":thread_read(f)},
 		"pin":{"policy":"scored","mode":case.mode(),"decider":{"registry_deployment":f.config.deployment,"id":"context-selector","version":"1.0.0"}},
 		"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1",
 		"disclosure":{"previews":true,"query":true},"required_home":false
@@ -150,12 +147,12 @@ async fn cleanup(fixture: ControlledContext) {
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-fn workspace_envelopes(context: &Value) -> Vec<Value> {
+fn thread_envelopes(context: &Value) -> Vec<Value> {
 	context["current"]["context_sources"]
 		.as_array()
 		.expect("explicit Step sources are attributed data")
 		.iter()
-		.filter(|item| item["provenance"]["identity"]["source"]["id"] == "context-workspace")
+		.filter(|item| item["provenance"]["identity"]["source"]["id"] == "context-thread")
 		.cloned()
 		.collect()
 }
@@ -178,7 +175,7 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 		&fixture._fixture.application,
 		&fixture.token,
 		"POST",
-		&format!("/api/workspaces/{}/semantic/search", before.workspace_id),
+		&format!("/api/threads/{}/semantic/search", before.thread_id),
 		json!({"query":"Research\nUse approved tools","limit":10,"max_tokens":4096}),
 	)
 	.await;
@@ -202,7 +199,7 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 	let contexts = fixture.captured.lock().unwrap().clone();
 	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(contexts.len(), 1, "{run:?}");
-	let envelopes = workspace_envelopes(&contexts[0]);
+	let envelopes = thread_envelopes(&contexts[0]);
 	for envelope in &envelopes {
 		assert_eq!(envelope["source"], "context_source");
 		assert_eq!(envelope["trust"], "data");
@@ -250,7 +247,7 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 		.context
 		.source_deliveries
 		.iter()
-		.filter(|item| item.identity.source.id == "context-workspace")
+		.filter(|item| item.identity.source.id == "context-thread")
 		.collect::<Vec<_>>();
 	assert_eq!(delivered.len(), matches.len());
 	assert!(
@@ -280,8 +277,8 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 		// Both calls use this exact immutable Source, Step placement and source
 		// candidates. Changing the Shadow keep proposal cannot change its bytes.
 		assert_eq!(
-			serde_json::to_vec(&workspace_envelopes(&contexts[0])).unwrap(),
-			serde_json::to_vec(&workspace_envelopes(&contexts[1])).unwrap()
+			serde_json::to_vec(&thread_envelopes(&contexts[0])).unwrap(),
+			serde_json::to_vec(&thread_envelopes(&contexts[1])).unwrap()
 		);
 		let updated = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 		let next = updated.context.source_selections.last().unwrap();
@@ -337,7 +334,7 @@ async fn source_selection_denial_pauses_before_classifier_or_inference(
 			assert_eq!(status, 200, "{snapshot}");
 			let mut policy = snapshot["bundle"].clone();
 			policy["policies"].as_array_mut().unwrap().push(json!({
-				"id":"deny-selector-disclosure","effect":"deny","subjects":{"any":true},"actions":["semantic.disclose"],"resources":{"kinds":["workspace"]},
+				"id":"deny-selector-disclosure","effect":"deny","subjects":{"any":true},"actions":["semantic.disclose"],"resources":{"kinds":["thread"]},
 				"condition":{"op":"eq","left":{"source":"resource","path":"/hook"},"right":{"source":"literal","value":"context_selection"}}
 			}));
 			let (status, body) = request(

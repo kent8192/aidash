@@ -57,9 +57,9 @@ import {
 } from "./notifications/model";
 import {
   quietCompletion,
-  scheduleNoticeEntries,
-  type ScheduleNotices,
-} from "./schedules-model";
+  dutyNoticeEntries,
+  type DutyNotices,
+} from "./duties-model";
 
 const copy = {
   "ja-JP": {
@@ -73,7 +73,7 @@ const copy = {
     input: "回答が必要です",
     completed: "タスクが完了しました",
     failed: "タスクが失敗しました",
-    schedule_stopped: "スケジュールが止まりました",
+    duty_stopped: "職務が止まりました",
     joined: "招待による参加",
     updates: (count: number) => `${count}件の更新があります`,
     view: "通知を確認",
@@ -90,7 +90,7 @@ const copy = {
     input: "Your response is needed",
     completed: "Task completed",
     failed: "Task failed",
-    schedule_stopped: "Schedule stopped",
+    duty_stopped: "Duty stopped",
     joined: "Invitation accepted",
     updates: (count: number) => `${count} updates`,
     view: "View notifications",
@@ -102,7 +102,7 @@ const icons = {
   input: CircleHelp,
   completed: CheckCircle2,
   failed: TriangleAlert,
-  schedule_stopped: CalendarX2,
+  duty_stopped: CalendarX2,
   joined: CheckCircle2,
 };
 const iconTone = {
@@ -110,7 +110,7 @@ const iconTone = {
   input: "text-warning",
   completed: "text-success",
   failed: "text-destructive",
-  schedule_stopped: "text-warning",
+  duty_stopped: "text-warning",
   joined: "text-success",
 };
 type InvitationApprovalNotice = {
@@ -123,20 +123,20 @@ function frame(
   data: TenantState | undefined,
   node: string,
   approvals: ApprovalCard[] | undefined,
-  schedules: ScheduleNotices | undefined,
+  schedules: DutyNotices | undefined,
   administration: TenantAdministration | undefined,
   joins: InvitationApprovalNotice[] | undefined,
   ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
-  const scopes = data.workspaces.map((workspace) =>
-    JSON.stringify([data.deployment.id, workspace.id]),
+  const scopes = data.threads.map((thread) =>
+    JSON.stringify([data.deployment.id, thread.id]),
   );
   const eventScope = taskEventScope(data.deployment.id, node);
   scopes.push(eventScope);
   scopes.push(
     ...data.human_requests.map((request) =>
-      JSON.stringify([data.deployment.id, request.workspace_id]),
+      JSON.stringify([data.deployment.id, request.thread_id]),
     ),
   );
   const scheduled = new Set(schedules?.scheduled_tasks ?? []);
@@ -149,19 +149,19 @@ function frame(
           : null;
     return {
       key: JSON.stringify([data.deployment.id, "task", task.id]),
-      scope: JSON.stringify([data.deployment.id, task.workspace_id]),
+      scope: JSON.stringify([data.deployment.id, task.thread_id]),
       signature: `${task.revision}:${task.status}`,
       kind,
       quiet: quietCompletion(kind, task.id, scheduled),
       detail: task.title.slice(0, 180),
-      workspaceTitle:
-        data.workspaces.find((workspace) => workspace.id === task.workspace_id)
-          ?.title ?? "",
+      threadTitle:
+        data.threads.find((thread) => thread.id === task.thread_id)?.title ??
+        "",
       target: {
         kind: "task",
         id: task.id,
         node: data.deployment.id,
-        workspace: task.workspace_id,
+        thread: task.thread_id,
       },
     };
   });
@@ -169,7 +169,7 @@ function frame(
     (a, b) => a.sequence - b.sequence,
   )) {
     if (
-      !event.workspace_id ||
+      !event.thread_id ||
       !["task.updated", "task.completed"].includes(event.kind)
     )
       continue;
@@ -191,7 +191,7 @@ function frame(
       (typeof value.revision !== "number" || value.revision < windowed.revision)
     )
       continue;
-    const scope = JSON.stringify([data.deployment.id, event.workspace_id]);
+    const scope = JSON.stringify([data.deployment.id, event.thread_id]);
     if (!scopes.includes(scope)) scopes.push(scope);
     const key = JSON.stringify([data.deployment.id, "task", value.id]);
     const prior = entries.findIndex((entry) => entry.key === key);
@@ -211,14 +211,14 @@ function frame(
       kind,
       quiet: quietCompletion(kind, value.id, scheduled),
       detail: value.title.slice(0, 180),
-      workspaceTitle:
-        data.workspaces.find((workspace) => workspace.id === event.workspace_id)
-          ?.title ?? "",
+      threadTitle:
+        data.threads.find((thread) => thread.id === event.thread_id)?.title ??
+        "",
       target: {
         kind: "task",
         id: value.id,
         node: data.deployment.id,
-        workspace: event.workspace_id,
+        thread: event.thread_id,
       },
     };
     if (prior < 0) entries.push(entry);
@@ -231,7 +231,7 @@ function frame(
   for (const { request, node } of requests)
     entries.push({
       key: JSON.stringify([node, "human", request.id]),
-      scope: JSON.stringify([node, request.workspace_id]),
+      scope: JSON.stringify([node, request.thread_id]),
       signature: request.kind,
       kind:
         request.response !== null
@@ -240,17 +240,16 @@ function frame(
             ? "approval"
             : "input",
       detail: request.prompt.slice(0, 180),
-      workspaceTitle:
+      threadTitle:
         node === data.deployment.id
-          ? (data.workspaces.find(
-              (workspace) => workspace.id === request.workspace_id,
-            )?.title ?? node)
+          ? (data.threads.find((thread) => thread.id === request.thread_id)
+              ?.title ?? node)
           : node,
       target: {
         kind: "human",
         id: request.id,
         node,
-        workspace: request.workspace_id,
+        thread: request.thread_id,
       },
     });
   // Capability approvals addressed to this person. Their scope appears only
@@ -265,23 +264,22 @@ function frame(
         signature: `${approval.revision}:${approval.state}`,
         kind: approval.state === "pending" ? "approval" : null,
         detail: approvalNotice(approval, ja).slice(0, 180),
-        workspaceTitle: approval.agent_id ?? "",
+        threadTitle: approval.agent_id ?? "",
         target: {
           kind: "approval",
           id: approval.id,
           node: data.deployment.id,
-          workspace: "",
+          thread: "",
         },
       });
   }
-  // Stopped Schedules wait in the pending section (#557). Their scope appears
-  // once the list has loaded, so Schedules already stopped stay quiet.
+  // Stopped Duties wait in the pending section (#557). Their scope appears
+  // once the list has loaded, so Duties already stopped stay quiet.
   if (schedules) {
-    const stopped = scheduleNoticeEntries(
+    const stopped = dutyNoticeEntries(
       data.deployment.id,
       schedules,
-      (id) =>
-        data.workspaces.find((workspace) => workspace.id === id)?.title ?? "",
+      (id) => data.threads.find((thread) => thread.id === id)?.title ?? "",
       ja,
     );
     scopes.push(stopped.scope);
@@ -307,13 +305,13 @@ function frame(
         detail: ja
           ? `${person} が招待で参加しました`
           : `${person} joined through an invitation`,
-        workspaceTitle: administration.label ?? administration.tenant,
+        threadTitle: administration.label ?? administration.tenant,
         occurredAt: approval.occurred_at,
         target: {
           kind: "administration",
           id: approval.id,
           node: data.deployment.id,
-          workspace: "",
+          thread: "",
         },
       });
     }
@@ -376,8 +374,8 @@ export function NotificationProvider({
   node: string;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
-  /** Stopped Schedules and the Tasks Schedules started (#557). */
-  schedules?: ScheduleNotices;
+  /** Stopped Duties and the Tasks Duties started (#557). */
+  schedules?: DutyNotices;
   locale: Locale;
   theme: "light" | "dark";
   onSelect: (target: NoticeTarget) => void;
@@ -490,7 +488,7 @@ export function NotificationProvider({
                 </span>
                 {item && (
                   <small className="truncate font-mono text-[11px] font-normal text-faint">
-                    {item.workspaceTitle}
+                    {item.threadTitle}
                   </small>
                 )}
               </span>
@@ -619,7 +617,7 @@ export function NotificationProvider({
                               {item.detail}
                             </span>
                             <small className="truncate font-mono text-[11px] font-normal text-faint">
-                              {item.workspaceTitle}
+                              {item.threadTitle}
                             </small>
                           </span>
                         </Button>

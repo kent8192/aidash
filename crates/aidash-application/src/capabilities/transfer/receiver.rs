@@ -42,7 +42,7 @@ fn generation(area: Option<&Area>) -> Value {
 }
 /// The authority a transfer is staged and stored under, and the Area it lands in. `None` only
 /// for a message a Home takes from a Run executing for another Home (ADR 0139): its files become
-/// Thread Attachments of the grant's Workspace, which the delivery's admission already chose.
+/// Thread Attachments of the grant's Thread, which the delivery's admission already chose.
 async fn mapped<'a>(
 	repository: &'a dyn ReceiverRepository,
 	source: &str,
@@ -328,7 +328,7 @@ pub async fn commit(
         record.data["receipt"]=json!({"id":record.id,"node_id":description.target.node_id,"area_id":area.id,"revision":area.revision,"manifest_digest":description.manifest_digest,"files":delivered});
         scope.update(&mut record).await?;
         scope.reserve(-(total as i64)).await?;
-        scope.event(area.workspace_id,"capability.files_received",json!({"transfer_id":record.id,"area_id":area.id,"source_node":source})).await?;
+        scope.event(area.thread_id,"capability.files_received",json!({"transfer_id":record.id,"area_id":area.id,"source_node":source})).await?;
         Ok(view(&record))
     }.await;
 	finish(scope, result).await
@@ -511,7 +511,7 @@ pub async fn recipient_list(
 			.await;
 			scope.set_subjects(subjects);
 			match allowed {
-                    Ok(()) => items.push(json!({"node_id":node,"agent_id":area.agent_id,"agent_version":version,"thread_id":area.thread_id,"workspace_id":area.workspace_id})),
+                    Ok(()) => items.push(json!({"node_id":node,"agent_id":area.agent_id,"agent_version":version,"thread_id":area.thread_id})),
                     Err(Error::Forbidden | Error::NotFound(_)) => {}, Err(error) => return Err(error),
                 }
 		}

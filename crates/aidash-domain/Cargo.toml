@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 base64 = "0.22"
 chrono.workspace = true
-# Schedules read cron expressions in IANA time zones (#557).
+# Duty time triggers read cron expressions in IANA time zones (#557, #1011).
 chrono-tz = "0.10"
 getrandom = "0.3"
 psl = "=2.1.245"

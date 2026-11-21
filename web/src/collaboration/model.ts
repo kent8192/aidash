@@ -186,17 +186,17 @@ export function destination(
           : undefined,
   })}`;
 }
-export type WorkspaceRef = { id: string; title: string };
+export type ThreadRef = { id: string; title: string };
 export type TaskRef = {
   id: string;
-  workspace_id: string;
+  thread_id: string;
   status: string;
   created_by?: string;
   owner?: string | null;
 };
 export type RunRef = {
   id: string;
-  workspace_id: string;
+  thread_id: string;
   task_id: string;
   agent_id: string;
   agent_version: string;
@@ -242,22 +242,22 @@ export function relatedChannels(
   node: SelectedNode,
   data: {
     nodeId: string;
-    workspaces: readonly WorkspaceRef[];
+    threads: readonly ThreadRef[];
     tasks: readonly TaskRef[];
     runs: readonly RunRef[];
     registry: readonly EntryRef[];
   },
   current = "",
-): WorkspaceRef[] {
+): ThreadRef[] {
   if (!node.available) return [];
   const ids = new Set<string>();
   if (node.kind === "task") {
     const task = data.tasks.find((task) => task.id === node.resourceId);
-    if (task) ids.add(task.workspace_id);
+    if (task) ids.add(task.thread_id);
   } else if (node.kind === "run") {
     const run = data.runs.find((run) => run.id === node.resourceId);
     if (run && (!run.home_node || run.home_node === data.nodeId))
-      ids.add(run.workspace_id);
+      ids.add(run.thread_id);
   } else {
     const cluster =
       node.kind === "cluster" && node.entity
@@ -281,32 +281,53 @@ export function relatedChannels(
           run.agent_id === agent.id &&
           run.agent_version === agent.version
         )
-          ids.add(run.workspace_id);
+          ids.add(run.thread_id);
       }
       const qualified = `${data.nodeId}/agents/${agent.id}@${agent.version}`;
       for (const task of data.tasks) {
         if (task.owner === qualified || task.created_by === qualified)
-          ids.add(task.workspace_id);
+          ids.add(task.thread_id);
       }
     }
   }
-  return data.workspaces
-    .filter((workspace) => ids.has(workspace.id))
+  return data.threads
+    .filter((thread) => ids.has(thread.id))
     .sort((a, b) => Number(b.id === current) - Number(a.id === current));
 }
 export function chooseChannel(
-  channels: readonly WorkspaceRef[],
+  channels: readonly ThreadRef[],
   requested: string,
-): WorkspaceRef | undefined {
+): ThreadRef | undefined {
   return requested
     ? channels.find((channel) => channel.id === requested)
     : channels[0];
 }
+/**
+ * The request a Thread was opened with (#1008): the description of its
+ * earliest Root Task. A Thread opened without a request has none.
+ */
+export function threadRequest(
+  tasks: readonly {
+    thread_id: string;
+    parent_id?: string | null;
+    description: string;
+    created_at: string;
+  }[],
+  channel: string,
+): string | undefined {
+  return tasks
+    .filter((task) => task.thread_id === channel && !task.parent_id)
+    .reduce<
+      (typeof tasks)[number] | undefined
+    >((first, task) => (!first || task.created_at < first.created_at ? task : first), undefined)
+    ?.description;
+}
+
 export function taskProgress(
   tasks: readonly TaskRef[],
   channel: string,
 ): { total: number; completed: number; active: number; attention: number } {
-  const scoped = tasks.filter((task) => task.workspace_id === channel);
+  const scoped = tasks.filter((task) => task.thread_id === channel);
   return {
     total: scoped.length,
     completed: scoped.filter((task) => task.status === "COMPLETED").length,

@@ -51,12 +51,12 @@ fn browser_deployment_administrator_writes_only_on_administered_routes(
 }
 
 #[rstest]
-#[case("/api/runs/run-id/management", true)]
-#[case("/runs/run-id/management", true)]
-#[case("/api/runs/run-id/control", false)]
-#[case("/api/runs/run-id/resume", false)]
-#[case("/api/runs/run-id/management/extra", false)]
-#[case("/api/runs", false)]
+#[case("/api/executions/run-id/management", true)]
+#[case("/executions/run-id/management", true)]
+#[case("/api/executions/run-id/control", false)]
+#[case("/api/executions/run-id/resume", false)]
+#[case("/api/executions/run-id/management/extra", false)]
+#[case("/api/executions", false)]
 fn browser_deployment_administrator_run_writes_preserve_management_without_subject_actions(
 	#[case] path: &str,
 	#[case] permitted: bool,

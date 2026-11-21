@@ -18,6 +18,7 @@ fn home_binding_requires_exact_admission_task_and_initial_snapshot(
 		task_id: Uuid::from_u128(3),
 		task_revision: 7,
 		initial_task: json!({"task":"original"}),
+		activated: false,
 	};
 	assert_eq!(
 		bound.matches(Uuid::from_u128(admission), Uuid::from_u128(task), &snapshot),
@@ -28,7 +29,7 @@ fn home_binding_requires_exact_admission_task_and_initial_snapshot(
 fn task() -> crate::Task {
 	crate::Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "original title".into(),
 		description: "original intent".into(),
 		status: crate::TaskStatus::Open,
@@ -46,7 +47,7 @@ fn grant() -> Grant {
 		id: Uuid::from_u128(3),
 		task_id: task().id,
 		task_revision: 7,
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		node_id: "aidash://receiver".into(),
 		tenant: "tenant".into(),
 		credential_id: Uuid::from_u128(4),
@@ -65,12 +66,13 @@ fn bound() -> HomeBinding {
 		task_id: task().id,
 		task_revision: 8,
 		initial_task: json!(task()),
+		activated: false,
 	}
 }
 #[rstest]
 #[case("task_id")]
 #[case("task_revision")]
-#[case("workspace_id")]
+#[case("thread_id")]
 #[case("node_id")]
 #[case("credential_id")]
 #[case("tenant")]
@@ -85,7 +87,7 @@ fn reused_grant_rejects_each_changed_authority_dimension(#[case] changed: &str) 
 	match changed {
 		"task_id" => actual.task_id = Uuid::from_u128(99),
 		"task_revision" => actual.task_revision += 1,
-		"workspace_id" => actual.workspace_id = Uuid::from_u128(99),
+		"thread_id" => actual.thread_id = Uuid::from_u128(99),
 		"node_id" => actual.node_id = "aidash://other".into(),
 		"credential_id" => actual.credential_id = Uuid::from_u128(99),
 		"tenant" => actual.tenant = "other".into(),
@@ -141,7 +143,7 @@ fn bound_command_retains_original_input_after_journal_revision_advances() {
 #[case("grant")]
 #[case("task")]
 #[case("original_task")]
-#[case("workspace")]
+#[case("thread")]
 #[case("original_revision")]
 #[case("journal_revision")]
 fn bound_description_rejects_replaced_identity_or_revision(#[case] changed: &str) {
@@ -153,7 +155,7 @@ fn bound_description_rejects_replaced_identity_or_revision(#[case] changed: &str
 		"grant" => binding.grant_id = Uuid::from_u128(99),
 		"task" => binding.task_id = Uuid::from_u128(99),
 		"original_task" => binding.initial_task["id"] = json!(Uuid::from_u128(99)),
-		"workspace" => binding.initial_task["workspace_id"] = json!(Uuid::from_u128(99)),
+		"thread" => binding.initial_task["thread_id"] = json!(Uuid::from_u128(99)),
 		"original_revision" => binding.initial_task["revision"] = json!(6),
 		"journal_revision" => current.revision += 1,
 		_ => panic!("unknown dimension"),
@@ -181,4 +183,116 @@ fn malformed_original_snapshot_preserves_decoding_failure() {
 	let mut binding = bound();
 	binding.initial_task = json!({"bad":"snapshot"});
 	assert!(grant().admitted_task(&current, Some(&binding)).is_err());
+}
+
+fn liveness(expired: bool, held: bool, task: Option<crate::TaskStatus>) -> Liveness {
+	let now = Utc::now();
+	Liveness {
+		revoked: false,
+		expires_at: if expired {
+			now - chrono::Duration::seconds(1)
+		} else {
+			now + chrono::Duration::hours(1)
+		},
+		activated: true,
+		held,
+		task,
+	}
+}
+
+#[rstest]
+#[case::claimed(crate::TaskStatus::Claimed)]
+#[case::running(crate::TaskStatus::Running)]
+#[case::blocked(crate::TaskStatus::Blocked)]
+fn an_activated_held_grant_lives_past_its_lifetime_while_its_task_is_open(
+	#[case] status: crate::TaskStatus,
+) {
+	// The Run's Stint may sleep for days on an approval, CI or a child Task;
+	// nothing about the Run enters the rule, only the Task.
+	assert!(liveness(true, true, Some(status)).live(Utc::now()));
+}
+
+#[rstest]
+#[case::completed(crate::TaskStatus::Completed)]
+#[case::failed(crate::TaskStatus::Failed)]
+#[case::cancelled(crate::TaskStatus::Cancelled)]
+#[case::abandoned(crate::TaskStatus::Abandoned)]
+fn a_held_grant_ends_with_its_task(#[case] status: crate::TaskStatus) {
+	assert!(!liveness(true, true, Some(status)).live(Utc::now()));
+	// Within its lifetime the grant itself has not ended; the Home refuses a
+	// command for an ended Task on its own.
+	assert!(liveness(false, true, Some(status)).live(Utc::now()));
+}
+
+#[rstest]
+fn a_grant_its_receiver_does_not_hold_still_expires() {
+	let now = Utc::now();
+	// Prepared or admitted only, claimed by someone else, or reopened by a retry.
+	assert!(!liveness(true, false, Some(crate::TaskStatus::Open)).live(now));
+	assert!(!liveness(true, false, Some(crate::TaskStatus::Running)).live(now));
+	assert!(liveness(false, false, Some(crate::TaskStatus::Open)).live(now));
+	// A gone Task keeps nothing alive.
+	assert!(!liveness(true, true, None).live(now));
+}
+
+#[rstest]
+fn a_task_status_never_stands_in_for_the_activation() {
+	// The receiver's executor holds a running Task, but this grant's own
+	// binding never recorded an activation: its lifetime still bounds it.
+	let mut grant = liveness(true, true, Some(crate::TaskStatus::Running));
+	grant.activated = false;
+	assert!(!grant.live(Utc::now()));
+	grant.expires_at = Utc::now() + chrono::Duration::hours(1);
+	assert!(grant.live(Utc::now()));
+}
+
+#[rstest]
+#[case::inside_its_lifetime(false)]
+#[case::past_its_lifetime(true)]
+fn revocation_ends_a_grant_at_once(#[case] expired: bool) {
+	let mut grant = liveness(expired, true, Some(crate::TaskStatus::Running));
+	grant.revoked = true;
+	assert!(!grant.live(Utc::now()));
+}
+
+#[rstest]
+fn liveness_reads_this_grants_binding_and_the_executor_that_owns_its_task() {
+	// The fixture grant's lifetime ended long ago; its chain ends with `executor`.
+	let grant = grant();
+	let mut binding = bound();
+	binding.grant_id = grant.id;
+	binding.task_id = grant.task_id;
+	binding.activated = true;
+	let mut held = task();
+	held.status = crate::TaskStatus::Running;
+	held.owner = Some("executor".into());
+	assert!(Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
+	// Another grant's binding, an unrecorded activation or no binding at all.
+	let mut other = binding.clone();
+	other.grant_id = Uuid::from_u128(99);
+	assert!(!Liveness::of(&grant, Some(&other), Some(&held)).live(Utc::now()));
+	binding.activated = false;
+	assert!(!Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
+	assert!(!Liveness::of(&grant, None, Some(&held)).live(Utc::now()));
+	binding.activated = true;
+	// Another owner, or none after a retry reopened the Task, holds nothing.
+	held.owner = Some("someone-else".into());
+	assert!(!Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
+	held.owner = None;
+	held.status = crate::TaskStatus::Open;
+	assert!(!Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
+	assert!(!Liveness::of(&grant, Some(&binding), None).live(Utc::now()));
+}
+
+#[rstest]
+fn the_ending_statuses_are_exactly_the_terminal_ones() {
+	assert_eq!(
+		ending_statuses().collect::<Vec<_>>(),
+		vec![
+			crate::TaskStatus::Completed,
+			crate::TaskStatus::Failed,
+			crate::TaskStatus::Cancelled,
+			crate::TaskStatus::Abandoned,
+		]
+	);
 }

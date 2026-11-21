@@ -50,7 +50,7 @@ async fn reported_prompt_tokens(model: &str, body: &Value) -> u64 {
 fn tool(index: usize) -> Value {
 	json!({"type":"function","function":{
 		"name": format!("tool_{index}"),
-		"description": format!("Reads record {index} from the workspace."),
+		"description": format!("Reads record {index} from the thread."),
 		"parameters": {"type":"object","properties":{
 			"id":{"type":"string","description":"Record id"},
 			"limit":{"type":"integer","description":"Most lines to return"}

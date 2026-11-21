@@ -1,7 +1,7 @@
 //! Live authority and recorded read dependencies on a native transaction.
 use super::{
 	AuthorizationCatalog, AuthorizationExecution, AuthorizationRunOutput, AuthorizationRunRead,
-	AuthorizationRunRegistryRead, AuthorizationRunRemoteRead, AuthorizationWorkspace,
+	AuthorizationRunRegistryRead, AuthorizationRunRemoteRead, AuthorizationThread,
 };
 use crate::{Error, Result, registry::EntityRef};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -15,15 +15,15 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-impl AuthorizationWorkspace {
+impl AuthorizationThread {
 	pub(crate) async fn tenant_in(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<String>> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("tenant"))
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.lock(LockType::Share)
 			.build(PostgresQueryBuilder);
 		Ok(tx
@@ -34,34 +34,46 @@ impl AuthorizationWorkspace {
 			.map_err(FrameworkError::from)?)
 	}
 
+	/// The live Thread's owner and, for a Duty's own Thread, its Duty, from one
+	/// statement (#1008). A shared lock covers the authority row only.
 	pub(crate) async fn owner_in(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		tenant: &str,
 		lock: bool,
-	) -> Result<Option<String>> {
+	) -> Result<Option<aidash_application::ports::authorization::threads::ThreadOwner>> {
 		let mut query = Query::select();
 		query
 			.column(Alias::new("owner_subject"))
+			.expr_as(
+				crate::apps::workspaces::repositories::duties::own_duty(
+					Expr::col((Alias::new(Self::table_name()), Alias::new("thread_id"))).into(),
+					Expr::col((Alias::new(Self::table_name()), Alias::new("tenant"))).into(),
+				),
+				Alias::new("duty_id"),
+			)
 			.from(Alias::new(Self::table_name()))
 			.and_where(
-				crate::apps::identity::repositories::nodes::live_workspace_condition(
-					Expr::value(workspace).into(),
+				crate::apps::identity::repositories::nodes::live_thread_condition(
+					Expr::value(thread).into(),
 					Expr::value(tenant).into(),
 				),
 			)
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)));
 		if lock {
 			query.lock(LockType::Share);
 		}
 		let (sql, values) = query.build(PostgresQueryBuilder);
-		Ok(tx
-			.fetch_optional(&sql, convert_values(values))
-			.await?
-			.map(|row| row.get("owner_subject"))
-			.transpose()
-			.map_err(FrameworkError::from)?)
+		let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+			return Ok(None);
+		};
+		let owner: String = row.get("owner_subject").map_err(FrameworkError::from)?;
+		// A Thread that is no Duty's own selects NULL here.
+		let duty_id = QueryRow::from_backend_row(row).get::<Uuid>("duty_id");
+		Ok(Some(
+			aidash_application::ports::authorization::threads::ThreadOwner { owner, duty_id },
+		))
 	}
 }
 
@@ -96,18 +108,19 @@ impl AuthorizationCatalog {
 
 impl AuthorizationRunRead {
 	/// The historical execution grant is not proof that Home still exists.
-	/// Hold the same-Tenant Workspace through journaling, at both native writers.
+	/// Hold the same-Tenant Thread through journaling, at both native writers.
 	pub(crate) async fn lock_source_in(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<String> {
-		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
 		let (sql, values) = Query::select()
-			.column(Alias::new("workspace_id"))
-			.from(Alias::new("authorization_workspaces"))
+			.column(Alias::new("thread_id"))
+			.from(Alias::new("authorization_threads"))
 			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.lock(LockType::KeyShare)
 			.build(PostgresQueryBuilder);
 		if tx
@@ -122,10 +135,10 @@ impl AuthorizationRunRead {
 	pub(crate) async fn record_sources(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
-		let tenant = Self::lock_source_in(tx, run, workspace).await?;
+		let tenant = Self::lock_source_in(tx, run, thread).await?;
 		for chunk in sources.chunks(256) {
 			let mut query = Query::insert();
 			query
@@ -133,7 +146,7 @@ impl AuthorizationRunRead {
 				.columns(
 					[
 						"run_id",
-						"workspace_id",
+						"thread_id",
 						"resource_kind",
 						"resource_id",
 						"tenant",
@@ -146,7 +159,7 @@ impl AuthorizationRunRead {
 			for (kind, id) in chunk {
 				query.values_panic([
 					IntoValue::into_value(run),
-					IntoValue::into_value(workspace),
+					IntoValue::into_value(thread),
 					IntoValue::into_value(kind),
 					IntoValue::into_value(*id),
 					IntoValue::into_value(tenant.as_str()),
@@ -163,7 +176,7 @@ impl AuthorizationRunRead {
 		run: Uuid,
 	) -> Result<Vec<(Uuid, String, Uuid)>> {
 		let (sql, values) = Query::select()
-			.columns(["workspace_id", "resource_kind", "resource_id"].map(Alias::new))
+			.columns(["thread_id", "resource_kind", "resource_id"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.order_by(Alias::new("resource_kind"), Order::Asc)
@@ -174,7 +187,7 @@ impl AuthorizationRunRead {
 			.into_iter()
 			.map(|row| {
 				Ok((
-					row.get("workspace_id").map_err(FrameworkError::from)?,
+					row.get("thread_id").map_err(FrameworkError::from)?,
 					row.get("resource_kind").map_err(FrameworkError::from)?,
 					row.get("resource_id").map_err(FrameworkError::from)?,
 				))
@@ -187,26 +200,26 @@ impl AuthorizationRunOutput {
 	pub(crate) async fn record(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
 		let valid = AuthorizationExecution::objects()
 			.filter(AuthorizationExecution::field_run_id().eq(run))
-			.filter(AuthorizationExecution::field_workspace_id().eq(workspace))
+			.filter(AuthorizationExecution::field_thread_id().eq(thread))
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?;
 		if valid.is_empty() {
 			return Err(Error::Forbidden);
 		}
-		AuthorizationRunRead::record_sources(tx, run, workspace, &[(kind.into(), id)]).await?;
+		AuthorizationRunRead::record_sources(tx, run, thread, &[(kind.into(), id)]).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
 			.columns(
 				[
 					"run_id",
-					"workspace_id",
+					"thread_id",
 					"resource_kind",
 					"resource_id",
 					"tenant",
@@ -215,10 +228,10 @@ impl AuthorizationRunOutput {
 			)
 			.values_expr(vec![
 				IntoValue::into_value(run).into(),
-				IntoValue::into_value(workspace).into(),
+				IntoValue::into_value(thread).into(),
 				IntoValue::into_value(kind).into(),
 				IntoValue::into_value(id).into(),
-				crate::database::scope::tenant_of("runs", "id", run),
+				crate::database::scope::tenant_of("task_executions", "id", run),
 			])
 			.expect("one value per column")
 			.on_conflict(
@@ -231,14 +244,14 @@ impl AuthorizationRunOutput {
 
 	pub(crate) async fn producers(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Vec<Uuid>> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("run_id"))
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("resource_kind").eq(Expr::value(kind)))
 			.and_where(Expr::col("resource_id").eq(Expr::value(id)))
 			.order_by(Alias::new("run_id"), Order::Asc)

@@ -292,6 +292,11 @@ fn effective(
 	if rule.effect != RuleEffect::Allow {
 		return true;
 	}
+	// An allow rule never approves a generated definition: its Catalog
+	// Approval is a person's decision, not an advance one (#1012, ADR 0143).
+	if rule.kind == ApprovalKind::Generation {
+		return false;
+	}
 	let mut candidates = BTreeSet::new();
 	match &rule.target {
 		RuleTarget::Exact(_) => {
@@ -790,14 +795,12 @@ impl ApprovalPreferences {
 		&self,
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
-		workspace: Uuid,
 		thread: Uuid,
 	) -> Result<ThreadMode> {
 		let mut access = self.session(actor, origin).await?;
 		let result = async {
 			crate::apps::execution::capabilities::services::endpoints::readable_thread(
 				&mut access,
-				workspace,
 				thread,
 			)
 			.await?;
@@ -806,7 +809,7 @@ impl ApprovalPreferences {
 				access.identity.subject.clone(),
 			);
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
-			let node = access.workspace_node(workspace).await?;
+			let node = access.thread_node(thread).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
@@ -830,7 +833,6 @@ impl ApprovalPreferences {
 		&self,
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
-		workspace: Uuid,
 		thread: Uuid,
 		input: ThreadModeUpdate,
 	) -> Result<ThreadMode> {
@@ -838,7 +840,6 @@ impl ApprovalPreferences {
 		let result = async {
 			crate::apps::execution::capabilities::services::endpoints::readable_thread(
 				&mut access,
-				workspace,
 				thread,
 			)
 			.await?;
@@ -865,7 +866,7 @@ impl ApprovalPreferences {
 			}
 			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, thread, input.mode)
 				.await?;
-			let node = access.workspace_node(workspace).await?;
+			let node = access.thread_node(thread).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: input.mode,

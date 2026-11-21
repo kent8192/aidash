@@ -2,7 +2,7 @@
 r"""Measure whether native memory reaches a live Run's context (#122).
 
 For each case in tests/evaluation/memory-supply.toml and each arm, the
-evaluator creates a Workspace with a semantic index, a fresh memory
+evaluator creates a Thread with a semantic index, a fresh memory
 participant, seeds its bank with the case's Units (then applies corrections
 and deletions), waits for the index, assigns the participant to a new Task and
 claims the Task with that arm's Agent:
@@ -194,10 +194,10 @@ class Campaign:
             "max_steps": self.corpus["max_steps"], "projection_version": self.projection_version})
         return {"id": agent["id"], "version": "1.0.0"}
 
-    def wait_ready(self, workspace, ids, timeout=120):
+    def wait_ready(self, thread, ids, timeout=120):
         deadline = time.monotonic() + timeout
         while True:
-            entries = self.api.get(f"/api/workspaces/{workspace}/semantic/entries", self.token)["entries"]
+            entries = self.api.get(f"/api/threads/{thread}/semantic/entries", self.token)["entries"]
             states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in ids}
             if len(states) == len(ids) and all(value == "READY" for value in states.values()):
                 return
@@ -205,10 +205,10 @@ class Campaign:
                 raise RuntimeError(f"semantic index did not become ready: {states}")
             time.sleep(0.5)
 
-    def seed_units(self, workspace, provider, bank, case):
+    def seed_units(self, thread, provider, bank, case):
         """Admit, correct and delete the case's Units; return ids, current revisions and deleted symbols."""
         ids = {unit["id"]: str(uuid.uuid4()) for unit in case["units"]}
-        path = f"/api/workspaces/{workspace}/memory/units/mutate"
+        path = f"/api/threads/{thread}/memory/units/mutate"
         admitted = self.api.post(path, {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank,
                                         "changes": [{"operation": "add", "id": ids[unit["id"]],
                                                      "content": runner.unit_content(unit["text"])}
@@ -226,7 +226,7 @@ class Campaign:
                 if item.get("revision") is not None:
                     revisions[name] = item["revision"]
         deleted = set(case.get("deletions", []))
-        self.wait_ready(workspace, [ids[name] for name in ids if name not in deleted])
+        self.wait_ready(thread, [ids[name] for name in ids if name not in deleted])
         return ids, revisions, deleted
 
     def run(self, case, arm, repeat):
@@ -234,28 +234,28 @@ class Campaign:
         started = time.monotonic()
         try:
             token = self.token
-            workspace = self.api.post("/api/workspaces", {"title": f"{self.experiment.prefix} {case['id']} {arm} "
-                                                                   f"r{repeat}", "goal": "Memory supply evaluation"},
-                                      token)["id"]
-            record["workspace"] = workspace
-            self.api.post(f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+            thread = self.api.post("/api/threads", {"title": f"{self.experiment.prefix} {case['id']} {arm} "
+                                                             f"r{repeat}"},
+                                   token)["id"]
+            record["thread"] = thread
+            self.api.post(f"/api/threads/{thread}/semantic/index", {"expected_revision": 0, "spec": {
                 "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local",
                                                         "credential_env": None},
                 "enabled": True, "auto_context": False, "max_sources": 100, "max_results": 10,
                 "max_result_tokens": 32768, "max_input_bytes": 32768}}, token)
             seeding = self.seed if arm == "none" else {"provider": self.providers[arm], "agent": self.agents[arm]}
             provider = seeding["provider"]
-            participant = self.api.post(f"/api/workspaces/{workspace}/memory/participants",
+            participant = self.api.post(f"/api/threads/{thread}/memory/participants",
                                         {"agent": seeding["agent"]}, token)
             bank = participant["bank"]
-            ids, revisions, deleted = self.seed_units(workspace, provider, bank, case)
-            created = self.api.post(f"/api/workspaces/{workspace}/tasks", {
+            ids, revisions, deleted = self.seed_units(thread, provider, bank, case)
+            created = self.api.post(f"/api/threads/{thread}/tasks", {
                 "title": f"Memory supply: {case['id']}", "description": case["prompt"], "requirements": {},
                 "dependencies": [], "parent_id": None}, token)
             task = created["id"]
             revision = created.get("revision", 0)
             if arm != "none":
-                assigned = self.api.post(f"/api/workspaces/{workspace}/tasks/{task}/memory-participant", {
+                assigned = self.api.post(f"/api/threads/{thread}/tasks/{task}/memory-participant", {
                     "task_revision": revision, "expected": None,
                     "target": {"participant_id": participant["id"], "participant_revision": participant["revision"]}},
                     token)
@@ -267,16 +267,16 @@ class Campaign:
             # The Run's context keeps only the last inference's usage; the Run's input is the sum over
             # every accepted inference attempt, which the multi-step on-demand arm needs to be compared fairly.
             record["final_request_input_tokens"] = (context.get("usage") or {}).get("input_tokens")
-            attempts = runner.observed_provider_work(self.api, token, workspace, run["id"])
+            attempts = runner.observed_provider_work(self.api, token, thread, run["id"])
             record["inference_attempts"] = len(attempts)
             record["input_tokens"] = sum(attempt.get("input_tokens") or 0 for attempt in attempts)
             calls = runner.tool_calls_from(context)
             record["memory_recall_calls"] = sum(call["name"] == "memory_recall" for call in calls)
             record["tool_calls"] = [call["name"] for call in calls]
-            answer = runner.final_answer(self.api, token, workspace, run) if run["phase"] == "COMPLETED" else None
+            answer = runner.final_answer(self.api, token, thread, run) if run["phase"] == "COMPLETED" else None
             record["answer"] = answer
             live = [ids[name] for name in ids]
-            impact = self.api.post(f"/api/workspaces/{workspace}/memory/units/impact",
+            impact = self.api.post(f"/api/threads/{thread}/memory/units/impact",
                                    {"provider": provider, "bank": bank, "units": live}, token)
             reads = {name: [] for name in ids}
             for item in impact if isinstance(impact, list) else impact.get("units", []):
@@ -313,12 +313,12 @@ class Campaign:
                 raise
             while True:
                 if run_id is None:
-                    run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task}/runs", self.token)["items"]), None)
+                    run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task}/executions", self.token)["items"]), None)
                     if run_id is not None:
                         claim_uncertain = False
                         record["run_id"] = run_id
                 if run_id is not None:
-                    run = bounded.get(f"/api/runs/{run_id}", self.token)["run"]
+                    run = bounded.get(f"/api/executions/{run_id}", self.token)["run"]
                     if run["phase"] in runner.TERMINAL:
                         return run
                     if run.get("control") == "PAUSED":

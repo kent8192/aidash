@@ -37,7 +37,7 @@ impl BackgroundExtraction for OffloadQueue {
 			let run: aidash_domain::Run = crate::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(range.run)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -52,12 +52,11 @@ impl BackgroundExtraction for OffloadQueue {
 				{
 					Some(access) => Lease::Scoped(Box::new(access)),
 					None => {
-						Lease::within(store, &store.workspace_tenancy(run.workspace_id).await?)
-							.await?
+						Lease::within(store, &store.thread_tenancy(run.thread_id).await?).await?
 					}
 				};
 			let result = async {
-				repository::lock_workspace(&mut lease, run.workspace_id, true).await?;
+				repository::lock_thread(&mut lease, run.thread_id, true).await?;
 				let binding = super::super::bindings::for_run(store, &mut lease, &run)
 					.await?
 					.ok_or(Error::Forbidden)?;

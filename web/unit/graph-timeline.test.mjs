@@ -8,7 +8,7 @@ const key = (peer, id = "same-run") =>
   JSON.stringify(["resource", peer, "run", id]);
 const node = (peer) => ({ id: key(peer), nodeId: peer });
 const marker = (peer, age = 1) => ({
-  kind: "run.phase",
+  kind: "execution.phase",
   at: at(age),
   reference: key(peer),
 });

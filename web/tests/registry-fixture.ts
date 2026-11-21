@@ -88,3 +88,28 @@ export const builtInApprovalDecider = {
   approved: true,
   revision: 0,
 };
+
+/** What `GET /api/tenants/{tenant}/org-chart` serves a Tenant whose chains
+ *  created nothing yet (#1012). The Trust page and the Thread dashboard both
+ *  show the org chart, so a spec that answers unknown paths with `[]` serves
+ *  this instead. */
+export const emptyOrgChart = {
+  since: "2026-11-01T00:00:00Z",
+  nodes: [],
+  people: [],
+};
+
+/** What `GET /api/threads/{thread}/approval-mode` serves a person who set no
+ *  mode of their own for the Thread. Every Thread composer shows the switcher
+ *  (#1008), so a spec that answers unknown paths with `[]` serves this
+ *  instead. */
+export const defaultThreadApprovalMode = {
+  mode: null,
+  default_mode: "manual",
+  modes: [
+    { mode: "manual", allowed: true, reason: null },
+    { mode: "auto", allowed: false, reason: "policy" },
+    { mode: "dont_ask", allowed: true, reason: null },
+    { mode: "bypass", allowed: true, reason: "not_accepted" },
+  ],
+};

@@ -29,7 +29,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+	Alias, ColumnRef, Expr, ExprTrait as _, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde::de::DeserializeOwned;
@@ -40,7 +40,7 @@ pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 		let query_bind_1 = id;
 		crate::database::native::query_scalar(
 			&Query::select()
-				.expr(Expr::cust("NOT revoked AND expires_at > CLOCK_TIMESTAMP()"))
+				.expr(super::live_condition("authorization_remote_grants"))
 				.from(Alias::new("authorization_remote_grants"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id = ?)".to_owned(),
@@ -51,6 +51,54 @@ pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 		.scalar_one(&mut **access.tx)
 		.await?
 	})
+}
+/// Saves the answer of an onward `delegate` (#654) as the replay of the
+/// asking grant's command, so a repeat under the same key answers it after the
+/// target has claimed the child. `execute` saves a local delegation's answer
+/// inside the command's lease and moves the binding to the Task's revision;
+/// this runs after the lease, when the hand-on has changed nothing of the
+/// grant's own Task, so it leaves the binding alone. A repeat that raced this
+/// one saved the same answer, so an existing row is kept.
+pub(crate) async fn save_onward_replay(
+	access: &mut Access,
+	grant: Uuid,
+	(key, digest): (&str, &str),
+	result: &Value,
+) -> NativeResult<()> {
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("authorization_remote_commands"))
+		.columns(["grant_id", "request_key", "digest", "result", "tenant"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			grant.into(),
+			key.to_owned().into(),
+			digest.to_owned().into(),
+			result.clone().into(),
+			access.identity.tenant.clone().into(),
+		])
+		.on_conflict(
+			OnConflict::columns(["grant_id", "request_key"].map(Alias::new))
+				.do_nothing()
+				.to_owned(),
+		)
+		.build(PostgresQueryBuilder);
+	access
+		.tx
+		.execute(&sql, reinhardt::db::orm::execution::convert_values(values))
+		.await?;
+	Ok(())
+}
+/// The delegation chain a Remote Grant pins, read under the caller's lease:
+/// its root person, every Agent so far, and the receiver's executor.
+pub(crate) async fn subject_chain(access: &mut Access, id: Uuid) -> NativeResult<Vec<String>> {
+	crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("subject_chain"))
+			.from(Alias::new("authorization_remote_grants"))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **access.tx)
+	.await
 }
 #[async_trait]
 impl SourceAuthorityScope for Scope {
@@ -79,8 +127,8 @@ impl SourceAuthorityScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		HomeScope::workspace(self, id).await
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		HomeScope::thread(self, id).await
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		HomeScope::task_resource(self, task).await
@@ -168,12 +216,12 @@ impl GrantScope for Scope {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn require_non_subnode_workspace(&mut self, workspace: Uuid) -> Result<()> {
+	async fn require_non_subnode_thread(&mut self, thread: Uuid) -> Result<()> {
 		use crate::apps::execution::models::subnodes::SubnodeRecord;
 		use reinhardt::db::orm::Model;
 		let records = SubnodeRecord::objects()
 			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
-			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_thread_id().eq(thread))
 			.all_with_executor(self.access.tx.native_mut())
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
@@ -216,10 +264,10 @@ impl GrantScope for Scope {
 		.await
 		.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.runtime
 			.store
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -309,7 +357,7 @@ impl GrantScope for Scope {
 				let query_bind_1 = input.id;
 				let query_bind_2 = task.id;
 				let query_bind_3 = task.revision;
-				let query_bind_4 = task.workspace_id;
+				let query_bind_4 = task.thread_id;
 				let query_bind_5 = &input.node_id;
 				let query_bind_6 = &identity.tenant;
 				let query_bind_7 = identity.credential_id;
@@ -325,7 +373,7 @@ impl GrantScope for Scope {
 							reinhardt::query::Alias::new("id"),
 							reinhardt::query::Alias::new("task_id"),
 							reinhardt::query::Alias::new("task_revision"),
-							reinhardt::query::Alias::new("workspace_id"),
+							reinhardt::query::Alias::new("thread_id"),
 							reinhardt::query::Alias::new("node_id"),
 							reinhardt::query::Alias::new("tenant"),
 							reinhardt::query::Alias::new("credential_id"),
@@ -381,8 +429,8 @@ impl GrantScope for Scope {
 									"(CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => ?))".to_owned(),
 									vec![Expr::value(query_bind_11.to_owned()).into()]
 								))
-								// The Home Node issuing the grant is its Workspace's.
-								.expr(crate::database::scope::workspace_node(query_bind_4))
+								// The Home Node issuing the grant is its Thread's.
+								.expr(crate::database::scope::thread_node(query_bind_4))
 								.to_owned()
 						)
 						.to_owned()
@@ -490,6 +538,7 @@ impl GrantRepository for Repository {
 		Ok(Scope {
 			runtime: self.runtime.clone(),
 			access: Box::new(Access::begin(&self.runtime.store, &identity).await?),
+			chain: None,
 		})
 	}
 	async fn source_grant(&self, id: Uuid, node: &str) -> Result<Option<Grant>> {
@@ -595,7 +644,7 @@ pub(crate) async fn revoke_for_node_in(
 		store
 			.event_in_executor(
 				tx,
-				Some(grant.workspace_id),
+				Some(grant.thread_id),
 				"task.remote_grant_revoked",
 				serde_json::json!({"grant_id":id,"task_id":grant.task_id}),
 			)

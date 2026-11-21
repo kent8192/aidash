@@ -159,7 +159,6 @@ pub const TABLES: &[Table] = &[
 	table("execution", "core_records", TenantOwned),
 	table("execution", "core_requests", TenantOwned),
 	table("execution", "core_runs", TenantOwned),
-	table("execution", "core_task_sessions", TenantOwned),
 	// Decision Evidence (#290) belongs to its Run, like the Context Journal.
 	table("execution", "approval_observer_settings", TenantOwned),
 	table("execution", "approval_observations", TenantOwned),
@@ -203,11 +202,14 @@ pub const TABLES: &[Table] = &[
 	// Safety Stop audit and replay receipts; no key to a Run (ADR 0101)
 	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
-	table("execution", "runs", TenantOwned),
 	table("execution", "subnodes", TenantOwned),
+	// one Agent's awake stretches on a Task (#1009, ADR 0141)
+	table("execution", "stints", TenantOwned),
 	table("execution", "subnode_members", TenantOwned),
 	table("execution", "subnode_operation_receipts", TenantOwned),
 	table("execution", "subnode_limits", TenantOwned),
+	// the Task's execution record, formerly `runs` (#1009, ADR 0141)
+	table("execution", "task_executions", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
 	// federation
 	// cross-node transaction plumbing
@@ -259,7 +261,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "authorization_run_registry_reads", TenantOwned),
 	table("identity", "authorization_run_remote_reads", TenantOwned),
 	table("identity", "authorization_task_origins", TenantOwned),
-	table("identity", "authorization_workspaces", TenantOwned),
+	table("identity", "authorization_threads", TenantOwned),
 	// the Master Key check
 	table("identity", "credential_store_keys", DeploymentWide),
 	table("identity", "credential_store_resources", TenantOwned),
@@ -337,6 +339,13 @@ pub const TABLES: &[Table] = &[
 	table("identity", "run_provider_credentials", TenantOwned),
 	table("identity", "tenant_invitations", TenantOwned),
 	table("identity", "tenant_data_protection", TenantOwned),
+	table("identity", "tenant_instructions", TenantOwned),
+	table("identity", "tenant_execution_settings", TenantOwned),
+	table("identity", "budgets", TenantOwned),
+	table("identity", "budget_notices", TenantOwned),
+	table("identity", "budget_spend", TenantOwned),
+	table("identity", "budget_lineage", TenantOwned),
+	table("identity", "node_instructions", TenantOwned),
 	// policy revisions outlive the purge for the audit retention period (ADR 0061)
 	audit("identity", "tenant_data_protection_history"),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
@@ -427,11 +436,16 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "artifacts", TenantOwned),
 	table("workspaces", "channel_attachments", TenantOwned),
 	table("workspaces", "channel_message_context", TenantOwned),
-	table("workspaces", "channel_threads", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),
-	table("workspaces", "schedules", TenantOwned),
-	table("workspaces", "schedule_ticks", TenantOwned),
-	table("workspaces", "schedule_limits", TenantOwned),
+	table("workspaces", "duties", TenantOwned),
+	table("workspaces", "duty_ticks", TenantOwned),
+	table("workspaces", "duty_triggers", TenantOwned),
+	table("workspaces", "duty_events", TenantOwned),
+	table("workspaces", "duty_bookings", TenantOwned),
+	table("workspaces", "duty_script_versions", TenantOwned),
+	table("workspaces", "duty_script_runs", TenantOwned),
+	table("workspaces", "duty_deliveries", TenantOwned),
+	table("workspaces", "duty_pending_events", TenantOwned),
 	table("workspaces", "scratch_spaces", TenantOwned),
 	table("workspaces", "scratch_space_settings", TenantOwned),
 	table("workspaces", "scratch_space_members", TenantOwned),
@@ -439,7 +453,7 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "message_file_versions", TenantOwned),
 	table("workspaces", "task_dependencies", TenantOwned),
 	table("workspaces", "tasks", TenantOwned),
-	table("workspaces", "workspaces", TenantOwned),
+	table("workspaces", "threads", TenantOwned),
 ];
 
 #[cfg(test)]

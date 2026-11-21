@@ -1,5 +1,5 @@
 //! Channel scenarios compose the production endpoint fixture and native HTTP client.
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
+use crate::endpoint::{EndpointFixture, assert_json, endpoint, thread};
 use reinhardt::test::fixtures::api_client_from_url;
 use reinhardt::test::{APIClient, TestResponse};
 use rstest::fixture;
@@ -10,7 +10,7 @@ pub struct ScopedChannel {
 	pub app: EndpointFixture,
 	pub policy: Value,
 	pub token: String,
-	pub workspace: String,
+	pub thread: String,
 }
 
 #[fixture]
@@ -39,12 +39,12 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 		);
 		let token = crate::endpoint::subject_credential(&app.runtime.store, "acme", "alice").await;
 		let client = client_for(&app.server.url, &token).await;
-		let created = workspace(&client, "Channel access fixture").await;
+		let created = thread(&client, "Channel access fixture").await;
 		ScopedChannel {
 			app,
 			policy,
 			token,
-			workspace: created["id"].as_str().unwrap().to_owned(),
+			thread: created["id"].as_str().unwrap().to_owned(),
 		}
 	})
 }

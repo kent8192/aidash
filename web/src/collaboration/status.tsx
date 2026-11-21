@@ -3,12 +3,12 @@ import { useRef, useState } from "react";
 import { Alert } from "../components/patterns";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Circle, Pause, Play } from "lucide-react";
-import { runControl } from "../generated/aidash";
-import type { Task, Workspace, State, Discovery } from "../types";
+import { executionControl } from "../generated/aidash";
+import type { Task, Thread, State, Discovery } from "../types";
 import type { Selection } from "./details";
 import { Badge, useI18n, useAgentLabel } from "../ui";
-import { taskProgress } from "./model";
-import { workspaceCopy } from "./workspace-copy";
+import { taskProgress, threadRequest } from "./model";
+import { threadCopy } from "./thread-copy";
 import { Avatar } from "./avatar";
 import type { UnconfirmedLine } from "../unconfirmed";
 import { UnconfirmedNotice } from "../unconfirmed-notice";
@@ -19,12 +19,12 @@ import {
   terminalRun,
   resumableRun,
   type LocatedRun,
-} from "./workspace-model";
+} from "./thread-model";
 
 /** Pause or resume every live run of this channel on this node; each node controls its own runs. */
 export function useRunControl(runs: LocatedRun[], localNode: string) {
   const { locale } = useI18n();
-  const words = workspaceCopy[locale];
+  const words = threadCopy[locale];
   const active = runs.filter(
     (item) => item.node === localNode && !terminalRun(item.run),
   );
@@ -48,7 +48,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
         continue;
       try {
         const action = paused ? "resume" : "pause";
-        await runControl(run.id, { action });
+        await executionControl(run.id, { action });
       } catch {
         failed = true;
       }
@@ -57,7 +57,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
       client.invalidateQueries({ queryKey: ["state"] }),
       client.invalidateQueries({ queryKey: ["mesh"] }),
       client.invalidateQueries({ queryKey: ["run"] }),
-      client.invalidateQueries({ queryKey: ["workspace-live-runs"] }),
+      client.invalidateQueries({ queryKey: ["thread-live-runs"] }),
     ]);
     if (failed) setError(words.partialFailure);
     inFlight.current = false;
@@ -78,9 +78,9 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
 
 const sectionTitle = "text-[11px] font-medium text-faint";
 
-/** Overview tab of the progress sheet: goal, current tasks, participants and run control. */
+/** Overview tab of the progress sheet: request, current tasks, participants and run control. */
 export function ChannelStatus({
-  workspace,
+  thread,
   data,
   tasks,
   runs,
@@ -90,7 +90,7 @@ export function ChannelStatus({
   showTasks,
   unconfirmed = [],
 }: {
-  workspace: Workspace;
+  thread: Thread;
   data: State;
   tasks: Task[];
   runs: LocatedRun[];
@@ -102,7 +102,7 @@ export function ChannelStatus({
   unconfirmed?: UnconfirmedLine[];
 }) {
   const { locale } = useI18n();
-  const words = workspaceCopy[locale];
+  const words = threadCopy[locale];
   const agentLabel = useAgentLabel(data, discovery);
   const label = (item: LocatedRun) =>
     agentLabel(item.node, {
@@ -110,19 +110,24 @@ export function ChannelStatus({
       version: item.run.agent_version,
     });
   const agents = channelAgents(runs);
-  const progress = taskProgress(tasks, workspace.id);
+  const progress = taskProgress(tasks, thread.id);
+  const request = threadRequest(tasks, thread.id);
   const control = useRunControl(runs, data.node.id);
   const nodes = new Set(runs.map((item) => item.node)).size;
   return (
     <section className="flex min-h-0 flex-1 flex-col" aria-label={words.status}>
       <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
         <section className="grid gap-2 pb-4">
-          <h3 className={sectionTitle}>
-            {locale === "ja-JP" ? "ゴール" : "Goal"}
-          </h3>
-          <p className="text-[13px] leading-relaxed text-foreground">
-            {workspace.goal}
-          </p>
+          {request && (
+            <>
+              <h3 className={sectionTitle}>
+                {locale === "ja-JP" ? "依頼" : "Request"}
+              </h3>
+              <p className="text-[13px] leading-relaxed text-foreground">
+                {request}
+              </p>
+            </>
+          )}
           <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
             <span>
               <span className="font-mono tabular text-foreground">
@@ -208,7 +213,7 @@ export function ChannelStatus({
               variant="ghost"
               size="sm"
               type="button"
-              onClick={() => open({ kind: "task", workspace })}
+              onClick={() => open({ kind: "task", thread })}
             >
               {words.manage}
             </Button>

@@ -4,7 +4,7 @@ import {
   graphRegionPositions,
   graphRegions,
   regionForNode,
-  workspaceGraph,
+  threadGraph,
 } from "../src/collaboration/graph-regions.ts";
 import { filterMeshGraph, meshKinds } from "../src/collaboration/mesh-model.ts";
 
@@ -14,12 +14,12 @@ const c = "aidash://c";
 const key = (node, kind, id) => JSON.stringify(["resource", node, kind, id]);
 const entity = (node, id, version = "1.0.0") =>
   JSON.stringify(["entity", node, "agent", id, version]);
-const shared = (node, kind, id, workspaceId) => ({
+const shared = (node, kind, id, threadId) => ({
   id: key(node, kind, id),
   kind,
   nodeId: node,
   resourceId: id,
-  workspaceId,
+  threadId,
   name: { en: id },
   available: true,
   projected: node !== home,
@@ -44,10 +44,10 @@ const edge = (source, target, relation) => ({
 });
 const graph = () => {
   const nodes = [
-    shared(home, "workspace", "work", "work"),
+    shared(home, "thread", "work", "work"),
     shared(home, "task", "task", "work"),
     shared(home, "conversation", "talk", "work"),
-    shared(b, "workspace", "work", "work"),
+    shared(b, "thread", "work", "work"),
     shared(b, "task", "unrelated", "work"),
     agent(home, "same"),
     agent(b, "same"),
@@ -78,7 +78,7 @@ const state = {
   tasks: [
     {
       id: "task",
-      workspace_id: "work",
+      thread_id: "work",
       owner: `${home}/agents/same@1.0.0`,
       created_by: "person",
     },
@@ -86,17 +86,17 @@ const state = {
   conversations: [],
 };
 
-test("a cluster conversation retains only its participating cluster in either Workspace scope", () => {
+test("a cluster conversation retains only its participating cluster in either Thread scope", () => {
   const nodes = [
-    shared(home, "workspace", "work", "work"),
+    shared(home, "thread", "work", "work"),
     shared(home, "conversation", "talk", "work"),
     shared(home, "cluster", "recipient", undefined),
     shared(home, "cluster", "unrelated", undefined),
   ];
   const participation = edge(nodes[2].id, nodes[1].id, "participates");
   const source = { nodes, edges: [participation], omitted: 0, omittedEdges: 0 };
-  for (const workspace of ["work", ""]) {
-    const scoped = workspaceGraph(source, home, workspace, {
+  for (const thread of ["work", ""]) {
+    const scoped = threadGraph(source, home, thread, {
       tasks: [],
       conversations: [],
     });
@@ -104,7 +104,7 @@ test("a cluster conversation retains only its participating cluster in either Wo
     assert.deepEqual(scoped.edges, [participation]);
     const filtered = filterMeshGraph(scoped, {
       mode: "mesh",
-      kinds: ["workspace", "conversation", "cluster"],
+      kinds: ["thread", "conversation", "cluster"],
       relations: ["participates"],
       query: "",
     });
@@ -113,8 +113,8 @@ test("a cluster conversation retains only its participating cluster in either Wo
   }
 });
 
-test("selected Home Workspace keeps only proven Agents and puts peer Runs in their executing regions", () => {
-  const scoped = workspaceGraph(graph(), home, "work", state);
+test("selected Home Thread keeps only proven Agents and puts peer Runs in their executing regions", () => {
+  const scoped = threadGraph(graph(), home, "work", state);
   assert.ok(scoped.nodes.some((node) => node.id === key(home, "task", "task")));
   assert.ok(
     !scoped.nodes.some((node) => node.id === key(b, "task", "unrelated")),
@@ -144,8 +144,8 @@ test("selected Home Workspace keeps only proven Agents and puts peer Runs in the
   );
 });
 
-test("mode and kind filters do not erase the evidence that made an Agent Workspace-related", () => {
-  const scoped = workspaceGraph(graph(), home, "work", state);
+test("mode and kind filters do not erase the evidence that made an Agent Thread-related", () => {
+  const scoped = threadGraph(graph(), home, "work", state);
   for (const mode of ["mesh", "collaboration", "knowledge", "topology"]) {
     const filtered = filterMeshGraph(scoped, {
       mode,
@@ -164,13 +164,13 @@ test("mode and kind filters do not erase the evidence that made an Agent Workspa
   }
 });
 
-test("All Workspaces keeps Home-qualified ownership and Node-qualified execution separate", () => {
-  const scoped = workspaceGraph(graph(), home, "", state);
+test("All Threads keeps Home-qualified ownership and Node-qualified execution separate", () => {
+  const scoped = threadGraph(graph(), home, "", state);
   const regions = graphRegions(scoped, home);
   assert.deepEqual(
     regions
       .filter((region) => region.kind === "shared")
-      .map((region) => [region.nodeId, region.workspaceId]),
+      .map((region) => [region.nodeId, region.threadId]),
     [
       [home, "work"],
       [b, "work"],
@@ -192,15 +192,15 @@ test("All Workspaces keeps Home-qualified ownership and Node-qualified execution
     );
   assert.ok(positions[entity(home, "same")].x < positions[entity(b, "same")].x);
   assert.ok(
-    positions[key(home, "workspace", "work")].y >
+    positions[key(home, "thread", "work")].y >
       positions[key(home, "run", "local-run")].y,
   );
 });
 
-test("All Workspaces retains authorized continuation resources without their Workspace vertex", () => {
+test("All Threads retains authorized continuation resources without their Thread vertex", () => {
   for (const kind of ["run", "artifact"]) {
     const nodes = [
-      shared(home, "workspace", "work", "work"),
+      shared(home, "thread", "work", "work"),
       shared(b, "task", "page-task", "peer-work"),
       shared(b, kind, "page-resource", "peer-work"),
       agent(b, "worker"),
@@ -220,7 +220,7 @@ test("All Workspaces retains authorized continuation resources without their Wor
       omitted: 0,
       omittedEdges: 0,
     };
-    const scoped = workspaceGraph(page, home, "", state);
+    const scoped = threadGraph(page, home, "", state);
     assert.deepEqual(
       scoped.nodes.map((node) => node.id).sort(),
       nodes
@@ -232,7 +232,7 @@ test("All Workspaces retains authorized continuation resources without their Wor
     assert.deepEqual(
       graphRegions(scoped, home)
         .filter((region) => region.kind === "shared")
-        .map((region) => [region.nodeId, region.workspaceId]),
+        .map((region) => [region.nodeId, region.threadId]),
       [
         [home, "work"],
         [b, "peer-work"],
@@ -241,8 +241,8 @@ test("All Workspaces retains authorized continuation resources without their Wor
       kind,
     );
     assert.deepEqual(
-      workspaceGraph(page, home, "work", state).nodes.map((node) => node.id),
-      [key(home, "workspace", "work")],
+      threadGraph(page, home, "work", state).nodes.map((node) => node.id),
+      [key(home, "thread", "work")],
       kind,
     );
   }

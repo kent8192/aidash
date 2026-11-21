@@ -47,11 +47,11 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 		if let Binding::RequiredHome { .. } = binding {
 			// Disclosure is rechecked with the same attributes admission evaluated.
 			let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
-			let mut workspace = producer.source_workspace(task.workspace_id).await?;
-			workspace.attributes["remote_node"] = json!(node);
-			workspace.attributes["inference_model"] = json!(agent.model);
+			let mut thread = producer.source_thread(task.thread_id).await?;
+			thread.attributes["remote_node"] = json!(node);
+			thread.attributes["inference_model"] = json!(agent.model);
 			producer
-				.source_require(&workspace, "semantic.disclose")
+				.source_require(&thread, "semantic.disclose")
 				.await?;
 		}
 		producer.producer_semantic_sources(id).await?;

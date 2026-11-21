@@ -3,13 +3,13 @@ use crate::{
 	Error, Result,
 	ports::authorization::journals::{GrantJournalScope, ReadJournalScope, ReadMembership},
 };
-use aidash_domain::{WorkspaceSnapshot, registry::Entry, semantic::Failure};
+use aidash_domain::{ThreadSnapshot, registry::Entry, semantic::Failure};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 pub async fn track_snapshot(
 	scope: &mut dyn ReadJournalScope,
-	snapshot: &WorkspaceSnapshot,
+	snapshot: &ThreadSnapshot,
 ) -> Result<()> {
 	let (read_run, read_grant) = scope.membership();
 	let membership = match (read_run, read_grant) {
@@ -27,10 +27,10 @@ pub async fn track_snapshot(
 		.collect();
 	let id = |value: &Value| value.as_str().and_then(|s| s.parse::<Uuid>().ok());
 	if !snapshot.events.is_empty() {
-		sources.insert(("workspace_events".into(), snapshot.workspace.id));
+		sources.insert(("workspace_events".into(), snapshot.thread.id));
 	}
-	// A message may name a Run of another Workspace, as a Subnode member's message
-	// to its creator does. Provenance resolves a source Run in this Workspace only,
+	// A message may name a Run of another Thread, as a Subnode member's message
+	// to its creator does. Provenance resolves a source Run in this Thread only,
 	// so recording that Run would invalidate every later check of these reads.
 	let message_runs: Vec<Uuid> = snapshot
 		.events
@@ -44,7 +44,7 @@ pub async fn track_snapshot(
 		BTreeSet::new()
 	} else {
 		scope
-			.runs_in_workspace(snapshot.workspace.id, &message_runs)
+			.runs_in_thread(snapshot.thread.id, &message_runs)
 			.await?
 			.into_iter()
 			.collect()
@@ -54,7 +54,7 @@ pub async fn track_snapshot(
 			id(&event.data["id"]).map(|id| ("conversation", id))
 		} else if event.kind.starts_with("generation.") {
 			id(&event.data["id"]).map(|id| ("generation", id))
-		} else if event.kind == "run.created" {
+		} else if event.kind == "execution.created" {
 			id(&event.data["id"]).map(|id| ("run", id))
 		} else {
 			id(&event.data["run_id"])
@@ -66,13 +66,15 @@ pub async fn track_snapshot(
 		{
 			sources.insert((kind.into(), id));
 		}
+		// Reply threads are gone (#1008), but events recorded before then may
+		// still say a thread was opened on a root message: that reads the root.
 		if event.kind == "message.created" || event.kind == "message.thread_opened" {
 			if let Some(id) = id(&event.data["id"]) {
 				sources.insert(("message".into(), id));
 			} else if event.kind == "message.created" {
 				let ids = scope
 					.legacy_messages(
-						event.workspace_id,
+						event.thread_id,
 						event.data["sender"].as_str(),
 						event.data["content"].as_str(),
 					)
@@ -84,7 +86,7 @@ pub async fn track_snapshot(
 	scope
 		.record_sources(
 			membership,
-			snapshot.workspace.id,
+			snapshot.thread.id,
 			&sources.into_iter().collect::<Vec<_>>(),
 		)
 		.await
@@ -109,9 +111,9 @@ pub async fn grant_reads_visible(scope: &mut dyn GrantJournalScope, grant: Uuid)
 		Err(error) => return Err(error),
 	}
 	let mut pending = vec![];
-	for (workspace, kind, id) in scope.sources(grant).await? {
+	for (thread, kind, id) in scope.sources(grant).await? {
 		if !scope
-			.source_visible(workspace, &kind, id, &mut pending)
+			.source_visible(thread, &kind, id, &mut pending)
 			.await?
 		{
 			return Ok(false);
@@ -130,7 +132,7 @@ mod tests;
 /// Empty child pages do not need a new durable journal commit.
 pub async fn track_tasks(
 	scope: &mut dyn ReadJournalScope,
-	workspace: Uuid,
+	thread: Uuid,
 	tasks: &[Uuid],
 ) -> Result<()> {
 	if tasks.is_empty() {
@@ -145,7 +147,7 @@ pub async fn track_tasks(
 	scope
 		.record_sources(
 			membership,
-			workspace,
+			thread,
 			&tasks
 				.iter()
 				.map(|id| ("task".into(), *id))

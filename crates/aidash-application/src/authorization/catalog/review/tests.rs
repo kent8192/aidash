@@ -42,7 +42,7 @@ fn tool(id: &str, tier: &str) -> Entry {
 		json!({
 			"registry_deployment": "aidash://test-deployment",
 			"provider": "core",
-			"operation": if tier == "builtin" {"workspace_read"} else {"workspace_write"},
+			"operation": if tier == "builtin" {"workspace_read"} else {"thread_write"},
 			"default_alias": id,
 			"tier": tier,
 		}),

@@ -30,8 +30,8 @@ mod authorization_run_remote_reads;
 pub use authorization_run_remote_reads::AuthorizationRunRemoteRead;
 mod authorization_task_origins;
 pub use authorization_task_origins::AuthorizationTaskOrigin;
-mod authorization_workspaces;
-pub use authorization_workspaces::AuthorizationWorkspace;
+mod authorization_threads;
+pub use authorization_threads::AuthorizationThread;
 mod approval_preferences;
 pub use approval_preferences::{
 	ApprovalPreference, ApprovalRuleRecord, TenantApprovalSettings, ThreadApprovalMode,
@@ -111,6 +111,10 @@ pub mod tenant_secrets;
 
 mod authorization_remote_terminal_receipts;
 pub use authorization_remote_terminal_receipts::AuthorizationRemoteTerminalReceipt;
+mod execution_settings;
+pub use execution_settings::TenantExecutionSettings;
+mod standing_instructions;
+pub use standing_instructions::{NodeInstructions, TenantInstructions};
 mod tenant_data_protection;
 pub use tenant_data_protection::{TenantDataProtection, TenantDataProtectionHistory};
 pub mod oauth_clients;

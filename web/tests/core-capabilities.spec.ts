@@ -12,8 +12,7 @@ async function core(page: Page) {
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   const area = {
     id: "area-one",
-    workspace_id: "workspace-one",
-    thread_id: "thread-message-one",
+    thread_id: "thread-one",
     agent_id: "researcher",
     owner: "alice",
     state: "active",
@@ -168,14 +167,23 @@ async function core(page: Page) {
     if (
       request.method() === "POST" &&
       (path.startsWith("/api/working-areas/") ||
-        path.startsWith("/api/runs/") ||
-        path.includes("/restore/new-thread") ||
+        path.startsWith("/api/executions/") ||
         path.startsWith("/api/capabilities/") ||
         path.startsWith("/api/file-transfers/") ||
         path.endsWith("/delete") ||
         path.includes("/capability-configuration"))
     ) {
       calls.push({ path, body });
+      // A deleted Thread leaves the State, as the server tombstones it.
+      const deleted = /^\/api\/threads\/([^/]+)\/delete$/.exec(path)?.[1];
+      if (deleted) {
+        fixture.deleteThread(deleted);
+        return send({
+          thread_id: deleted,
+          state: "deleted",
+          file_operations: [],
+        });
+      }
       if (path.endsWith("/python")) {
         pythonCalls++;
         return send(
@@ -232,8 +240,7 @@ async function core(page: Page) {
       if (path.endsWith("/reconcile")) receipt = true;
       if (path.endsWith("/deletion-confirmation"))
         return send({ confirmation_id: "confirm-seven", revision: 7 });
-      if (path.endsWith("/restore/new-thread"))
-        return send({ thread: { id: "restored-thread" }, area: managed });
+      if (path.endsWith("/restore")) return send(managed);
       if (path.endsWith("/cleanup")) {
         managed.state =
           body.choice === "recoverable"
@@ -270,7 +277,7 @@ for (const outcome of ["match", "exhausted", "failed"] as const) {
             items: Array.from({ length: 50 }, (_, i) => ({
               ...managed,
               area_id: `other-${i}`,
-              workspace_id: "workspace-two",
+              thread_id: "thread-two",
               agent_id: `Other request ${i}`,
             })),
             next_cursor: "page&two",
@@ -295,7 +302,7 @@ for (const outcome of ["match", "exhausted", "failed"] as const) {
         },
       });
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page.getByRole("button", { name: "Files", exact: true }).click();
     const panel = page.getByRole("region", {
       name: "Working files",
@@ -538,12 +545,11 @@ test("failed-extraction originals stay private and downloadable", async ({
   expect(errors).toEqual([]);
 });
 
+/** Opens the Agent work of the Thread `thread-one`, which #1008 moved from
+ *  the reply-thread pane to the Thread's Results tab. */
 async function openThread(page: Page) {
-  await page.goto("/collaboration?channel=workspace-one");
-  await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
-    .first()
-    .click();
+  await page.goto("/collaboration?channel=thread-one");
+  await page.getByRole("tab", { name: /^Results/ }).click();
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
 }
 
@@ -553,7 +559,7 @@ test("Live preview background status is quiet when absent or unavailable", async
   const { errors } = await core(page);
   let status = 404;
   let requests = 0;
-  await page.route("**/api/runs/run-0/live-preview", (route) => {
+  await page.route("**/api/executions/run-0/live-preview", (route) => {
     requests++;
     return route.fulfill({
       status,
@@ -572,15 +578,15 @@ test("Live preview background status is quiet when absent or unavailable", async
   expect(errors).toEqual([]);
 });
 
-test("retained-work Files link keeps the originating request instead of the first workspace", async ({
+test("retained-work Files link keeps the originating request instead of the first thread", async ({
   page,
 }) => {
   const { errors } = await core(page);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   const data = await page.evaluate(() =>
     fetch("/api/state").then((response) => response.json()),
   );
-  data.workspaces.reverse();
+  data.threads.reverse();
   await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
   await page.route("**/api/working-areas/*/session", (route) =>
     route.fulfill({
@@ -599,11 +605,11 @@ test("retained-work Files link keeps the originating request instead of the firs
   });
   await expect(files).toHaveAttribute(
     "href",
-    "/settings?view=workingFiles&channel=workspace-one",
+    "/settings?view=workingFiles&channel=thread-one",
   );
   await files.click();
   await expect(page).toHaveURL(
-    /\/collaboration\?channel=workspace-one&view=files$/,
+    /\/collaboration\?channel=thread-one&view=files$/,
   );
   await expect(
     page.getByRole("dialog", { name: "Files", exact: true }),
@@ -928,15 +934,13 @@ test("narrow keyboard cleanup keeps default, separates confirmation and restores
   await expect(
     page.getByText("Recover until:", { exact: false }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Restore into a new thread" }).click();
+  // A Working Area is restored into its own Thread (#1008).
+  await page.getByRole("button", { name: "Restore files" }).click();
   await expect
-    .poll(
-      () => calls.filter((c) => c.path.endsWith("/restore/new-thread")).length,
-    )
+    .poll(() => calls.filter((c) => c.path.endsWith("/restore")).length)
     .toBe(1);
-  const restore = calls.find((c) => c.path.endsWith("/restore/new-thread"));
-  expect(restore?.body.thread_id).toBeUndefined();
-  expect(restore?.body.content).toBe("Restore retained working files");
+  const restore = calls.find((c) => c.path.endsWith("/restore"));
+  expect(restore?.body.snapshot_id).toBeTruthy();
   await retention.selectOption("irreversible");
   const review = page.getByRole("button", {
     name: "Review deletion",
@@ -1015,8 +1019,7 @@ test("thread deletion waits for every working-area page before submitting choice
   const { calls, errors } = await core(page);
   const areas = Array.from({ length: 51 }, (_, i) => ({
     id: `area-${i}`,
-    workspace_id: "workspace-one",
-    thread_id: "thread-message-one",
+    thread_id: "thread-one",
     agent_id: `agent-${i}`,
     owner: "alice",
     state: "active",
@@ -1075,7 +1078,7 @@ test("outbound retries reuse an ambiguous request key and a new fetch uses a fre
 }) => {
   const { errors } = await core(page);
   const requests: { url: string; idempotency_key: string }[] = [];
-  await page.route("**/api/runs/run-0/outbound", async (route) => {
+  await page.route("**/api/executions/run-0/outbound", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) return route.abort("failed");
@@ -1115,15 +1118,13 @@ test("thread run retries reuse an ambiguous idempotency key and changed prompts 
   await page.route("**/api/working-areas*", (route) =>
     route.fulfill({ json: { items: [], next_cursor: null } }),
   );
-  await page.route(
-    "**/api/workspaces/*/threads/*/agents/*/runs",
-    async (route) => {
-      if (route.request().method() !== "POST") return route.fallback();
-      requests.push(route.request().postDataJSON());
-      if (requests.length === 1) return route.abort("failed");
-      return route.fulfill({ json: { id: "new-area" } });
-    },
-  );
+  // An Agent runs in the Thread itself (#1008).
+  await page.route("**/api/threads/*/agents/*/executions", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    requests.push(route.request().postDataJSON());
+    if (requests.length === 1) return route.abort("failed");
+    return route.fulfill({ json: { id: "new-area" } });
+  });
   await openThread(page);
   await page.getByLabel("Agent to run").selectOption("researcher@1.0.0");
   const prompt = page.getByLabel("Next instruction");

@@ -233,7 +233,7 @@ mod tests {
 		let local = SourceObservation::new(
 			"key".into(),
 			"bindings".into(),
-			json!({"memory":null,"semantic_memory":{"workspace":null,"memory":null}}),
+			json!({"memory":null,"semantic_memory":{"thread":null,"memory":null}}),
 		)
 		.unwrap();
 		assert_eq!(local.semantic_operation(), None);
@@ -256,7 +256,7 @@ mod tests {
 		assert!(corrupted.skill_at(3, "bindings").is_err());
 	}
 	fn task() -> crate::Task {
-		serde_json::from_value(json!({"id":Uuid::nil(),"workspace_id":Uuid::nil(),"title":"Task","description":"Describe","status":"RUNNING","requirements":{},"owner":null,"created_by":"human","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-02T00:00:00Z"})).unwrap()
+		serde_json::from_value(json!({"id":Uuid::nil(),"thread_id":Uuid::nil(),"title":"Task","description":"Describe","status":"RUNNING","requirements":{},"owner":null,"created_by":"human","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-02T00:00:00Z"})).unwrap()
 	}
 	fn scope() -> RetrievalScope {
 		RetrievalScope {

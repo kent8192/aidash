@@ -261,33 +261,33 @@ impl ReadLookups {
 			self.passes.areas.insert(run, (readable, context.clone()));
 		}
 	}
-	pub(crate) fn task(&self, id: Uuid, workspace: Uuid) -> Option<Option<domain::Task>> {
-		self.tasks.get(&(id, workspace))
+	pub(crate) fn task(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Task>> {
+		self.tasks.get(&(id, thread))
 	}
-	pub(crate) fn artifact(&self, id: Uuid, workspace: Uuid) -> Option<Option<domain::Artifact>> {
-		self.artifacts.get(&(id, workspace))
+	pub(crate) fn artifact(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Artifact>> {
+		self.artifacts.get(&(id, thread))
 	}
-	pub(crate) fn message(&self, id: Uuid, workspace: Uuid) -> Option<Option<domain::Message>> {
-		self.messages.get(&(id, workspace))
+	pub(crate) fn message(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Message>> {
+		self.messages.get(&(id, thread))
 	}
 	pub(crate) fn conversation(
 		&self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Option<Option<domain::Conversation>> {
-		self.conversations.get(&(id, workspace))
+		self.conversations.get(&(id, thread))
 	}
-	pub(crate) fn attachment(&self, id: Uuid, workspace: Uuid) -> Option<Option<Uuid>> {
-		self.attachments.get(&(id, workspace))
+	pub(crate) fn attachment(&self, id: Uuid, thread: Uuid) -> Option<Option<Uuid>> {
+		self.attachments.get(&(id, thread))
 	}
-	pub(crate) fn producers(&self, workspace: Uuid, kind: &str, id: Uuid) -> Option<Vec<Uuid>> {
+	pub(crate) fn producers(&self, thread: Uuid, kind: &str, id: Uuid) -> Option<Vec<Uuid>> {
 		self.producers
-			.get(&(workspace, kind.to_owned(), id))
+			.get(&(thread, kind.to_owned(), id))
 			.map(Option::unwrap_or_default)
 	}
-	pub(crate) fn remote_grants(&self, workspace: Uuid, kind: &str, id: Uuid) -> Option<Vec<Uuid>> {
+	pub(crate) fn remote_grants(&self, thread: Uuid, kind: &str, id: Uuid) -> Option<Vec<Uuid>> {
 		self.grants
-			.get(&(workspace, kind.to_owned(), id))
+			.get(&(thread, kind.to_owned(), id))
 			.map(Option::unwrap_or_default)
 	}
 }
@@ -295,7 +295,7 @@ impl ReadLookups {
 #[derive(Deserialize)]
 struct StateSource {
 	run_id: Uuid,
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	resource_kind: String,
 	resource_id: Uuid,
 }
@@ -316,14 +316,16 @@ struct StateRemoteRead {
 	same_tenant: bool,
 }
 #[derive(Deserialize)]
-struct StateWorkspace {
+struct StateThread {
 	id: Uuid,
 	node: String,
 }
 #[derive(Deserialize)]
 struct StateOwner {
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	owner_subject: String,
+	/// The Duty whose own Thread this is, selected in the same statement.
+	duty_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
 struct StateDocument {
@@ -391,7 +393,7 @@ enum StateBatchRow {
 
 #[derive(Deserialize)]
 struct StateRunOutput {
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	resource_kind: String,
 	resource_id: Uuid,
 	run_id: Uuid,
@@ -399,7 +401,7 @@ struct StateRunOutput {
 
 #[derive(Deserialize)]
 struct StateGrantOutput {
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	resource_kind: String,
 	resource_id: Uuid,
 	grant_id: Uuid,
@@ -408,13 +410,13 @@ struct StateGrantOutput {
 #[derive(Deserialize)]
 struct AttachmentMessage {
 	id: Uuid,
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	message_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ProducedOutput {
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	resource_kind: String,
 	resource_id: Uuid,
 	owner: Uuid,
@@ -422,7 +424,7 @@ struct ProducedOutput {
 
 #[derive(Deserialize)]
 struct StateProducedOutput {
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	resource_kind: String,
 	resource_id: Uuid,
 	owner: Uuid,
@@ -471,102 +473,91 @@ impl Access {
 		self.read_lookups.state.as_ref()
 	}
 
-	pub(crate) fn state_task(&mut self, id: Uuid, workspace: Uuid) -> Option<domain::Task> {
-		self.current_state_rows()?
-			.tasks
-			.get(&(id, workspace))
-			.cloned()
+	pub(crate) fn state_task(&mut self, id: Uuid, thread: Uuid) -> Option<domain::Task> {
+		self.current_state_rows()?.tasks.get(&(id, thread)).cloned()
 	}
 
 	pub(crate) fn state_source_task(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Option<Option<domain::Task>> {
-		self.current_state_rows()?
-			.source_tasks
-			.get(&(id, workspace))
+		self.current_state_rows()?.source_tasks.get(&(id, thread))
 	}
 	pub(crate) fn state_source_artifact(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Option<Option<domain::Artifact>> {
 		self.current_state_rows()?
 			.source_artifacts
-			.get(&(id, workspace))
+			.get(&(id, thread))
 	}
 	pub(crate) fn state_source_message(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Option<Option<domain::Message>> {
 		self.current_state_rows()?
 			.source_messages
-			.get(&(id, workspace))
+			.get(&(id, thread))
 	}
 	pub(crate) fn state_source_conversation(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Option<Option<domain::Conversation>> {
 		self.current_state_rows()?
 			.source_conversations
-			.get(&(id, workspace))
+			.get(&(id, thread))
 	}
 	pub(crate) fn state_source_attachment(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Option<Option<Uuid>> {
 		self.current_state_rows()?
 			.source_attachments
-			.get(&(id, workspace))
+			.get(&(id, thread))
 	}
 	pub(crate) fn state_producers(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Option<Vec<Uuid>> {
 		self.current_state_rows()?
 			.outputs
-			.get(&(workspace, kind.to_owned(), id))
+			.get(&(thread, kind.to_owned(), id))
 			.map(Option::unwrap_or_default)
 	}
 	pub(crate) fn state_remote_outputs(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Option<Vec<Uuid>> {
 		self.current_state_rows()?
 			.remote_outputs
-			.get(&(workspace, kind.to_owned(), id))
+			.get(&(thread, kind.to_owned(), id))
 			.map(Option::unwrap_or_default)
 	}
 	pub(crate) async fn prepare_state_tasks(&mut self, tasks: &[domain::Task]) -> Result<()> {
-		self.prepare_state_workspaces(
-			&tasks
-				.iter()
-				.map(|task| task.workspace_id)
-				.collect::<Vec<_>>(),
-		)
-		.await?;
+		self.prepare_state_threads(&tasks.iter().map(|task| task.thread_id).collect::<Vec<_>>())
+			.await?;
 		if self.current_state_rows().is_none() {
 			return Ok(());
 		}
 		let reads: Vec<_> = tasks
 			.iter()
-			.map(|task| (task.workspace_id, "task".to_owned(), task.id))
+			.map(|task| (task.thread_id, "task".to_owned(), task.id))
 			.collect();
 		self.prepare_read_sources(&reads).await?;
 		let outputs = self.read_lookups.producers.clone();
 		let remote_outputs = self.read_lookups.grants.clone();
 		if let Some(rows) = self.read_lookups.state.as_mut() {
 			for task in tasks {
-				rows.tasks
-					.insert((task.id, task.workspace_id), task.clone());
+				rows.tasks.insert((task.id, task.thread_id), task.clone());
 			}
 			rows.outputs = outputs;
 			rows.remote_outputs = remote_outputs;
@@ -580,16 +571,16 @@ impl Access {
 		if self.current_state_rows().is_none() || artifacts.is_empty() {
 			return Ok(());
 		}
-		self.prepare_state_workspaces(
+		self.prepare_state_threads(
 			&artifacts
 				.iter()
-				.map(|row| row.workspace_id)
+				.map(|row| row.thread_id)
 				.collect::<Vec<_>>(),
 		)
 		.await?;
 		let reads: Vec<_> = artifacts
 			.iter()
-			.map(|row| (row.workspace_id, "artifact".to_owned(), row.id))
+			.map(|row| (row.thread_id, "artifact".to_owned(), row.id))
 			.collect();
 		self.prepare_read_sources(&reads).await?;
 		let source_tasks = self.read_lookups.tasks.clone();
@@ -604,21 +595,18 @@ impl Access {
 		}
 		Ok(())
 	}
-	pub(crate) fn state_run(&mut self, id: Uuid, workspace: Uuid) -> Option<domain::RunMetadata> {
-		self.current_state_rows()?
-			.runs
-			.get(&(id, workspace))
-			.cloned()
+	pub(crate) fn state_run(&mut self, id: Uuid, thread: Uuid) -> Option<domain::RunMetadata> {
+		self.current_state_rows()?.runs.get(&(id, thread)).cloned()
 	}
 
 	pub(crate) fn state_humans(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		run: Uuid,
 	) -> Option<Vec<domain::HumanRequest>> {
 		self.current_state_rows()?
 			.humans
-			.get(&(run, workspace))
+			.get(&(run, thread))
 			.cloned()
 	}
 
@@ -913,15 +901,15 @@ impl Access {
 		self.current_state_rows()?.snapshots.get(&run).cloned()
 	}
 
-	/// Load the state window's Workspace rows while retaining the usual live-node and lock checks.
-	pub(crate) async fn prepare_state_workspaces(&mut self, ids: &[Uuid]) -> Result<()> {
-		self.tx.current_workspaces();
+	/// Load the state window's Thread rows while retaining the usual live-node and lock checks.
+	pub(crate) async fn prepare_state_threads(&mut self, ids: &[Uuid]) -> Result<()> {
+		self.tx.current_threads();
 		let ids: Vec<_> = ids
 			.iter()
 			.copied()
 			.filter(|id| {
-				!self.tx.workspace_nodes.contains_key(id)
-					|| !self.tx.workspace_owners.contains_key(&(*id, true))
+				!self.tx.thread_nodes.contains_key(id)
+					|| !self.tx.thread_owners.contains_key(&(*id, true))
 			})
 			.collect();
 		if ids.is_empty() {
@@ -929,36 +917,48 @@ impl Access {
 		}
 		let (sql, values) = Query::select()
 			.columns(["id", "node"].map(Alias::new))
-			.from(Alias::new("workspaces"))
+			.from(Alias::new("threads"))
 			.and_where(Expr::col("tenant").eq(Expr::value(&self.identity.tenant)))
 			.and_where(Expr::col("id").is_in(ids.iter().copied().map(Expr::value)))
 			.build(PostgresQueryBuilder);
-		let workspaces: Vec<StateWorkspace> = self.fetch_rows(&sql, values).await?;
+		let threads: Vec<StateThread> = self.fetch_rows(&sql, values).await?;
+		// The Duty rides in the owner statement, so `/api/state` keeps its
+		// statement count (#849) while its Threads carry `duty_id` (#1008).
 		let (sql, values) = Query::select()
-			.columns(["workspace_id", "owner_subject"].map(Alias::new))
-			.from(Alias::new("authorization_workspaces"))
-			.and_where(
-				crate::apps::identity::repositories::nodes::live_workspace_condition(
-					Expr::col((
-						Alias::new("authorization_workspaces"),
-						Alias::new("workspace_id"),
-					))
-					.into(),
-					Expr::col((Alias::new("authorization_workspaces"), Alias::new("tenant")))
+			.columns(["thread_id", "owner_subject"].map(Alias::new))
+			.expr_as(
+				crate::apps::workspaces::repositories::duties::own_duty(
+					Expr::col((Alias::new("authorization_threads"), Alias::new("thread_id")))
 						.into(),
+					Expr::col((Alias::new("authorization_threads"), Alias::new("tenant"))).into(),
+				),
+				Alias::new("duty_id"),
+			)
+			.from(Alias::new("authorization_threads"))
+			.and_where(
+				crate::apps::identity::repositories::nodes::live_thread_condition(
+					Expr::col((Alias::new("authorization_threads"), Alias::new("thread_id")))
+						.into(),
+					Expr::col((Alias::new("authorization_threads"), Alias::new("tenant"))).into(),
 				),
 			)
 			.and_where(Expr::col("tenant").eq(Expr::value(&self.identity.tenant)))
-			.and_where(Expr::col("workspace_id").is_in(ids.iter().copied().map(Expr::value)))
+			.and_where(Expr::col("thread_id").is_in(ids.iter().copied().map(Expr::value)))
 			.lock(reinhardt::query::LockType::Share)
 			.build(PostgresQueryBuilder);
 		let owners: Vec<StateOwner> = self.fetch_rows(&sql, values).await?;
-		for workspace in workspaces {
-			self.tx.workspace_nodes.insert(workspace.id, workspace.node);
+		for thread in threads {
+			self.tx.thread_nodes.insert(thread.id, thread.node);
 		}
 		for owner in owners {
-			self.tx
-				.remember_workspace_owner(owner.workspace_id, true, &owner.owner_subject);
+			self.tx.remember_thread_owner(
+				owner.thread_id,
+				true,
+				&aidash_application::ports::authorization::threads::ThreadOwner {
+					owner: owner.owner_subject,
+					duty_id: owner.duty_id,
+				},
+			);
 		}
 		Ok(())
 	}
@@ -969,7 +969,7 @@ impl Access {
 	}
 
 	/// Preload Runs checked together under one authority, such as the Runs of a
-	/// Workspace's pending Human Requests: one preload for all of them, not one each.
+	/// Thread's pending Human Requests: one preload for all of them, not one each.
 	pub(crate) async fn prepare_state_inspections(
 		&mut self,
 		runs: &[domain::RunInspection],
@@ -1046,7 +1046,7 @@ impl Access {
 			("authorization_run_reads", "source", "run_id"),
 			("authorization_run_registry_reads", "registry", "run_id"),
 			("authorization_run_remote_reads", "remote", "run_id"),
-			("runs", "snapshot", "id"),
+			("task_executions", "snapshot", "id"),
 			("core_runs", "core", "run_id"),
 			("semantic_run_reads", "semantic", "run_id"),
 		] {
@@ -1191,10 +1191,10 @@ impl Access {
 		}
 		let mut newly_asked = BTreeSet::new();
 		for task in &tasks {
-			let key = (task.id, task.workspace_id);
+			let key = (task.id, task.thread_id);
 			self.read_lookups.tasks.asked.insert(key);
 			self.read_lookups.tasks.found.insert(key, task.clone());
-			let output = (task.workspace_id, "task".to_owned(), task.id);
+			let output = (task.thread_id, "task".to_owned(), task.id);
 			if self.read_lookups.producers.asked.insert(output.clone()) {
 				self.read_lookups.grants.asked.insert(output.clone());
 				newly_asked.insert(output);
@@ -1202,7 +1202,7 @@ impl Access {
 		}
 		run_outputs.sort_by_key(|row| row.run_id);
 		for row in run_outputs {
-			let key = (row.workspace_id, row.resource_kind, row.resource_id);
+			let key = (row.thread_id, row.resource_kind, row.resource_id);
 			if newly_asked.contains(&key) {
 				self.read_lookups
 					.producers
@@ -1214,7 +1214,7 @@ impl Access {
 		}
 		grant_outputs.sort_by_key(|row| row.grant_id);
 		for row in grant_outputs {
-			let key = (row.workspace_id, row.resource_kind, row.resource_id);
+			let key = (row.thread_id, row.resource_kind, row.resource_id);
 			if newly_asked.contains(&key) {
 				self.read_lookups
 					.grants
@@ -1300,7 +1300,7 @@ impl Access {
 			remote_outputs: Loaded::default(),
 			runs: runs
 				.iter()
-				.map(|run| ((run.id, run.workspace_id), run.clone()))
+				.map(|run| ((run.id, run.thread_id), run.clone()))
 				.collect(),
 			sources: runs.iter().map(|run| (run.id, Vec::new())).collect(),
 			registry_reads: runs.iter().map(|run| (run.id, Vec::new())).collect(),
@@ -1318,24 +1318,20 @@ impl Access {
 			snapshots: runs.iter().map(|run| (run.id, None)).collect(),
 			humans: runs
 				.iter()
-				.map(|run| ((run.id, run.workspace_id), Vec::new()))
+				.map(|run| ((run.id, run.thread_id), Vec::new()))
 				.collect(),
 		};
 		for task in tasks {
-			rows.tasks.insert((task.id, task.workspace_id), task);
+			rows.tasks.insert((task.id, task.thread_id), task);
 		}
 		for human in humans {
-			if let Some(items) = rows.humans.get_mut(&(human.run_id, human.workspace_id)) {
+			if let Some(items) = rows.humans.get_mut(&(human.run_id, human.thread_id)) {
 				items.push(human);
 			}
 		}
 		for source in sources {
 			if let Some(items) = rows.sources.get_mut(&source.run_id) {
-				items.push((
-					source.workspace_id,
-					source.resource_kind,
-					source.resource_id,
-				));
+				items.push((source.thread_id, source.resource_kind, source.resource_id));
 			}
 		}
 		for read in registry {
@@ -1405,8 +1401,8 @@ impl Access {
 		// The state preload already includes each source and its outputs. A walk
 		// must still authorize them, but it need not load the same rows again.
 		if self.current_state_rows().is_some_and(|rows| {
-			sources.iter().all(|(workspace, kind, id)| {
-				let key = (*id, *workspace);
+			sources.iter().all(|(thread, kind, id)| {
+				let key = (*id, *thread);
 				match kind.as_str() {
 					"task" => rows.source_tasks.get(&key).is_some(),
 					"artifact" => rows.source_artifacts.get(&key).is_some(),
@@ -1427,7 +1423,7 @@ impl Access {
 			sources
 				.iter()
 				.filter(|(_, source, _)| source == kind)
-				.map(|(workspace, _, id)| (*id, *workspace))
+				.map(|(thread, _, id)| (*id, *thread))
 				.collect()
 		};
 		let mut messages = of_kind("message");
@@ -1435,40 +1431,40 @@ impl Access {
 		let wanted = unasked(&mut self.read_lookups.attachments, attachments);
 		if !wanted.is_empty() {
 			let (sql, values) = Query::select()
-				.columns(["id", "workspace_id", "message_id"].map(Alias::new))
+				.columns(["id", "thread_id", "message_id"].map(Alias::new))
 				.from(Alias::new("channel_attachments"))
 				.and_where(Expr::col("id").is_in(wanted.into_iter().map(Expr::value)))
 				.and_where(Expr::col("message_id").is_not_null())
 				.build(PostgresQueryBuilder);
 			let rows: Vec<AttachmentMessage> = self.fetch_rows(&sql, values).await?;
 			for row in rows {
-				messages.push((row.message_id, row.workspace_id));
+				messages.push((row.message_id, row.thread_id));
 				self.read_lookups
 					.attachments
 					.found
-					.insert((row.id, row.workspace_id), row.message_id);
+					.insert((row.id, row.thread_id), row.message_id);
 			}
 		}
 		let mut tasks = of_kind("task");
 		let artifacts = of_kind("artifact");
 		let mut outputs: Vec<Output> = artifacts
 			.iter()
-			.map(|(id, workspace)| (*workspace, "artifact".to_owned(), *id))
+			.map(|(id, thread)| (*thread, "artifact".to_owned(), *id))
 			.collect();
 		let wanted = unasked(&mut self.read_lookups.artifacts, artifacts);
 		if !wanted.is_empty() {
 			for artifact in Artifact::read_many_in(&mut **self.tx, &wanted).await? {
-				tasks.push((artifact.task_id, artifact.workspace_id));
+				tasks.push((artifact.task_id, artifact.thread_id));
 				self.read_lookups
 					.artifacts
 					.found
-					.insert((artifact.id, artifact.workspace_id), artifact);
+					.insert((artifact.id, artifact.thread_id), artifact);
 			}
 		}
 		outputs.extend(
 			tasks
 				.iter()
-				.map(|(id, workspace)| (*workspace, "task".to_owned(), *id)),
+				.map(|(id, thread)| (*thread, "task".to_owned(), *id)),
 		);
 		let wanted = unasked(&mut self.read_lookups.tasks, tasks);
 		if !wanted.is_empty() {
@@ -1476,13 +1472,13 @@ impl Access {
 				self.read_lookups
 					.tasks
 					.found
-					.insert((task.id, task.workspace_id), task);
+					.insert((task.id, task.thread_id), task);
 			}
 		}
 		outputs.extend(
 			messages
 				.iter()
-				.map(|(id, workspace)| (*workspace, "message".to_owned(), *id)),
+				.map(|(id, thread)| (*thread, "message".to_owned(), *id)),
 		);
 		let wanted = unasked(&mut self.read_lookups.messages, messages);
 		if !wanted.is_empty() {
@@ -1490,7 +1486,7 @@ impl Access {
 				self.read_lookups
 					.messages
 					.found
-					.insert((message.id, message.workspace_id), message);
+					.insert((message.id, message.thread_id), message);
 			}
 		}
 		let wanted = unasked(
@@ -1502,7 +1498,7 @@ impl Access {
 				self.read_lookups
 					.conversations
 					.found
-					.insert((conversation.id, conversation.workspace_id), conversation);
+					.insert((conversation.id, conversation.thread_id), conversation);
 			}
 		}
 		self.prepare_outputs(outputs).await
@@ -1518,8 +1514,7 @@ impl Access {
 		if wanted.is_empty() {
 			return Ok(());
 		}
-		let workspaces: BTreeSet<Uuid> =
-			wanted.iter().map(|(workspace, _, _)| *workspace).collect();
+		let threads: BTreeSet<Uuid> = wanted.iter().map(|(thread, _, _)| *thread).collect();
 		let kinds: BTreeSet<&str> = wanted.iter().map(|(_, kind, _)| kind.as_str()).collect();
 		let ids: BTreeSet<Uuid> = wanted.iter().map(|(_, _, id)| *id).collect();
 		for key in &wanted {
@@ -1529,13 +1524,12 @@ impl Access {
 			let selection = |table: &str, owner: &str, remote: bool| {
 				let mut query = Query::select();
 				query
-					.columns(["workspace_id", "resource_kind", "resource_id"].map(Alias::new))
+					.columns(["thread_id", "resource_kind", "resource_id"].map(Alias::new))
 					.expr_as(Expr::col(Alias::new(owner)), Alias::new("owner"))
 					.expr_as(Expr::value(remote).cast_as("bool"), Alias::new("remote"))
 					.from(Alias::new(table))
 					.and_where(
-						Expr::col("workspace_id")
-							.is_in(workspaces.iter().copied().map(Expr::value)),
+						Expr::col("thread_id").is_in(threads.iter().copied().map(Expr::value)),
 					)
 					.and_where(
 						Expr::col("resource_kind").is_in(kinds.iter().copied().map(Expr::value)),
@@ -1558,7 +1552,7 @@ impl Access {
 				};
 				loaded
 					.found
-					.entry((row.workspace_id, row.resource_kind, row.resource_id))
+					.entry((row.thread_id, row.resource_kind, row.resource_id))
 					.or_default()
 					.push(row.owner);
 			}
@@ -1569,12 +1563,10 @@ impl Access {
 			("authorization_remote_outputs", "grant_id", true),
 		] {
 			let (sql, values) = Query::select()
-				.columns(["workspace_id", "resource_kind", "resource_id"].map(Alias::new))
+				.columns(["thread_id", "resource_kind", "resource_id"].map(Alias::new))
 				.expr_as(Expr::col(Alias::new(owner)), Alias::new("owner"))
 				.from(Alias::new(table))
-				.and_where(
-					Expr::col("workspace_id").is_in(workspaces.iter().copied().map(Expr::value)),
-				)
+				.and_where(Expr::col("thread_id").is_in(threads.iter().copied().map(Expr::value)))
 				.and_where(Expr::col("resource_kind").is_in(kinds.iter().copied().map(Expr::value)))
 				.and_where(Expr::col("resource_id").is_in(ids.iter().copied().map(Expr::value)))
 				.order_by(Alias::new(owner), Order::Asc)
@@ -1589,7 +1581,7 @@ impl Access {
 				};
 				loaded
 					.found
-					.entry((row.workspace_id, row.resource_kind, row.resource_id))
+					.entry((row.thread_id, row.resource_kind, row.resource_id))
 					.or_default()
 					.push(row.owner);
 			}

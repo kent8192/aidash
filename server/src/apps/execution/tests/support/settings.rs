@@ -34,7 +34,7 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 				.with_value("preview", json!({}))
 				.with_value("preview_limits", json!({}))
 				.with_value("workbench_test_limits", json!({}))
-				.with_value("schedules", json!({}))
+				.with_value("duties", json!({}))
 				.with_value("marketplace", json!({}))
 				.with_value(
 					"deployment",

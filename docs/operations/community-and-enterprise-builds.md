@@ -42,7 +42,7 @@ those defaults; other Tenancy settings retain their existing values.
 
 `enterprise/infra/` holds the GCP Environments and delivery Terraform, the environment chart and the Cloud-only scripts. It is not part of the Community build.
 
-`enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. Keep them equal to the Community files, except the `[workspace.package]` license, which is `Apache-2.0` for Community and `BUSL-1.1` for Enterprise (ADR 0035), and keep `enterprise/Cargo.lock` on the versions `Cargo.lock` holds for packages both lock (`cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>`).
+`enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[thread.package]` and `[thread.lints]` tables and the profiles. Keep them equal to the Community files, except the `[thread.package]` license, which is `Apache-2.0` for Community and `BUSL-1.1` for Enterprise (ADR 0035), and keep `enterprise/Cargo.lock` on the versions `Cargo.lock` holds for packages both lock (`cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>`).
 
 ## Dashboard
 
@@ -72,7 +72,7 @@ npm run test:gcip --prefix enterprise/web
 
 ## Develop the Enterprise build locally
 
-Build and test the Enterprise workspace from the repository root:
+Build and test the Enterprise thread from the repository root:
 
 ```sh
 cargo test --locked --manifest-path enterprise/Cargo.toml

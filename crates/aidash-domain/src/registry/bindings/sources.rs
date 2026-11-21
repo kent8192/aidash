@@ -43,7 +43,7 @@ pub enum NativeSource {
 		roots: Vec<String>,
 	},
 }
-/// Whether a step may go without optional Workspace semantic context when its
+/// Whether a step may go without optional Thread semantic context when its
 /// retrieval stays unavailable. Optional context degrades by default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -59,7 +59,7 @@ impl OnUnavailable {
 }
 
 impl NativeContext {
-	/// Bind implicit native tool references to the exact workspace reader in
+	/// Bind implicit native tool references to the exact thread reader in
 	/// this Run's immutable snapshot. Explicit source policies remain exact.
 	pub fn declaration_for_snapshot(
 		&self,
@@ -77,12 +77,20 @@ impl NativeContext {
 			.chain(declaration.tools.write.iter_mut())
 			.chain(declaration.tools.detail.iter_mut())
 		{
+			// An Agent version normalized before #1008 pins the Workspace tool
+			// a Thread tool replaces; the source reads through that one.
+			let former = reference
+				.id
+				.strip_prefix("aidash.")
+				.and_then(crate::tool::thread_tools::former)
+				.map(|name| format!("aidash.{name}"));
 			if !snapshot
 				.bindings
 				.iter()
 				.any(|binding| binding.identity == *reference && binding.excluded_reason.is_none())
 				&& let Some(saved) = snapshot.bindings.iter().find(|binding| {
-					binding.identity.id == reference.id
+					(binding.identity.id == reference.id
+						|| Some(&binding.identity.id) == former.as_ref())
 						&& binding.identity.registry_deployment == reference.registry_deployment
 						&& binding.excluded_reason.is_none()
 				}) {
@@ -184,10 +192,12 @@ impl NativeContext {
 			NativeSource::ConversationMemory { .. } | NativeSource::SemanticMemory { .. } => {
 				vec!["memory_recall"]
 			}
+			// The Thread tools (#1008); a Run aligns them with the Workspace
+			// tools an Agent version admitted before them pins.
 			NativeSource::WorkspaceObservation { .. } => {
-				vec!["workspace_observe", "workspace_read"]
+				vec!["thread_observe", "thread_read"]
 			}
-			NativeSource::WorkspaceRetrieval { .. } => vec!["workspace_read"],
+			NativeSource::WorkspaceRetrieval { .. } => vec!["thread_read"],
 			NativeSource::PrivateReferences { .. } | NativeSource::ReferenceAttachments { .. } => {
 				vec!["file_read"]
 			}

@@ -23,12 +23,8 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		)
 		.unwrap()
 		.into_iter()
-		.filter(|e| {
-			matches!(
-				e.id.as_str(),
-				"aidash.workspace_read" | "aidash.human_request"
-			) && (e.id != "aidash.workspace_read" || e.version == "1.1.0")
-		}),
+		// The Agent's required tools (#1008: the Thread reader).
+		.filter(|e| matches!(e.id.as_str(), "aidash.thread_read" | "aidash.human_request")),
 	);
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());

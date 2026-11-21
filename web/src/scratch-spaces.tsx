@@ -313,10 +313,10 @@ function Edit({
     </div>
   );
 }
-/** Names the Scratch Space of an open Workspace. Reading a Workspace does not
+/** Names the Scratch Space of an open Thread. Reading a Thread does not
  *  grant the space, so only people who may use it learn its name; the server
  *  refuses everyone else, and refuses a deleted space the same way. */
-export function WorkspaceScratchSpace({
+export function ThreadScratchSpace({
   id,
   channel,
 }: {
@@ -346,7 +346,7 @@ export function WorkspaceScratchSpace({
         <Link
           to="/$section"
           params={{ section: "settings" }}
-          // The channel keeps the Workspace's Node selected in settings.
+          // The channel keeps the Thread's Node selected in settings.
           search={{ view: "node", channel, focus: space.data.id }}
           className="text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
         >

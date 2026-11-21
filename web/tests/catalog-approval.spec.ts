@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
   defaultNode,
+  emptyOrgChart,
   registryVersion,
   routeRegistryVersions,
   routeTenantActions,
@@ -74,14 +75,14 @@ async function dashboard(
               (version) => !version.needs_approval || version.approval?.enabled,
             )
             .map((version) => version.entry),
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -105,6 +106,8 @@ async function dashboard(
       decisions.push(decision);
       return route.fulfill(answer(decision));
     }
+    if (path.endsWith("/org-chart"))
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await routeRegistryVersions(page, versions);

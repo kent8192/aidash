@@ -138,12 +138,12 @@ impl VectorIndex for NoEffects {
 	}
 }
 fn task() -> Task {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"title":"title","description":"intent","status":"OPEN","requirements":{},"owner":null,"created_by":"requester","dependencies":[],"parent_id":null,"revision":7,"created_at":"2026-10-04T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"thread_id":Uuid::from_u128(2),"title":"title","description":"intent","status":"OPEN","requirements":{},"owner":null,"created_by":"requester","dependencies":[],"parent_id":null,"revision":7,"created_at":"2026-10-04T00:00:00Z"})).unwrap()
 }
 fn message() -> Message {
 	Message {
 		id: Uuid::from_u128(5),
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		sender: "requester".into(),
 		content: "input text".into(),
 		idempotency_key: None,
@@ -254,7 +254,7 @@ fn spec() -> IndexingSpec {
 }
 fn index() -> Index {
 	Index {
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		tenant: "tenant".into(),
 		revision: 9,
 		spec: json!(spec()),
@@ -269,7 +269,7 @@ fn cached_receipt(candidate_digest: &str) -> Receipt {
 		operation_digest: operation().digest().unwrap(),
 		home_node: operation().home_node,
 		tenant: "tenant".into(),
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		grant_id: operation().grant_id,
 		admission_id: operation().admission_id,
 		executor: "aidash://receiver/agents/agent@1.0.0".into(),
@@ -279,7 +279,7 @@ fn cached_receipt(candidate_digest: &str) -> Receipt {
 		candidate_digest: candidate_digest.into(),
 		sources: vec![],
 		result: SearchResult {
-			workspace_id: task().workspace_id,
+			thread_id: task().thread_id,
 			index_revision: 9,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -295,8 +295,8 @@ struct EmptyRetrieval;
 impl crate::ports::authorization::visibility::RowOutcome for EmptyRetrieval {}
 #[async_trait]
 impl SemanticRetrievalSession for EmptyRetrieval {
-	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		assert_eq!(workspace, task().workspace_id);
+	async fn thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
+		assert_eq!(thread, task().thread_id);
 		assert_eq!(action, "semantic.search");
 		Ok(())
 	}
@@ -654,6 +654,7 @@ impl SemanticSearchScope for Scope {
 			task_id: task().id,
 			task_revision: task().revision,
 			initial_task: json!(task()),
+			activated: true,
 		}))
 	}
 	fn disclosure_mode(&mut self, grant: Uuid) -> Result<()> {
@@ -668,8 +669,8 @@ impl SemanticSearchScope for Scope {
 		}
 		Ok(task)
 	}
-	async fn input_message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message> {
-		assert_eq!(workspace, task().workspace_id);
+	async fn input_message(&mut self, thread: Uuid, id: Uuid) -> Result<Message> {
+		assert_eq!(thread, task().thread_id);
 		assert_eq!(id, message().id);
 		let mut value = message();
 		if self.denied == Some("input") {
@@ -691,7 +692,7 @@ impl SemanticSearchScope for Scope {
 	}
 	async fn prepare_search(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &Search,
 		controls: &AgentConfig,
 	) -> Result<retrieval::PreparedSearch> {
@@ -702,7 +703,7 @@ impl SemanticSearchScope for Scope {
 		assert_eq!(controls.model.id, "model");
 		self.trace.lock().unwrap().push("candidates");
 		let mut prepared =
-			retrieval::prepare(&mut EmptyRetrieval, workspace, input, Some(controls)).await?;
+			retrieval::prepare(&mut EmptyRetrieval, thread, input, Some(controls)).await?;
 		if let Some(native) = &self.native {
 			prepared.result.matches = vec![native.ordinary.clone()];
 		}
@@ -773,7 +774,7 @@ impl NativeFixture {
 		let bank = aidash_domain::memory::Bank {
 			home: "aidash://home".into(),
 			tenant: "tenant".into(),
-			workspace: task().workspace_id,
+			thread: task().thread_id,
 			participant: Some(Uuid::from_u128(100)),
 		};
 		let mut bound = binding();
@@ -927,7 +928,7 @@ async fn native_finalization_failures_rollback_dependencies_and_receipt(
 /// A native memory model attempt still inside its call deadline leaves the
 /// operation waiting as `Pending`. It neither pauses the operation nor spends
 /// one of its outage retries, however long the call deadline is (#233). Each
-/// fresh claim repeats the charged workspace embedding, so a repeated wait
+/// fresh claim repeats the charged thread embedding, so a repeated wait
 /// backs off to `PENDING_REPLAY_SECONDS`.
 /// A resume keeps the remote operation ID but opens a new journal cycle; the
 /// Home's native memory ledger counts its retries in that cycle (#291).

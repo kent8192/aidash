@@ -29,14 +29,14 @@ pub async fn local_base_visible(
 	}
 	if let Some(allowed) = scope.cached(run) {
 		return if allowed {
-			scope.human_reads(run.workspace_id, run.id).await
+			scope.human_reads(run.thread_id, run.id).await
 		} else {
 			Ok(false)
 		};
 	}
-	let workspace = scope.workspace(run.workspace_id).await?;
-	let resource = scope.resource("run", &run.id.to_string(), workspace.attributes.clone());
-	let memory = scope.memory_resource(run, &workspace).await?;
+	let thread = scope.thread(run.thread_id).await?;
+	let resource = scope.resource("run", &run.id.to_string(), thread.attributes.clone());
+	let memory = scope.memory_resource(run, &thread).await?;
 	let task_visible = match scope.task(run).await? {
 		Some(task) => scope.task_visible(&task).await?,
 		None => false,
@@ -49,7 +49,7 @@ pub async fn local_base_visible(
 		if held.is_some() {
 			let rest = scope.decide(&resource, "run.read").await?
 				&& scope.decide(&memory, "memory.read").await?
-				&& scope.human_reads(run.workspace_id, run.id).await?;
+				&& scope.human_reads(run.thread_id, run.id).await?;
 			conclude_chain(scope, held, rest);
 		} else {
 			scope.remember(run, false);
@@ -59,7 +59,7 @@ pub async fn local_base_visible(
 	let allowed =
 		scope.decide(&resource, "run.read").await? && scope.decide(&memory, "memory.read").await?;
 	scope.remember(run, allowed);
-	Ok(allowed && scope.human_reads(run.workspace_id, run.id).await?)
+	Ok(allowed && scope.human_reads(run.thread_id, run.id).await?)
 }
 
 pub async fn local_run_visible(
@@ -86,8 +86,8 @@ pub async fn local_dependency_without_memory_visible(
 	if !scope.core_area_visible(run.id).await? {
 		return Ok(false);
 	}
-	let workspace = scope.workspace(run.workspace_id).await?;
-	let resource = scope.resource("run", &run.id.to_string(), workspace.attributes);
+	let thread = scope.thread(run.thread_id).await?;
+	let resource = scope.resource("run", &run.id.to_string(), thread.attributes);
 	let task_visible = match scope.task(run).await? {
 		Some(task) => scope.task_visible(&task).await?,
 		None => false,
@@ -98,13 +98,13 @@ pub async fn local_dependency_without_memory_visible(
 		let held = scope.take_row_silence();
 		if held.is_some() {
 			let rest = scope.decide(&resource, "run.read").await?
-				&& scope.human_reads(run.workspace_id, run.id).await?;
+				&& scope.human_reads(run.thread_id, run.id).await?;
 			conclude_chain(scope, held, rest);
 		}
 		return Ok(false);
 	}
 	Ok(scope.decide(&resource, "run.read").await?
-		&& scope.human_reads(run.workspace_id, run.id).await?)
+		&& scope.human_reads(run.thread_id, run.id).await?)
 }
 
 pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
@@ -117,12 +117,12 @@ pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata)
 				// Same chain rule as a local Run (#770).
 				let held = scope.take_row_silence();
 				if held.is_some() {
-					let rest = scope.human_reads(run.workspace_id, run.id).await?;
+					let rest = scope.human_reads(run.thread_id, run.id).await?;
 					conclude_chain(scope, held, rest);
 				}
 				return Ok(false);
 			}
-			return scope.human_reads(run.workspace_id, run.id).await;
+			return scope.human_reads(run.thread_id, run.id).await;
 		}
 		// Missing scoped admission is not a legacy grant; only an exact local record qualifies.
 		if !scope.legacy_execution(run).await? {
@@ -148,7 +148,7 @@ where
 		if scope.scoped_admission(run.id).await? {
 			return Ok(scope.core_area_visible(run.id).await?
 				&& scope.foreign_base_visible(run).await?
-				&& scope.human_reads(run.workspace_id, run.id).await?);
+				&& scope.human_reads(run.thread_id, run.id).await?);
 		}
 		if !scope.legacy_execution(run).await? {
 			return Ok(false);
@@ -172,15 +172,15 @@ where
 	if !scope.core_area_visible(run.id).await? {
 		return Ok(false);
 	}
-	let workspace = LocalRunVisibilityScope::workspace(scope, run.workspace_id).await?;
+	let thread = LocalRunVisibilityScope::thread(scope, run.thread_id).await?;
 	let resource = LocalRunVisibilityScope::resource(
 		scope,
 		"run",
 		&run.id.to_string(),
-		workspace.attributes.clone(),
+		thread.attributes.clone(),
 	);
 	let memory = if require_memory {
-		Some(scope.memory_resource(run, &workspace).await?)
+		Some(scope.memory_resource(run, &thread).await?)
 	} else {
 		None
 	};
@@ -195,7 +195,7 @@ where
 					LocalRunVisibilityScope::decide(scope, &memory, "memory.read").await?
 				}
 				None => true,
-			} && scope.human_reads(run.workspace_id, run.id).await?,
+			} && scope.human_reads(run.thread_id, run.id).await?,
 	)
 }
 
@@ -234,7 +234,7 @@ pub async fn event_visible_in(
 		else {
 			return Ok(false);
 		};
-		return match scope.generation(id, event.workspace_id).await? {
+		return match scope.generation(id, event.thread_id).await? {
 			Some(job) => scope.generation_visible(&job).await,
 			None => Ok(false),
 		};
@@ -246,7 +246,7 @@ pub async fn event_visible_in(
 		else {
 			return Ok(false);
 		};
-		let Some(conversation) = scope.conversation(id, event.workspace_id).await? else {
+		let Some(conversation) = scope.conversation(id, event.thread_id).await? else {
 			return Ok(false);
 		};
 		let resource = scope.conversation_resource(&conversation).await?;
@@ -259,7 +259,7 @@ pub async fn event_visible_in(
 		else {
 			return Ok(false);
 		};
-		let Some(request) = scope.human(id, event.workspace_id).await? else {
+		let Some(request) = scope.human(id, event.thread_id).await? else {
 			return Ok(false);
 		};
 		if !scope.human_visible(&request).await? {
@@ -267,14 +267,14 @@ pub async fn event_visible_in(
 		}
 	}
 	let candidate = event.data.get("run_id").or_else(|| {
-		(event.kind == "run.created")
+		(event.kind == "execution.created")
 			.then(|| event.data.get("id"))
 			.flatten()
 	});
 	if candidate.is_none() {
 		return Ok(matches!(
 			event.kind.as_str(),
-			"workspace.created" | "workspace.updated"
+			"thread.created" | "thread.updated"
 		));
 	}
 	let Some(id) = candidate
@@ -283,17 +283,17 @@ pub async fn event_visible_in(
 	else {
 		return Ok(false);
 	};
-	if let Some(visible) = runs.get(id, event.workspace_id) {
+	if let Some(visible) = runs.get(id, event.thread_id) {
 		return Ok(visible);
 	}
-	let visible = match scope.run(id, event.workspace_id).await? {
+	let visible = match scope.run(id, event.thread_id).await? {
 		Some(run) => scope.run_visible(&run).await?,
 		None => false,
 	};
 	// A refusal reached while a Node did not answer may be that Node's silence,
 	// so it is checked again for the next event and counted with it (#770).
 	if visible || scope.row_silence().is_none() {
-		runs.remember(id, event.workspace_id, visible);
+		runs.remember(id, event.thread_id, visible);
 	}
 	Ok(visible)
 }

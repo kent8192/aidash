@@ -22,7 +22,7 @@ fn conversation() -> Candidate {
 		scratch_space_id: uuid::Uuid::nil(),
 		created_by: "subject".into(),
 		id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		target: "agent@1".into(),
 		target_kind: "agent".into(),
 		created_at: chrono::Utc::now(),
@@ -34,7 +34,7 @@ impl GraphVisibility for Scope {
 		self.trace.push(action.into());
 		Ok(self.permitted)
 	}
-	async fn workspace(&mut self, _: Uuid, action: &str) -> Result<bool> {
+	async fn thread(&mut self, _: Uuid, action: &str) -> Result<bool> {
 		self.trace.push(action.into());
 		Ok(self.permitted)
 	}
@@ -50,23 +50,23 @@ impl GraphVisibility for Scope {
 
 #[rstest]
 #[tokio::test]
-async fn denied_workspace_cannot_disclose_conversation_resources(
+async fn denied_thread_cannot_disclose_conversation_resources(
 	mut scope: Scope,
 	conversation: Candidate,
 ) {
 	assert!(!visible(&mut scope, &conversation).await.unwrap());
-	assert_eq!(scope.trace, ["workspace.read"]);
+	assert_eq!(scope.trace, ["thread.read"]);
 }
 
 #[rstest]
 #[tokio::test]
-async fn subject_requires_workspace_before_conversation_permission(
+async fn subject_requires_thread_before_conversation_permission(
 	mut scope: Scope,
 	conversation: Candidate,
 ) {
 	scope.permitted = true;
 	assert!(visible(&mut scope, &conversation).await.unwrap());
-	assert_eq!(scope.trace, ["workspace.read", "conversation.read"]);
+	assert_eq!(scope.trace, ["thread.read", "conversation.read"]);
 }
 
 #[rstest]

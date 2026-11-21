@@ -20,7 +20,7 @@ pub(crate) async fn reindex(
 	units::authorize(lease, &input.bank, "memory.read").await?;
 	let index = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
-		input.bank.workspace,
+		input.bank.thread,
 		true,
 	)
 	.await?
@@ -69,7 +69,7 @@ pub(crate) async fn reindex(
 		let evidence: Vec<Evidence> = receipt.try_get("outcome")?;
 		units::current(
 			lease,
-			input.bank.workspace,
+			input.bank.thread,
 			&evidence,
 			policy.bounds.max_graph_visits,
 		)
@@ -212,7 +212,7 @@ pub(crate) async fn inspect(
 			units::unexpired(lease, &unit).await?;
 			units::current(
 				lease,
-				bank.workspace,
+				bank.thread,
 				&unit.content.evidence,
 				policy.bounds.max_graph_visits,
 			)
@@ -345,7 +345,7 @@ pub(crate) async fn history(
 		} else {
 			match units::current(
 				lease,
-				bank.workspace,
+				bank.thread,
 				&content.evidence,
 				policy.bounds.max_graph_visits,
 			)

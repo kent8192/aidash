@@ -193,7 +193,7 @@ async fn explicit_connection_request_waits_under_dont_ask_and_returns_the_answer
 	let id = Uuid::now_v7();
 	*state.human.lock().unwrap() = Some(HumanRequest {
 		id,
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: CONNECTION_REQUEST_KIND.into(),
 		prompt:
@@ -387,7 +387,7 @@ async fn a_successful_connection_shaped_body_clears_a_prior_refusal_without_wait
 			.lock()
 			.unwrap()
 			.iter()
-			.any(|(event, saved)| event == "run.mcp_checkpoint"
+			.any(|(event, saved)| event == "execution.mcp_checkpoint"
 				&& saved.recovery.connection_refusals.is_empty()),
 		"real success must clear durably before its result is journaled"
 	);
@@ -488,7 +488,7 @@ async fn a_connection_success_checkpoint_failure_does_not_journal_the_result(mut
 	tool.connection_errors.lock().unwrap().clear();
 	*tool.outputs.lock().unwrap() = [json!({"ok":true})].into();
 	seed_refusal(&mut fixture.run);
-	*fixture.backend.0.failing_save.lock().unwrap() = Some("run.mcp_checkpoint");
+	*fixture.backend.0.failing_save.lock().unwrap() = Some("execution.mcp_checkpoint");
 	let error = advance_sources(&mut fixture).await.unwrap_err();
 	assert!(matches!(error, Error::External(ref message) if message == "save failed"));
 	assert_eq!(tool.invocations(), 1);

@@ -1,4 +1,4 @@
-//! Built-in workspace observation is a required bounded Source, like workspace_read.
+//! Built-in thread observation is a required bounded Source, like workspace_read.
 use super::*;
 pub const WORKSPACE_OBSERVATION_ID: &str = "aidash.workspace-observation";
 pub const WORKSPACE_OBSERVATION_VERSION: &str = "1.0.0";
@@ -17,7 +17,7 @@ pub(super) fn add_workspace_observation(
 	if let Some(binding) = bindings.iter_mut().find(|b| b.binding.target == target) {
 		if binding.binding.kind != BindingKind::Source {
 			return Err(Error::Invalid(
-				"workspace observation must be bound as a Source".into(),
+				"thread observation must be bound as a Source".into(),
 			));
 		}
 		binding.origin = BindingOrigin::Required;
@@ -43,10 +43,10 @@ pub fn workspace_observation() -> Result<Entry> {
 		id: WORKSPACE_OBSERVATION_ID.into(),
 		version: WORKSPACE_OBSERVATION_VERSION.into(),
 		kind: "source".into(),
-		name: [("en".into(), "Workspace observation".into())].into(),
+		name: [("en".into(), "Thread observation".into())].into(),
 		description: [(
 			"en".into(),
-			"Bounded authorized workspace state at the current inference boundary".into(),
+			"Bounded authorized thread state at the current inference boundary".into(),
 		)]
 		.into(),
 		capabilities: vec![],

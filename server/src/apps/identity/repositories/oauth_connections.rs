@@ -458,7 +458,7 @@ pub async fn answer_pending(
 			crate::apps::execution::models::event_records::append_run(
 				tx.as_mut(),
 				grant.run_id,
-				Some(grant.workspace_id),
+				Some(grant.thread_id),
 				"human.answered",
 				QueryRow::from_backend_row(answered).data,
 			)

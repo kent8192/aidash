@@ -32,28 +32,23 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 	let fixture = event_bus.await;
 	let store = &fixture.app.runtime.store;
 	let scope = acme(&fixture).await;
-	// A Subject replays only the events of Workspaces it may read (#484), so
-	// the events are Workspace events of the Tenant. Creating the Workspace
+	// A Subject replays only the events of Threads it may read (#484), so
+	// the events are Thread events of the Tenant. Creating the Thread
 	// emits a first event of its own.
 	let (member, _) = endpoint::tenant_member(&fixture.app).await;
-	let selected = endpoint::workspace(&member, "Event bus replay").await;
-	let workspace = uuid::Uuid::parse_str(selected["id"].as_str().unwrap()).unwrap();
+	let selected = endpoint::thread(&member, "Event bus replay").await;
+	let thread = uuid::Uuid::parse_str(selected["id"].as_str().unwrap()).unwrap();
 	let large = store
 		.emit(
 			&scope,
-			Some(workspace),
-			"workspace.updated",
+			Some(thread),
+			"thread.updated",
 			json!({"text":"x".repeat(2_000_000)}),
 		)
 		.await
 		.unwrap();
 	let small = store
-		.emit(
-			&scope,
-			Some(workspace),
-			"workspace.updated",
-			json!({"ok":true}),
-		)
+		.emit(&scope, Some(thread), "thread.updated", json!({"ok":true}))
 		.await
 		.unwrap();
 	// Act
@@ -86,7 +81,7 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 		} else if envelope["id"] == small.id.to_string() {
 			assert_eq!(envelope["data"], small.data);
 		} else {
-			// The Workspace's own event, published before the two above.
+			// The Thread's own event, published before the two above.
 			assert!(envelope["id"].is_string());
 		}
 	}

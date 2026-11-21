@@ -23,13 +23,13 @@ impl ReadJournalScope for Reads<'_> {
 	}
 	async fn legacy_messages(
 		&mut self,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		sender: Option<&str>,
 		content: Option<&str>,
 	) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
 			let ids: Vec<Uuid> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = sender;
 				let query_bind_3 = content;
 				crate::database::native::query_scalar(
@@ -40,7 +40,7 @@ impl ReadJournalScope for Reads<'_> {
 							Condition::all()
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -76,12 +76,12 @@ impl ReadJournalScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn runs_in_workspace(&mut self, workspace: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>> {
+	async fn runs_in_thread(&mut self, thread: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
-				.from(Alias::new("runs"))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.from(Alias::new("task_executions"))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.and_where(Expr::col("id").is_in(runs.iter().copied().map(Expr::value)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -92,7 +92,7 @@ impl ReadJournalScope for Reads<'_> {
 	async fn record_sources(
 		&mut self,
 		membership: ReadMembership,
-		workspace: Uuid,
+		thread: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
 		let result: NativeResult<()> = async {
@@ -103,16 +103,10 @@ impl ReadJournalScope for Reads<'_> {
 					.await?,
 			);
 			if let ReadMembership::RemoteGrant(scope) = membership {
-				AuthorizationRemoteGrantRead::record_sources(
-					tx.as_mut(),
-					scope,
-					workspace,
-					sources,
-				)
-				.await?;
-			} else if let ReadMembership::Run(scope) = membership {
-				AuthorizationRunRead::record_sources(tx.as_mut(), scope, workspace, sources)
+				AuthorizationRemoteGrantRead::record_sources(tx.as_mut(), scope, thread, sources)
 					.await?;
+			} else if let ReadMembership::Run(scope) = membership {
+				AuthorizationRunRead::record_sources(tx.as_mut(), scope, thread, sources).await?;
 			}
 			tx.commit().await?;
 			Ok(())
@@ -182,14 +176,14 @@ impl GrantJournalScope for Reads<'_> {
 	}
 	async fn source_visible(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 		pending: &mut Vec<Uuid>,
 	) -> Result<bool> {
 		Box::pin(
 			aidash_application::authorization::visibility::provenance::source_visible(
-				self, workspace, kind, id, pending,
+				self, thread, kind, id, pending,
 			),
 		)
 		.await
@@ -206,9 +200,7 @@ impl GrantJournalScope for Reads<'_> {
 				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::Alias::new(
-								"workspace_id",
-							)),
+							reinhardt::query::Expr::col(reinhardt::query::Alias::new("thread_id")),
 						))
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new(
@@ -241,7 +233,7 @@ impl GrantJournalScope for Reads<'_> {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.columns(&["workspace_id", "resource_kind", "resource_id"])
+				.columns(&["thread_id", "resource_kind", "resource_id"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};

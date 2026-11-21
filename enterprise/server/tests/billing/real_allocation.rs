@@ -898,8 +898,8 @@ impl Dispatch {
 			&d.app,
 			&token,
 			"POST",
-			"/api/workspaces",
-			json!({"title":"Allocation","goal":"Exercise real runtime","node":node.node}),
+			"/api/threads",
+			json!({"title":"Allocation","node":node.node}),
 		)
 		.await;
 		assert_eq!(status, 200);
@@ -907,10 +907,7 @@ impl Dispatch {
 			&d.app,
 			&token,
 			"POST",
-			&format!(
-				"/api/workspaces/{}/tasks",
-				workspace["id"].as_str().unwrap()
-			),
+			&format!("/api/threads/{}/tasks", workspace["id"].as_str().unwrap()),
 			json!({"title":"Allocation","description":"Native capability dispatch"}),
 		)
 		.await;
@@ -947,7 +944,7 @@ impl Dispatch {
 			&d.app,
 			&self.token,
 			"POST",
-			&format!("/api/runs/{}/{kind}", self.run.id),
+			&format!("/api/executions/{}/{kind}", self.run.id),
 			input,
 		)
 		.await;
@@ -971,7 +968,7 @@ impl Dispatch {
 					&d.app,
 					&self.token,
 					"POST",
-					&format!("/api/runs/{}/{kind}/poll", self.run.id),
+					&format!("/api/executions/{}/{kind}/poll", self.run.id),
 					json!({"operation_id":id}),
 				)
 				.await;
@@ -1422,7 +1419,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		&d.app,
 		&dispatch.token,
 		"POST",
-		&format!("/api/runs/{}/shell/poll", dispatch.run.id),
+		&format!("/api/executions/{}/shell/poll", dispatch.run.id),
 		json!({"operation_id":authority_id}),
 	)
 	.await;
@@ -1499,7 +1496,7 @@ async fn actual_allocation_receipts_reach_frozen_usage_before_independent_ack(
 		.call(
 			&alice,
 			"POST",
-			&format!("/api/runs/{}/control", dispatch.run.id),
+			&format!("/api/executions/{}/control", dispatch.run.id),
 			Some(&dispatch.context),
 			json!({"action":"cancel"}),
 		)

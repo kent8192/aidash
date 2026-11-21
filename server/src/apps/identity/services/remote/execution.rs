@@ -1,5 +1,5 @@
 //! Source-side activation and command journal for subject-scoped remote work.
-//! Receiver admissions never enter the legacy offer/workspace authority path.
+//! Receiver admissions never enter the legacy offer/thread authority path.
 #[path = "execution/commands.rs"]
 pub(crate) mod commands;
 #[path = "execution/deliveries.rs"]

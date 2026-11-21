@@ -1,6 +1,6 @@
 //! The calls of remote Runs that wait for an answer about a Federation tool list (ADR 0139), and
 //! the tools one side allowed for one Run only. Every statement runs in the Tenant's scope.
-use super::remote_grants::{run_live, unexpired};
+use super::remote_grants::{live_condition, run_live};
 use crate::Result;
 use aidash_domain::federation::tool_lists::{ToolAsk, ToolList, ToolPattern, receiver_may_answer};
 use aidash_domain::nodes::NodeAddress;
@@ -61,7 +61,7 @@ fn receiver_asks_query(tenant: &str, node: &str, source: &NodeAddress) -> Select
 		.column(Alias::new("id"))
 		.column(Alias::new("updated_at"))
 		.expr_as(paused_call(), Alias::new("paused_call"))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col(Alias::new("control")).eq("PAUSED"))
 		.and_where(Expr::col(Alias::new("control_source")).eq(ControlSource::System.as_str()))
 		.and_where(
@@ -217,7 +217,7 @@ pub(crate) async fn lock_receiver_ask(
 			.column(Alias::new("control"))
 			.column(Alias::new("control_source"))
 			.expr_as(paused_call(), Alias::new("paused_call"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
@@ -263,7 +263,7 @@ fn home_grants_query(
 		.and_where(Expr::col(Alias::new("tenant")).eq(tenant))
 		.and_where(Expr::col(Alias::new("node")).eq(node))
 		.and_where(Expr::col(Alias::new("node_id")).eq(receiver.to_string()))
-		.and_where(unexpired())
+		.and_where(live_condition("authorization_remote_grants"))
 		.and_where(run_live())
 		.order_by(Alias::new("expires_at"), Order::Asc)
 		.order_by(Alias::new("id"), Order::Asc)
@@ -383,7 +383,7 @@ mod tests {
 		assert_eq!(
 			sql,
 			"SELECT \"id\", \"updated_at\", \"pending\" -> 'recovery' -> 'paused_call' AS \"paused_call\" \
-			FROM \"runs\" WHERE \"control\" = 'PAUSED' AND \"control_source\" = 'system' \
+			FROM \"task_executions\" WHERE \"control\" = 'PAUSED' AND \"control_source\" = 'system' \
 			AND \"pending\" -> 'recovery' -> 'paused_call' -> 'ask' -> 'lacking' ->> 'receiver' = 'true' \
 			AND \"id\" IN (SELECT \"id\" FROM \"authorization_remote_admissions\" \
 			WHERE \"tenant\" = 'acme' AND \"node\" = 'default' \
@@ -392,8 +392,10 @@ mod tests {
 		);
 	}
 
-	/// The raw `tenant = ? AND node = ? AND node_id = ? AND NOT revoked AND expires_at >
-	/// CLOCK_TIMESTAMP()`, narrowed to grants whose Run lives and ordered by expiry.
+	/// `tenant = ? AND node = ? AND node_id = ?`, the Home's one liveness rule
+	/// (`live_condition`) instead of the lifetime alone, and a Run that lives:
+	/// bound, its activation recorded, its Task held by the receiver, started and
+	/// not ended. Ordered by expiry.
 	#[test]
 	fn home_grants_are_built_without_raw_sql_and_only_of_live_runs() {
 		let sql = home_grants_query("acme", "default", &source(), Some(Uuid::nil()))
@@ -403,11 +405,24 @@ mod tests {
 			"SELECT \"id\", \"task_id\" FROM \"authorization_remote_grants\" \
 			WHERE \"tenant\" = 'acme' AND \"node\" = 'default' \
 			AND \"node_id\" = 'aidash://calm-heron/able-oak-abcd1234' \
-			AND NOT \"revoked\" AND \"expires_at\" > CLOCK_TIMESTAMP() \
+			AND NOT \"authorization_remote_grants\".\"revoked\" \
+			AND (\"authorization_remote_grants\".\"expires_at\" > CLOCK_TIMESTAMP() \
+			OR EXISTS (SELECT TRUE FROM \"authorization_remote_execution\" AS \"live_binding\" \
+			INNER JOIN \"tasks\" AS \"live_task\" ON \"live_task\".\"id\" = \"live_binding\".\"task_id\" \
+			AND \"live_task\".\"tenant\" = \"live_binding\".\"tenant\" \
+			WHERE \"live_binding\".\"grant_id\" = \"authorization_remote_grants\".\"id\" \
+			AND \"live_binding\".\"task_id\" = \"authorization_remote_grants\".\"task_id\" \
+			AND \"live_binding\".\"activated_at\" IS NOT NULL \
+			AND array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
+			= ANY(array_positions(\"authorization_remote_grants\".\"subject_chain\", \"live_task\".\"owner\")) \
+			AND \"live_task\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED'))) \
 			AND EXISTS (SELECT TRUE FROM \"authorization_remote_execution\" AS \"b\" \
 			INNER JOIN \"tasks\" AS \"t\" ON \"t\".\"id\" = \"b\".\"task_id\" \
 			AND \"t\".\"revision\" = \"b\".\"task_revision\" \
 			WHERE \"b\".\"grant_id\" = \"authorization_remote_grants\".\"id\" \
+			AND \"b\".\"activated_at\" IS NOT NULL \
+			AND array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
+			= ANY(array_positions(\"authorization_remote_grants\".\"subject_chain\", \"t\".\"owner\")) \
 			AND \"t\".\"status\" NOT IN ('OPEN', 'COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED')) \
 			AND \"id\" = '00000000-0000-0000-0000-000000000000' \
 			ORDER BY \"expires_at\" ASC, \"id\" ASC LIMIT 100"

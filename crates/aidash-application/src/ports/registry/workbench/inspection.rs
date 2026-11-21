@@ -27,10 +27,10 @@ pub trait InspectionScope: Send {
 		reference: &EntityRef,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<RunMetadata>>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
-	async fn workspace_title(&mut self, id: Uuid) -> Result<Option<String>>;
+	async fn thread_title(&mut self, id: Uuid) -> Result<Option<String>>;
 	/// Preserve the existing one-registration source bound and order.
 	async fn registrations(&mut self, reference: &EntityRef) -> Result<Vec<Registration>>;
 	async fn draft(&mut self, id: Uuid) -> Result<Draft>;

@@ -187,13 +187,13 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 			| Action::Jobs { .. }
 			| Action::Usage { .. }
 	) {
-		let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
+		let mut lease = Lease::begin(store, actor, input.bank.thread).await?;
 		let result = operate_in(store, &mut lease, input, None).await;
 		return lease.finish(result).await;
 	}
 	// Establish the empty bank before the independently committed model ledger
 	// can reference it. No source knowledge is admitted by this initialization.
-	let mut initialization = Lease::begin(store, actor, input.bank.workspace).await?;
+	let mut initialization = Lease::begin(store, actor, input.bank.thread).await?;
 	let initialized = async {
 		if matches!(
 			input.action,
@@ -201,7 +201,7 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 		) {
 			super::super::repositories::candidates::human(&mut initialization)?;
 		}
-		repository::lock_workspace(&mut initialization, input.bank.workspace, true).await?;
+		repository::lock_thread(&mut initialization, input.bank.thread, true).await?;
 		scope_for_operation(
 			store,
 			&mut initialization,
@@ -243,7 +243,7 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 	}
 	.await;
 	initialization.finish(initialized).await?;
-	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
+	let mut lease = Lease::begin(store, actor, input.bank.thread).await?;
 	let result = operate_in(store, &mut lease, input, None).await;
 	lease.finish(result).await
 }
@@ -279,7 +279,7 @@ async fn retry_cycle(lease: &mut Lease<'_>, run: Option<Uuid>) -> Result<i32> {
 	native::query_scalar(
 		&Query::select()
 			.column(Alias::new("semantic_retry_cycle"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -297,7 +297,7 @@ pub(crate) async fn operate_staged(
 ) -> Result<Outcome> {
 	use super::super::repositories::{candidates, memory_scope::Scope, publications};
 	use aidash_application::ports::memory::MemoryScope;
-	repository::lock_workspace(lease, input.bank.workspace, input.action.writes()).await?;
+	repository::lock_thread(lease, input.bank.thread, input.action.writes()).await?;
 	scope_for_operation(
 		store,
 		lease,
@@ -481,20 +481,20 @@ pub(crate) async fn operate_staged(
 		_ => run,
 	};
 	// Tenant widening (#852 decision 6) lets a Run's model roles serve another
-	// Workspace's built-in bank only to recall from it, never to change it.
+	// Thread's built-in bank only to recall from it, never to change it.
 	if let Some(id) = model_run
 		&& !matches!(input.action, Action::Recall { .. })
 	{
-		let workspace: Uuid = native::query_scalar(
+		let thread: Uuid = native::query_scalar(
 			&Query::select()
-				.column(Alias::new("workspace_id"))
-				.from(Alias::new("runs"))
+				.column(Alias::new("thread_id"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **lease.tx())
 		.await?;
-		if workspace != input.bank.workspace {
+		if thread != input.bank.thread {
 			return Err(Error::Forbidden);
 		}
 	}
@@ -605,8 +605,8 @@ pub(crate) async fn run_mutate(
 	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
-	// Before `lock_workspace`, so `subnodes` is locked before `workspaces`.
-	crate::apps::execution::repositories::subnodes::require_writable(lease.tx(), run.workspace_id)
+	// Before `lock_thread`, so `subnodes` is locked before `threads`.
+	crate::apps::execution::repositories::subnodes::require_writable(lease.tx(), run.thread_id)
 		.await?;
 	let binding = super::super::repositories::bindings::for_run(store, lease, run)
 		.await?
@@ -617,13 +617,13 @@ pub(crate) async fn run_mutate(
 		bank: binding.bank,
 		changes: changes.to_vec(),
 	};
-	repository::lock_workspace(lease, run.workspace_id, true).await?;
+	repository::lock_thread(lease, run.thread_id, true).await?;
 	scope(store, lease, &mutation.bank, "memory.write").await?;
 	bank_provider(lease, &mutation.bank, &mutation.provider).await?;
 	let policy = policy(lease, &mutation.bank.tenant, &mutation.provider).await?;
 	// Model tools may only change content with their provider's non-attesting
 	// status. Check targets under the
-	// same Workspace mutation lock as CAS; supplied replacement content cannot
+	// same Thread mutation lock as CAS; supplied replacement content cannot
 	// downgrade an existing human verification or bypass it through deletion.
 	let model_status = if mutation.provider.id
 		== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
@@ -702,7 +702,7 @@ pub(crate) async fn run_recall(
 }
 
 /// Search once at Run start. Tenant widening considers only this Agent's
-/// provenance in other authorized Workspaces, and refuses an unbounded scan.
+/// provenance in other authorized Threads, and refuses an unbounded scan.
 pub(crate) async fn run_start_recall(
 	store: &Store,
 	lease: &mut Lease<'_>,
@@ -733,7 +733,7 @@ async fn run_shared_recall(
 		let rows = native::query(
 			&Query::select()
 				.columns(
-					["home", "tenant", "workspace_id", "participant_id"]
+					["home", "tenant", "thread_id", "participant_id"]
 						.map(|name| (Alias::new("b"), Alias::new(name))),
 				)
 				.from_as(Alias::new("memory_banks"), Alias::new("b"))
@@ -742,7 +742,7 @@ async fn run_shared_recall(
 					Expr::col(("memory_bank_settings", "bank_id")).equals(("b", "id")),
 				)
 				.and_where(Expr::col(("b", "tenant")).eq(binding.bank.tenant.as_str()))
-				.and_where(Expr::col(("b", "workspace_id")).ne(Expr::value(run.workspace_id)))
+				.and_where(Expr::col(("b", "thread_id")).ne(Expr::value(run.thread_id)))
 				.and_where(
 					Expr::col(("memory_bank_settings", "provider_id"))
 						.eq(aidash_domain::registry::bindings::memory_defaults::MEMORY_ID),
@@ -769,21 +769,21 @@ async fn run_shared_recall(
 			banks.push(Bank {
 				home: row.try_get("home")?,
 				tenant: row.try_get("tenant")?,
-				workspace: row.try_get("workspace_id")?,
+				thread: row.try_get("thread_id")?,
 				participant: row.try_get("participant_id")?,
 			});
 		}
 	}
 	let mut selected = Vec::new();
 	for bank in banks {
-		let foreign = bank.workspace != run.workspace_id;
+		let foreign = bank.thread != run.thread_id;
 		let mut delivered = Vec::new();
 		let operation = Operation {
 			operation_id: request_id(
 				run.id,
 				&format!(
 					"builtin-recall:{key}:{}:{:?}",
-					bank.workspace, bank.participant
+					bank.thread, bank.participant
 				),
 			)?,
 			provider: binding.provider.clone(),
@@ -887,7 +887,7 @@ async fn hydrate_unit(
 	let foreign = bank != &binding.bank;
 	if foreign {
 		if bank.tenant != binding.bank.tenant
-			|| bank.workspace == run.workspace_id
+			|| bank.thread == run.thread_id
 			|| super::super::repositories::sharing::get(&mut **lease.tx(), &bank.tenant)
 				.await?
 				.0 != SharingScope::TenantAgent
@@ -917,7 +917,7 @@ async fn hydrate_unit(
 	units::unexpired(lease, &unit).await?;
 	units::current_for_run(
 		lease,
-		bank.workspace,
+		bank.thread,
 		&unit.content.evidence,
 		policy.bounds.max_graph_visits,
 		Some(run.id),
@@ -1010,17 +1010,15 @@ async fn scope_inner(
 	}
 	let node: Option<String> = native::query_scalar(
 		&Query::select()
-			.column(("workspaces", "node"))
-			.from(Alias::new("authorization_workspaces"))
+			.column(("threads", "node"))
+			.from(Alias::new("authorization_threads"))
 			.inner_join(
-				Alias::new("workspaces"),
-				Expr::col(("authorization_workspaces", "workspace_id"))
-					.equals(("workspaces", "id")),
+				Alias::new("threads"),
+				Expr::col(("authorization_threads", "thread_id")).equals(("threads", "id")),
 			)
-			.and_where(Expr::col(("workspaces", "id")).eq(Expr::value(bank.workspace)))
+			.and_where(Expr::col(("threads", "id")).eq(Expr::value(bank.thread)))
 			.and_where(
-				Expr::col(("authorization_workspaces", "tenant"))
-					.eq(Expr::value(bank.tenant.clone())),
+				Expr::col(("authorization_threads", "tenant")).eq(Expr::value(bank.tenant.clone())),
 			)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -1095,9 +1093,9 @@ pub(crate) async fn bank_provider(
 	Ok(())
 }
 pub async fn mutate(store: &Store, actor: &Actor, mutation: Mutation) -> Result<Vec<Unit>> {
-	let mut lease = Lease::begin(store, actor, mutation.bank.workspace).await?;
+	let mut lease = Lease::begin(store, actor, mutation.bank.thread).await?;
 	let result = async {
-		repository::lock_workspace(&mut lease, mutation.bank.workspace, true).await?;
+		repository::lock_thread(&mut lease, mutation.bank.thread, true).await?;
 		scope(store, &mut lease, &mutation.bank, "memory.write").await?;
 		bank_provider(&mut lease, &mutation.bank, &mutation.provider).await?;
 		let policy = policy(&mut lease, &mutation.bank.tenant, &mutation.provider).await?;
@@ -1161,7 +1159,7 @@ pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<U
 
 /// The units a reader may see, and those a silent Node left out (#770).
 pub async fn list_counted(store: &Store, actor: &Actor, input: ReadBank) -> Result<UnitList> {
-	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
+	let mut lease = Lease::begin(store, actor, input.bank.thread).await?;
 	lease.lists();
 	let result = async {
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
@@ -1197,9 +1195,9 @@ pub async fn upgrade_participant(
 	let id = bank
 		.participant
 		.ok_or_else(|| Error::Invalid("shared memory has no Agent participant".into()))?;
-	let mut lease = Lease::begin(store, actor, bank.workspace).await?;
+	let mut lease = Lease::begin(store, actor, bank.thread).await?;
 	let result = async {
-		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
+		repository::lock_thread(&mut lease, bank.thread, true).await?;
 		scope(store, &mut lease, &bank, "memory.participant.manage").await?;
 		let accepted = definition(&mut lease, &bank.tenant, &input.agent, "agent").await?;
 		let configuration = super::super::repositories::bindings::configuration(
@@ -1272,20 +1270,18 @@ pub async fn upgrade_participant(
 pub async fn create_participant(
 	store: &Store,
 	actor: &Actor,
-	workspace: Uuid,
+	thread: Uuid,
 	input: CreateParticipant,
 ) -> Result<Participant> {
-	let mut lease = Lease::begin(store, actor, workspace).await?;
+	let mut lease = Lease::begin(store, actor, thread).await?;
 	let result = async {
-		repository::lock_workspace(&mut lease, workspace, true).await?;
-		lease
-			.workspace(workspace, "memory.participant.manage")
-			.await?;
+		repository::lock_thread(&mut lease, thread, true).await?;
+		lease.thread(thread, "memory.participant.manage").await?;
 		let tenant: String = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
-				.from(Alias::new("authorization_workspaces"))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.from(Alias::new("authorization_threads"))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **lease.tx())
@@ -1293,8 +1289,8 @@ pub async fn create_participant(
 		let node: String = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col("id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **lease.tx())
@@ -1315,7 +1311,7 @@ pub async fn create_participant(
 		let bank = Bank {
 			home: format!("{}/{node}", store.deployment),
 			tenant,
-			workspace,
+			thread,
 			participant: Some(id),
 		};
 		bank.validate()?;
@@ -1327,7 +1323,7 @@ pub async fn create_participant(
 						"id",
 						"home",
 						"tenant",
-						"workspace_id",
+						"thread_id",
 						"principal",
 						"agent_id",
 						"agent_version",
@@ -1341,7 +1337,7 @@ pub async fn create_participant(
 						.expr(Expr::value(id))
 						.expr(Expr::value(&bank.home))
 						.expr(Expr::value(&bank.tenant))
-						.expr(Expr::value(workspace))
+						.expr(Expr::value(thread))
 						.expr(Expr::value(principal))
 						.expr(Expr::value(&input.agent.id))
 						.expr(Expr::value(&input.agent.version))
@@ -1369,13 +1365,8 @@ pub async fn create_participant(
 }
 
 impl NativeMemory {
-	pub async fn operate(
-		&self,
-		actor: Actor,
-		workspace: Uuid,
-		input: Operation,
-	) -> Result<Outcome> {
-		if input.bank.workspace != workspace {
+	pub async fn operate(&self, actor: Actor, thread: Uuid, input: Operation) -> Result<Outcome> {
+		if input.bank.thread != thread {
 			return Err(Error::Forbidden);
 		}
 		operate(&self.runtime.store, &actor, input).await
@@ -1383,15 +1374,15 @@ impl NativeMemory {
 	pub async fn upgrade(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		participant: Uuid,
 		input: UpgradeParticipant,
 	) -> Result<Participant> {
-		let mut lease = Lease::begin(&self.runtime.store, &actor, workspace).await?;
+		let mut lease = Lease::begin(&self.runtime.store, &actor, thread).await?;
 		let found = async {
 			let row = native::query(
 				&Query::select()
-					.columns(["home", "tenant", "workspace_id"].map(Alias::new))
+					.columns(["home", "tenant", "thread_id"].map(Alias::new))
 					.from(Alias::new("memory_participants"))
 					.and_where(Expr::col("id").eq(Expr::value(participant)))
 					.to_string(PostgresQueryBuilder),
@@ -1402,10 +1393,10 @@ impl NativeMemory {
 			let bank = Bank {
 				home: row.try_get("home")?,
 				tenant: row.try_get("tenant")?,
-				workspace: row.try_get("workspace_id")?,
+				thread: row.try_get("thread_id")?,
 				participant: Some(participant),
 			};
-			if bank.workspace != workspace {
+			if bank.thread != thread {
 				return Err(Error::Forbidden);
 			}
 			Ok(bank)
@@ -1417,10 +1408,10 @@ impl NativeMemory {
 	pub async fn mutate(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		input: Mutation,
 	) -> Result<Vec<aidash_domain::memory::Mutated>> {
-		if input.bank.workspace != workspace {
+		if input.bank.thread != thread {
 			return Err(Error::Forbidden);
 		}
 		let changes = input.changes.clone();
@@ -1430,16 +1421,16 @@ impl NativeMemory {
 	pub async fn impact(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		input: impact::ImpactQuery,
 	) -> Result<impact::Impact> {
-		if input.bank.workspace != workspace {
+		if input.bank.thread != thread {
 			return Err(Error::Forbidden);
 		}
 		super::memory_impact::impact(&self.runtime.store, &actor, input).await
 	}
-	pub async fn list(&self, actor: Actor, workspace: Uuid, input: ReadBank) -> Result<UnitList> {
-		if input.bank.workspace != workspace {
+	pub async fn list(&self, actor: Actor, thread: Uuid, input: ReadBank) -> Result<UnitList> {
+		if input.bank.thread != thread {
 			return Err(Error::Forbidden);
 		}
 		list_counted(&self.runtime.store, &actor, input).await
@@ -1447,10 +1438,10 @@ impl NativeMemory {
 	pub async fn participant(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		input: CreateParticipant,
 	) -> Result<Participant> {
-		create_participant(&self.runtime.store, &actor, workspace, input).await
+		create_participant(&self.runtime.store, &actor, thread, input).await
 	}
 }
 
@@ -1476,18 +1467,18 @@ pub struct TaskAssignment {
 pub async fn task_assignment(
 	store: &Store,
 	actor: &Actor,
-	workspace: Uuid,
+	thread: Uuid,
 	task: Uuid,
 ) -> Result<TaskAssignment> {
-	let mut lease = Lease::begin(store, actor, workspace).await?;
+	let mut lease = Lease::begin(store, actor, thread).await?;
 	let result = async {
-		lease.workspace(workspace, "workspace.read").await?;
+		lease.thread(thread, "thread.read").await?;
 		let record: crate::domain::Task = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
 				.from(Alias::new("tasks"))
 				.and_where(Expr::col("id").eq(Expr::value(task)))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.lock(reinhardt::query::LockType::Share)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -1518,7 +1509,7 @@ pub async fn task_assignment(
 		if let Some(assigned) = &participant {
 			let row = native::query(
 				&Query::select()
-					.columns(["home", "tenant", "workspace_id"].map(Alias::new))
+					.columns(["home", "tenant", "thread_id"].map(Alias::new))
 					.from(Alias::new("memory_participants"))
 					.and_where(Expr::col("id").eq(Expr::value(assigned.participant_id)))
 					.to_string(PostgresQueryBuilder),
@@ -1531,7 +1522,7 @@ pub async fn task_assignment(
 				&Bank {
 					home: row.try_get("home")?,
 					tenant: row.try_get("tenant")?,
-					workspace: row.try_get("workspace_id")?,
+					thread: row.try_get("thread_id")?,
 					participant: Some(assigned.participant_id),
 				},
 				"memory.read",
@@ -1555,12 +1546,12 @@ pub struct ParticipantPage {
 pub async fn participants(
 	store: &Store,
 	actor: &Actor,
-	workspace: Uuid,
+	thread: Uuid,
 	after: Option<Uuid>,
 ) -> Result<ParticipantPage> {
-	let mut lease = Lease::begin(store, actor, workspace).await?;
+	let mut lease = Lease::begin(store, actor, thread).await?;
 	let result = async {
-		lease.workspace(workspace, "workspace.read").await?;
+		lease.thread(thread, "thread.read").await?;
 		let mut query = Query::select();
 		query
 			.column(reinhardt::query::ColumnRef::Asterisk)
@@ -1569,7 +1560,7 @@ pub async fn participants(
 				"home",
 				store.deployment.as_str(),
 			))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("deleted").eq(false))
 			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 			.limit(101);
@@ -1590,7 +1581,7 @@ pub async fn participants(
 			let bank = Bank {
 				home: row.try_get("home")?,
 				tenant: row.try_get("tenant")?,
-				workspace,
+				thread,
 				participant: Some(id),
 			};
 			match scope(store, &mut lease, &bank, "memory.read").await {
@@ -1616,23 +1607,21 @@ pub async fn participants(
 pub async fn assign_participant(
 	store: &Store,
 	actor: &Actor,
-	workspace: Uuid,
+	thread: Uuid,
 	task: Uuid,
 	input: AssignmentChange,
 ) -> Result<Option<AssignedParticipant>> {
-	let mut lease = Lease::begin(store, actor, workspace).await?;
+	let mut lease = Lease::begin(store, actor, thread).await?;
 	let result = async {
 		super::super::repositories::candidates::human(&mut lease)?;
-		repository::lock_workspace(&mut lease, workspace, true).await?;
-		lease
-			.workspace(workspace, "memory.participant.manage")
-			.await?;
+		repository::lock_thread(&mut lease, thread, true).await?;
+		lease.thread(thread, "memory.participant.manage").await?;
 		let task_row: crate::domain::Task = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
 				.from(Alias::new("tasks"))
 				.and_where(Expr::col("id").eq(Expr::value(task)))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.lock(reinhardt::query::LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -1687,10 +1676,10 @@ pub async fn assign_participant(
 			let bank = Bank {
 				home: row.try_get("home")?,
 				tenant: row.try_get("tenant")?,
-				workspace: row.try_get("workspace_id")?,
+				thread: row.try_get("thread_id")?,
 				participant: Some(target.participant_id),
 			};
-			if bank.workspace != workspace {
+			if bank.thread != thread {
 				return Err(Error::Forbidden);
 			}
 			scope(store, &mut lease, &bank, "memory.participant.use").await?;
@@ -1746,26 +1735,26 @@ impl NativeMemory {
 	pub async fn assignment(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		task: Uuid,
 	) -> Result<TaskAssignment> {
-		task_assignment(&self.runtime.store, &actor, workspace, task).await
+		task_assignment(&self.runtime.store, &actor, thread, task).await
 	}
 	pub async fn participants(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		after: Option<Uuid>,
 	) -> Result<ParticipantPage> {
-		participants(&self.runtime.store, &actor, workspace, after).await
+		participants(&self.runtime.store, &actor, thread, after).await
 	}
 	pub async fn assign(
 		&self,
 		actor: Actor,
-		workspace: Uuid,
+		thread: Uuid,
 		task: Uuid,
 		input: AssignmentChange,
 	) -> Result<Option<AssignedParticipant>> {
-		assign_participant(&self.runtime.store, &actor, workspace, task, input).await
+		assign_participant(&self.runtime.store, &actor, thread, task, input).await
 	}
 }

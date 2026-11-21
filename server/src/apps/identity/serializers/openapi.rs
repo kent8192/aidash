@@ -119,6 +119,73 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::update, &["String"])?;
 	}
 	{
+		use super::execution_settings::{TenantExecutionSettings, TenantExecutionSettingsUpdate};
+		use views::execution_settings as view;
+		contracts.response::<_, TenantExecutionSettings>(
+			document,
+			view::get,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::get, &["String"])?;
+		contracts.request::<_, TenantExecutionSettingsUpdate>(document, view::update)?;
+		contracts.response::<_, TenantExecutionSettings>(
+			document,
+			view::update,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::update, &["String"])?;
+	}
+	{
+		use super::standing_instructions::{Instructions, Update};
+		use views::standing_instructions as view;
+		contracts.response::<_, Instructions>(document, view::tenant, 200, "application/json")?;
+		contracts.path(document, view::tenant, &["String"])?;
+		contracts.request::<_, Update>(document, view::tenant_update)?;
+		contracts.response::<_, Instructions>(
+			document,
+			view::tenant_update,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::tenant_update, &["String"])?;
+		contracts.response::<_, Instructions>(document, view::node, 200, "application/json")?;
+		contracts.path(document, view::node, &["String", "String"])?;
+		contracts.request::<_, Update>(document, view::node_update)?;
+		contracts.response::<_, Instructions>(
+			document,
+			view::node_update,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::node_update, &["String", "String"])?;
+	}
+	{
+		use super::budgets::{BudgetUpdate, BudgetView};
+		use aidash_domain::budgets::Definition;
+		use views::budgets as view;
+		contracts.response::<_, Vec<BudgetView>>(document, view::list, 200, "application/json")?;
+		contracts.path(document, view::list, &["String"])?;
+		contracts.request::<_, Definition>(document, view::create)?;
+		contracts.response::<_, BudgetView>(document, view::create, 200, "application/json")?;
+		contracts.path(document, view::create, &["String"])?;
+		contracts.request::<_, BudgetUpdate>(document, view::update)?;
+		contracts.response::<_, BudgetView>(document, view::update, 200, "application/json")?;
+		contracts.path(document, view::update, &["String", "Uuid"])?;
+		contracts.empty(document, view::remove, 204)?;
+		contracts.path(document, view::remove, &["String", "Uuid"])?;
+	}
+	{
+		use super::flows::FlowStopped;
+		use aidash_application::org_chart::OrgChart;
+		use views::org_chart as view;
+		contracts.response::<_, OrgChart>(document, view::chart, 200, "application/json")?;
+		contracts.path(document, view::chart, &["String"])?;
+		contracts.response::<_, FlowStopped>(document, view::stop_flow, 200, "application/json")?;
+		contracts.path(document, view::stop_flow, &["String", "Uuid"])?;
+	}
+	{
 		use super::data_protection::{Impact, Settings};
 		use aidash_domain::data_protection::DataProtection;
 		use views::data_protection as view;
@@ -683,7 +750,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-		contracts.path(document, v::thread_mode, &["Uuid", "Uuid"])?;
+		contracts.path(document, v::thread_mode, &["Uuid"])?;
 		contracts.request::<_, approval::ThreadModeUpdate>(document, v::set_thread_mode)?;
 		contracts.response::<_, approval::ThreadMode>(
 			document,
@@ -691,7 +758,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-		contracts.path(document, v::set_thread_mode, &["Uuid", "Uuid"])?;
+		contracts.path(document, v::set_thread_mode, &["Uuid"])?;
 	}
 
 	contracts.response::<_, desktop::Started>(

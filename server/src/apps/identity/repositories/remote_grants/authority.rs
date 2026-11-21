@@ -38,8 +38,8 @@ impl SourceAuthorityScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)

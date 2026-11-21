@@ -41,7 +41,6 @@ fn area(constraints: Value) -> Area {
 		id: Uuid::nil(),
 		tenant: "tenant".into(),
 		home_node: "aidash://home/node".into(),
-		workspace_id: Uuid::nil(),
 		thread_id: Uuid::nil(),
 		agent_id: "agent".into(),
 		owner: "alice".into(),
@@ -81,4 +80,19 @@ fn a_receiving_area_sends_files_to_its_home_only_with_or_without_a_reference_set
 	}
 	// An Area no other Home started is not decided by this rule.
 	assert!(area(json!([])).may_send_to("aidash://other/node"));
+}
+
+#[test]
+fn a_run_works_only_in_an_area_of_its_own_kind() {
+	// A sibling Node of this Deployment keys both kinds alike (#1008).
+	let local = area(json!([]));
+	let receiving = area(json!([remote_home_constraint("aidash://home/node")]));
+	assert!(local.require_kind(false).is_ok());
+	assert!(receiving.require_kind(true).is_ok());
+	for (area, receiving) in [(&local, true), (&receiving, false)] {
+		assert!(matches!(
+			area.require_kind(receiving),
+			Err(crate::Error::Conflict(message)) if message.starts_with("AREA_UNAVAILABLE")
+		));
+	}
 }

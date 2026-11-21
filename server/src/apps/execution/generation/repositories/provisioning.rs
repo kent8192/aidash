@@ -33,12 +33,17 @@ pub(crate) struct NativeProvisioning {
 struct Activation {
 	runtime: Federation,
 	access: Access,
-	generation: Uuid,
 }
 struct Terminal {
 	runtime: Federation,
 	transaction: crate::database::native::Transaction,
 }
+
+/// Whether another chain of the root person who generated the agent of the
+/// request `g` uses it (#1012 decision 49): an unfinished Run of the agent in
+/// any of that person's chains, or a Duty of theirs that names it and has not
+/// stopped for good (a paused one still counts, so resuming it works).
+const IN_USE: &str = "(EXISTS (SELECT 1 FROM task_executions u JOIN authorization_execution ue ON ue.run_id = u.id WHERE u.tenant = g.tenant AND u.agent_id = g.agent_id AND u.agent_version = g.agent_version AND u.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') AND ue.root_subject = g.root_subject AND u.task_id <> g.task_id) OR EXISTS (SELECT 1 FROM duties d WHERE d.tenant = g.tenant AND d.agent_id = g.agent_id AND d.agent_version = g.agent_version AND d.requester = g.root_subject AND (d.halt IS NULL OR d.halt IN ('paused', 'failures'))))";
 struct Read {
 	runtime: Federation,
 	_visibility: crate::transactions::gate::ReadLease,
@@ -110,7 +115,6 @@ impl GenerationProvisioning for NativeProvisioning {
 		Ok(Box::new(Activation {
 			runtime: self.runtime.clone(),
 			access,
-			generation: job.id,
 		}))
 	}
 	async fn begin_terminal(
@@ -159,7 +163,7 @@ impl GenerationProvisionRead for Read {
 				.to_owned(),
 		)
 		.not();
-		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(pending).and_where(reinhardt::query::Expr::cust("g.local_task_id IS NOT NULL AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
+		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("task_executions"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(pending).and_where(reinhardt::query::Expr::cust(format!("g.local_task_id IS NOT NULL AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND NOT (g.status = 'ACTIVE' AND g.foreign_intent IS NULL AND {IN_USE})))"))).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
         .fetch_all(f.store.pool.in_scope(&TenancyScope::Deployment(DeploymentScopeReason::GenerationReconcile))).await?;
 		Ok(jobs)
 	}
@@ -329,13 +333,6 @@ impl GenerationActivationScope for Activation {
 	}
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> aidash_application::Result<()> {
 		execution::delegate_in(&self.runtime, &mut self.access, task, agent).await?;
-		// The generated Agent's Run keeps the mark of the Run that asked for it.
-		crate::apps::workspaces::repositories::schedules::inherit_generation(
-			&mut **self.access.tx,
-			self.generation,
-			task,
-		)
-		.await?;
 		Ok(())
 	}
 }
@@ -358,7 +355,7 @@ impl GenerationTerminalSession for Terminal {
 					.expr(reinhardt::query::SimpleExpr::from(
 						reinhardt::query::Expr::col(reinhardt::query::Alias::new("phase")),
 					))
-					.from(reinhardt::query::Alias::new("runs"))
+					.from(reinhardt::query::Alias::new("task_executions"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(task_id = ? AND home_node = ? || '/' || node)".to_owned(),
 						vec![
@@ -372,6 +369,30 @@ impl GenerationTerminalSession for Terminal {
 			.await?
 		};
 		Ok(phase)
+	}
+	async fn in_use(&mut self, job: &Request) -> aidash_application::Result<bool> {
+		if !job.is_local() {
+			return Ok(false);
+		}
+		let used: bool = crate::database::native::query_scalar(
+			&reinhardt::query::Query::select()
+				.expr(reinhardt::query::Expr::cust(IN_USE))
+				.from_as(
+					reinhardt::query::Alias::new("generation_requests"),
+					reinhardt::query::Alias::new("g"),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(g.tenant = ? AND g.id = ?)".to_owned(),
+					vec![
+						Expr::value(job.tenant.clone()).into(),
+						Expr::value(job.id).into(),
+					],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.scalar_one(&mut *self.transaction)
+		.await?;
+		Ok(used)
 	}
 	async fn transition(
 		&mut self,

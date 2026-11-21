@@ -135,7 +135,7 @@ export function subscribeInference(
     cursor,
     open: (signal, cursor) =>
       authenticatedFetch(
-        `/api/runs/${encodeURIComponent(run)}/inference/stream`,
+        `/api/executions/${encodeURIComponent(run)}/inference/stream`,
         {
           signal,
           headers: cursor === undefined ? {} : { "Last-Event-ID": cursor },

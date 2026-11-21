@@ -6,17 +6,11 @@ export type GraphRegion = {
   id: string;
   kind: "execution" | "shared" | "configuration";
   nodeId: string;
-  workspaceId?: string;
-  workspaceName?: Record<string, string>;
+  threadId?: string;
+  threadName?: Record<string, string>;
 };
 
-const sharedKinds = new Set([
-  "workspace",
-  "goal",
-  "task",
-  "conversation",
-  "artifact",
-]);
+const sharedKinds = new Set(["thread", "task", "conversation", "artifact"]);
 const configurationKinds = new Set(["tool", "model", "skill", "cluster"]);
 
 export function regionForNode(node: MeshNode): GraphRegion | undefined {
@@ -26,12 +20,12 @@ export function regionForNode(node: MeshNode): GraphRegion | undefined {
       kind: "execution",
       nodeId: node.nodeId,
     };
-  if (sharedKinds.has(node.kind) && node.workspaceId)
+  if (sharedKinds.has(node.kind) && node.threadId)
     return {
-      id: JSON.stringify(["region", "shared", node.nodeId, node.workspaceId]),
+      id: JSON.stringify(["region", "shared", node.nodeId, node.threadId]),
       kind: "shared",
       nodeId: node.nodeId,
-      workspaceId: node.workspaceId,
+      threadId: node.threadId,
     };
   if (configurationKinds.has(node.kind))
     return {
@@ -53,12 +47,12 @@ export function graphRegions(
   return [...regions.values()]
     .map((region) => ({
       ...region,
-      workspaceName: graph.nodes.find(
+      threadName: graph.nodes.find(
         (node) =>
           region.kind === "shared" &&
-          node.kind === "workspace" &&
+          node.kind === "thread" &&
           node.nodeId === region.nodeId &&
-          node.resourceId === region.workspaceId,
+          node.resourceId === region.threadId,
       )?.name,
     }))
     .sort((a, b) => {
@@ -67,43 +61,39 @@ export function graphRegions(
         rank[a.kind] - rank[b.kind] ||
         Number(b.nodeId === localNode) - Number(a.nodeId === localNode) ||
         a.nodeId.localeCompare(b.nodeId) ||
-        (a.workspaceId ?? "").localeCompare(b.workspaceId ?? "")
+        (a.threadId ?? "").localeCompare(b.threadId ?? "")
       );
     });
 }
 
 /** Scope by recorded, authorized resources before applying perspective and UI filters. */
-export function workspaceGraph(
+export function threadGraph(
   graph: MeshGraph,
   localNode: string,
-  workspace: string,
+  thread: string,
   state: Pick<State, "tasks" | "conversations">,
 ): MeshGraph {
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   const keep = new Set<string>();
-  const workspaceIds = new Set(
+  const threadIds = new Set(
     graph.nodes
-      .filter((node) => node.kind === "workspace" && node.resourceId)
+      .filter((node) => node.kind === "thread" && node.resourceId)
       .filter(
         (node) =>
-          !workspace ||
-          (node.nodeId === localNode && node.resourceId === workspace),
+          !thread || (node.nodeId === localNode && node.resourceId === thread),
       )
       .map((node) => JSON.stringify([node.nodeId, node.resourceId])),
   );
-  const selectedWorkspace = workspace
-    ? JSON.stringify([localNode, workspace])
-    : "";
+  const selectedThread = thread ? JSON.stringify([localNode, thread]) : "";
   for (const node of graph.nodes) {
-    if (!node.workspaceId) continue;
-    const owner = JSON.stringify([node.nodeId, node.workspaceId]);
-    // Authorized continuation pages need not repeat the Workspace vertex.
-    if (sharedKinds.has(node.kind) && (!workspace || workspaceIds.has(owner)))
+    if (!node.threadId) continue;
+    const owner = JSON.stringify([node.nodeId, node.threadId]);
+    // Authorized continuation pages need not repeat the Thread vertex.
+    if (sharedKinds.has(node.kind) && (!thread || threadIds.has(owner)))
       keep.add(node.id);
     if (
       node.kind === "run" &&
-      (!workspace ||
-        (workspaceIds.has(selectedWorkspace) && node.workspaceId === workspace))
+      (!thread || (threadIds.has(selectedThread) && node.threadId === thread))
     )
       keep.add(node.id);
   }
@@ -194,7 +184,7 @@ export function graphRegionPositions(
               kind === "execution"
                 ? ["agent", "run"]
                 : kind === "shared"
-                  ? ["workspace", "goal", "task", "conversation", "artifact"]
+                  ? ["thread", "task", "conversation", "artifact"]
                   : ["cluster", "tool", "model", "skill"];
             return (
               order.indexOf(a.kind) - order.indexOf(b.kind) ||

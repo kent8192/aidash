@@ -12,17 +12,17 @@ pub trait ReadJournalScope: Send {
 	fn membership(&self) -> (Option<Uuid>, Option<Uuid>);
 	async fn legacy_messages(
 		&mut self,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		sender: Option<&str>,
 		content: Option<&str>,
 	) -> Result<Vec<Uuid>>;
-	/// The Runs among `runs` that belong to `workspace`.
-	async fn runs_in_workspace(&mut self, workspace: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>>;
+	/// The Runs among `runs` that belong to `thread`.
+	async fn runs_in_thread(&mut self, thread: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>>;
 	/// This commit remains independent of the live authority lease.
 	async fn record_sources(
 		&mut self,
 		membership: ReadMembership,
-		workspace: Uuid,
+		thread: Uuid,
 		sources: &[(String, Uuid)],
 	) -> Result<()>;
 	async fn record_registry(
@@ -38,7 +38,7 @@ pub trait GrantJournalScope: Send {
 	async fn sources(&mut self, grant: Uuid) -> Result<Vec<(Uuid, String, Uuid)>>;
 	async fn source_visible(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 		pending: &mut Vec<Uuid>,

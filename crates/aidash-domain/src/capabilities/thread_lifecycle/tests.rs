@@ -43,7 +43,6 @@ fn area(state: &str) -> Area {
 		id: Uuid::new_v4(),
 		tenant: "tenant".into(),
 		home_node: "home".into(),
-		workspace_id: Uuid::new_v4(),
 		thread_id: Uuid::new_v4(),
 		agent_id: "agent".into(),
 		owner: "owner".into(),

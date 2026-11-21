@@ -62,7 +62,7 @@ import { ModelSource } from "../model-source";
 import { PlanConnectionsPage } from "../plan-connections";
 import { ProviderCredentialsPage } from "../provider-credentials";
 import { RecordView } from "../record-view";
-import { SchedulesPanel } from "../schedules";
+import { DutiesPanel } from "../duties";
 import { SemanticPage } from "../semantic";
 import type { State } from "../types";
 import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
@@ -676,7 +676,7 @@ export function Configuration({
               }
               initiallyOpen={integration === "semantic"}
             >
-              <SemanticPage data={data} workspaceId={channel} />
+              <SemanticPage data={data} threadId={channel} />
             </ToolSection>
           )}
           {section === "registry" &&
@@ -709,10 +709,10 @@ export function Configuration({
           )}
           {section === "schedules" &&
             (data.access.kind === "subject" ? (
-              <SchedulesPanel
+              <DutiesPanel
                 key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
                 scope={{ kind: "mine" }}
-                administrator={can("schedule.administer")}
+                administrator={can("duty.administer")}
               />
             ) : (
               <Notice role="status">{approvalCopy[locale].personalOnly}</Notice>

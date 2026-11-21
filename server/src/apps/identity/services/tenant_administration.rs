@@ -182,9 +182,6 @@ impl TenantAdministrations {
 		tenant: String,
 		input: aidash_domain::subnodes::SubnodeLimits,
 	) -> Result<aidash_domain::subnodes::SubnodeLimits> {
-		input
-			.validate()
-			.map_err(|error| Error::Invalid(error.to_string()))?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let result = self
 			.runtime

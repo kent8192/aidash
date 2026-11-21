@@ -26,7 +26,7 @@ DEPLOYMENT_ADMINISTRATOR = {"Authorization": "Bearer {{deployment_administrator_
 # route is checked with the contract subject, which passes the boundary, so
 # extractor errors such as 415 and 422 still reach the response.
 ADMIN_ADMITTED = {
-    "session", "state", "run-management-get", "run-management-control",
+    "session", "state", "execution-management-get", "execution-management-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
     "transaction_revocations", "transaction-participants",
     "tenant-administration", "tenant-invitation-approvals", "tenant-registrations", "tenant-registration-approve",
@@ -127,22 +127,21 @@ TENANT_ROUTES = {
         "body": {"tenant": "{{tenant}}", "installations": [], "approvals": []},
     },
     "POST /api/discover": {"body": {}},
-    "POST /api/workspaces": {"body": {"title": "Refused workspace", "goal": "Must not persist"}},
-    "PATCH /api/workspaces/{id}": {
-        "body": {"revision": 1, "state": {"refused": True}},
-        "path": "/api/workspaces/{{workspace_id}}",
+    "PATCH /api/threads/{id}": {
+        "body": {"revision": 1, "title": "Refused"},
+        "path": "/api/threads/{{thread_id}}",
     },
-    "POST /api/workspaces/{id}/tasks": {
+    "POST /api/threads/{id}/tasks": {
         "body": {"title": "Refused task", "description": "Must not persist", "requirements": {},
                  "dependencies": [], "parent_id": None},
-        "path": "/api/workspaces/{{workspace_id}}/tasks",
+        "path": "/api/threads/{{thread_id}}/tasks",
     },
-    "POST /api/workspaces/{id}/messages": {
+    "POST /api/threads/{id}/messages": {
         "body": {"content": "Must not persist"},
-        "path": "/api/workspaces/{{workspace_id}}/messages",
+        "path": "/api/threads/{{thread_id}}/messages",
     },
-    "POST /api/conversations": {
-        "body": {"title": "Refused conversation", "goal": "Must not persist",
+    "POST /api/threads": {
+        "body": {"title": "Refused conversation", "request": "Must not persist",
                  "target": AGENT, "target_kind": "agent"},
     },
     "POST /api/tasks/{id}/claim": {
@@ -153,7 +152,7 @@ TENANT_ROUTES = {
         "body": {"node_id": "{{node_id}}", "agent": AGENT},
         "path": "/api/tasks/{{task_id}}/delegate",
     },
-    "POST /api/runs/{id}/message": {"body": {"content": "Must not persist"}},
+    "POST /api/executions/{id}/message": {"body": {"content": "Must not persist"}},
     "POST /api/human-requests/{id}/answer": {"body": {"answer": "Must not persist"}},
 }
 # Tenant reads by subjects. Journey 05 gives the contract subject `registry.read`
@@ -162,13 +161,13 @@ TENANT_ROUTES = {
 # action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
-    "GET /api/workspaces/{id}/runs": [
-        ("Subject lists the readable Workspace's live Runs", 200, SUBJECT,
-         "/api/workspaces/{{workspace_id}}/runs?live=true", 'expect(res.getBody().items).to.be.an("array");'),
+    "GET /api/threads/{id}/executions": [
+        ("Subject lists the readable Thread's live Runs", 200, SUBJECT,
+         "/api/threads/{{thread_id}}/executions?live=true", 'expect(res.getBody().items).to.be.an("array");'),
     ],
-    "GET /api/tasks/{id}/runs": [
+    "GET /api/tasks/{id}/executions": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
-         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
+         "/api/tasks/{{task_id}}/executions", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
     ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
@@ -370,8 +369,8 @@ def render():
         if checks:
             js.append('test("' + label + ' contract", function () { ' + checks + " });")
         if immutable:
-            pre += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));\n'
-            after += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});\n'
+            pre += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/threads/"+bru.getVar("thread_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.thread.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeThread",JSON.stringify({revision:snapshot.data.thread.revision,title:snapshot.data.thread.title}));\n'
+            after += '\nconst snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/threads/"+bru.getVar("thread_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed thread state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.thread.revision,title:snapshot.data.thread.title})).to.equal(bru.getVar("beforeThread"));});\n'
         if node_unchanged:
             # Read the actual target Node, not an unrelated Workspace. The
             # current ordinary Subject still has no administration authority.
@@ -684,7 +683,7 @@ def render():
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
-                    checks += 'expect(res.getBody().openapi).to.match(/^3\\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));'
+                    checks += 'expect(res.getBody().openapi).to.match(/^3\\./);expect(res.getBody().paths["/api/threads"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token"));'
                 if path == "/api/openapi.json":
                     checks += 'const wireApi=res.getBody().components.schemas.WireApi;expect(wireApi.enum||(wireApi.oneOf||[]).flatMap(option=>option.enum||[])).to.eql(["chat","responses"]);expect(res.getBody().components.schemas.ModelConfig.properties).to.have.property("wire_api");expect(res.getBody().components.schemas.ModelConfig.required).not.to.include("wire_api");'
                 add(endpoint, label, 200, headers=headers, checks=checks)
@@ -912,11 +911,23 @@ def render():
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
                     path=uri, body="{", headers=SUBJECT, node_unchanged=True)
             continue
+        if endpoint == "POST /hooks/duties/{trigger}":
+            # A webhook authenticates by the HMAC signature of its body, not a
+            # session (#1011): a missing or wrong signature and an unknown
+            # trigger read alike as not found, so nothing is learned.
+            unknown = "/hooks/duties/00000000-0000-0000-0000-000000000000"
+            add(endpoint, "Unsigned request to an unknown trigger is not found", 404,
+                path=unknown, body="{}", immutable=True)
+            add(endpoint, "Wrong signature reads as not found", 404, path=unknown, body="{}",
+                headers={"X-Hub-Signature-256": "sha256=00"}, immutable=True)
+            add(endpoint, "Typed trigger IDs reject invalid UUIDs", 400,
+                path="/hooks/duties/not-a-uuid", body="{}", immutable=True)
+            continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.
         actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
-        if route["name"] in {"task-runs", "workspace-runs", "human-requests", "workspace-list"}:
+        if route["name"] in {"task-executions", "thread-executions", "human-requests", "thread-list"}:
             add(endpoint, "Deployment Administrator cannot read Tenant data", 403,
                 headers=DEPLOYMENT_ADMINISTRATOR)
         if route["name"] == "tenants-personal":
@@ -1275,8 +1286,7 @@ def render():
             # Only a browser Mapping context can be a Tenant Administrator.
             uri = path.replace("{subject}", "alice")
             body = (
-                json.dumps({"members_per_subnode": 5, "subnodes_per_run": 3,
-                            "remote_runs_may_create": False})
+                json.dumps({"remote_runs_may_create": False})
                 if method == "PUT" and path.endswith("/subnode-limits")
                 else
                 # One day, within any Deployment maximum, so only the caller is refused.
@@ -1310,7 +1320,7 @@ def render():
             continue
         if route["source"] == "server/src/apps/execution/capabilities/views/live_previews.rs":
             # A Live preview's status, stop, ticket and the Tenant's lowered limits.
-            if path == "/api/runs/{id}/live-preview":
+            if path == "/api/executions/{id}/live-preview":
                 add(endpoint, "Anonymous request is rejected", 401)
                 add(endpoint, "Deployment Administrator cannot read a missing Run", 403,
                     headers=DEPLOYMENT_ADMINISTRATOR)
@@ -1446,7 +1456,7 @@ def render():
                 headers={"Authorization": "Bearer invalid"},
                 immutable=True,
             )
-            if path == "/api/workspaces/{id}/attachments":
+            if path == "/api/threads/{id}/attachments":
                 add(
                     endpoint,
                     "Attachment upload requires its typed query",
@@ -1475,15 +1485,15 @@ def render():
             404 if "{" in path and path.count("{") > path.count("{tenant}") else 200
         )
         checks = 'expect(res.getHeader("content-type")).to.include("application/json");'
-        if path.startswith("/api/workspaces/"):
+        if path.startswith("/api/threads/"):
             if path.endswith("/message-history"):
-                uri = "/api/workspaces/{{workspace_id}}/message-history"
+                uri = "/api/threads/{{thread_id}}/message-history"
                 status = 200
                 checks += 'expect(res.getBody().messages).to.be.an("array");'
-            elif path == "/api/workspaces/{id}":
-                uri = "/api/workspaces/{{workspace_id}}"
+            elif path == "/api/threads/{id}":
+                uri = "/api/threads/{{thread_id}}"
                 status = 200
-                checks += "expect(res.getBody().workspace.revision).to.equal(1);expect(res.getBody().workspace.state).to.eql({bruno:true});"
+                checks += "expect(res.getBody().thread.revision).to.equal(1);expect(res.getBody().thread.title).to.equal(\"Bruno\");"
             elif "/semantic/" in path:
                 uri = None
                 status = 200 if path.endswith(("/history", "/cleanup")) else 404
@@ -1506,14 +1516,14 @@ def render():
         # inspection of a Tenant's version. Deployment Administrator credentials cannot
         # replace a subject or browser-bound graph grant.
         denied_reads = {
-            "task-runs",
-            "workspace-runs",
+            "task-executions",
+            "thread-executions",
             "memory-participant-current",
             "remote-semantic-home-provenance",
-            "remote-semantic-run-provenance",
+            "remote-semantic-execution-provenance",
             "remote_execution_list",
             "federated_graph_peers",
-            "run_working_area",
+            "execution_working_area",
             "core_outbound_history",
             "core_operation_history",
             "generation-usage",
@@ -1541,8 +1551,8 @@ def render():
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
         if route["name"] == "state":
-            checks += 'const c=res.getBody().next_cursors;for(const key of ["workspaces","tasks","runs","artifacts","human_requests","conversations"])expect(c[key]).to.equal(null);'
-        if route["name"] in {"human-requests", "workspace-list"}:
+            checks += 'const c=res.getBody().next_cursors;for(const key of ["threads","tasks","runs","artifacts","human_requests","conversations"])expect(c[key]).to.equal(null);'
+        if route["name"] in {"human-requests", "thread-list"}:
             checks += 'expect(res.getBody().items).to.be.an("array");'
         if route["name"] == "file_recipient_list":
             uri = path + "?node_id={{node_id}}/{{tenant_node}}"
@@ -1553,7 +1563,7 @@ def render():
         if route["name"] in {
             "marketplace-administration",
             "workbench-test-profiles",
-            "run-management-get",
+            "execution-management-get",
         }:
             uri = path + "?tenant={{tenant}}"
         if route["name"] in {"authorization-catalog", "registry-versions"}:
@@ -1631,7 +1641,7 @@ def render():
         # response the journeys fix; every other Tenant route is shown to refuse
         # the administrator (#484).
         subject_read = (
-            path in ("/api/workspaces", "/api/workspaces/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
+            path in ("/api/threads", "/api/threads/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/executions", "/api/human-requests")
             or path.endswith("/message-history")
         )
         if not admitted and not core:

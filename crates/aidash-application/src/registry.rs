@@ -362,9 +362,9 @@ pub async fn register_definition(
 ///
 /// - A model on an allowlisted OpenRouter route declares `explicit` caching
 ///   (ADR 0115).
-/// - An Agent on a model that declares Native gets Native with `structured@3`
-///   (#532). One that names a Projection Version keeps it, a Native one without
-///   a contract gets `structured@3`, and one whose model lacks Native keeps the
+/// - An Agent on a model that declares Native gets Native with `structured@4`
+///   (#532, #1010). One that names a Projection Version keeps it, a Native one
+///   without a contract gets `structured@4`, and one whose model lacks Native keeps the
 ///   omitted defaults (`legacy`, `legacy@1`).
 /// - A Native Agent on a structured contract gets `prompt_cache: explicit` when
 ///   its model accepts breakpoints (ADR 0115). `legacy@1` appends per-turn text
@@ -429,7 +429,7 @@ pub async fn apply_definition_defaults(scope: &mut dyn DefinitionLookup, entry: 
 	let native = entry.config.get("projection_version") == Some(&json!("native"));
 	if native && entry.config.get("harness_contract").is_none() && !stored_omits("harness_contract")
 	{
-		entry.config["harness_contract"] = json!("structured@3");
+		entry.config["harness_contract"] = json!("structured@4");
 	}
 	if native
 		&& entry.config.get("harness_contract") != Some(&json!("legacy@1"))

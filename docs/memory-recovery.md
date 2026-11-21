@@ -60,13 +60,13 @@ depending on `fsGroup` to grant permission to chmod the volume root. Separate
 Home identities must use separate claims/directories.
 
 Create a managed archive for the exact bank. Omit `--participant` for the shared
-Workspace bank. Archives contain typed CBOR canonical units and exact source
+Thread bank. Archives contain typed CBOR canonical units and exact source
 references, scoped to the current bank/policy and external epoch:
 
 ```sh
 cargo run -p aidash-server --bin aidash -- memory-recovery backup \
   --directory /absolute/persistent/home-memory-recovery \
-  --tenant tenant-id --workspace workspace-uuid --participant participant-uuid
+  --tenant tenant-id --workspace thread-uuid --participant participant-uuid
 ```
 
 The command prints the archive path. The pinned policy's `backup_days` governs
@@ -99,9 +99,9 @@ floor is withheld rather than guessed. Current source/authority, retention and
 origin allowances are rechecked before index work and final disclosure. Rebuild
 operations retain conservative charges for uncertain earlier attempts.
 
-Indexing holds a shared workspace lock before reading source rows and through
+Indexing holds a shared thread lock before reading source rows and through
 the independent durable embedding reservation. Concurrent indexers can share
-that lock; retention maintenance skips its workspace writer while those readers
+that lock; retention maintenance skips its thread writer while those readers
 are active, avoiding a cycle between source settings and reservation foreign keys.
 
 Inspect the gate and remove expired archives with `memory-recovery status` and
@@ -221,7 +221,7 @@ The `memory_decay:` test lives in
 ## Typed recovery
 
 A Run stopped by its semantic context reports the exact cause and the actions
-the current contract authorizes. `GET /api/runs/{id}/management` returns
+the current contract authorizes. `GET /api/executions/{id}/management` returns
 `semantic_recovery` next to `semantic_reason` while the Run is neither cancelled
 nor finished. The view carries no content, so it stays available when the Run's
 content is hidden. On the Home, each entry of
@@ -278,7 +278,7 @@ current visibility response does not identify the reason.
 
 ## Impact inspection
 
-`POST /api/workspaces/{workspace}/memory/units/impact` takes the provider, the
+`POST /api/threads/{thread}/memory/units/impact` takes the provider, the
 Bank and up to the pinned `max_candidates` Unit IDs, and needs `memory.read` on
 that Bank. For each Unit it returns the revision a Run may still read
 (`readable_revision`, `null` once the Unit is deleted, withdrawn, retired, past

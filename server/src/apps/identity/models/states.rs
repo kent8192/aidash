@@ -27,5 +27,5 @@ pub enum AuthorizationRunReadResourceKind {
 	Generation,
 	#[model_enum(value = "workspace_events")]
 	#[serde(rename = "workspace_events")]
-	WorkspaceEvents,
+	ThreadEvents,
 }

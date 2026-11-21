@@ -259,8 +259,8 @@ export function AgentMemoryFields({
       </Field>
       <Hint>
         {ja
-          ? "本文はWorkspaceに保持されます。選択した定義のバージョンを固定します。"
-          : "Bodies belong to the Workspace. Selected definition versions are pinned."}
+          ? "本文はThreadに保持されます。選択した定義のバージョンを固定します。"
+          : "Bodies belong to the Thread. Selected definition versions are pinned."}
       </Hint>
     </Group>
   );
@@ -325,8 +325,8 @@ export function MemoryRegistryFields({
         />
         <Field label={ja ? "検索する範囲" : "Recall scope"}>
           <NativeSelect name="memory_scope">
-            <option value="workspace">
-              {ja ? "共有Workspace" : "Shared Workspace"}
+            <option value="thread">
+              {ja ? "共有Thread" : "Shared Thread"}
             </option>
             <option value="participant">
               {ja ? "論理Agentの個人メモリ" : "Logical Agent private memory"}

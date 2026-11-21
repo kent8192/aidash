@@ -33,10 +33,27 @@ pub(crate) async fn get(
 	.await?;
 	match row {
 		Some(row) => Ok((
-			serde_json::from_value(serde_json::Value::String(row.try_get("scope")?))?,
+			from_stored(&row.try_get::<String>("scope")?)?,
 			row.try_get("revision")?,
 		)),
-		None => Ok((SharingScope::Workspace, 0)),
+		None => Ok((SharingScope::Thread, 0)),
+	}
+}
+
+/// The stored name of a scope. `memory_scope_valid` keeps the Thread scope's
+/// pre-#1008 name `workspace` (ADR 0140), so the row never changes meaning.
+fn stored(scope: SharingScope) -> &'static str {
+	match scope {
+		SharingScope::Thread => "workspace",
+		SharingScope::TenantAgent => "tenant_agent",
+	}
+}
+
+fn from_stored(value: &str) -> Result<SharingScope> {
+	match value {
+		"workspace" => Ok(SharingScope::Thread),
+		"tenant_agent" => Ok(SharingScope::TenantAgent),
+		_ => Err(Error::Invalid("invalid memory scope".into())),
 	}
 }
 
@@ -61,10 +78,7 @@ pub(crate) async fn set(
 		return Err(Error::Conflict("memory scope revision changed".into()));
 	}
 	let revision = current + 1;
-	let value = serde_json::to_value(scope)?
-		.as_str()
-		.ok_or_else(|| Error::Invalid("invalid memory scope".into()))?
-		.to_owned();
+	let value = stored(scope);
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_tenant_scope"))
@@ -89,7 +103,7 @@ pub(crate) async fn set(
 	Ok(revision)
 }
 
-/// A cross-Workspace Unit belongs to an Agent only if every provenance leaf
+/// A cross-Thread Unit belongs to an Agent only if every provenance leaf
 /// names one of its Runs. Derived observations inherit all source leaves.
 pub(crate) async fn agent_unit(
 	lease: &mut super::access::Lease<'_>,
@@ -116,7 +130,7 @@ pub(crate) async fn agent_unit(
 				let owner: Option<String> = native::query_scalar(
 					&Query::select()
 						.column(Alias::new("agent_id"))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(Expr::col("id").eq(Expr::value(run_id)))
 						.to_string(PostgresQueryBuilder),
 				)
@@ -165,13 +179,13 @@ mod tests {
 		bounds: Bounds,
 	) {
 		let database = database.await;
-		let (store, _, workspace) = setup(&database, bounds).await;
+		let (store, _, thread) = setup(&database, bounds).await;
 		let mut runs = Vec::new();
 		for agent in ["a", "other-agent"] {
 			let task = store
 				.create_task(
 					&TEST_FIXTURE,
-					workspace,
+					thread,
 					&aidash_domain::NewTask {
 						title: "source".into(),
 						description: "source".into(),
@@ -195,12 +209,12 @@ mod tests {
 			let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 			native::query(
 				&Query::insert()
-					.into_table(Alias::new("runs"))
+					.into_table(Alias::new("task_executions"))
 					.columns(
 						[
 							"id",
 							"task_id",
-							"workspace_id",
+							"thread_id",
 							"home_node",
 							"node",
 							"agent_id",
@@ -216,7 +230,7 @@ mod tests {
 						Query::select()
 							.expr(Expr::value(run))
 							.expr(Expr::value(task.id))
-							.expr(Expr::value(workspace))
+							.expr(Expr::value(thread))
 							.expr(Expr::value(
 								aidash_domain::nodes::NodeAddress::derived(
 									store.deployment.as_str(),
@@ -247,7 +261,7 @@ mod tests {
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		};
 		let mut unit = Unit {
@@ -279,7 +293,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(
 			get(&mut **lease.tx(), "acme").await.unwrap().0,
-			SharingScope::Workspace
+			SharingScope::Thread
 		);
 		assert_eq!(
 			set(&mut **lease.tx(), "acme", SharingScope::TenantAgent, 0)

@@ -31,7 +31,7 @@ pub enum Failure {
 	/// No route of the embedding model meets the Tenant's Data Protection
 	/// Level. Waiting does not change that; switch the embedding model (#963).
 	#[error(
-		"The embedding model cannot meet this Tenant's Data Protection Level; switch the Workspace to a model that meets it"
+		"The embedding model cannot meet this Tenant's Data Protection Level; switch the Thread to a model that meets it"
 	)]
 	DataProtection,
 	#[error("Semantic context does not fit the available context budget")]
@@ -61,12 +61,12 @@ pub enum Failure {
 }
 
 /// Delay between repeated replays of a semantic operation that is still
-/// `Pending`. Each replay repeats the charged workspace embedding, so only the
+/// `Pending`. Each replay repeats the charged thread embedding, so only the
 /// first one comes after a second. None of them spends an outage retry (#233).
 pub const PENDING_REPLAY_SECONDS: i64 = 30;
 
 /// Retries of a semantic outage before a Run pauses, or degrades an opted-in
-/// workspace slot (ADR 0059), after delays of 2, 4, 8, 16 and 32 s.
+/// thread slot (ADR 0059), after delays of 2, 4, 8, 16 and 32 s.
 pub const OUTAGE_RETRIES: u32 = 5;
 
 impl Failure {
@@ -218,7 +218,7 @@ pub struct Point {
 /// Scope comes from current PostgreSQL authority, never from vector payloads.
 pub struct VectorFilter<'a> {
 	pub allowed: &'a [Uuid],
-	pub workspace: Uuid,
+	pub thread: Uuid,
 	pub tenant: &'a str,
 }
 

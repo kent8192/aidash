@@ -20,5 +20,5 @@ pub struct ReportQuery {
 	pub include_sensitive: bool,
 	pub tenant: Option<String>,
 	pub subject: Option<String>,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 }

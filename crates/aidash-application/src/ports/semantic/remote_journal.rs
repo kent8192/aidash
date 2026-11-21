@@ -54,7 +54,7 @@ pub trait JournalScope: Send {
 	async fn fail_attempt(&mut self, attempt: &Attempt, error: &str) -> Result<()>;
 	async fn resume_records(&mut self, grant: Uuid, admission: Uuid) -> Result<Vec<Record>>;
 	async fn resume_record(&mut self, record: &Record) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }
 #[async_trait]

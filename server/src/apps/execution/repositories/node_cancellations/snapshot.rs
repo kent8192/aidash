@@ -34,12 +34,12 @@ pub(super) fn unsafe_operation() -> SimpleExpr {
 		.or(Expr::col("state").eq("uncertain").and(stopped))
 		.not()
 }
-fn workspace(table: &str, node: &str) -> SimpleExpr {
+fn thread(table: &str, node: &str) -> SimpleExpr {
 	Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("workspaces"), Alias::new("w"))
-			.and_where(column("w", "id").eq(column(table, "workspace_id")))
+			.from_as(Alias::new("threads"), Alias::new("w"))
+			.and_where(column("w", "id").eq(column(table, "thread_id")))
 			.and_where(column("w", "tenant").eq(column(table, "tenant")))
 			.and_where(column("w", "node").eq(Expr::value(node)))
 			.to_owned(),
@@ -54,7 +54,7 @@ fn area(table: &str, node: &str, address: &str) -> SimpleExpr {
 			.and_where(column("a", "id").eq(column(table, "area_id")))
 			.and_where(column("a", "tenant").eq(column(table, "tenant")))
 			.and_where(column("a", "home_node").eq(Expr::value(address)))
-			.and_where(workspace("a", node))
+			.and_where(thread("a", node))
 			.to_owned(),
 	)
 	.into()
@@ -81,7 +81,7 @@ fn capability(table: &str, node: &str, address: &str) -> SimpleExpr {
 	area(table, node, address).or(Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "tenant").eq(column(table, "tenant")))
 			.and_where(column("r", "node").eq(Expr::value(node)))
 			.and_where(binding)
@@ -95,7 +95,7 @@ pub(super) fn live_previews(node: &str, address: &str) -> SimpleExpr {
 	area(table, node, address).or(Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "id").eq(column(table, "run_id")))
 			.and_where(column("r", "tenant").eq(column(table, "tenant")))
 			.and_where(column("r", "node").eq(Expr::value(node)))
@@ -110,13 +110,13 @@ pub(super) fn selectors(
 ) -> Vec<(&'static str, &'static str, SimpleExpr, SimpleExpr)> {
 	let run = Expr::col("node")
 		.eq(Expr::value(node))
-		.or(workspace("runs", node).and(Expr::col("home_node").eq(Expr::value(address))))
+		.or(thread("task_executions", node).and(Expr::col("home_node").eq(Expr::value(address))))
 		.or(Expr::exists(
 			Query::select()
 				.expr(Expr::value(1_i32))
 				.from_as(Alias::new("core_runs"), Alias::new("cr"))
-				.and_where(column("cr", "run_id").eq(column("runs", "id")))
-				.and_where(column("cr", "tenant").eq(column("runs", "tenant")))
+				.and_where(column("cr", "run_id").eq(column("task_executions", "id")))
+				.and_where(column("cr", "tenant").eq(column("task_executions", "tenant")))
 				.and_where(area("cr", node, address))
 				.to_owned(),
 		));
@@ -126,7 +126,7 @@ pub(super) fn selectors(
 			.from_as(Alias::new("tasks"), Alias::new("t"))
 			.and_where(column("t", "id").eq(column("generation_remote_intents", "task_id")))
 			.and_where(column("t", "tenant").eq(column("generation_remote_intents", "tenant")))
-			.and_where(workspace("t", node))
+			.and_where(thread("t", node))
 			.to_owned(),
 	);
 	let delegated_task = Expr::exists(
@@ -152,13 +152,13 @@ pub(super) fn selectors(
 	);
 	// A locally owned Task may execute on another Node. Its captured Run must
 	// also fence reassignment while decided atomic recovery defers cancellation.
-	// Exact local Home/Workspace binding excludes a foreign Home's UUIDs.
+	// Exact local Home/Thread binding excludes a foreign Home's UUIDs.
 	let local_task = Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "task_id").eq(column("tasks", "id")))
-			.and_where(column("r", "workspace_id").eq(column("tasks", "workspace_id")))
+			.and_where(column("r", "thread_id").eq(column("tasks", "thread_id")))
 			.and_where(column("r", "tenant").eq(column("tasks", "tenant")))
 			.and_where(column("r", "phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.and_where(
@@ -174,8 +174,8 @@ pub(super) fn selectors(
 			.and_where(Expr::exists(
 				Query::select()
 					.expr(Expr::value(1_i32))
-					.from_as(Alias::new("workspaces"), Alias::new("w"))
-					.and_where(column("w", "id").eq(column("tasks", "workspace_id")))
+					.from_as(Alias::new("threads"), Alias::new("w"))
+					.and_where(column("w", "id").eq(column("tasks", "thread_id")))
 					.and_where(column("w", "tenant").eq(column("tasks", "tenant")))
 					.and_where(column("r", "home_node").eq(
 						Expr::value(format!("{deployment}/")).binary(
@@ -190,7 +190,7 @@ pub(super) fn selectors(
 	vec![
 		(
 			"run",
-			"runs",
+			"task_executions",
 			run,
 			Expr::col("phase")
 				.is_not_in(["COMPLETED", "FAILED", "CANCELLED"])
@@ -213,7 +213,7 @@ pub(super) fn selectors(
 		(
 			"grant",
 			"authorization_remote_grants",
-			workspace("authorization_remote_grants", node)
+			thread("authorization_remote_grants", node)
 				.or(Expr::col("node_id").eq(Expr::value(address))),
 			Expr::value(true).into(),
 		),
@@ -226,7 +226,7 @@ pub(super) fn selectors(
 		(
 			"task",
 			"tasks",
-			workspace("tasks", node).or(delegated_task).or(local_task),
+			thread("tasks", node).or(delegated_task).or(local_task),
 			Expr::col("status").is_not_in(["COMPLETED", "CANCELLED", "ABANDONED"]),
 		),
 		(

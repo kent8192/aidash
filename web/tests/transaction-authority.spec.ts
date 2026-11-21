@@ -206,19 +206,19 @@ test("subjects compose transactions in their selected local Node", async ({
   page,
 }) => {
   await setup(page);
-  const workspaces = ["first", "second"].map((node, index) => ({
-    id: `workspace-${index + 1}`,
+  const threads = ["first", "second"].map((node, index) => ({
+    id: `thread-${index + 1}`,
     node,
-    title: `${node} workspace`,
+    title: `${node} thread`,
     goal: "Keep changes in one Node",
     state: {},
     revision: index + 1,
     created_at: "2026-10-22T00:00:00Z",
   }));
-  const tasks = workspaces.map((workspace, index) => ({
+  const tasks = threads.map((thread, index) => ({
     id: `task-${index + 1}`,
-    workspace_id: workspace.id,
-    title: `${workspace.node} task`,
+    thread_id: thread.id,
+    title: `${thread.node} task`,
     description: "Stay in the selected Node",
     status: "RUNNING",
     owner: null,
@@ -227,14 +227,14 @@ test("subjects compose transactions in their selected local Node", async ({
     dependencies: [],
     parent_id: null,
     revision: index + 2,
-    created_at: workspace.created_at,
+    created_at: thread.created_at,
   }));
   const runs = tasks.map((task, index) => ({
     id: `run-${index + 1}`,
-    node: workspaces[index].node,
-    workspace_id: task.workspace_id,
+    node: threads[index].node,
+    thread_id: task.thread_id,
     task_id: task.id,
-    home_node: `aidash://home/${workspaces[index].node}`,
+    home_node: `aidash://home/${threads[index].node}`,
     agent_id: "researcher",
     agent_version: "1.0.0",
     phase: "THINKING",
@@ -244,7 +244,7 @@ test("subjects compose transactions in their selected local Node", async ({
     step: 1,
     revision: index + 3,
     error: null,
-    updated_at: workspaces[index].created_at,
+    updated_at: threads[index].created_at,
   }));
   await page.route("**/api/state**", (route) =>
     route.fulfill({
@@ -256,7 +256,7 @@ test("subjects compose transactions in their selected local Node", async ({
           protocol_version: "0.4",
           key: null,
         },
-        workspaces,
+        threads,
         tasks,
         runs: [
           ...runs,
@@ -265,7 +265,7 @@ test("subjects compose transactions in their selected local Node", async ({
         registry: [],
         conversations: [],
         next_cursors: {
-          workspaces: null,
+          threads: null,
           tasks: null,
           runs: null,
           artifacts: null,
@@ -315,9 +315,9 @@ test("subjects compose transactions in their selected local Node", async ({
   const node = dialog.getByLabel("Node", { exact: true });
   await expect(node).toBeDisabled();
   await expect(node).toHaveValue("aidash://home/second");
-  const workspace = dialog.getByLabel("Workspace", { exact: true });
-  await expect(workspace.locator('option[value="workspace-1"]')).toHaveCount(0);
-  await workspace.selectOption("workspace-2");
+  const thread = dialog.getByLabel("Thread", { exact: true });
+  await expect(thread.locator('option[value="thread-1"]')).toHaveCount(0);
+  await thread.selectOption("thread-2");
   await expect(dialog.getByLabel("Revision", { exact: true })).toHaveValue("2");
   await expect(
     dialog.getByRole("button", { name: "Add participant", exact: true }),
@@ -374,9 +374,9 @@ test("subjects submit from their selected Node with explicit remote participant 
     .getByRole("button", { name: "Create transaction", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByLabel("Workspace", { exact: true })
-    .selectOption("workspace-one");
+  await dialog.getByLabel("Thread", { exact: true }).selectOption("thread-one");
+  // A Thread's title is the only attribute a transaction changes (#1008).
+  await dialog.getByLabel("Title", { exact: true }).fill("Research notes");
   await dialog
     .getByRole("button", { name: "Add participant", exact: true })
     .click();
@@ -396,4 +396,12 @@ test("subjects submit from their selected Node with explicit remote participant 
   expect(
     submitted?.participants.map((participant) => participant.node_id),
   ).toEqual([`aidash://home/${defaultNode.name}`, "aidash://remote/lab"]);
+  expect(submitted?.participants[0].mutations).toEqual([
+    {
+      kind: "thread_title",
+      thread_id: "thread-one",
+      expected_revision: 1,
+      title: "Research notes",
+    },
+  ]);
 });

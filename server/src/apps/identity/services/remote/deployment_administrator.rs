@@ -44,10 +44,10 @@ pub(crate) fn application_error(error: Error) -> aidash_application::Error {
 	}
 }
 
-/// Index configuration is allowed for required-Home Workspaces, but never for
+/// Index configuration is allowed for required-Home Threads, but never for
 /// a deleted Tenant. The same policy lock protects configuration and its effects.
-pub(crate) async fn workspace_tenant(connection: &mut Transaction, workspace: Uuid) -> Result<()> {
-	// A receiver Run may name a foreign Workspace with no local Workspace row.
+pub(crate) async fn thread_tenant(connection: &mut Transaction, thread: Uuid) -> Result<()> {
+	// A receiver Run may name a foreign Thread with no local Thread row.
 	// Its already resolved transaction scope still identifies the owning Tenant.
 	if let Some(owner) = connection.scope().and_then(|scope| scope.tenant_name()) {
 		let owner = owner.as_str().to_owned();
@@ -55,8 +55,8 @@ pub(crate) async fn workspace_tenant(connection: &mut Transaction, workspace: Uu
 	}
 	let query = Query::select()
 		.column(Alias::new("tenant"))
-		.from(Alias::new("workspaces"))
-		.and_where(Expr::col("id").eq(Expr::value(workspace)))
+		.from(Alias::new("threads"))
+		.and_where(Expr::col("id").eq(Expr::value(thread)))
 		.to_string(PostgresQueryBuilder);
 	let owner: String = crate::database::native::query_scalar(&query)
 		.scalar_one(&mut *connection)
@@ -64,17 +64,14 @@ pub(crate) async fn workspace_tenant(connection: &mut Transaction, workspace: Uu
 	tenant(&mut **connection, &owner).await
 }
 
-async fn deleted_workspaces(
-	connection: &mut Transaction,
-	workspaces: &[Uuid],
-) -> Result<BTreeSet<Uuid>> {
-	if workspaces.is_empty() {
+async fn deleted_threads(connection: &mut Transaction, threads: &[Uuid]) -> Result<BTreeSet<Uuid>> {
+	if threads.is_empty() {
 		return Ok(BTreeSet::new());
 	}
 	let query = Query::select()
 		.column(Alias::new("id"))
-		.from(Alias::new("workspaces"))
-		.and_where(Expr::col("id").is_in(workspaces.iter().copied().map(Expr::value)))
+		.from(Alias::new("threads"))
+		.and_where(Expr::col("id").is_in(threads.iter().copied().map(Expr::value)))
 		.and_where(Expr::col("tenant").in_subquery(deleted_tenants()))
 		.to_string(PostgresQueryBuilder);
 	let ids: Vec<Uuid> = crate::database::native::query_scalar(&query)
@@ -85,14 +82,14 @@ async fn deleted_workspaces(
 
 pub(crate) async fn blocked(
 	connection: &mut Transaction,
-	workspaces: &[Uuid],
+	threads: &[Uuid],
 ) -> Result<BTreeSet<Uuid>> {
-	if workspaces.is_empty() {
+	if threads.is_empty() {
 		return Ok(BTreeSet::new());
 	}
 	let receiver = Query::select()
-		.column((Alias::new("r"), Alias::new("workspace_id")))
-		.from_as(Alias::new("runs"), Alias::new("r"))
+		.column((Alias::new("r"), Alias::new("thread_id")))
+		.from_as(Alias::new("task_executions"), Alias::new("r"))
 		.join(
 			JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(
@@ -102,11 +99,11 @@ pub(crate) async fn blocked(
 			Expr::cust("a.id=r.id"),
 		)
 		.and_where(Expr::cust(
-			"r.workspace_id=ANY($1) AND a.description->'semantic'->>'mode'='required_home'",
+			"r.thread_id=ANY($1) AND a.description->'semantic'->>'mode'='required_home'",
 		))
 		.to_owned();
 	let query = Query::select()
-		.column((Alias::new("t"), Alias::new("workspace_id")))
+		.column((Alias::new("t"), Alias::new("thread_id")))
 		.from_as(Alias::new("tasks"), Alias::new("t"))
 		.join(
 			JoinType::InnerJoin,
@@ -117,26 +114,26 @@ pub(crate) async fn blocked(
 			Expr::cust("g.task_id=t.id"),
 		)
 		.and_where(Expr::cust(
-			"t.workspace_id=ANY($1) AND g.semantic->>'mode'='required_home'",
+			"t.thread_id=ANY($1) AND g.semantic->>'mode'='required_home'",
 		))
 		.union(receiver)
 		.to_string(PostgresQueryBuilder);
 	let values: Vec<Uuid> = crate::database::native::query_scalar(&query)
-		.bind(workspaces)
+		.bind(threads)
 		.scalar_all(&mut *connection)
 		.await?;
 	let mut denied: BTreeSet<_> = values.into_iter().collect();
-	denied.extend(deleted_workspaces(connection, workspaces).await?);
+	denied.extend(deleted_threads(connection, threads).await?);
 	Ok(denied)
 }
 
-pub(crate) async fn visible(connection: &mut Transaction, workspace: Uuid) -> Result<bool> {
-	Ok(blocked(connection, &[workspace]).await?.is_empty())
+pub(crate) async fn visible(connection: &mut Transaction, thread: Uuid) -> Result<bool> {
+	Ok(blocked(connection, &[thread]).await?.is_empty())
 }
 
-pub(crate) async fn require(connection: &mut Transaction, workspace: Uuid) -> Result<()> {
-	workspace_tenant(connection, workspace).await?;
-	if visible(connection, workspace).await? {
+pub(crate) async fn require(connection: &mut Transaction, thread: Uuid) -> Result<()> {
+	thread_tenant(connection, thread).await?;
+	if visible(connection, thread).await? {
 		Ok(())
 	} else {
 		Err(Error::Forbidden)

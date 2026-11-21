@@ -30,7 +30,7 @@ fn asks(fixture: &mut Fixture, deadline: Option<i64>) -> Uuid {
 fn journal(fixture: &Fixture, request: Uuid, kind: &str, response: Option<Value>) {
 	*fixture.backend.0.human.lock().unwrap() = Some(HumanRequest {
 		id: request,
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: kind.into(),
 		prompt: "Which one?".into(),
@@ -97,7 +97,7 @@ async fn a_question_of_a_person_with_a_deadline_wakes_the_run_that_many_seconds_
 		unreachable!("checked by answer_by");
 	};
 	assert_eq!(waiting.deadline(), Some(by));
-	assert_eq!(last_write(&fixture).0, "run.tool_recorded");
+	assert_eq!(last_write(&fixture).0, "execution.tool_recorded");
 }
 
 #[rstest]
@@ -196,7 +196,7 @@ async fn the_system_answers_a_question_nobody_answered_by_the_deadline(mut fixtu
 	);
 	assert_eq!(stored.answered_by.as_deref(), Some("system"));
 	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
-	assert_eq!(last_write(&fixture).0, "run.resumed");
+	assert_eq!(last_write(&fixture).0, "execution.resumed");
 	let heard = heard(&fixture.run);
 	assert_eq!(heard["answered"], false);
 	assert_eq!(heard["reason"], "answer_deadline");
@@ -301,5 +301,5 @@ async fn a_question_stays_open_until_its_deadline(mut fixture: Fixture) {
 	// Assert
 	assert_eq!(closed(&fixture), 0);
 	assert_eq!(answer_by(&fixture.run), Some(by));
-	assert_eq!(last_write(&fixture).0, "run.waiting");
+	assert_eq!(last_write(&fixture).0, "execution.waiting");
 }

@@ -104,9 +104,9 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 }
 #[test]
 fn only_implicit_defaults_can_be_excluded_remotely() {
-	let descriptor = core_descriptor("aidash://node-a", "agent_discover").unwrap();
+	let descriptor = core_descriptor("aidash://node-a", "duty_list").unwrap();
 	let contract = descriptor
-		.declared_contract(QualifiedRef::builtin("aidash://node-a", "agent_discover"))
+		.declared_contract(QualifiedRef::builtin("aidash://node-a", "duty_list"))
 		.unwrap();
 	assert!(
 		remote_exclusion(BindingOrigin::Default, &contract)

@@ -47,7 +47,7 @@ pub(crate) async fn load(lease: &mut Lease<'_>, id: Uuid, exclusive: bool) -> Re
 		bank: Bank {
 			home: bank.try_get("home")?,
 			tenant: bank.try_get("tenant")?,
-			workspace: bank.try_get("workspace_id")?,
+			thread: bank.try_get("thread_id")?,
 			participant: bank.try_get("participant_id")?,
 		},
 		revision: row.try_get("revision")?,
@@ -110,15 +110,15 @@ async fn authorize_inner(
 	}
 	bank.validate()?;
 	if let Some(access) = lease.access() {
-		let workspace = access.workspace(bank.workspace).await?;
+		let thread = access.thread(bank.thread).await?;
 		if aidash_domain::nodes::deployment_of(&bank.home) != access.node_id
-			|| bank.tenant != workspace.tenant
+			|| bank.tenant != thread.tenant
 			|| bank.tenant != access.identity.tenant
 		{
 			return Err(Error::Forbidden);
 		}
-		access.require(&workspace, "workspace.read").await?;
-		let mut attributes = workspace.attributes;
+		access.require(&thread, "thread.read").await?;
+		let mut attributes = thread.attributes;
 		attributes["participant_id"] = json!(bank.participant);
 		attributes["shared"] = json!(bank.participant.is_none());
 		if let Some(id) = bank.participant {
@@ -136,7 +136,7 @@ async fn authorize_inner(
 			if row.try_get::<bool>("deleted")?
 				|| row.try_get::<String>("home")? != bank.home
 				|| row.try_get::<String>("tenant")? != bank.tenant
-				|| row.try_get::<Uuid>("workspace_id")? != bank.workspace
+				|| row.try_get::<Uuid>("thread_id")? != bank.thread
 			{
 				return Err(Error::Forbidden);
 			}
@@ -146,14 +146,14 @@ async fn authorize_inner(
 		let resource = access.resource(
 			"memory",
 			bank.participant
-				.map_or_else(|| bank.workspace.to_string(), |id| id.to_string()),
+				.map_or_else(|| bank.thread.to_string(), |id| id.to_string()),
 			attributes,
 		);
 		access.require(&resource, action).await?;
 		Ok(())
 	} else {
 		// Deployment Administrator access is still limited by current Home visibility; no executor bank union.
-		crate::authorization::remote::deployment_administrator::require(lease.tx(), bank.workspace)
+		crate::authorization::remote::deployment_administrator::require(lease.tx(), bank.thread)
 			.await?;
 		if let Some(id) = bank.participant {
 			let row = native::query(
@@ -170,7 +170,7 @@ async fn authorize_inner(
 			if row.try_get::<bool>("deleted")?
 				|| row.try_get::<String>("home")? != bank.home
 				|| row.try_get::<String>("tenant")? != bank.tenant
-				|| row.try_get::<Uuid>("workspace_id")? != bank.workspace
+				|| row.try_get::<Uuid>("thread_id")? != bank.thread
 			{
 				return Err(Error::Forbidden);
 			}
@@ -179,22 +179,18 @@ async fn authorize_inner(
 	}
 }
 
-pub(crate) async fn text(
-	lease: &mut Lease<'_>,
-	id: Uuid,
-	workspace: Uuid,
-) -> Result<Option<String>> {
+pub(crate) async fn text(lease: &mut Lease<'_>, id: Uuid, thread: Uuid) -> Result<Option<String>> {
 	let Some(unit) = load(lease, id, false).await? else {
 		return Ok(None);
 	};
-	if unit.bank.workspace != workspace || !unit.visible() {
+	if unit.bank.thread != thread || !unit.visible() {
 		return Ok(None);
 	}
 	authorize(lease, &unit.bank, "memory.read").await?;
 	let policy = unexpired(lease, &unit).await?;
 	current(
 		lease,
-		workspace,
+		thread,
 		&unit.content.evidence,
 		policy.bounds.max_graph_visits,
 	)
@@ -228,37 +224,37 @@ pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<Poli
 /// oversized provenance graphs fail closed rather than delivering partial evidence.
 pub(crate) async fn current(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	evidence: &[aidash_domain::memory::Evidence],
 	max_visits: usize,
 ) -> Result<()> {
-	current_in(lease, workspace, evidence, max_visits, &mut 0).await
+	current_in(lease, thread, evidence, max_visits, &mut 0).await
 }
 
 /// Apply the originating Run's visibility even for credentialless workers.
 pub(crate) async fn current_for_run(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	evidence: &[aidash_domain::memory::Evidence],
 	max_visits: usize,
 	reader: Option<Uuid>,
 ) -> Result<()> {
-	current_in_reader(lease, workspace, evidence, max_visits, &mut 0, reader).await
+	current_in_reader(lease, thread, evidence, max_visits, &mut 0, reader).await
 }
 
 pub(crate) fn current_in<'a>(
 	lease: &'a mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	evidence: &'a [aidash_domain::memory::Evidence],
 	max_visits: usize,
 	visits: &'a mut usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-	current_in_reader(lease, workspace, evidence, max_visits, visits, None)
+	current_in_reader(lease, thread, evidence, max_visits, visits, None)
 }
 
 pub(crate) fn current_in_reader<'a>(
 	lease: &'a mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	evidence: &'a [aidash_domain::memory::Evidence],
 	max_visits: usize,
 	visits: &'a mut usize,
@@ -266,7 +262,7 @@ pub(crate) fn current_in_reader<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
 	sources_in_reader(
 		lease,
-		workspace,
+		thread,
 		evidence,
 		max_visits,
 		visits,
@@ -291,7 +287,7 @@ pub(crate) enum UnitChanges {
 /// [`current_in_reader`] with a choice of how changed Units count.
 pub(crate) fn sources_in_reader<'a>(
 	lease: &'a mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	evidence: &'a [aidash_domain::memory::Evidence],
 	max_visits: usize,
 	visits: &'a mut usize,
@@ -343,7 +339,7 @@ pub(crate) fn sources_in_reader<'a>(
 						let run: aidash_domain::Run = crate::database::query_as(
 							&Query::select()
 								.column(ColumnRef::Asterisk)
-								.from(Alias::new("runs"))
+								.from(Alias::new("task_executions"))
 								.and_where(Expr::col("id").eq(Expr::value(run_id)))
 								.lock(LockType::Share)
 								.to_string(PostgresQueryBuilder),
@@ -351,7 +347,7 @@ pub(crate) fn sources_in_reader<'a>(
 						.fetch_optional(&mut **lease.tx())
 						.await?
 						.ok_or_else(|| Error::Conflict("memory Journal Run removed".into()))?;
-						if run.workspace_id != workspace {
+						if run.thread_id != thread {
 							return Err(Error::Forbidden);
 						}
 						if let Some(access) = lease.access()
@@ -425,12 +421,12 @@ pub(crate) fn sources_in_reader<'a>(
 					}
 					Evidence::Publication { id, revision } => {
 						Box::pin(super::publications::check(
-							lease, workspace, id, revision, max_visits, visits, reader,
+							lease, thread, id, revision, max_visits, visits, reader,
 						))
 						.await?;
 					}
 					Evidence::Unit { bank, id, revision } => {
-						if bank.workspace != workspace {
+						if bank.thread != thread {
 							return Err(Error::Forbidden);
 						}
 						let Some(unit) = load(lease, id, false).await? else {
@@ -475,10 +471,9 @@ pub(crate) fn sources_in_reader<'a>(
 						digest,
 					} => {
 						let mut disclosure = super::disclosure::Disclosure { lease };
-						let message =
-							disclosure.message(id, workspace).await?.ok_or_else(|| {
-								Error::Conflict("memory message source removed".into())
-							})?;
+						let message = disclosure.message(id, thread).await?.ok_or_else(|| {
+							Error::Conflict("memory message source removed".into())
+						})?;
 						if disclosure.scoped() && !disclosure.message_visible(&message).await? {
 							return Err(Error::Forbidden);
 						}
@@ -496,10 +491,9 @@ pub(crate) fn sources_in_reader<'a>(
 						digest,
 					} => {
 						let mut disclosure = super::disclosure::Disclosure { lease };
-						let artifact =
-							disclosure.artifact(id, workspace).await?.ok_or_else(|| {
-								Error::Conflict("memory artifact source removed".into())
-							})?;
+						let artifact = disclosure.artifact(id, thread).await?.ok_or_else(|| {
+							Error::Conflict("memory artifact source removed".into())
+						})?;
 						if disclosure.scoped() && !disclosure.artifact_visible(&artifact).await? {
 							return Err(Error::Forbidden);
 						}
@@ -520,7 +514,7 @@ pub(crate) fn sources_in_reader<'a>(
 						let row = native::query(
 							&Query::select()
 								.column(ColumnRef::Asterisk)
-								.from(Alias::new("runs"))
+								.from(Alias::new("task_executions"))
 								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 								.lock(LockType::Share)
 								.to_string(PostgresQueryBuilder),
@@ -528,7 +522,7 @@ pub(crate) fn sources_in_reader<'a>(
 						.fetch_optional(&mut **lease.tx())
 						.await?
 						.ok_or_else(|| Error::Conflict("memory Run evidence removed".into()))?;
-						if row.try_get::<Uuid>("workspace_id")? != workspace
+						if row.try_get::<Uuid>("thread_id")? != thread
 							|| row.try_get::<i64>("revision")? != revision
 							|| row.try_get::<String>("phase")? != "COMPLETED"
 						{
@@ -539,7 +533,7 @@ pub(crate) fn sources_in_reader<'a>(
 						let run: aidash_domain::Run = crate::database::query_as(
 							&Query::select()
 								.column(ColumnRef::Asterisk)
-								.from(Alias::new("runs"))
+								.from(Alias::new("task_executions"))
 								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 								.to_string(PostgresQueryBuilder),
 						)

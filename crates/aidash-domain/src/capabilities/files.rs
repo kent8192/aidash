@@ -31,8 +31,10 @@ pub enum Representation {
 #[serde(deny_unknown_fields)]
 pub struct FileRead {
 	pub file_id: Uuid,
-	/// Select an Area in a Subnode Workspace created by this Run.
-	pub workspace_id: Option<Uuid>,
+	/// Select an Area in a Subnode Thread created by this Run. A call saved in
+	/// a Run's `pending` before #1008 names it `workspace_id`.
+	#[serde(alias = "workspace_id")]
+	pub thread_id: Option<Uuid>,
 	pub area_id: Option<Uuid>,
 	pub representation: Representation,
 	pub offset: Option<usize>,

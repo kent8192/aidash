@@ -26,7 +26,7 @@ pub(crate) struct WorkerTasks<'a> {
 }
 #[async_trait]
 impl WorkerTaskScope for WorkerTasks<'_> {
-	async fn subnode_members(&mut self, workspace: Uuid) -> Result<Option<Vec<EntityRef>>> {
+	async fn subnode_members(&mut self, thread: Uuid) -> Result<Option<Vec<EntityRef>>> {
 		use crate::apps::execution::models::subnodes::{SubnodeMemberRecord, SubnodeRecord};
 		let tenant = self.access.identity.tenant.clone();
 		let result: NativeResult<Option<Vec<EntityRef>>> = async {
@@ -36,7 +36,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("subnodes"))
 				.and_where(Expr::col("tenant").eq(tenant.clone()))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.lock(LockType::Update)
 				.build(PostgresQueryBuilder);
 			let row = self
@@ -91,6 +91,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		policy: &str,
 		reason: &str,
 		members: Option<&[EntityRef]>,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Assignment> {
 		crate::generation::assign_in_restricted(
 			self.federation,
@@ -98,6 +99,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			task,
 			policy,
 			reason,
+			draft,
 			members,
 		)
 		.await
@@ -109,15 +111,15 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			.record_output_in(
 				&mut self.access.tx,
 				Some(source.id),
-				source.workspace_id,
+				source.thread_id,
 				kind,
 				id,
 			)
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -125,22 +127,22 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()> {
+	async fn related_tasks(&mut self, thread: Uuid, input: &NewTask) -> Result<()> {
 		self.access
-			.related_tasks(workspace, input)
+			.related_tasks(thread, input)
 			.await
 			.map_err(Into::into)
 	}
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: &str,
 	) -> Result<Task> {
 		self.federation
 			.store
-			.create_task_in(&mut self.access.tx, workspace, input, creator, Some(key))
+			.create_task_in(&mut self.access.tx, thread, input, creator, Some(key))
 			.await
 			.map_err(Into::into)
 	}
@@ -160,13 +162,13 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn task_workspace(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+	async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>> {
 		let result: NativeResult<Option<Uuid>> = async {
 			Ok({
 				let query_bind_1 = task;
 				crate::database::native::query_scalar(
 					&Query::select()
-						.column(Alias::new("workspace_id"))
+						.column(Alias::new("thread_id"))
 						.from(Alias::new("tasks"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -252,7 +254,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			let source_row = crate::database::native::query(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(source)))
 					.and_where(
 						Expr::col("tenant")
@@ -277,6 +279,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 							"tenant",
 							"root_subject",
 							"subject_chain",
+							"federated",
 						]
 						.map(Alias::new),
 					)
@@ -287,9 +290,34 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 							.expr(Expr::value(&self.access.identity.tenant))
 							.expr(Expr::value(&self.access.identity.subject))
 							.expr(crate::database::text_array(self.access.subjects.clone()))
+							.expr(super::execution::federated_source(
+								source,
+								&self.access.identity.tenant,
+							))
 							.to_owned(),
 					)
 					.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **self.access.tx)
+			.await?;
+			// A Task a Duty's Run creates works for that Duty too (#1012).
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("tasks"))
+					.value_expr(
+						Alias::new("duty_id"),
+						SimpleExpr::CustomWithExpr(
+							"(SELECT s.duty_id FROM authorization_execution e JOIN tasks s ON s.id = e.task_id AND s.tenant = e.tenant WHERE e.run_id = ? AND e.tenant = ?)".to_owned(),
+							vec![
+								Expr::value(source).into(),
+								Expr::value(self.access.identity.tenant.clone()).into(),
+							],
+						),
+					)
+					.and_where(Expr::col("id").eq(Expr::value(task)))
+					.and_where(Expr::col("tenant").eq(Expr::value(&self.access.identity.tenant)))
+					.and_where(Expr::col("duty_id").is_null())
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **self.access.tx)

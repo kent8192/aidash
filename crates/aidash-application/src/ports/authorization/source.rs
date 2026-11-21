@@ -20,7 +20,7 @@ pub trait SourceAuthorityScope: Send {
 		node: &str,
 		generation: Option<&Value>,
 	) -> Result<()>;
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn source_require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 }

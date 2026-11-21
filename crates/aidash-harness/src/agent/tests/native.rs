@@ -395,7 +395,7 @@ async fn a_native_final_answer_is_a_model_turn_without_calls(mut fixture: Fixtur
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.completed");
+	assert_eq!(event, "execution.completed");
 	assert_eq!(
 		saved.context.events().collect::<Vec<_>>(),
 		[&turn(5, "Final answer", &[])]
@@ -522,7 +522,7 @@ fn native_estimate_counts_the_complete_request_near_the_window(#[case] turns: u3
 	let pinned = json!({
 		"identity":{"node_id":"aidash://fixture","agent_id":"agent","agent_version":"1.0.0"},
 		"task":{"title":"Task","description":"x".repeat(4096)},
-		"workspace":{"workspace_id":Uuid::nil()},
+		"thread":{"thread_id":Uuid::nil()},
 		"agent_state":{"phase":"thinking","step":3},
 		"semantic_memory":{"fact":"observed"},
 	});
@@ -673,7 +673,7 @@ async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture:
 #[tokio::test]
 async fn evidence_offloaded_in_its_own_step_is_journaled_whole(mut fixture: Fixture) {
 	// Arrange: a Run over its window whose older turns hold nothing worth
-	// offloading, and a small protected tail, so this step's new workspace
+	// offloading, and a small protected tail, so this step's new thread
 	// evidence is the one item compaction offloads.
 	native(&mut fixture);
 	let large = "q".repeat(60_000);
@@ -786,6 +786,7 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	let expected = aidash_domain::harness_contract::system_text(
 		aidash_domain::harness_contract::HarnessContract::Structured3,
 		ProjectionVersion::Native,
+		&aidash_domain::standing_instructions::StandingInstructions::default(),
 		"Do the task",
 		&[],
 		"",
@@ -1038,4 +1039,42 @@ async fn withdrawing_a_source_only_the_continuation_rendered_discards_the_summar
 		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
 		Some(Outcome::Unauthorized)
 	);
+}
+
+/// The Tenant and Node Instructions pinned on the Run reach the model between
+/// the contract text and the Agent instructions (#1010).
+#[rstest]
+#[tokio::test]
+async fn pinned_standing_instructions_reach_the_system_text(mut canonical: Fixture) {
+	// Arrange
+	structured(
+		&mut canonical,
+		aidash_domain::harness_contract::HarnessContract::Structured4,
+	);
+	let standing = aidash_domain::standing_instructions::StandingInstructions {
+		tenant: "Reply in Japanese.".into(),
+		node: "Open pull requests as drafts.".into(),
+		duty: String::new(),
+	};
+	canonical.run.context.standing_instructions = Some(standing.clone());
+	// Act
+	let _ = advance_sources(&mut canonical).await;
+	// Assert
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	let expected = aidash_domain::harness_contract::system_text(
+		aidash_domain::harness_contract::HarnessContract::Structured4,
+		ProjectionVersion::Native,
+		&standing,
+		"Do the task",
+		&[],
+		"",
+	);
+	assert_eq!(requests[0].instructions, expected);
+	let tenant = expected
+		.find("# Tenant instructions\n\nReply in Japanese.")
+		.unwrap();
+	let agent = expected
+		.find("# Agent instructions\n\nDo the task")
+		.unwrap();
+	assert!(tenant < agent);
 }

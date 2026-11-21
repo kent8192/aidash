@@ -1,8 +1,7 @@
 //! Selective writes on the caller's native transaction.
-use super::{Artifact, Task, Workspace};
+use super::{Artifact, Task, Thread};
 use crate::apps::workspaces::serializers::entities::{
-	Artifact as ArtifactContract, ArtifactInput, Task as TaskContract,
-	Workspace as WorkspaceContract,
+	Artifact as ArtifactContract, ArtifactInput, Task as TaskContract, Thread as ThreadContract,
 };
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -15,46 +14,79 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-impl Workspace {
-	pub(crate) async fn lock_existing(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+impl Thread {
+	/// Locks a live Thread for new work: an Area admission, a Run started in
+	/// it, a semantic index change. `FOR NO KEY UPDATE` serializes these with
+	/// each other and with [`Self::lock_for_deletion`], but not with the
+	/// foreign key's `KEY SHARE`, so events and messages written in the
+	/// Thread meanwhile do not wait for an admission (#1008).
+	pub async fn lock_existing(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+		Self::lock_live_as(tx, id, LockType::NoKeyUpdate).await
+	}
+
+	/// Deletion's lock. `FOR UPDATE` also waits for every writer holding
+	/// [`Self::lock_live`], and makes every later one wait for the deletion
+	/// to commit and then find the Thread deleted (#1008).
+	pub async fn lock_for_deletion(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+		Self::lock_live_as(tx, id, LockType::Update).await
+	}
+
+	/// A writer's check that the Thread is live, before a Task, a message or a
+	/// title commits into it. The condition is on the locked row itself, so a
+	/// writer that waited for a deletion sees its `deleted_at` and is refused
+	/// instead of committing into the deleted Thread (#1008). `KEY SHARE`
+	/// leaves concurrent writers and admissions alone.
+	pub async fn lock_live(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<()> {
+		Self::lock_live_as(tx, id, LockType::KeyShare).await
+	}
+
+	async fn lock_live_as(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		lock: LockType,
+	) -> Result<()> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.lock(LockType::Update)
+			// A deleted Thread takes no new work (#1008).
+			.and_where(Expr::col("deleted_at").is_null())
+			.lock(lock)
 			.build(PostgresQueryBuilder);
 		if tx
 			.fetch_optional(&sql, convert_values(values))
 			.await?
 			.is_none()
 		{
-			return Err(Error::NotFound("workspace".into()));
+			return Err(Error::NotFound("thread".into()));
 		}
 		Ok(())
 	}
 
-	/// The use case validates the state contract before attempting this CAS.
-	pub(crate) async fn replace_state(
+	/// The use case validates the title before attempting this CAS.
+	pub(crate) async fn replace_title(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
 		revision: i64,
-		state: Value,
-	) -> Result<WorkspaceContract> {
+		title: String,
+	) -> Result<ThreadContract> {
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
-			.value_expr(Alias::new("state"), Expr::value(state))
+			.value_expr(Alias::new("title"), Expr::value(title))
 			.value_expr(
 				Alias::new("revision"),
 				Expr::col("revision").add(reinhardt::query::Expr::value(1_i64)),
 			)
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("revision").eq(Expr::value(revision)))
+			// Rechecked on the row a concurrent deletion wrote (#1008).
+			.and_where(Expr::col("deleted_at").is_null())
 			.returning_all()
 			.build(PostgresQueryBuilder);
 		let row = tx
 			.fetch_optional(&sql, convert_values(values))
 			.await?
-			.ok_or_else(|| Error::Conflict("workspace revision changed".into()))?;
+			.ok_or_else(|| Error::Conflict("thread revision changed".into()))?;
 		Ok(serde_json::from_value(
 			QueryRow::from_backend_row(row).data,
 		)?)
@@ -100,7 +132,7 @@ impl Task {
 		let tenant = crate::database::scope::parent_tenant(tx, "tasks", "id", task.id).await?;
 		let draft = Artifact::build()
 			.tenant(tenant)
-			.workspace(task.workspace_id)
+			.thread(task.thread_id)
 			.task(task.id)
 			.kind(serde_json::from_value(Value::String(
 				artifact.kind.clone(),

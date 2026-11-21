@@ -141,8 +141,8 @@ impl SourceAuthorityScope for Producer<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)
@@ -240,12 +240,12 @@ impl SourceReadScope for Scope<'_> {
 					.column(Asterisk)
 					.from(Alias::new("authorization_remote_grants"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=? AND node_id=? AND tenant=? AND NOT revoked AND expires_at>CLOCK_TIMESTAMP())"
-							.to_owned(),
+						"(id=? AND node_id=? AND tenant=? AND ?)".to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),
 							Expr::value(query_bind_3.to_owned()).into(),
+							super::live_condition("authorization_remote_grants"),
 						],
 					))
 					.lock(LockType::Share)

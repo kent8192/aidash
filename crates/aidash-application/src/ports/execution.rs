@@ -17,17 +17,20 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub struct WorkspaceEvent {
+pub struct ThreadEvent {
 	pub generation: i64,
 	pub task_id: Uuid,
 	pub status: String,
+	/// A Duty event delivered to this Run, which booked it (#1011): its
+	/// trigger and content, given to the model as data.
+	pub duty_event: Option<serde_json::Value>,
 }
 
-/// The Workspace task changes a waiting Run is told about.
+/// The Thread task changes a waiting Run is told about.
 #[derive(Debug, Clone, Default)]
-pub struct WorkspaceEvents {
+pub struct ThreadEvents {
 	/// The newest changes, oldest first. The store bounds how many it returns.
-	pub events: Vec<WorkspaceEvent>,
+	pub events: Vec<ThreadEvent>,
 	/// How many older changes the bound left out. The Run's cursor moves past
 	/// them, so only this count tells the Agent that it was not told of them.
 	pub dropped: u64,
@@ -42,6 +45,7 @@ pub struct ExecutionAgent {
 	pub reference_files: usize,
 	pub tools: Vec<EntityRef>,
 	pub skills: Vec<EntityRef>,
+	/// No longer a limit (#1009, ADR 0141): always `i32::MAX`.
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
@@ -131,8 +135,8 @@ pub enum InferenceInterruption {
 
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
-	/// Workspace task changes after the Run's durable cursor, in generation order.
-	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents>;
+	/// Thread task changes after the Run's durable cursor, in generation order.
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<ThreadEvents>;
 	/// Number of locally created or delegated Tasks that remain unfinished.
 	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64>;
 	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
@@ -169,31 +173,35 @@ pub trait ExecutionStore: Send + Sync {
 	/// Persist inference inputs without ending the worker's current lease. Return
 	/// the updated Run revision so the response uses the same durable boundary.
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.sources_observed").await
+		self.save_run(run, token, "execution.sources_observed")
+			.await
 	}
 	/// Persist a step that ran with Degraded context without ending the
-	/// worker's lease, and emit `run.semantic_degraded` (ADR 0059).
+	/// worker's lease, and emit `execution.semantic_degraded` (ADR 0059).
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.semantic_degraded").await
+		self.save_run(run, token, "execution.semantic_degraded")
+			.await
 	}
-	/// Persist a workspace's recovery before a later memory failure reloads the
+	/// Persist a thread's recovery before a later memory failure reloads the
 	/// Run. Keep the current lease and adopt the saved Run revision.
 	async fn recover_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.semantic_recovered").await
+		self.save_run(run, token, "execution.semantic_recovered")
+			.await
 	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.estimate_pinned").await
+		self.save_run(run, token, "execution.estimate_pinned").await
 	}
 	/// Persist the plugin tools the Run just pinned without ending the worker's
 	/// lease, so a recovered Run never lists its servers again (ADR 0073).
 	async fn pin_plugin_tools(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.plugin_tools_pinned").await
+		self.save_run(run, token, "execution.plugin_tools_pinned")
+			.await
 	}
 	/// A known MCP wire outcome or input answer, retaining the current lease.
 	async fn checkpoint_mcp(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		self.save_run(run, token, "run.mcp_checkpoint").await
+		self.save_run(run, token, "execution.mcp_checkpoint").await
 	}
 	/// Publish a sampling completion and finish its attempt atomically.
 	async fn finish_sampling(
@@ -220,7 +228,14 @@ pub trait ExecutionStore: Send + Sync {
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
 		Ok(Vec::new())
 	}
-	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
+	async fn emit(&self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
+	/// The Duty script this Run executes instead of asking a model (#1011,
+	/// ADR 0142). Only the Duty service records one, for a Task it started to
+	/// run its Router or Watcher, so every other Run asks a model. A Task
+	/// started for a script that went with its Duty answers `Gone`.
+	async fn duty_script(&self, _run: &Run) -> Result<aidash_domain::duties::scripts::TaskScript> {
+		Ok(aidash_domain::duties::scripts::TaskScript::Model)
+	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
 	/// The commit fence before Task completion. Unless a newer input is
 	/// accepted, it also persists the Run's Completion Gate progress, so a Task
@@ -439,10 +454,10 @@ pub trait ExecutionHome: Send + Sync {
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value>;
-	/// Read a Workspace owned by a Subnode created by this Run.
+	/// Read a Thread owned by a Subnode created by this Run.
 	async fn read_subnode_record_chunk(
 		&self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_kind: &str,
 		_id: &str,
 		_offset: usize,
@@ -450,9 +465,9 @@ pub trait ExecutionHome: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// The Workspace view the model's observe tool reads: every event.
+	/// The Thread view the model's observe tool reads: every event.
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value>;
-	/// The Workspace view a step pins as evidence: `observation` without the
+	/// The Thread view a step pins as evidence: `observation` without the
 	/// Run's own events, which its history already holds and every step
 	/// renews (#942).
 	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value>;
@@ -648,13 +663,13 @@ pub trait ExecutionVisibility: Send {
 	async fn suspend(&mut self) -> Result<()>;
 	async fn resume(&mut self) -> Result<()>;
 }
-/// Workspace retrieval progress survives a later native-memory failure. The
+/// Thread retrieval progress survives a later native-memory failure. The
 /// executor persists recovery of an earlier outage before propagating `result`.
 #[derive(Debug)]
 pub struct SemanticContextRead {
 	pub selections: Vec<aidash_domain::context::source::SelectionEvidence>,
 	pub contributions: Vec<aidash_domain::context::source::SourceContribution>,
-	pub workspace_retrieved: bool,
+	pub thread_retrieved: bool,
 	pub result: Result<Option<Value>>,
 }
 

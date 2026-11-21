@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub struct PermissionInput {
 	pub tenant: String,
 	pub subject: String,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -27,7 +27,7 @@ pub struct PermissionRow {
 pub struct PermissionContext {
 	pub tenant: String,
 	pub subject: String,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 	pub policy_revision: i64,
 	pub observed_at: DateTime<Utc>,
 	pub requested_capabilities: Vec<String>,

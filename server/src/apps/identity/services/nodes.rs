@@ -19,6 +19,7 @@ use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{self as domain, Node};
 use aidash_domain::tenancy::TenantName;
 use serde_json::json;
+use uuid::Uuid;
 
 pub struct Nodes {
 	runtime: Federation,
@@ -195,7 +196,7 @@ impl Nodes {
 							tx,
 							&tenant,
 							&label,
-							Creator::Identity(administrator.identity_id),
+							Creator::Identity(administrator.identity_id).into(),
 							&actor,
 							&mut snapshot,
 						)
@@ -232,7 +233,7 @@ impl Nodes {
 								&snapshot,
 								rules::NODE_UPDATE,
 								name.as_str(),
-								json!({"label": current.label, "default": current.default}),
+								nodes::policy_attributes(&current.label, current.default),
 							)
 							.await?;
 						relabel_in(
@@ -357,7 +358,7 @@ impl Nodes {
 										&snapshot,
 										change.permission(),
 										name.as_str(),
-										json!({"label": current.label,"default":current.default}),
+										nodes::policy_attributes(&current.label, current.default),
 									)
 									.await?;
 								change_in(
@@ -494,7 +495,7 @@ async fn change_in(
 				registration: None,
 				mapping: None,
 				tenant: Some(tenant),
-				subject: None,
+				subject: concerned_subject(actor),
 				invitation: None,
 			},
 			name,
@@ -520,7 +521,7 @@ async fn create_in(
 	tx: &mut reinhardt::db::orm::AtomicTransaction,
 	tenant: &str,
 	label: &str,
-	creator: Creator,
+	creator: nodes::NodeCreator,
 	actor: &AdministrationActor,
 	snapshot: &mut crate::authorization::Snapshot,
 ) -> Result<Node> {
@@ -552,7 +553,7 @@ async fn create_in(
 				registration: None,
 				mapping: None,
 				tenant: Some(tenant),
-				subject: None,
+				subject: concerned_subject(actor),
 				invitation: None,
 			},
 			node.name.as_str(),
@@ -594,4 +595,344 @@ async fn relabel_in(
 		)
 		.await?;
 	Ok(node)
+}
+
+/// The person an Agent's chain acted as, recorded as the history event's
+/// concerned subject because the history has no actor-subject column.
+fn concerned_subject(actor: &AdministrationActor) -> Option<&str> {
+	match actor {
+		AdministrationActor::Agent { subject } => Some(subject),
+		_ => None,
+	}
+}
+
+/// The person an Agent's Run acts as, with the credential it was admitted
+/// with (#1012, ADR 0143). A Run that arrived through Federation, and a Run
+/// whose chain starts at no person, has nobody to act as.
+struct AgentCaller {
+	identity: crate::authorization::identity::SubjectIdentity,
+}
+
+async fn agent_caller(f: &Federation, run: &aidash_domain::Run) -> Result<AgentCaller> {
+	use aidash_application::ports::authorization::ExecutionGrantRepository;
+	if !run.is_local(f.config.deployment.as_str()) {
+		return Err(Error::Invalid(
+			"a Run that arrived through Federation cannot create or delete Nodes here".into(),
+		));
+	}
+	let grant = crate::apps::identity::repositories::execution::Grants { store: &f.store }
+		.grant(run.id)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	let owner = crate::apps::identity::repositories::oauth_connections::owner_of_run(&f.store, run)
+		.await?
+		.ok_or_else(|| {
+			Error::Invalid(
+				"Nodes are created only for a person, and this conversation starts at no person"
+					.into(),
+			)
+		})?;
+	Ok(AgentCaller {
+		identity: crate::authorization::identity::SubjectIdentity {
+			http_session: None,
+			credential_id: grant.credential_id,
+			tenant: owner.tenant,
+			subject: owner.subject,
+		},
+	})
+}
+
+type Verdict = (
+	aidash_domain::policy::Evaluation,
+	aidash_domain::policy::Decision,
+);
+
+/// One decision of the Tenant's policy for the root person, recorded in the
+/// decision log as a Tenant Administrator's is. A denial is kept to be
+/// recorded after its transaction rolls back.
+fn decide(
+	f: &Federation,
+	identity: &crate::authorization::identity::SubjectIdentity,
+	snapshot: &crate::authorization::Snapshot,
+	action: &str,
+	id: &str,
+	attributes: serde_json::Value,
+) -> Verdict {
+	let evaluation = aidash_domain::policy::Evaluation {
+		subject: identity.subject.clone(),
+		action: action.into(),
+		resource: aidash_domain::policy::Resource {
+			tenant: identity.tenant.clone(),
+			kind: rules::resource_kind(action).into(),
+			id: id.into(),
+			attributes,
+		},
+		environment: json!({"node_id": f.config.deployment.as_str(), "transport": "agent"}),
+	};
+	let mut decision = snapshot.bundle.evaluate(&evaluation);
+	decision.revision = snapshot.revision;
+	(evaluation, decision)
+}
+
+/// Commits a denial whose transaction rolled back, so the decision log shows it.
+async fn record_denial(f: &Federation, tenant: &str, denial: Option<Verdict>) -> Result<()> {
+	let Some((evaluation, decision)) = denial else {
+		return Ok(());
+	};
+	f.store
+		.pool
+		.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+			crate::apps::identity::models::AuthorizationDecision::append(
+				tx,
+				tenant,
+				&evaluation,
+				&decision,
+			)
+			.await
+		})
+		.await
+}
+
+/// A Node tool call by an Agent (#1012, ADR 0143): `node_create` or
+/// `node_delete`, acting as the person at the root of the Run's chain. Both are
+/// Authority Changes: the harness releases the Run's own lease first.
+pub async fn agent_tool(
+	f: &Federation,
+	run: &aidash_domain::Run,
+	key: &str,
+	operation: &str,
+	input: serde_json::Value,
+) -> Result<serde_json::Value> {
+	match agent_call(f, run, key, operation, input).await {
+		// A busy Tenant refuses an Authority Change before it changes
+		// anything (ADR 0121); the Agent is told to call again, as a person
+		// is, instead of the call being left uncertain.
+		Err(Error::PolicyBusy { retry_after }) => Err(Error::Invalid(format!(
+			"the Tenant's policy is busy with another change; call again in {retry_after} seconds"
+		))),
+		result => result,
+	}
+}
+
+async fn agent_call(
+	f: &Federation,
+	run: &aidash_domain::Run,
+	key: &str,
+	operation: &str,
+	input: serde_json::Value,
+) -> Result<serde_json::Value> {
+	use aidash_application::nodes::tool;
+	let caller = agent_caller(f, run).await?;
+	// Persist a removed Tenant Binding's disablement before any lease.
+	caller.identity.check_binding(&f.store.pool).await?;
+	match operation {
+		"node_create" => {
+			let input: tool::Create =
+				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+			let label = domain::label(&input.label)?;
+			let node = agent_create(f, run, &caller, key, &label).await?;
+			Ok(json!({
+				"node": node.name.as_str(),
+				"address": f.config.deployment.node(node.name.clone()).to_string(),
+				"label": node.label,
+				"created_at": node.created_at,
+			}))
+		}
+		"node_delete" => {
+			let input: tool::Delete =
+				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+			let name = domain::NodeName::parse(&input.node)?;
+			if name == run.node {
+				return Err(Error::Invalid(
+					"a Run cannot delete the Node it runs on".into(),
+				));
+			}
+			let (node, deletion) = agent_delete(f, run, &caller, name.as_str()).await?;
+			Ok(json!({
+				"node": node.name.as_str(),
+				"label": node.label,
+				"deleted": true,
+				"restorable_until": deletion.as_ref().map(|row| row.purge_after),
+			}))
+		}
+		_ => Err(Error::Invalid("unknown Node tool".into())),
+	}
+}
+
+async fn agent_create(
+	f: &Federation,
+	run: &aidash_domain::Run,
+	caller: &AgentCaller,
+	key: &str,
+	label: &str,
+) -> Result<Node> {
+	let identity = &caller.identity;
+	let tenant = identity.tenant.clone();
+	let key = aidash_domain::nodes::agents::creation_key(key)?;
+	// Decided on a policy read before the lock, as a Tenant Administrator's
+	// change is: a person no policy could allow `node.create` takes the
+	// ordinary lock, so the Tenant's work never waits for a refusal (ADR 0121).
+	let read = crate::apps::identity::services::core::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.snapshot(&tenant)
+	.await?;
+	let exclusive = read.bundle.may_allow(&identity.subject, rules::NODE_CREATE);
+	let policy = f.config.dashboard_policy();
+	let denial = std::sync::Mutex::new(None);
+	let result = f
+		.store
+		.pool
+		.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+			let mut snapshot = identity.lock_native(tx, exclusive, policy.as_ref()).await?;
+			if !exclusive
+				&& snapshot
+					.bundle
+					.may_allow(&identity.subject, rules::NODE_CREATE)
+			{
+				return Err(Error::Conflict("authorization revision changed".into()));
+			}
+			// A retried call returns the Node its first call created.
+			if let Some(existing) = nodes::created_by_call(tx, &tenant, run.id, key).await? {
+				return Ok(existing);
+			}
+			let (evaluation, decision) = decide(
+				f,
+				identity,
+				&snapshot,
+				rules::NODE_CREATE,
+				&tenant,
+				json!({}),
+			);
+			if !decision.allowed {
+				*denial.lock().expect("denial lock") = Some((evaluation, decision));
+				return Err(Error::Forbidden);
+			}
+			crate::apps::identity::models::AuthorizationDecision::append(
+				tx,
+				&tenant,
+				&evaluation,
+				&decision,
+			)
+			.await?;
+			create_in(
+				f,
+				tx,
+				&tenant,
+				label,
+				nodes::NodeCreator::Agent(nodes::AgentCreation {
+					subject: identity.subject.clone(),
+					run: run.id,
+					task: run.task_id,
+					key: key.to_owned(),
+				}),
+				&AdministrationActor::Agent {
+					subject: identity.subject.clone(),
+				},
+				&mut snapshot,
+			)
+			.await
+		})
+		.await;
+	match result {
+		Err(Error::Forbidden) => {
+			record_denial(f, &tenant, denial.into_inner().expect("denial lock")).await?;
+			Err(Error::Invalid(
+				"the person who started this conversation may not create Nodes in this Tenant (node.create)"
+					.into(),
+			))
+		}
+		Err(Error::NodeLimitReached) => Err(Error::Invalid(
+			"the Tenant already holds as many Nodes as its plan allows".into(),
+		)),
+		result => result,
+	}
+}
+
+/// Whether the Run's flow created Node `name`: the Root Task of the Task whose
+/// Run created it is the Root Task of `task`, the deleting Run's Task (#1012
+/// decision 20).
+async fn created_by_own_flow(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	name: &str,
+	task: Uuid,
+) -> Result<bool> {
+	let names = [name.to_owned()];
+	let creators = nodes::creators(tx, tenant, Some(names.as_slice())).await?;
+	let creator = creators
+		.get(name)
+		.ok_or_else(|| Error::NotFound("node not found".into()))?;
+	let creating = match creator {
+		aidash_domain::nodes::agents::NodeCreator::Agent { task_id, .. } => Some(*task_id),
+		_ => None,
+	};
+	let tasks: Vec<Uuid> = creating.into_iter().chain([task]).collect();
+	let roots = aidash_application::flows::roots(
+		&mut crate::apps::identity::repositories::flows::NativeFlowGraph {
+			tx,
+			tenant: tenant.to_owned(),
+		},
+		&tasks,
+	)
+	.await?;
+	Ok(aidash_domain::nodes::agents::may_delete(
+		creator,
+		creating.and_then(|creating| roots.get(&creating).copied()),
+		roots.get(&task).copied().unwrap_or(task),
+	)
+	.is_ok())
+}
+
+/// An Agent deletes only a Node its own flow created; even its root person's
+/// `node.delete` does not widen that (#1012 decision 20). The deletion takes
+/// the policy exclusively, as a Tenant Administrator's does (ADR 0121); a
+/// refused call takes no lock.
+async fn agent_delete(
+	f: &Federation,
+	run: &aidash_domain::Run,
+	caller: &AgentCaller,
+	name: &str,
+) -> Result<(Node, Option<NodeDeletion>)> {
+	let identity = &caller.identity;
+	let tenant = identity.tenant.clone();
+	let scope = TenancyScope::tenant(&tenant)?;
+	let refused = || {
+		Error::Invalid(
+			"only a Node that this conversation's own flow created can be deleted; a person deletes any other Node"
+				.into(),
+		)
+	};
+	let own = f
+		.store
+		.pool
+		.atomic(&scope, async |tx| {
+			created_by_own_flow(tx, &tenant, name, run.task_id).await
+		})
+		.await?;
+	if !own {
+		return Err(refused());
+	}
+	let policy = f.config.dashboard_policy();
+	f.store
+		.pool
+		.atomic(&scope, async |tx| {
+			identity.lock_native(tx, true, policy.as_ref()).await?;
+			if !created_by_own_flow(tx, &tenant, name, run.task_id).await? {
+				return Err(refused());
+			}
+			let (node, deletion, _) = change_in(
+				f,
+				tx,
+				&tenant,
+				name,
+				&Change::Delete(name.to_owned()),
+				&AdministrationActor::Agent {
+					subject: identity.subject.clone(),
+				},
+			)
+			.await?;
+			Ok((node, deletion))
+		})
+		.await
 }

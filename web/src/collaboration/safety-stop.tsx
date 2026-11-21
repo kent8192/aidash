@@ -55,7 +55,7 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
   const attempt = useRef<{ signature: string; key: string }>(undefined);
   // Only the newest lookup may write; an older response is ignored.
   const lookups = useRef(0);
-  const path = `/api/runs/${encodeURIComponent(run.trim())}/management`;
+  const path = `/api/executions/${encodeURIComponent(run.trim())}/management`;
   const target = safetyStopTarget(tenant, run);
   // Facts are valid only for the target they were read for, so editing the
   // Tenant or Run ID drops them and a stop cannot reuse another Run's revision.
@@ -64,7 +64,7 @@ export function SafetyStopPanel({ run: initialRun = "" }: { run?: string }) {
   const read = async () => {
     const [named, id] = JSON.parse(target) as [string, string];
     const facts = await apiFetch<RunControlFacts>(
-      `/api/runs/${encodeURIComponent(id)}/management?tenant=${encodeURIComponent(named)}`,
+      `/api/executions/${encodeURIComponent(id)}/management?tenant=${encodeURIComponent(named)}`,
     );
     return { target, facts };
   };

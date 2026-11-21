@@ -58,7 +58,7 @@ fn repository() -> Repository {
 	let now = DateTime::<Utc>::from_timestamp(1000, 0).unwrap();
 	let task = Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: "Work".into(),
 		status: TaskStatus::Open,

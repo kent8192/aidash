@@ -185,7 +185,7 @@ async fn cancel_stalled_inference(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"cancel"}),
 		),
 	)
@@ -239,7 +239,7 @@ async fn cancel_stalled_inference(
 	);
 	let snapshot = f
 		.store
-		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
 	assert!(snapshot.artifacts.is_empty());
@@ -304,7 +304,7 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 	assert!(json!(current.state)["data"].get("response").is_none());
 	let snapshot = f
 		.store
-		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
 	assert!(
@@ -454,7 +454,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	assert!(json!(current.state)["data"].get("response").is_none());
 	let snapshot = f
 		.store
-		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
 	assert!(
@@ -529,7 +529,7 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 	assert!(json!(current.state)["data"].get("response").is_none());
 	let snapshot = f
 		.store
-		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
 	assert!(
@@ -609,7 +609,7 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let snapshot = f
 		.store
-		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;
@@ -686,7 +686,7 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let snapshot = f
 		.store
-		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;

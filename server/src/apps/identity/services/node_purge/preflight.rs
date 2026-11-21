@@ -69,9 +69,9 @@ pub(super) async fn check(
 		.to_owned();
 	refuse(
 		tx,
-		"runs",
+		"task_executions",
 		owners
-			.predicate("runs")?
+			.predicate("task_executions")?
 			.or(Expr::col("id").in_subquery(area_runs))
 			.and(
 				Expr::col("phase")

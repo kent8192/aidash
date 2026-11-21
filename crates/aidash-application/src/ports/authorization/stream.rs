@@ -1,7 +1,7 @@
 //! Idle stream snapshots grant no right to emit; each frame retains a live lease.
 use super::visibility::RunVerdicts;
 use crate::Result;
-use aidash_domain::Event;
+use aidash_domain::{Event, policy::Resource};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -10,6 +10,10 @@ pub struct AuthorityRecord {
 	pub revision: i64,
 	pub document: Value,
 	pub owner_subject: Option<String>,
+	/// The Duty whose own Thread the selected Thread is, read with its owner.
+	pub duty_id: Option<Uuid>,
+	/// The selected Thread's Node policy resource from the same snapshot.
+	pub node: Option<Resource>,
 	pub mapping_id: Option<Uuid>,
 	pub mapping_enabled: Option<bool>,
 	pub issuer: Option<String>,
@@ -26,24 +30,24 @@ pub trait StreamAuthorityStore: Send + Sync {
 	fn reports_status(&self, issuer: &str) -> bool;
 	fn now(&self) -> DateTime<Utc>;
 	/// One unlocked MVCC snapshot; credential expiry remains evaluated by PostgreSQL.
-	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>>;
+	async fn current(&self, thread: Option<Uuid>) -> Result<Option<AuthorityRecord>>;
 }
 #[async_trait]
 pub trait StreamSession: Send + super::visibility::RowOutcome {
-	async fn event_workspaces(&mut self, workspace: Option<Uuid>) -> Result<Vec<Uuid>>;
-	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
+	async fn event_threads(&mut self, thread: Option<Uuid>) -> Result<Vec<Uuid>>;
+	async fn require_thread(&mut self, thread: Uuid, action: &str) -> Result<()>;
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>>;
-	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
+	async fn allowed(&mut self, thread: Uuid, action: &str) -> Result<bool>;
 	async fn stream_rows(
 		&mut self,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 	) -> Result<Vec<Event>>;
 	async fn read_rows(
 		&mut self,
 		cursor: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 		page_size: usize,
 	) -> Result<Vec<Event>>;

@@ -1340,7 +1340,7 @@ impl DashboardMapping {
 		}
 		// The person's Schedules stop with their Mapping and wait for a
 		// successor; nobody runs them in their name (#557, ADR 0134).
-		crate::apps::workspaces::services::schedules::stop_for_registrant(
+		crate::apps::workspaces::services::duties::stop_for_requester(
 			tx,
 			&self.tenant,
 			&self.subject,

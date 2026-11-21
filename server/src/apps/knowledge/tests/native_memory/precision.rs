@@ -16,11 +16,11 @@ async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

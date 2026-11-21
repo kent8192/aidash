@@ -11,123 +11,123 @@ use reinhardt::{delete, get, post};
 use uuid::Uuid;
 
 #[post(
-	"/api/workspaces/{workspace}/semantic/index",
+	"/api/threads/{thread}/semantic/index",
 	name = "semantic-configure",
 	auth = "protected"
 )]
 pub async fn configure(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<ConfigureIndex>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.configure(actor, workspace, input).await)
+	crate::http::json(service.configure(actor, thread, input).await)
 }
 
 #[get(
-	"/api/workspaces/{workspace}/semantic/index",
+	"/api/threads/{thread}/semantic/index",
 	name = "semantic-index",
 	auth = "protected"
 )]
 pub async fn index(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.index(actor, workspace).await)
+	crate::http::json(service.index(actor, thread).await)
 }
 
 #[post(
-	"/api/workspaces/{workspace}/semantic/entries",
+	"/api/threads/{thread}/semantic/entries",
 	name = "semantic-put",
 	auth = "protected"
 )]
 pub async fn put(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<PutEntry>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.put(actor, workspace, input).await)
+	crate::http::json(service.put(actor, thread, input).await)
 }
 
 #[get(
-	"/api/workspaces/{workspace}/semantic/entries",
+	"/api/threads/{thread}/semantic/entries",
 	name = "semantic-entries",
 	auth = "protected"
 )]
 pub async fn entries(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.entries(actor, workspace).await)
+	crate::http::json(service.entries(actor, thread).await)
 }
 
 #[delete(
-	"/api/workspaces/{workspace}/semantic/entries/{id}",
+	"/api/threads/{thread}/semantic/entries/{id}",
 	name = "semantic-delete",
 	auth = "protected"
 )]
 pub async fn delete(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path((workspace, id)): Path<(Uuid, Uuid)>,
+	Path((thread, id)): Path<(Uuid, Uuid)>,
 	Json(input): Json<Revision>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.delete(actor, (workspace, id), input).await)
+	crate::http::json(service.delete(actor, (thread, id), input).await)
 }
 
 #[post(
-	"/api/workspaces/{workspace}/semantic/entries/{id}/reindex",
+	"/api/threads/{thread}/semantic/entries/{id}/reindex",
 	name = "semantic-reindex",
 	auth = "protected"
 )]
 pub async fn reindex(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path((workspace, id)): Path<(Uuid, Uuid)>,
+	Path((thread, id)): Path<(Uuid, Uuid)>,
 	Json(input): Json<Revision>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.reindex(actor, (workspace, id), input).await)
+	crate::http::json(service.reindex(actor, (thread, id), input).await)
 }
 
 #[post(
-	"/api/workspaces/{workspace}/semantic/search",
+	"/api/threads/{thread}/semantic/search",
 	name = "semantic-search",
 	auth = "protected"
 )]
 pub async fn search(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<Search>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.search(actor, workspace, input).await)
+	crate::http::json(service.search(actor, thread, input).await)
 }
 
 #[get(
-	"/api/workspaces/{workspace}/semantic/history",
+	"/api/threads/{thread}/semantic/history",
 	name = "semantic-history",
 	auth = "protected"
 )]
 pub async fn history(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.history(actor, workspace).await)
+	crate::http::json(service.history(actor, thread).await)
 }
 
 #[get(
-	"/api/workspaces/{workspace}/semantic/cleanup",
+	"/api/threads/{thread}/semantic/cleanup",
 	name = "semantic-cleanup",
 	auth = "protected"
 )]
 pub async fn cleanup(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.cleanup(actor, workspace).await)
+	crate::http::json(service.cleanup(actor, thread).await)
 }

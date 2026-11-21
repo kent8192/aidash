@@ -91,7 +91,7 @@ impl RunInput {
 	async fn locked_run(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<RunContract> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
@@ -165,7 +165,7 @@ impl RunInput {
 		)?;
 		if !run.ledger_worker_ready {
 			let (sql, values) = Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(Alias::new("ledger_worker_ready"), Expr::value(true))
 				.and_where(Expr::col("id").eq(Expr::value(run_id)))
 				.build(PostgresQueryBuilder);
@@ -192,14 +192,14 @@ impl RunInput {
 				IntoValue::into_value(sender).into(),
 				IntoValue::into_value(content).into(),
 				IntoValue::into_value(key).into(),
-				crate::database::scope::tenant_of("runs", "id", run_id),
+				crate::database::scope::tenant_of("task_executions", "id", run_id),
 			])
 			.expect("one value per column")
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		if run.is_local(node) {
 			let message =
-				Message::append_in(tx, run.workspace_id, sender, content, key, publisher).await?;
+				Message::append_in(tx, run.thread_id, sender, content, key, publisher).await?;
 			Self::bind_message(tx, run_id, key, message.id).await?;
 		}
 		Ok(false)
@@ -217,7 +217,7 @@ impl RunInput {
 			.await
 			.map(|_| ())
 	}
-	/// Admit what another Run writes to `run`. Its copy in `run`'s Workspace names
+	/// Admit what another Run writes to `run`. Its copy in `run`'s Thread names
 	/// the writing Run, as that Run's own messages do.
 	pub(crate) async fn admit_from_run(
 		tx: &mut dyn TransactionExecutor,
@@ -231,7 +231,7 @@ impl RunInput {
 			.await
 			.map(|_| ())
 	}
-	/// The Workspace of `run` and the message bound to its input `key`, if the
+	/// The Thread of `run` and the message bound to its input `key`, if the
 	/// message was written locally.
 	pub(crate) async fn local_message_of(
 		tx: &mut dyn TransactionExecutor,
@@ -245,7 +245,7 @@ impl RunInput {
 			.find(|input| input.idempotency_key == key);
 		Ok(input
 			.and_then(|input| input.message_id)
-			.map(|message| (run.workspace_id, message)))
+			.map(|message| (run.thread_id, message)))
 	}
 	pub(crate) async fn admit_media(
 		tx: &mut dyn TransactionExecutor,
@@ -315,7 +315,7 @@ impl RunInput {
 					IntoValue::into_value(key).into(),
 					IntoValue::into_value(message.id).into(),
 					IntoValue::into_value(reference_only).into(),
-					crate::database::scope::tenant_of("runs", "id", run_id),
+					crate::database::scope::tenant_of("task_executions", "id", run_id),
 				])
 				.expect("one value per column")
 				.on_conflict(

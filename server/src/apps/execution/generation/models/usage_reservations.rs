@@ -107,9 +107,9 @@ impl GenerationRequest {
 	pub(crate) async fn released_policy(
 		tx: &mut dyn TransactionExecutor,
 		request: Uuid,
-	) -> Result<Option<(String, String)>> {
+	) -> Result<Option<(String, String, i64)>> {
 		let (sql, values) = Query::select()
-			.columns(["tenant", "policy_id"].map(Alias::new))
+			.columns(["tenant", "policy_id", "token_limit"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(request)))
 			.and_where(Expr::col("quota_released").eq(reinhardt::query::Expr::value(true)))
@@ -120,6 +120,7 @@ impl GenerationRequest {
 				Ok((
 					row.get("tenant").map_err(FrameworkError::from)?,
 					row.get("policy_id").map_err(FrameworkError::from)?,
+					row.get("token_limit").map_err(FrameworkError::from)?,
 				))
 			})
 			.transpose()
@@ -165,7 +166,8 @@ impl GenerationUsage {
 		run: Uuid,
 		amount: i64,
 	) -> Result<()> {
-		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
 		let record = Self::build()
 			.tenant(tenant)
 			.request_id(request)
@@ -201,7 +203,7 @@ impl GenerationUsage {
 
 pub(crate) struct EmbeddingAttempt<'a> {
 	pub id: uuid::Uuid,
-	pub workspace: uuid::Uuid,
+	pub thread: uuid::Uuid,
 	pub run: Option<uuid::Uuid>,
 	pub entry: Option<uuid::Uuid>,
 	pub purpose: &'a str,
@@ -223,7 +225,7 @@ impl GenerationEmbeddingUsage {
 				[
 					"request_id",
 					"attempt_id",
-					"workspace_id",
+					"thread_id",
 					"run_id",
 					"entry_id",
 					"purpose",
@@ -238,7 +240,7 @@ impl GenerationEmbeddingUsage {
 			.values_expr(vec![
 				IntoValue::into_value(request).into(),
 				IntoValue::into_value(attempt.id).into(),
-				IntoValue::into_value(attempt.workspace).into(),
+				IntoValue::into_value(attempt.thread).into(),
 				IntoValue::into_value(attempt.run).into(),
 				IntoValue::into_value(attempt.entry).into(),
 				IntoValue::into_value(attempt.purpose).into(),

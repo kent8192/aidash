@@ -180,7 +180,7 @@ pub async fn local_run(
 	agent: &aidash_server::registry::Entry,
 ) -> aidash_server::domain::Run {
 	let owner = aidash_server::domain::qualified_agent(
-		&workspace_node(store, task.workspace_id).await,
+		&thread_node(store, task.thread_id).await,
 		&agent.id,
 		&agent.version,
 	);
@@ -199,24 +199,24 @@ pub async fn local_run(
 		.expect("the claim queues a Run")
 }
 
-/// The address of the Node a Workspace belongs to.
+/// The address of the Node a Thread belongs to.
 #[allow(dead_code)]
-pub async fn workspace_node(
+pub async fn thread_node(
 	store: &aidash_server::store::Store,
-	workspace: uuid::Uuid,
+	thread: uuid::Uuid,
 ) -> aidash_domain::nodes::NodeAddress {
-	let name: String = sqlx::query_scalar("SELECT node FROM workspaces WHERE id = $1")
-		.bind(workspace)
+	let name: String = sqlx::query_scalar("SELECT node FROM threads WHERE id = $1")
+		.bind(thread)
 		.fetch_one(store.pool.fixture_driver())
 		.await
-		.expect("the Workspace's Node is read");
+		.expect("the Thread's Node is read");
 	store
 		.deployment
 		.node(aidash_domain::nodes::NodeName::parse(&name).unwrap())
 }
 
-/// An admitted remote Run on `store`, in the Tenant of its Workspace when the
-/// store holds that Workspace and in `acme` otherwise.
+/// An admitted remote Run on `store`, in the Tenant of its Thread when the
+/// store holds that Thread and in `acme` otherwise.
 #[allow(dead_code)]
 pub async fn remote_run(
 	store: &aidash_server::store::Store,
@@ -225,11 +225,11 @@ pub async fn remote_run(
 	agent_id: &str,
 	agent_version: &str,
 ) -> aidash_server::domain::Run {
-	let tenant: Option<String> = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id = $1")
-		.bind(task.workspace_id)
+	let tenant: Option<String> = sqlx::query_scalar("SELECT tenant FROM threads WHERE id = $1")
+		.bind(task.thread_id)
 		.fetch_optional(store.pool.fixture_driver())
 		.await
-		.expect("the Workspace's Tenant is read");
+		.expect("the Thread's Tenant is read");
 	remote_run_in(
 		store,
 		tenant.as_deref().unwrap_or("acme"),
@@ -241,7 +241,7 @@ pub async fn remote_run(
 	.await
 }
 
-/// An admitted remote Run of `tenant` on `store`, whose Workspace lives on the
+/// An admitted remote Run of `tenant` on `store`, whose Thread lives on the
 /// Run's home Node. Writes the Tenant's root record if the store lacks it.
 #[allow(dead_code)]
 pub async fn remote_run_in(
@@ -256,12 +256,12 @@ pub async fn remote_run_in(
 	tenant_root_in(store.pool.fixture_driver(), tenant).await;
 	let id = uuid::Uuid::new_v4();
 	let sql = Query::insert()
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(
 			[
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -290,7 +290,7 @@ pub async fn remote_run_in(
 	sqlx::query(&sql)
 		.bind(id)
 		.bind(task.id)
-		.bind(task.workspace_id)
+		.bind(task.thread_id)
 		.bind(home)
 		.bind(agent_id)
 		.bind(agent_version)

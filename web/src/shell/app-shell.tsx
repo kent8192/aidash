@@ -73,7 +73,7 @@ import {
   type ApprovalInbox,
   type PendingDecision,
 } from "./decision-queue";
-import { WorkspaceList } from "./workspace-list";
+import { ThreadList } from "./thread-list";
 
 export type Go = (
   section: Destination,
@@ -204,7 +204,7 @@ export function AppShell({
   deploymentAdministrator,
   streamStatus,
   decisions,
-  workspaceMore,
+  threadMore,
   humanMore,
   inbox,
   queueOpen,
@@ -224,7 +224,7 @@ export function AppShell({
   deploymentAdministrator: boolean;
   streamStatus: "live" | "reconnecting";
   decisions: PendingDecision[];
-  workspaceMore: {
+  threadMore: {
     available: boolean;
     loading: boolean;
     error: boolean;
@@ -310,7 +310,7 @@ export function AppShell({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  const workspace = data?.workspaces.find((value) => value.id === channel);
+  const thread = data?.threads.find((value) => value.id === channel);
   const { selected } = useNodes();
   const subject = data?.access.kind === "subject" ? data.access : undefined;
   const pendingCatalog = useQuery({
@@ -359,7 +359,7 @@ export function AppShell({
   };
   const listProps = {
     data,
-    more: workspaceMore,
+    more: threadMore,
     current: section === "collaboration" ? channel : "",
     filter,
     setFilter,
@@ -524,7 +524,7 @@ export function AppShell({
               }}
             >
               <PopoverTrigger
-                aria-label={`${copy.switchRequest}: ${workspace?.title ?? copy.chooseRequest}`}
+                aria-label={`${copy.switchRequest}: ${thread?.title ?? copy.chooseRequest}`}
                 aria-keyshortcuts="Meta+K Control+K"
                 className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md border border-border px-2 text-foreground transition-colors duration-150 hover:bg-surface aria-expanded:bg-surface"
               >
@@ -532,16 +532,16 @@ export function AppShell({
                   aria-hidden
                   className={cn(
                     "size-1.5 shrink-0 rounded-full",
-                    workspace ? "bg-brand-mark" : "bg-faint",
+                    thread ? "bg-brand-mark" : "bg-faint",
                   )}
                 />
                 <span
                   className={cn(
                     "truncate",
-                    workspace ? "font-mono" : "text-muted-foreground",
+                    thread ? "font-mono" : "text-muted-foreground",
                   )}
                 >
-                  {workspace?.title ?? copy.chooseRequest}
+                  {thread?.title ?? copy.chooseRequest}
                 </span>
                 <ChevronDown
                   aria-hidden
@@ -556,7 +556,7 @@ export function AppShell({
                   searchInput.current?.focus();
                 }}
               >
-                <WorkspaceList
+                <ThreadList
                   {...listProps}
                   showCreate
                   className="max-h-[min(70vh,520px)]"
@@ -679,7 +679,7 @@ export function AppShell({
             {destinations.map((item) => destinationButton(item, true))}
           </nav>
           <div className="border-t border-border pt-2">
-            <WorkspaceList {...listProps} showCreate={false} />
+            <ThreadList {...listProps} showCreate={false} />
           </div>
           <div className="grid gap-1 border-t border-border pt-2">
             <p className="px-2 text-[11px] text-faint">{collab.settings}</p>

@@ -97,7 +97,7 @@ Aidash Pods run with a read-only root filesystem. Native memory additionally
 requires an independently initialized and retained Home recovery ledger through
 `memoryRecovery.existingClaim`. Server and worker share that ReadWriteOnce claim;
 it must not be restored from a PostgreSQL backup. PostgreSQL
-retains workspaces, task/run IDs, journals, artifacts, leases, transaction
+retains threads, task/run IDs, journals, artifacts, leases, transaction
 decisions, policy and semantic source state. Use persistent volumes or a managed
 database with durable storage, tested backups, and a retention policy independent
 of the Aidash Helm release. Only `aidash migrate`, run as `aidash_owner` before
@@ -152,7 +152,7 @@ their isolated recovery pools; do not assume a fixed total connection budget.
 Semantic memory (contract (b) in [architecture](architecture.md#memory-contracts))
 stores vectors and keyword indexes in PostgreSQL using pgvector and PGroonga. Provision the extensions from `deploy/postgres/Dockerfile`, persist
 the PostgreSQL data directory, and select an exact embedding provider version in
-the workspace semantic index. PostgreSQL also holds canonical content and durable
+the thread semantic index. PostgreSQL also holds canonical content and durable
 retry/deletion records. Native memory's PGroonga crash-safe worker settings are
 included in the database image; recovery and index reconciliation run after a
 database outage.

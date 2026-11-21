@@ -39,7 +39,7 @@ fn query() -> ReportQuery {
 		include_sensitive: false,
 		tenant: None,
 		subject: None,
-		workspace_id: None,
+		thread_id: None,
 	}
 }
 fn subject() -> Principal {
@@ -56,7 +56,7 @@ fn observation() -> Inspection {
 		.unwrap(),
 		source_node: "node".into(),
 		observed_at: Utc.timestamp_opt(100, 0).unwrap(),
-		workspaces: vec![],
+		threads: vec![],
 		usage_truncated: false,
 		test_evidence: vec![],
 		test_evidence_truncated: false,
@@ -105,7 +105,7 @@ impl ReportSources for Sources {
 		let mut s = self.state.lock().unwrap();
 		s.calls.push("permissions");
 		s.context = Some(
-			json!({"tenant":input.tenant,"subject":input.subject,"workspace_id":input.workspace_id}),
+			json!({"tenant":input.tenant,"subject":input.subject,"thread_id":input.thread_id}),
 		);
 		if self.failed == Some("permissions") {
 			return Err(Error::Forbidden);
@@ -113,7 +113,7 @@ impl ReportSources for Sources {
 		Ok(PermissionContext {
 			tenant: input.tenant,
 			subject: input.subject,
-			workspace_id: input.workspace_id,
+			thread_id: input.thread_id,
 			policy_revision: 9,
 			observed_at: Utc.timestamp_opt(30, 0).unwrap(),
 			requested_capabilities: vec![],

@@ -31,7 +31,7 @@ fn repository() -> Repository {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			workspace_id: Uuid::new_v4(),
+			thread_id: Uuid::new_v4(),
 			home_node: "aidash://home".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1.0.0".into(),

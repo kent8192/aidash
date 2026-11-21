@@ -68,7 +68,7 @@ Cluster coordinators require all three coordination tools.
 {
   "schema_version": 1,
   "model": { "id": "model", "version": "1.0.0" },
-  "instructions": "Work within the authorized workspace.",
+  "instructions": "Work within the authorized thread.",
   "bindings": [
     {
       "kind": "memory",
@@ -80,8 +80,7 @@ Cluster coordinators require all three coordination tools.
       "narrow": {}
     }
   ],
-  "remove_default": ["task_delegate"],
-  "max_steps": 64
+  "remove_default": ["task_delegate"]
 }
 ```
 
@@ -95,7 +94,7 @@ operations. An Agent whose only memory Binding is a native conversation or
 semantic memory source is not offered `memory_recall`, `memory_reflect` or
 `memory_mutate`; that memory reaches the model only as automatic context.
 `memory_mutate` alone does not enable reading. Supported native
-context declarations wrap the existing conversation/semantic memory, workspace
+context declarations wrap the existing conversation/semantic memory, thread
 retrieval, private-reference, original-reference and Skill adapters. Private
 Agent documents become immutable private Source definitions. Their contents
 retain separate knowledge/reference authorization and are never made public by
@@ -271,7 +270,7 @@ and change only the Run's Exposure set. Identities serialize as
 An invalid search cursor is a recoverable tool error. A description is recorded
 whole or not at all: when it would not fit the remaining request budget, with
 room reserved for the response's later calls, the step is deferred like a
-`skill_read` that does not fit (`run.description_deferred`). The retained
+`skill_read` that does not fit (`execution.description_deferred`). The retained
 context is compacted and the next request asks the model to retry the call.
 
 A search page is recorded with only its leading results that fit the remaining
@@ -279,7 +278,7 @@ request budget, with the same reserve. A cut page sets `truncated` and
 `budget_limited`, and its `next_cursor` resumes at the first dropped result.
 When no result fits but the empty page does, the page also sets `deferred` and
 a `message` to continue on a later turn. When not even the empty page fits, the
-step is deferred (`run.search_deferred`) like a description.
+step is deferred (`execution.search_deferred`) like a description.
 
 A successful load or unload also returns an `exposure_update`. The Executor
 stages it in `context.exposure` only for tools whose contract declares
@@ -411,7 +410,7 @@ Only `streamable-http` servers are called from the server process. A Run lists
 every remote server of its Agent's plugins (`tools/list`) at its first step,
 before its first model request and outside any transaction, at most four at a
 time, for up to 15 s per server and 30 s in all. The per-server budget includes the modern discovery probe and legacy fallback. The result is the Run's
-`plugin_tools`. It is saved with `run.plugin_tools_pinned`, so a recovered Run
+`plugin_tools`. It is saved with `execution.plugin_tools_pinned`, so a recovered Run
 never lists again, and the Binding snapshot stays what admission resolved.
 
 The tools a server listed are pinned as follows.
@@ -513,7 +512,7 @@ declared digest against the Run's own listing.
 
 A server that times out, is refused, cannot initialize or answers nonsense is
 left out with a typed cause and the Run continues without its tools. The event
-`run.plugin_tools_pinned` carries `skipped`, a list of `plugin`, `server` and
+`execution.plugin_tools_pinned` carries `skipped`, a list of `plugin`, `server` and
 `reason` codes, and no URL, header, detail or server answer. The Run channel
 shows which servers could not be reached.
 
@@ -568,11 +567,12 @@ Deadline and the remaining MCP human-wait allowance; expiry declines the form.
 Late answers are rejected atomically under the request lock.
 
 The capability profile (`AIDASH_CAPABILITY_PROFILE`) accepts an optional `mcp`
-object. Defaults are `human_wait_seconds: 900`, `continuation_sends: 10`, and
+object. Defaults are `human_wait_seconds: 604800` (7 days: the Stint sleeps while
+a person answers), `continuation_sends: 10`, and
 `sampling_tokens: 4096`. Human waiting is cumulative across all inputs and rounds
 of one logical call and is also capped by `approval_seconds`; sampling output is
 further capped by the Run model's output limit. Supported Deployment ranges are
-1-3600 seconds, 1-100 continuation sends, and 1-1,000,000 sampling tokens. Initial
+1-2592000 seconds (30 days), 1-100 continuation sends, and 1-1,000,000 sampling tokens. Initial
 requests do not count as continuations; state-only continuation rounds do.
 Exhaustion produces `MCP_CONTINUATION_LIMIT` and an `mcp.input_failed` event.
 
@@ -642,7 +642,7 @@ Peer execution requires protocol `0.2` or later; the `/v0.1/` URL namespace rema
 a path name and does not negotiate an old contract. Both Nodes verify that the
 protocol header is a version they accept, and the Provider contracts. Protocol
 `0.3` additionally lets a remote Ordered Run see changes to the Home's semantic
-corpus (see [context projection](../features/context-projection.md)). Remote mandatory workspace and Human operations
+corpus (see [context projection](../features/context-projection.md)). Remote mandatory thread and Human operations
 use Home authority under the exact task, grant, admission and Run. Unsupported
 remote defaults have persisted placement exclusions; explicit incompatible
 Bindings fail admission.
@@ -720,16 +720,16 @@ back with the `revision` they were read at; another write in between answers
 refused. Whoever runs the Deployment sets the ceilings in
 `[workbench_test_limits]`:
 
-| Setting                  | Default | Bounds                               |
-| ------------------------ | ------- | ------------------------------------ |
-| `max_input_bytes`        | 1000000 | Test input bytes                     |
-| `max_output_tokens`      | 8192    | Output tokens per model call         |
-| `max_total_tokens`       | 1000000 | Tokens across the test               |
-| `max_steps`              | 64      | Model steps                          |
-| `max_duration_secs`      | 900     | Seconds per test                     |
-| `max_concurrent`         | 32      | Tests running at once for one Tenant |
-| `payload_days`           | 365     | Days a test payload is kept          |
-| `incident_evidence_days` | 3650    | Days incident evidence is kept       |
+| Setting                  | Default | Bounds                                           |
+| ------------------------ | ------- | ------------------------------------------------ |
+| `max_input_bytes`        | 1000000 | Test input bytes                                 |
+| `max_output_tokens`      | 8192    | Output tokens per model call                     |
+| `max_total_tokens`       | 1000000 | Tokens across the test                           |
+| `max_steps`              | 64      | Model steps of a Workbench test (Runs have none) |
+| `max_duration_secs`      | 900     | Seconds per test                                 |
+| `max_concurrent`         | 32      | Tests running at once for one Tenant             |
+| `payload_days`           | 365     | Days a test payload is kept                      |
+| `incident_evidence_days` | 3650    | Days incident evidence is kept                   |
 
 The defaults are the largest values a Tenant may set at all, so a Deployment
 that sets nothing leaves its Tenants the full range. Lowering a ceiling also
@@ -767,7 +767,7 @@ production isolation profile.
 
 ## Native Memory providers
 
-A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native workspace `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.
+A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native thread `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.
 
 A `memory` descriptor's configuration is the `ProviderConfig` in `crates/aidash-domain/src/memory.rs`: the engine and its policy only. It rejects unknown fields, so do not add operation, pinning, disclosure or binding controls to it. Those are separate Registry and admission controls: the memory operations are their own builtin Tool descriptors, the admitted Binding snapshot pins exact versions, authorization governs disclosure, and the Agent's Binding list selects the provider. Private memory bodies and credentials are not part of a descriptor: they stay in authorized provider storage, and catalog metadata never exposes them (see [Registry boundary](../architecture.md#registry-boundary)). The memory contracts that these providers serve are described in [architecture](../architecture.md#memory-contracts).
 

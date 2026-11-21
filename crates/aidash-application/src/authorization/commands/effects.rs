@@ -8,11 +8,13 @@ use crate::{
 };
 use aidash_domain::{
 	ArtifactInput, NewTask, TaskStatus,
+	federation::Delegation,
 	identity::commands::{
 		self, Metadata,
 		effects::{AuditError, audit_event, child_eligible, field},
 	},
-	registry::{EntityRef, Entry},
+	policy::Resource,
+	registry::{EntityRef, Entry, Search},
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -231,10 +233,10 @@ pub async fn execute(
 			}
 			json!(request)
 		}
-		"workspace_search" => {
+		"thread_search" => {
 			only_fields(data, &["run_id", "input"])?;
-			let resource = scope.workspace(task.workspace_id).await?;
-			scope.require(&resource, "workspace.read").await?;
+			let resource = scope.thread(task.thread_id).await?;
+			scope.require(&resource, "thread.read").await?;
 			// An image query names a File or a Thread Attachment selection of the
 			// receiving Node's Run, which the Home cannot read.
 			if data["input"]
@@ -242,12 +244,10 @@ pub async fn execute(
 				.is_some_and(|image| !image.is_null())
 			{
 				return Err(Error::Invalid(
-					"a Run executing for another Home searches this Workspace by text only".into(),
+					"a Run executing for another Home searches this Thread by text only".into(),
 				));
 			}
-			scope
-				.workspace_search(task.workspace_id, &data["input"])
-				.await?
+			scope.thread_search(task.thread_id, &data["input"]).await?
 		}
 		"task_assign" => {
 			only_fields(data, &["run_id", "key", "task_id", "policy", "reason"])?;
@@ -309,12 +309,12 @@ pub async fn execute(
 				.await?
 		),
 		"task" => json!(task),
-		"snapshot" => scope.snapshot(task.workspace_id).await?,
+		"snapshot" => scope.snapshot(task.thread_id).await?,
 		"workspace_observation" => {
 			let offset = serde_json::from_value(data["offset"].clone())?;
 			let limit: usize = serde_json::from_value(data["limit"].clone())?;
 			if !(1..=aidash_domain::context::observation::MAX_LIMIT).contains(&limit) {
-				return Err(Error::Invalid("invalid workspace observation limit".into()));
+				return Err(Error::Invalid("invalid thread observation limit".into()));
 			}
 			// A per-step view names its own Run to leave out (#942); older
 			// callers send no key and get every event.
@@ -323,19 +323,19 @@ pub async fn execute(
 				Some(value) => Some(serde_json::from_value(value.clone())?),
 			};
 			scope
-				.observation(task.workspace_id, offset, limit, exclude_run)
+				.observation(task.thread_id, offset, limit, exclude_run)
 				.await?
 		}
-		"workspace_record" | "workspace_record_chunk" => {
+		"thread_record" | "thread_record_chunk" => {
 			let id: Uuid = serde_json::from_value(data["id"].clone())?;
 			let kind = field(data, "kind")?;
-			let record = scope.record(task.workspace_id, kind, id).await?;
-			if input.operation == "workspace_record_chunk" {
+			let record = scope.record(task.thread_id, kind, id).await?;
+			if input.operation == "thread_record_chunk" {
 				let offset = serde_json::from_value(data["offset"].clone())?;
 				let max_chars: usize = serde_json::from_value(data["max_chars"].clone())?;
 				if max_chars > 16000 {
 					return Err(Error::Invalid(
-						"workspace chunk exceeds 16000 characters".into(),
+						"thread chunk exceeds 16000 characters".into(),
 					));
 				}
 				aidash_domain::context::observation::chunk_record(
@@ -349,12 +349,25 @@ pub async fn execute(
 				record
 			}
 		}
-		"workspace_children" => {
+		// Whether a Task is one this grant created, so the receiver may let its
+		// Run hand it on (#654). Reads nothing else about the Task.
+		"created_task" => {
+			let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+			json!({"created": scope.created_by_grant(input.grant_id, id).await?})
+		}
+		"discover" => {
+			let search: Search = match data.get("search") {
+				None | Some(Value::Null) => Search::default(),
+				Some(search) => serde_json::from_value(search.clone())?,
+			};
+			serde_json::to_value(scope.discover(task.thread_id, &search).await?)?
+		}
+		"thread_children" => {
 			let parent: Uuid = serde_json::from_value(data["parent_id"].clone())?;
 			if parent != task.id {
 				return Err(Error::Forbidden);
 			}
-			scope.children(task.workspace_id, parent).await?
+			scope.children(task.thread_id, parent).await?
 		}
 		"claim" => {
 			scope.require(&task_resource, "task.execute").await?;
@@ -426,14 +439,7 @@ pub async fn execute(
 					},
 				)
 				.await?;
-			track(
-				scope,
-				&result,
-				input.grant_id,
-				task.workspace_id,
-				"artifact",
-			)
-			.await?;
+			track(scope, &result, input.grant_id, task.thread_id, "artifact").await?;
 			result.value
 		}
 		"run_abandon_unassigned" => {
@@ -448,7 +454,7 @@ pub async fn execute(
 				.value
 		}
 		"create_task" => {
-			let resource = scope.workspace(task.workspace_id).await?;
+			let resource = scope.thread(task.thread_id).await?;
 			scope.require(&resource, "task.create").await?;
 			let new: NewTask = serde_json::from_value(data["task"].clone())?;
 			if new.parent_id != Some(task.id) {
@@ -456,14 +462,14 @@ pub async fn execute(
 			}
 			for id in &new.dependencies {
 				let dependency = scope.task(*id).await?;
-				if dependency.workspace_id != task.workspace_id {
+				if dependency.thread_id != task.thread_id {
 					return Err(Error::Forbidden);
 				}
 			}
 			let result = scope
 				.apply(context(), Effect::CreateTask { task: &new })
 				.await?;
-			track(scope, &result, input.grant_id, task.workspace_id, "task").await?;
+			track(scope, &result, input.grant_id, task.thread_id, "task").await?;
 			result.value
 		}
 		"delegate" => {
@@ -473,6 +479,8 @@ pub async fn execute(
 				return Err(Error::Forbidden);
 			}
 			let created = scope.created_by_grant(input.grant_id, child.id).await?;
+			// Another Node is reached through [`onward`] and a Remote Grant of the
+			// Home's own, never inside this lease.
 			if !created || field(data, "node_id")? != scope.local_node() {
 				return Err(Error::Forbidden);
 			}
@@ -489,7 +497,7 @@ pub async fn execute(
 				.value
 		}
 		"message" | "run_message_output" => {
-			let resource = scope.workspace(task.workspace_id).await?;
+			let resource = scope.thread(task.thread_id).await?;
 			scope.require(&resource, "message.create").await?;
 			let content = field(data, "content")?;
 			let through = if input.operation == "run_message_output" {
@@ -500,7 +508,7 @@ pub async fn execute(
 			let result = scope
 				.apply(context(), Effect::Message { content, through })
 				.await?;
-			track(scope, &result, input.grant_id, task.workspace_id, "message").await?;
+			track(scope, &result, input.grant_id, task.thread_id, "message").await?;
 			json!({"sent":true})
 		}
 		"run_message_delivery_capability" => json!({"protocol":2}),
@@ -511,7 +519,7 @@ pub async fn execute(
 				task_resource.attributes.clone(),
 			);
 			scope.require(&run, "run.message").await?;
-			let resource = scope.workspace(task.workspace_id).await?;
+			let resource = scope.thread(task.thread_id).await?;
 			scope.require(&resource, "message.create").await?;
 			let key = field(data, "key")?;
 			commands::require_input_key(key, input.admission_id)?;
@@ -569,15 +577,11 @@ pub async fn execute(
 		"run_message_history" => {
 			let offset: usize = serde_json::from_value(data["offset"].clone())?;
 			let rows = scope
-				.history(task.workspace_id, task.id, input.node, offset)
+				.history(task.thread_id, task.id, input.node, offset)
 				.await?;
 			let mut visible = Vec::new();
 			for message in rows {
-				visible.push(
-					scope
-						.record(task.workspace_id, "message", message.id)
-						.await?,
-				);
+				visible.push(scope.record(task.thread_id, "message", message.id).await?);
 			}
 			json!(visible)
 		}
@@ -596,17 +600,185 @@ pub async fn execute(
 	}
 	Ok(result)
 }
+/// A scoped `delegate` that names a Node other than the Home's own (#654,
+/// ADR 0109). The Home hands the child on through a Remote Grant of its own,
+/// which it prepares and activates only after the command's lease ends: both
+/// talk to the target Node, and the Home releases its locks before peer calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Onward {
+	pub child: Uuid,
+	pub node: String,
+	pub agent: EntityRef,
+	/// Where the answer is saved once the child is handed on.
+	pub replay: OnwardReplay,
+}
+
+/// The replay row of an onward `delegate`, as `execute` saves one for a local
+/// delegation: under the asking grant, the command's key and the digest of its
+/// input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnwardReplay {
+	pub request_key: String,
+	pub digest: String,
+}
+
+/// What [`onward`] decided under the command's lease.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnwardStep {
+	/// The same command already handed the child on: its saved answer.
+	Replay(Value),
+	/// Hand the child on with [`hand_on`] once the lease has ended.
+	HandOn(Onward),
+}
+
+/// Whether a scoped command hands a child Task to another Node.
+pub fn is_onward(local_node: &str, operation: &str, data: &Value) -> bool {
+	operation == "delegate"
+		&& data
+			.get("node_id")
+			.and_then(Value::as_str)
+			.is_some_and(|node| node != local_node)
+}
+
+/// Checks an onward `delegate` under the command's lease as strictly as one
+/// for the Home's own Node: a live binding, no conflicting replay, a child of
+/// the Run's Task that this grant created and the caller may hand on. It
+/// prepares nothing; the caller hands the child on after the lease ends, and
+/// the grant it prepares re-checks the whole chain by the Home's policy.
+///
+/// A command the Home already handed on answers what it answered then. A
+/// harness re-executes a replay-safe call under its key after losing its
+/// lease, and by then the target may have claimed the child, which a fresh
+/// check would refuse for a hand-on that happened.
+pub async fn onward(
+	scope: &mut dyn RemoteCommandEffects,
+	input: Command<'_>,
+) -> Result<OnwardStep> {
+	let data = input.data;
+	let grant = input.grant_id;
+	if !is_onward(scope.local_node(), input.operation, data) {
+		return Err(Error::Invalid(
+			"only a delegation to another Node is handed on".into(),
+		));
+	}
+	let node = field(data, "node_id")?.to_owned();
+	aidash_domain::nodes::NodeAddress::parse(&node)?;
+	let Prepared {
+		task,
+		owner,
+		metadata,
+		..
+	} = match prepare(scope, input).await? {
+		// `prepare` refused a different input under the same key.
+		Admission::Replay(result) => return Ok(OnwardStep::Replay(result)),
+		Admission::Ready(prepared) => *prepared,
+	};
+	let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+	let child = scope.task(id).await?;
+	if !child_eligible(&task, &child, &owner) || !scope.created_by_grant(grant, child.id).await? {
+		return Err(Error::Forbidden);
+	}
+	let agent: EntityRef = serde_json::from_value(data["agent"].clone())?;
+	if !scope.live(grant).await? {
+		return Err(Error::Forbidden);
+	}
+	Ok(OnwardStep::HandOn(Onward {
+		child: child.id,
+		node,
+		agent,
+		replay: OnwardReplay {
+			request_key: metadata.request_key,
+			digest: metadata.digest,
+		},
+	}))
+}
+
+/// The Home's side of [`hand_on`]. Every step takes its own short transaction,
+/// because handing on talks to the target Node.
+#[async_trait::async_trait]
+pub trait HandOnRepository: Send + Sync {
+	type Scope: HandOnScope;
+	/// A transaction of the Home as the chain's root person, deciding for every
+	/// subject of `chain`.
+	async fn begin(&self, chain: &[String]) -> Result<Self::Scope>;
+	/// Prepares, or reuses, and activates this Home's Remote Grant of the child
+	/// for exactly `chain`.
+	async fn delegate(&self, chain: Vec<String>, onward: &Onward) -> Result<Delegation>;
+	/// Saves `result` as the answer to a repeat of the asking grant's command.
+	async fn save_replay(&self, grant: Uuid, replay: &OnwardReplay, result: &Value) -> Result<()>;
+}
+
+/// One transaction of [`HandOnRepository::begin`].
+#[async_trait::async_trait]
+pub trait HandOnScope: Send + Sized {
+	/// Whether `grant` still lives by the Home's one liveness rule.
+	async fn live(&mut self, grant: Uuid) -> Result<bool>;
+	async fn task_read(&mut self, id: Uuid) -> Result<aidash_domain::Task>;
+	async fn task_resource(&mut self, task: &aidash_domain::Task) -> Result<Resource>;
+	fn node_resource(&self, node: &str) -> Resource;
+	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	/// Commits, or records the refusal and rolls back.
+	async fn finish(self, result: Result<()>) -> Result<()>;
+}
+
+/// Hands the child that [`onward`] checked on to its Node through a Remote
+/// Grant of this Home (#654, ADR 0109), under the asking grant's whole chain,
+/// never as its root person alone. The asking grant must still live: it may
+/// have been revoked since the command's lease ended. Every subject of the
+/// chain, the asking receiver's executor included, must be allowed
+/// `task.delegate` on the child and `federation.execute` on the target Node;
+/// the grant it prepares carries that chain, and the target decides by its own
+/// consent. The answer is saved for a repeat of the command.
+pub async fn hand_on<R: HandOnRepository>(
+	repository: &R,
+	root: &str,
+	grant: Uuid,
+	chain: Vec<String>,
+	onward: Onward,
+) -> Result<Value> {
+	if chain.len() < 2 || chain.first().map(String::as_str) != Some(root) {
+		return Err(Error::Forbidden);
+	}
+	let mut scope = repository.begin(&chain).await?;
+	let checked = async {
+		if !scope.live(grant).await? {
+			return Err(Error::Forbidden);
+		}
+		let child = scope.task_read(onward.child).await?;
+		let resource = scope.task_resource(&child).await?;
+		scope.require(&resource, "task.delegate").await?;
+		let node = scope.node_resource(&onward.node);
+		scope.require(&node, "federation.execute").await
+	}
+	.await;
+	match checked {
+		Ok(()) => scope.finish(Ok(())).await?,
+		Err(error) => {
+			scope.finish(Err(error)).await?;
+			return Err(Error::External("hand-on scope accepted a refusal".into()));
+		}
+	}
+	let delegation = repository.delegate(chain, &onward).await?;
+	let result = serde_json::to_value(delegation)?;
+	// The child is handed on whether or not the answer is saved, so a failed
+	// save does not turn it into a refusal. Only a repeat of this command after
+	// the target claimed the child would then be refused, as before replays.
+	if let Err(error) = repository.save_replay(grant, &onward.replay, &result).await {
+		tracing::warn!(%error, grant = %grant, child = %onward.child, "onward delegation replay not saved");
+	}
+	Ok(result)
+}
 async fn track(
 	scope: &mut dyn RemoteCommandEffects,
 	result: &Applied,
 	grant: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	kind: &str,
 ) -> Result<()> {
 	let id = result
 		.output_id
 		.ok_or_else(|| Error::External("remote output identifier missing".into()))?;
-	scope.record_output(grant, workspace, kind, id).await
+	scope.record_output(grant, thread, kind, id).await
 }
 #[cfg(test)]
 mod tests;
@@ -651,7 +823,7 @@ fn require_connection_prompt(prompt: &str) -> Result<()> {
 }
 
 /// Abandoning needs `task.abandon` on each Task for the caller's chain, and a
-/// child of the Run's own Task in its Workspace. Who created it is not asked
+/// child of the Run's own Task in its Thread. Who created it is not asked
 /// here: an earlier Run of the same parent, under another grant, may have, and
 /// the Home re-checks that and everything else inside the row lock.
 async fn require_abandonment(
@@ -661,7 +833,7 @@ async fn require_abandonment(
 ) -> Result<()> {
 	for id in ids {
 		let child = scope.task(*id).await?;
-		if child.workspace_id != parent.workspace_id || child.parent_id != Some(parent.id) {
+		if child.thread_id != parent.thread_id || child.parent_id != Some(parent.id) {
 			return Err(Error::Forbidden);
 		}
 		let resource = scope.task_resource(&child).await?;

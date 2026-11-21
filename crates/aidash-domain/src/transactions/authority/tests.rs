@@ -32,7 +32,7 @@ fn preflight_requires_the_named_coordinator_bounded_frontier_and_local_recipient
 		"targets" => {
 			input.targets = vec![
 				Target {
-					kind: "workspace".into(),
+					kind: "thread".into(),
 					id: Uuid::nil(),
 					task_id: None
 				};
@@ -49,7 +49,7 @@ fn preflight_requires_the_named_coordinator_bounded_frontier_and_local_recipient
 }
 #[fixture]
 fn run() -> RunMetadata {
-	serde_json::from_value(serde_json::json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE","step":0,"revision":0,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
+	serde_json::from_value(serde_json::json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE","step":0,"revision":0,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
 }
 #[rstest]
 #[case::valid("valid", true)]
@@ -57,7 +57,7 @@ fn run() -> RunMetadata {
 #[case::credential("credential", false)]
 #[case::source_tenant("source_tenant", false)]
 #[case::source_subject("source_subject", false)]
-#[case::workspace("workspace", false)]
+#[case::thread("thread", false)]
 #[case::agent("agent", false)]
 #[case::version("version", false)]
 #[case::root("root", false)]
@@ -83,7 +83,7 @@ fn source_admissions_require_the_current_credential_origin_and_assigned_agent(
 		subject_chain: vec![identity.subject.clone(), "agent".into()],
 		source_tenant: origin.tenant.clone(),
 		source_subject: origin.subject.clone(),
-		workspace_id: run.workspace_id,
+		thread_id: run.thread_id,
 		agent_id: run.agent_id.clone(),
 		agent_version: run.agent_version.clone(),
 	};
@@ -93,7 +93,7 @@ fn source_admissions_require_the_current_credential_origin_and_assigned_agent(
 		"credential" => admission.credential_id = Uuid::nil(),
 		"source_tenant" => admission.source_tenant = "other".into(),
 		"source_subject" => admission.source_subject = "other".into(),
-		"workspace" => admission.workspace_id = Uuid::nil(),
+		"thread" => admission.thread_id = Uuid::nil(),
 		"agent" => admission.agent_id = "other".into(),
 		"version" => admission.agent_version = "other".into(),
 		"root" => admission.subject_chain[0] = "other".into(),

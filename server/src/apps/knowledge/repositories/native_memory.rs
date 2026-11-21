@@ -15,18 +15,18 @@ mod tests;
 pub(crate) use dependencies::validate_impact;
 use uuid::Uuid;
 
-pub(crate) async fn lock_workspace(
+pub(crate) async fn lock_thread(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	exclusive: bool,
 ) -> Result<()> {
 	let found = native::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)))
-			// Memory locks the Workspace before reading Runs; a Run step may
-			// lock its Run before inserting an event referencing the Workspace.
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
+			// Memory locks the Thread before reading Runs; a Run step may
+			// lock its Run before inserting an event referencing the Thread.
 			// NO KEY UPDATE still serializes memory writers but permits the
 			// foreign key's KEY SHARE, avoiding the inverse-order deadlock.
 			.lock(if exclusive {
@@ -56,7 +56,7 @@ pub(crate) async fn bank_id(
 		.from(Alias::new("memory_banks"))
 		.and_where(Expr::col("home").eq(bank.home.as_str()))
 		.and_where(Expr::col("tenant").eq(bank.tenant.as_str()))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(bank.workspace)));
+		.and_where(Expr::col("thread_id").eq(Expr::value(bank.thread)));
 	match bank.participant {
 		Some(id) => {
 			select.and_where(Expr::col("participant_id").eq(Expr::value(id)));
@@ -80,7 +80,7 @@ pub(crate) async fn bank_id(
 					"id",
 					"home",
 					"tenant",
-					"workspace_id",
+					"thread_id",
 					"participant_id",
 					"revision",
 				]
@@ -91,7 +91,7 @@ pub(crate) async fn bank_id(
 					.expr(Expr::value(id))
 					.expr(Expr::value(&bank.home))
 					.expr(Expr::value(&bank.tenant))
-					.expr(Expr::value(bank.workspace))
+					.expr(Expr::value(bank.thread))
 					.expr(Expr::value(bank.participant))
 					.expr(Expr::value(1_i64))
 					.to_owned(),
@@ -119,7 +119,7 @@ pub(crate) async fn mutate_origin(
 	origin: Option<Uuid>,
 ) -> Result<Vec<Unit>> {
 	mutation.validate_bounds(bounds)?;
-	lock_workspace(lease, mutation.bank.workspace, true).await?;
+	lock_thread(lease, mutation.bank.thread, true).await?;
 	units::authorize(lease, &mutation.bank, "memory.write").await?;
 	let bank_id = bank_id(lease, &mutation.bank, true)
 		.await?
@@ -164,7 +164,7 @@ pub(crate) async fn mutate_origin(
 				units::unexpired(lease, &unit).await?;
 				units::current_for_run(
 					lease,
-					bank.workspace,
+					bank.thread,
 					&unit.content.evidence,
 					bounds.max_graph_visits,
 					origin,
@@ -260,7 +260,7 @@ pub(crate) async fn mutate_origin(
 			units::unexpired(lease, current).await?;
 			units::current_for_run(
 				lease,
-				current.bank.workspace,
+				current.bank.thread,
 				&current.content.evidence,
 				bounds.max_graph_visits,
 				origin,
@@ -347,7 +347,7 @@ pub(crate) async fn mutate_origin(
 			units::unexpired(lease, &unit).await?;
 			units::current_for_run(
 				lease,
-				unit.bank.workspace,
+				unit.bank.thread,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
 				origin,
@@ -455,7 +455,7 @@ pub(crate) async fn mutate_origin(
 					.ok_or(Error::Forbidden)?;
 				match units::current_for_run(
 					lease,
-					mutation.bank.workspace,
+					mutation.bank.thread,
 					&unit.content.evidence,
 					bounds.max_graph_visits,
 					origin,
@@ -503,7 +503,7 @@ pub(crate) async fn mutate_origin(
 	// Impact discovery is bounded and complete before any result may leave the transaction.
 	fence_dependents(
 		lease,
-		mutation.bank.workspace,
+		mutation.bank.thread,
 		&changed,
 		mutation.operation_id,
 		&actor,
@@ -528,7 +528,7 @@ pub(crate) async fn mutate_origin(
 		if !unit.deleted {
 			units::current_for_run(
 				lease,
-				unit.bank.workspace,
+				unit.bank.thread,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
 				origin,
@@ -875,7 +875,7 @@ pub(crate) async fn project(
 	}
 	let Some(index) = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
-		unit.bank.workspace,
+		unit.bank.thread,
 		true,
 	)
 	.await?
@@ -894,7 +894,7 @@ pub(crate) async fn project(
 	.fetch_optional(&mut **lease.tx())
 	.await?;
 	if let Some(prior) = &prior {
-		if prior.workspace_id != unit.bank.workspace
+		if prior.thread_id != unit.bank.thread
 			|| serde_json::from_value::<Source>(prior.source.clone())?
 				!= (Source::Unit { id: unit.id })
 		{
@@ -907,16 +907,14 @@ pub(crate) async fn project(
 			&Query::select()
 				.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
 				.from(Alias::new("semantic_entries"))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(unit.bank.workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(unit.bank.thread)))
 				.and_where(Expr::col("deleted").eq(false))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **lease.tx())
 		.await?;
 		if count >= spec.max_sources as i64 {
-			return Err(Error::Conflict(
-				"Workspace search source limit reached".into(),
-			));
+			return Err(Error::Conflict("Thread search source limit reached".into()));
 		}
 	}
 	if unit.visible() {
@@ -954,7 +952,7 @@ pub(crate) async fn project(
 		.ok_or_else(|| Error::Conflict("memory projection requires a pinned provider".into()))?;
 	let entry = Entry {
 		id: unit.id,
-		workspace_id: unit.bank.workspace,
+		thread_id: unit.bank.thread,
 		key: format!("memory-unit:{}", unit.id),
 		source: serde_json::to_value(Source::Unit { id: unit.id })?,
 		agent: unit.bank.participant.map(|id| format!("participant:{id}")),
@@ -973,7 +971,7 @@ pub(crate) async fn project(
 	};
 	let values: Vec<(&str, SimpleExpr)> = vec![
 		("id", Expr::value(entry.id).into()),
-		("workspace_id", Expr::value(entry.workspace_id).into()),
+		("thread_id", Expr::value(entry.thread_id).into()),
 		("key", Expr::value(&entry.key).into()),
 		("source", Expr::value(entry.source.clone()).into()),
 		("agent", Expr::value(entry.agent.clone()).into()),
@@ -1014,7 +1012,7 @@ pub(crate) async fn project(
 	super::storage::schedule_point(lease.tx(), &projection, &index.collection).await?;
 	super::storage::history(
 		lease.tx(),
-		unit.bank.workspace,
+		unit.bank.thread,
 		Some(unit.id),
 		revision,
 		state,
@@ -1092,7 +1090,7 @@ async fn supporting_units(
 }
 async fn fence_dependents(
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	changed: &[Unit],
 	operation: Uuid,
 	actor: &str,
@@ -1128,7 +1126,7 @@ async fn fence_dependents(
 				let mut unit = units::load(lease, dependent, true)
 					.await?
 					.ok_or(Error::Forbidden)?;
-				if unit.bank.workspace != workspace {
+				if unit.bank.thread != thread {
 					return Err(Error::Forbidden);
 				}
 				unit.stale = true;
@@ -1182,7 +1180,7 @@ pub(crate) async fn list_mode(
 	max_graph_visits: usize,
 	mode: ListMode,
 ) -> Result<Vec<Unit>> {
-	lock_workspace(lease, bank.workspace, false).await?;
+	lock_thread(lease, bank.thread, false).await?;
 	units::authorize(lease, bank, "memory.read").await?;
 	if matches!(mode, ListMode::Dormant) {
 		units::authorize(lease, bank, "memory.read_dormant").await?;
@@ -1242,13 +1240,7 @@ async fn load_snapshot(
 			.ok_or(Error::Forbidden)?;
 		let current = async {
 			units::unexpired(lease, &unit).await?;
-			units::current(
-				lease,
-				bank.workspace,
-				&unit.content.evidence,
-				max_graph_visits,
-			)
-			.await
+			units::current(lease, bank.thread, &unit.content.evidence, max_graph_visits).await
 		}
 		.await;
 		match current {
@@ -1259,7 +1251,7 @@ async fn load_snapshot(
 					lease.leave_out(
 						&node,
 						aidash_domain::unconfirmed::Kind::MemoryUnit,
-						bank.workspace,
+						bank.thread,
 					);
 				}
 				continue;
@@ -1270,7 +1262,7 @@ async fn load_snapshot(
 				lease.leave_out(
 					&node,
 					aidash_domain::unconfirmed::Kind::MemoryUnit,
-					bank.workspace,
+					bank.thread,
 				);
 				continue;
 			}
@@ -1289,7 +1281,7 @@ pub(crate) async fn recall_including_dormant(
 	limit: usize,
 	max_graph_visits: usize,
 ) -> Result<(Vec<Unit>, Vec<Unit>)> {
-	lock_workspace(lease, bank.workspace, false).await?;
+	lock_thread(lease, bank.thread, false).await?;
 	units::authorize(lease, bank, "memory.read").await?;
 	units::authorize(lease, bank, "memory.read_dormant").await?;
 	let Some(bank_id) = bank_id(lease, bank, false).await? else {

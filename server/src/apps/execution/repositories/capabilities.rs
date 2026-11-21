@@ -93,7 +93,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 	fn area(&self) -> AreaSnapshot {
 		AreaSnapshot {
 			id: self.area.id,
-			workspace_id: self.area.workspace_id,
+			thread_id: self.area.thread_id,
 			state: self.area.state.clone(),
 			epoch: self.area.epoch,
 			revision: self.area.revision,
@@ -267,7 +267,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 		self.store
 			.event(
 				&mut self.access.tx,
-				Some(self.area.workspace_id),
+				Some(self.area.thread_id),
 				"capability.operation_accepted",
 				json!({"area_id":self.area.id,"operation_id":id,"epoch":self.area.epoch}),
 			)

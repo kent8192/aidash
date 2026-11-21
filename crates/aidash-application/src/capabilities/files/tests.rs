@@ -105,7 +105,7 @@ impl FileScopePort for Scope {
 	async fn subnode_area(
 		&mut self,
 		_run: &RunMetadata,
-		_workspace: Uuid,
+		_thread: Uuid,
 		area: Uuid,
 	) -> Result<Area> {
 		self.subnode
@@ -190,7 +190,7 @@ impl FileScopePort for Scope {
 	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)> {
 		Ok((Uuid::new_v4(), expected.to_owned()))
 	}
-	async fn message(&mut self, _workspace: Uuid, _id: Uuid) -> Result<Value> {
+	async fn message(&mut self, _thread: Uuid, _id: Uuid) -> Result<Value> {
 		panic!("unexpected message effect")
 	}
 	async fn documents(&mut self, _entry: &Entry) -> Result<Value> {
@@ -220,7 +220,7 @@ impl FileScopePort for Scope {
 		self.persisted = Some(area.clone());
 		Ok(())
 	}
-	async fn event(&mut self, _workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, _thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.events.push((kind.to_owned(), data));
 		Ok(())
 	}
@@ -247,7 +247,6 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 		id: Uuid::new_v4(),
 		tenant: "tenant".into(),
 		home_node: "home".into(),
-		workspace_id: Uuid::new_v4(),
 		thread_id: Uuid::new_v4(),
 		agent_id: "agent".into(),
 		owner: "alice".into(),
@@ -299,7 +298,7 @@ fn selection(
 ) -> FileRead {
 	FileRead {
 		file_id: file.file_id,
-		workspace_id: None,
+		thread_id: None,
 		area_id: None,
 		representation,
 		offset,
@@ -712,7 +711,7 @@ async fn publication_tombstones_only_removed_working_objects() {
 }
 
 #[tokio::test]
-async fn a_receiving_area_publishes_without_a_workspace_index_or_event() {
+async fn a_receiving_area_publishes_without_a_thread_index_or_event() {
 	let (mut scope, mut area, mut image) = fixture(b"bytes");
 	image.path = "image.png".into();
 	image.media_type = "image/png".into();
@@ -803,7 +802,7 @@ fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEn
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),
-		workspace_id: area.workspace_id,
+		thread_id: area.thread_id,
 		home_node: node.into(),
 		agent_id: agent.id,
 		agent_version: agent.version,
@@ -923,7 +922,7 @@ async fn a_receiving_areas_message_never_carries_a_reference_file_or_a_copy_as_m
 		snapshot_message_files(&mut scope, &run, &["edited.txt".into()]).await,
 		Err(Error::Forbidden)
 	));
-	// A local Area posts to its own Workspace, where only the Reference file itself stays.
+	// A local Area posts to its own Thread, where only the Reference file itself stays.
 	scope.area.as_mut().unwrap().constraints = json!([]);
 	let local = snapshot_message_files(&mut scope, &run, &["out/doc.txt".into()])
 		.await
@@ -993,7 +992,7 @@ async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 	assert_eq!(scope.pending, b"image");
 	assert_eq!(
 		output["file"]["provenance"],
-		json!({"kind":"thread_attachment", "workspace_id":area.workspace_id, "message_id":message, "attachment_id":attachment})
+		json!({"kind":"thread_attachment", "thread_id":area.thread_id, "message_id":message, "attachment_id":attachment})
 	);
 	assert!(
 		scope
@@ -1121,7 +1120,7 @@ async fn a_running_area_exposes_only_its_saved_files(#[case] operation: &str) {
 async fn subnode_file_selection_requires_both_ids_and_an_authorizing_adapter() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
 	let mut input =
-		json!({"file_id": file.file_id, "representation": "text", "workspace_id": Uuid::new_v4()});
+		json!({"file_id": file.file_id, "representation": "text", "thread_id": Uuid::new_v4()});
 	assert!(matches!(
 		invoke(&mut scope, &run, "file_read", input.clone(), "request").await,
 		Err(Error::Invalid(_))
@@ -1148,10 +1147,10 @@ async fn a_creating_run_reads_a_members_copy_but_not_its_reference_set() {
 	copy.scope = FileScope::Working;
 	let mut member = scope.area.clone().unwrap();
 	member.id = Uuid::new_v4();
-	member.workspace_id = Uuid::new_v4();
+	member.thread_id = Uuid::new_v4();
 	member.manifest = json!([reference, copy]);
 	scope.subnode = Some(member.clone());
-	let read = |file: &FileEntry| json!({"file_id": file.file_id, "representation": "text", "workspace_id": member.workspace_id, "area_id": member.id});
+	let read = |file: &FileEntry| json!({"file_id": file.file_id, "representation": "text", "thread_id": member.thread_id, "area_id": member.id});
 
 	assert!(matches!(
 		invoke(&mut scope, &run, "file_read", read(&reference), "reference").await,

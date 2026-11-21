@@ -3,7 +3,7 @@ import { Button } from "../../components/ui/button";
 import { useI18n } from "../../ui";
 import { collaborationCopy } from "../copy";
 
-/** Request destination without a workspace: first-run welcome or an inaccessible explicit channel. */
+/** Request destination without a thread: first-run welcome or an inaccessible explicit channel. */
 export function RequestWelcome({
   unavailable,
   create,

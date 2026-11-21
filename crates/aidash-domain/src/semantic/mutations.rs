@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct Index {
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub tenant: String,
 	pub revision: i64,
 	pub spec: Value,
@@ -23,7 +23,7 @@ impl Index {
 #[derive(Debug, Clone)]
 pub struct Entry {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub key: String,
 	pub source: Value,
 	pub agent: Option<String>,
@@ -42,7 +42,7 @@ pub struct Entry {
 #[derive(Debug, Clone)]
 pub struct History {
 	pub sequence: i64,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub entry_id: Option<Uuid>,
 	pub revision: i64,
 	pub state: String,

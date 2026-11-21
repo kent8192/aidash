@@ -16,6 +16,33 @@ use reinhardt::query::{
 };
 use serde_json::json;
 
+/// The receiver's own bound on a Home's request about one of its admitted
+/// Runs (#1013). The admission must still be open and the Run not ended. Once
+/// the Run has started, its Home decides whether the grant still lives, and
+/// has just asked as that Home: a started grant outlives its pinned lifetime
+/// while its Task is open. A Run that never started is still bound by it.
+async fn require_live_admission(
+	access: &mut crate::authorization::access::Access,
+	description: &Description,
+	run: &aidash_domain::Run,
+) -> Result<()> {
+	crate::apps::execution::repositories::node_cancellations::require_admission_open(
+		&mut **access.tx,
+		run.id,
+	)
+	.await?;
+	if !aidash_domain::federation::execution::admission::serves_home(
+		run.phase(),
+		run.control,
+		run.step,
+		description.expires_at,
+		chrono::Utc::now(),
+	) {
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}
+
 fn reference_id(sender: &str, message: uuid::Uuid, file: uuid::Uuid) -> String {
 	format!("{sender}:{message}:{file}")
 }
@@ -33,13 +60,14 @@ enum SourceAudience {
 }
 
 /// The source Deployment has a durable admission binding, but no copy of H's
-/// Run row. Resolve the exact requester and target from that binding.
+/// Run row. Resolve the exact requester and target from that binding, and the
+/// grant it binds.
 async fn source_target(
 	f: &Federation,
 	access: &mut crate::authorization::access::Access,
 	run_id: uuid::Uuid,
 	audience: SourceAudience,
-) -> Result<(Sender, String)> {
+) -> Result<(Sender, String, uuid::Uuid)> {
 	let binding: Option<(uuid::Uuid, uuid::Uuid)> = crate::database::native::query_as(
 		&Query::select()
 			.columns(["grant_id", "task_id"].map(Alias::new))
@@ -54,7 +82,7 @@ async fn source_target(
 	let (grant_id, task_id) = binding.ok_or(Error::Forbidden)?;
 	let mut grant_query = Query::select();
 	grant_query
-		.columns(["node_id", "root_subject", "workspace_id"].map(Alias::new))
+		.columns(["node_id", "root_subject", "thread_id"].map(Alias::new))
 		.from(Alias::new("authorization_remote_grants"))
 		.and_where(Expr::col("id").eq(Expr::value(grant_id)))
 		.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
@@ -62,30 +90,32 @@ async fn source_target(
 	// A release is cleanup for a previously authorized hold, so V can still
 	// notify H after the source grant expires or is revoked.
 	if matches!(audience, SourceAudience::Viewer) {
-		grant_query
-			.and_where(Expr::col("revoked").eq(Expr::value(false)))
-			.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"));
+		grant_query.and_where(
+			crate::apps::identity::repositories::remote_grants::live_condition(
+				"authorization_remote_grants",
+			),
+		);
 	}
 	let grant: Option<(String, String, uuid::Uuid)> =
 		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))
-			.columns(&["node_id", "root_subject", "workspace_id"])
+			.columns(&["node_id", "root_subject", "thread_id"])
 			.fetch_optional(&mut **access.tx)
 			.await?;
-	let (target, requester, workspace_id) = grant.ok_or(Error::Forbidden)?;
+	let (target, requester, thread_id) = grant.ok_or(Error::Forbidden)?;
 	match audience {
 		SourceAudience::Viewer => {
 			let task = access.task_read(task_id).await?;
-			if requester != access.identity.subject || task.workspace_id != workspace_id {
+			if requester != access.identity.subject || task.thread_id != thread_id {
 				return Err(Error::Forbidden);
 			}
 		}
-		SourceAudience::ThreadCleanup(workspace) if workspace == workspace_id => {}
+		SourceAudience::ThreadCleanup(thread) if thread == thread_id => {}
 		SourceAudience::ThreadCleanup(_) => return Err(Error::Forbidden),
 	}
 	let source = f
 		.config
 		.deployment
-		.node(access.workspace_node(workspace_id).await?);
+		.node(access.thread_node(thread_id).await?);
 	NodeAddress::parse(&target)?;
 	Ok((
 		Sender {
@@ -94,7 +124,58 @@ async fn source_target(
 			subject: Some(requester),
 		},
 		target,
+		grant_id,
 	))
+}
+
+/// The Viewer's own lease on a remote Run, then the grant's whole chain: the
+/// Home describes the grant as it would for its receiver, which re-evaluates
+/// every subject of the chain by the current policy. A started grant stays
+/// live by its activation while its Run sleeps (#1013), so without this a
+/// chain broken meanwhile would keep reaching the Run's Working Area. Both
+/// transactions end before the Viewer's request goes to the receiver.
+async fn viewer_target(
+	f: &Federation,
+	identity: &crate::authorization::identity::SubjectIdentity,
+	run_id: uuid::Uuid,
+) -> Result<(Sender, String)> {
+	let mut access = crate::authorization::access::Access::begin(&f.store, identity).await?;
+	let result = source_target(f, &mut access, run_id, SourceAudience::Viewer).await;
+	let (sender, node, grant) = access.finish(result).await?;
+	let (lease, _) = crate::authorization::remote::description_lease(f, &node, grant)
+		.await
+		.map_err(|error| match error {
+			Error::RemoteExecutionRefused(_) | Error::Unauthorized => Error::Forbidden,
+			error => error,
+		})?;
+	lease.finish(Ok(())).await?;
+	Ok((sender, node))
+}
+
+/// A message that cites File versions of Runs another Node executes for this
+/// Home asks that Node to retain each one ([`retain_remote`]). Each cited
+/// Run's grant is described first, its whole chain re-evaluated as for a
+/// preview ticket (#1013), before the message's own transaction opens:
+/// describing a grant inside that transaction could wait on its locks.
+pub(crate) async fn require_cited_chains(
+	f: &Federation,
+	actor: &Actor,
+	citations: &[aidash_domain::threads::channels::CitedFileVersion],
+) -> Result<()> {
+	let runs: std::collections::BTreeSet<uuid::Uuid> = citations
+		.iter()
+		.filter_map(|citation| citation.run_id)
+		.collect();
+	if runs.is_empty() {
+		return Ok(());
+	}
+	let Actor::Subject(identity) = actor else {
+		return Err(Error::Forbidden);
+	};
+	for run in runs {
+		viewer_target(f, identity, run).await?;
+	}
+	Ok(())
 }
 
 /// V can display a remote citation only to the original requester while the
@@ -109,21 +190,18 @@ pub(crate) async fn source_viewer(
 		.map(|_| ())
 }
 
-/// Gather routing before thread deletion hides its Runs from normal reads.
+/// Gather routing before Thread deletion hides its Runs from normal reads.
 pub(crate) async fn releases_for_thread(
 	f: &Federation,
 	access: &mut crate::authorization::access::Access,
-	workspace: uuid::Uuid,
 	thread: uuid::Uuid,
 ) -> Result<Vec<ReleaseDelivery>> {
-	let refs = crate::apps::workspaces::repositories::citations::remote_for_thread(
-		access, workspace, thread,
-	)
-	.await?;
+	let refs =
+		crate::apps::workspaces::repositories::citations::remote_for_thread(access, thread).await?;
 	let mut deliveries = Vec::new();
 	for (message_id, run_id, file_id) in refs {
-		let Ok((sender, node)) =
-			source_target(f, access, run_id, SourceAudience::ThreadCleanup(workspace)).await
+		let Ok((sender, node, _)) =
+			source_target(f, access, run_id, SourceAudience::ThreadCleanup(thread)).await
 		else {
 			continue;
 		};
@@ -199,7 +277,6 @@ pub(crate) async fn retain(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -214,10 +291,11 @@ pub(crate) async fn retain(
 		if run.node != admitted.receiver.node
 			|| run.home_node != description.source_node
 			|| run.task_id != record.task_id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		let area = super::sessions::for_run(&mut access, &run).await?;
 		if area.id != request.area_id {
 			return Err(Error::Forbidden);
@@ -355,7 +433,6 @@ pub(crate) async fn inspect(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -367,10 +444,11 @@ pub(crate) async fn inspect(
 		if run.node != admitted.receiver.node
 			|| run.home_node != description.source_node
 			|| run.task_id != record.task_id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		// A remote Run has an admission record rather than a local execution
 		// grant. With no preview listener there is no area or viewing address to
 		// disclose; V can show the explicit unavailable state.
@@ -465,7 +543,6 @@ pub(crate) async fn issue(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -477,10 +554,11 @@ pub(crate) async fn issue(
 		if run.node != admitted.receiver.node
 			|| run.home_node != description.source_node
 			|| run.task_id != record.task_id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		let area = super::sessions::for_run(&mut access, &run).await?;
 		let peer = aidash_application::preview::Peer {
 			sender: admitted.sender.to_string(),
@@ -552,9 +630,7 @@ pub(crate) async fn request(
 	{
 		return Err(Error::Forbidden);
 	}
-	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
-	let result = source_target(&f, &mut access, run_id, SourceAudience::Viewer).await;
-	let (sender, node) = access.finish(result).await?;
+	let (sender, node) = viewer_target(&f, &identity, run_id).await?;
 	let input = TicketRequest {
 		run_id,
 		target,
@@ -579,9 +655,7 @@ pub(crate) async fn inspect_remote(
 	let Actor::Subject(identity) = actor else {
 		return Err(Error::Forbidden);
 	};
-	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
-	let result = source_target(&f, &mut access, run_id, SourceAudience::Viewer).await;
-	let (sender, node) = access.finish(result).await?;
+	let (sender, node) = viewer_target(&f, &identity, run_id).await?;
 	f.request(
 		&sender,
 		&node,
@@ -601,9 +675,12 @@ pub(crate) async fn retain_remote(
 	let Actor::Subject(identity) = actor else {
 		return Err(Error::Forbidden);
 	};
+	// The citing message's transaction is open here, so the grant's chain was
+	// described before it opened ([`require_cited_chains`]); this rechecks the
+	// binding, the live grant and the requester.
 	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
 	let result = source_target(f, &mut access, request.run_id, SourceAudience::Viewer).await;
-	let (sender, node) = access.finish(result).await?;
+	let (sender, node, _) = access.finish(result).await?;
 	f.request(
 		&sender,
 		&node,

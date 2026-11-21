@@ -89,7 +89,7 @@ pub async fn due(
 	let retry_at = recovery.retry.map(|r| r.at).filter(|d| *d > now);
 	let due = match &state {
 		RunState::Waiting(wait) => {
-			if let WaitingState::Workspace {
+			if let WaitingState::TaskWait {
 				wake_at,
 				cursor,
 				resume,
@@ -107,7 +107,7 @@ pub async fn due(
 				} else {
 					Some(
 						scope
-							.workspace_event_after(m.id, *cursor)
+							.thread_event_after(m.id, *cursor)
 							.await?
 							.unwrap_or(*wake_at)
 							.min(*wake_at),
@@ -272,7 +272,16 @@ pub async fn lease(
 			// The count includes the recovery a lost Isolated Step charged when it
 			// started, so a count above the bound means this claim would be one
 			// recovery too many (#604).
-			if !cancelled && run.recovery.lease_recoveries > LEASE_RECOVERY_LIMIT {
+			// Only a count above the smallest limit a Tenant may set needs its own.
+			let limit = if !cancelled
+				&& run.recovery.lease_recoveries
+					> *aidash_domain::run_state::LEASE_RECOVERY_LIMITS.start()
+			{
+				scope.lease_recovery_limit(m.id).await?
+			} else {
+				LEASE_RECOVERY_LIMIT
+			};
+			if !cancelled && run.recovery.lease_recoveries > limit {
 				let state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
 					target: FailureTarget::Failed,
 					wake_at: now,
@@ -280,7 +289,7 @@ pub async fn lease(
 				}));
 				if let Some(owned) = scope.repair_lease(m, token, seconds).await? {
 					let reason = format!(
-						"This step was taken over from its worker {LEASE_RECOVERY_LIMIT} times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
+						"This step was taken over from its worker {limit} times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
 					);
 					scope
 						.crash_loop(
@@ -300,6 +309,10 @@ pub async fn lease(
 			// charged when their Isolated Step acquired the gate, so a Run that
 			// only waited behind another Isolated Step is not charged again.
 			run.recovery.lease_recoveries = run.recovery.lease_recoveries.max(1);
+		}
+		// A cancellation is finished regardless of the queue, as `due` lets it.
+		if !cancelled && !scope.rejoin(m.id).await? {
+			continue;
 		}
 		if let Some(claimed) = scope.lease(&run, token, seconds, node).await? {
 			if claimed.recovery.lease_recoveries > 0 {

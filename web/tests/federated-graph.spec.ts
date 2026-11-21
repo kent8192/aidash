@@ -6,42 +6,29 @@ import { meshScene } from "./mesh-scene.mjs";
 
 const firstPeer = "aidash://graph-b";
 const secondPeer = "aidash://graph-c";
-const workspace = "11111111-1111-4111-8111-111111111111";
+const thread = "11111111-1111-4111-8111-111111111111";
 const task = "22222222-2222-4222-8222-222222222222";
 const key = (node: string, kind: string, id: string) =>
   JSON.stringify(["resource", node, kind, id]);
 const entity = (node: string, kind: string, id: string, version: string) =>
   JSON.stringify(["entity", node, kind, id, version]);
 const timestamp = new Date().toISOString();
-const goal =
-  "Full authorized Goal body.\nSecond paragraph with a unique search phrase.";
+// A peer projects a Thread with its title and no goal (#1008).
 const projected = {
   node_id: firstPeer,
   generation: `sha256:${"a".repeat(64)}`,
   checked_at: timestamp,
   nodes: [
     {
-      id: key(firstPeer, "workspace", workspace),
+      id: key(firstPeer, "thread", thread),
       node_id: firstPeer,
-      kind: "workspace",
-      name: { en: "B Workspace" },
-      resource_id: workspace,
+      kind: "thread",
+      name: { en: "B Thread" },
+      resource_id: thread,
       version: null,
-      workspace_id: workspace,
+      thread_id: thread,
       status: null,
       goal_body: null,
-      at: timestamp,
-    },
-    {
-      id: key(firstPeer, "goal", workspace),
-      node_id: firstPeer,
-      kind: "goal",
-      name: { en: "Full authorized Goal body." },
-      resource_id: workspace,
-      version: null,
-      workspace_id: workspace,
-      status: null,
-      goal_body: goal,
       at: timestamp,
     },
     {
@@ -51,7 +38,7 @@ const projected = {
       name: { en: "B Task" },
       resource_id: task,
       version: null,
-      workspace_id: workspace,
+      thread_id: thread,
       status: "RUNNING",
       goal_body: null,
       at: timestamp,
@@ -63,7 +50,7 @@ const projected = {
       name: { en: "B Agent" },
       resource_id: "worker",
       version: "1.0.0",
-      workspace_id: null,
+      thread_id: null,
       status: null,
       goal_body: null,
       at: null,
@@ -75,7 +62,7 @@ const projected = {
       name: { en: "B Run" },
       resource_id: "b-run",
       version: null,
-      workspace_id: workspace,
+      thread_id: thread,
       status: "THINKING",
       goal_body: null,
       at: timestamp,
@@ -83,13 +70,7 @@ const projected = {
   ],
   edges: [
     {
-      source: key(firstPeer, "workspace", workspace),
-      target: key(firstPeer, "goal", workspace),
-      relation: "goal",
-      layer: "configuration",
-    },
-    {
-      source: key(firstPeer, "goal", workspace),
+      source: key(firstPeer, "thread", thread),
       target: key(firstPeer, "task", task),
       relation: "contains",
       layer: "activity",
@@ -229,12 +210,12 @@ test("subject expands only direct authorized peers and clears remote details on 
     .poll(() =>
       requests.some(
         (body) =>
-          (body as { scope_workspace: string | null }).scope_workspace ===
+          (body as { scope_thread: string | null }).scope_thread ===
           "product-lab",
       ),
     )
     .toBe(true);
-  await page.getByLabel("Graph workspace").selectOption("");
+  await page.getByLabel("Graph thread").selectOption("");
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
   ).toBeVisible();
@@ -248,7 +229,7 @@ test("subject expands only direct authorized peers and clears remote details on 
     .poll(() =>
       requests.some(
         (body) =>
-          (body as { scope_workspace: string | null }).scope_workspace === null,
+          (body as { scope_thread: string | null }).scope_thread === null,
       ),
     )
     .toBe(true);
@@ -279,17 +260,15 @@ test("subject expands only direct authorized peers and clears remote details on 
   ).toBeVisible();
   await page.getByRole("button", { name: "Relationship list" }).click();
   const list = page.getByRole("table", { name: "Relationship list" });
-  await expect(list).toContainText("B Workspace");
-  await list
-    .getByRole("button", { name: "Full authorized Goal body." })
-    .click();
+  await expect(list).toContainText("B Thread");
+  await list.getByRole("button", { name: "B Thread" }).click();
   const inspector = page.getByRole("complementary", { name: "Node details" });
-  await expect(inspector).toContainText(goal);
+  await expect(inspector).toContainText("B Thread");
   const search = page.getByRole("searchbox", {
     name: "Search nodes, tasks, agents, or artifacts…",
   });
-  await search.fill("unique search phrase");
-  await expect(list).toContainText("Full authorized Goal body.");
+  await search.fill("B Thread");
+  await expect(list).toContainText("B Thread");
   await search.fill("");
   await list.getByRole("button", { name: "B Task" }).click();
   await expect(inspector).not.toContainText("LOCAL-ONLY-DESCRIPTION");
@@ -315,10 +294,10 @@ test("subject expands only direct authorized peers and clears remote details on 
   await expect(page.getByRole("button", { name: "Expand node" })).toHaveCount(
     2,
   );
-  await expect(page.getByText("B Workspace")).toHaveCount(0);
+  await expect(page.getByText("B Thread")).toHaveCount(0);
 });
 
-test("three authorized execution Nodes share one Home Workspace without merging Peer Runs", async ({
+test("three authorized execution Nodes share one Home Thread without merging Peer Runs", async ({
   page,
 }) => {
   const scene = meshScene();
@@ -344,7 +323,7 @@ test("three authorized execution Nodes share one Home Workspace without merging 
         name: { en: "Peer Worker" },
         resource_id: "worker",
         version: "1.0.0",
-        workspace_id: null,
+        thread_id: null,
         status: null,
         goal_body: null,
         at: null,
@@ -356,7 +335,7 @@ test("three authorized execution Nodes share one Home Workspace without merging 
         name: { en: "Peer Run" },
         resource_id: "same-run-id",
         version: null,
-        workspace_id: "product-lab",
+        thread_id: "product-lab",
         status: "THINKING",
         goal_body: null,
         at: timestamp,
@@ -415,7 +394,7 @@ test("three authorized execution Nodes share one Home Workspace without merging 
   await expect(
     page
       .locator(".mesh-region-label")
-      .filter({ hasText: "Workspace shared data" }),
+      .filter({ hasText: "Thread shared data" }),
   ).toHaveCount(1);
   await expect(
     page
@@ -508,19 +487,19 @@ test("compact Japanese view replaces page windows and clears outages and forged 
     name: { ja: name },
     resource_id: name,
     version: "1.0.0",
-    workspace_id: null,
+    thread_id: null,
     status: null,
     goal_body: null,
     at: null,
   });
   const run = () => ({
-    id: key(firstPeer, "run", "workspace-run"),
+    id: key(firstPeer, "run", "thread-run"),
     node_id: firstPeer,
     kind: "run",
     name: { ja: "Bの実行" },
-    resource_id: "workspace-run",
+    resource_id: "thread-run",
     version: null,
-    workspace_id: "product-lab",
+    thread_id: "product-lab",
     status: "THINKING",
     goal_body: null,
     at: timestamp,
@@ -567,7 +546,7 @@ test("compact Japanese view replaces page windows and clears outages and forged 
                           : "B最初のページ",
                       "1.0.0",
                     ),
-                    target: key(firstPeer, "run", "workspace-run"),
+                    target: key(firstPeer, "run", "thread-run"),
                     relation: "executes",
                     layer: "activity",
                   },

@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{base_url}}/api/workspaces/{{workspace_id}}/tasks
+  url: {{base_url}}/api/threads/{{thread_id}}/tasks
   body: json
   auth: none
 }
@@ -32,7 +32,7 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody().workspace_id).to.equal(bru.getVar("workspace_id"));
+    expect(res.getBody().thread_id).to.equal(bru.getVar("thread_id"));
     expect(res.getBody().status).to.equal("OPEN");
   });
 

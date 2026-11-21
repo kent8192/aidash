@@ -28,9 +28,9 @@ class ReconciliationTests(unittest.TestCase):
 
         self.assertEqual(reconciled, key)
         self.assertEqual(request.call_args_list, [
-            call(base, "/api/runs/remote-run", token="subject-token"),
-            call(base, "/api/runs/remote-run", token="subject-token"),
-            call(base, "/api/runs/remote-run", token="subject-token"),
+            call(base, "/api/executions/remote-run", token="subject-token"),
+            call(base, "/api/executions/remote-run", token="subject-token"),
+            call(base, "/api/executions/remote-run", token="subject-token"),
             call(base, "/api/human-requests/confirmation/answer", {"result": result}, token="subject-token"),
         ])
 
@@ -43,7 +43,7 @@ class ReconciliationTests(unittest.TestCase):
                 golden_path.reconcile_uncertain_http(
                     "http://receiver.invalid", "remote-run", lambda: {"other-run:4:0": {"ok": True}}, "subject-token"
                 )
-        request.assert_called_once_with("http://receiver.invalid", "/api/runs/remote-run", token="subject-token")
+        request.assert_called_once_with("http://receiver.invalid", "/api/executions/remote-run", token="subject-token")
 
 
 class FixtureApprovalTests(unittest.TestCase):
@@ -57,9 +57,9 @@ class FixtureApprovalTests(unittest.TestCase):
             self.assertIsNone(golden_path.completed_run(self.base, "run-1", "subject-token"))
             self.assertEqual(golden_path.completed_run(self.base, "run-1", "subject-token")["phase"], "COMPLETED")
         self.assertEqual(request.call_args_list, [
-            call(self.base, "/api/tasks/task-1/runs", token="subject-token"),
-            call(self.base, "/api/runs/run-1", token="subject-token"),
-            call(self.base, "/api/runs/run-1", token="subject-token"),
+            call(self.base, "/api/tasks/task-1/executions", token="subject-token"),
+            call(self.base, "/api/executions/run-1", token="subject-token"),
+            call(self.base, "/api/executions/run-1", token="subject-token"),
         ])
 
     def test_external_requests_follow_a_short_page(self):

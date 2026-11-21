@@ -7,7 +7,6 @@ pub struct Area {
 	pub id: Uuid,
 	pub tenant: String,
 	pub home_node: String,
-	pub workspace_id: Uuid,
 	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub owner: String,
@@ -35,7 +34,7 @@ pub struct SessionStatus {
 	pub queue: Vec<SessionRun>,
 }
 /// The constraint kind of a Working Area a receiving Node keeps for Runs executing for another
-/// Home (ADR 0139). It records the Home, whose Workspace this Node does not hold, so reads of
+/// Home (ADR 0139). It records the Home, whose Thread this Node does not hold, so reads of
 /// the Area are authorized by the Run's admission and the Area's owner instead.
 pub const REMOTE_HOME: &str = "remote_home";
 pub fn remote_home_constraint(home_node: &str) -> Value {
@@ -55,6 +54,20 @@ impl Area {
 	/// here; the caller's own checks apply, which refuse a Reference set.
 	pub fn may_send_to(&self, recipient_node: &str) -> bool {
 		!self.is_remote_home() || recipient_node == self.home_node
+	}
+	/// Refuse an Area of the other kind than the Run needs. A receiving Area and a local one
+	/// share their key (Tenant, Home Node, Thread, Agent, owner) when the Home is a sibling Node
+	/// of this Deployment (#1008), so the row found for a key may be the other kind's; a Run
+	/// never works in it, and neither kind reaches the other's files.
+	pub fn require_kind(&self, receiving: bool) -> crate::Result<()> {
+		if self.is_remote_home() == receiving {
+			Ok(())
+		} else {
+			Err(crate::Error::Conflict(
+				"AREA_UNAVAILABLE: this Thread's Working Area for the Agent and person serves Runs of another Node"
+					.into(),
+			))
+		}
 	}
 }
 pub fn received_scope_matches(subjects: &[String], owner: &str, agent: &str) -> bool {

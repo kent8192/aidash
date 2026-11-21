@@ -199,7 +199,7 @@ impl Environment<'_> {
 			"skills" => Ok(Slot::Skills),
 			"references" => Ok(Slot::References),
 			"reference_images" => Ok(Slot::ReferenceImages),
-			"workspace" => Ok(Slot::Observation),
+			"thread" => Ok(Slot::Observation),
 			"semantic_memory" => Ok(Slot::Semantic),
 			_ => Err(aidash_application::Error::Forbidden),
 		}
@@ -293,7 +293,7 @@ impl Environment<'_> {
 		SemanticContextRead {
 			selections: vec![],
 			contributions: vec![],
-			workspace_retrieved: false,
+			thread_retrieved: false,
 			result,
 		}
 	}

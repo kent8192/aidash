@@ -185,8 +185,8 @@ impl ForeignGenerationGuard for Scope {
 	async fn lineage(&mut self, node: &str) -> Result<Vec<Ancestor>> {
 		self.guard().lineage(node).await
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.guard().workspace(id).await
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.guard().thread(id).await
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.guard().task_resource(task).await

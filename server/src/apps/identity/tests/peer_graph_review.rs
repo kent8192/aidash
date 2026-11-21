@@ -19,8 +19,8 @@ async fn project(
 	options: Value,
 ) -> (u16, Value) {
 	let mut input = json!({
-		"subject":subject,"scope_workspace":null,"mode":"mesh",
-		"kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,
+		"subject":subject,"scope_thread":null,"mode":"mesh",
+		"kinds":["thread"],"relations":[],"hours":0,"limit":80,"cursor":null,
 	});
 	input
 		.as_object_mut()
@@ -66,7 +66,7 @@ async fn viewer(
 	("source-subject", id, source)
 }
 
-/// Activation writes a receiver run and an admission, not a local workspace/task.
+/// Activation writes a receiver run and an admission, not a local thread/task.
 struct FixtureDefinitions<'a>(&'a Federation);
 #[async_trait::async_trait]
 impl aidash_application::ports::registry::DefinitionLookup for FixtureDefinitions<'_> {
@@ -93,12 +93,12 @@ async fn admitted_run(
 	credential: Uuid,
 	tenant: &str,
 	source: &str,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Uuid {
 	let id = Uuid::new_v4();
 	let mut task = template.clone();
 	task.id = Uuid::new_v4();
-	task.workspace_id = workspace;
+	task.thread_id = thread;
 	let agent: Value = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("metadata"))
@@ -187,12 +187,12 @@ async fn admitted_run(
 	.unwrap();
 	sqlx::query(
 		&Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",
 					"task_id",
-					"workspace_id",
+					"thread_id",
 					"home_node",
 					"agent_id",
 					"agent_version",
@@ -213,7 +213,7 @@ async fn admitted_run(
 	)
 	.bind(id)
 	.bind(task.id)
-	.bind(workspace)
+	.bind(thread)
 	.bind(source)
 	.bind("research")
 	.bind("1.0.0")
@@ -226,7 +226,7 @@ async fn admitted_run(
 	id
 }
 
-async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value, age: i64) {
+async fn event(f: &Federation, thread: Option<Uuid>, kind: &str, data: Value, age: i64) {
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("events"))
@@ -234,7 +234,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 				[
 					"id",
 					"node",
-					"workspace_id",
+					"thread_id",
 					"kind",
 					"data",
 					"created_at",
@@ -253,7 +253,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 	)
 	.bind(Uuid::new_v4())
 	.bind(common::default_node(&f.store, "acme").await.node.as_str())
-	.bind(workspace)
+	.bind(thread)
 	.bind(kind)
 	.bind(data)
 	.bind(chrono::Utc::now() - chrono::Duration::seconds(age))
@@ -268,7 +268,7 @@ async fn bump_run(f: &Federation, id: Uuid) {
 		let query_bind_1 = id;
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id=?)".to_owned(),
@@ -319,11 +319,10 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		.await
 	}
 	.unwrap();
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let mut expected = vec![];
 	for _ in 0..3 {
-		expected
-			.push(admitted_run(&f, &task, credential, "acme", &source.address(), workspace).await);
+		expected.push(admitted_run(&f, &task, credential, "acme", &source.address(), thread).await);
 	}
 	let third = admitted_run(
 		&f,
@@ -331,7 +330,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		credential,
 		"acme",
 		&home("aidash://third"),
-		workspace,
+		thread,
 	)
 	.await;
 	let other_scope = admitted_run(
@@ -362,15 +361,15 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		other_credential,
 		"other",
 		&source.address(),
-		workspace,
+		thread,
 	)
 	.await;
 	for index in 0..6 {
 		event(
 			&f,
 			None,
-			"run.phase",
-			json!({"run_id":expected[0],"workspace_id":workspace}),
+			"execution.phase",
+			json!({"run_id":expected[0],"thread_id":thread}),
 			60 - index,
 		)
 		.await;
@@ -378,13 +377,12 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	event(
 		&f,
 		None,
-		"run.phase",
-		json!({"run_id":third,"workspace_id":workspace}),
+		"execution.phase",
+		json!({"run_id":third,"thread_id":thread}),
 		1,
 	)
 	.await;
-	let options =
-		json!({"scope_workspace":workspace,"kinds":["run","agent"],"relations":["executes"]});
+	let options = json!({"scope_thread":thread,"kinds":["run","agent"],"relations":["executes"]});
 	let (status, page) = project(&app, &source, subject, options.clone()).await;
 	assert_eq!(status, 200, "{page}");
 	let mut actual = run_ids(&page);
@@ -401,14 +399,14 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 			.windows(2)
 			.all(|pair| { pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap() })
 	);
-	let local_workspace_count: i64 = {
-		let query_bind_1 = workspace;
+	let local_thread_count: i64 = {
+		let query_bind_1 = thread;
 		sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("authorization_workspaces"))
+				.from(Alias::new("authorization_threads"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id=?)".to_owned(),
+					"(thread_id=?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(PostgresQueryBuilder),
@@ -417,7 +415,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		.await
 	}
 	.unwrap();
-	assert_eq!(local_workspace_count, 0);
+	assert_eq!(local_thread_count, 0);
 	let mut paged = options.clone();
 	paged["limit"] = json!(2);
 	let (status, first) = project(&app, &source, subject, paged.clone()).await;
@@ -428,8 +426,8 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 		&app,
 		&token,
 		"POST",
-		"/api/workspaces",
-		json!({"title":"Unrelated same-tenant activity","goal":"Do not reset the remote cursor"}),
+		"/api/threads",
+		json!({"title":"Unrelated same-tenant activity"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
@@ -439,8 +437,8 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	event(
 		&f,
 		None,
-		"run.phase",
-		json!({"run_id":third,"workspace_id":workspace}),
+		"execution.phase",
+		json!({"run_id":third,"thread_id":thread}),
 		1,
 	)
 	.await;
@@ -451,8 +449,8 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-remote-run","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["run.read"],"resources":{"kinds":["run"]},
-		"condition":{"op":"eq","left":{"source":"resource","path":"/source_workspace_id"},
-			"right":{"source":"literal","value":workspace}},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/source_thread_id"},
+			"right":{"source":"literal","value":thread}},
 	}));
 	let (status, written) = request(
 		&app,
@@ -475,7 +473,7 @@ async fn event_decisions(f: &Federation) -> i64 {
 		&Query::select()
 			.expr(Expr::cust("COUNT(*)"))
 			.from(Alias::new("authorization_decisions"))
-			.and_where(Expr::cust("tenant='acme' AND action='workspace.events'"))
+			.and_where(Expr::cust("tenant='acme' AND action='thread.events'"))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(f.store.pool.fixture_driver())
@@ -494,11 +492,11 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	let app = fixture.application;
 	let (mut policy, _, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
 	let (subject, _, source) = viewer(&f, &app).await;
-	let workspace: Uuid = {
+	let thread: Uuid = {
 		let query_bind_1 = task_id;
 		sqlx::query_scalar(
 			&Query::select()
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.from(Alias::new("tasks"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id=?)".to_owned(),
@@ -511,14 +509,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	}
 	.unwrap();
 	for index in 0..6 {
-		event(
-			&f,
-			Some(workspace),
-			"workspace.updated",
-			json!({}),
-			60 - index,
-		)
-		.await;
+		event(&f, Some(thread), "thread.updated", json!({}), 60 - index).await;
 	}
 	let before = event_decisions(&f).await;
 	let (status, page) = project(&app, &source, subject, json!({})).await;
@@ -526,10 +517,10 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	assert_eq!(event_decisions(&f).await - before, 1);
 	let activity = page["activity"].as_array().unwrap();
 	assert!(activity.len() >= 6);
-	assert_eq!(activity[0]["kind"], "workspace.updated");
+	assert_eq!(activity[0]["kind"], "thread.updated");
 	let updates: Vec<_> = activity
 		.iter()
-		.filter(|item| item["kind"] == "workspace.updated")
+		.filter(|item| item["kind"] == "thread.updated")
 		.collect();
 	assert!(
 		updates
@@ -538,7 +529,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-events","effect":"deny","subjects":{"ids":["alice"]},
-		"actions":["workspace.events"],"resources":{"kinds":["workspace"]},
+		"actions":["thread.events"],"resources":{"kinds":["thread"]},
 	}));
 	let (status, written) = request(
 		&app,

@@ -18,9 +18,9 @@ pub async fn home_authority(
 	target: &str,
 	policy_id: &str,
 ) -> Result<()> {
-	let workspace = scope.workspace(task.workspace_id).await?;
-	scope.require(&workspace, "workspace.read").await?;
-	scope.require(&workspace, "generation.disclose").await?;
+	let thread = scope.thread(task.thread_id).await?;
+	scope.require(&thread, "thread.read").await?;
+	scope.require(&thread, "generation.disclose").await?;
 	let resource = scope.task_resource(task).await?;
 	scope.require(&resource, "task.read").await?;
 	scope.require(&resource, "task.delegate").await?;

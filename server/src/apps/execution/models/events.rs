@@ -17,18 +17,18 @@ pub struct Event {
 	pub tenant: String,
 	#[field]
 	pub id: uuid::Uuid,
-	/// The Node of the Workspace or executing Run; none for a Tenant-level event.
+	/// The Node of the Thread or executing Run; none for a Tenant-level event.
 	#[field(field_type = "text", null = true)]
 	pub node: Option<String>,
 
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "events_workspace_id_fkey",
+		db_constraint = "events_thread_id_fkey",
 		db_index = false,
 		null = true
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field(field_type = "text")]
 	pub kind: String,
 	#[field]

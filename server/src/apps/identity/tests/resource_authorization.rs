@@ -31,7 +31,7 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 		f.store
 			.create_task(
 				&TEST_FIXTURE,
-				parent.workspace_id,
+				parent.thread_id,
 				&NewTask {
 					title: format!("Large child {index}"),
 					description: "bounded summary payload ".repeat(2_500),
@@ -45,16 +45,16 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 			.await
 			.unwrap();
 	}
-	sqlx::query("UPDATE tasks SET status = 'ABANDONED' WHERE workspace_id = $1 AND parent_id = $2")
-		.bind(parent.workspace_id)
+	sqlx::query("UPDATE tasks SET status = 'ABANDONED' WHERE thread_id = $1 AND parent_id = $2")
+		.bind(parent.thread_id)
 		.bind(parent_id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-		"SELECT id FROM tasks WHERE workspace_id = $1 AND parent_id = $2 ORDER BY id",
+		"SELECT id FROM tasks WHERE thread_id = $1 AND parent_id = $2 ORDER BY id",
 	)
-	.bind(parent.workspace_id)
+	.bind(parent.thread_id)
 	.bind(parent_id)
 	.fetch_all(f.store.pool.fixture_driver())
 	.await
@@ -73,12 +73,12 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 	else {
 		panic!("subject required")
 	};
-	let scope = aidash_server::authorization::workspace::Workspaces {
+	let scope = aidash_server::authorization::thread::Threads {
 		store: f.store.clone(),
 		identity,
 	};
 	let summary = scope
-		.child_task_summary(parent.workspace_id, parent_id)
+		.child_task_summary(parent.thread_id, parent_id)
 		.await
 		.unwrap();
 	assert!(summary.has_pending && !summary.has_failed);
@@ -104,7 +104,7 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 		200
 	);
 	let summary = scope
-		.child_task_summary(parent.workspace_id, parent_id)
+		.child_task_summary(parent.thread_id, parent_id)
 		.await
 		.unwrap();
 	assert!(!summary.has_pending && !summary.has_failed);
@@ -162,7 +162,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/workspaces/{}/messages", task_record.workspace_id),
+			&format!("/api/threads/{}/messages", task_record.thread_id),
 			json!({"content":"private-message-content"})
 		)
 		.await
@@ -172,7 +172,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	let (_, before) = common::get(
 		&app,
 		&token,
-		&format!("/api/workspaces/{}", task_record.workspace_id),
+		&format!("/api/threads/{}", task_record.thread_id),
 	)
 	.await;
 	let message = before["messages"][0]["id"].as_str().unwrap();
@@ -196,8 +196,8 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	);
 	for path in [
 		"/api/state".to_owned(),
-		format!("/api/workspaces/{}", task_record.workspace_id),
-		format!("/api/events?workspace_id={}", task_record.workspace_id),
+		format!("/api/threads/{}", task_record.thread_id),
+		format!("/api/events?thread_id={}", task_record.thread_id),
 	] {
 		let (status, body) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200, "{body}");
@@ -216,7 +216,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	}
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		403
@@ -224,7 +224,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	let (_, snapshot) = common::get(
 		&app,
 		&token,
-		&format!("/api/workspaces/{}", task_record.workspace_id),
+		&format!("/api/threads/{}", task_record.thread_id),
 	)
 	.await;
 	assert_eq!(snapshot["tasks"], json!([]));
@@ -243,12 +243,7 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task]}}));
 	assert_eq!(
 		common::post(
@@ -280,14 +275,9 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 			json!(task)
 		};
 		assert_eq!(
-			common::post(
-				&app,
-				&token,
-				&format!("/api/workspaces/{workspace}/tasks"),
-				input
-			)
-			.await
-			.0,
+			common::post(&app, &token, &format!("/api/threads/{thread}/tasks"), input)
+				.await
+				.0,
 			403
 		);
 	}
@@ -302,7 +292,7 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 	);
 	assert_eq!(
 		f.store
-			.tasks(&TEST_FIXTURE, Some(workspace))
+			.tasks(&TEST_FIXTURE, Some(thread))
 			.await
 			.unwrap()
 			.len(),
@@ -324,7 +314,7 @@ async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_event_revocation_hides_journals_and_pauses_before_provider_io(
+async fn thread_event_revocation_hides_journals_and_pauses_before_provider_io(
 	#[future(awt)]
 	#[from(retained_snapshot_revocation_provider)]
 	fixture: RetainedSnapshotRevocationProvider,
@@ -341,12 +331,7 @@ async fn retained_snapshot_revocation(
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	assert_eq!(
 		common::post(
 			&app,
@@ -421,18 +406,18 @@ async fn retained_snapshot_revocation(
 	else {
 		panic!("subject required")
 	};
-	let scope = aidash_server::authorization::workspace::Workspaces {
+	let scope = aidash_server::authorization::thread::Threads {
 		store: f.store.clone(),
 		identity,
 	};
-	let buffered = scope.events(0, Some(workspace), 500).await.unwrap();
+	let buffered = scope.events(0, Some(thread), 500).await.unwrap();
 	let protected = buffered
 		.iter()
 		.find(|event| event.kind == "tool.completed")
 		.unwrap();
 	assert!(scope.can_emit(protected).await.unwrap());
 	let denial = if events_only {
-		json!({"id":"revoke-events","effect":"deny","subjects":{"ids":["alice"]},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[workspace]}})
+		json!({"id":"revoke-events","effect":"deny","subjects":{"ids":["alice"]},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[thread]}})
 	} else {
 		json!({"id":"revoke-source","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}})
 	};
@@ -453,7 +438,7 @@ async fn retained_snapshot_revocation(
 		"buffered raw journals must be rechecked"
 	);
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		403
@@ -461,8 +446,8 @@ async fn retained_snapshot_revocation(
 	if !events_only {
 		for path in [
 			"/api/state".to_owned(),
-			format!("/api/workspaces/{workspace}"),
-			format!("/api/events?workspace_id={workspace}"),
+			format!("/api/threads/{thread}"),
+			format!("/api/events?thread_id={thread}"),
 		] {
 			let (status, body) = common::get(&app, &token, &path).await;
 			assert_eq!(status, 200, "{body}");
@@ -489,204 +474,6 @@ async fn retained_snapshot_revocation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn opened_thread_events_retain_their_root_message_read_dependency(
-	#[future(awt)]
-	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider)]
-	fixture: OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider,
-) {
-	let (f, url, schema) = fixture.application.runtime.parts();
-	let app = fixture.application.application;
-	let server = fixture.server;
-	let endpoint = server.url.clone();
-	let calls = fixture.calls;
-	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	let root_content = "older thread root";
-	f.store
-		.message(
-			&TEST_FIXTURE,
-			workspace,
-			"human",
-			root_content,
-			Some("thread-root-old"),
-		)
-		.await
-		.unwrap();
-	let root: uuid::Uuid = {
-		let query_bind_1 = workspace;
-		let query_bind_2 = root_content;
-		sqlx::query_scalar(
-			&reinhardt::query::Query::select()
-				.column(reinhardt::query::Alias::new("id"))
-				.from(reinhardt::query::Alias::new("messages"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ? AND content = ?)".to_owned(),
-					vec![
-						Expr::value(query_bind_1.to_owned()).into(),
-						Expr::value(query_bind_2.to_owned()).into(),
-					],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_one(f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	let old = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
-		.unwrap()
-		.with_timezone(&chrono::Utc);
-	{
-		let query_bind_1 = old;
-		let query_bind_2 = root;
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("messages"))
-				.value_expr(
-					reinhardt::query::Alias::new("created_at"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("id"),
-					))
-					.eq(SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					)),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	for index in 0..110 {
-		f.store
-			.message(
-				&TEST_FIXTURE,
-				workspace,
-				"human",
-				&format!("newer message {index}"),
-				Some(&format!("thread-burst-{index}")),
-			)
-			.await
-			.unwrap();
-	}
-	let (status, thread) = common::post(
-		&app,
-		&common::tenant_token(&f.store, "acme").await,
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":root}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
-	let recent: Vec<uuid::Uuid> = {
-		let query_bind_1 = workspace;
-		sqlx::query_scalar(
-			&reinhardt::query::Query::select()
-				.column(reinhardt::query::Alias::new("id"))
-				.from(reinhardt::query::Alias::new("messages"))
-				.and_where(
-					reinhardt::query::Expr::col(reinhardt::query::Alias::new("workspace_id"))
-						.eq(Expr::value(query_bind_1.to_owned())),
-				)
-				.order_by(
-					reinhardt::query::Alias::new("created_at"),
-					reinhardt::query::Order::Desc,
-				)
-				.order_by(
-					reinhardt::query::Alias::new("id"),
-					reinhardt::query::Order::Desc,
-				)
-				.limit(100)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	assert!(
-		!recent.contains(&root),
-		"the root is outside the message page"
-	);
-
-	assert_eq!(
-		common::post(
-			&app,
-			&token,
-			&format!("/api/tasks/{task}/claim"),
-			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
-		)
-		.await
-		.0,
-		200
-	);
-	let worker = Harness {
-		federation: f.clone(),
-	};
-	for _ in 0..4 {
-		worker.worker_once().await.unwrap();
-		if calls.load(Ordering::SeqCst) > 0 {
-			break;
-		}
-	}
-	assert_eq!(calls.load(Ordering::SeqCst), 1);
-	let run = f
-		.store
-		.runs(&TEST_FIXTURE)
-		.await
-		.unwrap()
-		.into_iter()
-		.find(|run| run.task_id == task)
-		.unwrap();
-	let dependency: i64 = { let query_bind_1 = run.id; let query_bind_2 = workspace; let query_bind_3 = root; sqlx::query_scalar(&reinhardt::query::Query::select()
-			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-			.from(reinhardt::query::Alias::new("authorization_run_reads"))
-			.and_where(SimpleExpr::CustomWithExpr("(run_id = ? AND workspace_id = ? AND resource_kind = 'message' AND resource_id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
-			.to_string(reinhardt::query::PostgresQueryBuilder))
-	.fetch_one(f.store.pool.fixture_driver())
-	.await }
-	.unwrap();
-	assert_eq!(
-		dependency, 1,
-		"thread-open events depend on their root message"
-	);
-
-	bundle["policies"].as_array_mut().unwrap().push(json!({
-		"id":"deny-thread-root", "effect":"deny", "subjects":{"ids":["alice"]},
-		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[root]}
-	}));
-	assert_eq!(
-		common::post(
-			&app,
-			&f.config.api_token,
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":bundle})
-		)
-		.await
-		.0,
-		200
-	);
-	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
-			.await
-			.0,
-		403
-	);
-	drop(server);
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn stored_message_author_controls_visibility_and_forged_authorship_is_rejected(
 	#[future(awt)]
 	#[from(common::native_application)]
@@ -695,12 +482,7 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	bundle["subjects"]["bob"] = json!({"kind":"user"});
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"private-bob-message","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"bob"}}}));
 	assert_eq!(
@@ -716,7 +498,7 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	);
 	let bob = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = bob["token"].as_str().unwrap();
-	let path = format!("/api/workspaces/{workspace}/messages");
+	let path = format!("/api/threads/{thread}/messages");
 	let authorization = format!("Bearer {bob}");
 	// Keep the shared
 	// anonymous client free of default credentials so later Alice requests stay isolated.
@@ -754,11 +536,11 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 			.0,
 		200
 	);
-	let (_, snapshot) = common::get(&app, &alice, &format!("/api/workspaces/{workspace}")).await;
+	let (_, snapshot) = common::get(&app, &alice, &format!("/api/threads/{thread}")).await;
 	assert!(snapshot.to_string().contains("alice-visible"));
 	assert!(!snapshot.to_string().contains("bob-private"));
 	assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
-	let (_, snapshot) = common::get(&app, bob, &format!("/api/workspaces/{workspace}")).await;
+	let (_, snapshot) = common::get(&app, bob, &format!("/api/threads/{thread}")).await;
 	assert!(snapshot.to_string().contains("bob-private"));
 	cleanup(f, &url, &schema).await;
 }
@@ -773,12 +555,7 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-new-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
 	assert_eq!(
 		common::post(
@@ -795,7 +572,7 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/workspaces/{workspace}/tasks"),
+			&format!("/api/threads/{thread}/tasks"),
 			json!({"title":"Blocked new task","description":"Must roll back"})
 		)
 		.await
@@ -804,7 +581,7 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 	);
 	assert_eq!(
 		f.store
-			.tasks(&TEST_FIXTURE, Some(workspace))
+			.tasks(&TEST_FIXTURE, Some(thread))
 			.await
 			.unwrap()
 			.len(),
@@ -812,7 +589,7 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 	);
 	assert!(
 		!f.store
-			.events(&TEST_FIXTURE, 0, Some(workspace), 100)
+			.events(&TEST_FIXTURE, 0, Some(thread), 100)
 			.await
 			.unwrap()
 			.iter()
@@ -844,16 +621,11 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, first) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, first)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, first).await.unwrap().thread_id;
 	let (_, second) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Second","description":"Second journal"}),
 	)
 	.await;
@@ -916,7 +688,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 				let read = AuthorizationRunRead::build()
 					.tenant("acme")
 					.run_id(run)
-					.workspace_id(workspace)
+					.thread_id(thread)
 					.resource_kind(AuthorizationRunReadResourceKind::Run)
 					.resource_id(source)
 					.finish();
@@ -944,8 +716,8 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		f.store
 			.emit(
 				&TEST_FIXTURE,
-				Some(workspace),
-				"run.updated",
+				Some(thread),
+				"execution.updated",
 				json!({"run_id":runs[index % 2].id}),
 			)
 			.await
@@ -971,7 +743,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		assert_eq!(
 			tokio::time::timeout(
 				std::time::Duration::from_secs(3),
-				common::get(&app, &token, &format!("/api/runs/{}", run.id))
+				common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			)
 			.await
 			.unwrap()
@@ -999,11 +771,11 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|event| event["kind"] == "run.updated")
+			.any(|event| event["kind"] == "execution.updated")
 	);
 	for run in &runs {
 		assert_eq!(
-			common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			common::get(&app, &token, &format!("/api/executions/{}", run.id))
 				.await
 				.0,
 			403
@@ -1025,12 +797,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	assert_eq!(
 		common::post(
 			&app,
@@ -1069,7 +836,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/workspaces/{workspace}/messages"),
+			&format!("/api/threads/{thread}/messages"),
 			json!({"content":"hidden-message"})
 		)
 		.await
@@ -1078,7 +845,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	);
 	let hidden_message = f
 		.store
-		.snapshot(&TEST_FIXTURE, workspace)
+		.snapshot(&TEST_FIXTURE, thread)
 		.await
 		.unwrap()
 		.messages[0]
@@ -1103,7 +870,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		200
@@ -1129,7 +896,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	}
 	.unwrap();
 	assert_eq!(hidden, 0);
-	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace).await.unwrap();
+	let snapshot = f.store.snapshot(&TEST_FIXTURE, thread).await.unwrap();
 	let output = snapshot
 		.artifacts
 		.iter()
@@ -1168,7 +935,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 			200
 		);
 		assert_eq!(
-			common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			common::get(&app, &token, &format!("/api/executions/{}", run.id))
 				.await
 				.0,
 			403
@@ -1191,29 +958,24 @@ async fn artifact_state_window_stops_at_task_denials_without_disclosing_them(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, hidden) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, hidden)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, hidden).await.unwrap().thread_id;
 	let (_, visible) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Visible","description":"An older readable artifact"}),
 	)
 	.await;
 	let visible: uuid::Uuid = visible["id"].as_str().unwrap().parse().unwrap();
 	{
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		let query_bind_2 = hidden;
 		sqlx::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("artifacts"))
 				.columns([
 					reinhardt::query::Alias::new("id"),
-					reinhardt::query::Alias::new("workspace_id"),
+					reinhardt::query::Alias::new("thread_id"),
 					reinhardt::query::Alias::new("task_id"),
 					reinhardt::query::Alias::new("kind"),
 					reinhardt::query::Alias::new("name"),
@@ -1256,14 +1018,14 @@ async fn artifact_state_window_stops_at_task_denials_without_disclosing_them(
 	}
 	.unwrap();
 	{
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		let query_bind_2 = visible;
 		sqlx::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("artifacts"))
 				.columns([
 					reinhardt::query::Alias::new("id"),
-					reinhardt::query::Alias::new("workspace_id"),
+					reinhardt::query::Alias::new("thread_id"),
 					reinhardt::query::Alias::new("task_id"),
 					reinhardt::query::Alias::new("kind"),
 					reinhardt::query::Alias::new("name"),
@@ -1325,7 +1087,7 @@ async fn artifact_state_window_stops_at_task_denials_without_disclosing_them(
 	// rather than denied. Once it enters the window it remains visible.
 	let delete = reinhardt::query::Query::delete()
 		.from_table(reinhardt::query::Alias::new("artifacts"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 		.and_where(Expr::col("task_id").eq(Expr::value(hidden)))
 		.to_string(reinhardt::query::PostgresQueryBuilder);
 	sqlx::query(&delete)
@@ -1383,21 +1145,18 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			.bundle,
 		)
 		.unwrap();
-		let (status, workspace) = common::post(
+		let (status, thread) = common::post(
 			&app,
 			&token,
-			"/api/workspaces",
-			json!({"node":node.node,"title":"Named Node discovery","goal":"Retain discovered metadata"}),
+			"/api/threads",
+			json!({"node":node.node,"title":"Named Node discovery"}),
 		)
 		.await;
-		assert_eq!(status, 200, "{workspace}");
+		assert_eq!(status, 200, "{thread}");
 		let (status, created) = common::post(
 			&app,
 			&token,
-			&format!(
-				"/api/workspaces/{}/tasks",
-				workspace["id"].as_str().unwrap()
-			),
+			&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 			json!({"title":"Discover on the Run's Node","description":"Use approved tools"}),
 		)
 		.await;
@@ -1453,7 +1212,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	}
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "COMPLETED");
-	let path = format!("/api/runs/{}", run.id);
+	let path = format!("/api/executions/{}", run.id);
 	let (status, journal) = common::get(&app, &token, &path).await;
 	assert_eq!(status, 200);
 	assert!(journal.to_string().contains("discovered-private-metadata"));
@@ -1621,12 +1380,12 @@ fn retained_snapshot_revocation_provider_router(
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
             let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let artifact_id = context["current"]["workspace"]["artifacts"][0]["id"].clone();
+            let artifact_id = context["current"]["thread"]["artifacts"][0]["id"].clone();
             assert!(artifact_id.is_string());
             assert!(!body.to_string().contains("private-artifact-content"));
             let sources:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(reinhardt::query::Expr::cust("resource_kind = 'artifact'")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
             assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
-            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"thread_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
     })).into_server_router();
 
@@ -1657,68 +1416,6 @@ fn retained_snapshot_revocation_provider(
 ) -> BoxFuture<'static, RetainedSnapshotRevocationProvider> {
 	async move {
 		RetainedSnapshotRevocationProvider {
-			application: _application.await,
-			server: _server.await,
-			calls,
-		}
-	}
-	.boxed()
-}
-
-#[rstest::fixture]
-fn opened_thread_events_retain_their_root_message_read_dependency_provider_calls()
--> Arc<AtomicUsize> {
-	Arc::new(AtomicUsize::new(0))
-}
-
-#[rstest::fixture]
-fn opened_thread_events_retain_their_root_message_read_dependency_provider_router(
-	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider_calls)]
-	calls: Arc<AtomicUsize>,
-) -> upstream_fixtures::RouterFuture {
-	async move {
-
-
-
-
-	let seen = calls.clone();
-	let server = reinhardt::test::stub::StubRouter::new()
-.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let _body = request.json::<Value>().unwrap();
-			let seen = seen.clone();
-			async move {
-				seen.fetch_add(1, Ordering::SeqCst);
-				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Noted the discussion."}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-			}
-		})).into_server_router();
-
-
-
-Arc::new(server)}.boxed().shared()
-}
-
-struct OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider {
-	application: common::ApplicationFixture,
-	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
-	calls: Arc<AtomicUsize>,
-}
-
-#[rstest::fixture]
-fn opened_thread_events_retain_their_root_message_read_dependency_provider(
-	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider_calls)]
-	calls: Arc<AtomicUsize>,
-	#[from(common::runtime)] _runtime: common::RuntimeFuture,
-	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider_router)]
-	#[with(calls.clone())]
-	_router: upstream_fixtures::RouterFuture,
-	#[from(async_upstream)]
-	#[with(_router.clone())]
-	_server: upstream_fixtures::UpstreamFuture,
-	#[from(common::native_application)]
-	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
-	_application: common::ApplicationFuture,
-) -> BoxFuture<'static, OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider> {
-	async move {
-		OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider {
 			application: _application.await,
 			server: _server.await,
 			calls,

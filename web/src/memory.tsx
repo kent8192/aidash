@@ -35,6 +35,7 @@ import { UnconfirmedNotice } from "./unconfirmed-notice";
 type Bank = {
   home: string;
   tenant: string;
+  /** The bank's Thread; stored and declared under its pre-#1008 name. */
   workspace: string;
   participant: string | null;
 };
@@ -105,13 +106,13 @@ const post = <T,>(url: string, value: unknown) =>
 const subheading = "text-xs font-semibold text-foreground";
 const refKey = (ref: EntityRef) => `${ref.id}@${ref.version}`;
 
-/** Bodies live in Workspace memory. Registry selection contributes immutable references only. */
-export function MemoryWorkspace({
+/** Bodies live in Thread memory. Registry selection contributes immutable references only. */
+export function MemoryThread({
   data,
-  workspace,
+  thread,
 }: {
   data: State;
-  workspace: string;
+  thread: string;
 }) {
   const { locale, local } = useI18n();
   const ja = locale === "ja-JP";
@@ -136,18 +137,18 @@ export function MemoryWorkspace({
   const [observed, setObserved] = useState({ scope: "", units: "" });
   const [query, setQuery] = useState("");
   const [taskId, setTaskId] = useState("");
-  const taskPages = useTaskPickerPages(data, workspace);
+  const taskPages = useTaskPickerPages(data, thread);
   const [questionSource, setQuestionSource] = useState<Unit | null>(null);
   const [question, setQuestion] = useState("");
   const [questionTarget, setQuestionTarget] = useState<Unit | null>(null);
   const [questionSources, setQuestionSources] = useState<string[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [publicationProviderKey, setPublicationProviderKey] = useState("");
-  const base = `/api/workspaces/${workspace}/memory`;
+  const base = `/api/threads/${thread}/memory`;
   const providers = data.registry.filter((entry) => entry.kind === "memory");
   const agents = data.registry.filter((entry) => entry.kind === "agent");
   const participants = useInfiniteQuery({
-    queryKey: ["memory", workspace, "participants"],
+    queryKey: ["memory", thread, "participants"],
     initialPageParam: "",
     queryFn: ({ pageParam }) =>
       apiFetch<{ items: Participant[]; next: string | null }>(
@@ -191,23 +192,23 @@ export function MemoryWorkspace({
   const bank: Bank = chosen?.bank ?? {
     home: data.node.id,
     tenant,
-    workspace,
+    workspace: thread,
     participant: null,
   };
   const read =
     providerRef && bank.tenant ? { provider: providerRef, bank } : undefined;
   const assignment = useQuery({
-    queryKey: ["memory", workspace, "assignment", taskId],
+    queryKey: ["memory", thread, "assignment", taskId],
     queryFn: () =>
       apiFetch<{ task_revision: number; participant: Assigned | null }>(
-        `/api/workspaces/${workspace}/tasks/${taskId}/memory-participant`,
+        `/api/threads/${thread}/tasks/${taskId}/memory-participant`,
       ),
     enabled: !!taskId && !!chosen,
     retry: false,
   });
   const sharedBank = { ...bank, participant: null };
   const sharedSettings = useQuery({
-    queryKey: ["memory", workspace, "shared-settings", sharedBank, providerRef],
+    queryKey: ["memory", thread, "shared-settings", sharedBank, providerRef],
     queryFn: () =>
       post<{ result: "settings"; value: Settings | null }>(`${base}/operate`, {
         provider: providerRef,
@@ -223,7 +224,7 @@ export function MemoryWorkspace({
     providers.find((entry) => refKey(entry) === publicationProviderKey);
   const blocked = busy || retry !== null;
   const units = useQuery({
-    queryKey: ["memory", workspace, "units", read],
+    queryKey: ["memory", thread, "units", read],
     queryFn: async () => {
       const list = await post<{ units: Unit[]; unconfirmed: Unconfirmed[] }>(
         `${base}/units/query`,
@@ -239,10 +240,10 @@ export function MemoryWorkspace({
   const missingUnits = unconfirmedFor(
     units.data?.unconfirmed,
     ["memory_unit"],
-    [workspace],
+    [thread],
   );
   const settings = useQuery({
-    queryKey: ["memory", workspace, "settings", read],
+    queryKey: ["memory", thread, "settings", read],
     queryFn: () =>
       post<{ result: "settings"; value: Settings | null }>(`${base}/operate`, {
         ...read,
@@ -253,7 +254,7 @@ export function MemoryWorkspace({
     retry: false,
   });
   const candidates = useQuery({
-    queryKey: ["memory", workspace, "candidates", read],
+    queryKey: ["memory", thread, "candidates", read],
     queryFn: () =>
       post<{ result: "candidates"; value: Candidate[] }>(`${base}/operate`, {
         ...read,
@@ -266,7 +267,7 @@ export function MemoryWorkspace({
   });
   const inspection = useInfiniteQuery({
     initialPageParam: "",
-    queryKey: ["memory", workspace, "inspection", read],
+    queryKey: ["memory", thread, "inspection", read],
     queryFn: ({ pageParam }) =>
       post<{ result: "inspection"; value: Inspection }>(`${base}/operate`, {
         ...read,
@@ -279,7 +280,7 @@ export function MemoryWorkspace({
     refetchInterval: 10000,
   });
   const jobs = useInfiniteQuery({
-    queryKey: ["memory", workspace, "jobs", read],
+    queryKey: ["memory", thread, "jobs", read],
     initialPageParam: "",
     queryFn: ({ pageParam }) =>
       post<{
@@ -296,7 +297,7 @@ export function MemoryWorkspace({
     refetchInterval: 10000,
   });
   const scope = JSON.stringify([
-    workspace,
+    thread,
     tenant,
     participantId,
     providerKey,
@@ -323,7 +324,7 @@ export function MemoryWorkspace({
   const history = useInfiniteQuery({
     queryKey: [
       "memory",
-      workspace,
+      thread,
       "history",
       read,
       historyUnit?.id,
@@ -363,7 +364,7 @@ export function MemoryWorkspace({
       setEditing(null);
       setReviewing(null);
       setQuestionSource(null);
-      await client.invalidateQueries({ queryKey: ["memory", workspace] });
+      await client.invalidateQueries({ queryKey: ["memory", thread] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       if (e instanceof ApiError && e.status === 409) {
@@ -439,7 +440,7 @@ export function MemoryWorkspace({
           onClick={() => {
             setEditing(null);
             setConflict(false);
-            void client.invalidateQueries({ queryKey: ["memory", workspace] });
+            void client.invalidateQueries({ queryKey: ["memory", thread] });
           }}
         >
           <RefreshCw aria-hidden />
@@ -449,8 +450,8 @@ export function MemoryWorkspace({
     >
       <Hint>
         {text(
-          "Private memory belongs to a logical Agent in this Workspace. Publish only selected units to share them.",
-          "プライベート記憶はこのWorkspaceの論理Agentに属します。選択したUnitを公開すると共有記憶になります。",
+          "Private memory belongs to a logical Agent in this Thread. Publish only selected units to share them.",
+          "プライベート記憶はこのThreadの論理Agentに属します。選択したUnitを公開すると共有記憶になります。",
         )}
       </Hint>
       <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -465,7 +466,7 @@ export function MemoryWorkspace({
             }}
           >
             <option value="">
-              {text("Shared Workspace memory", "Workspace共有記憶")}
+              {text("Shared Thread memory", "Thread共有記憶")}
             </option>
             {allParticipants.map((value) => (
               <option key={value.id} value={value.id}>
@@ -623,7 +624,7 @@ export function MemoryWorkspace({
             onClick={() => {
               if (assignment.data)
                 void send(
-                  `/api/workspaces/${workspace}/tasks/${taskId}/memory-participant`,
+                  `/api/threads/${thread}/tasks/${taskId}/memory-participant`,
                   {
                     task_revision: assignment.data.task_revision,
                     expected: assignment.data.participant,
@@ -650,7 +651,7 @@ export function MemoryWorkspace({
                 disabled={blocked}
                 onClick={() =>
                   void send(
-                    `/api/workspaces/${workspace}/tasks/${taskId}/memory-participant`,
+                    `/api/threads/${thread}/tasks/${taskId}/memory-participant`,
                     {
                       task_revision: assignment.data!.task_revision,
                       expected: assignment.data!.participant,
@@ -717,7 +718,7 @@ export function MemoryWorkspace({
                     setRetry(null);
                     setEditing(null);
                     void client.invalidateQueries({
-                      queryKey: ["memory", workspace],
+                      queryKey: ["memory", thread],
                     });
                   }}
                 >
@@ -976,8 +977,8 @@ export function MemoryWorkspace({
                     }}
                   >
                     {text(
-                      "Publish selected unit to Workspace",
-                      "このUnitをWorkspaceに公開",
+                      "Publish selected unit to Thread",
+                      "このUnitをThreadに公開",
                     )}
                   </Button>
                 )}
@@ -1000,7 +1001,7 @@ export function MemoryWorkspace({
               </div>
               {read && (
                 <MemoryImpactView
-                  workspace={workspace}
+                  thread={thread}
                   base={base}
                   provider={read.provider}
                   unit={unit}
@@ -1757,11 +1758,8 @@ function ContentMetadata({
           </Field>
           {source.bank && (
             <small>
-              {label(
-                "Home / Workspace / participant",
-                "Home／Workspace／所有者",
-              )}
-              : {source.bank.home} / {source.bank.workspace} /{" "}
+              {label("Home / Thread / participant", "Home／Thread／所有者")}:{" "}
+              {source.bank.home} / {source.bank.workspace} /{" "}
               {source.bank.participant ?? label("Shared", "共有")}
             </small>
           )}

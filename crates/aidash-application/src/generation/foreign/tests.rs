@@ -38,7 +38,7 @@ fn scope() -> Scope {
 	let now = DateTime::<Utc>::from_timestamp(1000, 0).unwrap();
 	let task = Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: "Work".into(),
 		status: TaskStatus::Open,
@@ -179,10 +179,10 @@ impl ForeignGenerationGuard for Scope {
 		self.point("lineage").await?;
 		Ok(self.lineage.clone())
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		assert_eq!(id, self.task.workspace_id);
-		self.point("workspace").await?;
-		Ok(self.resource("workspace", &id.to_string(), json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		assert_eq!(id, self.task.thread_id);
+		self.point("thread").await?;
+		Ok(self.resource("thread", &id.to_string(), json!({})))
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		assert_eq!(task.id, self.task.id);
@@ -190,7 +190,7 @@ impl ForeignGenerationGuard for Scope {
 		Ok(self.resource(
 			"task",
 			&task.id.to_string(),
-			json!({"workspace_id":task.workspace_id}),
+			json!({"thread_id":task.thread_id}),
 		))
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
@@ -408,7 +408,7 @@ async fn home_guard_holds_the_saved_binding_then_requires_all_current_permission
 		[
 			"intent",
 			"lineage",
-			"workspace",
+			"thread",
 			"require",
 			"require",
 			"task.resource",
@@ -425,7 +425,7 @@ async fn home_guard_holds_the_saved_binding_then_requires_all_current_permission
 			.map(|(_, action)| action.as_str())
 			.collect::<Vec<_>>(),
 		[
-			"workspace.read",
+			"thread.read",
 			"generation.disclose",
 			"task.read",
 			"task.delegate",
@@ -451,7 +451,7 @@ async fn home_guard_holds_the_saved_binding_then_requires_all_current_permission
 #[case("chain")]
 #[case("node")]
 #[case("task")]
-#[case("workspace")]
+#[case("thread")]
 #[case("expiry")]
 #[tokio::test]
 async fn changed_home_binding_cannot_reach_lineage_or_permission_queries(
@@ -468,12 +468,12 @@ async fn changed_home_binding_cannot_reach_lineage_or_permission_queries(
 		"chain" => record.subject_chain = scope.authority.subjects.clone(),
 		"node" => intent.target_node = "aidash://other".into(),
 		"task" => intent.task.id = Uuid::from_u128(99),
-		"workspace" => intent.task.workspace_id = Uuid::from_u128(99),
+		"thread" => intent.task.thread_id = Uuid::from_u128(99),
 		"expiry" => intent.expires_at = scope.now,
 		_ => panic!("case"),
 	}
 	let generation = json!(intent);
-	if matches!(changed, "node" | "task" | "workspace" | "expiry") {
+	if matches!(changed, "node" | "task" | "thread" | "expiry") {
 		record.binding = generation.clone();
 	}
 	let task = scope.task.clone();
@@ -513,7 +513,7 @@ async fn missing_or_changed_home_lineage_never_uses_current_permissions(mut scop
 	assert_eq!(scope.required.len(), 0);
 }
 #[rstest]
-#[case("workspace.read", 1)]
+#[case("thread.read", 1)]
 #[case("generation.disclose", 2)]
 #[case("task.read", 3)]
 #[case("task.delegate", 4)]

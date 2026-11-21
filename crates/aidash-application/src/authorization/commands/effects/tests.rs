@@ -31,7 +31,7 @@ fn scope() -> Scope {
 		connection_result: json!({"content":[{"type":"text","text":"called"}]}),
 		task: Task {
 			id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
@@ -163,10 +163,10 @@ impl RemoteCommandEffects for Scope {
 		}
 		self.call(&format!("require:{action}"))
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		assert_eq!(id, self.task.workspace_id);
-		self.call("workspace")?;
-		Ok(self.res("workspace", &id.to_string(), json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		assert_eq!(id, self.task.thread_id);
+		self.call("thread")?;
+		Ok(self.res("thread", &id.to_string(), json!({})))
 	}
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
 		assert_eq!(task, self.task.id);
@@ -197,6 +197,21 @@ impl RemoteCommandEffects for Scope {
 		assert_eq!(parent, self.task.id);
 		self.call("children")?;
 		Ok(json!([]))
+	}
+	async fn discover(
+		&mut self,
+		thread: Uuid,
+		search: &aidash_domain::registry::Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards> {
+		assert_eq!(thread, self.task.thread_id);
+		self.call(&format!(
+			"discover:{}",
+			search.kind.as_deref().unwrap_or("")
+		))?;
+		Ok(aidash_domain::federation::DiscoveryCards {
+			agents: vec![],
+			errors: vec![],
+		})
 	}
 	async fn created_by_grant(&mut self, _: Uuid, child: Uuid) -> Result<bool> {
 		assert_eq!(child, Uuid::from_u128(5));
@@ -273,12 +288,12 @@ impl RemoteCommandEffects for Scope {
 	async fn record_output(
 		&mut self,
 		grant: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
 		assert_eq!(grant, Uuid::from_u128(4));
-		assert_eq!(workspace, self.task.workspace_id);
+		assert_eq!(thread, self.task.thread_id);
 		assert_eq!(id, Uuid::from_u128(9));
 		self.call(&format!("output:{kind}"))
 	}
@@ -312,9 +327,9 @@ impl RemoteCommandEffects for Scope {
 		self.call("live")?;
 		Ok(self.live)
 	}
-	async fn workspace_search(&mut self, workspace: Uuid, input: &Value) -> Result<Value> {
-		assert_eq!(workspace, self.task.workspace_id);
-		self.call("workspace_search")?;
+	async fn thread_search(&mut self, thread: Uuid, input: &Value) -> Result<Value> {
+		assert_eq!(thread, self.task.thread_id);
+		self.call("thread_search")?;
 		self.applied.push(json!({"search":input}));
 		Ok(json!({"results":[]}))
 	}
@@ -426,7 +441,7 @@ async fn message_effect_output_journal_and_final_lease_check_keep_their_order(mu
 		&scope.calls[4..],
 		&[
 			"task_resource",
-			"workspace",
+			"thread",
 			"require:message.create",
 			"apply",
 			"output:message",
@@ -461,8 +476,8 @@ async fn exact_durable_replays_repeat_neither_effects_nor_fresh_lease_checks(mut
 	assert!(scope.journal.is_empty());
 }
 #[rstest]
-#[case::builtin("builtin:workspace_message")]
-#[case::workspace("workspace")]
+#[case::builtin("builtin:thread_message")]
+#[case::thread("thread")]
 #[case::permission("require:message.create")]
 #[case::effect("apply")]
 #[case::output("output:message")]
@@ -496,11 +511,9 @@ async fn lease_revocation_after_journaling_rejects_the_transaction_result(mut sc
 }
 #[rstest]
 #[tokio::test]
-async fn a_dependency_in_another_workspace_stops_child_creation_before_any_effect(
-	mut scope: Scope,
-) {
+async fn a_dependency_in_another_thread_stops_child_creation_before_any_effect(mut scope: Scope) {
 	let mut dependency = scope.child();
-	dependency.workspace_id = Uuid::nil();
+	dependency.thread_id = Uuid::nil();
 	let id = dependency.id;
 	scope.additional.insert(id, dependency);
 	let data = json!({"key":"id","task":{"title":"child","description":"","requirements":{},"dependencies":[id],"parent_id":scope.task.id}});
@@ -575,6 +588,402 @@ async fn delegation_requires_both_grant_output_provenance_and_the_local_target(
 	assert!(scope.calls.contains(&"provenance".into()));
 }
 #[rstest]
+#[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]
+#[case::receivers_own_node("aidash://peer/brave-otter-k3m9q2xa")]
+#[tokio::test]
+async fn a_child_handed_to_another_node_is_checked_here_and_granted_after_the_lease(
+	mut scope: Scope,
+	#[case] node: &str,
+) {
+	// Multi-hop delegation (#654): the Home checks the child under the command's
+	// lease exactly as for its own Node, applies nothing and leaves the grant
+	// to the caller, which prepares it after the lease ends.
+	let child = scope.child();
+	let id = child.id;
+	scope.additional.insert(id, child);
+	let data = json!({"key":"id","task_id":id,"node_id":node,"agent":{"id":"next","version":"2"}});
+	assert!(is_onward(scope.local_node(), "delegate", &data));
+	let onward = onward(&mut scope, input("delegate", &data)).await.unwrap();
+	assert_eq!(
+		onward,
+		OnwardStep::HandOn(Onward {
+			child: id,
+			node: node.into(),
+			agent: EntityRef {
+				id: "next".into(),
+				version: "2".into()
+			},
+			replay: OnwardReplay {
+				request_key: "delegate:id".into(),
+				digest: commands::prepare("delegate", &data).unwrap().digest,
+			},
+		})
+	);
+	assert!(scope.applied.is_empty());
+	assert!(scope.journal.is_empty());
+	assert_eq!(
+		scope.calls,
+		[
+			"binding".to_owned(),
+			"task:00000000-0000-0000-0000-000000000002".to_owned(),
+			"builtin:task_delegate".to_owned(),
+			"previous:delegate:id".to_owned(),
+			"task_resource".to_owned(),
+			format!("task:{id}"),
+			"provenance".to_owned(),
+			"live".to_owned(),
+		]
+	);
+}
+#[rstest]
+#[case::not_created_by_this_grant(false, true, true)]
+#[case::grant_ended(true, false, true)]
+#[case::someone_elses_child(true, true, false)]
+#[tokio::test]
+async fn an_onward_delegation_fails_closed_like_a_local_one(
+	mut scope: Scope,
+	#[case] created: bool,
+	#[case] live: bool,
+	#[case] own_child: bool,
+) {
+	let mut child = scope.child();
+	if !own_child {
+		child.parent_id = Some(Uuid::from_u128(77));
+	}
+	let id = child.id;
+	scope.additional.insert(id, child);
+	scope.created = created;
+	scope.live = live;
+	let data = json!({"key":"id","task_id":id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":{"id":"next","version":"2"}});
+	let result = onward(&mut scope, input("delegate", &data)).await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(scope.applied.is_empty());
+}
+/// A repeat of an onward `delegate` the Home already handed on answers what it
+/// answered then (#1013 review), though the target has claimed the child since
+/// and a fresh check would refuse it.
+#[rstest]
+#[tokio::test]
+async fn a_repeated_onward_delegation_answers_its_saved_result(mut scope: Scope) {
+	let mut child = scope.child();
+	child.owner = Some(aidash_domain::agent_subject("aidash://third", "next", "2"));
+	child.status = TaskStatus::Claimed;
+	let id = child.id;
+	scope.additional.insert(id, child);
+	let data = json!({"key":"id","task_id":id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":{"id":"next","version":"2"}});
+	let saved = json!({"task_id":id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent_id":"next","agent_version":"2"});
+	let digest = commands::prepare("delegate", &data).unwrap().digest;
+	scope.previous = Some((digest, saved.clone()));
+	assert_eq!(
+		onward(&mut scope, input("delegate", &data)).await.unwrap(),
+		OnwardStep::Replay(saved)
+	);
+	assert!(scope.applied.is_empty());
+	// Other input under the same key is still a conflict.
+	scope.previous = Some(("another digest".into(), json!({})));
+	assert!(matches!(
+		onward(&mut scope, input("delegate", &data)).await,
+		Err(Error::Conflict(_))
+	));
+	// Without a saved answer the claimed child is refused, as before.
+	scope.previous = None;
+	assert!(matches!(
+		onward(&mut scope, input("delegate", &data)).await,
+		Err(Error::Forbidden)
+	));
+}
+
+/// A fake Home for [`hand_on`]: `revoked` stands for a revocation of the
+/// asking grant after the command's lease ended.
+#[derive(Default)]
+struct Handing {
+	revoked: bool,
+	refused: Option<&'static str>,
+	save_fails: bool,
+	calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+	saved: std::sync::Mutex<Vec<(Uuid, OnwardReplay, Value)>>,
+}
+struct HandingScope {
+	revoked: bool,
+	refused: Option<&'static str>,
+	calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+	chain: Vec<String>,
+}
+impl Handing {
+	fn calls(&self) -> Vec<String> {
+		self.calls.lock().unwrap().clone()
+	}
+}
+impl HandingScope {
+	fn call(&self, name: impl Into<String>) {
+		self.calls.lock().unwrap().push(name.into());
+	}
+	fn resource(kind: &str, id: &str, attributes: Value) -> Resource {
+		Resource {
+			tenant: "source".into(),
+			kind: kind.into(),
+			id: id.into(),
+			attributes,
+		}
+	}
+}
+#[async_trait]
+impl HandOnRepository for Handing {
+	type Scope = HandingScope;
+	async fn begin(&self, chain: &[String]) -> Result<Self::Scope> {
+		self.calls
+			.lock()
+			.unwrap()
+			.push(format!("begin:{}", chain.join(",")));
+		Ok(HandingScope {
+			revoked: self.revoked,
+			refused: self.refused,
+			calls: self.calls.clone(),
+			chain: chain.to_vec(),
+		})
+	}
+	async fn delegate(&self, chain: Vec<String>, onward: &Onward) -> Result<Delegation> {
+		self.calls
+			.lock()
+			.unwrap()
+			.push(format!("delegate:{}", chain.len()));
+		Ok(Delegation {
+			task_id: onward.child,
+			node_id: onward.node.clone(),
+			agent_id: onward.agent.id.clone(),
+			agent_version: onward.agent.version.clone(),
+		})
+	}
+	async fn save_replay(&self, grant: Uuid, replay: &OnwardReplay, result: &Value) -> Result<()> {
+		self.calls.lock().unwrap().push("save".into());
+		if self.save_fails {
+			return Err(Error::External("fault:save".into()));
+		}
+		self.saved
+			.lock()
+			.unwrap()
+			.push((grant, replay.clone(), result.clone()));
+		Ok(())
+	}
+}
+#[async_trait]
+impl HandOnScope for HandingScope {
+	async fn live(&mut self, _: Uuid) -> Result<bool> {
+		self.call("live");
+		Ok(!self.revoked)
+	}
+	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
+		self.call("task_read");
+		Ok(Task {
+			id,
+			thread_id: Uuid::from_u128(3),
+			title: String::new(),
+			description: String::new(),
+			status: TaskStatus::Open,
+			requirements: json!({}),
+			owner: None,
+			created_by: self.chain[1].clone(),
+			dependencies: vec![],
+			parent_id: Some(Uuid::from_u128(2)),
+			revision: 1,
+			created_at: chrono::Utc::now(),
+		})
+	}
+	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
+		Ok(Self::resource("task", &task.id.to_string(), json!({})))
+	}
+	fn node_resource(&self, node: &str) -> Resource {
+		Self::resource("node", node, json!({"remote_node": node}))
+	}
+	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
+		assert_eq!(self.chain.len(), 3, "the whole chain decides");
+		self.call(format!("require:{action}"));
+		if self.refused == Some(action) {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+	async fn finish(self, result: Result<()>) -> Result<()> {
+		self.call(if result.is_ok() { "commit" } else { "refuse" });
+		result
+	}
+}
+fn handed() -> Onward {
+	Onward {
+		child: Uuid::from_u128(5),
+		node: "aidash://third/quiet-falcon-4f8k2m1z".into(),
+		agent: EntityRef {
+			id: "next".into(),
+			version: "2".into(),
+		},
+		replay: OnwardReplay {
+			request_key: "delegate:id".into(),
+			digest: "digest".into(),
+		},
+	}
+}
+fn chain() -> Vec<String> {
+	vec![
+		"root".into(),
+		aidash_domain::agent_subject("aidash://peer", "agent", "1"),
+		aidash_domain::agent_subject("aidash://third/quiet-falcon-4f8k2m1z", "next", "2"),
+	]
+}
+
+/// The asking grant is checked again after the command's lease: one revoked
+/// in between hands nothing on (#1013 review).
+#[tokio::test]
+async fn a_grant_revoked_after_the_lease_hands_nothing_on() {
+	let home = Handing {
+		revoked: true,
+		..Default::default()
+	};
+	let result = hand_on(&home, "root", Uuid::from_u128(4), chain(), handed()).await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert_eq!(
+		home.calls(),
+		[
+			format!("begin:{}", chain().join(",")),
+			"live".into(),
+			"refuse".into()
+		]
+	);
+	assert!(home.saved.lock().unwrap().is_empty());
+}
+
+/// A live grant whose chain may hand the child on is handed on and its answer
+/// saved under the asking grant's command; a refusal of the chain or a chain
+/// that does not start with the authenticated root hands nothing on.
+#[rstest]
+#[case::handed(None, "root", true)]
+#[case::child_refused(Some("task.delegate"), "root", false)]
+#[case::node_refused(Some("federation.execute"), "root", false)]
+#[case::another_root(None, "someone-else", false)]
+#[tokio::test]
+async fn a_live_grant_hands_on_only_what_its_whole_chain_may(
+	#[case] refused: Option<&'static str>,
+	#[case] root: &str,
+	#[case] handed_on: bool,
+) {
+	let home = Handing {
+		refused,
+		..Default::default()
+	};
+	let result = hand_on(&home, root, Uuid::from_u128(4), chain(), handed()).await;
+	let calls = home.calls();
+	if handed_on {
+		let result = result.unwrap();
+		assert_eq!(result["task_id"], json!(Uuid::from_u128(5)));
+		assert_eq!(
+			*home.saved.lock().unwrap(),
+			[(Uuid::from_u128(4), handed().replay, result)]
+		);
+		assert_eq!(
+			calls[1..],
+			[
+				"live",
+				"task_read",
+				"require:task.delegate",
+				"require:federation.execute",
+				"commit",
+				"delegate:3",
+				"save"
+			]
+		);
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+		assert!(!calls.iter().any(|call| call.starts_with("delegate")));
+		assert!(home.saved.lock().unwrap().is_empty());
+	}
+}
+
+/// The child is handed on whether or not its answer is saved, so a failed save
+/// still answers the delegation.
+#[tokio::test]
+async fn a_hand_on_whose_answer_is_not_saved_still_answers_it() {
+	let home = Handing {
+		save_fails: true,
+		..Default::default()
+	};
+	let result = hand_on(&home, "root", Uuid::from_u128(4), chain(), handed())
+		.await
+		.unwrap();
+	assert_eq!(result["node_id"], "aidash://third/quiet-falcon-4f8k2m1z");
+	assert_eq!(home.calls().last().unwrap(), "save");
+}
+#[rstest]
+#[tokio::test]
+async fn the_homes_own_node_is_never_handed_on(mut scope: Scope) {
+	let child = scope.child();
+	let id = child.id;
+	scope.additional.insert(id, child);
+	let data = json!({"key":"id","task_id":id,"node_id":"aidash://home","agent":{"id":"next","version":"2"}});
+	assert!(!is_onward(scope.local_node(), "delegate", &data));
+	assert!(!is_onward(
+		scope.local_node(),
+		"create_task",
+		&json!({"node_id":"aidash://third/quiet-falcon-4f8k2m1z"})
+	));
+	assert!(matches!(
+		onward(&mut scope, input("delegate", &data)).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.calls.is_empty());
+}
+#[rstest]
+#[case::created(true)]
+#[case::not_created(false)]
+#[tokio::test]
+async fn a_receiver_asks_whether_its_grant_created_a_task(mut scope: Scope, #[case] created: bool) {
+	scope.created = created;
+	let result = run(
+		&mut scope,
+		"created_task",
+		&json!({"task_id":Uuid::from_u128(5)}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(result, json!({"created": created}));
+	assert_eq!(
+		scope.calls,
+		[
+			"binding",
+			"task:00000000-0000-0000-0000-000000000002",
+			"builtin:task_delegate",
+			"task_resource",
+			"provenance",
+			"live"
+		]
+	);
+	assert!(scope.journal.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_run_discovers_from_its_homes_task_node_and_rechecks_the_grant(mut scope: Scope) {
+	let result = run(&mut scope, "discover", &json!({"search":{"kind":"agent"}}))
+		.await
+		.unwrap();
+	assert_eq!(result, json!({"agents":[],"errors":[]}));
+	assert_eq!(
+		scope.calls,
+		[
+			"binding",
+			"task:00000000-0000-0000-0000-000000000002",
+			"builtin:agent_discover",
+			"task_resource",
+			"discover:agent",
+			"live"
+		]
+	);
+	// Discovery writes nothing and is never recorded for replay.
+	assert!(scope.journal.is_empty());
+	scope.live = false;
+	assert!(matches!(
+		run(&mut scope, "discover", &json!({})).await,
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
 #[case::terminal("run_message_terminal_transition",json!({"key":"id","revision":8,"status":"COMPLETED","through_seq":-1}),"invalid terminal sequence")]
 #[case::complete("run_message_complete",json!({"key":"id","artifact":{"kind":"text","name":"a","content":"saved"},"through_seq":-1}),"invalid input sequence")]
 #[tokio::test]
@@ -595,7 +1004,7 @@ async fn negative_terminal_boundaries_fail_before_persistence(
 #[case::commit("run_message_commit", "commit")]
 #[case::deliver("run_message_delivery", "deliver")]
 #[tokio::test]
-async fn input_delivery_uses_run_and_workspace_authority_without_mutation_replay(
+async fn input_delivery_uses_run_and_thread_authority_without_mutation_replay(
 	mut scope: Scope,
 	#[case] operation: &str,
 	#[case] kind: &str,
@@ -608,7 +1017,7 @@ async fn input_delivery_uses_run_and_workspace_authority_without_mutation_replay
 		&[
 			"task_resource",
 			"require:run.message",
-			"workspace",
+			"thread",
 			"require:message.create",
 			"apply",
 			"live"
@@ -694,7 +1103,7 @@ async fn history_rechecks_disclosure_for_every_stored_message(mut scope: Scope) 
 	scope.history = (10..12)
 		.map(|id| Message {
 			id: Uuid::from_u128(id),
-			workspace_id: scope.task.workspace_id,
+			thread_id: scope.task.thread_id,
 			sender: "human@aidash://peer".into(),
 			content: "protected".into(),
 			idempotency_key: None,
@@ -725,7 +1134,7 @@ async fn chunk_size_errors_follow_the_original_record_disclosure_check(mut scope
 	let id = Uuid::from_u128(9);
 	let data = json!({"kind":"artifact","id":id,"offset":0,"max_chars":16001});
 	assert!(
-		matches!(run(&mut scope,"workspace_record_chunk",&data).await,Err(Error::Invalid(message)) if message=="workspace chunk exceeds 16000 characters")
+		matches!(run(&mut scope,"thread_record_chunk",&data).await,Err(Error::Invalid(message)) if message=="thread chunk exceeds 16000 characters")
 	);
 	assert_eq!(
 		scope.calls.last().unwrap(),
@@ -938,7 +1347,7 @@ async fn forwarded_assignment_needs_the_grants_own_child_and_is_replay_journaled
 }
 #[rstest]
 #[case::not_created_by_this_grant(false, false)]
-#[case::another_task_of_the_workspace(true, true)]
+#[case::another_task_of_the_thread(true, true)]
 #[tokio::test]
 async fn forwarded_assignment_refuses_a_task_the_grant_did_not_create(
 	mut scope: Scope,
@@ -1018,10 +1427,10 @@ async fn forwarded_connection_request_rechecks_the_prompt_the_tool_composed(
 }
 #[rstest]
 #[tokio::test]
-async fn forwarded_workspace_search_needs_workspace_read_and_refuses_images(mut scope: Scope) {
+async fn forwarded_thread_search_needs_thread_read_and_refuses_images(mut scope: Scope) {
 	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
-	run(&mut scope, "workspace_search", &data).await.unwrap();
-	assert!(scope.calls.contains(&"require:workspace.read".to_string()));
+	run(&mut scope, "thread_search", &data).await.unwrap();
+	assert!(scope.calls.contains(&"require:thread.read".to_string()));
 	assert_eq!(
 		scope.applied[0],
 		json!({"search":{"query":"notes","limit":3}})
@@ -1030,7 +1439,7 @@ async fn forwarded_workspace_search_needs_workspace_read_and_refuses_images(mut 
 	scope.applied.clear();
 	let image = json!({"input":{"query":"x","image":{"file_id":"a"}}});
 	assert!(matches!(
-		run(&mut scope, "workspace_search", &image).await,
+		run(&mut scope, "thread_search", &image).await,
 		Err(Error::Invalid(_))
 	));
 	assert!(scope.applied.is_empty());
@@ -1142,7 +1551,7 @@ async fn an_outbound_read_returns_only_the_question_this_tool_asked(mut scope: S
 	let request = |kind: &str| aidash_domain::HumanRequest {
 		answered_by: None,
 		id: Uuid::from_u128(77),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		run_id: Uuid::from_u128(1),
 		kind: kind.into(),
 		prompt: outbound_prompt(),
@@ -1192,7 +1601,7 @@ async fn run_requested(
 fn forwarded_calls() -> Vec<(&'static str, Value)> {
 	vec![
 		(
-			"workspace_search",
+			"thread_search",
 			json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}}),
 		),
 		("task_assign", assign_data()),
@@ -1219,7 +1628,7 @@ fn forwarded_calls() -> Vec<(&'static str, Value)> {
 #[tokio::test]
 async fn the_home_refuses_a_forwarded_tool_its_own_request_does_not_name(mut scope: Scope) {
 	// The receiving Node skipped its gate: the Home's Request names only the defaults it kept.
-	let request = home_request(&["workspace_message", "human_request"]);
+	let request = home_request(&["thread_message", "human_request"]);
 	for (operation, data) in forwarded_calls() {
 		let refused = run_requested(&mut scope, operation, &data, &request).await;
 		assert!(
@@ -1238,9 +1647,9 @@ async fn the_home_refuses_a_forwarded_tool_its_own_request_does_not_name(mut sco
 #[tokio::test]
 async fn the_home_serves_a_forwarded_tool_its_request_or_a_run_only_answer_names(mut scope: Scope) {
 	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
-	let listed = home_request(&["workspace_search", "memory_*"]);
+	let listed = home_request(&["thread_search", "memory_*"]);
 	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
-	run_requested(&mut scope, "workspace_search", &data, &listed)
+	run_requested(&mut scope, "thread_search", &data, &listed)
 		.await
 		.unwrap();
 	let recall = json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}});
@@ -1249,7 +1658,7 @@ async fn the_home_serves_a_forwarded_tool_its_request_or_a_run_only_answer_names
 		.unwrap();
 	// The Home's "this Run only" answer travels inside the Request it describes.
 	let run_only = ToolList::new([ToolPattern::new("task_assign").unwrap()]).unwrap();
-	let answered = home_request(&["workspace_message"])
+	let answered = home_request(&["thread_message"])
 		.with_run_tools(&run_only)
 		.unwrap();
 	let child = scope.child();
@@ -1264,8 +1673,8 @@ async fn older_operations_keep_only_the_binding_check_under_a_request(mut scope:
 	// A Run's own traffic (here, a record read for its context) names no list.
 	let request = home_request(&[]);
 	let data = json!({"kind":"message","id":Uuid::from_u128(6)});
-	run_requested(&mut scope, "workspace_record", &data, &request)
+	run_requested(&mut scope, "thread_record", &data, &request)
 		.await
 		.unwrap();
-	assert!(scope.calls.contains(&"builtin:workspace_read".to_string()));
+	assert!(scope.calls.contains(&"builtin:thread_read".to_string()));
 }

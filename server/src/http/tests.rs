@@ -68,7 +68,7 @@ async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
 	});
 	let method = http::Method::POST;
 	let headers = http::HeaderMap::new();
-	let uri = "/api/workspaces/scoped/files/file/chunks".parse().unwrap();
+	let uri = "/api/threads/scoped/files/file/chunks".parse().unwrap();
 	let admitted = RequestAdmission::admit(
 		&protection,
 		RequestHead {
@@ -96,7 +96,7 @@ async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
 		http::StatusCode::SERVICE_UNAVAILABLE
 	);
 	drop(admitted);
-	let upload = "/api/workspaces/00000000-0000-0000-0000-000000000001/attachments"
+	let upload = "/api/threads/00000000-0000-0000-0000-000000000001/attachments"
 		.parse()
 		.unwrap();
 	let admitted = RequestAdmission::admit(
@@ -141,7 +141,7 @@ async fn pre_body_overload_rejection_is_correlated_private_and_measured() {
 	let mut headers = http::HeaderMap::new();
 	let id = "7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb";
 	headers.insert("x-request-id", HeaderValue::from_static(id));
-	let uri = "/api/workspaces".parse().unwrap();
+	let uri = "/api/threads".parse().unwrap();
 	let head = || RequestHead {
 		method: &method,
 		uri: &uri,
@@ -164,7 +164,7 @@ async fn pre_body_overload_rejection_is_correlated_private_and_measured() {
 	let metrics = handle.render();
 	assert!(metrics.lines().any(|line| {
 		line.starts_with("aidash_http_requests_total{")
-			&& line.contains("route=\"/api/workspaces\"")
+			&& line.contains("route=\"/api/threads\"")
 			&& line.contains("status=\"503\"")
 			&& line.ends_with(" 1")
 	}));

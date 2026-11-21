@@ -208,7 +208,7 @@ async fn builtin_sends_the_current_journal_to_the_same_run_session(
 	};
 	sqlx::query(
 		&Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("phase"), "COMPLETED")
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),

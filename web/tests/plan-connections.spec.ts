@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { setup as collaborationSetup } from "./collaboration-fixture";
 import { installBearerDashboard } from "./auth-fixture";
+import { emptyOrgChart } from "./registry-fixture";
 
 const callback =
   "http://127.0.0.1:1457/auth/callback?code=private-code&state=private-state";
@@ -125,14 +126,14 @@ async function setup(
             key: null,
           },
           registry: [],
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -170,6 +171,8 @@ async function setup(
         json: { enabled: options.enabled ?? true, connection },
       });
     }
+    if (path.endsWith("/org-chart"))
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/settings?view=planConnections");
@@ -489,7 +492,7 @@ test("a Plan Run explains its source and links to personal usage management", as
     subject: true,
     planModel: true,
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();

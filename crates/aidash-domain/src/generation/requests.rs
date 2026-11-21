@@ -14,7 +14,7 @@ pub struct Request {
 	pub policy_id: String,
 	pub policy_revision: i64,
 	pub task_id: Uuid,
-	/// The Node of the requesting Workspace.
+	/// The Node of the requesting Thread.
 	pub node: crate::nodes::NodeName,
 	/// The address of the Node that owns the Task: this request's own Node for
 	/// a local request, the requesting Home for a foreign one.
@@ -24,7 +24,7 @@ pub struct Request {
 	pub prepared: bool,
 	pub grant_id: Option<Uuid>,
 	pub admission_id: Option<Uuid>,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[serde(skip_serializing)]
 	pub credential_id: Uuid,
 	pub root_subject: String,
@@ -44,7 +44,7 @@ pub struct Request {
 }
 
 impl Request {
-	/// Whether the Task belongs to a Workspace of this Deployment, as opposed to
+	/// Whether the Task belongs to a Thread of this Deployment, as opposed to
 	/// a Home that asked for the generation through a peer.
 	pub fn is_local(&self) -> bool {
 		self.foreign_intent.is_none()
@@ -114,6 +114,11 @@ pub fn resource_attributes(policy_id: &str, root_subject: &str, task_id: Uuid) -
 }
 
 impl Request {
+	/// What a refund of `refund` tokens to this request gives back to its
+	/// policy ([`crate::generation::policy::policy_refund`]).
+	pub fn policy_refund(&self, refund: i64) -> i64 {
+		crate::generation::policy::policy_refund(self.token_limit, refund)
+	}
 	pub fn resource_attributes(&self) -> Value {
 		resource_attributes(&self.policy_id, &self.root_subject, self.task_id)
 	}

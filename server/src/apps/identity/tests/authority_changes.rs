@@ -47,7 +47,7 @@ fn bundle(tenant: &str) -> Value {
 			"actions":["*"],"resources":{"kinds":["*"]}
 		}, {
 			"id":"read","effect":"allow","subjects":{"any":true},
-			"actions":["workspace.read"],"resources":{"kinds":["workspace"]}
+			"actions":["thread.read"],"resources":{"kinds":["thread"]}
 		}]
 	})
 }
@@ -279,8 +279,8 @@ async fn stops_and_reads_inside_a_hold_pass_a_waiting_change(#[future] endpoint:
 	// entrance while the change still waited.
 	let unknown = uuid::Uuid::new_v4();
 	for path in [
-		format!("/api/runs/{unknown}/control"),
-		format!("/api/runs/{unknown}/management"),
+		format!("/api/executions/{unknown}/control"),
+		format!("/api/executions/{unknown}/management"),
 	] {
 		let response = admin
 			.post(&path, &json!({"action":"pause"}), "json")
@@ -410,7 +410,7 @@ async fn a_resume_waits_at_the_entrance_before_it_holds_a_visibility_lease(
 		resuming.spawn(async move {
 			admin
 				.post(
-					&format!("/api/runs/{unknown}/control"),
+					&format!("/api/executions/{unknown}/control"),
 					&json!({"action":"resume"}),
 					"json",
 				)
@@ -421,8 +421,10 @@ async fn a_resume_waits_at_the_entrance_before_it_holds_a_visibility_lease(
 	}
 	tokio::time::sleep(Duration::from_millis(300)).await;
 	// Leave room for an instrumented runner to service the concurrent requests,
-	// while requiring the bystander to pass before the Authority Change times out.
-	let reader = tokio::time::timeout(Duration::from_secs(2), bystander.get("/api/state"))
+	// while requiring the bystander to pass before the Authority Change times out:
+	// 0.3 s + 3 s stays under the 4 s policy wait, and the assertion below still
+	// catches a change that finished first (#1017).
+	let reader = tokio::time::timeout(Duration::from_secs(3), bystander.get("/api/state"))
 		.await
 		.expect("resumes waiting at the entrance took the visibility pool from another Tenant")
 		.unwrap();

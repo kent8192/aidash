@@ -172,7 +172,7 @@ fn a_rule_is_effective_where_the_owner_could_approve_in_advance() {
 }
 
 #[test]
-fn a_generation_rule_sees_the_request_attributes_admission_checks() {
+fn a_generation_allow_rule_is_never_effective() {
 	// Arrange: admission passes the generated policy, its root subject and a
 	// task id. The settings view has no task yet, but must still carry these
 	// attributes so the policy's conditions are evaluated.
@@ -239,8 +239,10 @@ fn a_generation_rule_sees_the_request_attributes_admission_checks() {
 	.unwrap();
 	let generation = rule(ApprovalKind::Generation, RuleTarget::Exact("gen".into()));
 
-	// Act + Assert
-	assert!(effective(
+	// Act + Assert: even a person who could approve the generation and its
+	// definition sees an allow rule as never effective, because a generated
+	// definition's Catalog Approval is made by a person live (#1012, ADR 0143).
+	assert!(!effective(
 		&bundle,
 		"alice",
 		&generation,

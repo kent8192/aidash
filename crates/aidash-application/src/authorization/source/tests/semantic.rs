@@ -31,7 +31,7 @@ impl BindingScope {
 		Self {
 			base: Scope::new(),
 			index: Index {
-				workspace_id: task().workspace_id,
+				thread_id: task().thread_id,
 				tenant: "tenant".into(),
 				revision: 9,
 				spec: serde_json::to_value(&spec).unwrap(),
@@ -70,8 +70,8 @@ impl SourceAuthorityScope for BindingScope {
 	) -> Result<()> {
 		self.base.generation_home(task, node, generation).await
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.base.source_workspace(id).await
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.base.source_thread(id).await
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.base.source_task_resource(task).await
@@ -108,7 +108,7 @@ impl SemanticBindingScope for BindingScope {
 	}
 	async fn native_binding(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		request: &aidash_domain::semantic::remote::NativeRequest,
 		_: Option<&aidash_domain::semantic::remote::NativeOrigin>,
 	) -> Result<aidash_domain::semantic::remote::NativeBinding> {
@@ -125,7 +125,7 @@ impl SemanticBindingScope for BindingScope {
 				bank: aidash_domain::memory::Bank {
 					home: self.home_node_id().into(),
 					tenant: self.binding_tenant().into(),
-					workspace,
+					thread,
 					participant: Some(request.participant),
 				},
 				participant_revision: request.expected_revision,

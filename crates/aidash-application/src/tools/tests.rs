@@ -118,7 +118,13 @@ impl ToolOperations for Operations {
 			.push((key.to_owned(), serde_json::to_value(input)?));
 		Ok(self.task.clone())
 	}
-	async fn assign(&self, _id: Uuid, _policy: &str, _reason: &str) -> Result<Value> {
+	async fn assign(
+		&self,
+		_id: Uuid,
+		_policy: &str,
+		_reason: &str,
+		_draft: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value> {
 		panic!("unexpected tool effect: assign")
 	}
 	async fn delegate_with_key(
@@ -169,18 +175,18 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: read_record_chunk")
 	}
-	async fn workspace_image(
+	async fn thread_image(
 		&self,
 		selection: &aidash_domain::media::WorkingImageSelection,
 		representation: &str,
 	) -> Result<Value> {
-		self.record("workspace.image");
+		self.record("thread.image");
 		Ok(
 			json!({"status":"completed","metadata":{"file_id":selection.file_id,"path":selection.path,"digest":selection.expected_digest,"media_type":"image/png","size":12},"representation":representation}),
 		)
 	}
-	async fn workspace_search(&self, input: Value) -> Result<Value> {
-		self.record("workspace.search");
+	async fn thread_search(&self, input: Value) -> Result<Value> {
+		self.record("thread.search");
 		self.inputs.lock().unwrap().push(("search".into(), input));
 		Ok(json!({"matches":[]}))
 	}
@@ -213,7 +219,7 @@ impl ToolOperations for Operations {
 		Ok(HumanRequest {
 			id: Uuid::now_v7(),
 			run_id: Uuid::nil(),
-			workspace_id: Uuid::nil(),
+			thread_id: Uuid::nil(),
 			kind: kind.into(),
 			prompt: prompt.into(),
 			response: None,
@@ -547,13 +553,13 @@ struct Fixture {
 fn fixture() -> Fixture {
 	let now = "2026-10-02T00:00:00Z".parse().unwrap();
 	let token = Uuid::new_v4();
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let task = Uuid::new_v4();
 	let run = Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: task,
-		workspace_id: workspace,
+		thread_id: thread,
 		home_node: "aidash://fixture".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -576,7 +582,7 @@ fn fixture() -> Fixture {
 
 	let task = Task {
 		id: Uuid::new_v4(),
-		workspace_id: workspace,
+		thread_id: thread,
 		title: "Child".into(),
 		description: "Child task".into(),
 		status: TaskStatus::Open,
@@ -613,7 +619,7 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 
 #[rstest]
 #[tokio::test]
-async fn workspace_read_selects_an_image_by_its_exact_file_version(fixture: Fixture) {
+async fn thread_read_selects_an_image_by_its_exact_file_version(fixture: Fixture) {
 	let tool = builtins().remove("workspace_read").unwrap();
 	let input = json!({"kind":"file","id":Uuid::from_u128(10),"area_id":Uuid::from_u128(9),"generation":3,"path":"chart.png","expected_digest":"file-digest","representation":"model_input"});
 	let result = tool
@@ -634,15 +640,12 @@ async fn workspace_read_selects_an_image_by_its_exact_file_version(fixture: Fixt
 			.model_media_selection(&input, &result),
 		Some(aidash_domain::media::ModelMedia::WorkingImage(_))
 	));
-	assert_eq!(
-		*fixture.operations.calls.lock().unwrap(),
-		["workspace.image"]
-	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.image"]);
 }
 
 #[rstest]
 #[tokio::test]
-async fn workspace_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {
+async fn thread_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {
 	let tool = builtins().remove("workspace_search").unwrap();
 	let image = json!({"area_id":Uuid::from_u128(9),"generation":3,"file_id":Uuid::from_u128(10),"path":"chart.png","expected_digest":"file-digest"});
 	let ctx = ToolContext {
@@ -652,18 +655,12 @@ async fn workspace_search_accepts_only_one_current_image_or_text_query(fixture: 
 	tool.invoke(&ctx, json!({"image":image}), "key")
 		.await
 		.unwrap();
-	assert_eq!(
-		*fixture.operations.calls.lock().unwrap(),
-		["workspace.search"]
-	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 	let denied = tool
 		.invoke(&ctx, json!({"query":"text", "image":image}), "key")
 		.await;
 	assert!(matches!(denied, Err(Error::Invalid(_))));
-	assert_eq!(
-		*fixture.operations.calls.lock().unwrap(),
-		["workspace.search"]
-	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 	let mut foreign = image;
 	foreign["run_id"] = json!(Uuid::from_u128(999));
 	assert!(
@@ -676,13 +673,13 @@ async fn workspace_search_accepts_only_one_current_image_or_text_query(fixture: 
 		.unwrap();
 	assert_eq!(
 		*fixture.operations.calls.lock().unwrap(),
-		["workspace.search", "workspace.search"]
+		["thread.search", "thread.search"]
 	);
 }
 
 #[rstest]
 #[tokio::test]
-async fn workspace_search_accepts_the_selection_of_a_thread_attachment(fixture: Fixture) {
+async fn thread_search_accepts_the_selection_of_a_thread_attachment(fixture: Fixture) {
 	// Arrange
 	let tool = builtins().remove("workspace_search").unwrap();
 	let ctx = ToolContext {
@@ -699,15 +696,12 @@ async fn workspace_search_accepts_the_selection_of_a_thread_attachment(fixture: 
 	// Assert
 	assert!(accepted.is_ok());
 	assert!(matches!(refused, Err(Error::Invalid(_))));
-	assert_eq!(
-		*fixture.operations.calls.lock().unwrap(),
-		["workspace.search"]
-	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 }
 
 #[rstest]
 #[tokio::test]
-async fn workspace_message_passes_image_descriptions_for_its_own_files(fixture: Fixture) {
+async fn thread_message_passes_image_descriptions_for_its_own_files(fixture: Fixture) {
 	// Arrange
 	let tool = builtins().remove("workspace_message").unwrap();
 	let context = ToolContext {
@@ -754,7 +748,7 @@ async fn workspace_message_passes_image_descriptions_for_its_own_files(fixture: 
 
 #[rstest]
 #[tokio::test]
-async fn workspace_message_passes_paths_to_the_snapshot_operation_and_enforces_count(
+async fn thread_message_passes_paths_to_the_snapshot_operation_and_enforces_count(
 	fixture: Fixture,
 ) {
 	let tool = builtins().remove("workspace_message").unwrap();

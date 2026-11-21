@@ -62,10 +62,10 @@ COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "ha
 # need, and the deferred@1 exposure builtins (crates/aidash-domain/src/registry/bindings.rs,
 # exposure.rs `default_tools` and `skill_support_tools`). test_fixed_task_evaluation.py checks
 # them against the Rust lists.
-DEFAULT_TOOLS = ("connection_request", "workspace_observe", "workspace_search", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
+DEFAULT_TOOLS = ("connection_request", "thread_observe", "thread_search", "task_wait", "skill_list", "skill_load", "skill_read", "file_search",
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
-                 "workspace_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect",
-                 "schedule_create", "schedule_list", "schedule_update", "schedule_delete")
+                 "thread_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect",
+                 "duty_create", "duty_list", "duty_update", "duty_delete")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
 # `Failure::label` (crates/aidash-domain/src/context/recovery.rs): why a Run's context pause was recorded.
 CONTEXT_REASONS = ("source_selection_unavailable", "source_selection_forbidden", "source_selection_unapproved",

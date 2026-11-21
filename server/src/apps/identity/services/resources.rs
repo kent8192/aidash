@@ -1,4 +1,4 @@
-//! Resource attributes come from stored rows and their authoritative workspace.
+//! Resource attributes come from stored rows and their authoritative thread.
 use super::{access::Access, policy::Resource};
 use crate::apps::identity::models::DecisionOwner;
 use crate::{
@@ -39,15 +39,15 @@ impl Access {
 	}
 	pub(crate) async fn task_summary_visible(
 		&mut self,
-		workspace: &Resource,
-		workspace_id: Uuid,
+		thread: &Resource,
+		thread_id: Uuid,
 		task_id: Uuid,
 		created_by: &str,
 	) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_summary_visible(
 			&mut crate::bootstrap::run_visibility_scope(self),
-			workspace,
-			workspace_id,
+			thread,
+			thread_id,
 			task_id,
 			created_by,
 		)
@@ -57,12 +57,12 @@ impl Access {
 
 	pub(crate) async fn related_tasks(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &crate::domain::NewTask,
 	) -> Result<()> {
 		aidash_application::authorization::visibility::resources::related_tasks(
 			&mut crate::bootstrap::run_visibility_scope(self),
-			workspace,
+			thread,
 			input,
 		)
 		.await
@@ -79,13 +79,13 @@ impl Access {
 	}
 	pub(crate) async fn output_visible(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<bool> {
 		aidash_application::authorization::visibility::provenance::output_visible(
 			&mut crate::bootstrap::run_visibility_scope(self),
-			workspace,
+			thread,
 			kind,
 			id,
 		)
@@ -97,10 +97,10 @@ impl Access {
 		run: impl Into<crate::domain::RunMetadata>,
 	) -> Result<Resource> {
 		let run = run.into();
-		let workspace = self.workspace(run.workspace_id).await?;
+		let thread = self.thread(run.thread_id).await?;
 		let mut attributes = aidash_application::authorization::visibility::memory_attributes(
 			&run,
-			workspace.attributes,
+			thread.attributes,
 		);
 		let binding = if self.state_binding_exists(run.id) == Some(false) {
 			None
@@ -157,7 +157,7 @@ impl Access {
 impl Access {
 	pub(crate) async fn track_snapshot(
 		&mut self,
-		snapshot: &crate::domain::WorkspaceSnapshot,
+		snapshot: &crate::domain::ThreadSnapshot,
 	) -> Result<()> {
 		aidash_application::authorization::journals::track_snapshot(
 			&mut crate::bootstrap::run_visibility_scope(self),
@@ -203,68 +203,68 @@ impl Access {
 	}
 
 	/// See [`ReadProvenanceScope::open_run_reads`]. An authority that is not
-	/// inherited has no Workspace boundary to open.
+	/// inherited has no Thread boundary to open.
 	///
 	/// [`ReadProvenanceScope::open_run_reads`]: aidash_application::ports::authorization::visibility::provenance::ReadProvenanceScope::open_run_reads
 	pub(crate) async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
 		if !self.inherited_lease {
 			return Ok(false);
 		}
-		let workspaces = match self.subnode_workspaces.get(&run) {
-			Some(workspaces) => workspaces.clone(),
+		let threads = match self.subnode_threads.get(&run) {
+			Some(threads) => threads.clone(),
 			None => {
-				let workspaces =
-					crate::apps::execution::models::subnodes::SubnodeRecord::workspaces_of_run(
+				let threads =
+					crate::apps::execution::models::subnodes::SubnodeRecord::threads_of_run(
 						&mut **self.tx,
 						&self.identity.tenant,
 						run,
 					)
 					.await?;
-				self.subnode_workspaces.insert(run, workspaces.clone());
-				workspaces
+				self.subnode_threads.insert(run, threads.clone());
+				threads
 			}
 		};
-		if workspaces.is_empty() {
+		if threads.is_empty() {
 			return Ok(false);
 		}
-		self.recheck_workspaces.push(workspaces);
+		self.recheck_threads.push(threads);
 		Ok(true)
 	}
 	pub(crate) fn close_run_reads(&mut self) {
-		self.recheck_workspaces.pop();
+		self.recheck_threads.pop();
 	}
 	pub(crate) fn recheck_reaches(&self, id: Uuid) -> bool {
-		self.recheck_workspaces
+		self.recheck_threads
 			.iter()
 			.flatten()
 			.any(|opened| *opened == id)
 	}
-	/// The producers of a record in `workspace` whose reads this reader checks. A
-	/// Run working in a Subnode's Workspace leaves out the Run that created it:
+	/// The producers of a record in `thread` whose reads this reader checks. A
+	/// Run working in a Subnode's Thread leaves out the Run that created it:
 	/// what the creator puts there is its deliberate handoff, and the members
 	/// cannot read what the creator had read (ADR 0110). Anyone else checks it.
 	pub(crate) async fn producers_to_check(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		mut producers: Vec<Uuid>,
 	) -> Result<Vec<Uuid>> {
 		if producers.is_empty()
 			|| self.read_run.is_none()
-			|| self.context["workspace_id"] != serde_json::json!(workspace.to_string())
+			|| self.context["thread_id"] != serde_json::json!(thread.to_string())
 		{
 			return Ok(producers);
 		}
-		let creator = match self.subnode_creators.get(&workspace) {
+		let creator = match self.subnode_creators.get(&thread) {
 			Some(creator) => *creator,
 			None => {
 				let creator =
-					crate::apps::execution::models::subnodes::SubnodeRecord::creator_of_workspace(
+					crate::apps::execution::models::subnodes::SubnodeRecord::creator_of_thread(
 						&mut **self.tx,
 						&self.identity.tenant,
-						workspace,
+						thread,
 					)
 					.await?;
-				self.subnode_creators.insert(workspace, creator);
+				self.subnode_creators.insert(thread, creator);
 				creator
 			}
 		};

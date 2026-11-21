@@ -131,7 +131,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	async fn cancel_runs(&mut self, job: &Request) -> aidash_application::Result<()> {
 		let mut query = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("tenant"),
 				Expr::value(job.tenant.clone()),
@@ -139,10 +139,6 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("node"),
 				Expr::value(job.node.as_str().to_owned()),
-			))
-			.and_where(reinhardt::query::ExprTrait::eq(
-				Expr::col("task_id"),
-				Expr::value(job.task_id),
 			))
 			.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("home_node"),
@@ -160,6 +156,15 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			.and_where(Expr::col("control").ne("CANCELLED"))
 			.lock(LockType::Update)
 			.to_owned();
+		// A local generated agent may work on any Task of its root person's
+		// chains (#1012 decision 49), so stopping it reaches every one of
+		// them; a foreign one works only on the Task it was prepared for.
+		if !job.is_local() {
+			query.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("task_id"),
+				Expr::value(job.task_id),
+			));
+		}
 		if let Some(id) = job.admission_id {
 			query.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("id"),
@@ -183,7 +188,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			let raw: aidash_domain::run_state::RawRun = crate::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -502,13 +507,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 
 	async fn event(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		data: Value,
 	) -> aidash_application::Result<()> {
 		self.runtime
 			.store
-			.event(self.transaction, Some(workspace), kind, data)
+			.event(self.transaction, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

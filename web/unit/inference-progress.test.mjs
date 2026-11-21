@@ -78,17 +78,17 @@ test("parser buffers partial frames and skips comments", () => {
 test("parser skips an oversized frame but keeps its id and event", () => {
   const data = "x".repeat(300_000);
   const frames = new SseParser().push(
-    `id: 41\nevent: workspace.updated\ndata: ${data}\n\nid: 42\ndata: ok\n\n`,
+    `id: 41\nevent: thread.updated\ndata: ${data}\n\nid: 42\ndata: ok\n\n`,
   );
   assert.deepEqual(frames, [
-    { id: "41", event: "workspace.updated", data: "" },
+    { id: "41", event: "thread.updated", data: "" },
     { id: "42", data: "ok" },
   ]);
 });
 
 test("parser streams an oversized frame without buffering its data", () => {
   const stream =
-    `event: workspace.updated\r\ndata: ${"x".repeat(300_000)}\r\n` +
+    `event: thread.updated\r\ndata: ${"x".repeat(300_000)}\r\n` +
     `: note\r\nid: 41\r\n\r\nid: 42\r\ndata: ok\r\n\r\n`;
   const parser = new SseParser();
   const frames = [];
@@ -97,7 +97,7 @@ test("parser streams an oversized frame without buffering its data", () => {
     assert.ok(parser.buffer.length <= 64 * 1024);
   }
   assert.deepEqual(frames, [
-    { id: "41", event: "workspace.updated", data: "" },
+    { id: "41", event: "thread.updated", data: "" },
     { id: "42", data: "ok" },
   ]);
 });
@@ -296,9 +296,9 @@ test("inference markers do not refresh the dashboard", () => {
   });
   assert.equal(refreshesDashboard(mesh("inference.started")), false);
   assert.equal(refreshesDashboard(mesh("inference.accepted")), false);
-  assert.equal(refreshesDashboard(mesh("run.updated")), true);
+  assert.equal(refreshesDashboard(mesh("execution.updated")), true);
   assert.equal(
-    refreshesDashboard({ ...mesh("run.updated"), id: undefined }),
+    refreshesDashboard({ ...mesh("execution.updated"), id: undefined }),
     false,
   );
   assert.equal(refreshesDashboard({ id: "8", data: "not json" }), true);

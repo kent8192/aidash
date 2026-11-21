@@ -17,25 +17,25 @@ pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
 /// Default Tool sets an Agent version may have been normalized with: today's
-/// (0) and six historical ones (see `AgentBindings::normalize_mode`).
-const HISTORICAL_DEFAULT_SETS: u8 = 7;
+/// (0) and seven historical ones (see `AgentBindings::normalize_mode`).
+const HISTORICAL_DEFAULT_SETS: u8 = 8;
 /// Default file tools whose builtin moved to 1.0.1 with the Execution Pod
 /// (#745). Every historical default set bound them at 1.0.0.
 const POD_FILE_TOOLS: &[&str] = &["file_read", "file_search", "attachment_copy"];
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
-pub const MAX_TOOL_PARALLELISM: u8 = 16;
+pub const MAX_TOOL_PARALLELISM: u8 = 64;
 fn sequential_tools() -> u8 {
 	1
 }
 fn is_sequential_tools(value: &u8) -> bool {
 	*value == 1
 }
-pub const REQUIRED_TOOLS: &[&str] = &["workspace_read", "human_request"];
+pub const REQUIRED_TOOLS: &[&str] = &["thread_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"connection_request",
-	"workspace_observe",
-	"workspace_search",
-	"workspace_wait",
+	"thread_observe",
+	"thread_search",
+	"task_wait",
 	"skill_list",
 	"skill_load",
 	"skill_read",
@@ -45,24 +45,19 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"task_delegate",
 	"agent_discover",
 	"artifact_publish",
-	"workspace_message",
+	"thread_message",
 	"attachment_copy",
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
-	"schedule_create",
-	"schedule_list",
-	"schedule_update",
-	"schedule_delete",
+	"duty_create",
+	"duty_list",
+	"duty_update",
+	"duty_delete",
 ];
 /// The core capability `schedules` (#557): on by default, so its tools are
 /// default tools an Agent definition removes with `remove_default`.
-pub const SCHEDULE_TOOLS: &[&str] = &[
-	"schedule_create",
-	"schedule_list",
-	"schedule_update",
-	"schedule_delete",
-];
+pub const SCHEDULE_TOOLS: &[&str] = &["duty_create", "duty_list", "duty_update", "duty_delete"];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
 /// offering them (#600, #617). Binding resolution gives an Agent that binds
@@ -302,10 +297,10 @@ impl AgentBindings {
 					.bindings
 					.iter()
 					.any(|b| matches!(b.kind, BindingKind::Skill | BindingKind::Source))
-			|| self
-				.remove_default
-				.iter()
-				.any(|name| !defaults.contains(&name.as_str()))
+			// Saved definitions name the Workspace tools the Thread tools replace.
+			|| self.remove_default.iter().any(|name| {
+				!defaults.contains(&crate::tool::thread_tools::current(name))
+			})
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
@@ -411,19 +406,21 @@ impl AgentBindings {
 		self.normalize_mode(node, 0)
 	}
 	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
-	/// version was normalized with (0 today, 1–6 historical, where 5 is
-	/// today's set before the Schedule tools of #557, which sets 1–5 lack, and
-	/// 6 is today's set before the file tools moved to 1.0.1 with #745, which
-	/// every historical set predates); `mode >=
-	/// HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and `subnode_task`
-	/// at the 1.0.0 they had before they moved to 1.1.0.
+	/// version was normalized with (0 today, 1–7 historical, where 5 is
+	/// today's set before the Schedule tools of #557, which sets 1–5 lack, 6
+	/// is today's set before the file tools moved to 1.0.1 with #745, which
+	/// sets 1–6 predate, and 7 is today's set before the Thread tools of
+	/// #1008 replaced the Workspace tools, which every historical set binds);
+	/// `mode >= HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and
+	/// `subnode_task` at the 1.0.0 they had before they moved to 1.1.0.
 	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
 		let mode = mode % HISTORICAL_DEFAULT_SETS;
-		let previous_file_tools = mode != 0;
-		// Set 6 is today's set in every other way.
-		let mode = if mode == 6 { 0 } else { mode };
+		let workspace_tools = mode != 0;
+		let previous_file_tools = mode != 0 && mode != 7;
+		// Sets 6 and 7 are today's set in every other way.
+		let mode = if matches!(mode, 6 | 7) { 0 } else { mode };
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
@@ -440,6 +437,13 @@ impl AgentBindings {
 		let required_tools = policy.required_tools();
 		let support = policy.skill_support_tools();
 		for operation in required_tools.iter().chain(&policy.default_tools()) {
+			// A historical set binds the Workspace tool a Thread tool replaces.
+			let current = *operation;
+			let operation = &if workspace_tools {
+				crate::tool::thread_tools::former(current).unwrap_or(current)
+			} else {
+				current
+			};
 			if (mode == 1 && matches!(*operation, "workspace_search" | "attachment_copy"))
 				|| (mode == 2 && *operation == "workspace_search")
 				|| (mode == 3 && *operation == "attachment_copy")
@@ -447,8 +451,12 @@ impl AgentBindings {
 			{
 				continue;
 			}
-			let required = required_tools.contains(operation);
-			if !required && self.remove_default.iter().any(|name| name == operation) {
+			let required = required_tools.contains(&current);
+			// A definition may remove a Thread tool under either name.
+			if !required
+				&& self.remove_default.iter().any(|name| {
+					name == operation || crate::tool::thread_tools::current(name) == current
+				}) {
 				continue;
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
@@ -502,7 +510,7 @@ impl AgentBindings {
 				binding: explicit.cloned().unwrap_or_else(|| Binding::tool(target)),
 				origin: if required {
 					BindingOrigin::Required
-				} else if has_skills && support.contains(operation) {
+				} else if has_skills && support.contains(&current) {
 					BindingOrigin::SkillSupport
 				} else if explicit.is_some() {
 					BindingOrigin::Explicit
@@ -606,15 +614,20 @@ impl Entry {
 /// so earlier calls behave the same; without it a pinned 1.0.1 could not post
 /// an image, since every posted image needs a description. This is an owner
 /// decision (2026-11-13) that departs, for these two tools only, from #640's
-/// rule that a pinned tool does not change. `workspace_read` keeps its pins:
-/// its versions decide whether an Agent can select a Thread Attachment at all.
+/// rule that a pinned tool does not change. `workspace_wait` 1.0.0 binds as
+/// 1.1.0 on the same grounds: 1.1.0 only adds the optional `on_trigger` and a
+/// longer maximum wait (#1011, lead's call recorded in PR #1014).
+/// `workspace_read` keeps its pins: its versions decide whether an Agent can
+/// select a Thread Attachment at all.
 fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
 	for item in &mut bindings {
 		let target = &mut item.binding.target;
 		if target.registry_deployment == node
 			&& matches!(
 				(target.id.as_str(), target.version.as_str()),
-				("aidash.workspace_message", "1.0.1") | ("aidash.workspace_search", "1.0.0")
+				("aidash.workspace_message", "1.0.1")
+					| ("aidash.workspace_search", "1.0.0")
+					| ("aidash.workspace_wait", "1.0.0")
 			) {
 			target.version = "1.1.0".into();
 		}
@@ -624,8 +637,9 @@ fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedB
 
 fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
 	identity.registry_deployment == node
-		&& identity.id == "aidash.workspace_read"
-		&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0")
+		&& (identity.id == "aidash.workspace_read"
+			&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0")
+			|| identity.id == "aidash.thread_read")
 		&& [("kind", "attachment"), ("representation", "model_input")]
 			.iter()
 			.all(|(key, value)| {
@@ -682,6 +696,10 @@ impl QualifiedRef {
 					| "workspace_message"
 					| "memory_mutate"
 					| "subnode_task"
+					// Gained `draft` for free-form generation (#1012).
+					| "task_assign"
+					// Gained `on_trigger` and a 30-day wait (#1011).
+					| "workspace_wait"
 			) {
 				"1.1.0"
 			} else if matches!(
@@ -1047,7 +1065,7 @@ impl BindingSnapshot {
 					.config
 					.get("provider")
 					.and_then(Value::as_str)
-					== Some("core.schedules@1")
+					== Some("core.duties@1")
 			{
 				binding.excluded_reason = Some(WORKBENCH_SCHEDULE_EXCLUSION.into());
 				// An excluded tool carries no Provider implementation.
@@ -1354,17 +1372,24 @@ impl BindingSnapshot {
 			}
 		}
 		for operation in policy.required_tools() {
-			let identity = QualifiedRef::builtin(&self.agent.registry_deployment, operation);
+			// An Agent normalized before #1008 binds the Workspace tool the
+			// Thread tool replaces.
+			let names = std::iter::once(operation)
+				.chain(crate::tool::thread_tools::former(operation))
+				.collect::<Vec<_>>();
 			if !self.bindings.iter().any(|binding| {
-				(binding.identity == identity
-					|| (operation == "workspace_read"
-						&& binding.identity.registry_deployment == identity.registry_deployment
-						&& binding.identity.id == identity.id
-						&& matches!(
-							binding.identity.version.as_str(),
-							"1.0.0" | "1.0.1" | "1.1.0"
-						))) && binding.origin == BindingOrigin::Required
-					&& binding.alias.as_deref() == Some(operation)
+				names.iter().any(|name| {
+					let identity = QualifiedRef::builtin(&self.agent.registry_deployment, name);
+					(binding.identity == identity
+						|| (*name == "workspace_read"
+							&& binding.identity.registry_deployment
+								== identity.registry_deployment
+							&& binding.identity.id == identity.id
+							&& matches!(
+								binding.identity.version.as_str(),
+								"1.0.0" | "1.0.1" | "1.1.0"
+							))) && binding.alias.as_deref() == Some(*name)
+				}) && binding.origin == BindingOrigin::Required
 					&& binding.excluded_reason.is_none()
 			}) {
 				return Err(Error::Invalid(format!(

@@ -14,7 +14,7 @@ pub enum Origin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
 	pub id: Uuid,
-	pub workspace: Uuid,
+	pub thread: Uuid,
 	pub origin: Origin,
 	pub provider: EntityRef,
 	pub request_bytes: i64,

@@ -35,7 +35,7 @@ pub(crate) async fn run(lease: &mut Lease<'_>, id: Uuid) -> Result<Option<RunMet
 	crate::database::query_as::<RunMetadata>(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)

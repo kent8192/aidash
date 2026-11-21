@@ -2,9 +2,9 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query};
 
-pub(super) fn manifest(node: &str, workspace: Uuid) -> Value {
+pub(super) fn manifest(node: &str, thread: Uuid) -> Value {
 	json!({"id":Uuid::new_v4(),"coordinator":node,"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
-		"participants":[{"node_id":node,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{}}]}]})
+		"participants":[{"node_id":node,"mutations":[{"kind":"thread_title","thread_id":thread,"expected_revision":0,"title":"Committed"}]}]})
 }
 
 #[rstest::rstest]
@@ -20,13 +20,8 @@ async fn abort_honors_manifest_attribute_denies(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	let manifest = manifest(node(&f).await.as_str(), workspace);
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	let manifest = manifest(node(&f).await.as_str(), thread);
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", manifest.clone())
 			.await
@@ -85,12 +80,7 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let old_pool = f.store.control_pool.clone();
 	f.store.control_pool = old_pool
 		.options()
@@ -140,7 +130,7 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 			.0,
 		200
 	);
-	let manifest = manifest(node(&f).await.as_str(), workspace);
+	let manifest = manifest(node(&f).await.as_str(), thread);
 	for _ in 0..2 {
 		let (status, body) =
 			common::post(&app, &token, "/api/transactions", manifest.clone()).await;
@@ -196,13 +186,8 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	let oldest = manifest(node(&f).await.as_str(), workspace);
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	let oldest = manifest(node(&f).await.as_str(), thread);
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", oldest.clone())
 			.await
@@ -211,7 +196,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	);
 	let mut hidden = Vec::new();
 	for _ in 0..201 {
-		let next = manifest(node(&f).await.as_str(), workspace);
+		let next = manifest(node(&f).await.as_str(), thread);
 		hidden.push(next["id"].clone());
 		let (status, body) = common::post(&app, &token, "/api/transactions", next).await;
 		assert_eq!(status, 202, "{body}");
@@ -289,13 +274,8 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	let own = manifest(node(&f).await.as_str(), workspace);
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	let own = manifest(node(&f).await.as_str(), thread);
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", own.clone())
 			.await
@@ -304,7 +284,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	);
 	// A Deployment Administrator owns no transaction: its submission is refused
 	// and leaves nothing behind (#484).
-	let deployment_administrator = manifest(node(&f).await.as_str(), workspace);
+	let deployment_administrator = manifest(node(&f).await.as_str(), thread);
 	assert_eq!(
 		common::post(
 			&app,
@@ -318,7 +298,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	);
 	// The foreign subject's binding is immutable fixture state. Its transaction
 	// exists but must look absent to Alice.
-	let foreign = manifest(node(&f).await.as_str(), workspace);
+	let foreign = manifest(node(&f).await.as_str(), thread);
 	assert_eq!(
 		common::post(
 			&app,
@@ -403,7 +383,7 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 #[rstest::rstest]
-#[case::workspace("workspace_state")]
+#[case::thread("thread_title")]
 #[case::task("complete_task")]
 #[case::run("finish_run")]
 #[tokio::test]
@@ -416,12 +396,12 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
+	let thread = f
 		.store
 		.task(&TEST_FIXTURE, task_id)
 		.await
 		.unwrap()
-		.workspace_id;
+		.thread_id;
 	let (status, body) = common::post(
 		&app,
 		&token,
@@ -441,8 +421,8 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 		.await;
 	assert_eq!(status, 201, "{sibling}");
 	let mutation = match kind {
-		"workspace_state" => {
-			json!({"kind":kind,"workspace_id":workspace,"expected_revision":0,"state":{"intrusion":true}})
+		"thread_title" => {
+			json!({"kind":kind,"thread_id":thread,"expected_revision":0,"title":"Intrusion"})
 		}
 		"complete_task" => {
 			json!({"kind":kind,"task_id":task_id,"expected_revision":1,"artifact":{"kind":"text","name":"Answer","content":"Must not write"}})
@@ -477,16 +457,17 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 		matches!(result, Err(aidash_server::Error::Forbidden)),
 		"{result:?}"
 	);
-	let state: Value = sqlx::query_scalar(
+	// No mutation reached the Thread: its title is still its own.
+	let title: String = sqlx::query_scalar(
 		&Query::select()
-			.column(Alias::new("state"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.column(Alias::new("title"))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	assert_eq!(state, json!({}));
+	assert_ne!(title, "Intrusion");
 	cleanup(f, &url, &schema).await;
 }

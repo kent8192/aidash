@@ -56,11 +56,11 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
-	async fn workspace_node(
+	async fn thread_node(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> aidash_application::Result<aidash_domain::nodes::NodeAddress> {
-		let node = self.access.workspace_node(workspace).await?;
+		let node = self.access.thread_node(thread).await?;
 		self.access.set_node(node.clone());
 		Ok(self.runtime.config.deployment.node(node))
 	}
@@ -142,7 +142,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			let query_bind_3 = policy_id;
 			let query_bind_4 = policy.revision;
 			let query_bind_5 = task_id;
-			let query_bind_6 = task.workspace_id;
+			let query_bind_6 = task.thread_id;
 			let query_bind_7 = access.identity.credential_id;
 			let query_bind_8 = &access.identity.subject;
 			let query_bind_9 = &access.subjects;
@@ -152,19 +152,19 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			let query_bind_13 = status;
 			let query_bind_14 = reason;
 			let query_bind_15 = depth;
-			let query_bind_16 = limits.tokens_per_agent;
+			let query_bind_16 = limits.agent_token_limit();
 			let query_bind_17 = creation.lifetime_seconds;
 			let query_bind_19 = creation.foreign_intent.clone();
 			let deployment = self.runtime.config.deployment.as_str();
-			let (node, home_node, local_task, local_workspace) = match &creation.foreign_intent {
+			let (node, home_node, local_task, local_thread) = match &creation.foreign_intent {
 				None => (
-					crate::database::scope::workspace_node(task.workspace_id),
+					crate::database::scope::thread_node(task.thread_id),
 					crate::database::scope::node_address(
 						deployment,
-						crate::database::scope::workspace_node(task.workspace_id),
+						crate::database::scope::thread_node(task.thread_id),
 					),
 					Expr::value(task_id).into(),
-					Expr::value(task.workspace_id).into(),
+					Expr::value(task.thread_id).into(),
 				),
 				Some(intent) => (
 					Expr::value(
@@ -190,7 +190,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 						reinhardt::query::Alias::new("policy_id"),
 						reinhardt::query::Alias::new("policy_revision"),
 						reinhardt::query::Alias::new("task_id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("credential_id"),
 						reinhardt::query::Alias::new("root_subject"),
 						reinhardt::query::Alias::new("subject_chain"),
@@ -205,7 +205,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 						reinhardt::query::Alias::new("home_node"),
 						reinhardt::query::Alias::new("node"),
 						reinhardt::query::Alias::new("local_task_id"),
-						reinhardt::query::Alias::new("local_workspace_id"),
+						reinhardt::query::Alias::new("local_thread_id"),
 						reinhardt::query::Alias::new("foreign_intent"),
 					])
 					.from_subquery(
@@ -281,7 +281,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 							.expr(home_node)
 							.expr(node)
 							.expr(local_task)
-							.expr(local_workspace)
+							.expr(local_thread)
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_19.to_owned()).into()],
@@ -294,16 +294,6 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			.fetch_one(&mut **access.tx)
 			.await?
 		};
-		// A Run a Schedule started passes its mark on to the Run of the Agent
-		// generated for it (#557 decision 7).
-		if let Some(run) = access.read_run {
-			crate::apps::workspaces::repositories::schedules::mark_generation(
-				&mut **access.tx,
-				run,
-				id,
-			)
-			.await?;
-		}
 		crate::apps::execution::observation::enqueue_generation(
 			access,
 			&generated,
@@ -324,7 +314,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 
 		let query_bind_1 = &access.identity.tenant;
 		let query_bind_2 = policy_id;
-		let query_bind_3 = limits.tokens_per_agent;
+		let query_bind_3 = limits.reserved_tokens();
 		let query_bind_5 = allowances.embedding_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::update()
@@ -371,7 +361,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let limits = &policy.spec.limits;
 
 		let query_bind_1 = id;
-		let query_bind_2 = limits.tokens_per_agent;
+		let query_bind_2 = limits.agent_token_limit();
 		let query_bind_4 = allowances.embedding_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::insert()
@@ -466,13 +456,13 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 
 	async fn event(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		data: Value,
 	) -> aidash_application::Result<()> {
 		self.runtime
 			.store
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -562,8 +552,8 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 		Ok(task)
 	}
 
-	async fn workspace(&mut self, id: Uuid) -> aidash_application::Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> aidash_application::Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn inherit_task_origin(&mut self, id: Uuid) -> aidash_application::Result<bool> {
 		execution::inherit_task_origin(self.access, id)
@@ -647,7 +637,7 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 					.join(
 						reinhardt::query::JoinType::InnerJoin,
 						reinhardt::query::TableRef::table_alias(
-							reinhardt::query::Alias::new("runs"),
+							reinhardt::query::Alias::new("task_executions"),
 							reinhardt::query::Alias::new("r"),
 						),
 						reinhardt::query::Expr::cust("r.id = e.run_id"),
@@ -687,6 +677,34 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 		.await?
 		};
 		Ok(generated)
+	}
+
+	/// A live, local generated agent that a chain of this root person
+	/// generated (#1012 decision 49). Its request row stays share-locked until
+	/// this transaction ends, so retirement, which locks it for update, waits
+	/// for the assignment and then sees the new Run using the agent.
+	async fn reusable(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		let access = &mut *self.access;
+		let found: Option<Uuid> = crate::database::native::query_scalar(
+			&reinhardt::query::Query::select()
+				.column(reinhardt::query::Alias::new("id"))
+				.from(reinhardt::query::Alias::new("generation_requests"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(tenant = ? AND agent_id = ? AND agent_version = ? AND root_subject = ? AND status = 'ACTIVE' AND expires_at > CLOCK_TIMESTAMP() AND foreign_intent IS NULL)".to_owned(),
+					vec![
+						Expr::value(access.identity.tenant.clone()).into(),
+						Expr::value(entry.id.clone()).into(),
+						Expr::value(entry.version.clone()).into(),
+						Expr::value(access.identity.subject.clone()).into(),
+					],
+				))
+				.limit(1)
+				.lock(reinhardt::query::LockType::Share)
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **access.tx)
+		.await?;
+		Ok(found.is_some())
 	}
 
 	async fn delegate(
@@ -767,11 +785,11 @@ impl GenerationCreationScope for Session {
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
-	async fn workspace_node(
+	async fn thread_node(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> aidash_application::Result<aidash_domain::nodes::NodeAddress> {
-		let node = self.access.workspace_node(workspace).await?;
+		let node = self.access.thread_node(thread).await?;
 		self.access.set_node(node.clone());
 		Ok(self.runtime.config.deployment.node(node))
 	}
@@ -825,11 +843,11 @@ impl GenerationCreationScope for Session {
 	}
 	async fn event(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		data: Value,
 	) -> aidash_application::Result<()> {
-		self.scope().event(workspace, kind, data).await
+		self.scope().event(thread, kind, data).await
 	}
 	async fn visible(&mut self, job: &Request) -> aidash_application::Result<bool> {
 		self.scope().visible(job).await
@@ -861,8 +879,8 @@ impl GenerationAssignmentScope for Session {
 	async fn task(&mut self, id: Uuid) -> aidash_application::Result<Task> {
 		self.scope().task(id).await
 	}
-	async fn workspace(&mut self, id: Uuid) -> aidash_application::Result<Resource> {
-		self.scope().workspace(id).await
+	async fn thread(&mut self, id: Uuid) -> aidash_application::Result<Resource> {
+		self.scope().thread(id).await
 	}
 	async fn inherit_task_origin(&mut self, id: Uuid) -> aidash_application::Result<bool> {
 		self.scope().inherit_task_origin(id).await
@@ -894,6 +912,9 @@ impl GenerationAssignmentScope for Session {
 	}
 	async fn generated(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
 		self.scope().generated(entry).await
+	}
+	async fn reusable(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		self.scope().reusable(entry).await
 	}
 	async fn delegate(
 		&mut self,

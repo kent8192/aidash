@@ -15,24 +15,25 @@ pub trait WorkerTaskScope: Send {
 	fn node_id(&self) -> &str;
 	fn identity(&self) -> ExecutionPrincipal;
 	fn subjects(&self) -> &[String];
-	/// None for an ordinary Workspace; otherwise the active Subnode members.
+	/// None for an ordinary Thread; otherwise the active Subnode members.
 	/// The Subnode membership lock is held through the delegated effect.
-	async fn subnode_members(&mut self, workspace: Uuid) -> Result<Option<Vec<EntityRef>>>;
-	async fn task_workspace(&mut self, task: Uuid) -> Result<Option<Uuid>>;
+	async fn subnode_members(&mut self, thread: Uuid) -> Result<Option<Vec<EntityRef>>>;
+	async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>>;
 	async fn assign(
 		&mut self,
 		task: Uuid,
 		policy: &str,
 		reason: &str,
 		members: Option<&[EntityRef]>,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Assignment>;
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, id: Uuid) -> Result<()>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn related_tasks(&mut self, workspace: Uuid, input: &NewTask) -> Result<()>;
+	async fn related_tasks(&mut self, thread: Uuid, input: &NewTask) -> Result<()>;
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: &str,

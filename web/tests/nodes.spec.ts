@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { NodeRecord } from "../src/generated/models";
 import { installBearerDashboard } from "./auth-fixture";
+import { defaultThreadApprovalMode, emptyOrgChart } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 const deployment = "aidash://home";
@@ -33,7 +34,7 @@ const deleted = (name: string, by = "tenant_administrator"): NodeRecord => ({
     purge_failed_at: null,
   },
 });
-const workspace = (id: string, title: string, owner: string) => ({
+const thread = (id: string, title: string, owner: string) => ({
   id,
   node: owner,
   title,
@@ -64,7 +65,7 @@ const registration = (
   ...overrides,
 });
 
-/** One Tenant with two Nodes, a Workspace in each, and a Tenant Administrator
+/** One Tenant with two Nodes, a Thread in each, and a Tenant Administrator
  *  who may manage Nodes and their registrations. */
 async function setup(
   page: Page,
@@ -130,9 +131,9 @@ async function setup(
             key: null,
           },
           registry: [],
-          workspaces: [
-            workspace("w-home", "Home research", "first"),
-            workspace("w-lab", "Lab notebook", "second"),
+          threads: [
+            thread("w-home", "Home research", "first"),
+            thread("w-lab", "Lab notebook", "second"),
           ].filter(
             (row) =>
               !new URL(request.url()).searchParams.get("node") ||
@@ -144,7 +145,7 @@ async function setup(
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -158,7 +159,7 @@ async function setup(
               ? [
                   {
                     id: "ask-lab",
-                    workspace_id: "w-lab",
+                    thread_id: "w-lab",
                     run_id: "run-lab",
                     kind: "QUESTION",
                     prompt: "Which sample goes first?",
@@ -305,13 +306,13 @@ async function setup(
     }
     if (/\/registration-history$/.test(path))
       return route.fulfill({ json: [] });
-    if (/^\/api\/workspaces\/[^/]+\/message-history$/.test(path))
+    if (/^\/api\/threads\/[^/]+\/message-history$/.test(path))
       return route.fulfill({ json: { messages: [], next_before: null } });
-    const snapshot = /^\/api\/workspaces\/([^/]+)$/.exec(path);
+    const snapshot = /^\/api\/threads\/([^/]+)$/.exec(path);
     if (snapshot && method === "GET")
       return route.fulfill({
         json: {
-          workspace: workspace(
+          thread: thread(
             snapshot[1],
             snapshot[1] === "w-lab" ? "Lab notebook" : "Home research",
             snapshot[1] === "w-lab" ||
@@ -325,13 +326,19 @@ async function setup(
           messages: [],
         },
       });
-    if (path === "/api/workspaces" && method === "POST") {
+    if (path === "/api/threads" && method === "POST") {
       const body = request.postDataJSON();
       posts.push({ path, body });
       return route.fulfill({
-        json: workspace("w-new", body.title, body.node ?? "first"),
+        json: thread("w-new", body.title, body.node ?? "first"),
       });
     }
+    // Every Thread composer shows the person's Approval Mode (#1008), and the
+    // Thread dashboard shows the org chart (#1012).
+    if (/^\/api\/threads\/[^/]+\/approval-mode$/.test(path))
+      return route.fulfill({ json: defaultThreadApprovalMode });
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   return { posts, errors, registrations, queries };
@@ -342,7 +349,7 @@ const openAccountMenu = (page: Page) =>
 const switcher = (page: Page) =>
   page.getByRole("button", { name: /^Switch request/ });
 
-test("the selected Node decides which Workspaces are listed, and is remembered", async ({
+test("the selected Node decides which Threads are listed, and is remembered", async ({
   page,
 }) => {
   const { errors } = await setup(page);
@@ -354,7 +361,7 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   });
   await page.goto("/");
   await switcher(page).click();
-  const list = page.getByRole("navigation", { name: "Workspaces" });
+  const list = page.getByRole("navigation", { name: "Threads" });
   await expect(
     list.getByRole("link", { name: "# Home research" }),
   ).toBeVisible();
@@ -374,12 +381,12 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   await switcher(page).click();
   await expect(
     page
-      .getByRole("navigation", { name: "Workspaces" })
+      .getByRole("navigation", { name: "Threads" })
       .getByRole("link", { name: "# Lab notebook" }),
   ).toBeVisible();
   await expect(
     page
-      .getByRole("navigation", { name: "Workspaces" })
+      .getByRole("navigation", { name: "Threads" })
       .getByRole("link", { name: "# Home research" }),
   ).toHaveCount(0);
 
@@ -392,7 +399,7 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   expect(errors).toEqual([]);
 });
 
-test("a link to a Workspace of another Node opens in that Node", async ({
+test("a link to a Thread of another Node opens in that Node", async ({
   page,
 }) => {
   const { errors } = await setup(page);
@@ -405,7 +412,7 @@ test("a link to a Workspace of another Node opens in that Node", async ({
   expect(errors).toEqual([]);
 });
 
-test("a new Workspace is created in the Node chosen in its form", async ({
+test("a new Thread is created in the Node chosen in its form", async ({
   page,
 }) => {
   const { posts, errors } = await setup(page);
@@ -419,16 +426,14 @@ test("a new Workspace is created in the Node chosen in its form", async ({
   await dialog
     .getByRole("textbox", { name: "Title", exact: true })
     .fill("Draft");
-  await dialog
-    .getByRole("textbox", { name: "Goal", exact: true })
-    .fill("Notes");
   await dialog.getByLabel("Node", { exact: true }).selectOption("second");
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page).toHaveURL(/channel=w-new/);
+  // A Thread has a title and no goal (#1008).
   expect(posts).toEqual([
     {
-      path: "/api/workspaces",
-      body: { title: "Draft", goal: "Notes", node: "second" },
+      path: "/api/threads",
+      body: { title: "Draft", node: "second" },
     },
   ]);
   await openAccountMenu(page);

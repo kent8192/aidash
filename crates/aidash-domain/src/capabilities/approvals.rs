@@ -69,7 +69,7 @@ pub fn approver_eligible(bundle: &PolicyBundle, evaluation: &Evaluation, request
 		}) && bundle.evaluate(evaluation).allowed
 }
 
-/// Judge the starter of a Workbench test without a Run or workspace context.
+/// Judge the starter of a Workbench test without a Run or thread context.
 pub fn workbench_approver_eligible(
 	bundle: &PolicyBundle,
 	starter: &str,
@@ -85,7 +85,7 @@ pub fn workbench_approver_eligible(
 	approver_eligible(&bundle, &evaluation, starter)
 }
 
-/// A Workbench test has no Run or workspace. An allow that depends on either
+/// A Workbench test has no Run or thread. An allow that depends on either
 /// cannot grant access; denies still evaluate their other applicable branches.
 pub fn workbench_policy(bundle: &PolicyBundle) -> PolicyBundle {
 	use crate::policy::{Condition, Effect, Operand};
@@ -96,7 +96,7 @@ pub fn workbench_policy(bundle: &PolicyBundle) -> PolicyBundle {
 	fn run_operand(operand: &Operand) -> bool {
 		match operand {
 			Operand::Resource { path } | Operand::Environment { path } => {
-				["/run_id", "/workspace_id", "/workspace", "/owner"]
+				["/run_id", "/thread_id", "/thread", "/owner"]
 					.iter()
 					.any(|prefix| path == prefix || path.starts_with(&format!("{prefix}/")))
 			}

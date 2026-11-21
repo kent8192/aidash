@@ -77,7 +77,7 @@ async fn a_final_answer_beside_an_unassigned_task_is_held_and_the_model_is_told(
 	let step = fixture.run.step;
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.unassigned_tasks_told");
+	assert_eq!(event, "execution.unassigned_tasks_told");
 	assert_eq!(saved.phase(), RunPhase::Thinking);
 	// The notice uses one step, publishes nothing and completes nothing.
 	assert_eq!(saved.step, step + 1);
@@ -181,10 +181,10 @@ async fn delegating_after_the_notice_abandons_nothing_and_the_parent_waits(mut f
 	answer(&mut fixture.run, "Waiting for it.");
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting");
+	assert_eq!(event, "execution.waiting");
 	assert!(matches!(
 		saved.state,
-		RunState::Waiting(ref waiting) if matches!(**waiting, WaitingState::Workspace { .. })
+		RunState::Waiting(ref waiting) if matches!(**waiting, WaitingState::TaskWait { .. })
 	));
 	assert_eq!(calls(&fixture, "home.complete"), 0);
 	assert!(fixture.backend.0.abandoned.lock().unwrap().is_empty());
@@ -204,7 +204,7 @@ async fn a_task_created_after_the_notice_gets_its_own_notice(mut fixture: Fixtur
 	answer(&mut fixture.run, "All done again.");
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, _) = last_write(&fixture);
-	assert_eq!(event, "run.unassigned_tasks_told");
+	assert_eq!(event, "execution.unassigned_tasks_told");
 	assert_eq!(told(&fixture), [Uuid::from_u128(1), Uuid::from_u128(2)]);
 	assert_eq!(calls(&fixture, "home.complete"), 0);
 }
@@ -262,7 +262,7 @@ async fn a_running_child_beside_an_unassigned_task_means_waiting_without_a_notic
 	answer(&mut fixture.run, "Partial.");
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, _) = last_write(&fixture);
-	assert_eq!(event, "run.waiting");
+	assert_eq!(event, "execution.waiting");
 	assert!(told(&fixture).is_empty());
 	// A text answer given while children are running is published as before.
 	assert_eq!(*fixture.backend.0.published.lock().unwrap(), ["Partial."]);
@@ -335,7 +335,7 @@ async fn a_handed_over_child_makes_the_parent_abandon_the_root_and_wait(mut fixt
 	assert_eq!(calls(&fixture, "home.complete"), 0);
 	assert!(matches!(
 		fixture.run.state,
-		RunState::Waiting(ref waiting) if matches!(**waiting, WaitingState::Workspace { .. })
+		RunState::Waiting(ref waiting) if matches!(**waiting, WaitingState::TaskWait { .. })
 	));
 }
 
@@ -426,7 +426,7 @@ async fn a_conflict_from_complete_reaches_the_same_decision(mut fixture: Fixture
 	]);
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.unassigned_tasks_told");
+	assert_eq!(event, "execution.unassigned_tasks_told");
 	assert_eq!(saved.phase(), RunPhase::Thinking);
 }
 
@@ -446,7 +446,7 @@ async fn the_ceiling_of_the_internal_wait_rechecks_children_without_a_model_call
 		.store(owned, Ordering::Release);
 	set_children(&fixture, children(1, false, vec![]));
 	let past = chrono::Utc::now() - chrono::Duration::minutes(1);
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 		wake_at: past,
 		cursor: 0,
 		resume: ResumeState::Thinking(ThinkingState::default()),
@@ -455,14 +455,14 @@ async fn the_ceiling_of_the_internal_wait_rechecks_children_without_a_model_call
 	let inferred = calls(&fixture, "provider.infer");
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_workspace");
+	assert_eq!(event, "execution.waiting_for_thread");
 	assert_eq!(saved.step, step);
 	assert_eq!(calls(&fixture, "provider.infer"), inferred);
 	let RunState::Waiting(waiting) = &saved.state else {
 		panic!("expected the Run to keep waiting");
 	};
-	let WaitingState::Workspace { wake_at, .. } = **waiting else {
-		panic!("expected a workspace wait");
+	let WaitingState::TaskWait { wake_at, .. } = **waiting else {
+		panic!("expected a thread wait");
 	};
 	let before = chrono::Utc::now();
 	assert!(wake_at > before + chrono::Duration::seconds(seconds - 60));
@@ -475,14 +475,14 @@ async fn the_ceiling_wakes_the_run_once_the_decision_is_no_longer_to_wait(mut fi
 	// Every pending child is unassigned now: the answer must be reconsidered.
 	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
 	let past = chrono::Utc::now() - chrono::Duration::minutes(1);
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 		wake_at: past,
 		cursor: 0,
 		resume: ResumeState::Thinking(ThinkingState::default()),
 	}));
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.resumed");
+	assert_eq!(event, "execution.resumed");
 	assert_eq!(saved.phase(), RunPhase::Thinking);
 }
 
@@ -573,7 +573,7 @@ async fn the_default_wait_on_a_remote_home_ignores_unassigned_tasks(
 	let RunState::Waiting(waiting) = &fixture.run.state else {
 		panic!("Run did not wait")
 	};
-	let WaitingState::Workspace { wake_at, .. } = waiting.as_ref() else {
+	let WaitingState::TaskWait { wake_at, .. } = waiting.as_ref() else {
 		panic!("wrong wait")
 	};
 	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
@@ -585,7 +585,7 @@ async fn wake_result(fixture: &mut Fixture, summary: ChildTaskSummary) -> Value 
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(summary);
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::TaskWait {
 		wake_at: chrono::Utc::now() - chrono::Duration::seconds(1),
 		cursor: 0,
 		resume: ResumeState::ToolCall(Box::default()),

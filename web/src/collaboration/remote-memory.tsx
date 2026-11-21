@@ -12,6 +12,7 @@ import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Field, useI18n } from "../ui";
 import type { RunManagement } from "../generated/models";
+import { tokenLimitLabel } from "../generation-limits";
 import { collaborationCopy } from "./copy";
 import { DeclineCall } from "./decline-call";
 import { offeredDecline } from "./decline-call-model";
@@ -34,7 +35,7 @@ export function RemoteRunManagement({
   const [error, setError] = useState("");
   const query = useQuery({
     queryKey: ["run-management", id],
-    queryFn: () => apiFetch<RunManagement>(`/api/runs/${id}/management`),
+    queryFn: () => apiFetch<RunManagement>(`/api/executions/${id}/management`),
     retry: false,
     refetchInterval: 2000,
   });
@@ -46,7 +47,7 @@ export function RemoteRunManagement({
   const act = (action: "pause" | "cancel") => {
     setBusy(true);
     setError("");
-    void apiFetch(`/api/runs/${id}/management`, {
+    void apiFetch(`/api/executions/${id}/management`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action }),
@@ -124,7 +125,7 @@ export function RemoteRunManagement({
           submit={submit}
           withSentence={false}
           decline={(call, rest_of_run) =>
-            apiFetch(`/api/runs/${id}/declined-calls`, {
+            apiFetch(`/api/executions/${id}/declined-calls`, {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({
@@ -194,8 +195,8 @@ export const semanticReasons: Record<RemoteSemanticFailure, [string, string]> =
       "埋め込みモデルを利用できません。新しい Agent バージョンを登録してください。",
     ],
     data_protection: [
-      "The embedding model cannot meet this Tenant's Data Protection Level. Switch the Workspace to a model that meets it, then retry.",
-      "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。満たせるモデルに Workspace を切り替えてから再試行してください。",
+      "The embedding model cannot meet this Tenant's Data Protection Level. Switch the Thread to a model that meets it, then retry.",
+      "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。満たせるモデルに Thread を切り替えてから再試行してください。",
     ],
     context_budget: [
       "Semantic context does not fit the model's available context budget.",
@@ -478,7 +479,7 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                     items={[
                       [
                         t("generationUsedTokens"),
-                        `${allowance.used_tokens.toLocaleString()} / ${allowance.token_limit.toLocaleString()}`,
+                        `${allowance.used_tokens.toLocaleString()} / ${tokenLimitLabel(allowance.token_limit, undefined, t("generationNoLimit"))}`,
                         true,
                       ],
                       [

@@ -37,11 +37,9 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   });
   const serverOrigin = await serveKeyless(server, KeylessFixture.semantic);
   const endpoint = `${serverOrigin}/v1`;
-  const workspace = await api("/api/workspaces", {
-    title: "Semantic dashboard",
-    goal: "Retrieve authorized context",
-  });
-  const root = `/api/workspaces/${workspace.id}/semantic`;
+  // A Thread opened without a target takes a title alone (#1008).
+  const thread = await api("/api/threads", { title: "Semantic dashboard" });
+  const root = `/api/threads/${thread.id}/semantic`;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let releaseRefresh = () => {};
@@ -55,9 +53,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       localStorage.setItem("aidash-locale", "en-US");
     });
     await page.goto("/semantic");
-    await page
-      .getByLabel("Workspace", { exact: true })
-      .selectOption(workspace.id);
+    await page.getByLabel("Thread", { exact: true }).selectOption(thread.id);
     await page
       .getByRole("button", { name: "Configure index", exact: true })
       .click();
@@ -188,9 +184,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       fullPage: true,
     });
     await page.reload();
-    await page
-      .getByLabel("Workspace", { exact: true })
-      .selectOption(workspace.id);
+    await page.getByLabel("Thread", { exact: true }).selectOption(thread.id);
     await expect(page.locator(".semantic-entry")).toContainText("transport");
     await page.getByRole("button", { name: "Delete", exact: true }).click();
     await page
@@ -233,7 +227,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
-    // The Workspace index owns its PostgreSQL vectors. Disable its generation
+    // The Thread index owns its PostgreSQL vectors. Disable its generation
     // through the authorized API so the durable janitor retires those rows.
     const indexResponse = await request.get(`${root}/index`, { headers });
     if (indexResponse.ok()) {

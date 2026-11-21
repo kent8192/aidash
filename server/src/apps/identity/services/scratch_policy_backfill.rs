@@ -1,19 +1,18 @@
 //! Upgrade the original member policy for named Scratch Space creation.
 
 pub(crate) fn forward() -> String {
+	use crate::apps::identity::services::duty_policy_backfill;
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 	};
-	let bundle = aidash_domain::identity::tenancy::initial_policy("migration", false)
-		.expect("the migration Tenant name is valid");
-	let mut current = bundle
-		.policies
-		.into_iter()
-		.find(|policy| policy.id == "members")
-		.expect("the initial member policy exists");
-	// The member policy as it stood when this migration was written: later
-	// grants have their own migrations (`identity/0080_schedule_member_policy`).
-	current.actions.remove(aidash_domain::schedules::CREATE);
+	// The member policy as it stood when this migration was written, so the
+	// generated asset keeps the text it was applied with: every later grant and
+	// rename has its own migration (`identity/0080_schedule_member_policy`
+	// onwards).
+	let mut current = duty_policy_backfill::member_policy_after();
+	current
+		.actions
+		.remove(duty_policy_backfill::SCHEDULE_CREATE);
 	let mut previous = current.clone();
 	previous.actions.remove("scratch.create");
 	let previous = serde_json::to_value(previous).expect("the member policy serializes");
@@ -72,8 +71,12 @@ mod tests {
 				.iter_mut()
 				.find(|policy| policy.id == "members")
 				.unwrap();
+			// The member policy of this migration's time, before its grant.
+			*policy = crate::apps::identity::services::duty_policy_backfill::member_policy_after();
+			policy
+				.actions
+				.remove(crate::apps::identity::services::duty_policy_backfill::SCHEDULE_CREATE);
 			policy.actions.remove("scratch.create");
-			policy.actions.remove(aidash_domain::schedules::CREATE);
 			if tenant == "scratch-custom-policy" {
 				policy.actions.remove("workspace.create");
 			}

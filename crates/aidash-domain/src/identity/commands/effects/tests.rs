@@ -4,7 +4,7 @@ use rstest::{fixture, rstest};
 fn task() -> Task {
 	Task {
 		id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		title: String::new(),
 		description: String::new(),
 		status: TaskStatus::Open,
@@ -28,7 +28,7 @@ fn a_new_child_of_the_bound_task_is_eligible_for_grant_provenance_checks(task: T
 	assert!(child_eligible(&task, &child, "owner"));
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::parent("parent")]
 #[case::creator("creator")]
 #[case::owner("owner")]
@@ -41,7 +41,7 @@ fn delegation_cannot_claim_unrelated_owned_or_started_children(task: Task, #[cas
 		..task.clone()
 	};
 	match change {
-		"workspace" => child.workspace_id = Uuid::nil(),
+		"thread" => child.thread_id = Uuid::nil(),
 		"parent" => child.parent_id = None,
 		"creator" => child.created_by = "other".into(),
 		"owner" => child.owner = Some("other".into()),

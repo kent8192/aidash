@@ -7,17 +7,18 @@ fn management_schema_has_typed_results_and_distinct_recipient_contracts() {
 	let api = serde_json::to_value(crate::config::openapi::openapi().unwrap()).unwrap();
 	let schemas = &api["components"]["schemas"];
 	assert_eq!(schemas["Recipient"]["additionalProperties"], false);
-	assert!(
-		schemas["Recipient"]["properties"]
-			.get("workspace_id")
-			.is_none()
-	);
-	assert!(
-		schemas["FileRecipient"]["required"]
-			.as_array()
-			.unwrap()
-			.contains(&json!("workspace_id"))
-	);
+	// Since #1008 a transfer's recipient and a listed recipient both name the
+	// recipient Run's Thread (before, a reply thread and a Workspace).
+	for schema in ["Recipient", "FileRecipient"] {
+		assert!(
+			schemas[schema]["required"]
+				.as_array()
+				.unwrap()
+				.contains(&json!("thread_id")),
+			"{schema}"
+		);
+		assert!(schemas[schema]["properties"].get("workspace_id").is_none());
+	}
 	for expected in [
 		"core_agent_configure",
 		"core_file_materialize",

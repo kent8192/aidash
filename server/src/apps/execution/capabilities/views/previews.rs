@@ -53,7 +53,7 @@ pub async fn ticket(
 
 /// V's dashboard asks its own Deployment for a ticket to a delegated Run on H.
 #[post(
-	"/api/runs/{id}/preview-tickets",
+	"/api/executions/{id}/preview-tickets",
 	name = "!core_remote_preview_ticket",
 	auth = "protected"
 )]
@@ -82,7 +82,7 @@ pub async fn remote_ticket(
 
 /// V exposes H's scoped Run File version and Live preview metadata.
 #[get(
-	"/api/runs/{id}/remote-preview",
+	"/api/executions/{id}/remote-preview",
 	name = "!core_remote_preview_inspect",
 	auth = "protected"
 )]

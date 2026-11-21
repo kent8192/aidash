@@ -18,7 +18,7 @@ struct World {
 	app: common::TestApplication,
 	run: Uuid,
 	task: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 	agent: aidash_server::registry::Entry,
 	alice: String,
 	_runtime: common::RuntimeFixture,
@@ -36,16 +36,16 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let app = fixture.application.clone();
 	let alice = common::tenant_token(&f.store, "acme").await;
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&acme, "alice", "Run Control", "Stop a Run")
+		.create_thread(&acme, "alice", "Run Control")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
 			&acme,
-			workspace.id,
+			thread.id,
 			&aidash_server::domain::NewTask {
 				title: "Work".into(),
 				description: "A Run whose owner stops it".into(),
@@ -103,7 +103,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		app,
 		run: run.id,
 		task: task.id,
-		workspace: workspace.id,
+		thread: thread.id,
 		agent: registered[1].clone(),
 		alice,
 		_runtime: fixture.runtime,
@@ -116,7 +116,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{}", self.run),
+			&format!("/api/executions/{}", self.run),
 			Value::Null,
 		)
 		.await
@@ -127,7 +127,7 @@ impl World {
 			&self.app,
 			token,
 			"POST",
-			&format!("/api/runs/{}/control", self.run),
+			&format!("/api/executions/{}/control", self.run),
 			json!({"action":action}),
 		)
 		.await
@@ -138,7 +138,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{}/management", self.run),
+			&format!("/api/executions/{}/management", self.run),
 			Value::Null,
 		)
 		.await
@@ -209,7 +209,7 @@ impl World {
 			.store
 			.create_task(
 				&acme,
-				self.workspace,
+				self.thread,
 				&aidash_server::domain::NewTask {
 					title: "Parent".into(),
 					description: "The Run that delegated the Task".into(),
@@ -240,11 +240,11 @@ impl World {
 		.await
 		.unwrap();
 		sqlx::query(
-			"INSERT INTO authorization_run_outputs (run_id, tenant, workspace_id, resource_kind, resource_id) \
+			"INSERT INTO authorization_run_outputs (run_id, tenant, thread_id, resource_kind, resource_id) \
 			 VALUES ($1, 'acme', $2, 'task', $3)",
 		)
 		.bind(parent.id)
-		.bind(self.workspace)
+		.bind(self.thread)
 		.bind(self.task)
 		.execute(pool)
 		.await
@@ -254,11 +254,11 @@ impl World {
 	/// The Run has asked a person a question, as a Run waiting on a human has.
 	async fn add_human_request(&self) {
 		sqlx::query(
-			"INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) \
+			"INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key, created_at) \
 			 VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Which one?', 'ask', now())",
 		)
 		.bind(Uuid::new_v4())
-		.bind(self.workspace)
+		.bind(self.thread)
 		.bind(self.run)
 		.execute(self.f.store.pool.fixture_driver())
 		.await
@@ -271,7 +271,7 @@ impl World {
 			&self.app,
 			token,
 			"POST",
-			"/api/suspended-runs/resume",
+			"/api/suspended-executions/resume",
 			Value::Null,
 		)
 		.await
@@ -281,7 +281,7 @@ impl World {
 	/// records the epoch it paused under, as `pause_for_execution` does.
 	async fn paused_for(&self, error: &str) {
 		sqlx::query(
-			"UPDATE runs SET error = $1, pending = CASE WHEN $1 = 'account_suspended' \
+			"UPDATE task_executions SET error = $1, pending = CASE WHEN $1 = 'account_suspended' \
 			 THEN jsonb_set(pending, '{recovery}', \
 			 COALESCE(pending->'recovery', '{}'::jsonb) || '{\"account_suspension_epoch\": 1}') \
 			 ELSE pending END WHERE id = $2 AND control = 'PAUSED'",
@@ -591,16 +591,16 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 	let (f, _, _) = fixture.runtime.parts();
 	common::tenant_token(&f.store, "acme").await;
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&acme, "alice", "Package indexes", "Run an older Agent")
+		.create_thread(&acme, "alice", "Package indexes")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
 			&acme,
-			workspace.id,
+			thread.id,
 			&aidash_server::domain::NewTask {
 				title: "Work".into(),
 				description: "An Agent that bound core.npm".into(),

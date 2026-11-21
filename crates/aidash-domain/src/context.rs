@@ -148,6 +148,11 @@ pub struct Context {
 	/// a Run without Agent Plugins never sets it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub plugin_tools: Option<crate::agent_plugin::PluginTools>,
+	/// The Tenant and Node Instructions pinned when the Run was claimed
+	/// (#1010). `None` means none were pinned; editing them never changes a
+	/// Run already under way.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub standing_instructions: Option<crate::standing_instructions::StandingInstructions>,
 }
 
 /// Stored contexts written before the Context Journal carry bare history
@@ -205,6 +210,8 @@ struct StoredContext {
 	completion: crate::completion::CompletionProgress,
 	#[serde(default)]
 	plugin_tools: Option<crate::agent_plugin::PluginTools>,
+	#[serde(default)]
+	standing_instructions: Option<crate::standing_instructions::StandingInstructions>,
 }
 
 #[derive(Deserialize)]
@@ -301,6 +308,7 @@ impl<'de> Deserialize<'de> for Context {
 			exposure: stored.exposure,
 			completion: stored.completion,
 			plugin_tools: stored.plugin_tools,
+			standing_instructions: stored.standing_instructions,
 		})
 	}
 }
@@ -486,6 +494,9 @@ pub struct InspectionContext<'a> {
 	/// The plugin tools the Run pinned, with everything left out.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub plugin_tools: Option<&'a crate::agent_plugin::PluginTools>,
+	/// The Tenant and Node Instructions the Run pinned at claim (#1010).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub standing_instructions: Option<&'a crate::standing_instructions::StandingInstructions>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -505,6 +516,7 @@ impl Context {
 			estimate: self.estimate.view(),
 			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
 			plugin_tools: self.plugin_tools.as_ref(),
+			standing_instructions: self.standing_instructions.as_ref(),
 		}
 	}
 }
@@ -522,7 +534,7 @@ use crate::{Error, Result, exposure::ExposureState};
 use serde_json::{Value, json};
 
 // Conservative upper bound for mixed-language text, not a provider tokenizer.
-// The budget includes system instructions, tools, workspace and output reserve.
+// The budget includes system instructions, tools, thread and output reserve.
 pub fn estimated_tokens(value: &str) -> usize {
 	value.len()
 }
@@ -714,13 +726,13 @@ pub const ORDERED_STABLE_KEYS: [&str; 3] = ["identity", "task", "reference_docum
 /// new pinned key can never move into, or reorder, the Stable Prefix.
 const ORDERED_VOLATILE_KEYS: [&str; 11] = [
 	"agent_state",
-	"workspace",
+	"thread",
 	"run_messages",
 	"run_message_read_instruction",
 	"deferred_run_message_reads",
 	"deferred_skill_read",
-	"deferred_workspace_observation",
-	"deferred_workspace_read",
+	"deferred_thread_observation",
+	"deferred_thread_read",
 	"snapshot_truncated",
 	"semantic_memory",
 	"turn_instructions",
@@ -1072,7 +1084,7 @@ pub enum ContextEvent {
 		harness: Option<Value>,
 	},
 	/// Evidence a Native step admitted that history did not hold yet (#942):
-	/// workspace observation entries and Run messages. Like a tool result it
+	/// thread observation entries and Run messages. Like a tool result it
 	/// is appended once and sent at its position; only offloading or
 	/// compaction removes it.
 	Evidence {
@@ -1085,7 +1097,7 @@ pub enum ContextEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceItem {
-	/// The pinned key, such as `workspace` or `run_messages`.
+	/// The pinned key, such as `thread` or `run_messages`.
 	pub key: String,
 	/// The field of the key's object the item belongs to; absent when the key
 	/// holds a list.

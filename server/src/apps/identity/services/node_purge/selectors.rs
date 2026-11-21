@@ -30,8 +30,8 @@ impl Owners<'_> {
 	pub fn root(&self, table: &str, field: &str, root: Root) -> Result<SimpleExpr> {
 		use Root::*;
 		let (parent, key) = match root {
-			Workspace => ("workspaces", "id"),
-			Run => ("runs", "id"),
+			Thread => ("threads", "id"),
+			Run => ("task_executions", "id"),
 			Task => ("tasks", "id"),
 			Area => ("core_areas", "id"),
 			Request => ("generation_requests", "id"),
@@ -43,7 +43,6 @@ impl Owners<'_> {
 			MemoryOperation => ("memory_model_operations", "id"),
 			SemanticOperation => ("semantic_remote_operations", "id"),
 			RemoteUsage => ("generation_remote_usage", "attempt_id"),
-			Thread => ("channel_threads", "id"),
 			Observation => ("approval_observations", "id"),
 			Message => ("messages", "id"),
 			RetentionHold => ("core_retention_holds", "id"),
@@ -52,6 +51,7 @@ impl Owners<'_> {
 			Subnode => ("subnodes", "id"),
 			ScratchSpace => ("scratch_spaces", "id"),
 			Record => ("core_records", "id"),
+			Duty => ("duties", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(
@@ -81,7 +81,7 @@ impl Owners<'_> {
 				.or(self.root(table, second, other)?),
 			Approvals => {
 				// Capability evidence follows the executing Run, even on a foreign
-				// Workspace. Generation evidence exists before a Run is created.
+				// Thread. Generation evidence exists before a Run is created.
 				col(table, "approval_type")
 					.eq(Expr::value("capability"))
 					.and(self.root(table, "run_id", Root::Run)?)
@@ -90,19 +90,19 @@ impl Owners<'_> {
 						.and(self.root(table, "approval", Root::Request)?))
 			}
 			Areas => {
-				// A present Workspace always owns its area; subject fallback is only for
-				// genuinely absent Workspaces. home_node/agent_id are never selectors.
-				let exists: SimpleExpr = Expr::from(col(table, "workspace_id"))
+				// A present Thread always owns its area; subject fallback is only for
+				// genuinely absent Threads. home_node/agent_id are never selectors.
+				let exists: SimpleExpr = Expr::from(col(table, "thread_id"))
 					.in_subquery(
 						Query::select()
 							.column(Alias::new("id"))
-							.from(Alias::new("workspaces"))
+							.from(Alias::new("threads"))
 							.and_where(Expr::col("tenant").eq(Expr::value(self.tenant)))
 							.to_owned(),
 					)
 					.into();
 				// A receiving Working Area (ADR 0139) is owned by a Home person and keyed by a
-				// Workspace this Node does not hold, so neither edge above reaches it. It lasts
+				// Thread this Node does not hold, so neither edge above reaches it. It lasts
 				// as long as the Node whose Runs use it.
 				let received: SimpleExpr = Expr::cust(format!(
 					"\"{table}\".\"constraints\" @> '[{{\"kind\":\"remote_home\"}}]'::jsonb"
@@ -117,7 +117,7 @@ impl Owners<'_> {
 							.to_owned(),
 					)
 					.into();
-				self.root(table, "workspace_id", Root::Workspace)?
+				self.root(table, "thread_id", Root::Thread)?
 					.or(exists.not().and(self.subject(table, "owner")))
 					.or(received.and(used_here))
 			}
@@ -131,11 +131,11 @@ impl Owners<'_> {
 					.is_null()
 					.and(col(table, "kind").eq(Expr::value("thread_tombstone")))
 					.and(
-						Expr::from(json(col(table, "data"), "workspace_id")).in_subquery(
+						Expr::from(json(col(table, "data"), "thread_id")).in_subquery(
 							Query::select()
 								.expr(Expr::col("id").cast_as(Alias::new("text")))
-								.from(Alias::new("workspaces"))
-								.and_where(self.predicate("workspaces")?)
+								.from(Alias::new("threads"))
+								.and_where(self.predicate("threads")?)
 								.to_owned(),
 						),
 					)),
@@ -157,7 +157,7 @@ impl Owners<'_> {
 						.and_where(Expr::col("wav_object_id").is_not_null())
 						.to_owned(),
 				)),
-			CascadeTasks => self.root(table, "workspace_id", Root::Workspace)?,
+			CascadeTasks => self.root(table, "thread_id", Root::Thread)?,
 			SemanticJournals => ids(col(table, "id"), &self.journals),
 			SourceReads => Expr::exists(
 				Query::select()
@@ -217,12 +217,11 @@ impl Owners<'_> {
 				any.and(other.not())
 			}
 			Dispatches => ids(col(table, "attempt_id"), &self.dispatches),
-			Event => {
-				self.root(table, "workspace_id", Root::Workspace)?
-					.or(col(table, "workspace_id")
-						.is_null()
-						.and(col(table, "node").eq(Expr::value(self.node))))
-			}
+			Event => self
+				.root(table, "thread_id", Root::Thread)?
+				.or(col(table, "thread_id")
+					.is_null()
+					.and(col(table, "node").eq(Expr::value(self.node)))),
 		};
 		Ok(col(table, "tenant")
 			.eq(Expr::value(self.tenant))

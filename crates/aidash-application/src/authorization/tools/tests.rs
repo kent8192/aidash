@@ -33,7 +33,7 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 		vec![
 			"lease".to_owned(),
 			"require:builtin:task_create:tool.invoke".to_owned(),
-			format!("require:{}:task.create", run.workspace_id),
+			format!("require:{}:task.create", run.thread_id),
 			"release".to_owned()
 		]
 	);
@@ -264,7 +264,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
-		workspace_id: id(3),
+		thread_id: id(3),
 		home_node: "aidash://home".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
@@ -354,6 +354,8 @@ struct Repository {
 	snapshot: Option<BindingSnapshot>,
 	plugin_tools: Option<aidash_domain::agent_plugin::PluginTools>,
 	subnode_allowance: Option<aidash_domain::subnodes::Allowance>,
+	/// The Tasks the Home records as outputs of the Run's Remote Grant.
+	outputs: Vec<Uuid>,
 	/// What a remote Run's lists are; `None` is a Home of the receiver's own Tenant.
 	lists: Option<aidash_domain::federation::tool_lists::OwnedRemoteToolLists>,
 }
@@ -376,6 +378,7 @@ fn repository() -> Repository {
 		snapshot: None,
 		plugin_tools: None,
 		subnode_allowance: None,
+		outputs: vec![],
 		lists: None,
 	}
 }
@@ -420,6 +423,10 @@ impl AgentToolRepository for Repository {
 		self.record("lease");
 		self.check("lease")?;
 		Ok(Box::new(Scope(self)))
+	}
+	async fn grant_output(&self, task: Uuid) -> Result<bool> {
+		self.record(format!("grant_output:{task}"));
+		Ok(self.outputs.contains(&task))
 	}
 }
 #[async_trait]
@@ -510,7 +517,7 @@ impl AgentToolScope for Scope<'_> {
 		}
 		Ok(Task {
 			id: key,
-			workspace_id: id(3),
+			thread_id: id(3),
 			title: "saved".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
@@ -547,18 +554,18 @@ impl AgentToolScope for Scope<'_> {
 		Ok(resource(
 			"memory",
 			&run.agent_id,
-			json!({"workspace":run.workspace_id,"run":run.id}),
+			json!({"thread":run.thread_id,"run":run.id}),
 		))
 	}
 
 	async fn human_request(&mut self, run: &RunMetadata, id: Uuid) -> Result<Option<HumanRequest>> {
 		self.0
-			.record(format!("human:{}:{}:{id}", run.id, run.workspace_id));
+			.record(format!("human:{}:{}:{id}", run.id, run.thread_id));
 		self.0.check("human")?;
 		Ok((!self.0.missing_request).then(|| HumanRequest {
 			id,
 			run_id: run.id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			kind: "approval".into(),
 			prompt: "saved question".into(),
 			response: None,
@@ -573,7 +580,7 @@ impl AgentToolScope for Scope<'_> {
 		Ok(resource(
 			"human_request",
 			&request.id.to_string(),
-			json!({"run":request.run_id,"workspace":request.workspace_id,"prompt":request.prompt}),
+			json!({"run":request.run_id,"thread":request.thread_id,"prompt":request.prompt}),
 		))
 	}
 }
@@ -822,7 +829,7 @@ async fn a_read_only_registry_tool_refuses_an_explicit_policy_deny(
 
 #[rstest]
 #[tokio::test]
-async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
+async fn an_agent_plugin_requires_target_execution_and_thread_creation(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -838,13 +845,13 @@ async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
 			"lease".into(),
 			"catalog:configured:tool.invoke".into(),
 			"catalog:target:agent.execute".into(),
-			format!("require:{}:task.create", run.workspace_id),
+			format!("require:{}:task.create", run.thread_id),
 			"release".into()
 		]
 	);
 	let decisions = repository.decisions();
 	assert_eq!(decisions[0].0.attributes, json!({}));
-	assert_eq!(decisions[0].0.kind, "workspace");
+	assert_eq!(decisions[0].0.kind, "thread");
 }
 #[rstest]
 #[tokio::test]
@@ -936,28 +943,59 @@ async fn core_skill_operations_use_the_skill_flag_even_for_a_null_skill_id(
 	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
-#[case("task_delegate")]
-#[case("agent_discover")]
 #[tokio::test]
-async fn one_hop_rejection_precedes_remote_refresh_and_agent_flags(
+async fn a_remote_grant_run_discovers_through_its_home_without_a_hop_limit(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// Multi-hop delegation (#654, ADR 0109): discovery is a Home command, so this
+	// Node checks only that its policy lets the Run use the tool.
+	repository.remote = true;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("agent_discover", json!({})),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository
+			.decisions()
+			.into_iter()
+			.map(|(resource, action)| (resource.id, action))
+			.collect::<Vec<_>>(),
+		vec![("builtin:agent_discover".into(), "tool.invoke".into())]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	mut repository: Repository,
 	run: RunMetadata,
 	mut agent: AgentConfig,
-	#[case] name: &str,
 ) {
 	repository.remote = true;
-	repository.fault = Some("lease");
 	agent.allow_task_delegation = Some(false);
-	let result = authorize(&repository, &run, &agent, &call(name, json!({}))).await;
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await;
 	assert!(
-		matches!(result, Err(Error::Invalid(ref message)) if message.contains("one hop")),
+		matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag),
 		"{result:?}"
 	);
-	assert!(repository.calls().is_empty());
 }
 #[rstest]
-#[case::task("task_create", "workspace", "task.create")]
-#[case::message("workspace_message", "workspace", "message.create")]
+#[case::task("task_create", "thread", "task.create")]
+#[case::message("workspace_message", "thread", "message.create")]
 #[case::human("human_request", "run", "human.request")]
 #[case::generation("task_assign", "generation_policy", "generation.request")]
 #[case::memory("memory_mutate", "memory", "memory.write")]
@@ -984,7 +1022,7 @@ async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	assert_eq!(decisions[1].1, action);
 	assert_eq!(decisions[1].0.kind, kind);
 	let expected = match kind {
-		"workspace" => run.workspace_id.to_string(),
+		"thread" => run.thread_id.to_string(),
 		"run" => run.id.to_string(),
 		"generation_policy" => "saved-policy".into(),
 		"memory" => run.agent_id.clone(),
@@ -994,7 +1032,7 @@ async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	if kind == "memory" {
 		assert_eq!(
 			decisions[1].0.attributes,
-			json!({"workspace":run.workspace_id,"run":run.id})
+			json!({"thread":run.thread_id,"run":run.id})
 		);
 	} else {
 		assert_eq!(decisions[1].0.attributes, json!({}));
@@ -1249,8 +1287,161 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 	);
 }
 #[rstest]
+#[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]
+#[case::the_receivers_own_node("aidash://receiver/brave-otter-k3m9q2xa")]
 #[tokio::test]
-async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
+async fn a_remote_grant_run_hands_a_home_task_on_to_any_node_its_home_decides(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] node: &str,
+) {
+	// Multi-hop delegation (#654): the child lives at the Home, which checks the
+	// agent and the target Node by its own policy and prepares the next grant.
+	// This Node consents to its Run using the tool and to `task.delegate` on the
+	// Home's Task, and never checks its own catalog or `federation.execute`.
+	repository.remote = true;
+	repository.outputs = vec![id(9)];
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":node,"agent":reference()}),
+		),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository
+			.decisions()
+			.into_iter()
+			.map(|(resource, action)| (resource.id, action))
+			.collect::<Vec<_>>(),
+		vec![
+			("builtin:task_delegate".into(), "tool.invoke".into()),
+			(
+				format!("aidash://home/tasks/{}", id(9)),
+				"task.delegate".into()
+			),
+		]
+	);
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|name| name.starts_with("catalog:") || name.starts_with("task_read:"))
+	);
+	// The Home's record was asked before this Node's authority lease was taken
+	// (the earlier lease is the remote authority refresh, released before it).
+	let calls = repository.calls();
+	let asked = calls
+		.iter()
+		.position(|call| call == &format!("grant_output:{}", id(9)))
+		.unwrap();
+	assert!(asked < calls.iter().rposition(|call| call == "lease").unwrap());
+	assert_eq!(
+		calls[..asked]
+			.iter()
+			.filter(|call| *call == "lease")
+			.count(),
+		calls[..asked]
+			.iter()
+			.filter(|call| *call == "release")
+			.count()
+	);
+	// The handed-on Task is judged as itself, not with the admitted Task's attributes.
+	let decisions = repository.decisions();
+	assert_ne!(decisions[1].0.attributes, repository.context);
+	assert_eq!(
+		decisions[1].0.attributes,
+		json!({"source_thread_id":run.thread_id,"source_task_id":id(9),"source_parent_task_id":run.task_id})
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_run_hands_on_only_a_task_its_grant_created(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// Any other id is answered like a Task that does not exist, before any
+	// lease or decision here (#654).
+	repository.remote = true;
+	repository.outputs = vec![id(8)];
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message)) if message.contains("was not found")),
+		"{result:?}"
+	);
+	assert!(repository.decisions().is_empty());
+	// No lease follows the Home's answer.
+	let calls = repository.calls();
+	let asked = calls
+		.iter()
+		.position(|call| call == &format!("grant_output:{}", id(9)))
+		.unwrap();
+	assert!(!calls[asked..].contains(&"lease".to_owned()));
+}
+#[rstest]
+#[tokio::test]
+async fn only_task_delegate_names_another_task_and_its_own_task_keeps_its_context(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.remote = true;
+	// The Run's own Task asks the Home nothing and keeps the admitted context.
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":run.task_id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await
+	.unwrap();
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|call| call.starts_with("grant_output:"))
+	);
+	let decisions = repository.decisions();
+	assert_eq!(
+		decisions[1].0.id,
+		format!("aidash://home/tasks/{}", run.task_id)
+	);
+	assert_eq!(decisions[1].0.attributes, repository.context);
+	// No other tool asks the Home about a named Task.
+	let contract = aidash_domain::tool::builtin_contract("task_create").unwrap();
+	assert!(
+		delegated_output(
+			&repository,
+			&run,
+			&call("task_create", json!({"task_id":id(9)})),
+			&contract
+		)
+		.await
+		.unwrap()
+		.is_none()
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_run_names_a_home_task_only_by_its_id(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1262,28 +1453,17 @@ async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
 		&agent,
 		&call(
 			"task_delegate",
-			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+			json!({"task_id":"not-a-task","node_id":"aidash://third/node","agent":reference()}),
 		),
 	)
 	.await;
-	// The one-hop restriction is a Rejected Call before target admission.
-	assert!(
-		matches!(result, Err(Error::Invalid(ref message))
-			if message.contains("one hop")),
-		"{result:?}"
-	);
+	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
 	assert!(
 		!repository
-			.calls()
-			.contains(&"catalog:configured:agent.execute".into())
-	);
-	assert!(
-		!repository
-			.calls()
+			.decisions()
 			.iter()
-			.any(|name| name.starts_with("task_read:"))
+			.any(|(_, action)| action == "task.delegate")
 	);
-	assert!(repository.decisions().is_empty());
 }
 #[rstest]
 #[case::memory("memory_mutate")]
@@ -1662,8 +1842,8 @@ async fn cancellation_releases_the_lease_held_during_tool_authorization(
 #[rstest]
 #[case::matching_task("task", 2, true)]
 #[case::foreign_task("task", 9, false)]
-#[case::matching_workspace("workspace", 3, true)]
-#[case::foreign_workspace("workspace", 9, false)]
+#[case::matching_thread("thread", 3, true)]
+#[case::foreign_thread("thread", 9, false)]
 #[case::memory("memory", 1, true)]
 #[case::run("run", 1, true)]
 #[case::foreign_run("run", 9, false)]
@@ -1723,7 +1903,7 @@ async fn invalid_explicit_task_id_is_forbidden_before_reading_a_task(
 }
 #[rstest]
 #[tokio::test]
-async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
+async fn explicit_remote_thread_actions_refresh_and_keep_current_context(
 	mut repository: Repository,
 	run: RunMetadata,
 ) {
@@ -1731,26 +1911,26 @@ async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
 	action(
 		&repository,
 		&run,
-		"workspace.read",
-		"workspace",
-		&run.workspace_id.to_string(),
+		"thread.read",
+		"thread",
+		&run.thread_id.to_string(),
 	)
 	.await
 	.unwrap();
 	let decision = &repository.decisions()[0];
 	assert_eq!(
 		decision.0.id,
-		format!("aidash://home/workspaces/{}", run.workspace_id)
+		format!("aidash://home/threads/{}", run.thread_id)
 	);
 	assert_eq!(decision.0.attributes, repository.context);
-	assert_eq!(decision.1, "workspace.read");
+	assert_eq!(decision.1, "thread.read");
 	assert_eq!(
 		repository.calls()[..5],
 		vec!["lease", "active", "suspend", "replace", "release"]
 	);
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::task("task")]
 #[case::run("run")]
 #[tokio::test]
@@ -1787,7 +1967,7 @@ async fn remote_human_reads_are_denied_before_acquiring_or_refreshing_authority(
 }
 #[rstest]
 #[tokio::test]
-async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
+async fn a_saved_human_request_is_authorized_under_its_run_and_thread(
 	repository: Repository,
 	run: RunMetadata,
 ) {
@@ -1796,7 +1976,7 @@ async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
 		repository.calls(),
 		vec![
 			"lease".into(),
-			format!("human:{}:{}:{}", run.id, run.workspace_id, id(9)),
+			format!("human:{}:{}:{}", run.id, run.thread_id, id(9)),
 			"human_resource".into(),
 			format!("require:{}:human.read", id(9)),
 			"release".into()
@@ -1806,7 +1986,7 @@ async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
 	assert_eq!(decision.0.kind, "human_request");
 	assert_eq!(
 		decision.0.attributes,
-		json!({"run":run.id,"workspace":run.workspace_id,"prompt":"saved question"})
+		json!({"run":run.id,"thread":run.thread_id,"prompt":"saved question"})
 	);
 	assert_eq!(decision.1, "human.read");
 }
@@ -2306,7 +2486,7 @@ fn lists(
 #[case::pattern_still_covers(lists(&["*"], &["shell*"], &[]), "shell_poll", false)]
 #[case::block_pattern_wins(lists(&["*"], &["*"], &["live_*"]), "live_preview_start", true)]
 #[case::run_reach_needs_no_list(lists(&[], &[], &[]), "journal_read", false)]
-#[case::never_reach(lists(&["*"], &["*"], &[]), "schedule_list", true)]
+#[case::never_reach(lists(&["*"], &["*"], &[]), "duty_list", true)]
 #[case::unknown_tool_fails_closed(lists(&["*"], &["*"], &[]), "no_such_tool", true)]
 fn a_list_change_withdraws_the_work_that_depends_on_the_tool(
 	#[case] lists: aidash_domain::federation::tool_lists::OwnedRemoteToolLists,
@@ -2340,16 +2520,15 @@ async fn a_block_pattern_leaves_run_reach_tools_in_the_remote_tool_map(mut repos
 	// lists say (`RemoteToolLists::decide`), so the tool map must keep it as well.
 	repository.remote = true;
 	repository.lists = Some(lists(&["*"], &["*"], &["*"]));
-	let mut tools: BTreeMap<String, ToolContract> =
-		["journal_read", "workspace_read", "schedule_list"]
-			.into_iter()
-			.map(|name| {
-				(
-					name.to_owned(),
-					aidash_domain::tool::builtin_contract(name).unwrap(),
-				)
-			})
-			.collect();
+	let mut tools: BTreeMap<String, ToolContract> = ["journal_read", "thread_read", "duty_list"]
+		.into_iter()
+		.map(|name| {
+			(
+				name.to_owned(),
+				aidash_domain::tool::builtin_contract(name).unwrap(),
+			)
+		})
+		.collect();
 	super::filter_remote(&repository, &mut tools, Clone::clone)
 		.await
 		.unwrap();
@@ -2367,15 +2546,10 @@ async fn a_listed_tool_runs_in_a_remote_run(
 	agent: AgentConfig,
 ) {
 	repository.remote = true;
-	repository.lists = Some(lists(&["workspace_read"], &["workspace_*"], &[]));
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	repository.lists = Some(lists(&["thread_read"], &["thread_*"], &[]));
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 }
 
 #[rstest]
@@ -2387,49 +2561,33 @@ async fn a_subnode_member_answers_to_the_lists_of_its_remote_creating_run(
 ) {
 	// The member is a local Run, so the repository finds the creating Run's lists for it.
 	repository.subnode_allowance = Some(aidash_domain::subnodes::Allowance {
-		tools: ["workspace_read".to_owned(), "workspace_search".to_owned()].into(),
+		tools: ["thread_read".to_owned(), "thread_search".to_owned()].into(),
 		secrets: Default::default(),
 	});
 	repository.lists = Some(lists(
-		&["workspace_read", "workspace_search"],
-		&["workspace_read"],
+		&["thread_read", "thread_search"],
+		&["thread_read"],
 		&[],
 	));
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 	// The allowance names the tool but the receiver's list does not: refused, never a pause
 	// nobody could answer for the member.
 	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call("workspace_search", json!({})),
-		)
-		.await,
+		authorize(&repository, &run, &agent, &call("thread_search", json!({})),).await,
 		Err(Error::Refused(_))
 	));
 	// A Subnode member of a Run of the receiver's own Tenant has no lists.
 	repository.lists = None;
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 }
 
 #[rstest]
-#[case::blocked("workspace_read", lists(&["workspace_read"], &["workspace_read"], &["workspace_*"]))]
-#[case::never_reach("schedule_list", lists(&["*"], &["*"], &[]))]
+#[case::blocked("thread_read", lists(&["thread_read"], &["thread_read"], &["thread_*"]))]
+#[case::never_reach("duty_list", lists(&["*"], &["*"], &[]))]
 #[tokio::test]
 async fn a_blocked_or_never_tool_answers_with_the_shared_text(
 	mut repository: Repository,
@@ -2449,8 +2607,8 @@ async fn a_blocked_or_never_tool_answers_with_the_shared_text(
 }
 
 #[rstest]
-#[case::home_lacks(lists(&[], &["workspace_read"], &[]), true, false)]
-#[case::receiver_lacks(lists(&["workspace_read"], &[], &[]), false, true)]
+#[case::home_lacks(lists(&[], &["thread_read"], &[]), true, false)]
+#[case::receiver_lacks(lists(&["thread_read"], &[], &[]), false, true)]
 #[case::both_lack(lists(&[], &[], &[]), true, true)]
 #[tokio::test]
 async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
@@ -2463,13 +2621,7 @@ async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
 ) {
 	repository.remote = true;
 	repository.lists = Some(owned);
-	let result = authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await;
+	let result = authorize(&repository, &run, &agent, &call("thread_read", json!({}))).await;
 	let Err(Error::AuthorityRefused(refusal)) = result else {
 		panic!("expected an authority pause, got {result:?}");
 	};
@@ -2478,10 +2630,10 @@ async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
 		RefusalCheck::FederationTools { home, receiver }
 	);
 	// The pause is answered by the key the lists matched.
-	assert_eq!(refusal.action.as_deref(), Some("workspace_read"));
+	assert_eq!(refusal.action.as_deref(), Some("thread_read"));
 }
 
-/// The defaults hold `workspace_message` without files (decision 6): a message that sends files
+/// The defaults hold `thread_message` without files (decision 6): a message that sends files
 /// is decided, and asked about, on its own key, and is never more permitted than a plain one.
 #[rstest]
 #[tokio::test]
@@ -2490,15 +2642,15 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 	run: RunMetadata,
 	agent: AgentConfig,
 ) {
-	use aidash_domain::federation::tool_lists::{DEFAULT_TOOLS, WORKSPACE_MESSAGE_FILES};
+	use aidash_domain::federation::tool_lists::{DEFAULT_TOOLS, THREAD_MESSAGE_FILES};
 	repository.remote = true;
 	repository.lists = Some(lists(DEFAULT_TOOLS, DEFAULT_TOOLS, &[]));
-	let plain = call("workspace_message", json!({"content":"done"}));
+	let plain = call("thread_message", json!({"content":"done"}));
 	authorize(&repository, &run, &agent, &plain).await.unwrap();
-	let empty = call("workspace_message", json!({"content":"done","files":[]}));
+	let empty = call("thread_message", json!({"content":"done","files":[]}));
 	authorize(&repository, &run, &agent, &empty).await.unwrap();
 	let with_files = call(
-		"workspace_message",
+		"thread_message",
 		json!({"content":"done","files":["out/report.pdf"]}),
 	);
 	let result = authorize(&repository, &run, &agent, &with_files).await;
@@ -2512,9 +2664,9 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 			receiver: true
 		}
 	);
-	assert_eq!(refusal.action.as_deref(), Some(WORKSPACE_MESSAGE_FILES));
-	// `workspace_message*` names both forms.
-	repository.lists = Some(lists(&["workspace_message*"], &["workspace_message*"], &[]));
+	assert_eq!(refusal.action.as_deref(), Some(THREAD_MESSAGE_FILES));
+	// `thread_message*` names both forms.
+	repository.lists = Some(lists(&["thread_message*"], &["thread_message*"], &[]));
 	authorize(&repository, &run, &agent, &with_files)
 		.await
 		.unwrap();
@@ -2524,9 +2676,9 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 	};
 	// A Block of the files form stops only messages with files.
 	repository.lists = Some(lists(
-		&["workspace_message*"],
-		&["workspace_message*"],
-		&[WORKSPACE_MESSAGE_FILES],
+		&["thread_message*"],
+		&["thread_message*"],
+		&[THREAD_MESSAGE_FILES],
 	));
 	authorize(&repository, &run, &agent, &plain).await.unwrap();
 	assert!(unavailable(
@@ -2534,25 +2686,21 @@ async fn a_message_with_files_is_decided_on_its_own_key(
 	));
 	// A Block of the plain message stops both: files never make a message more permitted.
 	repository.lists = Some(lists(
-		&["workspace_message*"],
-		&["workspace_message*"],
-		&["workspace_message"],
+		&["thread_message*"],
+		&["thread_message*"],
+		&["thread_message"],
 	));
 	assert!(unavailable(
 		authorize(&repository, &run, &agent, &with_files).await
 	));
 	// Lacking the plain message, the pause asks about it first.
-	repository.lists = Some(lists(
-		&[WORKSPACE_MESSAGE_FILES],
-		&[WORKSPACE_MESSAGE_FILES],
-		&[],
-	));
+	repository.lists = Some(lists(&[THREAD_MESSAGE_FILES], &[THREAD_MESSAGE_FILES], &[]));
 	let Err(Error::AuthorityRefused(refusal)) =
 		authorize(&repository, &run, &agent, &with_files).await
 	else {
 		panic!("expected an authority pause");
 	};
-	assert_eq!(refusal.action.as_deref(), Some("workspace_message"));
+	assert_eq!(refusal.action.as_deref(), Some("thread_message"));
 }
 
 #[rstest]
@@ -2563,7 +2711,7 @@ async fn a_run_only_answer_of_each_side_lets_the_call_through(
 	agent: AgentConfig,
 ) {
 	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
-	let only = ToolList::new([ToolPattern::new("workspace_read").unwrap()]).unwrap();
+	let only = ToolList::new([ToolPattern::new("thread_read").unwrap()]).unwrap();
 	repository.remote = true;
 	repository.lists = Some(
 		aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
@@ -2572,14 +2720,9 @@ async fn a_run_only_answer_of_each_side_lets_the_call_through(
 			..Default::default()
 		},
 	);
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
 }
 
 #[rstest]
@@ -2590,15 +2733,10 @@ async fn without_lists_only_reach_never_is_refused(
 	agent: AgentConfig,
 ) {
 	repository.remote = true;
-	authorize(
-		&repository,
-		&run,
-		&agent,
-		&call("workspace_read", json!({})),
-	)
-	.await
-	.unwrap();
-	let result = authorize(&repository, &run, &agent, &call("schedule_list", json!({}))).await;
+	authorize(&repository, &run, &agent, &call("thread_read", json!({})))
+		.await
+		.unwrap();
+	let result = authorize(&repository, &run, &agent, &call("duty_list", json!({}))).await;
 	assert!(
 		matches!(result, Err(Error::Invalid(ref message))
 			if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL),

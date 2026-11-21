@@ -15,7 +15,7 @@ fn receipt(matches: usize) -> Receipt {
 		operation_digest: "digest".into(),
 		home_node: "aidash://home".into(),
 		tenant: "tenant".into(),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		grant_id: Uuid::from_u128(3),
 		admission_id: Uuid::from_u128(4),
 		executor: "aidash://receiver/agent@1".into(),
@@ -25,7 +25,7 @@ fn receipt(matches: usize) -> Receipt {
 		candidate_digest: "candidates".into(),
 		sources: vec![],
 		result: SearchResult {
-			workspace_id: Uuid::from_u128(2),
+			thread_id: Uuid::from_u128(2),
 			index_revision: 7,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -137,7 +137,7 @@ fn mixed_receipt_preserves_ordinary_provenance_before_trimming_native_units(
 	let bank = crate::memory::Bank {
 		home: value.home_node.clone(),
 		tenant: value.tenant.clone(),
-		workspace: value.workspace_id,
+		thread: value.thread_id,
 		participant: Some(Uuid::from_u128(100)),
 	};
 	let provider = Provider {

@@ -1,5 +1,5 @@
 //! A Run's call that passed the tool's entrance just before its Subnode ended,
-//! on a fixture that has no Subnode: the Run's own Workspace is made a Subnode,
+//! on a fixture that has no Subnode: the Run's own Thread is made a Subnode,
 //! the call is recorded as the model's choice, and the end is committed while
 //! the call waits at the Subnode check of the write (#759).
 //!
@@ -10,30 +10,32 @@ use aidash_server::{domain::Run, federation::Federation, harness::Harness};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// Make `run`'s own Workspace an active Subnode whose only member is the Run's
+/// Make `run`'s own Thread an active Subnode whose only member is the Run's
 /// Agent, with `allowance` as the tools its members may use. The Run is also the
-/// creator, which the schema allows and nothing here reads.
+/// creator, which the schema allows and nothing here reads. Like
+/// `create_subnode`, it records the Node's address, not its bare name.
 #[allow(dead_code)]
 pub async fn seed_subnode(f: &Federation, run: Uuid, allowance: &[String]) -> Uuid {
 	let subnode = Uuid::new_v4();
 	sqlx::query(
 		"INSERT INTO subnodes (id, tenant, node, creator_run_id, creator_task_id, \
 		  creator_agent_id, creator_agent_version, leader_agent_id, leader_agent_version, \
-		  allowance, workspace_id, title, state, created_at, creation_key, creation_fingerprint) \
-		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
-		  $2, workspace_id, 'Late writes', 'active', now(), 'late', 'late' \
-		 FROM runs WHERE id = $3",
+		  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
+		 SELECT $1, tenant, $4 || '/' || node, id, task_id, agent_id, agent_version, agent_id, \
+		  agent_version, $2, thread_id, 'Late writes', 'active', now(), 'late', 'late' \
+		 FROM task_executions WHERE id = $3",
 	)
 	.bind(subnode)
 	.bind(json!({"tools":allowance,"secrets":[]}))
 	.bind(run)
+	.bind(f.config.deployment.to_string())
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	sqlx::query(
 		"INSERT INTO subnode_members (subnode_id, agent_id, tenant, agent_version, \
 		  added_by_run_id, added_at) \
-		 SELECT $1, agent_id, tenant, agent_version, id, now() FROM runs WHERE id = $2",
+		 SELECT $1, agent_id, tenant, agent_version, id, now() FROM task_executions WHERE id = $2",
 	)
 	.bind(subnode)
 	.bind(run)
@@ -63,7 +65,7 @@ pub async fn stage(f: &Federation, run: Uuid, name: &str, arguments: Value, call
 		"data": json!(aidash_server::domain::RunState::ToolCall(Box::new(state)))["data"],
 		"recovery": {"retry": null},
 	});
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(run)
 		.execute(f.store.pool.fixture_driver())
@@ -139,7 +141,7 @@ impl EndFirst {
 	/// Cancel the Run in the same transaction, as the end does, and commit.
 	#[allow(dead_code)]
 	pub async fn commit(mut self) {
-		sqlx::query("UPDATE runs SET control = 'CANCELLED' WHERE id = $1")
+		sqlx::query("UPDATE task_executions SET control = 'CANCELLED' WHERE id = $1")
 			.bind(self.run)
 			.execute(&mut *self.tx)
 			.await

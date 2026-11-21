@@ -588,12 +588,11 @@ async fn cross_tenant_listing_preserves_discovery_order_but_never_acquires_autho
 }
 #[rstest]
 #[case("max_agents", 0)]
-#[case("max_agents", 513)]
 #[case("max_concurrent", 6)]
-#[case("max_depth", 32)]
+#[case("max_depth", 0)]
 #[case("token_budget", 1000000000001_i64)]
 #[case("tokens_per_agent", 1000001)]
-#[case("lifetime_seconds", 2592001)]
+#[case("lifetime_seconds", 0)]
 fn bounded_generation_limits_reject_each_excess(
 	mut spec: Spec,
 	validation: DefinitionValidation,
@@ -606,6 +605,33 @@ fn bounded_generation_limits_reject_each_excess(
 	assert!(
 		matches!(validate(&validation,&spec,&serde_json::from_value(bundle()).unwrap()),Err(Error::Invalid(message)) if message=="invalid generation limits")
 	);
+}
+/// Token limits are optional like the other limits (#1012 decision 41): a
+/// policy without them has none, and Budgets limit its spend. A token budget
+/// still needs the per-agent limit it is reserved by.
+#[rstest]
+#[case::neither(None, None, true)]
+#[case::per_agent_only(None, Some(5_000_000), true)]
+#[case::both(Some(10_000_000), Some(5_000_000), true)]
+#[case::budget_without_per_agent(Some(10_000_000), None, false)]
+fn token_limits_are_optional(
+	mut spec: Spec,
+	validation: DefinitionValidation,
+	#[case] budget: Option<i64>,
+	#[case] per_agent: Option<i64>,
+	#[case] valid: bool,
+) {
+	// Arrange
+	spec.limits.token_budget = budget;
+	spec.limits.tokens_per_agent = per_agent;
+	// Act
+	let result = validate(
+		&validation,
+		&spec,
+		&serde_json::from_value(bundle()).unwrap(),
+	);
+	// Assert
+	assert_eq!(result.is_ok(), valid, "{result:?}");
 }
 #[rstest]
 #[case("role", "generated role does not exist")]
@@ -668,7 +694,7 @@ async fn approved_component_kind_and_model_reservation_are_checked_before_cas(
 			.get_mut(&("model".into(), "1.0.0".into()))
 			.unwrap()["kind"] = json!("tool");
 	} else {
-		spec.limits.tokens_per_agent = 5119;
+		spec.limits.tokens_per_agent = Some(5119);
 	}
 	assert!(
 		matches!(set(&repo,"tenant","policy",0,&spec,&validation).await,Err(Error::Invalid(actual)) if actual==message)
@@ -741,6 +767,45 @@ async fn a_deployment_administrator_lists_and_sets_no_generation_policy(
 		Err(Error::Forbidden)
 	));
 	assert!(!repo.calls().iter().any(|call| call.starts_with("begin:")));
+}
+
+/// Count, depth and lifetime have no upper bound (#1012, ADR 0143), and a
+/// policy may leave each of them out.
+#[rstest]
+#[case("max_agents", Some(100_000))]
+#[case("max_depth", Some(1_000))]
+#[case("lifetime_seconds", Some(31_536_000))]
+#[case("max_agents", None)]
+#[case("max_concurrent", None)]
+#[case("max_depth", None)]
+#[case("lifetime_seconds", None)]
+fn generation_limits_have_no_upper_bound(
+	spec: Spec,
+	validation: DefinitionValidation,
+	#[case] field: &str,
+	#[case] value: Option<i64>,
+) {
+	let mut value_spec = json!(spec);
+	match value {
+		Some(value) => value_spec["limits"][field] = json!(value),
+		None => {
+			value_spec["limits"].as_object_mut().unwrap().remove(field);
+		}
+	}
+	if field == "max_agents" && value.is_none() {
+		// A concurrency cap without a total cap stays valid.
+		value_spec["limits"]["max_concurrent"] = json!(2);
+	}
+	let spec: Spec = serde_json::from_value(value_spec).unwrap();
+	assert!(
+		validate(
+			&validation,
+			&spec,
+			&serde_json::from_value(bundle()).unwrap()
+		)
+		.is_ok(),
+		"{field}: {value:?}"
+	);
 }
 
 #[rstest]

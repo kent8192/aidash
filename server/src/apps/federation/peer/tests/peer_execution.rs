@@ -273,7 +273,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let definitions = result["definitions"].as_array().unwrap();
 	assert_eq!(
 		definitions.len(),
-		// Agent, model and HTTP Tool, plus the required workspace Source and
+		// Agent, model and HTTP Tool, plus the required thread Source and
 		// the default Built-in Memory provider (#852).
 		5 + aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
 			+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len()

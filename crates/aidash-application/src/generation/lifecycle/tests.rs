@@ -233,13 +233,15 @@ impl GenerationLifecycleScope for Scope {
 	}
 	async fn release_policy(
 		&mut self,
-		_job: &Request,
+		job: &Request,
 		unused: i64,
 		unused_calls: &aidash_domain::generation::policy::Allowances,
 	) -> Result<()> {
 		self.point("release").await?;
-		assert_eq!((unused, unused_calls.embedding_calls), (70, 13));
-		self.effects.push("quota.release".into());
+		// A request without a token limit gives no tokens back (#1012).
+		let expected = job.policy_refund(70);
+		assert_eq!((unused, unused_calls.embedding_calls), (expected, 13));
+		self.effects.push(format!("quota.release:{unused}"));
 		Ok(())
 	}
 	async fn mark_quota_released(&mut self, _job: &Request) -> Result<()> {
@@ -306,10 +308,10 @@ impl GenerationLifecycleScope for Scope {
 			.push(format!("history:{status}:{actor}:{reason}"));
 		Ok(())
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.point("event").await?;
 		assert_eq!(kind, "generation.changed");
-		assert_eq!(workspace, self.state.lock().unwrap().job.workspace_id);
+		assert_eq!(thread, self.state.lock().unwrap().job.thread_id);
 		assert_eq!(data["id"], json!(Uuid::from_u128(1)));
 		self.effects.push("event".into());
 		Ok(())
@@ -612,7 +614,7 @@ async fn cancellation_discards_all_staged_lifecycle_effects(#[case] pause: &'sta
 }
 #[rstest]
 #[tokio::test]
-async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_workspace_event() {
+async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_thread_event() {
 	let repo = Repository::new(true);
 	{
 		let mut state = repo.state.lock().unwrap();
@@ -628,6 +630,37 @@ async fn foreign_retirement_keeps_the_exact_catalog_proof_without_a_local_worksp
 	assert!(!state.effects.contains(&"event".into()));
 	let subject = job.executor_subject("aidash://local");
 	assert!(!state.authority.bundle.subjects[&subject].enabled);
+}
+/// A request without a token limit reserved nothing of its policy, so ending
+/// it gives no tokens back, while a bounded one returns what it did not use
+/// (#1012 decision 41).
+#[rstest]
+#[case::bounded(200_000, 70)]
+#[case::unbounded(aidash_domain::generation::policy::UNBOUNDED_TOKENS, 0)]
+#[tokio::test]
+async fn ending_a_request_returns_only_tokens_it_reserved(
+	#[case] token_limit: i64,
+	#[case] returned: i64,
+) {
+	// Arrange
+	let repo = Repository::new(true);
+	{
+		let mut state = repo.state.lock().unwrap();
+		state.job.status = "ACTIVE".into();
+		state.job.token_limit = token_limit;
+	}
+	// Act
+	control(&repo, "tenant", Uuid::from_u128(1), &stop())
+		.await
+		.unwrap();
+	// Assert
+	assert!(
+		repo.state
+			.lock()
+			.unwrap()
+			.effects
+			.contains(&format!("quota.release:{returned}"))
+	);
 }
 #[rstest]
 #[tokio::test]

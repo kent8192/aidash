@@ -65,7 +65,7 @@ const names: Record<string, [string, string]> = {
   bank: ["Memory bank", "記憶の所有者"],
   home: ["Home", "Home"],
   tenant: ["Tenant", "テナント"],
-  workspace: ["Workspace", "Workspace"],
+  thread: ["Thread", "Thread"],
   participant: ["Logical Agent", "論理 Agent"],
   learned_at: ["Learned", "記憶した日時"],
   updated_at: ["Updated", "更新日時"],

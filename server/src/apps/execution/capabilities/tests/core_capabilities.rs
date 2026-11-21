@@ -489,7 +489,7 @@ http_client,
 async fn shell_never_falls_back_to_the_host(#[future] capability_fixture: CoreFixture) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, result) = request(&c.app, &c.token, "POST", &format!("/api/runs/{}/shell", run.id), json!({
+	let (status, result) = request(&c.app, &c.token, "POST", &format!("/api/executions/{}/shell", run.id), json!({
 		"idempotency_key":Uuid::new_v4(),"command":"printf unsafe > MUST_NOT_EXIST", "expected_revision":1
 	})).await;
 	assert!(matches!(status, 400 | 403 | 409), "{result}");
@@ -539,7 +539,7 @@ async fn operation_until(
 			&c.app,
 			&c.token,
 			"POST",
-			&format!("/api/runs/{run}/{kind}/poll"),
+			&format!("/api/executions/{run}/{kind}/poll"),
 			json!({"operation_id":operation}),
 		)
 		.await;
@@ -575,7 +575,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 		c.f.store.clone(),
 		receiver.clone(),
 	));
-	let path = format!("/api/runs/{}/shell", run.id);
+	let path = format!("/api/executions/{}/shell", run.id);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"command":"printf '一度だけ\\n' >> count.txt; sleep 5; printf 'finished\\n'", "expected_revision":1});
 	let (status, first) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{first}");
@@ -584,7 +584,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"x","mode":"literal","scope":"working"}),
 	)
 	.await;
@@ -613,7 +613,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -627,7 +627,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -640,7 +640,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/shell/cancel", run.id),
+		&format!("/api/executions/{}/shell/cancel", run.id),
 		json!({"operation_id":long["operation_id"]}),
 	)
 	.await;
@@ -666,7 +666,7 @@ async fn isolated_python_preserves_heap_and_requires_reset_acknowledgement(
 		c.f.store.clone(),
 		receiver,
 	));
-	let path = format!("/api/runs/{}/python", run.id);
+	let path = format!("/api/executions/{}/python", run.id);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"code":"counter = 41\nfrom pathlib import Path\nPath('value.txt').write_text('東京')\nprint(counter)","expected_revision":1});
 	let (status, first) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{first}");
@@ -682,7 +682,7 @@ async fn isolated_python_preserves_heap_and_requires_reset_acknowledgement(
 	let second = operation_until(&c, run.id, "python", &next["operation_id"], &["completed"]).await;
 	assert_eq!(second["session_id"], done["session_id"]);
 	assert!(second["output"].as_str().unwrap().contains("42"));
-	let (status,patched)=request(&c.app,&c.token,"POST",&format!("/api/runs/{}/patch",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":second["revision"],"patch":"*** Begin Patch\n*** Add File: changed.txt\n+changed outside Python\n*** End Patch","preconditions":{"changed.txt":null}})).await;
+	let (status,patched)=request(&c.app,&c.token,"POST",&format!("/api/executions/{}/patch",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":second["revision"],"patch":"*** Begin Patch\n*** Add File: changed.txt\n+changed outside Python\n*** End Patch","preconditions":{"changed.txt":null}})).await;
 	assert_eq!(status, 200, "{patched}");
 	let mut input = json!({"idempotency_key":Uuid::new_v4(),"code":"print(counter)","expected_revision":patched["revision"],"expected_session_id":second["session_id"]});
 	let (status, reset) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
@@ -713,12 +713,12 @@ async fn admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	assert_eq!(status, 200, "{response}");
 	c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0)
 }
-async fn source(c: &CoreFixture, workspace: Uuid, text: &str) -> Uuid {
+async fn source(c: &CoreFixture, thread: Uuid, text: &str) -> Uuid {
 	let (status, response) = request(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":text,"idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
@@ -732,9 +732,9 @@ async fn files_preserve_unicode_revision_and_source_authority(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let message = source(&c, run.workspace_id, &"東京の資料\n".repeat(61)).await;
+	let message = source(&c, run.thread_id, &"東京の資料\n".repeat(61)).await;
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"notes/日本語.txt","source":{"kind":"message","message_id":message}});
-	let path = format!("/api/runs/{}/files/materialize", run.id);
+	let path = format!("/api/executions/{}/files/materialize", run.id);
 	let (status, created) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{created}");
 	assert_eq!(
@@ -747,7 +747,7 @@ async fn files_preserve_unicode_revision_and_source_authority(
 		request(&c.app, &c.token, "POST", &path, changed).await.0,
 		409
 	);
-	let read_path = format!("/api/runs/{}/files/read", run.id);
+	let read_path = format!("/api/executions/{}/files/read", run.id);
 	let file = created["file"]["file_id"].clone();
 	let (status, page) = request(
 		&c.app,
@@ -772,7 +772,7 @@ async fn files_preserve_unicode_revision_and_source_authority(
 		.0,
 		400
 	);
-	let search_path = format!("/api/runs/{}/files/search", run.id);
+	let search_path = format!("/api/executions/{}/files/search", run.id);
 	let query = json!({"query":"東京","mode":"literal","scope":"working"});
 	let (status, first) = request(&c.app, &c.token, "POST", &search_path, query.clone()).await;
 	assert_eq!(status, 200, "{first}");
@@ -850,7 +850,7 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -930,7 +930,7 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{queued}/control"),
+		&format!("/api/executions/{queued}/control"),
 		json!({"action":"cancel"}),
 	)
 	.await;
@@ -955,7 +955,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let path = format!("/api/runs/{}/patch", run.id);
+	let path = format!("/api/executions/{}/patch", run.id);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,
         "preconditions":{"a.txt":null,"b.txt":null},
         "patch":"*** Begin Patch\n*** Add File: a.txt\n+東京\n*** Add File: b.txt\n+remove me\n*** End Patch"});
@@ -970,7 +970,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -990,7 +990,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1003,7 +1003,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1012,7 +1012,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":area["manifest"][0]["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -1029,7 +1029,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 	c.close().await;
 }
 fn path_for_patch(id: Uuid) -> String {
-	format!("/api/runs/{id}/patch")
+	format!("/api/executions/{id}/patch")
 }
 
 #[rstest::rstest]
@@ -1039,7 +1039,7 @@ async fn direct_skills_are_pinned_and_loaded_progressively(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let base = format!("/api/runs/{}/skills", run.id);
+	let base = format!("/api/executions/{}/skills", run.id);
 	let (status, list) =
 		request(&c.app, &c.token, "POST", &format!("{base}/list"), json!({})).await;
 	assert_eq!(status, 200, "{list}");
@@ -1092,7 +1092,7 @@ async fn direct_skills_are_pinned_and_loaded_progressively(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1111,7 +1111,7 @@ async fn approval_fixture(
 async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server::domain::Run) {
 	let run = admit(&c).await;
 	c.policy["policies"][0]["resources"]["kinds"] = json!([
-		"workspace",
+		"thread",
 		"task",
 		"run",
 		"tool",
@@ -1140,7 +1140,7 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 	#[future] approval_fixture: (CoreFixture, aidash_server::domain::Run),
 ) {
 	let (c, run) = Box::pin(approval_fixture).await;
-	let path = format!("/api/runs/{}/outbound", run.id);
+	let path = format!("/api/executions/{}/outbound", run.id);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/a"});
 	let (status, pending) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{pending}");
@@ -1229,7 +1229,7 @@ async fn withdrawing_the_agents_approval_stops_an_approved_request_before_it_is_
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/a"}),
 	)
 	.await;
@@ -1312,7 +1312,7 @@ async fn reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse(
 	#[future] approval_fixture: (CoreFixture, aidash_server::domain::Run),
 ) {
 	let (c, run) = Box::pin(approval_fixture).await;
-	let path = format!("/api/runs/{}/outbound", run.id);
+	let path = format!("/api/executions/{}/outbound", run.id);
 	let (_, pending) = request(
 		&c.app,
 		&c.token,
@@ -1410,7 +1410,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", sender.workspace_id),
+		&format!("/api/threads/{}/tasks", sender.thread_id),
 		json!({"title":"Recipient","description":"Read a selected file"}),
 	)
 	.await;
@@ -1432,14 +1432,14 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 			.into_iter()
 			.find(|r| r.agent_id == "reader")
 			.unwrap();
-	let patch_path = format!("/api/runs/{}/patch", sender.id);
+	let patch_path = format!("/api/executions/{}/patch", sender.id);
 	let (status,value)=request(&c.app,&c.token,"POST",&patch_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.csv":null},"patch":"*** Begin Patch\n*** Add File: data.csv\n+value\n+first\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
 	let (_, mut area) = request(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", sender.id),
+		&format!("/api/executions/{}/working-area", sender.id),
 		Value::Null,
 	)
 	.await;
@@ -1454,8 +1454,8 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	)
 	.await;
 	let source = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
-	let share_path = format!("/api/runs/{}/files/share", sender.id);
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["thread_id"]}});
+	let share_path = format!("/api/executions/{}/files/share", sender.id);
 	let (status, receipt) = request(&c.app, &c.token, "POST", &share_path, input.clone()).await;
 	assert_eq!(status, 200, "{receipt}");
 	assert_eq!(receipt["status"], "completed");
@@ -1469,7 +1469,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	assert_eq!(file["media_type"], "image/svg+xml");
 	let (status,value)=request(&c.app,&c.token,"POST",&patch_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.csv":source["digest"]},"patch":"*** Begin Patch\n*** Update File: data.csv\n@@\n-first\n+second\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
-	let read_path = format!("/api/runs/{}/files/read", receiver.id);
+	let read_path = format!("/api/executions/{}/files/read", receiver.id);
 	let (status, read) = request(
 		&c.app,
 		&c.token,
@@ -1480,7 +1480,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "value\nfirst\n");
-	let (status,copy)=request(&c.app,&c.token,"POST",&format!("/api/runs/{}/files/materialize",receiver.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"path":"copy.csv","source":{"kind":"file","file_id":file["file_id"],"expected_digest":file["digest"]}})).await;
+	let (status,copy)=request(&c.app,&c.token,"POST",&format!("/api/executions/{}/files/materialize",receiver.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"path":"copy.csv","source":{"kind":"file","file_id":file["file_id"],"expected_digest":file["digest"]}})).await;
 	assert_eq!(status, 200, "{copy}");
 	assert_ne!(copy["file"]["file_id"], file["file_id"]);
 	let mut conflict = input;
@@ -1632,7 +1632,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1640,7 +1640,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/files/search", run.id),
+		&format!("/api/executions/{}/files/search", run.id),
 		json!({"query":"東京","mode":"literal","scope":"references"}),
 	)
 	.await;
@@ -1650,7 +1650,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/files/read", run.id),
+		&format!("/api/executions/{}/files/read", run.id),
 		json!({"file_id":ready["extraction"]["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -1661,10 +1661,10 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 			.unwrap()
 			.contains("Sheet Sales!A1")
 	);
-	let (status,copy)=request(&c.app,&c.token,"POST",&format!("/api/runs/{}/files/materialize",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.xlsx","source":{"kind":"file","file_id":ready["original"]["file_id"],"expected_digest":digest}})).await;
+	let (status,copy)=request(&c.app,&c.token,"POST",&format!("/api/executions/{}/files/materialize",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.xlsx","source":{"kind":"file","file_id":ready["original"]["file_id"],"expected_digest":digest}})).await;
 	assert_eq!(status, 200, "{copy}");
 	assert_ne!(copy["file"]["file_id"], ready["original"]["file_id"]);
-	let python_path = format!("/api/runs/{}/python", run.id);
+	let python_path = format!("/api/executions/{}/python", run.id);
 	let (status,op)=request(&c.app,&c.token,"POST",&python_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":copy["revision"],"code":"import openpyxl\nw=openpyxl.load_workbook('copy.xlsx')\nw['Sales']['B1']=99\nw.save('copy.xlsx')\nprint(w['Sales']['B1'].value)"})).await;
 	assert_eq!(status, 200, "{op}");
 	let done = operation_until(&c, run.id, "python", &op["operation_id"], &["completed"]).await;
@@ -1725,7 +1725,7 @@ async fn cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1773,13 +1773,13 @@ async fn cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 			Value::Null
 		)
 		.await
 		.0 >= 400
 	);
-	let (status,restored)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/restore"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":cleaned["revision"],"snapshot_id":cleanup["operation_id"],"thread_id":area["thread_id"]})).await;
+	let (status,restored)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/restore"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":cleaned["revision"],"snapshot_id":cleanup["operation_id"]})).await;
 	assert_eq!(status, 200, "{restored}");
 	assert_eq!(restored["manifest"][0]["digest"], digest);
 	assert_ne!(
@@ -1866,8 +1866,14 @@ mod transfer_tests;
 #[path = "core_capabilities/lifecycle.rs"]
 mod lifecycle_tests;
 
-#[path = "core_capabilities/schedules.rs"]
-mod schedule_tests;
+#[path = "core_capabilities/area_queue.rs"]
+mod area_queue_tests;
+
+#[path = "core_capabilities/duties.rs"]
+mod duty_tests;
+
+#[path = "core_capabilities/agent_nodes.rs"]
+mod agent_node_tests;
 
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/runtime_faults.rs"]

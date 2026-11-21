@@ -156,7 +156,7 @@ pub async fn initialize_as(
 		})
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
-		.with_schedules(settings.schedules.ceilings()?, settings.schedules.poll()?)
+		.with_duties(settings.duties.poll()?)
 		.with_preview_limits(settings.preview_limits.limits()?)
 		.with_preview(
 			config
@@ -535,18 +535,18 @@ impl RuntimeTasks {
 				)),
 			);
 		}
-		// Every replica runs the scheduler; SKIP LOCKED and the tick key keep a
-		// scheduled time to one Task (#557).
+		// Every replica runs the Duty time triggers; SKIP LOCKED and the tick
+		// key keep a scheduled time to one Task (#557, #1011).
 		let scheduler = federation.clone();
 		tasks.spawn_service(
-			"schedules",
+			"duties",
 			runtime_task(watched_loop::run(
-				"schedules",
-				federation.store.schedule_poll,
+				"duties",
+				federation.store.duty_poll,
 				move |_| {
 					let scheduler = scheduler.clone();
 					async move {
-						match crate::apps::workspaces::services::schedules::pass(
+						match crate::apps::workspaces::services::duties::pass(
 							&scheduler,
 							chrono::Utc::now(),
 						)
@@ -563,6 +563,12 @@ impl RuntimeTasks {
 							}
 							Ok(_) => {}
 							Err(error) => tracing::warn!(%error, "schedules pass failed"),
+						}
+						// Soft Limit mail of Budgets rides the same loop (#1012).
+						if let Err(error) =
+							crate::apps::identity::services::budgets::notice_pass(&scheduler).await
+						{
+							tracing::warn!(%error, "budget notice pass failed");
 						}
 					}
 				},
@@ -1521,12 +1527,12 @@ pub(crate) fn semantic_entries_scope<'a, 'scope>(
 pub(crate) fn semantic_configuration_repository(
 	store: &Store,
 	actor: &crate::authorization::identity::Actor,
-	workspace: uuid::Uuid,
+	thread: uuid::Uuid,
 ) -> crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 	crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 		store: store.clone(),
 		actor: actor.clone(),
-		workspace,
+		thread,
 	}
 }
 
@@ -1635,13 +1641,13 @@ pub(crate) fn registry_verification_scope<'a>(
 }
 
 pub(crate) fn stream_authority_store(
-	workspaces: &crate::apps::identity::services::workspace::Workspaces,
+	threads: &crate::apps::identity::services::thread::Threads,
 ) -> crate::apps::identity::repositories::visibility::stream::Authority<'_> {
-	crate::apps::identity::repositories::visibility::stream::Authority { workspaces }
+	crate::apps::identity::repositories::visibility::stream::Authority { threads }
 }
 
-/// Workspace policies and atomic writes share the caller's existing authority transaction.
-pub(crate) fn workspace_mutations<'a>(
+/// Thread policies and atomic writes share the caller's existing authority transaction.
+pub(crate) fn thread_mutations<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	store: &'a Store,
 ) -> crate::apps::workspaces::repositories::mutations::NativeMutations<'a> {
@@ -2336,6 +2342,7 @@ pub(crate) fn home_execution_repository(
 		runtime: runtime.clone(),
 		actor: Some(actor),
 		worker: None,
+		chain: None,
 	}
 }
 /// A peer-authenticated request has no local actor; its authority is the grant it names.
@@ -2346,6 +2353,7 @@ pub(crate) fn peer_home_execution_repository(
 		runtime: runtime.clone(),
 		actor: None,
 		worker: None,
+		chain: None,
 	}
 }
 

@@ -63,7 +63,7 @@ pub async fn inspect(
 				},
 				attributes: json!({"version":reference.version,"capabilities":dependency.capabilities,"tags":dependency.tags,"languages":dependency.languages,"config":dependency.config}),
 			},
-			environment: json!({"workspace_id":input.workspace_id,"node_id":repository.node_id(),"transport":"worker"}),
+			environment: json!({"thread_id":input.thread_id,"node_id":repository.node_id(),"transport":"worker"}),
 		};
 		let decision = scope.evaluate(&input.tenant, &evaluation).await?;
 		let registry_read_allowed = if action == "agent.execute" {
@@ -86,18 +86,18 @@ pub async fn inspect(
 				&& registry_read_allowed.unwrap_or(true),
 		});
 	}
-	let workspace_read = if let Some(workspace_id) = input.workspace_id {
-		if let Some(owner) = scope.workspace_owner(workspace_id, &input.tenant).await? {
+	let workspace_read = if let Some(thread_id) = input.thread_id {
+		if let Some(owner) = scope.thread_owner(thread_id, &input.tenant).await? {
 			let decision = scope.evaluate(&input.tenant, &Evaluation {
                 subject: input.subject.clone(),
-                action: "workspace.read".into(),
+                action: "thread.read".into(),
                 resource: Resource {
                     tenant: input.tenant.clone(),
-                    kind: "workspace".into(),
-                    id: workspace_id.to_string(),
-                    attributes: json!({"owner":owner,"workspace_id":workspace_id}),
+                    kind: "thread".into(),
+                    id: thread_id.to_string(),
+                    attributes: crate::authorization::threads::attributes(thread_id, &owner),
                 },
-                environment: json!({"workspace_id":workspace_id,"node_id":repository.node_id(),"transport":"worker"}),
+                environment: json!({"thread_id":thread_id,"node_id":repository.node_id(),"transport":"worker"}),
             }).await?;
 			policy_revision = decision.revision;
 			Some(decision.allowed)
@@ -111,7 +111,7 @@ pub async fn inspect(
 	Ok(PermissionContext {
         tenant: input.tenant,
         subject: input.subject,
-        workspace_id: input.workspace_id,
+        thread_id: input.thread_id,
         policy_revision,
         observed_at: Utc::now(),
         requested_capabilities: entry.capabilities,

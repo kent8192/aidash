@@ -248,7 +248,7 @@ fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
 		),
 		("tool", "aidash.research.page.fetch", "tool.call_unapproved")
 	);
-	assert!(result.resource.attributes.get("workspace_id").is_none());
+	assert!(result.resource.attributes.get("thread_id").is_none());
 }
 #[async_trait]
 impl SandboxScope for Scope<'_> {
@@ -422,7 +422,7 @@ fn response(tool: bool) -> ModelResponse {
 		tool_calls: if tool {
 			vec![ToolCall {
 				id: "call".into(),
-				name: "workspace_message".into(),
+				name: "thread_message".into(),
 				arguments: json!({"content":"fixture"}),
 			}]
 		} else {
@@ -505,7 +505,7 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 	let model = model(repository.clone(), vec![response(true), response(false)]);
 	let mut job = job(model.clone());
 	job.input.fixtures.insert(
-		"workspace_message".into(),
+		"thread_message".into(),
 		Fixture {
 			status: FixtureStatus::Success,
 			response: json!({"fixture":true}),
@@ -524,7 +524,7 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 	);
 	assert_eq!(
 		outcome.tool_calls,
-		json!([{"id":"call","name":"workspace_message","arguments":{"content":"fixture"},"fixture":{"status":"success","response":{"fixture":true}},"outcome":"simulated"}])
+		json!([{"id":"call","name":"thread_message","arguments":{"content":"fixture"},"fixture":{"status":"success","response":{"fixture":true}},"outcome":"simulated"}])
 	);
 	let requests = model.requests.lock().unwrap();
 	assert_eq!(requests.len(), 2);
@@ -561,7 +561,7 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 }
 #[tokio::test]
 async fn deferred_load_results_reshape_the_next_request() {
-	// Arrange: a deferred Agent whose default workspace tools are Discoverable.
+	// Arrange: a deferred Agent whose default thread tools are Discoverable.
 	let mut repository = Repository::new();
 	repository.entry.config["exposure"] = json!({"version":"deferred@1"});
 	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
@@ -571,7 +571,7 @@ async fn deferred_load_results_reshape_the_next_request() {
 	let digest = snapshot
 		.bindings
 		.iter()
-		.find(|binding| binding.alias.as_deref() == Some("workspace_observe"))
+		.find(|binding| binding.alias.as_deref() == Some("thread_observe"))
 		.unwrap()
 		.digest
 		.clone();
@@ -595,9 +595,9 @@ async fn deferred_load_results_reshape_the_next_request() {
 				call(
 					"load",
 					"capability_load",
-					json!({"alias":"workspace_observe","digest":digest}),
+					json!({"alias":"thread_observe","digest":digest}),
 				),
-				call("early", "workspace_observe", json!({})),
+				call("early", "thread_observe", json!({})),
 			]),
 			respond(vec![]),
 		],
@@ -630,32 +630,24 @@ async fn deferred_load_results_reshape_the_next_request() {
 	assert_eq!(outcome.tool_calls[1]["outcome"], deferred::EVALUATED);
 	assert_eq!(
 		outcome.tool_calls[1]["result"]["error"],
-		"capability workspace_observe was loaded in this response; call it after the next model request"
+		"capability thread_observe was loaded in this response; call it after the next model request"
 	);
 	let requests = model.requests.lock().unwrap();
 	let exposes = |request: &ModelRequest| {
 		request
 			.tools
 			.iter()
-			.any(|tool| tool.name == "workspace_observe")
+			.any(|tool| tool.name == "thread_observe")
 	};
 	assert!(!exposes(&requests[0]));
 	assert!(exposes(&requests[1]));
-	assert!(
-		requests[0]
-			.instructions
-			.contains("workspace_observe [tool]")
-	);
-	assert!(
-		!requests[1]
-			.instructions
-			.contains("workspace_observe [tool]")
-	);
+	assert!(requests[0].instructions.contains("thread_observe [tool]"));
+	assert!(!requests[1].instructions.contains("thread_observe [tool]"));
 	assert!(requests[1].instructions.starts_with("sandbox"));
 	// A continued session resumes the Exposure set it ended with.
 	let replayed = deferred::replayed(outcome.conversation.as_array().unwrap()).unwrap();
 	assert_eq!(replayed.loaded.len(), 1);
-	assert_eq!(replayed.loaded[0].alias, "workspace_observe");
+	assert_eq!(replayed.loaded[0].alias, "thread_observe");
 }
 #[tokio::test]
 async fn deferred_search_without_room_stops_instead_of_retaining_a_result() {
@@ -741,7 +733,7 @@ async fn fresh_revocation_after_progress_prevents_a_second_inference(
 	let model = model(repository.clone(), vec![response(true), response(false)]);
 	let mut job = job(model.clone());
 	job.input.fixtures.insert(
-		"workspace_message".into(),
+		"thread_message".into(),
 		Fixture {
 			status: FixtureStatus::Denied,
 			response: json!({"denied":true}),
@@ -1317,7 +1309,7 @@ async fn a_real_tool_profile_never_dispatches_a_plugin_tool(#[case] fixture: boo
 		tenant: "tenant".into(),
 		rules: repository.rules.clone(),
 	});
-	job.tool_references = BTreeMap::from([("workspace_message".to_owned(), permitted)]);
+	job.tool_references = BTreeMap::from([("thread_message".to_owned(), permitted)]);
 	if fixture {
 		job.input
 			.fixtures

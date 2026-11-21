@@ -30,11 +30,11 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 		("/api/marketplace/installations/{id}/activation", "post"),
 		("/api/marketplace/administration", "get"),
 		("/api/marketplace/publication-access", "post"),
-		("/api/workspaces/{id}/threads", "post"),
-		("/api/workspaces/{id}/thread-messages", "post"),
-		("/api/workspaces/{id}/message-history", "get"),
-		("/api/workspaces/{id}/attachments", "post"),
-		("/api/workspaces/{id}/attachments/{attachment_id}", "get"),
+		("/api/threads", "post"),
+		("/api/threads/{id}/channel-messages", "post"),
+		("/api/threads/{id}/message-history", "get"),
+		("/api/threads/{id}/attachments", "post"),
+		("/api/threads/{id}/attachments/{attachment_id}", "get"),
 		("/api/providers/openrouter/models", "get"),
 		("/api/agents/personal", "post"),
 		("/api/workbench/drafts", "post"),
@@ -61,7 +61,10 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 	for (path, operations) in paths {
 		// Public browser endpoints that publish a typed contract: desktop
 		// sign-in, and an Invitation holder opening or redeeming a link.
-		let public = path.starts_with("/auth/desktop/") || path.starts_with("/auth/invitations/");
+		// A Duty webhook authenticates by its signature (#1011).
+		let public = path.starts_with("/auth/desktop/")
+			|| path.starts_with("/auth/invitations/")
+			|| path.starts_with("/hooks/duties/");
 		assert!(
 			path.starts_with("/api/") || path.starts_with("/federation/v0.1/") || public,
 			"{path}"
@@ -90,7 +93,7 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 	// Control answers without content, because stopping a Run does not depend on
 	// being able to read it.
 	assert_eq!(
-		document["paths"]["/api/runs/{id}/control"]["post"]["responses"]["200"]["content"]["application/json"]
+		document["paths"]["/api/executions/{id}/control"]["post"]["responses"]["200"]["content"]["application/json"]
 			["schema"],
 		json!({"$ref":"#/components/schemas/RunManagement"})
 	);
@@ -98,7 +101,7 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 	// publish source payloads and private execution state in the generated client
 	// contract even though HTTP serialization omits them.
 	assert_eq!(
-		document["paths"]["/api/runs/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
+		document["paths"]["/api/executions/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
 			["schema"],
 		json!({"$ref":"#/components/schemas/RunDetails"})
 	);
@@ -138,7 +141,7 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 		"#/components/schemas/TransactionManifest"
 	);
 	assert!(schemas.get("PackageRecord").is_none());
-	let upload = &document["paths"]["/api/workspaces/{id}/attachments"]["post"];
+	let upload = &document["paths"]["/api/threads/{id}/attachments"]["post"];
 	assert_eq!(
 		upload["requestBody"]["content"]["application/octet-stream"]["schema"]["format"],
 		"binary"
@@ -190,7 +193,11 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 }
 
 #[rstest]
-#[case("/api/runs/{id}/semantic", "get", "remote-semantic-run-provenance")]
+#[case(
+	"/api/executions/{id}/semantic",
+	"get",
+	"remote-semantic-execution-provenance"
+)]
 #[case(
 	"/api/tasks/{task}/remote-grants/{id}/semantic",
 	"get",
@@ -232,10 +239,10 @@ fn openapi_retains_current_management_endpoints(
 #[rstest]
 fn openapi_separates_the_subject_and_safety_stop_management_contracts(document: Value) {
 	let schemas = &document["components"]["schemas"];
-	let get = &document["paths"]["/api/runs/{id}/management"]["get"];
-	let post = &document["paths"]["/api/runs/{id}/management"]["post"];
-	assert_eq!(get["operationId"], "run-management-get");
-	assert_eq!(post["operationId"], "run-management-control");
+	let get = &document["paths"]["/api/executions/{id}/management"]["get"];
+	let post = &document["paths"]["/api/executions/{id}/management"]["post"];
+	assert_eq!(get["operationId"], "execution-management-get");
+	assert_eq!(post["operationId"], "execution-management-control");
 	let named = |operation: &Value, location: &str| -> Vec<String> {
 		operation["parameters"]
 			.as_array()
@@ -430,7 +437,7 @@ fn reference_and_transfer_chunks_have_distinct_schemas(document: Value) {
 
 #[rstest]
 fn openapi_describes_declining_a_paused_call(document: Value) {
-	let decline = &document["paths"]["/api/runs/{id}/declined-calls"]["post"];
+	let decline = &document["paths"]["/api/executions/{id}/declined-calls"]["post"];
 	// It answers what `/control` answers.
 	assert_eq!(
 		decline["responses"]["200"]["content"]["application/json"]["schema"],

@@ -93,8 +93,8 @@ impl RemoteCommandEffects for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
 		self.access
@@ -102,37 +102,59 @@ impl RemoteCommandEffects for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn snapshot(&mut self, workspace: Uuid) -> Result<Value> {
+	async fn snapshot(&mut self, thread: Uuid) -> Result<Value> {
 		self.access
-			.workspace_snapshot(workspace)
+			.thread_snapshot(thread)
 			.await
 			.map(|value| json!(value))
 			.map_err(Into::into)
 	}
 	async fn observation(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		offset: usize,
 		limit: usize,
 		exclude_run: Option<Uuid>,
 	) -> Result<Value> {
 		self.access
-			.workspace_observation(workspace, offset, limit, exclude_run)
+			.workspace_observation(thread, offset, limit, exclude_run)
 			.await
 			.map_err(Into::into)
 	}
-	async fn record(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
+	async fn record(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
-			.workspace_record(workspace, kind, id)
+			.thread_record(thread, kind, id)
 			.await
 			.map_err(Into::into)
 	}
-	async fn children(&mut self, workspace: Uuid, parent: Uuid) -> Result<Value> {
+	async fn children(&mut self, thread: Uuid, parent: Uuid) -> Result<Value> {
 		self.access
-			.workspace_children(workspace, parent)
+			.thread_children(thread, parent)
 			.await
 			.map(|value| json!(value))
 			.map_err(Into::into)
+	}
+	async fn discover(
+		&mut self,
+		thread: Uuid,
+		search: &aidash_domain::registry::Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards> {
+		let result: NativeResult<aidash_domain::federation::DiscoveryCards> = async {
+			// The Node of the Home Task asks, as the grant's root subject under the
+			// chain the command's lease holds, exactly as a person's discovery
+			// does (#654). Only the cards a model sees leave this Node.
+			let node = self.access.thread_node(thread).await?;
+			let discovery = crate::authorization::peer::discovery::discover_in(
+				self.runtime,
+				self.access,
+				Some(node),
+				search,
+			)
+			.await?;
+			Ok(aidash_domain::federation::DiscoveryCards::from(&discovery))
+		}
+		.await;
+		result.map_err(Into::into)
 	}
 	async fn created_by_grant(&mut self, grant: Uuid, child: Uuid) -> Result<bool> {
 		let result: NativeResult<bool> = async {
@@ -179,7 +201,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						&mut **self.access.tx,
 						grant,
 						admission,
-						task.workspace_id,
+						task.thread_id,
 						kind,
 						prompt,
 						key,
@@ -188,7 +210,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					store
 						.event(
 							&mut self.access.tx,
-							Some(task.workspace_id),
+							Some(task.thread_id),
 							"task.remote_human_requested",
 							json!({"task_id":task.id,"grant_id":grant,"request_id":request.id,"execution_node":owner}),
 						)
@@ -298,13 +320,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 				}
 				Effect::CreateTask { task: new } => {
 					let value = store
-						.create_task_in(
-							&mut self.access.tx,
-							task.workspace_id,
-							new,
-							owner,
-							Some(key),
-						)
+						.create_task_in(&mut self.access.tx, task.thread_id, new, owner, Some(key))
 						.await?;
 					let id = value.id;
 					(json!(value), Some(id))
@@ -344,7 +360,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 							.run_message_output_in(
 								&mut self.access.tx,
 								crate::store::FencedRunMessageOutput {
-									workspace: task.workspace_id,
+									thread: task.thread_id,
 									task_id: task.id,
 									run_id: admission,
 									included_input_seq: seq,
@@ -358,7 +374,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						store
 							.message_in(
 								&mut self.access.tx,
-								task.workspace_id,
+								task.thread_id,
 								owner,
 								content,
 								Some(key),
@@ -401,7 +417,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						.run_message_delivery_in(
 							&mut self.access.tx,
 							crate::store::RunMessageDelivery {
-								workspace: task.workspace_id,
+								thread: task.thread_id,
 								task_id: task.id,
 								run_id: admission,
 								sender: &sender,
@@ -427,7 +443,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 				}
 				Effect::Event { kind, data } => {
 					store
-						.event(&mut self.access.tx, Some(task.workspace_id), kind, data)
+						.event(&mut self.access.tx, Some(task.thread_id), kind, data)
 						.await?;
 					(json!({"recorded":true}), None)
 				}
@@ -440,7 +456,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 	async fn record_output(
 		&mut self,
 		grant: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
@@ -451,7 +467,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					.columns(
 						[
 							"grant_id",
-							"workspace_id",
+							"thread_id",
 							"resource_kind",
 							"resource_id",
 							"tenant",
@@ -468,7 +484,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					.on_conflict(
 						OnConflict::columns([
 							"grant_id",
-							"workspace_id",
+							"thread_id",
 							"resource_kind",
 							"resource_id",
 						])
@@ -478,7 +494,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(grant)
-			.bind(workspace)
+			.bind(thread)
 			.bind(kind)
 			.bind(id)
 			.bind(&self.access.identity.tenant)
@@ -519,14 +535,14 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 	}
 	async fn history(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		task: Uuid,
 		node: &str,
 		offset: usize,
 	) -> Result<Vec<Message>> {
 		let result: NativeResult<Vec<Message>> = async {
 			let rows: Vec<crate::domain::Message> = {
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_2 = format!("{node}:{}:%", task);
 				let query_bind_3 = format!("human@{node}");
 				aidash_server::database::query_as(
@@ -534,7 +550,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						.column(Asterisk)
 						.from(Alias::new("messages"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id=? AND idempotency_key LIKE ? AND sender=?)".to_owned(),
+							"(thread_id=? AND idempotency_key LIKE ? AND sender=?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -634,8 +650,8 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_search(&mut self, workspace: Uuid, input: &Value) -> Result<Value> {
-		super::search::workspace_search(self.access, &self.runtime.store, workspace, input)
+	async fn thread_search(&mut self, thread: Uuid, input: &Value) -> Result<Value> {
+		super::search::thread_search(self.access, &self.runtime.store, thread, input)
 			.await
 			.map_err(Into::into)
 	}

@@ -24,7 +24,7 @@ fn metadata() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		home_node: "fixture".into(),
 		agent_id: "fixture".into(),
 		agent_version: "1".into(),
@@ -59,7 +59,7 @@ fn scope() -> Scope {
 fn task(scope: &Scope, status: TaskStatus) -> Task {
 	Task {
 		id: scope.metadata.task_id,
-		workspace_id: scope.metadata.workspace_id,
+		thread_id: scope.metadata.thread_id,
 		title: "fixture".into(),
 		description: String::new(),
 		status,

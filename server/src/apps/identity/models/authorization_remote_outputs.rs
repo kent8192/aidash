@@ -10,7 +10,7 @@ pub struct AuthorizationRemoteOutputs {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[field(primary_key = true, field_type = "text")]
 	pub resource_kind: String,
 	#[field(primary_key = true, field_type = "uuid")]

@@ -1,14 +1,12 @@
-//! Record reads keep workspace predicates and strict status decoding in one transaction.
+//! Record reads keep thread predicates and strict status decoding in one transaction.
 use super::Reads;
 use crate::Result as NativeResult;
 use crate::apps::workspaces::models::child_flags;
 use aidash_application::{
 	Result,
-	ports::authorization::records::{ChildSummaryScope, ChildTaskRecord, WorkspaceRecordScope},
+	ports::authorization::records::{ChildSummaryScope, ChildTaskRecord, ThreadRecordScope},
 };
-use aidash_domain::{
-	Artifact, Event, Message, Task, Workspace, WorkspaceSnapshot, policy::Resource,
-};
+use aidash_domain::{Artifact, Event, Message, Task, Thread, ThreadSnapshot, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
@@ -40,11 +38,9 @@ crate::native_record!(AttachmentRecordRow {
 	description
 });
 #[async_trait]
-impl WorkspaceRecordScope for Reads<'_> {
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Box::pin(self.access.workspace(id))
-			.await
-			.map_err(Into::into)
+impl ThreadRecordScope for Reads<'_> {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		Box::pin(self.access.thread(id)).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		Box::pin(self.access.require(resource, action))
@@ -68,10 +64,10 @@ impl WorkspaceRecordScope for Reads<'_> {
 	}
 	async fn message_attachments(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		messages: &[Uuid],
 	) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
-		super::attachment_metadata(self.access, workspace, messages).await
+		super::attachment_metadata(self.access, thread, messages).await
 	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		Box::pin(self.access.message_visible(row))
@@ -83,17 +79,17 @@ impl WorkspaceRecordScope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()> {
+	async fn track(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
 		aidash_application::authorization::journals::track_snapshot(self, snapshot).await
 	}
-	async fn workspace_row(&mut self, workspace_id: Uuid) -> Result<Workspace> {
-		let result: NativeResult<Workspace> = async {
+	async fn thread_row(&mut self, thread_id: Uuid) -> Result<Thread> {
+		let result: NativeResult<Thread> = async {
 			Ok({
-				let query_bind_1 = workspace_id;
+				let query_bind_1 = thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
-						.from(Alias::new("workspaces"))
+						.from(Alias::new("threads"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -111,11 +107,11 @@ impl WorkspaceRecordScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn task_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Task>> {
+	async fn task_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Task>> {
 		let result: NativeResult<Option<Task>> = async {
 			Ok({
 				let query_bind_1 = id;
-				let query_bind_2 = workspace_id;
+				let query_bind_2 = thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -131,7 +127,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -148,11 +144,11 @@ impl WorkspaceRecordScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn artifact_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Artifact>> {
+	async fn artifact_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Artifact>> {
 		let result: NativeResult<Option<Artifact>> = async {
 			Ok({
 				let query_bind_1 = id;
-				let query_bind_2 = workspace_id;
+				let query_bind_2 = thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -168,7 +164,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -187,7 +183,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 	}
 	async fn attachment_record(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 	) -> Result<Option<aidash_domain::media::AttachmentRecord>> {
 		let query = Query::select()
@@ -207,7 +203,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 				.map(Alias::new),
 			)
 			.from(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 			.and_where(Expr::col(Alias::new("message_id")).is_not_null())
 			.to_string(PostgresQueryBuilder);
@@ -241,17 +237,17 @@ impl WorkspaceRecordScope for Reads<'_> {
 			},
 		}))
 	}
-	async fn message_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Message>> {
-		if let Some(message) = self.access.state_source_message(id, workspace_id) {
+	async fn message_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.state_source_message(id, thread_id) {
 			return Ok(message);
 		}
-		if let Some(message) = self.access.read_lookups.message(id, workspace_id) {
+		if let Some(message) = self.access.read_lookups.message(id, thread_id) {
 			return Ok(message);
 		}
 		let result: NativeResult<Option<Message>> = async {
 			Ok({
 				let query_bind_1 = id;
-				let query_bind_2 = workspace_id;
+				let query_bind_2 = thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -267,7 +263,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -284,11 +280,11 @@ impl WorkspaceRecordScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn event_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Event>> {
+	async fn event_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Event>> {
 		let result: NativeResult<Option<Event>> = async {
 			Ok({
 				let query_bind_1 = id;
-				let query_bind_2 = workspace_id;
+				let query_bind_2 = thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
@@ -304,7 +300,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -345,8 +341,8 @@ crate::native_record!(ChildTaskSummaryRow {
 
 #[async_trait]
 impl ChildSummaryScope for Reads<'_> {
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -356,28 +352,28 @@ impl ChildSummaryScope for Reads<'_> {
 	}
 	async fn visible(
 		&mut self,
-		workspace: &Resource,
-		workspace_id: Uuid,
+		thread: &Resource,
+		thread_id: Uuid,
 		id: Uuid,
 		created_by: &str,
 	) -> Result<bool> {
 		self.access
-			.task_summary_visible(workspace, workspace_id, id, created_by)
+			.task_summary_visible(thread, thread_id, id, created_by)
 			.await
 			.map_err(Into::into)
 	}
-	async fn track_tasks(&mut self, workspace: Uuid, tasks: &[Uuid]) -> Result<()> {
-		aidash_application::authorization::journals::track_tasks(self, workspace, tasks).await
+	async fn track_tasks(&mut self, thread: Uuid, tasks: &[Uuid]) -> Result<()> {
+		aidash_application::authorization::journals::track_tasks(self, thread, tasks).await
 	}
 	async fn children(
 		&mut self,
-		workspace_id: Uuid,
+		thread_id: Uuid,
 		parent_id: Uuid,
 		after: Option<Uuid>,
 	) -> Result<Vec<ChildTaskRecord>> {
 		let result: NativeResult<Vec<ChildTaskRecord>> = async {
 			let rows: Vec<ChildTaskSummaryRow> = {
-				let query_bind_1 = workspace_id;
+				let query_bind_1 = thread_id;
 				let query_bind_2 = parent_id;
 				let query_bind_3 = after;
 				crate::database::native::query_as(
@@ -400,13 +396,11 @@ impl ChildSummaryScope for Reads<'_> {
 						)
 						.from(Alias::new("tasks"))
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								)),
 						)
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("parent_id")))

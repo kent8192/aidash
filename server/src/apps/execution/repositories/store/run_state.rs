@@ -1,7 +1,9 @@
 use super::*;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{DateTime, Utc};
-use reinhardt::query::{Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query};
+use reinhardt::query::{
+	Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query, SelectStatement, UpdateStatement,
+};
 fn a(name: &str) -> Alias {
 	Alias::new(name)
 }
@@ -49,6 +51,11 @@ pub(crate) struct FailureDelivery {
 }
 
 /// The same ordering and Area blockers govern claims and deferred notifications.
+///
+/// An execution waits behind the awake executions queued before it in its
+/// Working Area. One that sleeps, or is paused, holds no place (#1008, ADR
+/// 0140): the database sets `core_runs.asleep` when it falls asleep, and
+/// [`rejoin_queue`] puts it back at the tail when it wakes.
 pub(crate) fn run_unblocked() -> Condition {
 	let earlier = Query::select()
 		.expr(Expr::val(1))
@@ -75,13 +82,16 @@ pub(crate) fn run_unblocked() -> Condition {
 		)
 		.join(
 			JoinType::InnerJoin,
-			reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("previous")),
+			reinhardt::query::TableRef::table_alias(
+				Alias::new("task_executions"),
+				Alias::new("previous"),
+			),
 			Expr::col((Alias::new("earlier"), Alias::new("run_id")))
 				.equals((Alias::new("previous"), Alias::new("id"))),
 		)
 		.and_where(
 			Expr::col((Alias::new("mine"), Alias::new("run_id")))
-				.equals((Alias::new("runs"), Alias::new("id"))),
+				.equals((Alias::new("task_executions"), Alias::new("id"))),
 		)
 		.and_where(
 			Expr::col((Alias::new("previous"), Alias::new("phase"))).is_not_in([
@@ -89,6 +99,10 @@ pub(crate) fn run_unblocked() -> Condition {
 				"FAILED",
 				"CANCELLED",
 			]),
+		)
+		.and_where(
+			Expr::col((Alias::new("earlier"), Alias::new("asleep")))
+				.eq(reinhardt::query::Expr::value(false)),
 		)
 		.to_owned();
 	let unready = Query::select()
@@ -102,7 +116,7 @@ pub(crate) fn run_unblocked() -> Condition {
 		)
 		.and_where(
 			Expr::col((Alias::new("q"), Alias::new("run_id")))
-				.equals((Alias::new("runs"), Alias::new("id"))),
+				.equals((Alias::new("task_executions"), Alias::new("id"))),
 		)
 		.and_where(
 			Expr::col((Alias::new("q"), Alias::new("initialized")))
@@ -120,6 +134,51 @@ pub(crate) fn run_unblocked() -> Condition {
 				.add(Expr::exists(earlier).not())
 				.add(Expr::exists(unready).not()),
 		)
+}
+
+/// The Working Area of `run` when the execution holds no place in its
+/// queue: it slept, or was paused, and has not re-entered (#1008, ADR 0140).
+pub(crate) fn asleep_in(run: Uuid) -> SelectStatement {
+	Query::select()
+		.column(a("area_id"))
+		.from(a("core_runs"))
+		.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+		.and_where(Expr::col(a("asleep")).eq(Expr::value(true)))
+		.to_owned()
+}
+
+/// The Area's next queue position, its row locked as an admission locks it.
+/// Nothing when another transaction holds the row: a lease never waits for
+/// it, because it holds the rows it selected, which a deletion holding the
+/// Area may wait for. The execution is due again at the next notification
+/// or recovery scan.
+pub(crate) fn lock_queue_tail(area: Uuid) -> SelectStatement {
+	Query::select()
+		.column(a("next_sequence"))
+		.from(a("core_areas"))
+		.and_where(Expr::col(a("id")).eq(Expr::value(area)))
+		.lock(reinhardt::query::LockType::NoKeyUpdate)
+		.lock_behavior(reinhardt::query::LockBehavior::SkipLocked)
+		.to_owned()
+}
+
+/// Puts the waking execution `run` at the tail of its Area's queue, awake:
+/// it re-enters behind every execution queued while it slept, and is leased
+/// only once no awake one precedes it ([`run_unblocked`]).
+pub(crate) fn rejoin_queue(run: Uuid, area: Uuid, tail: i64) -> [UpdateStatement; 2] {
+	[
+		Query::update()
+			.table(a("core_runs"))
+			.value(a("asleep"), false)
+			.value(a("sequence"), tail)
+			.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+			.to_owned(),
+		Query::update()
+			.table(a("core_areas"))
+			.value(a("next_sequence"), tail + 1)
+			.and_where(Expr::col(a("id")).eq(Expr::value(area)))
+			.to_owned(),
+	]
 }
 
 impl Store {
@@ -140,7 +199,7 @@ impl Store {
 		let mut cursor = self.recovery_cursors.delivery.lock().await;
 		let mut query = Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(a("runs"))
+			.from(a("task_executions"))
 			.and_where(Expr::col(a("phase")).eq(reinhardt::query::Expr::value("WAITING")))
 			.and_where(Expr::col(a("control")).ne(reinhardt::query::Expr::value("PAUSED")))
 			.and_where(Expr::col(a("revision")).lt(reinhardt::query::Expr::value(i64::MAX - 2)))
@@ -190,7 +249,7 @@ impl Store {
 			// stops new execution; it cannot replace an undelivered failure.
 			let metadata: Option<RunMetadata> = aidash_server::database::query_as(
 				&Query::update()
-					.table(a("runs"))
+					.table(a("task_executions"))
 					.value(a("lease_owner"), worker)
 					.value_expr(a("lease_until"), crate::database::lease_deadline(seconds))
 					.value_expr(
@@ -232,11 +291,11 @@ impl Store {
 			Ok(status) => {
 				let (state, kind) = match status {
 					TaskStatus::Completed => {
-						(RunState::Completed(TerminalState {}), "run.completed")
+						(RunState::Completed(TerminalState {}), "execution.completed")
 					}
-					TaskStatus::Failed => (RunState::Failed(TerminalState {}), "run.failed"),
+					TaskStatus::Failed => (RunState::Failed(TerminalState {}), "execution.failed"),
 					TaskStatus::Cancelled | TaskStatus::Abandoned => {
-						(RunState::Cancelled(TerminalState {}), "run.cancelled")
+						(RunState::Cancelled(TerminalState {}), "execution.cancelled")
 					}
 					TaskStatus::Open
 					| TaskStatus::Claimed
@@ -258,14 +317,14 @@ impl Store {
 						last_delivery_error: Some(text.clone()),
 					})),
 					Some(text),
-					"run.failure_pending",
+					"execution.failure_pending",
 				)
 			}
 		};
 		let m = &delivery.metadata;
 		let mut tx = self.pool.begin(scope).await?;
 		let query = Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("phase"), state.phase().as_str())
 			.value_expr(a("pending"), Expr::value(crate::domain::run_state::encode(&state, &RecoveryState::default())?))
 			.value_expr(a("revision"), Expr::col(a("revision")).add(Expr::value(1)))
@@ -295,26 +354,20 @@ impl Store {
 		self.run_event(
 			&mut tx,
 			m.id,
-			m.is_local(self.deployment.as_str())
-				.then_some(m.workspace_id),
+			m.is_local(self.deployment.as_str()).then_some(m.thread_id),
 			kind,
 			json!({"run_id":m.id,"task_id":m.task_id,"phase":state.phase(),"delivery_error":error}),
 		)
 		.await?;
 		// Failure delivery can itself be the terminal transition.
-		if state.phase().is_terminal() {
-			let reason = match state.phase() {
-				aidash_domain::RunPhase::Completed => "creator_completed",
-				aidash_domain::RunPhase::Failed => "creator_failed",
-				aidash_domain::RunPhase::Cancelled => "creator_cancelled",
-				_ => unreachable!("terminal Run phase"),
-			};
+		// Only a cancellation ends what the creator built (#1012).
+		if state.phase() == aidash_domain::RunPhase::Cancelled {
 			self.subnode_control_in(
 				&mut tx,
 				m.id,
 				aidash_domain::RunControlAction::Cancel,
 				aidash_domain::ControlSource::System,
-				Some(reason),
+				Some("creator_cancelled"),
 			)
 			.await?;
 		}
@@ -338,7 +391,7 @@ impl Store {
 		let raw: RawRun = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(a("runs"))
+				.from(a("task_executions"))
 				.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -351,7 +404,7 @@ impl Store {
 		let rows: Vec<RawRun> = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(a("runs"))
+				.from(a("task_executions"))
 				.order_by(a("updated_at"), reinhardt::query::Order::Desc)
 				.limit(500)
 				.to_string(PostgresQueryBuilder),

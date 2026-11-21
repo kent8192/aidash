@@ -96,6 +96,9 @@ pub async fn transition(
 	);
 	if terminal && !job.quota_released {
 		let (unused, unused_calls) = scope.unused(job).await?;
+		// A request without a token limit reserved no tokens of its policy,
+		// whatever the policy says now (#1012 decision 41).
+		let unused = job.policy_refund(unused);
 		scope.release_policy(job, unused, &unused_calls).await?;
 		scope.mark_quota_released(job).await?;
 	}
@@ -126,7 +129,7 @@ pub async fn transition(
 	if job.is_local() {
 		scope
 			.event(
-				job.workspace_id,
+				job.thread_id,
 				"generation.changed",
 				json!({"id":job.id,"task_id":job.task_id,"policy_id":job.policy_id,"status":status}),
 			)

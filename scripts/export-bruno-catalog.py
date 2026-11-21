@@ -27,8 +27,13 @@ ADDITIONS = {
     ("POST", NODE_PATH + "/deletion"): ("tenant-node-deletion", "nodes"),
     ("POST", NODE_PATH + "/restore"): ("tenant-node-restore", "nodes"),
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
-    ("GET", "/api/workspaces"): ("workspace-list", "workspaces/management"),
-    ("GET", "/api/workspaces/{id}/runs"): ("workspace-runs", "execution/management"),
+    ("GET", "/api/threads"): ("thread-list", "workspaces/management"),
+    # Marketplace Duty templates (#1011 D4).
+    ("GET", "/api/duties/{id}/template"): ("duty-template-draft", "marketplace/duty_templates"),
+    ("POST", "/api/duties/{id}/template"): ("duty-template-publish", "marketplace/duty_templates"),
+    ("POST", "/api/marketplace/packages/{key}/duty"): ("marketplace-install-duty", "marketplace/duty_templates"),
+    ("POST", "/api/duties/{id}/template-update"): ("duty-template-update", "marketplace/duty_templates"),
+    ("GET", "/api/threads/{id}/executions"): ("thread-executions", "execution/management"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
     ("GET", "/api/authorization/{tenant}/catalog/requests/pending/count"): ("authorization-catalog-requests-pending-count", "policies"),
@@ -36,6 +41,17 @@ ADDITIONS = {
     ("POST", "/api/tenants/{tenant}/approval-request-mail/mine"): ("catalog-set-mail-preference", "policies"),
     ("GET", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope", "memory_scope"),
     ("PUT", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope-update", "memory_scope"),
+    ("GET", "/api/tenants/{tenant}/instructions"): ("tenant-instructions", "standing_instructions"),
+    ("PUT", "/api/tenants/{tenant}/instructions"): ("tenant-instructions-update", "standing_instructions"),
+    ("GET", NODE_PATH + "/instructions"): ("node-instructions", "standing_instructions"),
+    ("PUT", NODE_PATH + "/instructions"): ("node-instructions-update", "standing_instructions"),
+    ("GET", "/api/tenants/{tenant}/budgets"): ("budgets", "budgets"),
+    ("POST", "/api/tenants/{tenant}/budgets"): ("budgets-create", "budgets"),
+    ("PUT", "/api/tenants/{tenant}/budgets/{budget}"): ("budgets-update", "budgets"),
+    ("DELETE", "/api/tenants/{tenant}/budgets/{budget}"): ("budgets-delete", "budgets"),
+    ("GET", "/api/tenants/{tenant}/org-chart"): ("org-chart", "org_chart"),
+    ("POST", "/api/tenants/{tenant}/flows/{root_task}/stop"): ("flow-stop", "org_chart"),
+    ("POST", "/federation/v0.1/scoped/duty-events"): ("duty-node-event", "duty_events"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.

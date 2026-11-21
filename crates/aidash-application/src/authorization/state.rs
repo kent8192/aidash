@@ -1,21 +1,21 @@
 //! Dashboard state applies current disclosure policy before bounded projections.
 use crate::{
 	Result,
-	ports::authorization::state::{WorkspaceListingScope, WorkspaceStateScope},
+	ports::authorization::state::{ThreadListingScope, ThreadStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, RunSummary, Task,
-	WaitingState, Workspace,
+	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, RunSummary, Task, Thread,
+	WaitingState,
 	registry::Entry,
+	threads::TaskPage,
 	unconfirmed::{Kind, Tally, Unconfirmed},
-	workspaces::TaskPage,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use uuid::Uuid;
-pub struct WorkspaceState {
+pub struct ThreadState {
 	pub registry: Vec<Entry>,
-	pub workspaces: Vec<Workspace>,
+	pub threads: Vec<Thread>,
 	pub tasks: Vec<Task>,
 	pub artifacts: Vec<Artifact>,
 	pub runs: Vec<RunSummary>,
@@ -28,13 +28,13 @@ pub struct WorkspaceState {
 	/// only the candidates that window scanned.
 	pub unconfirmed: Vec<Unconfirmed>,
 }
-pub async fn task_page(scope: &mut dyn WorkspaceListingScope, offset: u64) -> Result<TaskPage> {
-	let workspaces = scope.visible("workspace.read").await?;
-	scope.task_page(&workspaces, offset).await
+pub async fn task_page(scope: &mut dyn ThreadListingScope, offset: u64) -> Result<TaskPage> {
+	let threads = scope.visible("thread.read").await?;
+	scope.task_page(&threads, offset).await
 }
 #[derive(Default, Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct NextCursors {
-	pub workspaces: Option<String>,
+	pub threads: Option<String>,
 	pub tasks: Option<String>,
 	pub runs: Option<String>,
 	pub artifacts: Option<String>,
@@ -47,34 +47,31 @@ fn cursor<T>(rows: &[T], id: impl Fn(&T) -> Uuid) -> Option<String> {
 		.then(|| id(rows.last().expect("full page is not empty")).to_string())
 }
 
-async fn workspace_ok(
-	scope: &mut dyn WorkspaceStateScope,
+async fn thread_ok(
+	scope: &mut dyn ThreadStateScope,
 	cache: &mut HashMap<Uuid, bool>,
 	id: Uuid,
 ) -> Result<bool> {
 	if let Some(allowed) = cache.get(&id) {
 		return Ok(*allowed);
 	}
-	let allowed = scope.allowed(id, "workspace.read").await?;
+	let allowed = scope.allowed(id, "thread.read").await?;
 	cache.insert(id, allowed);
 	Ok(allowed)
 }
 
-pub async fn state(
-	scope: &mut dyn WorkspaceStateScope,
-	node: Option<&str>,
-) -> Result<WorkspaceState> {
+pub async fn state(scope: &mut dyn ThreadStateScope, node: Option<&str>) -> Result<ThreadState> {
 	let mut cache = HashMap::new();
-	let mut workspace_ids = Vec::new();
-	let workspace_candidates = scope.workspace_candidates(node, None).await?;
-	scope.prepare_workspaces(&workspace_candidates).await?;
+	let mut thread_ids = Vec::new();
+	let thread_candidates = scope.thread_candidates(node, None).await?;
+	scope.prepare_threads(&thread_candidates).await?;
 	let mut cursors = NextCursors {
-		workspaces: cursor(&workspace_candidates, |id| *id),
+		threads: cursor(&thread_candidates, |id| *id),
 		..Default::default()
 	};
-	for id in workspace_candidates {
-		if workspace_ok(scope, &mut cache, id).await? {
-			workspace_ids.push(id);
+	for id in thread_candidates {
+		if thread_ok(scope, &mut cache, id).await? {
+			thread_ids.push(id);
 		}
 	}
 	let run_candidates = scope.run_candidates(node).await?;
@@ -84,7 +81,7 @@ pub async fn state(
 		.map(|row| row.metadata.clone())
 		.collect::<Vec<_>>();
 	scope.prepare_runs(&run_metadata).await?;
-	// A row counts as unconfirmed only after the reader's own `workspace.read`
+	// A row counts as unconfirmed only after the reader's own `thread.read`
 	// passed, and only when its check stopped at a silent Node (#770).
 	let mut unconfirmed = Tally::new();
 	let mut tasks = Vec::new();
@@ -92,14 +89,14 @@ pub async fn state(
 	cursors.tasks = cursor(&candidates, |row| row.id);
 	scope.prepare_tasks(&candidates).await?;
 	for row in candidates {
-		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
+		if !thread_ok(scope, &mut cache, row.thread_id).await? {
 			continue;
 		}
 		scope.begin_row();
 		let allowed = scope.task_visible(&row).await?;
 		let silence = scope.take_row_silence();
-		if unconfirmed.settle(silence, Kind::Task, row.workspace_id, allowed) {
-			workspace_ids.push(row.workspace_id);
+		if unconfirmed.settle(silence, Kind::Task, row.thread_id, allowed) {
+			thread_ids.push(row.thread_id);
 			tasks.push(row);
 		}
 	}
@@ -108,28 +105,28 @@ pub async fn state(
 	cursors.artifacts = cursor(&candidates, |row| row.id);
 	scope.prepare_artifacts(&candidates).await?;
 	for row in candidates {
-		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
+		if !thread_ok(scope, &mut cache, row.thread_id).await? {
 			continue;
 		}
 		scope.begin_row();
 		let allowed = scope.artifact_visible(&row).await?;
 		let silence = scope.take_row_silence();
-		if unconfirmed.settle(silence, Kind::Artifact, row.workspace_id, allowed) {
-			workspace_ids.push(row.workspace_id);
+		if unconfirmed.settle(silence, Kind::Artifact, row.thread_id, allowed) {
+			thread_ids.push(row.thread_id);
 			artifacts.push(row);
 		}
 	}
 	let mut runs = Vec::new();
 	let candidates = run_candidates;
 	for row in candidates {
-		if !workspace_ok(scope, &mut cache, row.metadata.workspace_id).await? {
+		if !thread_ok(scope, &mut cache, row.metadata.thread_id).await? {
 			continue;
 		}
 		scope.begin_row();
 		let allowed = scope.run_visible(&row.metadata).await?;
 		let silence = scope.take_row_silence();
-		if unconfirmed.settle(silence, Kind::Run, row.metadata.workspace_id, allowed) {
-			workspace_ids.push(row.metadata.workspace_id);
+		if unconfirmed.settle(silence, Kind::Run, row.metadata.thread_id, allowed) {
+			thread_ids.push(row.metadata.thread_id);
 			runs.push(row.inspect().into());
 		}
 	}
@@ -137,17 +134,17 @@ pub async fn state(
 	let candidates = scope.pending_human_candidates(node).await?;
 	cursors.human_requests = cursor(&candidates, |row| row.id);
 	scope
-		.prepare_workspaces(
+		.prepare_threads(
 			&candidates
 				.iter()
-				.map(|row| row.workspace_id)
+				.map(|row| row.thread_id)
 				.collect::<Vec<_>>(),
 		)
 		.await?;
 	let had_humans = !candidates.is_empty();
 	let mut waiting = Vec::new();
 	for row in candidates {
-		if workspace_ok(scope, &mut cache, row.workspace_id).await? {
+		if thread_ok(scope, &mut cache, row.thread_id).await? {
 			waiting.push(row);
 		}
 	}
@@ -171,7 +168,7 @@ pub async fn state(
 			if let Some(silent) = silent_runs.get(&row.run_id) {
 				let resource = scope.human_resource(&row).await?;
 				if scope.decide(&resource, "human.read").await? {
-					unconfirmed.record(silent, Kind::HumanRequest, row.workspace_id);
+					unconfirmed.record(silent, Kind::HumanRequest, row.thread_id);
 				}
 			}
 			continue;
@@ -181,12 +178,12 @@ pub async fn state(
 			row.answer_by = answer_deadlines(std::slice::from_ref(run))
 				.get(&row.id)
 				.copied();
-			workspace_ids.push(row.workspace_id);
+			thread_ids.push(row.thread_id);
 			human_requests.push(row);
 		}
 	}
 	if had_humans {
-		// The nested Run checks use each Workspace's authority. Prepare again
+		// The nested Run checks use each Thread's authority. Prepare again
 		// under the state reader's restored authority before continuing.
 		scope.prepare_runs(&run_metadata).await?;
 	}
@@ -194,27 +191,27 @@ pub async fn state(
 	let candidates = scope.conversation_candidates(node).await?;
 	cursors.conversations = cursor(&candidates, |row| row.id);
 	for row in candidates {
-		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
+		if !thread_ok(scope, &mut cache, row.thread_id).await? {
 			continue;
 		}
 		let resource = scope.conversation_resource(&row).await?;
 		if scope.decide(&resource, "conversation.read").await? {
-			workspace_ids.push(row.workspace_id);
+			thread_ids.push(row.thread_id);
 			conversations.push(row);
 		}
 	}
 	let (events, left_out) = scope.latest_visible_events(node).await?;
 	unconfirmed.merge(left_out);
-	// A Workspace that only an unconfirmed row belongs to is returned too, so
+	// A Thread that only an unconfirmed row belongs to is returned too, so
 	// the Web's Node filter keeps that row's warning (#664 decision 9, #770).
 	// Every window and the event scan are bounded, so this is bounded as well.
 	let unconfirmed_entries = unconfirmed.into_entries();
-	workspace_ids.extend(unconfirmed_entries.iter().map(|entry| entry.workspace_id));
-	workspace_ids.sort_unstable();
-	workspace_ids.dedup();
-	Ok(WorkspaceState {
+	thread_ids.extend(unconfirmed_entries.iter().map(|entry| entry.thread_id));
+	thread_ids.sort_unstable();
+	thread_ids.dedup();
+	Ok(ThreadState {
 		registry: scope.registry().await?,
-		workspaces: scope.workspace_rows(&workspace_ids).await?,
+		threads: scope.thread_rows(&thread_ids).await?,
 		tasks,
 		artifacts,
 		runs,

@@ -181,7 +181,7 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 	sqlx::query_scalar(
 		&Query::select()
 			.column(a("id"))
-			.from(a("runs"))
+			.from(a("task_executions"))
 			.and_where(Expr::col(a("task_id")).eq(Expr::value(task)))
 			.and_where(Expr::cust(format!(
 				"starts_with(home_node, '{}/')",
@@ -294,14 +294,14 @@ async fn separate_process_notifications_and_negative_control(
 		let window_start = Instant::now();
 		let mut index = 0;
 		while samples.len() < 100 && window_start.elapsed() < Duration::from_secs(30) {
-			// Keep the activation workload constant: historical workspace
+			// Keep the activation workload constant: historical thread
 			// observation growth is a different performance dimension.
-			let workspace: Value = f
+			let thread: Value = f
 				.client
 				.clone()
-				.post(format!("{}/api/workspaces", f.config.endpoint))
+				.post(format!("{}/api/threads", f.config.endpoint))
 				.bearer_auth(&token)
-				.json(&json!({"title":"Activation sample","goal":"Complete"}))
+				.json(&json!({"title":"Activation sample"}))
 				.send()
 				.await
 				.unwrap()
@@ -310,14 +310,11 @@ async fn separate_process_notifications_and_negative_control(
 				.json()
 				.await
 				.unwrap();
-			let workspace = workspace["id"].as_str().unwrap();
+			let thread = thread["id"].as_str().unwrap();
 			let response = f
 				.client
 				.clone()
-				.post(format!(
-					"{}/api/workspaces/{workspace}/tasks",
-					f.config.endpoint
-				))
+				.post(format!("{}/api/threads/{thread}/tasks", f.config.endpoint))
 				.bearer_auth(&token)
 				.json(&json!({"title":"Activation sample","description":"Complete"}))
 				.send()
@@ -479,20 +476,17 @@ async fn post_json(f: &Federation, token: &str, path: &str, body: Value) -> Valu
 	body
 }
 async fn fresh_task(f: &Federation, token: &str) -> Uuid {
-	let workspace = post_json(
+	let thread = post_json(
 		f,
 		token,
-		"/api/workspaces",
-		json!({"title":"Isolated activation","goal":"Complete"}),
+		"/api/threads",
+		json!({"title":"Isolated activation"}),
 	)
 	.await;
 	let task = post_json(
 		f,
 		token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Fixture","description":"Complete"}),
 	)
 	.await;
@@ -555,7 +549,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	aidash_server::database::native::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("control"), "PAUSED")
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
@@ -591,7 +585,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	// now has an independent deadline and must not be claimed early.
 	sqlx::query(
 		&Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("phase"), "WAITING")
 			.value_expr(a("revision"), Expr::col(a("revision")).add(1))
 			.value_expr(
@@ -715,7 +709,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	post_json(
 		&f,
 		&token,
-		&format!("/api/runs/{active}/message"),
+		&format!("/api/executions/{active}/message"),
 		json!({"content":"Accepted correction","idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
@@ -1213,10 +1207,10 @@ async fn startup_reconciliation_drains_all_batches(
 	let (f, url, schema) = runtime.parts();
 	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let mut insert = Query::insert();
-	insert.into_table(a("runs")).columns([
+	insert.into_table(a("task_executions")).columns([
 		a("id"),
 		a("task_id"),
-		a("workspace_id"),
+		a("thread_id"),
 		a("home_node"),
 		a("node"),
 		a("agent_id"),
@@ -1533,7 +1527,7 @@ fn permits() -> Arc<tokio::sync::Semaphore> {
 	Arc::new(tokio::sync::Semaphore::new(0))
 }
 #[rstest::fixture]
-fn workspace_id() -> Uuid {
+fn thread_id() -> Uuid {
 	Uuid::new_v4()
 }
 

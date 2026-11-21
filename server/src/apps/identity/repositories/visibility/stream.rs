@@ -1,6 +1,6 @@
 //! Unlocked idle snapshots and locked stream pages preserve the original SQL.
 use super::{Reads, projection::event_scope};
-use crate::{Result as NativeResult, apps::identity::services::workspace::Workspaces};
+use crate::{Result as NativeResult, apps::identity::services::thread::Threads};
 use aidash_application::{
 	Result,
 	ports::authorization::{
@@ -8,7 +8,7 @@ use aidash_application::{
 		visibility::RunVerdicts,
 	},
 };
-use aidash_domain::Event;
+use aidash_domain::{Event, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
@@ -17,22 +17,22 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct Authority<'a> {
-	pub(crate) workspaces: &'a Workspaces,
+	pub(crate) threads: &'a Threads,
 }
 #[async_trait]
 impl StreamAuthorityStore for Authority<'_> {
 	fn tenant(&self) -> &str {
-		&self.workspaces.identity.tenant
+		&self.threads.identity.tenant
 	}
 	fn subject(&self) -> &str {
-		&self.workspaces.identity.subject
+		&self.threads.identity.subject
 	}
 	fn node_id(&self) -> &str {
-		self.workspaces.store.deployment.as_str()
+		self.threads.store.deployment.as_str()
 	}
 	fn reports_status(&self, issuer: &str) -> bool {
 		if self
-			.workspaces
+			.threads
 			.store
 			.pool
 			.dashboard_policy()
@@ -45,16 +45,20 @@ impl StreamAuthorityStore for Authority<'_> {
 	fn now(&self) -> chrono::DateTime<chrono::Utc> {
 		chrono::Utc::now()
 	}
-	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>> {
+	async fn current(&self, thread: Option<Uuid>) -> Result<Option<AuthorityRecord>> {
 		let result: NativeResult<Option<AuthorityRecord>> = async {
-			self.workspaces
+			self.threads
 				.identity
-				.check_binding(&self.workspaces.store.pool)
+				.check_binding(&self.threads.store.pool)
 				.await?;
 			struct Current {
 				revision: i64,
 				document: Value,
 				owner_subject: Option<String>,
+				duty_id: Option<Uuid>,
+				node: Option<String>,
+				node_label: Option<String>,
+				node_default: Option<bool>,
 				mapping_id: Option<Uuid>,
 				mapping_enabled: Option<bool>,
 				mapping_tenant: Option<String>,
@@ -66,6 +70,10 @@ impl StreamAuthorityStore for Authority<'_> {
 				revision,
 				document,
 				owner_subject,
+				duty_id,
+				node,
+				node_label,
+				node_default,
 				mapping_id,
 				mapping_enabled,
 				mapping_tenant,
@@ -83,6 +91,18 @@ impl StreamAuthorityStore for Authority<'_> {
 					(Alias::new("b"), Alias::new("document")),
 					(Alias::new("w"), Alias::new("owner_subject")),
 				])
+				// The selected Thread's Duty, from the same statement (#1008).
+				.expr_as(
+					crate::apps::workspaces::repositories::duties::own_duty(
+						col("w", "thread_id").into(),
+						col("w", "tenant").into(),
+					),
+					Alias::new("duty_id"),
+				)
+				// The selected Thread's Node, for its administrator (#1008).
+				.expr_as(col("n", "name"), Alias::new("node"))
+				.expr_as(col("n", "label"), Alias::new("node_label"))
+				.expr_as(col("n", "is_default"), Alias::new("node_default"))
 				.expr_as(col("m", "id"), Alias::new("mapping_id"))
 				.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
 				.expr_as(col("m", "tenant"), Alias::new("mapping_tenant"))
@@ -118,36 +138,56 @@ impl StreamAuthorityStore for Authority<'_> {
 				.join(
 					reinhardt::query::JoinType::LeftJoin,
 					reinhardt::query::TableRef::table_alias(
-						Alias::new("authorization_workspaces"),
+						Alias::new("authorization_threads"),
 						Alias::new("w"),
 					),
 					Condition::all()
-						.add(col("w", "workspace_id").eq(Expr::value(workspace)))
+						.add(col("w", "thread_id").eq(Expr::value(thread)))
 						.add(col("w", "tenant").equals((Alias::new("c"), Alias::new("tenant")))),
+				)
+				.join(
+					reinhardt::query::JoinType::LeftJoin,
+					reinhardt::query::TableRef::table_alias(
+						Alias::new("threads"),
+						Alias::new("t"),
+					),
+					Condition::all()
+						.add(col("t", "id").equals((Alias::new("w"), Alias::new("thread_id"))))
+						.add(col("t", "tenant").equals((Alias::new("w"), Alias::new("tenant")))),
+				)
+				.join(
+					reinhardt::query::JoinType::LeftJoin,
+					reinhardt::query::TableRef::table_alias(
+						Alias::new("nodes"),
+						Alias::new("n"),
+					),
+					Condition::all()
+						.add(col("n", "name").equals((Alias::new("t"), Alias::new("node"))))
+						.add(col("n", "tenant").equals((Alias::new("t"), Alias::new("tenant")))),
 				)
 				.and_where(col("c", "id").eq(Expr::cust("$1")))
 				.and_where(col("c", "tenant").eq(Expr::cust("$2")))
 				.and_where(col("c", "subject").eq(Expr::cust("$3")))
 				.and_where(col("c", "revoked_at").is_null())
 				.and_where(col("c", "expires_at").gt(Expr::cust("clock_timestamp()")));
-			if let Some(workspace) = workspace {
+			if let Some(thread) = thread {
 				query.and_where(
-					crate::apps::identity::repositories::nodes::live_workspace_condition(
-						Expr::value(workspace).into(),
-						Expr::value(self.workspaces.identity.tenant.clone()).into(),
+					crate::apps::identity::repositories::nodes::live_thread_condition(
+						Expr::value(thread).into(),
+						Expr::value(self.threads.identity.tenant.clone()).into(),
 					),
 				);
 			}
 			let current: Option<Current> =
 				crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
-					.bind(self.workspaces.identity.credential_id)
-					.bind(&self.workspaces.identity.tenant)
-					.bind(&self.workspaces.identity.subject)
+					.bind(self.threads.identity.credential_id)
+					.bind(&self.threads.identity.tenant)
+					.bind(&self.threads.identity.subject)
 					.fetch_optional(
-						self.workspaces
+						self.threads
 							.store
 							.pool
-							.in_scope(&self.workspaces.identity.tenancy()?),
+							.in_scope(&self.threads.identity.tenancy()?),
 					)
 					.await?;
 			if let Some(current) = &current {
@@ -155,14 +195,14 @@ impl StreamAuthorityStore for Authority<'_> {
 					revision: current.revision,
 					bundle: serde_json::from_value(current.document.clone())?,
 				};
-				self.workspaces
+				self.threads
 					.store
 					.pool
-					.atomic(&self.workspaces.identity.tenancy()?, async |tx| {
+					.atomic(&self.threads.identity.tenancy()?, async |tx| {
 						crate::authorization::identity::require_live_subject(
 							tx,
 							&snapshot,
-							&self.workspaces.identity.subject,
+							&self.threads.identity.subject,
 						)
 						.await
 					})
@@ -175,11 +215,11 @@ impl StreamAuthorityStore for Authority<'_> {
 					.mapping_tenant
 					.as_deref()
 					.ok_or(crate::Error::Forbidden)?;
-				if tenant != self.workspaces.identity.tenant {
+				if tenant != self.threads.identity.tenant {
 					return Err(crate::Error::Forbidden);
 				}
 				crate::authorization::identity::require_dashboard_mapping(
-					self.workspaces.store.pool.dashboard_policy().as_ref(),
+					self.threads.store.pool.dashboard_policy().as_ref(),
 					current.issuer.as_deref().ok_or(crate::Error::Forbidden)?,
 					tenant,
 				)?;
@@ -188,6 +228,19 @@ impl StreamAuthorityStore for Authority<'_> {
 				revision: current.revision,
 				document: current.document,
 				owner_subject: current.owner_subject,
+				duty_id: current.duty_id,
+				node: current
+					.node
+					.zip(current.node_label)
+					.zip(current.node_default)
+					.map(|((id, label), default)| Resource {
+						tenant: self.tenant().into(),
+						kind: "node".into(),
+						id,
+						attributes: crate::apps::identity::repositories::nodes::policy_attributes(
+							&label, default,
+						),
+					}),
 				mapping_id: current.mapping_id,
 				mapping_enabled: current.mapping_enabled,
 				issuer: current.issuer,
@@ -201,13 +254,13 @@ impl StreamAuthorityStore for Authority<'_> {
 }
 #[async_trait]
 impl StreamSession for Reads<'_> {
-	async fn event_workspaces(&mut self, workspace: Option<Uuid>) -> Result<Vec<Uuid>> {
-		Box::pin(self.access.event_workspaces(workspace))
+	async fn event_threads(&mut self, thread: Option<Uuid>) -> Result<Vec<Uuid>> {
+		Box::pin(self.access.event_threads(thread))
 			.await
 			.map_err(Into::into)
 	}
-	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		Box::pin(self.access.require_workspace(workspace, action))
+	async fn require_thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
+		Box::pin(self.access.require_thread(thread, action))
 			.await
 			.map_err(Into::into)
 	}
@@ -216,8 +269,8 @@ impl StreamSession for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool> {
-		Box::pin(self.access.allowed(workspace, action))
+	async fn allowed(&mut self, thread: Uuid, action: &str) -> Result<bool> {
+		Box::pin(self.access.allowed(thread, action))
 			.await
 			.map_err(Into::into)
 	}
@@ -229,7 +282,7 @@ impl StreamSession for Reads<'_> {
 	async fn stream_rows(
 		&mut self,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 	) -> Result<Vec<Event>> {
 		let result: NativeResult<Vec<Event>> = async {
@@ -240,7 +293,7 @@ impl StreamSession for Reads<'_> {
 					.and_where(
 						Condition::all()
 							.add(event_scope(
-								workspace.is_none(),
+								thread.is_none(),
 								&self.access.identity.tenant,
 								visible,
 							))
@@ -260,7 +313,7 @@ impl StreamSession for Reads<'_> {
 	async fn read_rows(
 		&mut self,
 		cursor: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 		page_size: usize,
 	) -> Result<Vec<Event>> {
@@ -272,7 +325,7 @@ impl StreamSession for Reads<'_> {
 					.and_where(
 						Condition::all()
 							.add(event_scope(
-								workspace.is_none(),
+								thread.is_none(),
 								&self.access.identity.tenant,
 								visible,
 							))

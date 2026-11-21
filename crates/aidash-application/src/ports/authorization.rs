@@ -34,7 +34,7 @@ pub trait ExecutionGrantSession: Send {
 	/// did. A chain too long to walk to its start also counts, so admission
 	/// fails closed.
 	async fn federated_origin(&mut self, task: Uuid) -> Result<bool>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	fn set_context(&mut self, context: Value);
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 }
@@ -44,7 +44,7 @@ pub mod admission;
 pub mod visibility;
 
 pub mod lease;
-pub mod workspaces;
+pub mod threads;
 
 pub mod projection;
 

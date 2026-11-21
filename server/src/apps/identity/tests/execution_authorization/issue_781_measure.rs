@@ -15,7 +15,7 @@ async fn cancel(app: &common::TestApplication, token: &str, run: Uuid) -> (u16, 
 		app,
 		token,
 		"POST",
-		&format!("/api/runs/{run}/control"),
+		&format!("/api/executions/{run}/control"),
 		json!({"action":"cancel"}),
 	)
 	.await
@@ -59,11 +59,17 @@ async fn person_sees(case: &str, app: &common::TestApplication, token: &str, run
 			(status, listed),
 		);
 	}
-	let (status, run_body) =
-		request(app, token, "GET", &format!("/api/runs/{run}"), Value::Null).await;
+	let (status, run_body) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/executions/{run}"),
+		Value::Null,
+	)
+	.await;
 	note(
 		case,
-		"GET /api/runs/{run} status, phase, control",
+		"GET /api/executions/{run} status, phase, control",
 		(
 			status,
 			run_body["phase"].clone(),

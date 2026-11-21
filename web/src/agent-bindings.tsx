@@ -83,10 +83,10 @@ export const defaults = [
   "memory_recall",
   "memory_reflect",
   // The core capability `schedules` (#557), on by default.
-  "schedule_create",
-  "schedule_list",
-  "schedule_update",
-  "schedule_delete",
+  "duty_create",
+  "duty_list",
+  "duty_update",
+  "duty_delete",
 ];
 export const coordinatorDefaults = [
   "task_create",

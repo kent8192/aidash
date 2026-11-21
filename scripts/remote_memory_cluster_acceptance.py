@@ -186,9 +186,9 @@ class RemoteMemory(Cluster):
         self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "model": "home-vector", "model_version": "1", "dimensions": 3}
         self.register(0, "embedding", "home-embedding", self.embedding)
 
-    def workspace(self):
-        workspace = self.ok(self.user(0, "/api/workspaces", {"title": "Remote memory acceptance", "goal": "Search the approved archive"}))["id"]
-        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+    def thread(self):
+        thread = self.ok(self.user(0, "/api/threads", {"title": "Remote memory acceptance"}))["id"]
+        self.ok(self.user(0, f"/api/threads/{thread}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None},
             "enabled": True, "auto_context": True, "max_sources": 100, "max_results": 10, "max_result_tokens": 4096, "max_input_bytes": 32768}}))
         entries = []
@@ -196,9 +196,9 @@ class RemoteMemory(Cluster):
                                  ("exact", f"{self.nodes[1]['address']}/agents/research@1.0.0", "Exact executor marker: silver fern."),
                                  ("other-node", f"{self.nodes[0]['address']}/agents/research@1.0.0", "DO NOT DISCLOSE: Home Agent scope."),
                                  ("other-version", f"{self.nodes[1]['address']}/agents/research@1.0.1", "DO NOT DISCLOSE: other definition version.")]:
-            entries.append(self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries", {"key": key, "expected_revision": 0, "source": {"kind": "memory", "text": text}, "agent": owner, "metadata": {}})))
-        self.until(lambda: all(e["state"] == "READY" for e in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))["entries"]), "Home index ready")
-        return workspace, entries[0]
+            entries.append(self.ok(self.user(0, f"/api/threads/{thread}/semantic/entries", {"key": key, "expected_revision": 0, "source": {"kind": "memory", "text": text}, "agent": owner, "metadata": {}})))
+        self.until(lambda: all(e["state"] == "READY" for e in self.ok(self.user(0, f"/api/threads/{thread}/semantic/entries"))["entries"]), "Home index ready")
+        return thread, entries[0]
 
     def activate(self, task, agent):
         grant = str(uuid.uuid4())
@@ -225,8 +225,8 @@ class RemoteMemory(Cluster):
     def ordinary(self):
         record = {"name": "ordinary-worker-sigkill", "started_at": now(), "result": "failed"}
         self.evidence["cases"].append(record)
-        workspace, _ = self.workspace()
-        task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Remote research", "description": "Find the relevant non-keyword archive marker"}))["id"]
+        thread, _ = self.thread()
+        task = self.ok(self.user(0, f"/api/threads/{thread}/tasks", {"title": "Remote research", "description": "Find the relevant non-keyword archive marker"}))["id"]
         grant, run = self.activate(task, {"id": "research", "version": "1.0.0"})
         record.update(task=task, grant=grant, run=run)
         embeddings = len(self.captured("embedding"))
@@ -250,7 +250,7 @@ class RemoteMemory(Cluster):
         entry = self.entries[node][name]
         return {"node_id": self.nodes[node]["address"], "entry": ref(entry), "digest": digest(entry), "configuration_digest": digest(entry["config"])}
 
-    def generated_task(self, workspace, policy_suffix=""):
+    def generated_task(self, thread, policy_suffix=""):
         parent_policy = "remote-parent" + policy_suffix
         child_policy = "remote-child" + policy_suffix
         capability = "unique-parent-specialist" + policy_suffix
@@ -262,7 +262,7 @@ class RemoteMemory(Cluster):
         parent["embedding"] = {"provider": {"id": "home-embedding", "version": "1.0.0"}, "calls_per_agent": 10, "call_budget": 40}
         parent["remote"] = {"inference": [self.descriptor(1, "model")]}
         self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/policies/{parent_policy}", {"expected_revision": 0, "spec": parent}))
-        parent_task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Generated origin", "description": "Delegate scoped memory research", "requirements": {"capability": capability}}))["id"]
+        parent_task = self.ok(self.user(0, f"/api/threads/{thread}/tasks", {"title": "Generated origin", "description": "Delegate scoped memory research", "requirements": {"capability": capability}}))["id"]
         assigned = self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/tasks/{parent_task}/assign", {"policy_id": parent_policy, "reason": "Generated ancestor acceptance"}))
         assert assigned["kind"] == "generated", assigned
         self.scale(0, "worker", 1)
@@ -271,7 +271,7 @@ class RemoteMemory(Cluster):
             return bool(runs and runs[0]["phase"] == "WAITING")
         self.until(waiting, "actual generated task_create and human_request")
         self.scale(0, "worker", 0)
-        tasks = self.ok(self.user(0, f"/api/workspaces/{workspace}"))["tasks"]
+        tasks = self.ok(self.user(0, f"/api/threads/{thread}"))["tasks"]
         children = [t for t in tasks if t["title"] == "Generated remote research"]
         assert len(children) == 1, tasks
         child = children[0]["id"]
@@ -299,8 +299,8 @@ class RemoteMemory(Cluster):
     def generated(self):
         record = {"name": "generated-home-sigkill-link-outage-and-restart", "started_at": now(), "result": "failed"}
         self.evidence["cases"].append(record)
-        workspace, source = self.workspace()
-        child, agent, parent = self.generated_task(workspace)
+        thread, source = self.thread()
+        child, agent, parent = self.generated_task(thread)
         task = child["id"]
         # PostgreSQL restarts can legitimately trigger background source reindexing.
         # Count this task's query input so those calls cannot imitate a resend.
@@ -359,13 +359,13 @@ class RemoteMemory(Cluster):
             budget = next(b for b in final[node]["budgets"] if b["request_id"] == usage[0]["request_id"])
             assert budget["used_tokens"] >= old["reserved_tokens"] + 3 and budget["embedding_calls"] >= 2, budget
         record["completed"] = final
-        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries/{source['id']}", {"expected_revision": source["revision"]}, "DELETE"))
+        self.ok(self.user(0, f"/api/threads/{thread}/semantic/entries/{source['id']}", {"expected_revision": source["revision"]}, "DELETE"))
         assert self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/semantic")[0] == 403
-        assert self.user(1, f"/api/runs/{run}")[0] == 403
-        control = self.ok(self.user(1, f"/api/runs/{run}/management"))
+        assert self.user(1, f"/api/executions/{run}")[0] == 403
+        control = self.ok(self.user(1, f"/api/executions/{run}/management"))
         assert not {"context", "pending", "error"}.intersection(control), control
         assert control["id"] == run and control["phase"] == "COMPLETED", control
-        assert self.user(1, f"/api/runs/{run}/management", {"action": "cancel"})[0] == 409
+        assert self.user(1, f"/api/executions/{run}/management", {"action": "cancel"})[0] == 409
         record["content_free_control"] = control
         record["result"] = "passed"
 

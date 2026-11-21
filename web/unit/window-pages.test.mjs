@@ -9,7 +9,7 @@ import {
   rereadPages,
   uniqueById,
 } from "../src/window-pages.ts";
-import { workspaceStatus } from "../src/shell/workspace-status.ts";
+import { threadStatus } from "../src/shell/thread-status.ts";
 
 test("a fresh window keeps loaded older rows and wins for shared ids", () => {
   const fresh = [
@@ -53,19 +53,19 @@ test("the advanced cursor survives a refresh until the window holds everything",
   assert.equal(olderRows(loaded, null), null);
 });
 
-const task = (id, workspace_id, status) => ({ id, workspace_id, status });
-const request = (workspace_id, response = null) => ({ workspace_id, response });
+const task = (id, thread_id, status) => ({ id, thread_id, status });
+const request = (thread_id, response = null) => ({ thread_id, response });
 
 test("a complete Task window shows done, idle and counts", () => {
   const complete = { moreTasks: false, moreRequests: false };
   const tasks = [task("t1", "w1", "COMPLETED"), task("t2", "w1", "COMPLETED")];
-  assert.deepEqual(workspaceStatus(tasks, [], "w1", complete), {
+  assert.deepEqual(threadStatus(tasks, [], "w1", complete), {
     tone: "done",
     progress: { completed: 2, total: 2 },
     pending: 0,
     pendingMore: false,
   });
-  assert.equal(workspaceStatus(tasks, [], "w2", complete).tone, "idle");
+  assert.equal(threadStatus(tasks, [], "w2", complete).tone, "idle");
 });
 
 test("a truncated Task window claims neither done nor idle", () => {
@@ -77,15 +77,15 @@ test("a truncated Task window claims neither done nor idle", () => {
     task("t4", "w4", "RUNNING"),
   ];
   const requests = [request("w1"), request("w1", { approved: true })];
-  assert.deepEqual(workspaceStatus(tasks, requests, "w1", truncated), {
+  assert.deepEqual(threadStatus(tasks, requests, "w1", truncated), {
     tone: "unknown",
     progress: null,
     pending: 1,
     pendingMore: true,
   });
-  assert.equal(workspaceStatus(tasks, [], "w2", truncated).tone, "unknown");
-  assert.equal(workspaceStatus(tasks, [], "w3", truncated).tone, "attention");
-  assert.equal(workspaceStatus(tasks, [], "w4", truncated).tone, "active");
+  assert.equal(threadStatus(tasks, [], "w2", truncated).tone, "unknown");
+  assert.equal(threadStatus(tasks, [], "w3", truncated).tone, "attention");
+  assert.equal(threadStatus(tasks, [], "w4", truncated).tone, "active");
 });
 
 // Rows w1 (oldest) .. w9; pages of two, each continuing after its last id.
@@ -100,7 +100,7 @@ function pageAfter(cursor) {
 }
 
 test("a moved window boundary re-reads the loaded range without a gap", async () => {
-  // The window held w9..w8 and one page (w7, w6) was loaded. A new Workspace
+  // The window held w9..w8 and one page (w7, w6) was loaded. A new Thread
   // w10 moves the boundary to w9: re-reading from it brings w8 back.
   const result = await rereadPages(
     async (cursor) => pageAfter(cursor),

@@ -238,8 +238,8 @@ pub async fn share(
 		),
 	]);
 	let received_authority = async {
-		let workspace = scope.workspace(recipient.workspace_id).await?;
-		scope.require(&workspace, "workspace.read").await?;
+		let thread = scope.thread(recipient.thread_id).await?;
+		scope.require(&thread, "thread.read").await?;
 		let _entry = scope
 			.entry(
 				&EntityRef {
@@ -261,10 +261,10 @@ pub async fn share(
 		// Both the existing recipient data and the incoming source constraints
 		// must be readable by every recipient subject at this commit boundary.
 		scope
-			.source_authority(recipient.workspace_id, &recipient.constraints)
+			.source_authority(recipient.thread_id, &recipient.constraints)
 			.await?;
 		scope
-			.source_authority(area.workspace_id, &area.constraints)
+			.source_authority(area.thread_id, &area.constraints)
 			.await
 	}
 	.await;
@@ -335,7 +335,7 @@ pub async fn share(
 	scope.collaboration(id, area.id, result.clone()).await?;
 
 	scope.cache(input.idempotency_key, &digest, &result).await?;
-	scope.event(area.workspace_id,"capability.files_shared",json!({"transfer_id":id,"sender_area":area.id,"recipient_area":recipient.id,"manifest_digest":manifest_digest})).await?;
+	scope.event(area.thread_id,"capability.files_shared",json!({"transfer_id":id,"sender_area":area.id,"recipient_area":recipient.id,"manifest_digest":manifest_digest})).await?;
 	Ok(result)
 }
 #[cfg(test)]

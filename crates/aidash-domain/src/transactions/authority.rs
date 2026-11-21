@@ -69,7 +69,7 @@ pub struct SourceAdmission {
 	pub subject_chain: Vec<String>,
 	pub source_tenant: String,
 	pub source_subject: String,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub agent_version: String,
 }
@@ -84,7 +84,7 @@ impl SourceAdmission {
 			&& self.credential_id == identity.credential_id
 			&& self.source_tenant == origin.tenant
 			&& self.source_subject == origin.subject
-			&& self.workspace_id == run.workspace_id
+			&& self.thread_id == run.thread_id
 			&& self.agent_id == run.agent_id
 			&& self.agent_version == run.agent_version
 			&& self.subject_chain.first() == Some(&identity.subject)

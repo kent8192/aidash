@@ -119,7 +119,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	.unwrap();
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	let run = a.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let path = format!("/api/runs/{}", run.id);
+	let path = format!("/api/executions/{}", run.id);
 	assert_eq!(
 		request(&a_app, &token, "GET", &path, Value::Null).await.0,
 		200
@@ -279,10 +279,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		.clone()
 		.request(
 			Method::GET,
-			a_app.url(format!(
-				"/api/events/stream?workspace_id={}",
-				run.workspace_id
-			)),
+			a_app.url(format!("/api/events/stream?thread_id={}", run.thread_id)),
 		)
 		.header("authorization", format!("Bearer {token}"))
 		.send()
@@ -324,7 +321,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 			&a_app,
 			&token,
 			"POST",
-			&format!("/api/workspaces/{}/messages", run.workspace_id),
+			&format!("/api/threads/{}/messages", run.thread_id),
 			json!({"content":"public-stream-tail"})
 		)
 		.await

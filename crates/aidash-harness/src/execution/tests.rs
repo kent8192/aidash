@@ -104,7 +104,7 @@ impl Scope {
 				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				id: leases.run,
 				task_id: Uuid::new_v4(),
-				workspace_id: Uuid::new_v4(),
+				thread_id: Uuid::new_v4(),
 				home_node: "fixture".into(),
 				agent_id: "fixture".into(),
 				agent_version: "1".into(),
@@ -145,7 +145,7 @@ impl ExecutionRecoveryStore for Scope {
 			"authority failures must pause"
 		);
 		assert_eq!(run.recovery.lease_recoveries, 0);
-		assert_eq!(event, "run.retrying");
+		assert_eq!(event, "execution.retrying");
 		self.trace.lock().unwrap().push("save");
 		Ok(())
 	}
@@ -167,7 +167,7 @@ impl ExecutionRecoveryStore for Scope {
 			reason.ends_with(": an authority check refused this step"),
 			"{reason}"
 		);
-		assert_eq!(event, "run.authorization_blocked");
+		assert_eq!(event, "execution.authorization_blocked");
 		self.trace.lock().unwrap().push("pause");
 		Ok(())
 	}
@@ -496,7 +496,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) 
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			workspace_id: Uuid::new_v4(),
+			thread_id: Uuid::new_v4(),
 			home_node: "aidash://delivery-home".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1".into(),

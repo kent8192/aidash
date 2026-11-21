@@ -112,7 +112,7 @@ impl DashboardExecutionOrigin {
 		// PAUSED, and its stale Run revision cannot overwrite this stop.
 		Run::worker_context(db).await?;
 		let update = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("control"), "PAUSED")
 			.value(Alias::new("error"), "external identity disabled")
 			.value_expr(

@@ -148,7 +148,11 @@ pub(crate) async fn record(
 					.expr(Expr::value(0_i32))
 					.expr(Expr::value(attempts as i32))
 					.expr(Expr::value(expires))
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			)
 			.on_conflict(

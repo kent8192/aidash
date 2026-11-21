@@ -61,7 +61,7 @@ impl WorkerStep for Scope {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::nil(),
 			task_id: Uuid::nil(),
-			workspace_id: Uuid::nil(),
+			thread_id: Uuid::nil(),
 			home_node: "fixture".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1".into(),

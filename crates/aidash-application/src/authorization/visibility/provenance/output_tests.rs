@@ -38,9 +38,9 @@ impl crate::ports::authorization::visibility::RowOutcome for Scope {
 }
 #[async_trait]
 impl LocalOutputScope for Scope {
-	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		self.touch("producers")?;
-		self.scopes.push((workspace, kind.into(), id));
+		self.scopes.push((thread, kind.into(), id));
 		Ok(self.producers.clone())
 	}
 	async fn producer_reads_visible(&mut self, run: Uuid) -> Result<bool> {
@@ -55,9 +55,9 @@ impl LocalOutputScope for Scope {
 }
 #[async_trait]
 impl OutputScope for Scope {
-	async fn remote_grants(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+	async fn remote_grants(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		self.touch("grants")?;
-		self.scopes.push((workspace, kind.into(), id));
+		self.scopes.push((thread, kind.into(), id));
 		Ok(self.grants.clone())
 	}
 	async fn grant_visible(&mut self, grant: Uuid) -> Result<bool> {
@@ -82,18 +82,18 @@ fn fixture() -> Scope {
 #[tokio::test]
 async fn all_remote_grants_are_authorized_before_loading_or_reading_local_producers() {
 	let mut scope = fixture();
-	let workspace = Uuid::from_u128(5);
+	let thread = Uuid::from_u128(5);
 	let id = Uuid::from_u128(6);
 	assert!(
-		output_visible(&mut scope, workspace, "artifact", id)
+		output_visible(&mut scope, thread, "artifact", id)
 			.await
 			.unwrap()
 	);
 	assert_eq!(
 		scope.scopes,
 		vec![
-			(workspace, "artifact".into(), id),
-			(workspace, "artifact".into(), id)
+			(thread, "artifact".into(), id),
+			(thread, "artifact".into(), id)
 		]
 	);
 	assert_eq!(

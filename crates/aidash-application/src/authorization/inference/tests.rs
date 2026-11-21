@@ -34,7 +34,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
-		workspace_id: id(3),
+		thread_id: id(3),
 		home_node: "aidash://home".into(),
 		agent_id: "producer".into(),
 		agent_version: "2".into(),
@@ -116,7 +116,7 @@ impl InferenceScope for Scope {
 		self.record(&format!("{}:{action}", reference.id))
 	}
 	async fn memory_resource(&mut self, run: &RunMetadata) -> Result<Resource> {
-		assert_eq!(run.workspace_id, id(3));
+		assert_eq!(run.thread_id, id(3));
 		self.record("memory")?;
 		Ok(Resource {
 			tenant: "tenant".into(),

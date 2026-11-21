@@ -5,12 +5,12 @@ pub mod access;
 pub mod attachments;
 #[path = "history.rs"]
 pub mod history;
-#[path = "threads.rs"]
-pub mod threads;
+#[path = "posting.rs"]
+pub mod posting;
 
 pub use crate::apps::workspaces::serializers::{
 	ChannelAttachment, ChannelAttachmentUploadQuery, ChannelHistoryQuery, ChannelMessage,
-	ChannelMessageInput, ChannelMessagePage, ChannelThread, ChannelThreadInput,
+	ChannelMessageInput, ChannelMessagePage,
 };
 
 #[path = "entities.rs"]

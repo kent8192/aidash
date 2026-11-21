@@ -18,6 +18,11 @@ pub struct CoreRuns {
 	pub initialized: bool,
 	#[field]
 	pub generation: i64,
+	/// The execution sleeps, or is paused, and so holds no place in its
+	/// Working Area's queue: later executions of the Area run meanwhile, and
+	/// it re-enters at the tail when it wakes (#1008, ADR 0140).
+	#[field(default = false)]
+	pub asleep: bool,
 }
 
 impl CoreRuns {}

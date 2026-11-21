@@ -54,7 +54,7 @@ impl RunSemanticJournal for Journal {
 								vec![Expr::value(query_bind_3.to_owned()).into()]
 							))
 							.expr(crate::database::scope::tenant_of(
-								"runs",
+								"task_executions",
 								"id",
 								query_bind_1
 							))

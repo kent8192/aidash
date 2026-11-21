@@ -52,7 +52,7 @@ crate::native_record!(AttachmentMetadataRow {
 
 async fn attachment_metadata(
 	access: &mut Access,
-	workspace: Uuid,
+	thread: Uuid,
 	messages: &[Uuid],
 ) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
 	if messages.is_empty() {
@@ -74,7 +74,7 @@ async fn attachment_metadata(
 			.map(Alias::new),
 		)
 		.from(Alias::new("channel_attachments"))
-		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+		.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 		.and_where(
 			Expr::col(Alias::new("message_id")).is_in(messages.iter().copied().map(Expr::value)),
 		)
@@ -125,7 +125,7 @@ impl LocalRunVisibilityScope for Reads<'_> {
 			.then(|| {
 				self.access
 					.cached_runs
-					.get(&(run.workspace_id, run.id))
+					.get(&(run.thread_id, run.id))
 					.copied()
 			})
 			.flatten()
@@ -138,14 +138,14 @@ impl LocalRunVisibilityScope for Reads<'_> {
 		if self.access.dependency_frontier.is_none() {
 			self.access
 				.cached_runs
-				.insert((run.workspace_id, run.id), allowed);
+				.insert((run.thread_id, run.id), allowed);
 		}
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn memory_resource(&mut self, run: &RunMetadata, _: &Resource) -> Result<Resource> {
 		self.access.memory_resource(run).await.map_err(Into::into)
@@ -159,9 +159,9 @@ impl LocalRunVisibilityScope for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
+	async fn human_reads(&mut self, thread: Uuid, run: Uuid) -> Result<bool> {
 		self.access
-			.human_reads(workspace, run)
+			.human_reads(thread, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -174,14 +174,14 @@ impl LocalRunVisibilityScope for Reads<'_> {
 		self.access.run_reads_visible(run).await.map_err(Into::into)
 	}
 	async fn task(&mut self, run: &RunMetadata) -> Result<Option<Task>> {
-		if let Some(task) = self.access.state_task(run.task_id, run.workspace_id) {
+		if let Some(task) = self.access.state_task(run.task_id, run.thread_id) {
 			return Ok(Some(task));
 		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let task: Option<Task> = {
 				let query_bind_1 = run.task_id;
-				let query_bind_2 = run.workspace_id;
+				let query_bind_2 = run.thread_id;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
@@ -197,7 +197,7 @@ impl LocalRunVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -260,14 +260,14 @@ impl RunVisibilityScope for Reads<'_> {
 			let local: Option<Uuid> = {
 				let query_bind_1 = run.id;
 				let query_bind_2 = run.task_id;
-				let query_bind_3 = run.workspace_id;
+				let query_bind_3 = run.thread_id;
 				let query_bind_4 = &this.identity.tenant;
 				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("run_id"))
 						.from(Alias::new("authorization_execution"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(run_id=? AND task_id=? AND workspace_id=? AND tenant=?)".to_owned(),
+							"(run_id=? AND task_id=? AND thread_id=? AND tenant=?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -297,8 +297,8 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn memory_resource(&mut self, run: &RunMetadata, _: &Resource) -> Result<Resource> {
 		self.access.memory_resource(run).await.map_err(Into::into)
@@ -308,7 +308,7 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 		crate::apps::workspaces::models::Task::read_in(
 			self.access.tx.as_mut(),
 			run.task_id,
-			run.workspace_id,
+			run.thread_id,
 		)
 		.await
 		.map_err(Into::into)
@@ -322,9 +322,9 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
+	async fn human_reads(&mut self, thread: Uuid, run: Uuid) -> Result<bool> {
 		self.access
-			.human_reads(workspace, run)
+			.human_reads(thread, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -382,7 +382,7 @@ impl EventVisibilityScope for Reads<'_> {
 			None
 		};
 		if let Some(kind) = kind {
-			if event.workspace_id.is_some()
+			if event.thread_id.is_some()
 				|| event.data["tenant"].as_str() != Some(self.access.identity.tenant.as_str())
 			{
 				return Ok(Some(false));
@@ -434,13 +434,13 @@ impl EventVisibilityScope for Reads<'_> {
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_visible(run).await.map_err(Into::into)
 	}
-	async fn generation(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Request>> {
+	async fn generation(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Request>> {
 		let result: NativeResult<Option<Request>> = async {
 			let this = &mut *self.access;
 			let job: Option<crate::generation::Request> = {
 				let query_bind_1 = id;
 				let query_bind_2 = &this.identity.tenant;
-				let query_bind_3 = workspace;
+				let query_bind_3 = thread;
 				crate::database::query_as(
 					&Query::select()
 						.column(Asterisk)
@@ -465,7 +465,7 @@ impl EventVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -486,13 +486,13 @@ impl EventVisibilityScope for Reads<'_> {
 	async fn conversation(
 		&mut self,
 		id: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 	) -> Result<Option<Conversation>> {
 		let result: NativeResult<Option<Conversation>> = async {
 			let this = &mut *self.access;
 			let conversation: Option<Conversation> = {
 				let query_bind_1 = id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
@@ -508,7 +508,7 @@ impl EventVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -526,12 +526,12 @@ impl EventVisibilityScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn human(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<HumanRequest>> {
+	async fn human(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<HumanRequest>> {
 		let result: NativeResult<Option<HumanRequest>> = async {
 			let this = &mut *self.access;
 			let request: Option<HumanRequest> = {
 				let query_bind_1 = id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
@@ -547,7 +547,7 @@ impl EventVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -565,19 +565,19 @@ impl EventVisibilityScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn run(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<RunMetadata>> {
-		if let Some(run) = workspace.and_then(|workspace| self.access.state_run(id, workspace)) {
+	async fn run(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<RunMetadata>> {
+		if let Some(run) = thread.and_then(|thread| self.access.state_run(id, thread)) {
 			return Ok(Some(run));
 		}
 		let result: NativeResult<Option<RunMetadata>> = async {
 			let this = &mut *self.access;
 			let run: Option<crate::domain::RunMetadata> = {
 				let query_bind_1 = id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.cond_where(
 							Condition::all()
 								.add(
@@ -589,7 +589,7 @@ impl EventVisibilityScope for Reads<'_> {
 								)
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
+										"thread_id",
 									)))
 									.eq(SimpleExpr::CustomWithExpr(
 										"(?)".to_owned(),
@@ -621,7 +621,7 @@ pub(crate) mod semantic;
 
 pub(crate) mod registry_reads;
 
-pub(crate) mod workspaces;
+pub(crate) mod threads;
 
 pub mod projection;
 

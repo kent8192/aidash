@@ -6,8 +6,8 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct WorkspaceUse {
-	pub workspace_id: Uuid,
+pub struct ThreadUse {
+	pub thread_id: Uuid,
 	pub title: String,
 	pub current: bool,
 	pub latest_run_at: DateTime<Utc>,
@@ -19,7 +19,7 @@ pub struct Inspection {
 	pub entry: Entry,
 	pub source_node: String,
 	pub observed_at: DateTime<Utc>,
-	pub workspaces: Vec<WorkspaceUse>,
+	pub threads: Vec<ThreadUse>,
 	pub usage_truncated: bool,
 	pub test_evidence: Vec<TestEvidence>,
 	pub test_evidence_truncated: bool,

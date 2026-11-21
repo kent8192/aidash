@@ -2,7 +2,7 @@
 use crate::apps::{
 	execution::models::Run,
 	registry::workbench::models::{AgentDraft, AgentDraftRegistration, AgentTestSession},
-	workspaces::models::Workspace,
+	workspaces::models::Thread,
 };
 use crate::{
 	authorization::{access::NativeAccess, identity::Actor},
@@ -103,8 +103,8 @@ impl InspectionScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.lease.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.lease.thread(id).await.map_err(Into::into)
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		self.lease
@@ -115,8 +115,8 @@ impl InspectionScope for Scope {
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.lease.run_visible(run).await.map_err(Into::into)
 	}
-	async fn workspace_title(&mut self, id: Uuid) -> Result<Option<String>> {
-		Workspace::title_in(self.tx(), id).await.map_err(Into::into)
+	async fn thread_title(&mut self, id: Uuid) -> Result<Option<String>> {
+		Thread::title_in(self.tx(), id).await.map_err(Into::into)
 	}
 	async fn registrations(&mut self, reference: &EntityRef) -> Result<Vec<Registration>> {
 		Ok(

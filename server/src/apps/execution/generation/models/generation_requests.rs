@@ -20,7 +20,7 @@ pub struct GenerationRequest {
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	/// The Node of the requesting Workspace.
+	/// The Node of the requesting Thread.
 	#[field(field_type = "text")]
 	pub node: String,
 	#[field(field_type = "text")]
@@ -41,7 +41,7 @@ pub struct GenerationRequest {
 	#[field]
 	pub task_id: uuid::Uuid,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
@@ -81,23 +81,18 @@ pub struct GenerationRequest {
 	pub local_task_id: Option<uuid::Uuid>,
 
 	#[field]
-	pub local_workspace_id: Option<uuid::Uuid>,
-
-	/// A Run a Schedule started made this request (#557): the Run its
-	/// generated Agent is delegated never registers or changes Schedules.
-	#[field(default = false)]
-	pub scheduled: bool,
+	pub local_thread_id: Option<uuid::Uuid>,
 }
 
 impl GenerationRequest {
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<Request>> {
 		Self::objects()
 			.filter(Self::field_id().eq(id))
-			.filter(Self::field_workspace_id().eq(workspace))
+			.filter(Self::field_thread_id().eq(thread))
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?
@@ -115,7 +110,7 @@ impl GenerationRequest {
 			admission_id: self.admission_id,
 			prepared: self.prepared,
 			task_id: self.task_id,
-			workspace_id: self.workspace_id,
+			thread_id: self.thread_id,
 			credential_id: self.credential_id,
 			tenant: self.tenant,
 			policy_id: self.policy_key,

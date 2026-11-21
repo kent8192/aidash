@@ -47,7 +47,7 @@ a page that would not fit the remaining request budget is cut short, and its
 never runs its scripts or grants permissions. See
 [deferred capability exposure](../operations/registry-capabilities.md#deferred-capability-exposure).
 
-Workspace and Skill text reads count Unicode scalar values in `offset`,
+Thread and Skill text reads count Unicode scalar values in `offset`,
 `max_chars`, `next_offset`, and `total_chars` wherever those fields are present.
 Japanese characters and emoji each count as one scalar value; a combining mark
 counts separately. Pinned Skill reads and `skill_asset_read` accept `max_chars`.
@@ -84,7 +84,7 @@ Documents live in `agent_knowledge`, bound to the exact agent ID/version. Regist
 entries contain only their SHA-256 digest. Registry reads, discovery, package
 metadata, and registration events do not include document names or contents.
 At inference time, the original agent loads extracted reference text and image names as reference data in the
-user context, separate from Skill and additional instructions. Image bytes are not loaded into every Run. Image references require an approved image-capable embedding pinned by the Agent version; registration embeds every image before atomically saving the documents and its private vector collection. Each Run queries that collection with the pinned definition, separately from Workspace retrieval. If the definition is missing, its Catalog Approval is withdrawn, or its provider no longer has the model, register a new Agent version; temporary provider outages retry. Execution sends this
+user context, separate from Skill and additional instructions. Image bytes are not loaded into every Run. Image references require an approved image-capable embedding pinned by the Agent version; registration embeds every image before atomically saving the documents and its private vector collection. Each Run queries that collection with the pinned definition, separately from Thread retrieval. If the definition is missing, its Catalog Approval is withdrawn, or its provider no longer has the model, register a new Agent version; temporary provider outages retry. Execution sends this
 data to the configured model provider and may produce derived content in artifacts.
 Anyone authorized to run the agent can therefore cause it to use its attached data.
 

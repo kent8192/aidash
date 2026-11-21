@@ -129,12 +129,9 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Usage", "Record inference usage")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&ACME, "alice", "Usage").await.unwrap();
 	let task = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	common::local_run(&store, &ACME, &task, &agent).await;
@@ -272,12 +269,9 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 async fn leased_run(store: &Store, token: Uuid) -> Run {
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Usage", "Record inference usage")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&ACME, "alice", "Usage").await.unwrap();
 	let task = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	common::local_run(store, &ACME, &task, &agent).await;
@@ -303,7 +297,7 @@ async fn dispatch_does_not_wait_for_the_workers_own_run_references(
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),
@@ -363,7 +357,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	sqlx::query(
 		&Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value_expr(
 				Alias::new("lease_until"),
 				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
@@ -853,7 +847,7 @@ async fn evaluation_export_keeps_usage_and_recovery_without_private_context(
 	run.context.estimate.demoted = true;
 	let context = serde_json::to_value(&run.context).unwrap();
 	let update = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value_expr(Alias::new("context"), Expr::value(context))
 		.and_where(Expr::col("id").eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);
@@ -1030,4 +1024,168 @@ async fn summary_dispatch_proof_is_atomic_and_independent_from_compaction_outcom
 	.unwrap();
 	assert_eq!(count, 0);
 	cleanup(store, &url, &schema).await;
+}
+
+async fn ledger(store: &Store) -> (i64, i64) {
+	sqlx::query_as(
+		"SELECT COALESCE(SUM(spent_nanocredits), 0)::bigint, COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend WHERE tenant = 'acme'",
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// A model call's reported cost, or one unpriced call, reaches the Budget
+/// ledger; a Tenant Budget at its Hard Limit refuses the next dispatch with
+/// its action, and raising the limit lets it through (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn budget_ledger_records_spend_and_a_hard_limit_refuses_dispatch(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, _url, _schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let priced = dispatch(token);
+	let reported = ReportedUsage {
+		cost: Some(ProviderCost {
+			nanocredits: 150_000,
+			upstream_nanocredits: None,
+		}),
+		..Default::default()
+	};
+	// Act: one priced call, then one whose cost no provider reported.
+	store
+		.record_usage_dispatch(&ACME, &run, token, &priced)
+		.await
+		.unwrap();
+	store
+		.complete_usage_record(
+			&ACME,
+			&run,
+			priced.attempt,
+			&UsageOutcome::Completed(reported),
+		)
+		.await
+		.unwrap();
+	let unpriced = dispatch(token);
+	store
+		.record_usage_dispatch(&ACME, &run, token, &unpriced)
+		.await
+		.unwrap();
+	store
+		.complete_usage_record(
+			&ACME,
+			&run,
+			unpriced.attempt,
+			&UsageOutcome::Completed(ReportedUsage::default()),
+		)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(ledger(&store).await, (150_000, 1));
+
+	// Arrange: a Tenant Budget whose Hard Limit the spend has reached.
+	let budget = Uuid::now_v7();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 100000, 'stop', '{}', 1, now(), 'alice', now())")
+		.bind(budget)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// Act / Assert: Stop, then Sleep, refuse without recording a dispatch.
+	let refused = dispatch(token);
+	let stopped = store
+		.record_usage_dispatch(&ACME, &run, token, &refused)
+		.await
+		.unwrap_err();
+	assert!(
+		matches!(
+			stopped,
+			aidash_server::Error::BudgetExhausted { stop: true, .. }
+		),
+		"{stopped:?}"
+	);
+	sqlx::query("UPDATE budgets SET on_hard_limit = 'sleep' WHERE id = $1")
+		.bind(budget)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let sleeping = store
+		.record_usage_dispatch(&ACME, &run, token, &refused)
+		.await
+		.unwrap_err();
+	assert!(
+		matches!(
+			sleeping,
+			aidash_server::Error::BudgetExhausted { stop: false, .. }
+		),
+		"{sleeping:?}"
+	);
+	let recorded: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM inference_usage WHERE attempt_id = $1")
+			.bind(refused.attempt)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(recorded, 0);
+	// Act / Assert: a raised limit lets the same call through.
+	sqlx::query("UPDATE budgets SET hard_limit_nanocredits = 1000000000 WHERE id = $1")
+		.bind(budget)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	store
+		.record_usage_dispatch(&ACME, &run, token, &refused)
+		.await
+		.unwrap();
+}
+
+/// An attempt a newer dispatch made unknown still finishes at the provider,
+/// which bills it: its late completion is not written to the record, but the
+/// Budget ledger takes its cost (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_late_completion_of_an_abandoned_attempt_still_reaches_the_budget_ledger(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange: a dispatched attempt that the next dispatch of its purpose
+	// made unknown.
+	let (store, _url, _schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let stale = dispatch(token);
+	store
+		.record_usage_dispatch(&ACME, &run, token, &stale)
+		.await
+		.unwrap();
+	store
+		.record_usage_dispatch(&ACME, &run, token, &dispatch(token))
+		.await
+		.unwrap();
+	assert_eq!(usage_row(&store, stale.attempt).await.0, "unknown");
+	// Act: its completion arrives after all.
+	let written = store
+		.complete_usage_record(
+			&ACME,
+			&run,
+			stale.attempt,
+			&UsageOutcome::Completed(ReportedUsage {
+				cost: Some(ProviderCost {
+					nanocredits: 70_000,
+					upstream_nanocredits: None,
+				}),
+				..Default::default()
+			}),
+		)
+		.await
+		.unwrap();
+	// Assert: the record stays unknown; the ledger has the cost.
+	assert!(!written);
+	assert_eq!(usage_row(&store, stale.attempt).await.0, "unknown");
+	assert_eq!(ledger(&store).await, (70_000, 0));
 }

@@ -32,8 +32,8 @@ fn event(n: u64) -> ContextEvent {
 /// A leased Run whose projection holds `1..=head`, with `1..=imported` recovered
 /// from a pre-journal projection.
 async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uuid) {
-	let (status, created) = request(app, token, "POST", "/api/conversations", json!({
-		"title":"Journal", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	let (status, created) = request(app, token, "POST", "/api/threads", json!({
+		"title":"Journal", "request":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	}))
 	.await;
 	assert_eq!(status, 200, "{created}");
@@ -151,7 +151,7 @@ async fn saves_journal_original_events_with_their_origin(
 	project(&mut run, 3, 2);
 	// Act
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	// Assert
@@ -171,7 +171,7 @@ async fn saves_journal_original_events_with_their_origin(
 	run.context.push(event(4));
 	// Act
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	// Assert: the journal keeps the originals; the projection is lossy.
@@ -334,7 +334,7 @@ async fn a_remote_run_reads_only_its_own_journal(
 	let (_policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (remote, remote_worker) = leased(&f, &app, &token).await;
 	let (other, other_worker) = leased(&f, &app, &token).await;
-	sqlx::query("UPDATE runs SET home_node=$1 WHERE id=$2")
+	sqlx::query("UPDATE task_executions SET home_node=$1 WHERE id=$2")
 		.bind("aidash://elsewhere")
 		.bind(remote.id)
 		.execute(f.store.pool.fixture_driver())
@@ -384,7 +384,7 @@ async fn begin_compaction_abandons_open_attempts_and_enforces_the_call_budget(
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	project(&mut run, 3, 0);
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	let first = attempt(&run, 1, 2);
@@ -454,7 +454,7 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	project(&mut run, 3, 0);
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	let mut compacted = run.clone();
@@ -600,10 +600,10 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 }
 
 /// Source checkpoints adopt their stored revision and retain the lease so
-/// the same step can continue after a pinned estimate or workspace recovery.
+/// the same step can continue after a pinned estimate or thread recovery.
 #[rstest::rstest]
 #[case::estimate(false)]
-#[case::workspace_recovered(true)]
+#[case::thread_recovered(true)]
 #[tokio::test]
 async fn a_source_checkpoint_is_durable_and_keeps_the_lease(
 	#[case] recovered: bool,
@@ -619,7 +619,7 @@ async fn a_source_checkpoint_is_durable_and_keeps_the_lease(
 	run.recovery.degraded.outage = true;
 	run = f
 		.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	let snapshot =
@@ -642,7 +642,7 @@ async fn a_source_checkpoint_is_durable_and_keeps_the_lease(
 	assert_eq!(run.revision, revision + 1);
 	assert_eq!(run.recovery.degraded.outage, !recovered);
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	assert_eq!(
@@ -684,19 +684,19 @@ async fn provider_tools_activity_remains_inspectable_after_projection_compaction
 	});
 	run.context.push(event(2));
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	run.context.history.clear();
 	f.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	let (status, details) = request(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}", run.id),
+		&format!("/api/executions/{}", run.id),
 		Value::Null,
 	)
 	.await;
@@ -719,7 +719,7 @@ async fn provider_tools_activity_remains_inspectable_after_projection_compaction
 		&app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}?offset=100", run.id),
+		&format!("/api/executions/{}?offset=100", run.id),
 		Value::Null,
 	)
 	.await;

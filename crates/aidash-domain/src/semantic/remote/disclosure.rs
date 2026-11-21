@@ -85,7 +85,7 @@ impl Receipt {
 				|| declared.provider.entry != actual.provider
 				|| actual.bank.home != self.home_node
 				|| actual.bank.tenant != self.tenant
-				|| actual.bank.workspace != self.workspace_id
+				|| actual.bank.thread != self.thread_id
 			{
 				return Err(ContractError::Semantic(Failure::ProviderContract));
 			}

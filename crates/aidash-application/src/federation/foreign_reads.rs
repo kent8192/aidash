@@ -11,7 +11,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 	if d.source_node != run.home_node
 		|| d.target_node != format!("{}/{}", scope.node(), run.node)
 		|| d.task.id != run.task_id
-		|| d.task.workspace_id != run.workspace_id
+		|| d.task.thread_id != run.thread_id
 		|| d.inspection.agent.id != run.agent_id
 		|| d.inspection.agent.version != run.agent_version
 		|| d.expires_at <= scope.now()
@@ -21,7 +21,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 	// The admission's trusted source attributes, as every later check of the
 	// same resources carries them; a policy conditioned on them must match here.
 	let source = json!({
-		"source_workspace_id": d.task.workspace_id,
+		"source_thread_id": d.task.thread_id,
 		"source_task_id": d.task.id,
 		"source_task_revision": d.task.revision,
 	});
@@ -31,9 +31,9 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 		}
 		attributes
 	};
-	let workspace = scope.resource(
-		"workspace",
-		&format!("{}/workspaces/{}", run.home_node, run.workspace_id),
+	let thread = scope.resource(
+		"thread",
+		&format!("{}/threads/{}", run.home_node, run.thread_id),
 		with_source(json!({})),
 	);
 	let task = scope.resource(
@@ -49,7 +49,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 			"version":run.agent_version,
 		})),
 	);
-	if !scope.decide(&workspace, "workspace.read").await?
+	if !scope.decide(&thread, "thread.read").await?
 		|| !scope.decide(&task, "task.read").await?
 		|| !scope
 			.decide(
@@ -99,10 +99,10 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 		subject.enabled = true;
 	}
 	let mut source = scope.source_authority(snapshot, record.subjects);
-	if !source.decide(&workspace, "workspace.read").await?
+	if !source.decide(&thread, "thread.read").await?
 		|| !source.decide(&task, "task.read").await?
 		|| !source.decide(&task, "task.execute").await?
-		|| (!d.semantic.disabled() && !source.decide(&workspace, "semantic.use").await?)
+		|| (!d.semantic.disabled() && !source.decide(&thread, "semantic.use").await?)
 	{
 		return Ok(false);
 	}

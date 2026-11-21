@@ -28,7 +28,7 @@ const MANDATORY: [&str; 7] = [
 	"capability_unload",
 	"human_request",
 	"skill_asset_read",
-	"workspace_read",
+	"thread_read",
 ];
 const EAGER: &str = "plugin_0";
 const GUIDE_BODY: &str = "GUIDE-BODY: Draft the release notes from the checklist.";
@@ -189,7 +189,7 @@ async fn deferred_fixture(#[future] scripted_core: Deferred) -> Deferred {
 	}
 	register_approved(
 		&c,
-		json!({"id":"native-semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Native semantic memory"},"description":{"en":"Workspace memory entries only"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}}),
+		json!({"id":"native-semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Native semantic memory"},"description":{"en":"Thread memory entries only"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}}),
 	)
 	.await;
 	for (version, deferred, memory) in [
@@ -301,12 +301,12 @@ impl Deferred {
 			.find(|run| run.task_id == task)
 			.unwrap()
 	}
-	async fn task(&self, workspace: Uuid) -> Uuid {
+	async fn task(&self, thread: Uuid) -> Uuid {
 		let (status, task) = request(
 			&self.c.app,
 			&self.c.token,
 			"POST",
-			&format!("/api/workspaces/{workspace}/tasks"),
+			&format!("/api/threads/{thread}/tasks"),
 			json!({"title":"Second research","description":"Use approved tools"}),
 		)
 		.await;
@@ -582,7 +582,7 @@ async fn native_memory_source_alone_falls_back_to_built_in_memory(
 	d.script(|_, _| Reply::Text("Done."));
 	let legacy = d.delegate(d.c.task, LEGACY).await;
 	completed(&d.drive(legacy.id).await);
-	let second = d.task(legacy.workspace_id).await;
+	let second = d.task(legacy.thread_id).await;
 	let native = d.delegate(second, NATIVE_MEMORY).await;
 	completed(&d.drive(native.id).await);
 	let requests = d.requests().await;
@@ -697,7 +697,7 @@ async fn deferred_invocation_rejections_keep_unloaded_capabilities_unavailable(
 			json!({"file_id":Uuid::nil(),"representation":"text"}),
 		),
 		3 => Reply::Call("skill_load", json!({"skill_id":Uuid::nil()})),
-		4 => Reply::Call("capability_unload", json!({"alias":"workspace_read"})),
+		4 => Reply::Call("capability_unload", json!({"alias":"thread_read"})),
 		5 => Reply::Call(
 			"capability_load",
 			json!({"alias":"file_search","digest":"sha256:stale"}),
@@ -738,7 +738,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 	d.script(|_, context| {
 		if events(context).is_empty() {
 			Reply::Call(
-				"workspace_read",
+				"thread_read",
 				json!({"kind":"task","id":context["current"]["task"]["id"]}),
 			)
 		} else {
@@ -746,7 +746,20 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		}
 	});
 	let first = d.delegate(d.c.task, DEFERRED).await;
-	let second = d.task(first.workspace_id).await;
+	// The failed deferred Run keeps its Thread's Working Area (one per Thread
+	// and Agent since #1008), so the legacy twin works in a Thread of its own.
+	let (status, thread) = request(
+		&d.c.app,
+		&d.c.token,
+		"POST",
+		"/api/threads",
+		json!({"title":"Legacy research"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let second = d
+		.task(serde_json::from_value(thread["id"].clone()).unwrap())
+		.await;
 	let mut outcomes = vec![];
 	for (revision, (task, version)) in [(d.c.task, DEFERRED), (second, LEGACY)]
 		.into_iter()
@@ -1159,7 +1172,7 @@ async fn deferred_exposure_survives_fresh_harness_instances_without_duplication(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deferred_run_message_catch_up_advertises_only_workspace_read(
+async fn deferred_run_message_catch_up_advertises_only_thread_read(
 	#[future] deferred_fixture: Deferred,
 ) {
 	let d = Box::pin(deferred_fixture).await;
@@ -1172,7 +1185,7 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 			.as_array()
 			.into_iter()
 			.flatten()
-			.filter(|entry| entry["requires_workspace_read"] == true)
+			.filter(|entry| entry["requires_thread_read"] == true)
 			.map(|entry| entry["record"]["id"].clone())
 			.chain(
 				current["deferred_run_message_reads"]
@@ -1184,16 +1197,17 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 			.collect::<Vec<_>>();
 		let events = events(context);
 		for id in required {
-			let last = events.iter().rev().find(|(call, _)| {
-				call["name"] == "workspace_read" && call["arguments"]["id"] == id
-			});
+			let last = events
+				.iter()
+				.rev()
+				.find(|(call, _)| call["name"] == "thread_read" && call["arguments"]["id"] == id);
 			match last {
 				None => {
-					return Reply::Call("workspace_read", json!({"kind":"message","id":id}));
+					return Reply::Call("thread_read", json!({"kind":"message","id":id}));
 				}
 				Some((_, result)) if result["next_offset"].is_u64() => {
 					return Reply::Call(
-						"workspace_read",
+						"thread_read",
 						json!({"kind":"message","id":id,"offset":result["next_offset"]}),
 					);
 				}
@@ -1225,7 +1239,7 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 	leased.observed_input_seq = summarized;
 	d.c.f
 		.store
-		.save_run(&TEST_FIXTURE, &leased, worker, "run.message_received")
+		.save_run(&TEST_FIXTURE, &leased, worker, "execution.message_received")
 		.await
 		.unwrap();
 	d.c.f
@@ -1241,14 +1255,11 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 		.partition(|body| instructions(body).contains(CATCH_UP));
 	assert!(!catch_up.is_empty() && !ordinary.is_empty(), "{requests:?}");
 	for body in &catch_up {
-		assert_eq!(
-			tool_names(body),
-			BTreeSet::from(["workspace_read".to_owned()])
-		);
+		assert_eq!(tool_names(body), BTreeSet::from(["thread_read".to_owned()]));
 	}
 	for body in &ordinary {
 		let names = tool_names(body);
-		assert!(names.contains("human_request") && names.contains("workspace_read"));
+		assert!(names.contains("human_request") && names.contains("thread_read"));
 		assert_eq!(names, expected_initial());
 	}
 	d.close().await;
@@ -1282,7 +1293,7 @@ async fn legacy_agent_beside_deferred_keeps_legacy_tools_and_skill_record(
 			"skill_list",
 			"skill_load",
 			"skill_read",
-			"workspace_read",
+			"thread_read",
 			"human_request",
 			"file_search",
 			"file_read",

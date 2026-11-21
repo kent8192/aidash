@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{base_url}}/api/workspaces
+  url: {{base_url}}/api/threads
   body: json
   auth: none
 }
@@ -18,8 +18,7 @@ headers {
 
 body:json {
   {
-    "title": "Bruno real API workspace",
-    "goal": "Verify scoped contracts against the running server"
+    "title": "Bruno real API thread"
   }
 }
 
@@ -30,10 +29,10 @@ tests {
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
     expect(res.getBody().revision).to.equal(0);
-    expect(res.getBody().state).to.eql({});
+    expect(res.getBody().title).to.equal("Bruno real API thread");
   });
 
   if (res.getStatus() === 200) {
-    bru.setVar("workspace_id", res.getBody().id);
+    bru.setVar("thread_id", res.getBody().id);
   }
 }

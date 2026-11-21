@@ -2,7 +2,9 @@
 //!
 //! Adapt application use cases for views, commands, and worker scopes.
 
+pub(crate) mod area_queue_sleep_backfill;
 pub mod context_rules;
+pub(crate) mod execution_event_backfill;
 pub(crate) mod human_interaction;
 pub(crate) mod input_ledger;
 pub(crate) mod migration_backfill;

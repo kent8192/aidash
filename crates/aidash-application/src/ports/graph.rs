@@ -19,7 +19,7 @@ pub trait GraphProjectionScope: Send + super::authorization::visibility::RowOutc
 		options: &GraphOptions,
 	) -> Result<Vec<Candidate>>;
 	async fn visible(&mut self, candidate: &Candidate, scoped: bool) -> Result<bool>;
-	async fn linked_workspace(&mut self, id: Uuid) -> Result<Option<Candidate>>;
+	async fn linked_thread(&mut self, id: Uuid) -> Result<Option<Candidate>>;
 	async fn linked_task(&mut self, id: Uuid) -> Result<Option<Candidate>>;
 	async fn linked_registry(
 		&mut self,
@@ -43,7 +43,7 @@ pub trait GraphVisibility: Send {
 		entry: &aidash_domain::registry::Entry,
 		action: &str,
 	) -> Result<bool>;
-	async fn workspace(&mut self, id: Uuid, action: &str) -> Result<bool>;
+	async fn thread(&mut self, id: Uuid, action: &str) -> Result<bool>;
 	async fn record(&mut self, candidate: &Candidate) -> Result<bool>;
 	async fn conversation(
 		&mut self,

@@ -17,11 +17,11 @@ fn policy() -> Decay {
 		}),
 	}
 }
-async fn participant(store: &Store, workspace: Uuid) -> Bank {
+async fn participant(store: &Store, thread: Uuid) -> Bank {
 	memory::create_participant(
 		store,
 		&administrator(store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -100,7 +100,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -109,7 +109,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 		Some(policy()),
 	)
 	.await;
-	let bank = participant(&store, workspace).await;
+	let bank = participant(&store, thread).await;
 	let ids = [Uuid::now_v7(), Uuid::now_v7()];
 	let mut admission = mutation(
 		&bank,
@@ -247,7 +247,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -256,7 +256,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 		Some(policy()),
 	)
 	.await;
-	let bank = participant(&store, workspace).await;
+	let bank = participant(&store, thread).await;
 	for state in ["deleted", "stale", "contradicted"] {
 		for action in ["pin", "unpin", "reactivate"] {
 			let unit = Uuid::now_v7();
@@ -404,7 +404,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 	let database = database.await;
 	let model = decay_embedding_provider.await;
 	let endpoint = format!("{}/v1", model.url);
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		&endpoint,
@@ -413,7 +413,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 		Some(policy()),
 	)
 	.await;
-	let bank = participant(&store, workspace).await;
+	let bank = participant(&store, thread).await;
 	let source = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
@@ -550,7 +550,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -559,7 +559,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 		Some(policy()),
 	)
 	.await;
-	let bank = participant(&store, workspace).await;
+	let bank = participant(&store, thread).await;
 	let mut ids = vec![];
 	for learning in [
 		Learning::Fact,
@@ -685,7 +685,7 @@ async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
 	let database = database.await;
 	let model = decay_embedding_provider.await;
 	let endpoint = format!("{}/v1", model.url);
-	let (store, _, workspace) = setup_endpoint_decay(
+	let (store, _, thread) = setup_endpoint_decay(
 		&database,
 		bounds,
 		&endpoint,
@@ -694,7 +694,7 @@ async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
 		Some(policy()),
 	)
 	.await;
-	let bank = participant(&store, workspace).await;
+	let bank = participant(&store, thread).await;
 	let source = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,

@@ -87,7 +87,7 @@ Workers perform startup recovery and bounded broad recovery every five seconds,
 or every second during known transport loss. Connection attempts run separately,
 with a five-second deadline and exponential backoff from 500 ms to five seconds
 including jitter. A dead owner's existing 30-second lease must expire first.
-An operation wait is due on completion, newer input, or its ceiling. A workspace
+An operation wait is due on completion, newer input, or its ceiling. A thread
 wait is due on newer input, a relevant Task event after its durable cursor, or its
 ceiling; Task events are coalesced for two seconds. A remote Home is checked every
 15 seconds without invoking the model. Its fixed-size terminal fingerprint reports a
@@ -116,8 +116,8 @@ which of them it needs, and `encode` stores that as a `requires` array in the
 `pending` envelope beside the state. The key is omitted when empty, so Runs that need
 nothing keep the legacy bytes and stay claimable by every worker.
 
-`event_wait` covers operation and workspace waits, a woken result awaiting
-delivery, and the retained workspace event cursor and remote Task snapshot.
+`event_wait` covers operation and thread waits, a woken result awaiting
+delivery, and the retained thread event cursor and remote Task snapshot.
 
 `outage_wait` covers a Run in an Outage Wait (ADR 0129): the `outage` wait reason and
 `RecoveryState.outage`, which keeps when the outage began across wake-ups so that the
@@ -147,7 +147,7 @@ it abandons (#772). A cancel settles that completion with exactly those Tasks.
 - A cancelled Run is never gated, because cancellation needs no state. A worker that
   cannot load the state takes a repair lease and replaces the state with cancellation
   delivery, which finishes the Run and its Task from metadata alone. This records no
-  error and no `run.invalid_state` event, and inspection reports no `lease_wait`.
+  error and no `execution.invalid_state` event, and inspection reports no `lease_wait`.
 
 To add a capability when a change adds persisted state that older workers reject:
 

@@ -195,29 +195,64 @@ fn a_message_with_files_needs_its_own_key_after_the_plain_one() {
 		json!({"content":"hi","files":null}),
 		json!({"content":"hi","files":[]}),
 	] {
-		assert_eq!(keys("workspace_message", plain), ["workspace_message"]);
+		assert_eq!(keys("thread_message", plain.clone()), ["thread_message"]);
+		// The Workspace tool a saved Agent pins is listed as its Thread tool (#1008).
+		assert_eq!(keys("workspace_message", plain), ["thread_message"]);
 	}
 	// Anything else in `files`, malformed included, is a message with files.
 	for files in [json!(["out/a.pdf"]), json!("out/a.pdf")] {
-		assert_eq!(
-			keys("workspace_message", json!({"content":"hi","files":files})),
-			["workspace_message", WORKSPACE_MESSAGE_FILES]
-		);
+		for tool in ["thread_message", "workspace_message"] {
+			assert_eq!(
+				keys(tool, json!({"content":"hi","files":files})),
+				["thread_message", THREAD_MESSAGE_FILES]
+			);
+		}
 	}
 	assert_eq!(keys("file_share", json!({"files":["a"]})), ["file_share"]);
 	// The defaults hold the plain message only; a pattern of the tool names both forms.
-	assert!(ToolList::defaults().matches("workspace_message"));
-	assert!(!ToolList::defaults().matches(WORKSPACE_MESSAGE_FILES));
-	assert!(list(&["workspace_message*"]).matches(WORKSPACE_MESSAGE_FILES));
-	assert!(ToolPattern::new(WORKSPACE_MESSAGE_FILES).is_ok());
+	assert!(ToolList::defaults().matches("thread_message"));
+	assert!(!ToolList::defaults().matches(THREAD_MESSAGE_FILES));
+	assert!(list(&["thread_message*"]).matches(THREAD_MESSAGE_FILES));
+	assert!(ToolPattern::new(THREAD_MESSAGE_FILES).is_ok());
+}
+
+#[test]
+fn a_pinned_workspace_tool_and_its_thread_tool_are_one_key() {
+	// A list written with either name decides both, so a Block naming the old name still
+	// stops the new one (#1008).
+	for (current, former) in crate::tool::thread_tools::RENAMED {
+		assert_eq!(current_key(former), current);
+		assert_eq!(current_key(current), current);
+		assert!(list(&[former]).matches(current), "{former}");
+		assert!(list(&[current]).matches(former), "{current}");
+		let lists = RemoteToolLists {
+			request: &ToolList::defaults(),
+			allowance: &ToolList::defaults(),
+			block: &list(&[former]),
+			run_request: &ToolList::default(),
+			run_allowance: &ToolList::default(),
+		};
+		let reach = crate::tool::builtin_reach(current).unwrap();
+		if reach.listable() {
+			assert_eq!(lists.decide(reach, current), ToolVerdict::Unavailable);
+		}
+	}
+	assert_eq!(current_key("workspace_message:files"), THREAD_MESSAGE_FILES);
+	assert!(list(&["workspace_message:files"]).matches(THREAD_MESSAGE_FILES));
+	assert!(list(&["workspace_*"]).matches(THREAD_MESSAGE_FILES));
+	assert_eq!(current_key("registry:github/read"), "registry:github/read");
+	assert!(!list(&["thread_*"]).matches("task_wait"));
+	// A pinned Workspace tool's contract and descriptor are listed under the Thread tool.
+	let pinned = crate::tool::contract::builtin_contract("workspace_read").unwrap();
+	assert_eq!(list_key(&pinned, "workspace_read"), "thread_read");
 }
 
 #[test]
 fn a_run_only_answer_lets_the_call_through_without_changing_the_registered_lists() {
-	let allowance = list(&["workspace_read"]);
+	let allowance = list(&["thread_read"]);
 	let run_only = list(&["registry:github/create_issue"]);
 	let lists = RemoteToolLists {
-		request: &list(&["workspace_read", "registry:github/*"]),
+		request: &list(&["thread_read", "registry:github/*"]),
 		allowance: &allowance,
 		block: &ToolList::default(),
 		run_request: &ToolList::default(),
@@ -235,7 +270,7 @@ fn a_run_only_answer_lets_the_call_through_without_changing_the_registered_lists
 			receiver: true
 		})
 	);
-	assert_eq!(allowance, list(&["workspace_read"]));
+	assert_eq!(allowance, list(&["thread_read"]));
 }
 
 #[test]
@@ -257,15 +292,15 @@ fn a_blocked_tool_is_not_let_through_by_a_run_only_answer() {
 #[test]
 fn the_homes_run_only_tools_travel_inside_the_request() {
 	let request = FederationToolRequest {
-		tools: list(&["workspace_read"]),
+		tools: list(&["thread_read"]),
 		hosts: vec![HostPattern::new("example.com").unwrap()],
 	};
 	let merged = request
-		.with_run_tools(&list(&["shell", "workspace_read"]))
+		.with_run_tools(&list(&["shell", "thread_read"]))
 		.unwrap();
-	assert_eq!(merged.tools, list(&["shell", "workspace_read"]));
+	assert_eq!(merged.tools, list(&["shell", "thread_read"]));
 	assert_eq!(merged.hosts, request.hosts);
-	assert_eq!(request.tools, list(&["workspace_read"]));
+	assert_eq!(request.tools, list(&["thread_read"]));
 	assert_eq!(
 		request.with_run_tools(&ToolList::default()).unwrap(),
 		request

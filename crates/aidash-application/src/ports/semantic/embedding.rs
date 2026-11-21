@@ -14,7 +14,7 @@ pub trait SemanticEmbeddingScope: Send {
 	/// A missing receipt means this authority has no generated ancestors.
 	async fn reserve(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		input: aidash_domain::semantic::EmbeddingInput<'_>,
 		origin: Origin,

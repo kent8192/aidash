@@ -52,11 +52,7 @@ pub(crate) struct ScopedMedia<'a> {
 }
 #[async_trait]
 impl MediaAttachments for ScopedMedia<'_> {
-	async fn attachments(
-		&mut self,
-		workspace: Uuid,
-		message: Uuid,
-	) -> Result<Vec<MediaAttachment>> {
+	async fn attachments(&mut self, thread: Uuid, message: Uuid) -> Result<Vec<MediaAttachment>> {
 		let result: NativeResult<Vec<MediaAttachment>> = async {
 			let mut select = Query::select();
 			select
@@ -74,7 +70,7 @@ impl MediaAttachments for ScopedMedia<'_> {
 					.map(Alias::new),
 				)
 				.from(Alias::new("channel_attachments"))
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)));
+				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)));
 			let pending = self.pending.as_ref().filter(|(id, _, _)| *id == message);
 			if let Some((_, ids, principal)) = pending {
 				if ids.is_empty()
@@ -153,7 +149,7 @@ impl MediaAttachments for ScopedMedia<'_> {
 	}
 	async fn wav_rendition(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		attachment: &MediaAttachment,
 	) -> Result<Vec<u8>> {
 		let result: NativeResult<Vec<u8>> = async {
@@ -169,7 +165,7 @@ impl MediaAttachments for ScopedMedia<'_> {
 					.map(Alias::new),
 				)
 				.from(Alias::new("channel_attachments"))
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
 				.to_string(PostgresQueryBuilder);
 			let row: Option<Rendition> = crate::database::native::query_as(&query)
@@ -217,7 +213,7 @@ impl MediaAttachments for ScopedMedia<'_> {
 						.map(Alias::new),
 					)
 					.from(Alias::new("channel_attachments"))
-					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder);
@@ -261,7 +257,7 @@ impl MediaAttachments for ScopedMedia<'_> {
 					.value(Alias::new("wav_object_id"), id)
 					.value(Alias::new("wav_sha256"), digest)
 					.value(Alias::new("wav_size_bytes"), size)
-					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(attachment.id)))
 					.to_string(PostgresQueryBuilder);
 				crate::database::native::query(&update)
@@ -278,9 +274,9 @@ impl MediaAttachments for ScopedMedia<'_> {
 }
 #[async_trait]
 impl AuthorizedMediaScope for ScopedMedia<'_> {
-	async fn authorize_message(&mut self, workspace: Uuid, message: Uuid) -> Result<()> {
+	async fn authorize_message(&mut self, thread: Uuid, message: Uuid) -> Result<()> {
 		self.access
-			.workspace_record(workspace, "message", message)
+			.thread_record(thread, "message", message)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -383,7 +379,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		// A Run without its own Working Area can still open authorized
-		// Workspace image matches; it simply has no own Files to select.
+		// Thread image matches; it simply has no own Files to select.
 		let Some(area) = sessions::current_own_area(access, self.run).await? else {
 			self.files = Vec::new();
 			return Ok(Vec::new());
@@ -403,19 +399,14 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		self.files = files;
 		Ok(selected)
 	}
-	async fn subnode_file(
-		&mut self,
-		workspace: Uuid,
-		area: Uuid,
-		id: Uuid,
-	) -> Result<SelectedFile> {
+	async fn subnode_file(&mut self, thread: Uuid, area: Uuid, id: Uuid) -> Result<SelectedFile> {
 		use aidash_application::ports::capabilities::files::FileScopePort;
 		let access = self
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		let area = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run))
-			.subnode_area(&self.run.metadata(), workspace, area)
+			.subnode_area(&self.run.metadata(), thread, area)
 			.await?;
 		// A member's Reference set stays inside the member's own Run (ADR 0114).
 		let file = serde_json::from_value::<Vec<FileEntry>>(area.manifest)?
@@ -438,7 +429,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		self.files.push(file);
 		Ok(selected)
 	}
-	async fn workspace_image(
+	async fn thread_image(
 		&mut self,
 		area_id: Uuid,
 		generation: i64,
@@ -454,7 +445,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
 			Err(error) => return Err(error.into()),
 		};
-		if area.workspace_id != self.run.workspace_id || area.generation != generation {
+		if area.thread_id != self.run.thread_id || area.generation != generation {
 			return Ok(None);
 		}
 		let files = service::files(&area)?;
@@ -578,7 +569,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
-		let workspace = self.run.workspace_id;
+		let thread = self.run.thread_id;
 		let query = Query::select()
 			.columns(
 				[
@@ -594,7 +585,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 				.map(Alias::new),
 			)
 			.from(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::value(selection.message_id)))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(selection.attachment_id)))
 			.to_string(PostgresQueryBuilder);
@@ -615,10 +606,10 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			return Ok(None);
 		};
 		let authorized: NativeResult<()> = async {
-			let resource = access.workspace(workspace).await?;
-			access.require(&resource, "workspace.read").await?;
+			let resource = access.thread(thread).await?;
+			access.require(&resource, "thread.read").await?;
 			access
-				.workspace_record(workspace, "message", selection.message_id)
+				.thread_record(thread, "message", selection.message_id)
 				.await?;
 			Ok(())
 		}
@@ -666,7 +657,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			));
 		}
 		if selection.wav {
-			let bytes = match scope.wav_rendition(workspace, &row).await {
+			let bytes = match scope.wav_rendition(thread, &row).await {
 				Ok(bytes) => bytes,
 				Err(
 					aidash_application::Error::NotFound(_)

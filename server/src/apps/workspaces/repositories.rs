@@ -9,5 +9,7 @@ pub mod mutations;
 
 pub(crate) mod media;
 
-pub(crate) mod schedules;
+pub(crate) mod duties;
+pub(crate) mod duty_events;
+pub(crate) mod duty_scripts;
 pub(crate) mod scratch;

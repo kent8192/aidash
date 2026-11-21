@@ -206,8 +206,8 @@ fn access() -> Access {
 		wire: None,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,
-		recheck_workspaces: Default::default(),
-		subnode_workspaces: Default::default(),
+		recheck_threads: Default::default(),
+		subnode_threads: Default::default(),
 		subnode_creators: Default::default(),
 		// Same-credential publisher checks perform no database I/O.
 		tx: AccessTransaction::default(),
@@ -306,9 +306,9 @@ async fn a_forbidden_after_a_silent_node_names_the_node_unless_this_authority_de
 		Error::Unauthorized
 	));
 	// A `require` of this authority that denies is a real refusal.
-	let workspace = access.resource("workspace", "w", json!({}));
+	let thread = access.resource("thread", "w", json!({}));
 	assert!(matches!(
-		access.require(&workspace, "workspace.read").await,
+		access.require(&thread, "thread.read").await,
 		Err(Error::Forbidden)
 	));
 	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
@@ -321,7 +321,7 @@ async fn a_forbidden_after_a_silent_node_names_the_node_unless_this_authority_de
 #[tokio::test]
 async fn a_call_is_blamed_on_a_silent_node_only_if_its_own_checks_met_the_node(mut access: Access) {
 	let sibling = "aidash://other/sibling";
-	let workspace = access.resource("workspace", "w", json!({}));
+	let thread = access.resource("thread", "w", json!({}));
 	let silent = |error: Error| matches!(error, Error::NodeUnreachable { node, after_effect: false } if node == sibling);
 	// A call that met the Node: its refusal is the Node's silence.
 	let first = access.call_mark();
@@ -342,7 +342,7 @@ async fn a_call_is_blamed_on_a_silent_node_only_if_its_own_checks_met_the_node(m
 	assert!(silent(access.named_since(third, Error::Forbidden)));
 	// Unless a `require` of that same call denied: that is a real refusal.
 	assert!(matches!(
-		access.require(&workspace, "workspace.read").await,
+		access.require(&thread, "thread.read").await,
 		Err(Error::Forbidden)
 	));
 	assert!(matches!(
@@ -520,9 +520,9 @@ async fn a_memory_step_names_a_silent_node_for_authority_and_invalidated(mut acc
 		Error::RemoteSemantic(Failure::Allowance)
 	));
 	// A denial of this authority stays a refusal.
-	let workspace = access.resource("workspace", "w", json!({}));
+	let thread = access.resource("thread", "w", json!({}));
 	assert!(matches!(
-		access.require(&workspace, "workspace.read").await,
+		access.require(&thread, "thread.read").await,
 		Err(Error::Forbidden)
 	));
 	assert!(matches!(
@@ -817,9 +817,9 @@ async fn finishing_a_compound_check_bounds_audit_round_trips(
 		revision: 1,
 	};
 	for id in 0..decisions {
-		let resource = access.resource("workspace", id, json!({}));
+		let resource = access.resource("thread", id, json!({}));
 		access.pending_decisions.push(DecisionRow::direct(
-			access.evaluation("alice", &resource, "workspace.read"),
+			access.evaluation("alice", &resource, "thread.read"),
 			decision.clone(),
 		));
 	}
@@ -948,7 +948,7 @@ async fn node_liveness_is_rechecked_after_a_savepoint_rollback(
 }
 
 #[tokio::test]
-async fn workspace_owner_cache_respects_lock_strength_and_savepoint_rollback() {
+async fn thread_owner_cache_respects_lock_strength_and_savepoint_rollback() {
 	let pool: Pool = sqlx::postgres::PgPoolOptions::new()
 		.connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
 		.unwrap()
@@ -957,11 +957,17 @@ async fn workspace_owner_cache_respects_lock_strength_and_savepoint_rollback() {
 	let mut tx = AccessTransaction::new(probe.transaction(pool));
 	let locked = Uuid::new_v4();
 	let unlocked = Uuid::new_v4();
-	tx.remember_workspace_owner(locked, true, "alice");
-	tx.remember_workspace_owner(unlocked, false, "bob");
-	assert_eq!(tx.workspace_owner(locked, false).as_deref(), Some("alice"));
-	assert_eq!(tx.workspace_owner(unlocked, true), None);
+	use aidash_application::ports::authorization::threads::ThreadOwner;
+	// A Duty's own Thread keeps its Duty beside its owner in the cache (#1008).
+	let alice = ThreadOwner {
+		owner: "alice".into(),
+		duty_id: Some(Uuid::new_v4()),
+	};
+	tx.remember_thread_owner(locked, true, &alice);
+	tx.remember_thread_owner(unlocked, false, &ThreadOwner::person("bob"));
+	assert_eq!(tx.thread_owner(locked, false), Some(alice));
+	assert_eq!(tx.thread_owner(unlocked, true), None);
 	tx.rollback_to_savepoint("owner").await.unwrap();
-	assert_eq!(tx.workspace_owner(locked, false), None);
-	assert_eq!(tx.workspace_owner(unlocked, false), None);
+	assert_eq!(tx.thread_owner(locked, false), None);
+	assert_eq!(tx.thread_owner(unlocked, false), None);
 }

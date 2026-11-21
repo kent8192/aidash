@@ -148,7 +148,7 @@ mod controlled_context_composition {
 			(memory, "context-memory", "memory", "semantic_memory"),
 			(
 				workspace_retrieval,
-				"context-workspace",
+				"context-thread",
 				"source",
 				"workspace_retrieval",
 			),
@@ -212,12 +212,7 @@ mod controlled_context_composition {
 			.0,
 			200
 		);
-		let workspace = f
-			.store
-			.task(&TEST_FIXTURE, task)
-			.await
-			.unwrap()
-			.workspace_id;
+		let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 		let embedding_endpoint = embeddings.url.clone();
 		// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
 		f.store
@@ -225,7 +220,7 @@ mod controlled_context_composition {
 			.permit_origin_of(&embedding_endpoint)
 			.unwrap();
 		let embedding_server = embeddings;
-		configure(&app, &token, workspace, &spec(&embedding_endpoint), 0).await;
+		configure(&app, &token, thread, &spec(&embedding_endpoint), 0).await;
 		assert_eq!(
 			common::post(
 				&app,
@@ -260,7 +255,7 @@ mod controlled_context_composition {
 			.store
 			.message_record(
 				&TEST_FIXTURE,
-				workspace,
+				thread,
 				"human",
 				"Vehicle safety",
 				Some("controlled-message"),
@@ -278,7 +273,7 @@ mod controlled_context_composition {
 			let (status, entry) = common::post(
 				&app,
 				&token,
-				&format!("/api/workspaces/{workspace}/semantic/entries"),
+				&format!("/api/threads/{thread}/semantic/entries"),
 				json!({"key":key,"expected_revision":0,"source":source,"metadata":{}}),
 			)
 			.await;
@@ -325,7 +320,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		"run: {:?}",
 		fixture.f.store.runs(&TEST_FIXTURE).await.unwrap()[0]
 	);
-	let semantic = &contexts[0]["current"]["semantic_memory"]["workspace"];
+	let semantic = &contexts[0]["current"]["semantic_memory"]["thread"];
 	if !memory && !workspace_retrieval {
 		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
 	} else {
@@ -355,7 +350,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn on_demand_memory_does_not_leak_through_an_always_workspace_source(
+async fn on_demand_memory_does_not_leak_through_an_always_thread_source(
 	#[future(awt)]
 	#[with(true, true, false, false, true)]
 	controlled_context: ControlledContext,
@@ -364,9 +359,9 @@ async fn on_demand_memory_does_not_leak_through_an_always_workspace_source(
 	fixture.worker.worker_once().await.unwrap();
 	let contexts = fixture.captured.lock().unwrap().clone();
 	assert_eq!(contexts.len(), 1);
-	let matches = contexts[0]["current"]["semantic_memory"]["workspace"]["matches"]
+	let matches = contexts[0]["current"]["semantic_memory"]["thread"]["matches"]
 		.as_array()
-		.expect("workspace result remains available");
+		.expect("thread result remains available");
 	let mut kinds = matches
 		.iter()
 		.map(|item| item["source"]["kind"].as_str().unwrap())
@@ -393,7 +388,7 @@ enum Unavailable {
 	VectorBackend,
 }
 
-/// Issue #233: a local Run in a Workspace whose index has `auto_context`
+/// Issue #233: a local Run in a Thread whose index has `auto_context`
 /// enabled treats unavailable semantic retrieval as a typed, transient
 /// `unavailable` semantic failure, like a required-Home Run. The step stops
 /// before inference and retries with a persisted delay; the Run and its Task
@@ -529,7 +524,7 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-/// Issue #233, ADR 0129: after the bounded retry a local Run whose Workspace
+/// Issue #233, ADR 0129: after the bounded retry a local Run whose Thread
 /// source waits (`on_unavailable: pause`) enters an Outage Wait instead of a
 /// pause, keeps its Task, and goes on to inference by itself once the provider
 /// answers (or the index completes) and the wait wakes. No person resumes it.
@@ -546,7 +541,7 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
 	let fixture = controlled_context;
 	if pending_entry {
-		add_pending_workspace_entry(&fixture).await;
+		add_pending_thread_entry(&fixture).await;
 	} else {
 		fixture.fault.set(Fault::Unavailable);
 	}
@@ -611,7 +606,7 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 	let contexts = fixture.captured.lock().unwrap().clone();
 	assert_eq!(contexts.len(), 1, "the woken step reaches inference");
 	assert!(
-		contexts[0]["current"]["semantic_memory"]["workspace"]["matches"]
+		contexts[0]["current"]["semantic_memory"]["thread"]["matches"]
 			.as_array()
 			.is_some_and(|matches| !matches.is_empty()),
 		"the resumed step carries semantic context: {}",
@@ -625,23 +620,23 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-/// Add a visible Workspace source without running the indexer. A healthy
+/// Add a visible Thread source without running the indexer. A healthy
 /// provider alone cannot make this entry READY; indexing must finish first.
-async fn add_pending_workspace_entry(fixture: &ControlledContext) {
+async fn add_pending_thread_entry(fixture: &ControlledContext) {
 	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let message = fixture
 		.f
 		.store
 		.message_record(
 			&TEST_FIXTURE,
-			run.workspace_id,
+			run.thread_id,
 			"alice",
 			"Newly written vehicle maintenance knowledge.",
 			Some("pending-semantic-entry"),
 		)
 		.await
 		.unwrap();
-	let (status, entry) = common::post(&fixture._fixture.application, &fixture.token, &format!("/api/workspaces/{}/semantic/entries", run.workspace_id), json!({"key":"pending-entry","expected_revision":0,"source":{"kind":"message","id":message.id},"metadata":{}})).await;
+	let (status, entry) = common::post(&fixture._fixture.application, &fixture.token, &format!("/api/threads/{}/semantic/entries", run.thread_id), json!({"key":"pending-entry","expected_revision":0,"source":{"kind":"message","id":message.id},"metadata":{}})).await;
 	assert_eq!(status, 200, "{entry}");
 	assert_eq!(entry["state"], "PENDING", "{entry}");
 }
@@ -651,7 +646,7 @@ async fn add_pending_workspace_entry(fixture: &ControlledContext) {
 async fn advance_retry(fixture: &ControlledContext, run: Uuid) {
 	sqlx::query(
 		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("pending"),
 				Expr::cust(
@@ -674,7 +669,7 @@ async fn advance_retry(fixture: &ControlledContext, run: Uuid) {
 async fn advance_outage_wake(fixture: &ControlledContext, run: Uuid) {
 	sqlx::query(
 		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("pending"),
 				Expr::cust("JSONB_SET(pending, '{data,wake_at}', TO_JSONB(CLOCK_TIMESTAMP()))"),
@@ -746,7 +741,7 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 	);
 	let retrieved = ordered_semantic_memory(&fixture, 1);
 	assert!(
-		retrieved["workspace"]["matches"]
+		retrieved["thread"]["matches"]
 			.as_array()
 			.is_some_and(|matches| !matches.is_empty()),
 		"step 1 carries semantic context: {retrieved}"
@@ -781,12 +776,12 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 
 	// A pending entry changes the corpus, just as a Run message changes the query.
 	if pending_entry {
-		add_pending_workspace_entry(&fixture).await;
+		add_pending_thread_entry(&fixture).await;
 	} else {
 		let (status, body) = common::post(
 			&fixture._fixture.application,
 			&fixture.token,
-			&format!("/api/runs/{}/message", run().await.id),
+			&format!("/api/executions/{}/message", run().await.id),
 			json!({"content":"Also cover vehicle maintenance."}),
 		)
 		.await;
@@ -864,15 +859,15 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-/// Issue #234 (ADR 0059): an opted-in workspace source degrades after the
+/// Issue #234 (ADR 0059): an opted-in thread source degrades after the
 /// bounded retry. The step reaches inference with the typed marker, records the
-/// degraded step and emits `run.semantic_degraded`. Missing vector points need
+/// degraded step and emits `execution.semantic_degraded`. Missing vector points need
 /// repair, so they still pause even with the opt-in.
 #[rstest::rstest]
 #[case::embedding_outage(true)]
 #[case::missing_points(false)]
 #[tokio::test]
-async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
+async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 	#[case] embedding_outage: bool,
 	#[future(awt)]
 	#[with(false, true, false, true)]
@@ -937,7 +932,7 @@ async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
 		);
 		let semantic = &contexts[0]["current"]["semantic_memory"];
 		assert_eq!(
-			semantic.get("workspace").unwrap_or(semantic),
+			semantic.get("thread").unwrap_or(semantic),
 			&json!({"status":"unavailable","cause":"embedding_provider"}),
 			"{}",
 			contexts[0]
@@ -951,13 +946,13 @@ async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
 		let events = fixture
 			.f
 			.store
-			.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
+			.events(&TEST_FIXTURE, 0, Some(run.thread_id), 500)
 			.await
 			.unwrap();
 		let degraded = events
 			.iter()
-			.find(|event| event.kind == "run.semantic_degraded")
-			.expect("run.semantic_degraded");
+			.find(|event| event.kind == "execution.semantic_degraded")
+			.expect("execution.semantic_degraded");
 		assert_eq!(degraded.data["cause"], "embedding_provider");
 		assert_eq!(degraded.data["run_id"], json!(run.id));
 	}
@@ -974,7 +969,7 @@ async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
 #[case::legacy(false)]
 #[case::ordered(true)]
 #[tokio::test]
-async fn a_skipped_workspace_read_keeps_the_durable_outage(
+async fn a_skipped_thread_read_keeps_the_durable_outage(
 	#[case] _ordered: bool,
 	#[future(awt)]
 	#[with(false, true, _ordered, true)]
@@ -996,7 +991,7 @@ async fn a_skipped_workspace_read_keeps_the_durable_outage(
 	fixture
 		.f
 		.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.semantic_degraded")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.semantic_degraded")
 		.await
 		.unwrap();
 	fixture
@@ -1012,7 +1007,7 @@ async fn a_skipped_workspace_read_keeps_the_durable_outage(
 	configure(
 		&fixture._fixture.application,
 		&fixture.token,
-		run.workspace_id,
+		run.thread_id,
 		&limited,
 		1,
 	)
@@ -1032,7 +1027,7 @@ async fn a_skipped_workspace_read_keeps_the_durable_outage(
 	assert_eq!(
 		fixture.captured.lock().unwrap().len(),
 		1,
-		"the optional workspace slot still allows inference"
+		"the optional thread slot still allows inference"
 	);
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
@@ -1149,14 +1144,14 @@ fn spec(endpoint: &str) -> IndexSpec {
 async fn configure(
 	app: &common::TestApplication,
 	token: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	spec: &IndexSpec,
 	revision: i64,
 ) -> Value {
 	let (status, index) = common::post(
 		app,
 		token,
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		serde_json::to_value(ConfigureIndex {
 			expected_revision: revision,
 			spec: spec.clone(),
@@ -1170,20 +1165,20 @@ async fn configure(
 async fn put(
 	app: &common::TestApplication,
 	token: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	key: &str,
 	text: &str,
 	revision: i64,
 ) -> Value {
-	let (status,entry)=common::post(app, token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":key,"source":{"kind":"memory","text":text},"expected_revision":revision,"metadata":{"topic":"public"}})).await;
+	let (status,entry)=common::post(app, token, &format!("/api/threads/{thread}/semantic/entries"), json!({"key":key,"source":{"kind":"memory","text":text},"expected_revision":revision,"metadata":{"topic":"public"}})).await;
 	assert_eq!(status, 200, "{entry}");
 	entry
 }
-async fn search(app: &common::TestApplication, token: &str, workspace: Uuid) -> (u16, Value) {
+async fn search(app: &common::TestApplication, token: &str, thread: Uuid) -> (u16, Value) {
 	common::post(
 		app,
 		token,
-		&format!("/api/workspaces/{workspace}/semantic/search"),
+		&format!("/api/threads/{thread}/semantic/search"),
 		json!({"query":"vehicle","limit":1,"max_tokens":2048}),
 	)
 	.await
@@ -1232,56 +1227,35 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut config = spec(&endpoint);
 	config.embedding.provider = provider.into();
-	let first = configure(&app, &token, workspace, &config, 0).await;
+	let first = configure(&app, &token, thread, &config, 0).await;
 	assert_eq!(
-		configure(&app, &token, workspace, &config, 0).await["revision"],
+		configure(&app, &token, thread, &config, 0).await["revision"],
 		1
 	);
-	let cars = put(
-		&app,
-		&token,
-		workspace,
-		"cars",
-		"A car carries passengers.",
-		0,
-	)
-	.await;
+	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	assert_eq!(
-		put(
-			&app,
-			&token,
-			workspace,
-			"cars",
-			"A car carries passengers.",
-			0
-		)
-		.await["id"],
+		put(&app, &token, thread, "cars", "A car carries passengers.", 0).await["id"],
 		cars["id"]
 	);
 	put(
 		&app,
 		&token,
-		workspace,
+		thread,
 		"bread",
 		"Bread is baked in an oven.",
 		0,
 	)
 	.await;
 	assert_eq!(
-		search(&app, &token, workspace).await.0,
+		search(&app, &token, thread).await.0,
 		409,
 		"pending data is never a successful empty search"
 	);
 	semantic::worker::sweep(&f.store).await.unwrap();
-	let (status, result) = search(&app, &token, workspace).await;
+	let (status, result) = search(&app, &token, thread).await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(result["matches"][0]["entry_id"], cars["id"]);
 	assert_eq!(result["matches"][0]["source"], json!({"kind":"memory"}));
@@ -1294,40 +1268,29 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	assert_eq!(result["model_version"], "1");
 	// Replace the source using an optimistic revision. The old point must not
 	// remain eligible even before the vector deletion has run.
-	let updated = put(
-		&app,
-		&token,
-		workspace,
-		"cars",
-		"A car uses roads safely.",
-		1,
-	)
-	.await;
+	let updated = put(&app, &token, thread, "cars", "A car uses roads safely.", 1).await;
 	assert_eq!(updated["revision"], 2);
-	assert_eq!(search(&app, &token, workspace).await.0, 409);
+	assert_eq!(search(&app, &token, thread).await.0, 409);
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(
-		search(&app, &token, workspace).await.1["matches"][0]["revision"],
+		search(&app, &token, thread).await.1["matches"][0]["revision"],
 		2
 	);
 	config.embedding.model_version = "2".into();
-	let second = configure(&app, &token, workspace, &config, 1).await;
+	let second = configure(&app, &token, thread, &config, 1).await;
 	assert_ne!(first["collection"], second["collection"]);
-	assert_eq!(search(&app, &token, workspace).await.0, 409);
+	assert_eq!(search(&app, &token, thread).await.0, 409);
 	// Fresh pools reconstruct authority and jobs entirely from durable state.
 	let restarted = f.for_workers().await.unwrap();
 	semantic::worker::sweep(&restarted.store).await.unwrap();
-	assert_eq!(
-		search(&app, &token, workspace).await.1["model_version"],
-		"2"
-	);
+	assert_eq!(search(&app, &token, thread).await.1["model_version"], "2");
 	restarted.store.pool.close().await;
 	restarted.store.control_pool.close().await;
 	let current_points = request(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		&format!("/api/threads/{thread}/semantic/entries"),
 		json!(null),
 	)
 	.await
@@ -1340,7 +1303,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 		.unwrap()["point_id"]
 		.clone();
 	let path = format!(
-		"/api/workspaces/{workspace}/semantic/entries/{}",
+		"/api/threads/{thread}/semantic/entries/{}",
 		cars["id"].as_str().unwrap()
 	);
 	assert_eq!(
@@ -1367,7 +1330,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 		.0,
 		200
 	);
-	let after = search(&app, &token, workspace).await;
+	let after = search(&app, &token, thread).await;
 	assert_eq!(after.0, 200, "{}", after.1);
 	assert_ne!(after.1["matches"][0]["entry_id"], cars["id"]);
 	semantic::worker::sweep(&f.store).await.unwrap();
@@ -1408,7 +1371,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			.await
 			.unwrap();
 	}
-	let refused = search(&app, &token, workspace).await;
+	let refused = search(&app, &token, thread).await;
 	assert_eq!(refused.0, 400, "{}", refused.1);
 	assert!(
 		refused.1.to_string().contains("forbids Keyless endpoints"),
@@ -1433,22 +1396,9 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	configure(&app, &token, workspace, &spec(&endpoint), 0).await;
-	let cars = put(
-		&app,
-		&token,
-		workspace,
-		"cars",
-		"A car carries passengers.",
-		0,
-	)
-	.await;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	configure(&app, &token, thread, &spec(&endpoint), 0).await;
+	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"revoke-semantic","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
 	let (status, response) = common::post(
@@ -1460,7 +1410,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	.await;
 	assert_eq!(status, 200, "{response}");
 	let reindex_path = format!(
-		"/api/workspaces/{workspace}/semantic/entries/{}/reindex",
+		"/api/threads/{thread}/semantic/entries/{}/reindex",
 		cars["id"].as_str().unwrap()
 	);
 	assert_eq!(
@@ -1473,7 +1423,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	// No allowed candidates means no embedding request is necessary, even when
 	// the embedding backend is down. The caller cannot infer denied sources.
 	drop(server);
-	let response = search(&app, &token, workspace).await;
+	let response = search(&app, &token, thread).await;
 	assert_eq!(response.0, 200, "{}", response.1);
 	assert_eq!(response.1["matches"], json!([]));
 	// Credentials are listed and revoked by the host here: the HTTP routes need
@@ -1528,7 +1478,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	}
 	.unwrap();
 	assert_eq!(state, "REVOKED");
-	assert_eq!(search(&app, &token, workspace).await.0, 401);
+	assert_eq!(search(&app, &token, thread).await.0, 401);
 	dispose(f, &url, &schema).await;
 }
 
@@ -1546,43 +1496,30 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut config = spec(&endpoint);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
-	configure(&app, &token, workspace, &config, 0).await;
-	let cars = put(
-		&app,
-		&token,
-		workspace,
-		"cars",
-		"A car carries passengers.",
-		0,
-	)
-	.await;
+	configure(&app, &token, thread, &config, 0).await;
+	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	let entries = request(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		&format!("/api/threads/{thread}/semantic/entries"),
 		json!(null),
 	)
 	.await;
 	assert_eq!(entries.0, 200);
 	assert_eq!(entries.1["entries"][0]["state"], "ERROR");
 	assert_eq!(entries.1["entries"][0]["attempts"], 1);
-	assert_eq!(search(&app, &token, workspace).await.0, 409);
+	assert_eq!(search(&app, &token, thread).await.0, 409);
 	config.embedding.dimensions = 3;
-	configure(&app, &token, workspace, &config, 1).await;
+	configure(&app, &token, thread, &config, 1).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
-	assert_eq!(search(&app, &token, workspace).await.0, 200);
+	assert_eq!(search(&app, &token, thread).await.0, 200);
 	let reindex_path = format!(
-		"/api/workspaces/{workspace}/semantic/entries/{}/reindex",
+		"/api/threads/{thread}/semantic/entries/{}/reindex",
 		cars["id"].as_str().unwrap()
 	);
 	let first_reindex =
@@ -1596,15 +1533,15 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	let (status, _) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/semantic/search"),
+		&format!("/api/threads/{thread}/semantic/search"),
 		json!({"query":"vehicle","limit":999,"max_tokens":2048}),
 	)
 	.await;
 	assert_eq!(status, 400);
-	let (status,_)=common::post(&app, &token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":"cars","expected_revision":99,"source":{"kind":"memory","text":"changed"},"metadata":{}})).await;
+	let (status,_)=common::post(&app, &token, &format!("/api/threads/{thread}/semantic/entries"), json!({"key":"cars","expected_revision":99,"source":{"kind":"memory","text":"changed"},"metadata":{}})).await;
 	assert_eq!(status, 409);
 	drop(server);
-	let response = search(&app, &token, workspace).await;
+	let response = search(&app, &token, thread).await;
 	assert_eq!(response.0, 503, "embedding outage must fail visibly");
 	assert!(response.1["matches"].is_null());
 	assert!(!response.1.to_string().contains(&endpoint));
@@ -1640,22 +1577,9 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 
 	let endpoint = server.url.clone();
 	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	configure(&app, &token, workspace, &spec(&embedding_endpoint), 0).await;
-	let cars = put(
-		&app,
-		&token,
-		workspace,
-		"cars",
-		"A car carries passengers.",
-		0,
-	)
-	.await;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	configure(&app, &token, thread, &spec(&embedding_endpoint), 0).await;
+	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(
 		common::post(
@@ -1677,11 +1601,11 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
-		context["current"]["semantic_memory"]["workspace"]["matches"][0]["entry_id"],
+		context["current"]["semantic_memory"]["thread"]["matches"][0]["entry_id"],
 		cars["id"]
 	);
 	assert_eq!(
-		context["current"]["semantic_memory"]["workspace"]["model_version"],
+		context["current"]["semantic_memory"]["thread"]["model_version"],
 		"1"
 	);
 	let count: i64 = {
@@ -1717,7 +1641,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		&format!("/api/threads/{thread}/semantic/entries"),
 		json!(null),
 	)
 	.await
@@ -1740,7 +1664,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		200
 	);
 	let path = format!(
-		"/api/workspaces/{workspace}/semantic/entries/{}",
+		"/api/threads/{thread}/semantic/entries/{}",
 		cars["id"].as_str().unwrap()
 	);
 	assert_eq!(
@@ -1760,7 +1684,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 			&app,
 			&token,
 			"GET",
-			&format!("/api/runs/{}", run.id),
+			&format!("/api/executions/{}", run.id),
 			json!(null)
 		)
 		.await
@@ -1800,13 +1724,8 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	configure(&app, &token, workspace, &spec(&endpoint), 0).await;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	configure(&app, &token, thread, &spec(&endpoint), 0).await;
 	assert_eq!(
 		common::post(
 			&app,
@@ -1846,7 +1765,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	f.store
 		.message(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			"human",
 			"Vehicle safety",
 			Some("semantic-vehicle-safety"),
@@ -1855,7 +1774,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.unwrap();
 	let message = f
 		.store
-		.snapshot(&TEST_FIXTURE, workspace)
+		.snapshot(&TEST_FIXTURE, thread)
 		.await
 		.unwrap()
 		.messages[0]
@@ -1865,18 +1784,18 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		("artifact", artifact.id, None),
 		("message", message, Some("aidash://private/agent@1.0.0")),
 	] {
-		let (status,entry)=common::post(&app, &token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":kind,"expected_revision":0,"source":{"kind":kind,"id":id},"agent":agent,"metadata":{"topic":"transport"}})).await;
+		let (status,entry)=common::post(&app, &token, &format!("/api/threads/{thread}/semantic/entries"), json!({"key":kind,"expected_revision":0,"source":{"kind":kind,"id":id},"agent":agent,"metadata":{"topic":"transport"}})).await;
 		assert_eq!(status, 200, "{entry}");
 		ids.push(entry);
 	}
 	semantic::worker::sweep(&f.store).await.unwrap();
-	let found = search(&app, &token, workspace).await;
+	let found = search(&app, &token, thread).await;
 	assert_eq!(found.0, 200, "{}", found.1);
 	assert_eq!(
 		found.1["matches"][0]["entry_id"], ids[0]["id"],
 		"agent-scoped data is not implicitly included"
 	);
-	let path = format!("/api/workspaces/{workspace}/semantic/search");
+	let path = format!("/api/threads/{thread}/semantic/search");
 	let (_,found)=common::post(&app, &token, &path, json!({"query":"vehicle","agent":"aidash://private/agent@1.0.0","metadata":{"topic":"transport"},"limit":10,"max_tokens":4096})).await;
 	assert_eq!(found["matches"].as_array().unwrap().len(), 2);
 	let (_, filtered) = common::post(
@@ -1912,7 +1831,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.await
 	}
 	.unwrap();
-	assert_eq!(search(&app, &token, workspace).await.0, 409);
+	assert_eq!(search(&app, &token, thread).await.0, 409);
 	sqlx::query(
 		&reinhardt::query::Query::update()
 			.table(reinhardt::query::Alias::new("semantic_entries"))
@@ -1928,7 +1847,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	semantic::worker::sweep(&f.store).await.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert!(
-		search(&app, &token, workspace).await.1["matches"][0]["text"]
+		search(&app, &token, thread).await.1["matches"][0]["text"]
 			.as_str()
 			.unwrap()
 			.contains("brakes")
@@ -1945,15 +1864,12 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.0,
 		200
 	);
-	assert_eq!(
-		search(&app, &token, workspace).await.1["matches"],
-		json!([])
-	);
+	assert_eq!(search(&app, &token, thread).await.1["matches"], json!([]));
 	let (_, entries) = request(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		&format!("/api/threads/{thread}/semantic/entries"),
 		json!(null),
 	)
 	.await;
@@ -1962,14 +1878,14 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let other_tenant = common::tenant_scope(&f.store, "other").await;
 	let other = f
 		.store
-		.create_workspace(&other_tenant, "bob", "Other", "Isolation")
+		.create_thread(&other_tenant, "bob", "Other")
 		.await
 		.unwrap();
 	assert_eq!(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/workspaces/{}/semantic/index", other.id),
+			&format!("/api/threads/{}/semantic/index", other.id),
 			serde_json::to_value(ConfigureIndex {
 				expected_revision: 0,
 				spec: spec(&endpoint),
@@ -1980,7 +1896,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.0,
 		403
 	);
-	assert_eq!(common::post(&app, &token, &format!("/api/workspaces/{}/semantic/entries",other.id), json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
+	assert_eq!(common::post(&app, &token, &format!("/api/threads/{}/semantic/entries",other.id), json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
 	drop(server);
 	dispose(f, &url, &schema).await;
@@ -2004,29 +1920,24 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	let embedding = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let config = spec(&embedding);
-	let index = configure(&app, &token, workspace, &config, 0).await;
+	let index = configure(&app, &token, thread, &config, 0).await;
 	let entry = put(
 		&app,
 		&token,
-		workspace,
+		thread,
 		"restart",
 		"A car carries passengers.",
 		0,
 	)
 	.await;
 	semantic::worker::sweep(&f.store).await.unwrap();
-	assert_eq!(search(&app, &token, workspace).await.0, 200);
+	assert_eq!(search(&app, &token, thread).await.0, 200);
 	// Act: restart the exact PostgreSQL instance owned by the application fixture.
 	environment.await.restart_database().await;
 	assert_eq!(
-		search(&app, &token, workspace).await.1["matches"][0]["entry_id"],
+		search(&app, &token, thread).await.1["matches"][0]["entry_id"],
 		entry["id"],
 		"source and acknowledged vector survive the same PostgreSQL restart"
 	);
@@ -2040,7 +1951,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 		.await
 		.unwrap();
 	assert_eq!(
-		search(&app, &token, workspace).await.0,
+		search(&app, &token, thread).await.0,
 		503,
 		"missing vectors cannot masquerade as empty retrieval"
 	);
@@ -2057,7 +1968,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	.await
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
-	assert_eq!(search(&app, &token, workspace).await.0, 200);
+	assert_eq!(search(&app, &token, thread).await.0, 200);
 	drop(server);
 	dispose(f, &url, &schema).await;
 }
@@ -2261,23 +2172,10 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let config = spec(&endpoint);
-	configure(&app, &token, workspace, &config, 0).await;
-	let entry = put(
-		&app,
-		&token,
-		workspace,
-		"cars",
-		"A car carries passengers.",
-		0,
-	)
-	.await;
+	configure(&app, &token, thread, &config, 0).await;
+	let entry = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	let browser = common::BrowserAdministrator::new(&f).await;
 	common::tenant_root(&f, "other").await;
 	assert_eq!(
@@ -2285,8 +2183,8 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 		200
 	);
 	let bob = common::subject_credential(&f.store, "other", "bob").await;
-	let index = format!("/api/workspaces/{workspace}/semantic/index");
-	let entries = format!("/api/workspaces/{workspace}/semantic/entries");
+	let index = format!("/api/threads/{thread}/semantic/index");
+	let entries = format!("/api/threads/{thread}/semantic/entries");
 	let mut reconfigured = config.clone();
 	reconfigured.max_results = 1;
 	let reconfigure = serde_json::to_value(ConfigureIndex {
@@ -2302,17 +2200,17 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 		("POST", entries.clone(), overwrite),
 		(
 			"GET",
-			format!("/api/workspaces/{workspace}/semantic/cleanup"),
+			format!("/api/threads/{thread}/semantic/cleanup"),
 			Value::Null,
 		),
 		(
 			"POST",
-			format!("/api/workspaces/{workspace}/memory/operate"),
+			format!("/api/threads/{thread}/memory/operate"),
 			json!({}),
 		),
 		(
 			"POST",
-			format!("/api/workspaces/{workspace}/memory/units/mutate"),
+			format!("/api/threads/{thread}/memory/units/mutate"),
 			json!({}),
 		),
 	];

@@ -25,7 +25,7 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 	// Arrange
 	let snapshot = snapshot();
 	let deferred = Deferred::new(&snapshot, None).unwrap().unwrap();
-	let digest = binding(&snapshot, "workspace_observe").digest.clone();
+	let digest = binding(&snapshot, "thread_observe").digest.clone();
 	let mut state = ExposureState::default();
 	let evaluate = |name: &str, arguments: Value, state: &mut ExposureState| {
 		deferred
@@ -44,13 +44,13 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 	};
 	// Act / Assert: an unadvertised capability is answered, not simulated.
 	assert_eq!(
-		evaluate("workspace_observe", json!({}), &mut state),
-		Some(json!({"error":"capability workspace_observe is not loaded; use capability_load"}))
+		evaluate("thread_observe", json!({}), &mut state),
+		Some(json!({"error":"capability thread_observe is not loaded; use capability_load"}))
 	);
 	assert_eq!(
 		evaluate(
 			"capability_load",
-			json!({"alias":"workspace_observe","digest":"stale"}),
+			json!({"alias":"thread_observe","digest":"stale"}),
 			&mut state
 		),
 		Some(json!({"error":"CAPABILITY_CHANGED"}))
@@ -58,7 +58,7 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 	assert!(state.is_empty());
 	let loaded = evaluate(
 		"capability_load",
-		json!({"alias":"workspace_observe","digest":digest}),
+		json!({"alias":"thread_observe","digest":digest}),
 		&mut state,
 	)
 	.unwrap();
@@ -67,29 +67,29 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 	assert_eq!(
 		evaluate(
 			"capability_search",
-			json!({"query":"workspace_observe"}),
+			json!({"query":"thread_observe"}),
 			&mut state
 		)
 		.unwrap()["results"][0]["loaded"],
 		true
 	);
 	state.activate();
-	assert_eq!(evaluate("workspace_observe", json!({}), &mut state), None);
+	assert_eq!(evaluate("thread_observe", json!({}), &mut state), None);
 	assert_eq!(
 		evaluate(
 			"capability_unload",
-			json!({"alias":"workspace_observe"}),
+			json!({"alias":"thread_observe"}),
 			&mut state
 		)
 		.unwrap()["status"],
 		"unloaded"
 	);
 	// The unload applies to the next request only.
-	assert_eq!(evaluate("workspace_observe", json!({}), &mut state), None);
+	assert_eq!(evaluate("thread_observe", json!({}), &mut state), None);
 	state.activate();
 	let (text, tools) = deferred.request(&snapshot, &state).unwrap();
-	assert!(!tools.iter().any(|tool| tool.name == "workspace_observe"));
-	assert!(text.contains("workspace_observe [tool]"));
+	assert!(!tools.iter().any(|tool| tool.name == "thread_observe"));
+	assert!(text.contains("thread_observe [tool]"));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
 	let describe = |limit| {
 		evaluate(
 			"capability_describe",
-			json!({"alias":"workspace_observe"}),
+			json!({"alias":"thread_observe"}),
 			limit,
 		)
 	};

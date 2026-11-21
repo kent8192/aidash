@@ -159,9 +159,13 @@ async fn native_null_parameters_retain_timestamp_and_uuid_types(
 	assert_eq!(rows[0].data.get("request_id"), Some(&QueryValue::Null));
 }
 
+#[path = "database_area_queue.rs"]
+mod area_queue;
 #[path = "database_leases.rs"]
 mod leases;
 #[path = "run_fixtures.rs"]
 mod run_fixtures;
+#[path = "database_thread_locks.rs"]
+mod thread_locks;
 #[path = "database_waiting_requests.rs"]
 mod waiting_requests;

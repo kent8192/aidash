@@ -4,7 +4,7 @@
 //! command is. The Home checks that binding, the tool of the Run's Binding that the Run
 //! called, and the task the grant belongs to, before it stages or stores anything. Where
 //! the bytes go is never in the request: the Home takes the Working Area of the Run that
-//! delegated, or the Workspace of the grant's task, from its own records.
+//! delegated, or the Thread of the grant's task, from its own records.
 use crate::{Error, Result, ports::authorization::commands::RemoteCommandScope};
 use aidash_domain::{
 	Task, TaskStatus,
@@ -32,13 +32,15 @@ pub struct Identity<'a> {
 /// Admit one request of a delivery, in the order a Home command is admitted: the live grant's
 /// Binding must be this admission's, the Home's own Request and the Run's Binding must hold the
 /// tool the Run called, and the grant's task must still be the executing Agent's and not
-/// finished. Returns the task, whose Workspace and delegation the Home's records resolve the
+/// finished. Returns the task, whose Thread and delegation the Home's records resolve the
 /// target from.
 pub async fn verify(
 	scope: &mut dyn RemoteCommandScope,
 	who: &Identity<'_>,
 	tool: &str,
 ) -> Result<Task> {
+	// A Workspace tool a saved Agent pins is its Thread tool here, as on the lists (#1008).
+	let tool = aidash_domain::tool::thread_tools::current(tool);
 	let bound = scope.binding(who.grant_id).await?.ok_or(Error::Forbidden)?;
 	if bound.admission_id != who.admission_id {
 		return Err(Error::Forbidden);
@@ -46,13 +48,13 @@ pub async fn verify(
 	// The Home stores what a delivery carries itself, so its own Request must name the tool the
 	// Run called, whatever the receiving Node checked (ADR 0139, decision 1).
 	crate::authorization::peer::tool_request::require_requested(who.request, tool)?;
-	if tool == "workspace_message" {
+	if tool == "thread_message" {
 		// A delivered message always carries files, which the lists name with a key of their own
-		// besides the plain one: the default `workspace_message` sends no files (decision 6).
+		// besides the plain one: the default `thread_message` sends no files (decision 6).
 		crate::authorization::peer::tool_request::require_requested_key(
 			who.request,
 			aidash_domain::tool::ToolReach::HomeWorkspace,
-			aidash_domain::federation::tool_lists::WORKSPACE_MESSAGE_FILES,
+			aidash_domain::federation::tool_lists::THREAD_MESSAGE_FILES,
 		)?;
 	}
 	scope.require_builtin(tool).await?;

@@ -20,28 +20,28 @@ impl Run {
 }
 
 impl Event {
-	pub(crate) async fn in_workspace<E: OrmExecutor>(
+	pub(crate) async fn in_thread<E: OrmExecutor>(
 		db: &mut E,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 	) -> Result<Self> {
 		Self::objects()
 			.filter(Self::field_id().eq(id))
-			.filter(Self::field_workspace_id().eq(Some(workspace)))
+			.filter(Self::field_thread_id().eq(Some(thread)))
 			.first_with_db(db)
 			.await?
-			.ok_or_else(|| Error::Invalid("workspace record not available".into()))
+			.ok_or_else(|| Error::Invalid("thread record not available".into()))
 	}
 
 	pub(crate) async fn after<E: OrmExecutor>(
 		db: &mut E,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		limit: i64,
 	) -> Result<Vec<Self>> {
 		let mut query = Self::objects().filter(Self::field_sequence().gt(after.max(0)));
-		if let Some(workspace) = workspace {
-			query = query.filter(Self::field_workspace_id().eq(Some(workspace)));
+		if let Some(thread) = thread {
+			query = query.filter(Self::field_thread_id().eq(Some(thread)));
 		}
 		Ok(query
 			.order_by(&["sequence"])
@@ -50,11 +50,11 @@ impl Event {
 			.await?)
 	}
 
-	/// Recent journal events for a workspace snapshot, without the display-only
+	/// Recent journal events for a thread snapshot, without the display-only
 	/// Inference Attempt markers.
-	pub(crate) async fn recent<E: OrmExecutor>(db: &mut E, workspace: Uuid) -> Result<Vec<Self>> {
+	pub(crate) async fn recent<E: OrmExecutor>(db: &mut E, thread: Uuid) -> Result<Vec<Self>> {
 		let mut events = Self::objects()
-			.filter(Self::field_workspace_id().eq(Some(workspace)))
+			.filter(Self::field_thread_id().eq(Some(thread)))
 			.filter(Self::field_kind().starts_with(MARKER_PREFIX).not())
 			.order_by(&["-sequence"])
 			.limit(100)

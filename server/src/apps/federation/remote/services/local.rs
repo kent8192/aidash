@@ -378,6 +378,17 @@ async fn dispatch(
 		("POST", ["scoped", "files", operation]) => {
 			boxed(|| files(f, admitted, operation, body)).await
 		}
+		// An event for a Duty's `node_event` trigger from another Node of this
+		// Deployment (#1013), as the `duty-node-event` view handles it.
+		("POST", ["scoped", "duty-events"]) => {
+			use crate::apps::workspaces::{
+				serializers::duties::NodeEventInput, services::duty_events::receive_from_node,
+			};
+			let input = input!(body, NodeEventInput);
+			respond(
+				boxed(|| receive_from_node(&f, admitted, input.trigger_id, input.payload)).await,
+			)
+		}
 		(
 			"POST",
 			[

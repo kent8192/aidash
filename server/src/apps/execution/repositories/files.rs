@@ -278,12 +278,7 @@ impl FileScopePort for Scope<'_> {
 		)
 		.await
 	}
-	async fn subnode_area(
-		&mut self,
-		run: &RunMetadata,
-		workspace: Uuid,
-		area: Uuid,
-	) -> Result<Area> {
+	async fn subnode_area(&mut self, run: &RunMetadata, thread: Uuid, area: Uuid) -> Result<Area> {
 		use crate::apps::execution::models::subnodes::SubnodeRecord;
 		use reinhardt::db::orm::Model;
 		if self.access.read_run != Some(run.id) {
@@ -291,7 +286,7 @@ impl FileScopePort for Scope<'_> {
 		}
 		let matches = SubnodeRecord::objects()
 			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
-			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_thread_id().eq(thread))
 			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
 			.all_with_executor(self.access.tx.native_mut())
 			.await
@@ -300,11 +295,11 @@ impl FileScopePort for Scope<'_> {
 		if matches.is_empty() {
 			return Err(Error::Forbidden);
 		}
-		// Narrow the inherited Workspace only for this read. Session authorization
+		// Narrow the inherited Thread only for this read. Session authorization
 		// still checks file.read and every source constraint against the creator.
 		let previous = std::mem::replace(
 			&mut self.access.context,
-			serde_json::json!({"workspace_id": workspace}),
+			serde_json::json!({"thread_id": thread}),
 		);
 		let result = aidash_application::capabilities::sessions::load(
 			&mut crate::bootstrap::session_scope(None, self.access),
@@ -313,7 +308,7 @@ impl FileScopePort for Scope<'_> {
 		.await;
 		self.access.context = previous;
 		let area = result?;
-		if area.workspace_id != workspace {
+		if area.thread_id != thread {
 			return Err(Error::Forbidden);
 		}
 		Ok(area)
@@ -675,9 +670,9 @@ impl FileScopePort for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Value> {
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Value> {
 		self.access
-			.workspace_record(workspace, "message", id)
+			.thread_record(thread, "message", id)
 			.await
 			.map_err(Into::into)
 	}
@@ -710,12 +705,12 @@ impl FileScopePort for Scope<'_> {
 			.map(Into::into)
 			.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		let store = self.store.ok_or_else(missing)?;
 		store
 			.event(
 				&mut self.access.tx,
-				store.event_workspace(self.run, workspace),
+				store.event_thread(self.run, thread),
 				kind,
 				data,
 			)
@@ -732,9 +727,9 @@ impl FileScopePort for Scope<'_> {
 		if area.tenant != access.identity.tenant {
 			return Err(Error::Forbidden);
 		}
-		crate::apps::knowledge::repositories::image_publications::lock_workspace(
+		crate::apps::knowledge::repositories::image_publications::lock_thread(
 			&mut **access.tx,
-			area.workspace_id,
+			area.thread_id,
 		)
 		.await?;
 		let authority = if access.identity.subject == area.owner {
@@ -744,13 +739,13 @@ impl FileScopePort for Scope<'_> {
 			serde_json::json!({"credential":null,"tenant":area.tenant,"subject":area.owner,"subjects":[]})
 		};
 		let changes = serde_json::to_value(changes)?;
-		// The Workspace lock assigns publication sequence in commit order.
+		// The Thread lock assigns publication sequence in commit order.
 		let statement = Query::insert()
 			.into_table(Alias::new("semantic_image_publications"))
 			.columns(
 				[
 					"tenant",
-					"workspace_id",
+					"thread_id",
 					"area_id",
 					"generation",
 					"changes",
@@ -761,7 +756,7 @@ impl FileScopePort for Scope<'_> {
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(area.tenant.clone()))
-					.expr(Expr::value(area.workspace_id))
+					.expr(Expr::value(area.thread_id))
 					.expr(Expr::value(area.id))
 					.expr(Expr::value(area.generation))
 					.expr(Expr::value(changes))

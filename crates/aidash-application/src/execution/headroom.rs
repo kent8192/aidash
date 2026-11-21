@@ -39,9 +39,10 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 	} else {
 		json!({"reference_documents":documents})
 	};
+	let standing = scope.standing_instructions(run).await?;
 	let available = scope
 		.validation()
-		.bound_prompt_headroom(&snapshot, &private_context)?
+		.bound_prompt_headroom_under(&snapshot, &private_context, &standing)?
 		.saturating_sub(MIN_CONTEXT_RESERVE);
 
 	// Deferred registration already reserves the full exposure budgets, and a
@@ -53,7 +54,7 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 }
 
 pub async fn message_limit(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize> {
-	// Retain most of the window for task, workspace observation and tool history.
+	// Retain most of the window for task, thread observation and tool history.
 	Ok((request(scope, run).await? / 4).min(16_384))
 }
 

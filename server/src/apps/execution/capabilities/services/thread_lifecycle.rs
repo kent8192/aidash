@@ -7,13 +7,11 @@ use uuid::Uuid;
 pub(crate) async fn delete(
 	store: &Store,
 	access: &mut Access,
-	workspace: Uuid,
 	thread: Uuid,
 	input: DeleteThread,
 ) -> Result<Value> {
 	aidash_application::capabilities::thread_lifecycle::delete(
 		&mut crate::bootstrap::cleanup_scope(Some(store), access),
-		workspace,
 		thread,
 		input.into(),
 	)

@@ -140,7 +140,7 @@ mod tests {
 		)
 		.unwrap();
 		let raw: RawRun = serde_json::from_value(json!({
-			"id":run,"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
+			"id":run,"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),
 			"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa",
 			"agent_id":"producer","agent_version":"1","phase":"WAITING","control":"CANCELLED",
 			"step":3,"revision":7,"observed_input_seq":0,"ledger_worker_ready":true,"error":"saved failure",
@@ -191,7 +191,7 @@ mod tests {
 		}));
 		let pending = crate::run_state::encode(&state, &RecoveryState::default()).unwrap();
 		serde_json::from_value(json!({
-			"id":run,"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
+			"id":run,"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),
 			"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/brave-otter-k3m9q2xa",
 			"agent_id":"producer","agent_version":"1","phase":"TOOL_CALL","control":"CANCELLED",
 			"step":3,"revision":7,"observed_input_seq":0,"ledger_worker_ready":true,"error":null,

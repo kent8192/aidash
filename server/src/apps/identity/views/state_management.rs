@@ -19,8 +19,8 @@ fn stop_actor(browser: Option<crate::dashboard_auth::BrowserOrigin>) -> StopActo
 }
 
 #[reinhardt::get(
-	"/api/runs/{id}/management",
-	name = "run-management-get",
+	"/api/executions/{id}/management",
+	name = "execution-management-get",
 	auth = "protected"
 )]
 pub async fn get(
@@ -44,8 +44,8 @@ pub async fn get(
 	})
 }
 #[reinhardt::post(
-	"/api/runs/{id}/management",
-	name = "run-management-control",
+	"/api/executions/{id}/management",
+	name = "execution-management-control",
 	auth = "protected"
 )]
 pub async fn control(

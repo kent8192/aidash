@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
   builtInApprovalDecider,
+  emptyOrgChart,
   routeRegistryVersions,
   routeTenantActions,
 } from "./registry-fixture";
@@ -43,14 +44,14 @@ async function setup(page: Page, actions: string[]) {
             key: null,
           },
           registry: [],
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -86,6 +87,8 @@ async function setup(page: Page, actions: string[]) {
       });
     if (path === "/api/tenants/alpha/oauth-clients")
       return route.fulfill({ json: [] });
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await routeTenantActions(page, actions, {

@@ -92,7 +92,7 @@ impl Executor<'_> {
 				CheckStatus::Starting | CheckStatus::Running if !pending.overdue(now) => {
 					progress.pending = Some(pending);
 					return self
-						.wait(run, token, progress, "run.completion_check_running")
+						.wait(run, token, progress, "execution.completion_check_running")
 						.await;
 				}
 				// The hung operation keeps the Area busy, so waiting for the
@@ -138,7 +138,7 @@ impl Executor<'_> {
 			.is_some_and(|content| matches!(content.state, ContentState::Busy))
 		{
 			return self
-				.wait(run, token, progress, "run.completion_content_busy")
+				.wait(run, token, progress, "execution.completion_content_busy")
 				.await;
 		}
 		let capability = run
@@ -208,12 +208,12 @@ impl Executor<'_> {
 								running_since: None,
 							});
 							return self
-								.wait(run, token, progress, "run.completion_check_started")
+								.wait(run, token, progress, "execution.completion_check_started")
 								.await;
 						}
 						CheckStart::Stale => {
 							return self
-								.wait(run, token, progress, "run.completion_content_changed")
+								.wait(run, token, progress, "execution.completion_content_changed")
 								.await;
 						}
 						CheckStart::Unavailable(detail) => progress.record(subject.refused(
@@ -247,7 +247,7 @@ impl Executor<'_> {
 					run.state = RunState::Thinking(ThinkingState::default());
 					self.environment
 						.store()
-						.save_run(run, token, "run.completion_repair_required")
+						.save_run(run, token, "execution.completion_repair_required")
 						.await?;
 					return Ok(Gate::Saved);
 				}
@@ -313,7 +313,7 @@ impl Executor<'_> {
 		})?;
 		self.environment
 			.store()
-			.save_run(run, token, "run.completion_review_required")
+			.save_run(run, token, "execution.completion_review_required")
 			.await?;
 		Ok(Gate::Saved)
 	}

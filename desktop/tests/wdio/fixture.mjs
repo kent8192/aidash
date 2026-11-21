@@ -15,7 +15,7 @@ export async function startFixture() {
     default: true,
     address: `${scene.data.deployment.id}/default`,
   };
-  scene.data.workspaces[0].node = node.name;
+  scene.data.threads[0].node = node.name;
   for (const run of scene.data.runs) run.home_node = node.address;
   const pending = new Map();
   const codes = new Map();
@@ -161,9 +161,9 @@ export async function startFixture() {
             `id: ${server.address().port}\ndata: {}\n\n`,
           );
         }
-        case "/api/workspaces/product-lab":
+        case "/api/threads/product-lab":
           return reply(200, {
-            workspace: scene.data.workspaces[0],
+            thread: scene.data.threads[0],
             tasks: scene.data.tasks,
             artifacts: scene.data.artifacts,
             events: scene.data.events,

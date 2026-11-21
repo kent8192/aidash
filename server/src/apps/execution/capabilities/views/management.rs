@@ -33,8 +33,8 @@ pub async fn areas(
 }
 
 #[get(
-	"/api/runs/{id}/working-area",
-	name = "!run_working_area",
+	"/api/executions/{id}/working-area",
+	name = "!execution_working_area",
 	auth = "protected"
 )]
 pub async fn area_for_run(
@@ -46,7 +46,7 @@ pub async fn area_for_run(
 }
 
 #[post(
-	"/api/runs/{id}/files/read",
+	"/api/executions/{id}/files/read",
 	name = "!core_file_read",
 	auth = "protected"
 )]
@@ -63,7 +63,7 @@ pub async fn file_read(
 }
 
 #[post(
-	"/api/runs/{id}/files/search",
+	"/api/executions/{id}/files/search",
 	name = "!core_file_search",
 	auth = "protected"
 )]
@@ -79,7 +79,7 @@ pub async fn file_search(
 	crate::http::json(api::file_search(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post("/api/runs/{id}/shell", name = "!core_shell", auth = "protected")]
+#[post("/api/executions/{id}/shell", name = "!core_shell", auth = "protected")]
 pub async fn shell(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
@@ -92,7 +92,11 @@ pub async fn shell(
 	crate::http::json(api::shell(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post("/api/runs/{id}/patch", name = "!core_apply_patch", auth = "protected")]
+#[post(
+	"/api/executions/{id}/patch",
+	name = "!core_apply_patch",
+	auth = "protected"
+)]
 pub async fn apply_patch(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
@@ -106,7 +110,7 @@ pub async fn apply_patch(
 }
 
 #[post(
-	"/api/runs/{id}/shell/poll",
+	"/api/executions/{id}/shell/poll",
 	name = "!core_shell_poll",
 	auth = "protected"
 )]
@@ -123,7 +127,7 @@ pub async fn shell_poll(
 }
 
 #[post(
-	"/api/runs/{id}/shell/cancel",
+	"/api/executions/{id}/shell/cancel",
 	name = "!core_shell_cancel",
 	auth = "protected"
 )]
@@ -140,7 +144,7 @@ pub async fn shell_cancel(
 }
 
 #[post(
-	"/api/runs/{id}/files/materialize",
+	"/api/executions/{id}/files/materialize",
 	name = "!core_file_materialize",
 	auth = "protected"
 )]
@@ -217,7 +221,7 @@ pub async fn skill_import(
 }
 
 #[post(
-	"/api/runs/{id}/skills/list",
+	"/api/executions/{id}/skills/list",
 	name = "!core_skill_list",
 	auth = "protected"
 )]
@@ -234,7 +238,7 @@ pub async fn skill_list(
 }
 
 #[post(
-	"/api/runs/{id}/skills/load",
+	"/api/executions/{id}/skills/load",
 	name = "!core_skill_load",
 	auth = "protected"
 )]
@@ -251,7 +255,7 @@ pub async fn skill_load(
 }
 
 #[post(
-	"/api/runs/{id}/skills/read",
+	"/api/executions/{id}/skills/read",
 	name = "!core_skill_read",
 	auth = "protected"
 )]
@@ -268,7 +272,7 @@ pub async fn skill_read(
 }
 
 #[post(
-	"/api/runs/{id}/files/share",
+	"/api/executions/{id}/files/share",
 	name = "!core_file_share",
 	auth = "protected"
 )]
@@ -285,8 +289,8 @@ pub async fn file_share(
 }
 
 #[post(
-	"/api/workspaces/{workspace}/threads/{thread}/agents/{agent}/runs",
-	name = "!core_thread_run",
+	"/api/threads/{thread}/agents/{agent}/executions",
+	name = "!core_thread_execution",
 	auth = "protected"
 )]
 pub async fn thread_run(
@@ -298,11 +302,6 @@ pub async fn thread_run(
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	let workspace = request
-		.path_params
-		.get("workspace")
-		.and_then(|value| value.parse::<Uuid>().ok())
-		.ok_or_else(|| FrameworkError::Validation("invalid workspace path".into()))?;
 	let thread = request
 		.path_params
 		.get("thread")
@@ -314,19 +313,11 @@ pub async fn thread_run(
 		.map(str::to_owned)
 		.ok_or_else(|| FrameworkError::Validation("missing agent path".into()))?;
 
-	crate::http::json(
-		api::thread_run(
-			service.runtime.clone(),
-			actor,
-			(workspace, thread, agent),
-			input,
-		)
-		.await,
-	)
+	crate::http::json(api::thread_run(service.runtime.clone(), actor, (thread, agent), input).await)
 }
 
 #[post(
-	"/api/runs/{id}/outbound",
+	"/api/executions/{id}/outbound",
 	name = "!core_outbound_get",
 	auth = "protected"
 )]
@@ -343,7 +334,7 @@ pub async fn outbound_get(
 }
 
 #[get(
-	"/api/runs/{id}/outbound",
+	"/api/executions/{id}/outbound",
 	name = "!core_outbound_history",
 	auth = "protected"
 )]
@@ -420,7 +411,11 @@ pub async fn grant_revoke(
 	crate::http::json(api::grant_revoke(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post("/api/runs/{id}/python", name = "!core_python", auth = "protected")]
+#[post(
+	"/api/executions/{id}/python",
+	name = "!core_python",
+	auth = "protected"
+)]
 pub async fn python(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
@@ -434,7 +429,7 @@ pub async fn python(
 }
 
 #[post(
-	"/api/runs/{id}/python/poll",
+	"/api/executions/{id}/python/poll",
 	name = "!core_python_poll",
 	auth = "protected"
 )]
@@ -451,7 +446,7 @@ pub async fn python_poll(
 }
 
 #[post(
-	"/api/runs/{id}/python/cancel",
+	"/api/executions/{id}/python/cancel",
 	name = "!core_python_cancel",
 	auth = "protected"
 )]
@@ -690,25 +685,6 @@ pub async fn restore(
 	crate::http::json(api::restore(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post(
-	"/api/workspaces/{workspace}/working-areas/{id}/restore/new-thread",
-	name = "!core_restore_new_thread",
-	auth = "protected"
-)]
-pub async fn restore_new_thread(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path((workspace, id)): Path<(Uuid, Uuid)>,
-	Json(input): Json<crate::capabilities::cleanup::RestoreNewThread>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(
-		api::restore_new_thread(service.runtime.clone(), actor, (workspace, id), input).await,
-	)
-}
-
 #[get(
 	"/api/file-transfers/{id}",
 	name = "!file_transfer_status",
@@ -763,7 +739,7 @@ pub async fn transfer_recipients(
 }
 
 #[get(
-	"/api/runs/{id}/core-operations",
+	"/api/executions/{id}/core-operations",
 	name = "!core_operation_history",
 	auth = "protected"
 )]
@@ -786,22 +762,20 @@ pub async fn reference_list(
 }
 
 #[post(
-	"/api/workspaces/{workspace}/threads/{thread}/delete",
+	"/api/threads/{thread}/delete",
 	name = "!core_thread_delete",
 	auth = "protected"
 )]
 pub async fn thread_delete(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Path((workspace, thread)): Path<(Uuid, Uuid)>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<crate::capabilities::thread_lifecycle::DeleteThread>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(
-		api::thread_delete(service.runtime.clone(), actor, (workspace, thread), input).await,
-	)
+	crate::http::json(api::thread_delete(service.runtime.clone(), actor, thread, input).await)
 }
 
 use crate::authorization::identity::Actor;

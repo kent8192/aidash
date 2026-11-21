@@ -31,7 +31,7 @@ fn authority_router(#[from(authority_state)] state: Arc<ModelState>) -> Arc<Rout
                     1 => vec![("delegate", "task_delegate", json!({"task_id":state.child.lock().unwrap().unwrap(),"node_id":aidash_domain::nodes::NodeAddress::derived("aidash://native-memory", "acme").to_string(),"agent":{"id":"a","version":"1.0.0"}}))],
                     _ if state.member_calls.fetch_add(1, Ordering::SeqCst) == 0 => vec![
                         ("recall", "memory_recall", json!({"text":"evidence","time":null,"kinds":[],"max_tokens":8192})),
-                        ("observe", "workspace_observe", json!({})),
+                        ("observe", "thread_observe", json!({})),
                     ],
                     _ => vec![],
                 };
@@ -48,7 +48,7 @@ fn authority_router(#[from(authority_state)] state: Arc<ModelState>) -> Arc<Rout
 }
 
 #[rstest]
-#[case::fresh_workspace(None)]
+#[case::fresh_thread(None)]
 #[case::empty_dependency(Some(false))]
 #[case::lost_run_authority(Some(true))]
 #[tokio::test]
@@ -138,9 +138,9 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	let conversation = aidash_server::authorization::interaction::conversation(
 		&f,
 		identity,
-		aidash_application::workspaces::ConversationRequest {
+		aidash_application::threads::ConversationRequest {
 			title: "Conversation",
-			goal: "Delegate research",
+			request: "Delegate research",
 			target: &reference("coordinator"),
 			target_kind: "agent",
 			node: None,
@@ -149,7 +149,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	)
 	.await
 	.unwrap();
-	aidash_server::semantic::service::configure(&f.store, &actor, conversation.workspace.id, aidash_server::semantic::ConfigureIndex {
+	aidash_server::semantic::service::configure(&f.store, &actor, conversation.thread.id, aidash_server::semantic::ConfigureIndex {
         expected_revision: 0,
         spec: aidash_server::semantic::IndexSpec {
             embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
@@ -184,7 +184,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 			);
 			let tasks = f
 				.store
-				.tasks(&TEST_FIXTURE, Some(conversation.workspace.id))
+				.tasks(&TEST_FIXTURE, Some(conversation.thread.id))
 				.await
 				.unwrap();
 			if let Some(task) = tasks
@@ -255,7 +255,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		.unwrap();
 	state.stage.store(2, Ordering::SeqCst);
 	// Let inference record the coordinator event before the two tool calls.
-	// The authority cases then change policy; the fresh-workspace case does not.
+	// The authority cases then change policy; the fresh-thread case does not.
 	tokio::time::timeout(std::time::Duration::from_secs(90), async {
 		loop {
 			worker.worker_once().await.unwrap();

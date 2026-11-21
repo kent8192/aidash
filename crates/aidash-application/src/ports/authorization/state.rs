@@ -3,8 +3,8 @@ use super::visibility::RowOutcome;
 use crate::Result;
 use aidash_domain::unconfirmed::Tally;
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Workspace,
-	policy::Resource, registry::Entry, run_state::RawRun, workspaces::TaskPage,
+	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
+	policy::Resource, registry::Entry, run_state::RawRun, threads::TaskPage,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -15,20 +15,20 @@ pub type VisibleRuns = (
 	std::collections::HashMap<Uuid, String>,
 );
 #[async_trait]
-pub trait WorkspaceListingScope: Send + RowOutcome {
+pub trait ThreadListingScope: Send + RowOutcome {
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>>;
-	async fn task_page(&mut self, workspaces: &[Uuid], offset: u64) -> Result<TaskPage>;
+	async fn task_page(&mut self, threads: &[Uuid], offset: u64) -> Result<TaskPage>;
 }
 #[async_trait]
-pub trait WorkspaceStateScope: Send + RowOutcome {
-	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
-	async fn prepare_workspaces(&mut self, _workspaces: &[Uuid]) -> Result<()> {
+pub trait ThreadStateScope: Send + RowOutcome {
+	async fn allowed(&mut self, thread: Uuid, action: &str) -> Result<bool>;
+	async fn prepare_threads(&mut self, _threads: &[Uuid]) -> Result<()> {
 		Ok(())
 	}
 	async fn registry(&mut self) -> Result<Vec<Entry>>;
-	async fn workspace_rows(&mut self, workspaces: &[Uuid]) -> Result<Vec<Workspace>>;
+	async fn thread_rows(&mut self, threads: &[Uuid]) -> Result<Vec<Thread>>;
 	/// Candidate pages contain at most PAGE_SIZE rows, ordered newest first.
-	async fn workspace_candidates(
+	async fn thread_candidates(
 		&mut self,
 		node: Option<&str>,
 		cursor: Option<Uuid>,

@@ -1736,6 +1736,9 @@ impl PolicyAdministration {
 	) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
+		// A withdrawn or disabled approval deletes the Subnodes its Agent
+		// version created on that Node, once the change commits (#1012).
+		let withdraws = withdraw_carried || approvals.iter().any(|approval| !approval.enabled);
 		let mut access = Access::begin_change(
 			&f.store,
 			&identity,
@@ -2053,7 +2056,11 @@ impl PolicyAdministration {
 			Ok(bindings)
 		}
 		.await;
-		access.finish(result).await
+		let bindings = access.finish(result).await?;
+		if withdraws {
+			super::creator_removal::sweep(&f.store, &tenant).await;
+		}
+		Ok(bindings)
 	}
 	pub(crate) async fn issue_credential(
 		&self,
@@ -2324,6 +2331,9 @@ impl PolicyAdministration {
 				})
 				.await?
 		};
+		// A saved policy may disable an Agent subject, which deletes the
+		// Subnodes that Agent version created (#1012).
+		super::creator_removal::sweep(&f.store, &tenant).await;
 		let pending_transactions =
 			crate::transactions::authority::pending(&f, &tenant, None).await?;
 		let status = if pending_transactions.is_empty() {

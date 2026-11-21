@@ -14,6 +14,7 @@ pub const COORDINATION_TOOLS: &[&str] = &[
 	"task_assign",
 	"agent_discover",
 	"workspace_message",
+	"thread_message",
 	"subnode_message",
 	"subnode_add_member",
 	"subnode_remove_member",
@@ -52,6 +53,26 @@ pub enum EndReason {
 	CreatorFailed,
 	CreatorCancelled,
 	SafetyStop,
+	/// The creating Agent version was disabled or its approval withdrawn
+	/// (#1012): see [`creator_removed`].
+	CreatorAgentRemoved,
+}
+
+/// Whether a Subnode's creating Agent version is definitely unusable on the
+/// Subnode's Node, so the Subnode is deleted (#1012: "disabling or removing
+/// the creating Agent deletes its Subnodes").
+///
+/// Only a definite signal counts: the version's Catalog Approval on that Node
+/// is withdrawn or disabled (`catalog_enabled == Some(false)`), or the Tenant's
+/// policy names its Agent subject and disables it (`subject_enabled ==
+/// Some(false)`). A generated version's approval that its retirement
+/// disabled counts too. Absence proves nothing: a generated version may run
+/// with no approval row on the Node (one registered unapproved, as on the
+/// receiving Node of a foreign generation), and a subject missing from the
+/// policy bundle may be one that was never written there. Neither absence
+/// ends a Subnode.
+pub fn creator_removed(catalog_enabled: Option<bool>, subject_enabled: Option<bool>) -> bool {
+	catalog_enabled == Some(false) || subject_enabled == Some(false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,7 +86,7 @@ pub struct Subnode {
 	pub leader: EntityRef,
 	pub members: Vec<Member>,
 	pub allowance: Allowance,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub title: Option<String>,
 	pub state: State,
 	pub created_at: DateTime<Utc>,
@@ -99,12 +120,7 @@ impl Subnode {
 }
 
 /// Check the intended member set before persistence, including the one-version-per-agent rule.
-pub fn check_member_set(
-	leader: &EntityRef,
-	members: &[Member],
-	limits: SubnodeLimits,
-) -> Result<(), Refusal> {
-	limits.check_members(members.len())?;
+pub fn check_member_set(leader: &EntityRef, members: &[Member]) -> Result<(), Refusal> {
 	let mut ids = BTreeSet::new();
 	for member in members {
 		if !ids.insert(&member.agent_id) {
@@ -119,14 +135,6 @@ pub fn check_leader(leader: &EntityRef, members: &[Member]) -> Result<(), Refusa
 		Ok(())
 	} else {
 		Err(Refusal::LeaderNotMember)
-	}
-}
-
-pub fn check_can_create(is_member: bool) -> Result<(), Refusal> {
-	if is_member {
-		Err(Refusal::NestedSubnode)
-	} else {
-		Ok(())
 	}
 }
 
@@ -151,10 +159,6 @@ pub enum Refusal {
 	MemberTool(String),
 	#[error("member needs a secret outside the allowance: {0}")]
 	MemberSecret(String),
-	#[error("Subnode member limit reached")]
-	MemberLimit,
-	#[error("active Subnode limit reached")]
-	SubnodeLimit,
 	#[error("agent already belongs to the Subnode: {0}")]
 	DuplicateMember(String),
 	#[error("leader must be a member")]
@@ -165,10 +169,6 @@ pub enum Refusal {
 	MemberHasWork,
 	#[error("agent is not a member")]
 	NotMember,
-	#[error("a Subnode member cannot create another Subnode")]
-	NestedSubnode,
-	#[error("invalid Subnode limits")]
-	InvalidLimits,
 }
 
 /// Reject an allowance that exceeds what the creating Run may use.
@@ -204,54 +204,18 @@ pub fn member_fits(required: &Allowance, allowance: &Allowance) -> Result<(), Re
 	Ok(())
 }
 
-/// Tenant settings; callers must validate settings before storing or using them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// Tenant settings for Subnodes. There is no cap on how many Subnodes a Run
+/// creates, how many members one has or how deeply they nest (#1012, ADR
+/// 0143), and a remote Run's consent comes from both Nodes' Federation tool
+/// lists (ADR 0139), so nothing here is read any more.
+#[derive(
+	Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct SubnodeLimits {
-	#[schemars(range(min = 1, max = 20))]
-	pub members_per_subnode: u32,
-	#[schemars(range(min = 1, max = 10))]
-	pub subnodes_per_run: u32,
 	// No longer read: the receiving Node's Federation Tool Allowance replaced this setting
 	// (ADR 0110, ADR 0139). It stays in the stored and API shape until a migration drops it.
 	pub remote_runs_may_create: bool,
-}
-
-impl Default for SubnodeLimits {
-	fn default() -> Self {
-		Self {
-			members_per_subnode: 5,
-			subnodes_per_run: 3,
-			remote_runs_may_create: false,
-		}
-	}
-}
-
-impl SubnodeLimits {
-	pub fn validate(self) -> Result<(), Refusal> {
-		if !(1..=20).contains(&self.members_per_subnode)
-			|| !(1..=10).contains(&self.subnodes_per_run)
-		{
-			return Err(Refusal::InvalidLimits);
-		}
-		Ok(())
-	}
-
-	pub fn check_members(self, count: usize) -> Result<(), Refusal> {
-		self.validate()?;
-		if count > self.members_per_subnode as usize {
-			return Err(Refusal::MemberLimit);
-		}
-		Ok(())
-	}
-
-	pub fn check_create(self, active: usize) -> Result<(), Refusal> {
-		self.validate()?;
-		if active >= self.subnodes_per_run as usize {
-			return Err(Refusal::SubnodeLimit);
-		}
-		Ok(())
-	}
 }
 
 #[cfg(test)]
@@ -292,31 +256,6 @@ mod tests {
 			Err(Refusal::CoordinationToolInAllowance("task_create".into()))
 		);
 	}
-
-	#[test]
-	fn limits_apply_to_resulting_members_and_existing_subnodes() {
-		let limits = SubnodeLimits::default();
-		assert_eq!(limits.check_members(5), Ok(()));
-		assert_eq!(limits.check_members(6), Err(Refusal::MemberLimit));
-		assert_eq!(limits.check_create(2), Ok(()));
-		assert_eq!(limits.check_create(3), Err(Refusal::SubnodeLimit));
-		assert_eq!(
-			SubnodeLimits {
-				members_per_subnode: 0,
-				..limits
-			}
-			.validate(),
-			Err(Refusal::InvalidLimits)
-		);
-		assert_eq!(
-			SubnodeLimits {
-				subnodes_per_run: 11,
-				..limits
-			}
-			.validate(),
-			Err(Refusal::InvalidLimits)
-		);
-	}
 	#[test]
 	fn membership_controls_delegation_and_removal() {
 		let leader = EntityRef {
@@ -334,13 +273,10 @@ mod tests {
 			added_at: Utc::now(),
 		};
 		let members = vec![member(leader.clone()), member(worker.clone())];
-		assert_eq!(
-			check_member_set(&worker, &members, SubnodeLimits::default()),
-			Ok(())
-		);
+		assert_eq!(check_member_set(&worker, &members), Ok(()));
 		let duplicate = vec![member(leader.clone()), member(leader.clone())];
 		assert_eq!(
-			check_member_set(&leader, &duplicate, SubnodeLimits::default()),
+			check_member_set(&leader, &duplicate),
 			Err(Refusal::DuplicateMember("leader".into()))
 		);
 		let outsider = EntityRef {
@@ -361,7 +297,7 @@ mod tests {
 			leader: leader.clone(),
 			members,
 			allowance: Allowance::default(),
-			workspace_id: Uuid::nil(),
+			thread_id: Uuid::nil(),
 			title: None,
 			state: State::Active,
 			created_at: Utc::now(),
@@ -385,8 +321,32 @@ mod tests {
 		);
 		subnode.state = State::Dissolved;
 		assert!(!subnode.allows_delegation(&worker));
-		assert_eq!(check_can_create(true), Err(Refusal::NestedSubnode));
-		assert_eq!(check_can_create(false), Ok(()));
+	}
+
+	#[rstest::rstest]
+	#[case::approved_and_enabled(Some(true), Some(true), false)]
+	#[case::never_approved_nor_named(None, None, false)]
+	#[case::no_approval_row(None, Some(true), false)]
+	#[case::approved_but_not_a_subject(Some(true), None, false)]
+	#[case::approval_withdrawn(Some(false), Some(true), true)]
+	#[case::approval_withdrawn_subject_absent(Some(false), None, true)]
+	#[case::subject_disabled(Some(true), Some(false), true)]
+	#[case::subject_disabled_without_approval(None, Some(false), true)]
+	#[case::both(Some(false), Some(false), true)]
+	fn only_a_definite_signal_removes_the_creator(
+		#[case] catalog: Option<bool>,
+		#[case] subject: Option<bool>,
+		#[case] removed: bool,
+	) {
+		assert_eq!(creator_removed(catalog, subject), removed);
+	}
+
+	#[test]
+	fn the_creator_removal_reason_is_stored_in_snake_case() {
+		assert_eq!(
+			serde_json::to_value(EndReason::CreatorAgentRemoved).unwrap(),
+			serde_json::json!("creator_agent_removed")
+		);
 	}
 
 	#[test]

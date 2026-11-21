@@ -136,7 +136,7 @@ impl Binding {
 
 impl NativeBinding {
 	/// The one bank a memory tool of a Run executing for another Home writes: the Agent's
-	/// participant bank on the Home. A published Workspace bank is read, never written (ADR 0126).
+	/// participant bank on the Home. A published Thread bank is read, never written (ADR 0126).
 	pub fn write_bank(&self) -> &crate::memory::Bank {
 		&self.participant.bank
 	}
@@ -144,7 +144,7 @@ impl NativeBinding {
 	pub fn writes_private_bank(&self) -> bool {
 		self.participant.bank.participant.is_some()
 	}
-	/// The banks a tool recall reads: the declared participant and published Workspace banks.
+	/// The banks a tool recall reads: the declared participant and published Thread banks.
 	pub fn read_banks(&self) -> &[NativeBank] {
 		&self.banks
 	}
@@ -239,7 +239,9 @@ pub struct Receipt {
 	pub operation_digest: String,
 	pub home_node: String,
 	pub tenant: String,
-	pub workspace_id: Uuid,
+	/// Stored receipts say `workspace_id` before #1008.
+	#[serde(alias = "workspace_id")]
+	pub thread_id: Uuid,
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,
 	pub executor: String,
@@ -355,7 +357,7 @@ mod native_tool_tests {
 		Bank {
 			home: "aidash://home/node".into(),
 			tenant: "tenant".into(),
-			workspace: Uuid::from_u128(1),
+			thread: Uuid::from_u128(1),
 			participant,
 		}
 	}
@@ -400,7 +402,7 @@ mod native_tool_tests {
 				provider: provider().entry,
 			},
 			agent: provider(),
-			// The published Workspace bank is declared first on purpose.
+			// The published Thread bank is declared first on purpose.
 			banks: vec![declared(bank(None)), declared(participant)],
 		}
 	}
@@ -410,7 +412,7 @@ mod native_tool_tests {
 		let binding = binding();
 		assert_eq!(binding.write_bank().participant, Some(Uuid::from_u128(2)));
 		assert!(binding.writes_private_bank());
-		// The shared Workspace bank is readable by the tool, and is not the write bank.
+		// The shared Thread bank is readable by the tool, and is not the write bank.
 		assert!(
 			binding
 				.read_banks()
@@ -421,7 +423,7 @@ mod native_tool_tests {
 	}
 
 	#[test]
-	fn a_binding_with_a_workspace_wide_bank_has_no_private_write_bank() {
+	fn a_binding_with_a_thread_wide_bank_has_no_private_write_bank() {
 		let mut binding = binding();
 		binding.participant.bank.participant = None;
 		assert!(!binding.writes_private_bank());

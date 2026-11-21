@@ -39,7 +39,7 @@ pub struct SemanticRemoteOperations {
 	pub receipt: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 	#[field]
 	pub created_at: chrono::DateTime<chrono::Utc>,
-	/// Home only: the Workspace corpus digest read before the retrieval.
+	/// Home only: the Thread corpus digest read before the retrieval.
 	#[field(field_type = "text")]
 	pub corpus_digest: Option<String>,
 }

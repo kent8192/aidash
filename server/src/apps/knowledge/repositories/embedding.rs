@@ -16,7 +16,7 @@ pub(crate) struct Embedding<'a, 'scope> {
 impl SemanticEmbeddingScope for Embedding<'_, '_> {
 	async fn reserve(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		input: aidash_domain::semantic::EmbeddingInput<'_>,
 		origin: Origin,
@@ -25,7 +25,7 @@ impl SemanticEmbeddingScope for Embedding<'_, '_> {
 			crate::generation::embedding::reserve_input(
 				access,
 				&self.store,
-				workspace,
+				thread,
 				config,
 				input,
 				origin,

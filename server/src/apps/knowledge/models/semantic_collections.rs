@@ -17,10 +17,10 @@ pub struct SemanticCollection {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "semantic_collections_workspace_id_fkey",
+		db_constraint = "semantic_collections_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::knowledge::models::SemanticIndexe>,
+	pub thread: ForeignKeyField<crate::apps::knowledge::models::SemanticIndexe>,
 	#[field]
 	pub vector: Json<Value>,
 	#[field(default = false)]

@@ -75,14 +75,14 @@ async function registry(page: Page, actions: string[]) {
           registry: versions()
             .filter((version) => version.approval?.enabled)
             .map((version) => version.entry),
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,

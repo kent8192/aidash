@@ -24,10 +24,12 @@ fn observed_media_type(run: &aidash_domain::Run, id: &str) -> Option<String> {
 		let aidash_domain::context::ContextEvent::Tool { call, result } = &entry.event else {
 			return None;
 		};
-		if call.name == "workspace_read" && result["metadata"]["id"].as_str() == Some(id) {
+		if aidash_domain::tool::thread_tools::is(&call.name, "thread_read")
+			&& result["metadata"]["id"].as_str() == Some(id)
+		{
 			return result["metadata"]["media_type"].as_str().map(str::to_owned);
 		}
-		if call.name == "workspace_read"
+		if aidash_domain::tool::thread_tools::is(&call.name, "thread_read")
 			&& result["kind"] == "message"
 			&& result["offset"] == 0
 			&& result["next_offset"].is_null()
@@ -42,7 +44,7 @@ fn observed_media_type(run: &aidash_domain::Run, id: &str) -> Option<String> {
 						.flatten()
 				});
 		}
-		if call.name != "workspace_observe" {
+		if !aidash_domain::tool::thread_tools::is(&call.name, "thread_observe") {
 			return None;
 		}
 		result["messages"].as_array()?.iter().find_map(|message| {
@@ -151,8 +153,25 @@ impl ToolOperations for Operations {
 		aidash_application::tools::connection_outcome(value, false)
 	}
 
-	async fn schedule(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
-		crate::apps::workspaces::services::schedules::agent_tool(
+	async fn book_trigger(&self, trigger: Uuid) -> Result<Value> {
+		crate::apps::workspaces::services::duty_events::book(&self.0.store, &self.0.run, trigger)
+			.await
+			.map_err(Into::into)
+	}
+
+	async fn duty(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
+		if operation == "duty_notify" {
+			// An event leaves for another Node's Duty (#1013); it needs the
+			// Federation transport, not a Duty of this Node.
+			return crate::apps::workspaces::services::duty_events::notify(
+				&self.0.home.federation,
+				&self.0.run,
+				input,
+			)
+			.await
+			.map_err(Into::into);
+		}
+		crate::apps::workspaces::services::duties::agent_tool(
 			&self.0.store,
 			&self.0.run,
 			key,
@@ -161,6 +180,18 @@ impl ToolOperations for Operations {
 		)
 		.await
 		.map_err(Into::into)
+	}
+
+	async fn node(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
+		crate::apps::identity::services::nodes::agent_tool(
+			&self.0.home.federation,
+			&self.0.run,
+			key,
+			operation,
+			input,
+		)
+		.await
+		.map_err(operation_error)
 	}
 
 	async fn connection_person(&self) -> Result<bool> {
@@ -225,10 +256,7 @@ impl ToolOperations for Operations {
 	}
 	async fn discover(&self, input: &Search) -> Result<Value> {
 		// A model chooses an Agent by its card; the whole definition stays with people.
-		let discovery = self.0.home.discover(input).await?;
-		Ok(json!(aidash_domain::federation::DiscoveryCards::from(
-			&discovery
-		)))
+		Ok(json!(self.0.home.discover_cards(input).await?))
 	}
 	async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
 		self.0
@@ -237,9 +265,22 @@ impl ToolOperations for Operations {
 			.await
 			.map_err(Into::into)
 	}
-	async fn assign(&self, id: Uuid, policy: &str, reason: &str) -> Result<Value> {
+	async fn assign(
+		&self,
+		id: Uuid,
+		policy: &str,
+		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value> {
 		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
 			// The Home assigns under its own Generation policy, to its own Agents only.
+			// Its scoped `task_assign` carries no free-form draft (#1012), so a Run
+			// executing for another Home cannot write one.
+			if draft.is_some() {
+				return Err(aidash_application::Error::Invalid(
+					"a Run executing for another Home cannot draft a generated agent".into(),
+				));
+			}
 			return self
 				.0
 				.home
@@ -247,7 +288,7 @@ impl ToolOperations for Operations {
 				.await
 				.map_err(Into::into);
 		}
-		Ok(json!(self.0.home.assign(id, policy, reason).await?))
+		Ok(json!(self.0.home.assign(id, policy, reason, draft).await?))
 	}
 	async fn delegate_with_key(
 		&self,
@@ -365,7 +406,7 @@ impl ToolOperations for Operations {
 	}
 	async fn attachment_copy(&self, input: Value) -> Result<Value> {
 		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
-			// Reach: the Home's Workspace (ADR 0139, decision 20). The Home keeps the attachment
+			// Reach: the Home's Thread (ADR 0139, decision 20). The Home keeps the attachment
 			// and answers the receiver's pull; the bytes land where the Run's commands run.
 			let id: Uuid = serde_json::from_value(input["id"].clone())
 				.map_err(|_| aidash_application::Error::Invalid("invalid attachment id".into()))?;
@@ -440,7 +481,7 @@ impl ToolOperations for Operations {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_image(
+	async fn thread_image(
 		&self,
 		selection: &aidash_domain::media::WorkingImageSelection,
 		representation: &str,
@@ -455,17 +496,17 @@ impl ToolOperations for Operations {
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
-			.workspace_image(&ctx.store, &ctx.run, selection, representation)
+			.thread_image(&ctx.store, &ctx.run, selection, representation)
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_search(&self, input: Value) -> Result<Value> {
+	async fn thread_search(&self, input: Value) -> Result<Value> {
 		let ctx = &self.0;
 		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			// The Home searches its own Workspace by text.
+			// The Home searches its own Thread by text.
 			return ctx
 				.home
-				.forward_workspace_search(input)
+				.forward_thread_search(input)
 				.await
 				.map_err(Into::into);
 		}
@@ -475,14 +516,14 @@ impl ToolOperations for Operations {
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
-			.workspace_search(&ctx.store, &ctx.run, input)
+			.thread_search(&ctx.store, &ctx.run, input)
 			.await
 			.map_err(Into::into)
 	}
 
 	async fn read_subnode_record_chunk(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: &str,
 		offset: usize,
@@ -490,7 +531,7 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		self.0
 			.home
-			.read_subnode_record_chunk(workspace, kind, id, offset, maximum)
+			.read_subnode_record_chunk(thread, kind, id, offset, maximum)
 			.await
 			.map_err(Into::into)
 	}

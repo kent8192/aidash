@@ -22,7 +22,7 @@ fn raw(now: DateTime<Utc>) -> RawRun {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			home_node: "aidash://home/brave-otter-k3m9q2xa".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1.0.0".into(),
@@ -101,7 +101,7 @@ async fn an_operation_wait_wakes_for_input_or_completion_unless_paused(
 #[case::task_finished(false, Some(2), Some(2))]
 #[case::no_change(false, None, Some(300))]
 #[tokio::test]
-async fn workspace_wait_selects_input_or_a_coalesced_task_event(
+async fn thread_wait_selects_input_or_a_coalesced_task_event(
 	now: DateTime<Utc>,
 	repository: Repository,
 	#[case] input: bool,
@@ -111,7 +111,7 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 	let mut row = raw(now);
 	row.metadata.phase = RunPhase::Waiting;
 	row.pending = aidash_domain::run_state::encode(
-		&RunState::Waiting(Box::new(WaitingState::Workspace {
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
 			wake_at: now + chrono::Duration::minutes(5),
 			cursor: 4,
 			resume: aidash_domain::ResumeState::ToolCall(Box::default()),
@@ -120,7 +120,7 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 	)
 	.unwrap();
 	repository.0.input.store(input, Ordering::Release);
-	*repository.0.workspace_event.lock().unwrap() =
+	*repository.0.thread_event.lock().unwrap() =
 		event_in.map(|seconds| now + chrono::Duration::seconds(seconds));
 	let mut scope = Scope {
 		state: repository.0.clone(),
@@ -137,7 +137,7 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 
 #[rstest]
 #[tokio::test]
-async fn a_workspace_wait_on_a_remote_home_is_polled_without_waiting_for_the_ceiling(
+async fn a_thread_wait_on_a_remote_home_is_polled_without_waiting_for_the_ceiling(
 	now: DateTime<Utc>,
 	repository: Repository,
 ) {
@@ -145,7 +145,7 @@ async fn a_workspace_wait_on_a_remote_home_is_polled_without_waiting_for_the_cei
 	row.metadata.phase = RunPhase::Waiting;
 	row.metadata.home_node = "aidash://other/brave-otter-k3m9q2xa".into();
 	row.pending = aidash_domain::run_state::encode(
-		&RunState::Waiting(Box::new(WaitingState::Workspace {
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
 			wake_at: now + chrono::Duration::hours(1),
 			cursor: 0,
 			resume: aidash_domain::ResumeState::Thinking(Default::default()),
@@ -382,7 +382,7 @@ struct State {
 	/// Whether the Run accepted input after the sequence asked about.
 	input: AtomicBool,
 	operation_done: AtomicBool,
-	workspace_event: Mutex<Option<DateTime<Utc>>>,
+	thread_event: Mutex<Option<DateTime<Utc>>>,
 	dependencies: AtomicBool,
 	claimable: AtomicBool,
 	repairable: AtomicBool,
@@ -393,6 +393,8 @@ struct State {
 	deferred: Mutex<Vec<Option<DateTime<Utc>>>>,
 	/// Whether this process reached the database again within a lease period.
 	holds_recoveries: AtomicBool,
+	/// The owning Tenant's Lease Recovery limit; `None` keeps the default.
+	lease_recovery_limit: Mutex<Option<u32>>,
 	/// The capability approval record a Run waits on, when one exists.
 	approval: Mutex<Option<Approval>>,
 }
@@ -427,7 +429,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		answered: AtomicBool::new(false),
 		input: AtomicBool::new(false),
 		operation_done: AtomicBool::new(false),
-		workspace_event: Mutex::new(None),
+		thread_event: Mutex::new(None),
 		dependencies: AtomicBool::new(false),
 		claimable: AtomicBool::new(true),
 		repairable: AtomicBool::new(true),
@@ -436,6 +438,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		capabilities: Mutex::new(PersistedCapability::supported()),
 		deferred: Mutex::new(vec![]),
 		holds_recoveries: AtomicBool::new(false),
+		lease_recovery_limit: Mutex::new(None),
 		approval: Mutex::new(None),
 	}))
 }
@@ -457,6 +460,14 @@ impl SchedulingScope for Scope {
 	}
 	fn holds_recoveries(&self) -> bool {
 		self.state.holds_recoveries.load(Ordering::Acquire)
+	}
+	async fn lease_recovery_limit(&mut self, _run: Uuid) -> Result<u32> {
+		Ok(self
+			.state
+			.lease_recovery_limit
+			.lock()
+			.unwrap()
+			.unwrap_or(LEASE_RECOVERY_LIMIT))
 	}
 	async fn now(&mut self) -> Result<DateTime<Utc>> {
 		self.state.record("now");
@@ -493,8 +504,8 @@ impl SchedulingScope for Scope {
 	async fn operation_finished(&mut self, _: Uuid, _: Uuid) -> Result<bool> {
 		Ok(self.state.operation_done.load(Ordering::Acquire))
 	}
-	async fn workspace_event_after(&mut self, _: Uuid, _: i64) -> Result<Option<DateTime<Utc>>> {
-		Ok(*self.state.workspace_event.lock().unwrap())
+	async fn thread_event_after(&mut self, _: Uuid, _: i64) -> Result<Option<DateTime<Utc>>> {
+		Ok(*self.state.thread_event.lock().unwrap())
 	}
 	async fn approval(&mut self, _: Uuid) -> Result<Option<Approval>> {
 		self.state.record("approval");
@@ -1130,8 +1141,8 @@ async fn backpressure_retains_unaccepted_rows_and_sends_at_most_eight(repository
 #[rstest]
 #[case::first(0, false)]
 #[case::waited_behind_isolation(1, false)]
-#[case::third(3, false)]
-#[case::fourth(4, true)]
+#[case::fifth(5, false)]
+#[case::sixth(6, true)]
 #[tokio::test]
 async fn consecutive_lease_recoveries_are_bounded(
 	repository: Repository,
@@ -1162,7 +1173,7 @@ async fn consecutive_lease_recoveries_are_bounded(
 	if fails {
 		assert!(claimed.is_none());
 		assert!(events.iter().any(|event| event == "repair_lease"));
-		assert!(events.iter().any(|event| event == "crash_loop:3:This step was taken over from its worker 3 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."));
+		assert!(events.iter().any(|event| event == "crash_loop:5:This step was taken over from its worker 5 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."));
 		assert!(!events.iter().any(|event| event == "lease"));
 	} else {
 		// Only the first recovery is charged at claim; an Isolated Step charges
@@ -1170,6 +1181,46 @@ async fn consecutive_lease_recoveries_are_bounded(
 		assert_eq!(claimed.unwrap().recovery.lease_recoveries, count.max(1));
 		assert!(events.iter().any(|event| event == "lease"));
 	}
+}
+
+/// A Tenant may set its own limit from 1 to 20 (#1009).
+#[rstest]
+#[case::within_the_limit(2, false)]
+#[case::above_the_limit(3, true)]
+#[tokio::test]
+async fn a_tenant_sets_its_own_lease_recovery_limit(
+	repository: Repository,
+	now: DateTime<Utc>,
+	#[case] count: u32,
+	#[case] fails: bool,
+) {
+	*repository.0.lease_recovery_limit.lock().unwrap() = Some(2);
+	let mut row = raw(now);
+	row.metadata.lease_owner = Some(Uuid::new_v4());
+	row.metadata.lease_until = Some(now);
+	row.pending["recovery"]["lease_recoveries"] = serde_json::json!(count);
+	*repository.0.run.lock().unwrap() = Some(row);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let claimed = lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		None,
+		repository.node_id(),
+		&mut None,
+	)
+	.await
+	.unwrap();
+	let events = repository.0.events.lock().unwrap();
+	assert_eq!(claimed.is_none(), fails);
+	assert_eq!(
+		events.iter().any(|event| event
+			.starts_with("crash_loop:2:This step was taken over from its worker 2 times in a row")),
+		fails
+	);
 }
 
 #[rstest]

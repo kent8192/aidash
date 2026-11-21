@@ -19,13 +19,13 @@ pub(super) fn clock() -> SimpleExpr {
 impl SemanticIndexe {
 	pub(crate) async fn locked(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		exclusive: bool,
 	) -> Result<Option<Index>> {
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.lock(if exclusive {
 				LockType::Update
 			} else {
@@ -41,7 +41,7 @@ impl SemanticIndexe {
 
 	pub(crate) async fn replace_generation(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		tenant: &str,
 		revision: i64,
 		spec: Value,
@@ -49,15 +49,15 @@ impl SemanticIndexe {
 	) -> Result<Index> {
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
-			.columns(["workspace_id", "tenant", "revision", "spec", "collection"].map(Alias::new))
+			.columns(["thread_id", "tenant", "revision", "spec", "collection"].map(Alias::new))
 			.values_panic([
-				IntoValue::into_value(workspace),
+				IntoValue::into_value(thread),
 				IntoValue::into_value(tenant),
 				IntoValue::into_value(revision),
 				IntoValue::into_value(spec),
 				IntoValue::into_value(collection),
 			])
-			.on_conflict(OnConflict::columns(["workspace_id"]).update_columns([
+			.on_conflict(OnConflict::columns(["thread_id"]).update_columns([
 				"revision",
 				"spec",
 				"collection",
@@ -75,7 +75,7 @@ impl SemanticIndexe {
 impl SemanticEntry {
 	pub(crate) async fn configuration_counts(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<(i64, usize)> {
 		let (sql, values) = Query::select()
 			.expr_as(
@@ -83,7 +83,7 @@ impl SemanticEntry {
 				Alias::new("count"),
 			)
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("deleted").eq(reinhardt::query::Expr::value(false)))
 			.and_where(Expr::cust(
 				"source->>'kind' NOT IN ('working_image', 'attachment_image')",
@@ -109,7 +109,7 @@ impl SemanticEntry {
 				Alias::new("largest"),
 			)
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(kind.eq(Expr::value("memory")))
 			.build(PostgresQueryBuilder);
 		let largest: i64 = tx
@@ -122,12 +122,12 @@ impl SemanticEntry {
 
 	pub(crate) async fn lock_active(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Vec<Entry>> {
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("deleted").eq(reinhardt::query::Expr::value(false)))
 			.order_by(Alias::new("id"), Order::Asc)
 			.lock(LockType::Update)
@@ -165,15 +165,15 @@ impl SemanticEntry {
 }
 
 impl SemanticCollection {
-	pub(crate) async fn retire_workspace(
+	pub(crate) async fn retire_thread(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<()> {
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
 			.value_expr(Alias::new("retired"), Expr::value(true))
 			.value_expr(Alias::new("next_attempt"), clock())
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())
@@ -182,15 +182,14 @@ impl SemanticCollection {
 	pub(crate) async fn record_generation(
 		tx: &mut dyn TransactionExecutor,
 		collection: &str,
-		workspace: Uuid,
+		thread: Uuid,
 		vector: Value,
 	) -> Result<()> {
-		let tenant =
-			crate::database::scope::parent_tenant(tx, "workspaces", "id", workspace).await?;
+		let tenant = crate::database::scope::parent_tenant(tx, "threads", "id", thread).await?;
 		let record = Self::build()
 			.tenant(tenant)
 			.collection(collection)
-			.workspace(workspace)
+			.thread(thread)
 			.vector(vector.into())
 			.retired(false)
 			.last_error(None)
@@ -244,7 +243,7 @@ impl SemanticPoint {
 impl SemanticHistory {
 	pub(crate) async fn append(
 		tx: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 		entry: Option<Uuid>,
 		revision: i64,
 		state: &str,
@@ -254,7 +253,7 @@ impl SemanticHistory {
 			.into_table(Alias::new(Self::table_name()))
 			.columns(
 				[
-					"workspace_id",
+					"thread_id",
 					"entry_id",
 					"revision",
 					"state",
@@ -264,12 +263,12 @@ impl SemanticHistory {
 				.map(Alias::new),
 			)
 			.values_expr(vec![
-				IntoValue::into_value(workspace).into(),
+				IntoValue::into_value(thread).into(),
 				IntoValue::into_value(entry).into(),
 				IntoValue::into_value(revision).into(),
 				IntoValue::into_value(state).into(),
 				IntoValue::into_value(detail).into(),
-				crate::database::scope::tenant_of("workspaces", "id", workspace),
+				crate::database::scope::tenant_of("threads", "id", thread),
 			])
 			.expect("one value per column")
 			.build(PostgresQueryBuilder);

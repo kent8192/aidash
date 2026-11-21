@@ -360,7 +360,7 @@ impl NodeRegistrations {
 					&mut *tx,
 					run,
 					None,
-					"run.tool_ask_answered",
+					"execution.tool_ask_answered",
 					json!({"run_id": run, "side": "receiver", "choice": "decline", "key": key, "by": administrator.identity.subject}),
 				)
 				.await?;
@@ -421,7 +421,7 @@ impl NodeRegistrations {
 							tx,
 							run,
 							None,
-							"run.tool_ask_answered",
+							"execution.tool_ask_answered",
 							json!({"run_id": run, "side": "receiver", "choice": input.choice, "key": key, "pattern": pattern.as_str(), "by": administrator.identity.subject}),
 						)
 						.await?;

@@ -50,11 +50,13 @@ struct Scope {
 	chain: Vec<String>,
 	bundle: PolicyBundle,
 	context: Value,
-	inherited: bool,
+	task_origin: Option<Vec<String>>,
 	existing: Option<Request>,
 	run: Option<(String, String, Vec<String>)>,
 	catalog: Vec<Entry>,
 	generated: BTreeSet<String>,
+	/// Generated agents a chain of this scope's root person generated.
+	reusable: BTreeSet<String>,
 	depth: Option<i32>,
 	active: i64,
 	visible: bool,
@@ -68,7 +70,7 @@ struct Scope {
 	settings: Option<Settings>,
 	/// What the Tenant's policy lets that person do alone, as `kind:action`.
 	root_policy: BTreeSet<String>,
-	/// The Node a delegation names; the Workspace's own Node when unset.
+	/// The Node a delegation names; the Thread's own Node when unset.
 	delegate_node: Option<String>,
 }
 impl Scope {
@@ -77,7 +79,7 @@ impl Scope {
 		Self {
 			task: Task {
 				id: Uuid::from_u128(2),
-				workspace_id: Uuid::from_u128(3),
+				thread_id: Uuid::from_u128(3),
 				title: "Task".into(),
 				description: "Do work".into(),
 				status: TaskStatus::Open,
@@ -101,11 +103,12 @@ impl Scope {
 			chain: vec!["alice".into()],
 			bundle: serde_json::from_value(json!({"tenant":"tenant"})).unwrap(),
 			context: json!({}),
-			inherited: false,
+			task_origin: None,
 			existing: None,
 			run: None,
 			catalog: vec![],
 			generated: BTreeSet::new(),
+			reusable: BTreeSet::new(),
 			depth: None,
 			active: 0,
 			visible: true,
@@ -246,7 +249,7 @@ impl GenerationCreationScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://local"
 	}
-	async fn workspace_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
+	async fn thread_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
 		Ok(node())
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -283,7 +286,7 @@ impl GenerationCreationScope for Scope {
 		job.status = input.status.into();
 		job.reason = input.reason.into();
 		job.depth = input.depth;
-		job.token_limit = input.policy.spec.limits.tokens_per_agent;
+		job.token_limit = input.policy.spec.limits.agent_token_limit();
 		job.foreign_intent = input.foreign_intent.clone();
 		if let Some(intent) = &input.foreign_intent {
 			job.home_node = intent["home_node"].as_str().unwrap().into();
@@ -302,7 +305,8 @@ impl GenerationCreationScope for Scope {
 		self.point("allocate").await?;
 		self.effects.push(format!(
 			"allocate:{}:{}",
-			policy.spec.limits.tokens_per_agent, allowances.embedding_calls
+			policy.spec.limits.reserved_tokens(),
+			allowances.embedding_calls
 		));
 		Ok(())
 	}
@@ -325,8 +329,8 @@ impl GenerationCreationScope for Scope {
 		self.effects.push(format!("history:{status}"));
 		Ok(())
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
-		assert_eq!(workspace, Uuid::from_u128(3));
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
+		assert_eq!(thread, Uuid::from_u128(3));
 		assert_eq!(kind, "generation.requested");
 		assert_eq!(
 			data,
@@ -380,18 +384,22 @@ impl GenerationAssignmentScope for Scope {
 		self.point("task.lock").await?;
 		Ok(self.task.clone())
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		assert_eq!(id, self.task.workspace_id);
-		self.point("workspace").await?;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		assert_eq!(id, self.task.thread_id);
+		self.point("thread").await?;
 		Ok(self.resource(
-			"workspace",
+			"thread",
 			&id.to_string(),
-			json!({"workspace_id":id,"team":"research"}),
+			json!({"thread_id":id,"team":"research"}),
 		))
 	}
 	async fn inherit_task_origin(&mut self, _id: Uuid) -> Result<bool> {
 		self.point("origin").await?;
-		Ok(self.inherited)
+		let Some(chain) = &self.task_origin else {
+			return Ok(false);
+		};
+		self.chain.clone_from(chain);
+		Ok(true)
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.point("task.resource").await?;
@@ -431,9 +439,17 @@ impl GenerationAssignmentScope for Scope {
 		self.point(format!("generated:{}", entry.id)).await?;
 		Ok(self.generated.contains(&entry.id))
 	}
+	async fn reusable(&mut self, entry: &Entry) -> Result<bool> {
+		self.point(format!("reusable:{}", entry.id)).await?;
+		Ok(self.reusable.contains(&entry.id))
+	}
 	async fn delegate(&mut self, task_id: Uuid, agent: &EntityRef) -> Result<Delegation> {
 		self.point("delegate").await?;
-		assert_eq!(self.chain, ["alice"]);
+		let root_chain = [self.subject().to_owned()];
+		assert_eq!(
+			self.chain,
+			self.task_origin.as_deref().unwrap_or(&root_chain)
+		);
 		self.effects.push("delegate".into());
 		Ok(Delegation {
 			task_id,
@@ -493,10 +509,10 @@ async fn local_creation_locks_before_reservation_and_notifies_after_commit(
 		[
 			"begin",
 			"task.lock",
-			"workspace",
+			"thread",
 			"context",
 			"origin",
-			"decide:workspace.read:alice",
+			"decide:thread.read:alice",
 			"task.resource",
 			"decide:task.read:alice",
 			"decide:task.delegate:alice",
@@ -569,8 +585,7 @@ async fn task_origin_rejects_wrong_creator_or_unproven_chain(
 #[tokio::test]
 async fn inherited_worker_origin_preserves_the_narrowed_chain(validation: DefinitionValidation) {
 	let mut scope = Scope::new();
-	scope.inherited = true;
-	scope.chain.push("ancestor".into());
+	scope.task_origin = Some(vec!["alice".into(), "ancestor".into()]);
 	scope.task.created_by = "ancestor".into();
 	let job = generated(
 		assign_in(
@@ -587,7 +602,7 @@ async fn inherited_worker_origin_preserves_the_narrowed_chain(validation: Defini
 	assert_eq!(scope.context["team"], "research");
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("task.read")]
 #[case("task.delegate")]
 #[case("generation.request")]
@@ -751,7 +766,73 @@ async fn ordinary_agent_reuse_skips_generated_disabled_and_wrong_kind_candidates
 	assert!(!scope.calls().iter().any(|c| c == "insert"));
 }
 #[rstest]
-#[case("workspace.read")]
+#[case::same_person(true, "generated")]
+#[case::another_person(false, "ordinary")]
+#[tokio::test]
+async fn a_generated_agent_is_reused_only_in_its_root_persons_chains(
+	validation: DefinitionValidation,
+	#[case] same_person: bool,
+	#[case] expected: &str,
+) {
+	// Arrange: a generated agent matches before an ordinary one does.
+	let mut scope = Scope::new();
+	scope.ordinary("generated", true, SubjectKind::Agent);
+	scope.generated.insert("generated".into());
+	if same_person {
+		scope.reusable.insert("generated".into());
+	}
+	scope.ordinary("ordinary", true, SubjectKind::Agent);
+	// Act
+	let Assignment::Existing { delegation } = assign_in(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await
+	.unwrap() else {
+		panic!("existing")
+	};
+	// Assert: no new generation request is made either way.
+	assert_eq!(delegation.agent_id, expected);
+	assert!(scope.calls().iter().any(|c| c == "reusable:generated"));
+	assert!(!scope.calls().iter().any(|c| c == "insert"));
+}
+#[rstest]
+#[tokio::test]
+async fn a_generated_agent_is_never_handed_a_task_by_its_own_chain(
+	validation: DefinitionValidation,
+) {
+	// Arrange: the generated agent is reusable by this person, but it is the
+	// agent asking (it is in the chain), so it must not get its own Task back.
+	let mut scope = Scope::new();
+	scope.ordinary("generated", true, SubjectKind::Agent);
+	scope.generated.insert("generated".into());
+	scope.reusable.insert("generated".into());
+	scope.ordinary("ordinary", true, SubjectKind::Agent);
+	scope.task_origin = Some(vec![
+		"alice".into(),
+		qualified_agent(&node(), "generated", "1.0.0"),
+	]);
+	// Act
+	let Assignment::Existing { delegation } = assign_in(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await
+	.unwrap() else {
+		panic!("existing")
+	};
+	// Assert: the next matching agent takes the Task instead.
+	assert_eq!(delegation.agent_id, "ordinary");
+	assert!(!scope.calls().iter().any(|c| c == "insert"));
+}
+#[rstest]
+#[case("thread.read")]
 #[case("agent.execute")]
 #[case("task.read")]
 #[case("task.execute")]
@@ -877,7 +958,7 @@ async fn foreign_creation_inherits_depth_caps_expiry_and_omits_local_events(
 	use aidash_domain::generation::remote::Ancestor;
 	let mut scope = Scope::new();
 	scope.depth = Some(1);
-	scope.policy.spec.limits.max_depth = 4;
+	scope.policy.spec.limits.max_depth = Some(4);
 	// Nobody's mode or rules cover a request that arrived through Federation.
 	empowered(&mut scope);
 	advising(&mut scope, ApprovalMode::Bypass, vec![]);
@@ -986,7 +1067,6 @@ async fn approval_free_policy_is_queued_and_generated_tag_is_not_duplicated(
 #[case("count")]
 #[case("concurrency")]
 #[case("depth")]
-#[case("chain")]
 #[case("tokens")]
 #[case("tokens_overflow")]
 #[case("embedding")]
@@ -1006,10 +1086,6 @@ async fn each_quota_limit_is_independent_and_prevents_insert(
 		"count" => scope.policy.generated_count = 4,
 		"concurrency" => scope.active = 2,
 		"depth" => scope.depth = Some(2),
-		"chain" => {
-			scope.inherited = true;
-			scope.chain.resize(32, "ancestor".into());
-		}
 		"tokens" => scope.policy.allocated_tokens = 600001,
 		"tokens_overflow" => scope.policy.allocated_tokens = i64::MAX,
 		"embedding" | "embedding_overflow" => {
@@ -1075,15 +1151,16 @@ fn policy_rule(effect: RuleEffect) -> ApprovalRule {
 		effect,
 	}
 }
+/// Neither an allow rule nor Bypass approves a generated definition: its
+/// Catalog Approval is a person's decision (#1012, ADR 0143).
 #[rstest]
-#[case::allow_rule(ApprovalMode::Manual, vec![policy_rule(RuleEffect::Allow)], format!("approved in advance through Approval Rule {}", Uuid::from_u128(21)))]
-#[case::bypass(ApprovalMode::Bypass, vec![], "approved in advance through the Bypass Approval Mode".to_owned())]
+#[case::allow_rule(ApprovalMode::Manual, vec![policy_rule(RuleEffect::Allow)])]
+#[case::bypass(ApprovalMode::Bypass, vec![])]
 #[tokio::test]
-async fn a_rule_or_mode_within_the_ceiling_queues_the_request_and_names_itself(
+async fn a_rule_or_mode_never_approves_a_generated_definition(
 	validation: DefinitionValidation,
 	#[case] mode: ApprovalMode,
 	#[case] rules: Vec<ApprovalRule>,
-	#[case] reason: String,
 ) {
 	let mut scope = Scope::new();
 	empowered(&mut scope);
@@ -1101,15 +1178,9 @@ async fn a_rule_or_mode_within_the_ceiling_queues_the_request_and_names_itself(
 		.unwrap(),
 	);
 
-	assert_eq!(job.status, "QUEUED");
-	assert_eq!(
-		scope.state.lock().unwrap().reasons,
-		["work".to_owned(), reason]
-	);
-	assert_eq!(
-		&scope.effects[3..],
-		["history:PENDING_APPROVAL", "history:QUEUED", "event"]
-	);
+	assert_eq!(job.status, "PENDING_APPROVAL");
+	assert_eq!(scope.state.lock().unwrap().reasons, ["work".to_owned()]);
+	assert_eq!(&scope.effects[3..], ["history:PENDING_APPROVAL", "event"]);
 }
 #[rstest]
 #[case::no_catalog_approval("registry:catalog.approve")]
@@ -1242,6 +1313,8 @@ async fn subnode_assignment_reuses_only_members_and_never_generates(
 	assert_eq!(delegation.agent_id, "member");
 	assert_eq!(scope.effects, ["delegate"]);
 
+	// Until a generated agent can be checked against the Subnode's allowance
+	// and join it, a Subnode does not generate one.
 	let mut no_match = Scope::new();
 	no_match.ordinary("outsider", true, SubjectKind::Agent);
 	assert!(matches!(
@@ -1257,6 +1330,88 @@ async fn subnode_assignment_reuses_only_members_and_never_generates(
 		Err(Error::Refused(_))
 	));
 	assert!(no_match.effects.is_empty());
+}
+
+fn draft(components: Vec<EntityRef>) -> aidash_domain::generation::policy::Draft {
+	aidash_domain::generation::policy::Draft {
+		name: Some("SNS copywriter".into()),
+		instructions: "Write short, friendly posts.".into(),
+		model: None,
+		components,
+	}
+}
+
+/// A free-form policy lets the Agent write the generated agent's instructions
+/// and name (#1012, ADR 0143); a policy without that mode refuses a draft.
+#[rstest]
+#[tokio::test]
+async fn a_free_form_policy_takes_the_agents_draft_and_others_refuse_it(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	let refused = assign_in_drafted(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+		None,
+		Some(&draft(vec![])),
+	)
+	.await;
+	assert!(
+		matches!(refused, Err(Error::Invalid(ref message)) if message.contains("does not accept a draft")),
+		"{refused:?}"
+	);
+
+	let mut scope = Scope::new();
+	scope.policy.spec.free_form = Some(aidash_domain::generation::policy::FreeForm::default());
+	let job = generated(
+		assign_in_drafted(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+			None,
+			Some(&draft(vec![])),
+		)
+		.await
+		.unwrap(),
+	);
+	assert_eq!(
+		job.definition["config"]["instructions"],
+		json!("Write short, friendly posts.")
+	);
+	assert_eq!(job.definition["name"]["en"], json!("SNS copywriter"));
+}
+
+/// A draft may pick only what the free-form mode allows.
+#[rstest]
+#[tokio::test]
+async fn a_draft_cannot_pick_a_component_the_policy_does_not_allow(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	scope.policy.spec.free_form = Some(aidash_domain::generation::policy::FreeForm::default());
+	let outside = EntityRef {
+		id: "shell".into(),
+		version: "1.0.0".into(),
+	};
+	assert!(matches!(
+		assign_in_drafted(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+			None,
+			Some(&draft(vec![outside])),
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert!(!scope.effects.contains(&"insert".to_owned()));
 }
 
 #[rstest]
@@ -1303,7 +1458,7 @@ async fn a_remote_runs_assignment_never_selects_another_node(
 		&validation,
 	)
 	.await;
-	// `names_home` also accepts the bare Deployment of the Workspace's Node, which is
+	// `names_home` also accepts the bare Deployment of the Thread's Node, which is
 	// still the Home's own Deployment.
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 }

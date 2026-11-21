@@ -29,7 +29,7 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	let metadata = crate::database::query_as::<RunMetadata>(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -49,7 +49,11 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(run))
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -94,7 +98,11 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 						.expr(Expr::value(run))
 						.expr(Expr::value(unit.id))
 						.expr(Expr::value(unit.revision))
-						.expr(crate::database::scope::tenant_of("runs", "id", run))
+						.expr(crate::database::scope::tenant_of(
+							"task_executions",
+							"id",
+							run,
+						))
 						.to_owned(),
 				)
 				.on_conflict(
@@ -168,8 +176,8 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 		};
 		if builtin && (!unit.visible() || unit.revision != revision) {
 			// A changed Unit is not revalidated, but authority over another
-			// Workspace's Unit still is.
-			if unit.bank.workspace != metadata.workspace_id {
+			// Thread's Unit still is.
+			if unit.bank.thread != metadata.thread_id {
 				if !foreign_read_allowed(
 					lease,
 					&unit,
@@ -185,7 +193,7 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 			}
 		}
 		evidence
-			.entry(unit.bank.workspace)
+			.entry(unit.bank.thread)
 			.or_default()
 			.push(Evidence::Unit {
 				bank: unit.bank,
@@ -199,10 +207,10 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	} else {
 		units::UnitChanges::Refuse
 	};
-	for (workspace, sources) in evidence {
+	for (thread, sources) in evidence {
 		match units::sources_in_reader(
 			lease,
-			workspace,
+			thread,
 			&sources,
 			journal_visits,
 			&mut visits,
@@ -224,7 +232,7 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	Ok(())
 }
 
-/// Whether a built-in Run may still read a Unit from another Workspace: the
+/// Whether a built-in Run may still read a Unit from another Thread: the
 /// Tenant shares memory per Agent and the Unit came from this Run's Agent
 /// (#852 decision 6). The caller also checks `memory.read` on its bank.
 async fn foreign_read_allowed(
@@ -297,7 +305,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		crate::database::query_as::<RunMetadata>(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run_id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -390,9 +398,9 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				}
 				return Ok(Some(Failure::Invalidated));
 			};
-			// Authority over another Workspace's Unit is checked before any change
+			// Authority over another Thread's Unit is checked before any change
 			// to it is forgiven: losing it fails the Run even then.
-			if unit.bank.workspace != run.workspace_id {
+			if unit.bank.thread != run.thread_id {
 				if !builtin
 					|| !foreign_read_allowed(
 						lease,
@@ -418,7 +426,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				// not recognize memory results.
 				if let Err(error) = units::sources_in_reader(
 					lease,
-					unit.bank.workspace,
+					unit.bank.thread,
 					&[Evidence::Unit {
 						bank: unit.bank.clone(),
 						id: unit.id,
@@ -444,7 +452,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 			};
 			if let Err(error) = units::current_for_run(
 				lease,
-				unit.bank.workspace,
+				unit.bank.thread,
 				&[Evidence::Unit {
 					bank: unit.bank.clone(),
 					id: unit.id,

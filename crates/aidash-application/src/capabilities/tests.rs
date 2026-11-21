@@ -219,7 +219,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(2),
 		task_id: Uuid::from_u128(3),
-		workspace_id: Uuid::from_u128(4),
+		thread_id: Uuid::from_u128(4),
 		home_node: "aidash://home".into(),
 		agent_id: "agent".into(),
 		agent_version: "1".into(),
@@ -259,7 +259,7 @@ fn scope(run: RunMetadata) -> Scope {
 		},
 		area: AreaSnapshot {
 			id: Uuid::from_u128(5),
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			state: "active".into(),
 			epoch: 9,
 			revision: 7,

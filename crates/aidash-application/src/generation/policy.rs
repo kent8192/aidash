@@ -106,12 +106,23 @@ pub fn validate(
 		return Err(Error::Invalid("invalid embedding call limits".into()));
 	}
 	let limits = &spec.limits;
-	if !(1..=512).contains(&limits.max_agents)
-		|| !(1..=limits.max_agents).contains(&limits.max_concurrent)
-		|| !(1..=31).contains(&limits.max_depth)
-		|| !(1..=1_000_000_000_000_i64).contains(&limits.token_budget)
-		|| !(1..=limits.token_budget).contains(&limits.tokens_per_agent)
-		|| !(1..=2_592_000).contains(&limits.lifetime_seconds)
+	// Count, concurrency, depth, lifetime and tokens are optional and uncapped
+	// when given (#1012, ADR 0143); each must still be positive. Token limits
+	// stay bounded, and a token budget is reserved per agent, so it needs a
+	// per-agent limit.
+	const MAX_TOKENS: i64 = 1_000_000_000_000;
+	if limits.max_agents.is_some_and(|max| max < 1)
+		|| limits
+			.max_concurrent
+			.is_some_and(|max| max < 1 || limits.max_agents.is_some_and(|agents| max > agents))
+		|| limits.max_depth.is_some_and(|max| max < 1)
+		|| limits
+			.token_budget
+			.is_some_and(|budget| !(1..=MAX_TOKENS).contains(&budget))
+		|| limits.tokens_per_agent.is_some_and(|tokens| {
+			!(1..=limits.token_budget.unwrap_or(MAX_TOKENS)).contains(&tokens)
+		}) || (limits.token_budget.is_some() && limits.tokens_per_agent.is_none())
+		|| limits.lifetime_seconds.is_some_and(|seconds| seconds < 1)
 	{
 		return Err(Error::Invalid("invalid generation limits".into()));
 	}
@@ -233,7 +244,11 @@ async fn write_in(
 			if kind == "model" {
 				let model: ModelConfig = serde_json::from_value(entry.config)?;
 				let required = model.context_window as i64 + model.output_token_limit() as i64;
-				if spec.limits.tokens_per_agent < required {
+				if spec
+					.limits
+					.tokens_per_agent
+					.is_some_and(|tokens| tokens < required)
+				{
 					return Err(Error::Invalid(
 						"agent token allowance is smaller than one model reservation".into(),
 					));

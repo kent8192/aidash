@@ -145,13 +145,13 @@ pub fn rank_matches(
 	matches
 }
 
-/// Fit a separate reference list into the budget left by Workspace results.
+/// Fit a separate reference list into the budget left by Thread results.
 pub fn fit_reference_matches(
 	matches: Vec<Value>,
-	workspace_tokens: usize,
+	thread_tokens: usize,
 	max_tokens: usize,
 ) -> (Vec<Value>, bool) {
-	let available = max_tokens.saturating_sub(workspace_tokens);
+	let available = max_tokens.saturating_sub(thread_tokens);
 	let mut accepted = Vec::new();
 	let mut truncated = false;
 	for item in matches {

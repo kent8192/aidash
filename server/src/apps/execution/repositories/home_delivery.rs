@@ -29,7 +29,7 @@ pub(crate) async fn delegating_area(
 	let run: Option<Uuid> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(parent)))
 			.and_where(Expr::col(Alias::new("agent_id")).eq(agent))
 			.and_where(Expr::col(Alias::new("agent_version")).eq(version))

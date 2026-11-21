@@ -13,7 +13,7 @@ pub(crate) struct RunListQuery {
 
 #[derive(Default, Deserialize, JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WorkspaceRunListQuery {
+pub(crate) struct ThreadRunListQuery {
 	#[serde(default)]
 	pub(crate) live: bool,
 	pub(crate) cursor: Option<String>,
@@ -77,7 +77,7 @@ pub(crate) struct SuspendedRunsResume {
 	pub(crate) runs: Vec<SuspendedRunResume>,
 }
 /// One Run's result. Each Run is resumed on its own, with the same checks as
-/// a resume through `/api/runs/{id}/control`.
+/// a resume through `/api/executions/{id}/control`.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct SuspendedRunResume {
 	pub(crate) run_id: Uuid,
@@ -141,7 +141,7 @@ pub(crate) struct EventPage {
 pub(crate) struct EventQuery {
 	#[serde(default)]
 	pub(crate) after: i64,
-	pub(crate) workspace_id: Option<Uuid>,
+	pub(crate) thread_id: Option<Uuid>,
 }
 /// Resume after this `progress_seq`; `Last-Event-ID` takes precedence. Without
 /// a cursor the stream starts at the Run's latest Inference Attempt.

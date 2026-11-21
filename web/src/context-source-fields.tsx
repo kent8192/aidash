@@ -73,8 +73,8 @@ export function ContextSourceFields({
       </Hint>
       <Hint>
         {ja
-          ? "Agent の共有 native クエリーでは、プライマリーメモリー・各 bank Source・workspace の取得のクエリーポリシーを揃えてください。省略した定義も task-inputs@1 として扱われます。accepted-inputs-first@1 を使う場合は、すべての有効な構成要素で明示的に選択してください。"
-          : "The Agent's shared native query requires matching query policies across primary memory, every bank Source and workspace retrieval. An omitted policy means task-inputs@1. To use accepted-inputs-first@1, explicitly select it on every effective contributor."}
+          ? "Agent の共有 native クエリーでは、プライマリーメモリー・各 bank Source・thread の取得のクエリーポリシーを揃えてください。省略した定義も task-inputs@1 として扱われます。accepted-inputs-first@1 を使う場合は、すべての有効な構成要素で明示的に選択してください。"
+          : "The Agent's shared native query requires matching query policies across primary memory, every bank Source and thread retrieval. An omitted policy means task-inputs@1. To use accepted-inputs-first@1, explicitly select it on every effective contributor."}
       </Hint>
       {enabled && (
         <>

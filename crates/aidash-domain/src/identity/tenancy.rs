@@ -108,12 +108,14 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"run.control",
 	"run.message",
 	"run.read",
-	crate::schedules::CREATE,
+	crate::duties::CREATE,
 	"scratch.create",
 	"semantic.index.manage",
 	"semantic.read",
 	"semantic.search",
 	"semantic.use",
+	// Agents create Subnodes as freely as other work (#1012, ADR 0143).
+	crate::identity::tenant_administration::SUBNODE_CREATE,
 	"semantic.write",
 	"skill.import",
 	"skill.use",
@@ -126,11 +128,11 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"task.read",
 	"thread.delete",
 	"tool.invoke",
-	"workspace.create",
-	"workspace.events",
-	"workspace.read",
-	"workspace.share",
-	"workspace.update",
+	"thread.create",
+	"thread.events",
+	"thread.read",
+	"thread.share",
+	"thread.update",
 ];
 
 pub(crate) const RANDOM_LENGTH: usize = 8;

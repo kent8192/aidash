@@ -79,7 +79,7 @@ pub(crate) fn repository() -> Repository {
 	})))
 }
 fn intent() -> Value {
-	json!({"id":Uuid::from_u128(4),"home_node":"aidash://home","source_tenant":"tenant","source_subject":"root","task":{"id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"title":"Task","description":"Work","status":"OPEN","requirements":{},"owner":null,"created_by":"root","dependencies":[],"parent_id":null,"revision":7,"created_at":"1970-01-01T00:16:40Z"},"target_node":"aidash://executor","policy_id":"policy","policy_revision":7,"lineage":[],"reason":"Generate","ttl_seconds":1000,"expires_at":"1970-01-01T00:33:20Z"})
+	json!({"id":Uuid::from_u128(4),"home_node":"aidash://home","source_tenant":"tenant","source_subject":"root","task":{"id":Uuid::from_u128(1),"thread_id":Uuid::from_u128(2),"title":"Task","description":"Work","status":"OPEN","requirements":{},"owner":null,"created_by":"root","dependencies":[],"parent_id":null,"revision":7,"created_at":"1970-01-01T00:16:40Z"},"target_node":"aidash://executor","policy_id":"policy","policy_revision":7,"lineage":[],"reason":"Generate","ttl_seconds":1000,"expires_at":"1970-01-01T00:33:20Z"})
 }
 #[async_trait]
 impl ForeignGenerationVisibility for Visibility {

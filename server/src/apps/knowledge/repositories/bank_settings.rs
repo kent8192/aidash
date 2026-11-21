@@ -1,5 +1,5 @@
 //! A bank pins its Registry policy; callers cannot substitute larger read/storage caps.
-//! A keyword-only policy needs no Workspace index. Switching a nonempty indexed
+//! A keyword-only policy needs no Thread index. Switching a nonempty indexed
 //! bank to keyword-only is refused until its old projections have been retired.
 //! The canonical built-in provider uses PostgreSQL keyword, temporal and link
 //! search without a semantic index or recovery ledger. Its ordinary database
@@ -20,8 +20,8 @@
 //! entries. Tenant-wide initial recall examines at most 256 banks and returns
 //! at most 8 results in 1024 UTF-8-bounded tokens; a larger bank inventory is
 //! reported unavailable instead of being truncated. Tenant-wide tool recall
-//! uses the same bank and result limits; reflection remains Workspace-scoped.
-//! Cross-Workspace records must have exclusively Journal-range provenance
+//! uses the same bank and result limits; reflection remains Thread-scoped.
+//! Cross-Thread records must have exclusively Journal-range provenance
 //! from the same Agent, including every leaf of derived observations.
 //! These bounds are for the
 //! canonical built-in version; explicit providers retain their own policies.
@@ -103,19 +103,18 @@ pub(crate) async fn set(
 			"observed memory bank policy revision changed".into(),
 		));
 	}
-	// Workspace mutation locks also cover policy replacement. Tombstones count
+	// Thread mutation locks also cover policy replacement. Tombstones count
 	// toward record capacity; every non-deleted row counts toward live capacity.
 	// Mutation receipts and model operations remain durable after body retention.
 	// Rejection rolls back both settings and any participant update in this lease.
 	let policy = crate::semantic::native_memory::policy(lease, &bank.tenant, provider).await?;
 	if let Some(role) = &policy.embedding {
-		let index = crate::semantic::models::SemanticIndexe::locked(
-			&mut **lease.tx(),
-			bank.workspace,
-			false,
-		)
-		.await?
-		.ok_or_else(|| Error::Conflict("memory banks require an enabled Workspace index".into()))?;
+		let index =
+			crate::semantic::models::SemanticIndexe::locked(&mut **lease.tx(), bank.thread, false)
+				.await?
+				.ok_or_else(|| {
+					Error::Conflict("memory banks require an enabled Thread index".into())
+				})?;
 		let embedding =
 			crate::semantic::native_memory::definition(lease, &bank.tenant, role, "embedding")
 				.await?;
@@ -124,12 +123,12 @@ pub(crate) async fn set(
 		let configuration = index.configuration()?;
 		if !configuration.enabled {
 			return Err(Error::Conflict(
-				"memory banks require an enabled Workspace index".into(),
+				"memory banks require an enabled Thread index".into(),
 			));
 		}
 		if configuration.embedding != embedding {
 			return Err(Error::Conflict(
-				"memory bank embedding differs from its Workspace index".into(),
+				"memory bank embedding differs from its Thread index".into(),
 			));
 		}
 	}
@@ -247,7 +246,7 @@ pub(crate) async fn set(
 				let evidence: Vec<aidash_domain::memory::Evidence> = row.try_get("evidence")?;
 				match super::units::current(
 					lease,
-					bank.workspace,
+					bank.thread,
 					&evidence,
 					policy.bounds.max_graph_visits,
 				)

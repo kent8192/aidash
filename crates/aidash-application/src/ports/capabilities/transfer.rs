@@ -35,10 +35,10 @@ pub trait TransferScope: Send {
 	fn set_subjects(&mut self, subjects: Vec<String>);
 	fn set_context(&mut self, attributes: Value);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()>;
-	async fn sources(&mut self, workspace: Uuid, constraints: &Value) -> Result<()>;
+	async fn sources(&mut self, thread: Uuid, constraints: &Value) -> Result<()>;
 	async fn run(&mut self, id: Uuid) -> Result<RunMetadata>;
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
 	async fn check_pinned(&mut self, entry: &Entry) -> Result<()>;

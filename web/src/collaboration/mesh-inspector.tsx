@@ -86,9 +86,9 @@ export function MeshInspector({
     localNode && node.kind === "artifact"
       ? data.artifacts.find((v) => v.id === node.resourceId)
       : undefined;
-  const workspace =
-    localNode && node.workspaceId
-      ? data.workspaces.find((v) => v.id === node.workspaceId)
+  const thread =
+    localNode && node.threadId
+      ? data.threads.find((v) => v.id === node.threadId)
       : undefined;
   const connectedEdges = graph.edges.filter(
     (e) => e.source === node.id || e.target === node.id,
@@ -105,12 +105,12 @@ export function MeshInspector({
       .map((neighbor) => neighbor.id),
   );
   const tasks =
-    node.kind === "workspace" || node.kind === "goal"
+    node.kind === "thread"
       ? graph.nodes.filter(
           (n) =>
             n.kind === "task" &&
             n.nodeId === node.nodeId &&
-            n.workspaceId === node.workspaceId,
+            n.threadId === node.threadId,
         )
       : graph.nodes.filter(
           (candidate) =>
@@ -131,14 +131,14 @@ export function MeshInspector({
         kind: marker.kind,
         created_at: marker.at,
       }));
-  const related = workspace
-    ? [workspace]
+  const related = thread
+    ? [thread]
     : localNode
       ? relatedChannels(
           node,
           {
             nodeId: data.node.id,
-            workspaces: data.workspaces,
+            threads: data.threads,
             tasks: data.tasks,
             runs: data.runs,
             registry: data.registry,
@@ -321,9 +321,7 @@ export function MeshInspector({
           ] as [string, string, boolean],
         ]
       : []),
-    ...(workspace
-      ? [[copy.kinds.workspace, workspace.title] as [string, string]]
-      : []),
+    ...(thread ? [[copy.kinds.thread, thread.title] as [string, string]] : []),
   ];
   const connections = (all: boolean) => (
     <>
@@ -460,17 +458,6 @@ export function MeshInspector({
                   {task.description}
                 </p>
               )}
-              {node.kind === "goal" && node.goalBody && (
-                <p className="whitespace-pre-wrap text-xs text-muted-foreground">
-                  {node.goalBody}
-                </p>
-              )}
-              {(node.kind === "workspace" || node.kind === "goal") &&
-                workspace && (
-                  <p className="text-xs text-muted-foreground">
-                    {workspace.goal}
-                  </p>
-                )}
               {artifact && (
                 <>
                   <p className="text-xs text-muted-foreground">
@@ -614,7 +601,7 @@ export function MeshInspector({
           <TabsContent value="config">{connections(true)}</TabsContent>
         </div>
       </Tabs>
-      {(entity || task || workspace) && (
+      {(entity || task || thread) && (
         <footer className="flex shrink-0 gap-2 border-t border-border px-4 py-3">
           <Button
             variant="outline"
@@ -622,7 +609,7 @@ export function MeshInspector({
             onClick={() => {
               if (entity) open({ kind: "entityDetail", entity });
               else if (task) open({ kind: "taskDetail", task });
-              else if (workspace) visitChannel(workspace.id);
+              else if (thread) visitChannel(thread.id);
             }}
           >
             {entity || task ? copy.open : copy.channel}

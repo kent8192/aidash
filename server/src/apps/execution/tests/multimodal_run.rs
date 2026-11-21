@@ -45,13 +45,13 @@ fn wav_bytes(size: usize) -> Vec<u8> {
 async fn upload_response(
 	app: &common::TestApplication,
 	token: &str,
-	workspace: &str,
+	thread: &str,
 	name: &str,
 	mime: &str,
 	bytes: &[u8],
 ) -> (u16, Value) {
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename={name}&media_type={}&idempotency_key={}",
+		"/api/threads/{thread}/attachments?filename={name}&media_type={}&idempotency_key={}",
 		mime.replace('/', "%2F"),
 		Uuid::new_v4()
 	);
@@ -76,12 +76,12 @@ async fn upload_response(
 async fn upload(
 	app: &common::TestApplication,
 	token: &str,
-	workspace: &str,
+	thread: &str,
 	name: &str,
 	mime: &str,
 	bytes: &[u8],
 ) -> Value {
-	let (status, body) = upload_response(app, token, workspace, name, mime, bytes).await;
+	let (status, body) = upload_response(app, token, thread, name, mime, bytes).await;
 	assert_eq!(status, 200, "{body}");
 	body
 }
@@ -100,17 +100,17 @@ async fn verify_audio_batches(
 	member: &str,
 	case: AudioBatchCase<'_>,
 ) {
-	let (status, audio_created) = common::post(app, member, "/api/conversations", json!({"title":"Audio batching", "goal":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, audio_created) = common::post(app, member, "/api/threads", json!({"title":"Audio batching", "request":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{audio_created}");
-	let audio_workspace = audio_created["workspace"]["id"].as_str().unwrap();
+	let audio_thread = audio_created["id"].as_str().unwrap();
 	let audio_run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == audio_workspace)
+		.find(|run| run.thread_id.to_string() == audio_thread)
 		.unwrap();
 	// Both messages must fit the admitted Binding's ledger budget. The audio
 	// still forces separate provider requests; tool declarations determine the
@@ -136,7 +136,7 @@ async fn verify_audio_batches(
 		let (status, sent) = common::post(
 			app,
 			member,
-			&format!("/api/runs/{}/message", audio_run.id),
+			&format!("/api/executions/{}/message", audio_run.id),
 			json!({"content":content,"idempotency_key":Uuid::new_v4()}),
 		)
 		.await;
@@ -147,7 +147,7 @@ async fn verify_audio_batches(
 	let first = upload(
 		app,
 		member,
-		audio_workspace,
+		audio_thread,
 		"first.wav",
 		"audio/wav",
 		&first_audio,
@@ -156,14 +156,14 @@ async fn verify_audio_batches(
 	let second = upload(
 		app,
 		member,
-		audio_workspace,
+		audio_thread,
 		"second.wav",
 		"audio/wav",
 		&second_audio,
 	)
 	.await;
 	for attachment in [first, second] {
-		let (status, sent) = common::post(app, member, &format!("/api/runs/{}/message", audio_run.id), json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}))
+		let (status, sent) = common::post(app, member, &format!("/api/executions/{}/message", audio_run.id), json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}))
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
@@ -233,17 +233,17 @@ async fn verify_attachment_labels_count_toward_admission(
 	f: &Federation,
 	member: &str,
 ) {
-	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Media label budget", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, created) = common::post(app, member, "/api/threads", json!({"title":"Media label budget", "request":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == workspace)
+		.find(|run| run.thread_id.to_string() == thread)
 		.unwrap();
 	let seq = f
 		.store
@@ -268,9 +268,9 @@ async fn verify_attachment_labels_count_toward_admission(
 		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
 		.unwrap();
 	let audio = wav_bytes(audio_tokens * 16);
-	let long = upload(app, member, workspace, &long_name, "audio/wav", &audio).await;
-	let short = upload(app, member, workspace, short_name, "audio/wav", &audio).await;
-	let path = format!("/api/runs/{}/message", run.id);
+	let long = upload(app, member, thread, &long_name, "audio/wav", &audio).await;
+	let short = upload(app, member, thread, short_name, "audio/wav", &audio).await;
+	let path = format!("/api/executions/{}/message", run.id);
 	let (status, rejected) = common::post(
 		app,
 		member,
@@ -344,22 +344,22 @@ async fn verify_expired_route_retry(
 	let (status, body) = common::post(app, member, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.2"},"expected_revision":0,"enabled":true}))
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Retry after route expiry", "goal":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}))
+	let (status, created) = common::post(app, member, "/api/threads", json!({"title":"Retry after route expiry", "request":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == workspace)
+		.find(|run| run.thread_id.to_string() == thread)
 		.unwrap();
-	let image = upload(app, member, workspace, "retry.png", "image/png", PNG).await;
+	let image = upload(app, member, thread, "retry.png", "image/png", PNG).await;
 	let key = Uuid::new_v4();
 	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let (status, body) = common::post(app, member, &path, input.clone()).await;
 	assert_eq!(status, 200, "{body}");
 	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
@@ -436,28 +436,28 @@ async fn verify_separate_format_routes(
 	let (status, body) = common::post(app, member, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.3"},"expected_revision":0,"enabled":true}))
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(app, member, "/api/conversations", json!({"title":"Separate media routes", "goal":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}))
+	let (status, created) = common::post(app, member, "/api/threads", json!({"title":"Separate media routes", "request":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == workspace)
+		.find(|run| run.thread_id.to_string() == thread)
 		.unwrap();
 	let images = [
 		("first.png", "image/png", PNG, "fixture/png"),
 		("second.jpg", "image/jpeg", JPEG, "fixture/jpeg"),
 	];
 	for (name, mime, bytes, _) in images {
-		let attachment = upload(app, member, workspace, name, mime, bytes).await;
+		let attachment = upload(app, member, thread, name, mime, bytes).await;
 		let (status, sent) = common::post(
 			app,
 			member,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
 		)
 		.await;
@@ -595,15 +595,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true,"carry_over":false}))
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media input","goal":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Media input","request":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let workspace = run.workspace_id.to_string();
+	let thread = run.thread_id.to_string();
 	let (status, details) = request(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/runs/{}", run.id),
+		&format!("/api/executions/{}", run.id),
 		json!({}),
 	)
 	.await;
@@ -626,18 +626,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.contains(&json!("audio/mpeg"))
 	);
-	let (status, rejected) = upload_response(
-		&app,
-		&token,
-		&workspace,
-		"bad.png",
-		"image/png",
-		b"not a png",
-	)
-	.await;
+	let (status, rejected) =
+		upload_response(&app, &token, &thread, "bad.png", "image/png", b"not a png").await;
 	assert_eq!(status, 400, "{rejected}");
 	assert_eq!(rejected["error"], "MEDIA_UNDECODABLE");
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	assert!(
 		f.store
 			.run_inputs(&TEST_FIXTURE, run.id)
@@ -649,7 +642,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let long_audio = upload(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"long.mp3",
 		"audio/mpeg",
 		include_bytes!("support/media/too-long-for-wav.mp3"),
@@ -682,7 +675,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let first_large = upload(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"large-a.wav",
 		"audio/wav",
 		&large_audio,
@@ -691,7 +684,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let second_large = upload(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"large-b.wav",
 		"audio/wav",
 		&large_audio,
@@ -710,18 +703,18 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let audio = upload(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"sample.wav",
 		"audio/wav",
 		&wav_bytes(100),
 	)
 	.await;
-	let image = upload(&app, &token, &workspace, "sample.png", "image/png", PNG).await;
+	let image = upload(&app, &token, &thread, "sample.png", "image/png", PNG).await;
 	assert_eq!(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", Uuid::new_v4()),
+			&format!("/api/executions/{}/message", Uuid::new_v4()),
 			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":[image["id"]]})
 		)
 		.await
@@ -837,17 +830,17 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		"COMPLETED"
 	);
 	let member = token.clone();
-	let (status, created) = common::post(&app, &member, "/api/conversations", json!({"title":"Subject media", "goal":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, created) = common::post(&app, &member, "/api/threads", json!({"title":"Subject media", "request":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let member_workspace = created["workspace"]["id"].as_str().unwrap();
+	let member_thread = created["id"].as_str().unwrap();
 	let member_run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == member_workspace)
+		.find(|run| run.thread_id.to_string() == member_thread)
 		.unwrap();
 	let mut image_ids = Vec::new();
 	let mut expected_urls = Vec::new();
@@ -857,7 +850,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		let uploaded = upload(
 			&app,
 			&member,
-			member_workspace,
+			member_thread,
 			&format!("member-{index}.png"),
 			"image/png",
 			&bytes,
@@ -878,7 +871,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (status, rejected) = common::post(
 		&app,
 		&member,
-		&format!("/api/runs/{}/message", member_run.id),
+		&format!("/api/executions/{}/message", member_run.id),
 		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":&image_ids[..9]}),
 	)
 	.await;
@@ -895,7 +888,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		let (status, sent) = common::post(
 			&app,
 			&member,
-			&format!("/api/runs/{}/message", member_run.id),
+			&format!("/api/executions/{}/message", member_run.id),
 			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":ids}),
 		)
 		.await;
@@ -1011,22 +1004,22 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	))
 	.await;
 	// A route which only accepts WAV gets one immutable cached rendition of an MP3.
-	let (status, created) = common::post(&app, &member, "/api/conversations", json!({"title":"Audio rendition", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &member, "/api/threads", json!({"title":"Audio rendition", "request":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == workspace)
+		.find(|run| run.thread_id.to_string() == thread)
 		.unwrap();
 	let source = include_bytes!("support/media/short.mp3");
-	let attachment = upload(&app, &member, workspace, "sample.mp3", "audio/mpeg", source).await;
+	let attachment = upload(&app, &member, thread, "sample.mp3", "audio/mpeg", source).await;
 	let attachment_id: Uuid = attachment["id"].as_str().unwrap().parse().unwrap();
 	let key = Uuid::new_v4();
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let input = json!({"content":"", "idempotency_key":key, "attachment_ids":[attachment_id]});
 	let (status, body) = common::post(&app, &member, &path, input.clone()).await;
 	assert_eq!(status, 200, "{body}");
@@ -1154,7 +1147,7 @@ fn media_router(
 				sent.send(body).unwrap();
 				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {
 					assert!(no_tools, "media intake must not advertise task tools");
-					return reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"workspace_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
+					return reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"thread_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
 				}
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
 			}
@@ -1194,11 +1187,11 @@ fn selected_thread_router(
 			requests.sender.send(body).unwrap();
 			let step = count.fetch_add(1, Ordering::SeqCst);
 			let call = match step {
-				0 => Some(("workspace_observe", json!({}))),
-				1 | 6 | 7 | 9 => Some(("workspace_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
+				0 => Some(("thread_observe", json!({}))),
+				1 | 6 | 7 | 9 => Some(("thread_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
 				2 => Some(("attachment_copy", json!({"id":requests.attachment.lock().unwrap().as_ref().unwrap(), "path":"copied.png", "expected_revision":*requests.revision.lock().unwrap(), "idempotency_key":Uuid::new_v4()}))),
-				3 => Some(("workspace_message", json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single pixel"}}))),
-				5 => Some(("workspace_observe", json!({}))),
+				3 => Some(("thread_message", json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single pixel"}}))),
+				5 => Some(("thread_observe", json!({}))),
 				_ => None,
 			};
 			let message = match call {
@@ -1275,7 +1268,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Thread image", "goal":"Inspect the image", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Thread image", "request":"Inspect the image", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f
 		.store
@@ -1283,14 +1276,18 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == created["workspace"]["id"].as_str().unwrap())
+		.find(|run| run.thread_id.to_string() == created["id"].as_str().unwrap())
 		.unwrap();
-	let workspace = run.workspace_id.to_string();
-	let (status, area) =
-		common::get(&app, &token, &format!("/api/runs/{}/working-area", run.id)).await;
+	let thread = run.thread_id.to_string();
+	let (status, area) = common::get(
+		&app,
+		&token,
+		&format!("/api/executions/{}/working-area", run.id),
+	)
+	.await;
 	assert_eq!(status, 200, "{area}");
 	*selected_thread_requests.revision.lock().unwrap() = area["revision"].as_i64().unwrap();
-	let attachment = upload(&app, &token, &workspace, "selected.png", "image/png", PNG).await;
+	let attachment = upload(&app, &token, &thread, "selected.png", "image/png", PNG).await;
 	assert_eq!(
 		attachment["no_assigned_agent_can_read"], false,
 		"{attachment}"
@@ -1298,7 +1295,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let pdf = upload(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"notes.pdf",
 		"application/pdf",
 		b"test file",
@@ -1307,7 +1304,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	assert_eq!(pdf["no_assigned_agent_can_read"], false, "{pdf}");
 	*selected_thread_requests.attachment.lock().unwrap() =
 		Some(attachment["id"].as_str().unwrap().to_owned());
-	let (status, body) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"], pdf["id"]]})).await;
+	let (status, body) = common::post(&app, &token, &format!("/api/threads/{thread}/channel-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"], pdf["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(
 		body["attachments"][0]["no_assigned_agent_can_read"], false,
@@ -1365,7 +1362,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let (status, history) = common::get(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/message-history"),
+		&format!("/api/threads/{thread}/message-history"),
 	)
 	.await;
 	assert_eq!(status, 200, "{history}");
@@ -1390,7 +1387,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let (status, task) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Peer", "description":"Inspect Agent A's image"}),
 	)
 	.await;
@@ -1477,7 +1474,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let (status, task) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Text-only", "description":"Try the image"}),
 	)
 	.await;
@@ -1519,13 +1516,13 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		"{}",
 		requests[10]
 	);
-	let (status, text_conversation) = common::post(&app, &token, "/api/conversations", json!({"title":"Text only", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	let (status, text_conversation) = common::post(&app, &token, "/api/threads", json!({"title":"Text only", "request":"Inspect", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{text_conversation}");
-	let text_workspace = text_conversation["workspace"]["id"].as_str().unwrap();
+	let text_thread = text_conversation["id"].as_str().unwrap();
 	let text_image = upload(
 		&app,
 		&token,
-		text_workspace,
+		text_thread,
 		"unreadable.png",
 		"image/png",
 		PNG,
@@ -1538,7 +1535,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let (status, message) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{text_workspace}/thread-messages"),
+		&format!("/api/threads/{text_thread}/channel-messages"),
 		json!({"content":"Image", "idempotency_key":Uuid::new_v4(), "attachment_ids":[text_image["id"]]}),
 	)
 	.await;
@@ -1550,7 +1547,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let (status, next_task) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{text_workspace}/tasks"),
+		&format!("/api/threads/{text_thread}/tasks"),
 		json!({"title":"Image reader", "description":"Inspect"}),
 	)
 	.await;
@@ -1566,7 +1563,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	let (status, listing) = common::get(
 		&app,
 		&token,
-		&format!("/api/workspaces/{text_workspace}/message-history"),
+		&format!("/api/threads/{text_thread}/message-history"),
 	)
 	.await;
 	assert_eq!(status, 200, "{listing}");
@@ -1589,7 +1586,7 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 async fn run_tool(f: &Federation, run: Uuid, epoch: u64, name: &str, arguments: Value) -> Value {
 	let call = format!("call-{epoch}");
 	let response = json!({"text":"","tool_calls":[{"id":call,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(common::tool_pending(
 			json!({"response":response,"response_epoch":epoch,"cursor":0,"request_window":120000,"request_tokens":0}),
 		))
@@ -1612,15 +1609,11 @@ async fn run_tool(f: &Federation, run: Uuid, epoch: u64, name: &str, arguments: 
 		.unwrap_or_else(|| panic!("missing result of {call}"))
 }
 
-async fn message_history(
-	app: &common::TestApplication,
-	token: &str,
-	workspace: &str,
-) -> Vec<Value> {
+async fn message_history(app: &common::TestApplication, token: &str, thread: &str) -> Vec<Value> {
 	let (status, history) = common::get(
 		app,
 		token,
-		&format!("/api/workspaces/{workspace}/message-history"),
+		&format!("/api/threads/{thread}/message-history"),
 	)
 	.await;
 	assert_eq!(status, 200, "{history}");
@@ -1637,13 +1630,13 @@ fn with_content<'a>(messages: &'a [Value], content: &str) -> Vec<&'a Value> {
 async fn attachment_status(
 	app: &common::TestApplication,
 	token: &str,
-	workspace: &str,
+	thread: &str,
 	attachment: &str,
 ) -> u16 {
 	app.api_http
 		.request(
 			http::Method::GET,
-			&format!("/api/workspaces/{workspace}/attachments/{attachment}"),
+			&format!("/api/threads/{thread}/attachments/{attachment}"),
 		)
 		.header("Authorization", format!("Bearer {token}"))
 		.send()
@@ -1706,34 +1699,38 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 	assert_eq!(status, 200, "{body}");
 	let bob = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = bob["token"].as_str().unwrap();
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Report", "goal":"Report with a file", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Report", "request":"Report with a file", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
+	let thread = created["id"].as_str().unwrap().to_owned();
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == workspace)
+		.find(|run| run.thread_id.to_string() == thread)
 		.unwrap();
 	let agent = run.executor_subject(f.config.deployment.as_str());
 	// The Run reads Bob's message, because its outputs stay hidden from a reader
 	// who may not read what it read. Alice's own message stays out of that.
-	let attachment = upload(&app, bob, &workspace, "selected.png", "image/png", PNG).await;
-	let (status, body) = common::post(&app, bob, &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	let attachment = upload(&app, bob, &thread, "selected.png", "image/png", PNG).await;
+	let (status, body) = common::post(&app, bob, &format!("/api/threads/{thread}/channel-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
-	let own = upload(&app, &token, &workspace, "own.png", "image/png", PNG).await;
+	let own = upload(&app, &token, &thread, "own.png", "image/png", PNG).await;
 	let (status, body) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":"Alice's note", "idempotency_key":Uuid::new_v4(), "attachment_ids":[own["id"]]}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, area) =
-		common::get(&app, &token, &format!("/api/runs/{}/working-area", run.id)).await;
+	let (status, area) = common::get(
+		&app,
+		&token,
+		&format!("/api/executions/{}/working-area", run.id),
+	)
+	.await;
 	assert_eq!(status, 200, "{area}");
 	let copied = run_tool(&f, run.id, 1, "attachment_copy", json!({"id":attachment["id"], "path":"copied.png", "expected_revision":area["revision"], "idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(copied["file"]["path"], "copied.png", "{copied}");
@@ -1742,7 +1739,7 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 		&f,
 		run.id,
 		10,
-		"workspace_message",
+		"thread_message",
 		json!({"content":"No words", "files":["copied.png"]}),
 	)
 	.await;
@@ -1751,13 +1748,13 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 		"{undescribed}"
 	);
 	let with_files = json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single grey pixel"}});
-	let sent = run_tool(&f, run.id, 2, "workspace_message", with_files.clone()).await;
+	let sent = run_tool(&f, run.id, 2, "thread_message", with_files.clone()).await;
 	assert_eq!(sent["sent"], true, "{sent}");
 	let sent = run_tool(
 		&f,
 		run.id,
 		3,
-		"workspace_message",
+		"thread_message",
 		json!({"content":"Agent note"}),
 	)
 	.await;
@@ -1772,10 +1769,10 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 			.await
 			.unwrap();
 	assert_eq!(forgotten.rows_affected(), 1);
-	let retried = run_tool(&f, run.id, 2, "workspace_message", with_files).await;
+	let retried = run_tool(&f, run.id, 2, "thread_message", with_files).await;
 	assert_eq!(retried["sent"], true, "{retried}");
 
-	let messages = message_history(&app, &token, &workspace).await;
+	let messages = message_history(&app, &token, &thread).await;
 	let posted = with_content(&messages, "Agent snapshot");
 	assert_eq!(posted.len(), 1, "{messages:?}");
 	assert_eq!(
@@ -1800,7 +1797,7 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 
 	// A rule naming the person no longer reaches what the Agent wrote.
 	hide_from_alice(&f, &app, &mut policy, 2, "/sender", "alice").await;
-	let messages = message_history(&app, &token, &workspace).await;
+	let messages = message_history(&app, &token, &thread).await;
 	assert!(
 		with_content(&messages, "Alice's note").is_empty(),
 		"{messages:?}"
@@ -1811,17 +1808,17 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 		"{messages:?}"
 	);
 	assert_eq!(
-		attachment_status(&app, &token, &workspace, own_file).await,
+		attachment_status(&app, &token, &thread, own_file).await,
 		404
 	);
 	assert_eq!(
-		attachment_status(&app, &token, &workspace, &posted_file).await,
+		attachment_status(&app, &token, &thread, &posted_file).await,
 		200
 	);
 
 	// A rule naming the Agent reaches it, and the message's file with it.
 	hide_from_alice(&f, &app, &mut policy, 3, "/created_by", &agent).await;
-	let messages = message_history(&app, &token, &workspace).await;
+	let messages = message_history(&app, &token, &thread).await;
 	assert!(
 		with_content(&messages, "Agent snapshot").is_empty(),
 		"{messages:?}"
@@ -1836,11 +1833,11 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 		"{messages:?}"
 	);
 	assert_eq!(
-		attachment_status(&app, &token, &workspace, &posted_file).await,
+		attachment_status(&app, &token, &thread, &posted_file).await,
 		404
 	);
 	assert_eq!(
-		attachment_status(&app, &token, &workspace, own_file).await,
+		attachment_status(&app, &token, &thread, own_file).await,
 		200
 	);
 	cleanup(f, &url, &schema).await;
@@ -2007,22 +2004,22 @@ async fn live_openrouter_thread_attachment(
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");
 	agent.config["instructions"] = json!(
-		"Use workspace_observe to find the attachment. Call workspace_read with kind attachment, its id, and representation model_input. Then describe the media briefly. Do not finish before viewing it."
+		"Use thread_observe to find the attachment. Call thread_read with kind attachment, its id, and representation model_input. Then describe the media briefly. Do not finish before viewing it."
 	);
 	let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Live attachment", "goal":"Inspect the attached media using workspace_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Live attachment", "request":"Inspect the attached media using thread_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let bytes = if mime.starts_with("image/") {
 		PNG.to_vec()
 	} else {
 		wav_bytes(48_044)
 	};
-	let attachment = upload(&app, &token, workspace, filename, mime, &bytes).await;
-	let (status, message) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":format!("Read attachment {} with workspace_read kind attachment representation model_input, then describe it.", attachment["id"].as_str().unwrap()), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	let attachment = upload(&app, &token, thread, filename, mime, &bytes).await;
+	let (status, message) = common::post(&app, &token, &format!("/api/threads/{thread}/channel-messages"), json!({"content":format!("Read attachment {} with thread_read kind attachment representation model_input, then describe it.", attachment["id"].as_str().unwrap()), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
 	assert_eq!(status, 200, "{message}");
 	let worker = Harness {
 		federation: f.clone(),
@@ -2164,16 +2161,16 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Street", "goal":"Find the photo", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Street", "request":"Find the photo", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
+	let thread = created["id"].as_str().unwrap().to_owned();
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == workspace)
+		.find(|run| run.thread_id.to_string() == thread)
 		.unwrap();
 	let spec = json!({"embedding":{"provider":"openai","endpoint":format!("{}/v1", server.url),"model":"fixture","model_version":"1","dimensions":3,"inputs":["text","image"]},
 		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
@@ -2181,7 +2178,7 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	let (status, body) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
@@ -2189,7 +2186,7 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	let (status, photo) = upload_described(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"street.png",
 		PNG,
 		"A red car parked by the shop",
@@ -2197,14 +2194,14 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	.await;
 	assert_eq!(status, 200, "{photo}");
 	assert_eq!(photo["description"], "A red car parked by the shop");
-	let (status, body) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Photo from this morning", "idempotency_key":Uuid::new_v4(), "attachment_ids":[photo["id"]]})).await;
+	let (status, body) = common::post(&app, &token, &format!("/api/threads/{thread}/channel-messages"), json!({"content":"Photo from this morning", "idempotency_key":Uuid::new_v4(), "attachment_ids":[photo["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
 	let photo_id = photo["id"].as_str().unwrap().to_owned();
 	// An unrelated image, so the description is what finds the photo.
 	let (status, soup) = upload_described(
 		&app,
 		&token,
-		&workspace,
+		&thread,
 		"soup.png",
 		PNG,
 		"A bowl of soup on a table",
@@ -2214,12 +2211,12 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	let (status, body) = common::post(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({"content":"Lunch", "idempotency_key":Uuid::new_v4(), "attachment_ids":[soup["id"]]}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let messages = message_history(&app, &token, &workspace).await;
+	let messages = message_history(&app, &token, &thread).await;
 	assert_eq!(
 		with_content(&messages, "Photo from this morning")[0]["attachments"][0]["index_state"],
 		"pending"
@@ -2227,7 +2224,7 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	aidash_server::semantic::worker::sweep(&f.store)
 		.await
 		.unwrap();
-	let messages = message_history(&app, &token, &workspace).await;
+	let messages = message_history(&app, &token, &thread).await;
 	let posted = with_content(&messages, "Photo from this morning")[0].clone();
 	assert_eq!(
 		posted["attachments"][0]["index_state"], "indexed",
@@ -2241,16 +2238,16 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		&f,
 		run.id,
 		1,
-		"workspace_search",
+		"thread_search",
 		json!({"query":"a vehicle on the street"}),
 	)
 	.await;
-	let early = run_tool(&f, run.id, 2, "workspace_search", json!({"image":{"attachment_id":photo_id,"message_id":message_id,"expected_digest":aidash_domain::semantic::indexing::content_digest_bytes(PNG)}})).await;
+	let early = run_tool(&f, run.id, 2, "thread_search", json!({"image":{"attachment_id":photo_id,"message_id":message_id,"expected_digest":aidash_domain::semantic::indexing::content_digest_bytes(PNG)}})).await;
 	let opened = run_tool(
 		&f,
 		run.id,
 		3,
-		"workspace_read",
+		"thread_read",
 		json!({"kind":"attachment","id":photo_id,"representation":"model_input"}),
 	)
 	.await;
@@ -2269,7 +2266,7 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		&f,
 		run.id,
 		4,
-		"workspace_search",
+		"thread_search",
 		json!({"image":opened["selection"]}),
 	)
 	.await;
@@ -2337,12 +2334,12 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 async fn upload_described(
 	app: &common::TestApplication,
 	token: &str,
-	workspace: &str,
+	thread: &str,
 	name: &str,
 	bytes: &[u8],
 	description: &str,
 ) -> (u16, Value) {
-	let (status, uploaded) = upload_response(app, token, workspace, name, "image/png", bytes).await;
+	let (status, uploaded) = upload_response(app, token, thread, name, "image/png", bytes).await;
 	if status != 200 {
 		return (status, uploaded);
 	}
@@ -2351,7 +2348,7 @@ async fn upload_described(
 		app,
 		token,
 		"PUT",
-		&format!("/api/workspaces/{workspace}/attachments/{id}/description"),
+		&format!("/api/threads/{thread}/attachments/{id}/description"),
 		json!({"description":description}),
 	)
 	.await

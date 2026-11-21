@@ -41,13 +41,14 @@ pub(crate) struct Repository {
 	pub(crate) actor: Option<Actor>,
 	/// A worker revalidates its complete execution chain at every source boundary.
 	pub(crate) worker: Option<aidash_domain::RunMetadata>,
+	/// The delegation chain of a Remote Grant whose Run hands a Task on (#654):
+	/// the actor is the chain's root person, and every check and the grant this
+	/// Home prepares see the whole chain, never the person alone.
+	pub(crate) chain: Option<Vec<String>>,
 }
 impl Repository {
-	/// The Node a Workspace of the acting subject's Tenant belongs to.
-	async fn workspace_node(
-		&self,
-		workspace: Uuid,
-	) -> NativeResult<aidash_domain::nodes::NodeName> {
+	/// The Node a Thread of the acting subject's Tenant belongs to.
+	async fn thread_node(&self, thread: Uuid) -> NativeResult<aidash_domain::nodes::NodeName> {
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden);
 		};
@@ -59,8 +60,8 @@ impl Repository {
 				crate::database::native::query_scalar::<String>(
 					&Query::select()
 						.column(Alias::new("node"))
-						.from(Alias::new("workspaces"))
-						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+						.from(Alias::new("threads"))
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_one(&mut **tx)
@@ -73,6 +74,8 @@ impl Repository {
 pub(crate) struct Scope {
 	pub(crate) runtime: Federation,
 	pub(crate) access: Box<Access>,
+	/// The Remote Grant chain this scope acts under, if any (#654).
+	pub(crate) chain: Option<Vec<String>>,
 }
 pub(crate) async fn binding(access: &mut Access, grant: Uuid) -> NativeResult<Option<BindingRow>> {
 	Ok({
@@ -115,8 +118,8 @@ impl HomeScope for Scope {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -169,7 +172,7 @@ impl HomeScope for Scope {
 		for request in
 			super::remote_commands::humans::read(&mut **self.access.tx, grant, false).await?
 		{
-			if request.run_id != admission || request.workspace_id != task.workspace_id {
+			if request.run_id != admission || request.thread_id != task.thread_id {
 				return Err(aidash_application::Error::Forbidden);
 			}
 			let human = self.access.resource(
@@ -318,11 +321,11 @@ impl HomeScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()> {
+	async fn call_declined(&mut self, thread: Uuid, event: Value) -> Result<()> {
 		let result: NativeResult<()> = async {
 			crate::apps::execution::models::event_records::append(
 				&mut **self.access.tx,
-				Some(workspace),
+				Some(thread),
 				"remote.call_declined",
 				event,
 			)
@@ -381,8 +384,9 @@ impl HomeScope for Scope {
 						.and_where(
 							Expr::col("root_subject").ne(Expr::value(query_bind_3.to_owned())),
 						)
-						.and_where(Expr::col("revoked").eq(false))
-						.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
+						.and_where(super::remote_grants::live_condition(
+							"authorization_remote_grants",
+						))
 						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
@@ -397,10 +401,45 @@ impl HomeScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>> {
-		let worker_subjects = self.access.read_run.map(|_| self.access.subjects.clone());
-		let result:NativeResult<Vec<GrantRow>>=async {let identity=self.access.identity.clone();let access=&mut *self.access;Ok({ let query_bind_1 = task.id; let query_bind_2 = node; let query_bind_3 = &identity.tenant; let query_bind_4 = &identity.subject; crate::database::native::query_as(&Query::select().column(Asterisk).from(Alias::new("authorization_remote_grants"))
-            .and_where(SimpleExpr::CustomWithExpr("(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND NOT revoked AND expires_at>CLOCK_TIMESTAMP())".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
-            .order_by(Alias::new("expires_at"),reinhardt::query::Order::Desc).limit(100).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? })}.await;
+		// A worker's, or an onward hop's (#654), prepared grant is reused only
+		// for exactly its own chain followed by the receiver's executor.
+		let worker_subjects = self
+			.access
+			.read_run
+			.map(|_| self.access.subjects.clone())
+			.or_else(|| self.chain.clone());
+		let result: NativeResult<Vec<GrantRow>> = async {
+			let identity = self.access.identity.clone();
+			let access = &mut *self.access;
+			Ok({
+				let query_bind_1 = task.id;
+				let query_bind_2 = node;
+				let query_bind_3 = &identity.tenant;
+				let query_bind_4 = &identity.subject;
+				crate::database::native::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND ?)"
+								.to_owned(),
+							vec![
+								Expr::value(query_bind_1.to_owned()).into(),
+								Expr::value(query_bind_2.to_owned()).into(),
+								Expr::value(query_bind_3.to_owned()).into(),
+								Expr::value(query_bind_4.to_owned()).into(),
+								super::remote_grants::live_condition("authorization_remote_grants"),
+							],
+						))
+						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
+						.limit(100)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **access.tx)
+				.await?
+			})
+		}
+		.await;
 		result
 			.map(|r| {
 				r.into_iter()
@@ -652,7 +691,7 @@ impl HomeScope for Scope {
 		&mut self,
 		grant: Uuid,
 		admission: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		subject: &str,
 	) -> Result<()> {
 		crate::semantic::remote::journal::resume_in(
@@ -660,7 +699,7 @@ impl HomeScope for Scope {
 			&mut self.access.tx,
 			grant,
 			admission,
-			workspace,
+			thread,
 			subject,
 		)
 		.await
@@ -689,14 +728,14 @@ impl HomeScope for Scope {
 	}
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		subject: &str,
 		key: &str,
 	) -> Result<Task> {
 		self.runtime
 			.store
-			.create_task_in(&mut self.access.tx, workspace, input, subject, Some(key))
+			.create_task_in(&mut self.access.tx, thread, input, subject, Some(key))
 			.await
 			.map_err(Into::into)
 	}
@@ -710,12 +749,12 @@ impl HomeScope for Scope {
 #[async_trait]
 impl HomeRepository for Repository {
 	type Scope = Scope;
-	async fn node_address(&self, workspace: Uuid) -> Result<String> {
+	async fn node_address(&self, thread: Uuid) -> Result<String> {
 		Ok(self
 			.runtime
 			.config
 			.deployment
-			.node(self.workspace_node(workspace).await?)
+			.node(self.thread_node(thread).await?)
 			.to_string())
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
@@ -741,11 +780,24 @@ impl HomeRepository for Repository {
 			.await?
 			.ok_or(NativeError::Forbidden)?
 		} else {
-			Access::begin(&self.runtime.store, identity).await?
+			let mut access = Access::begin(&self.runtime.store, identity).await?;
+			if let Some(chain) = &self.chain {
+				// An onward hop acts under the grant's whole chain (#654), which
+				// starts at the person this access authenticates.
+				if chain.len() < 2 || chain.first() != Some(&identity.subject) {
+					return access
+						.finish::<Scope>(Err(NativeError::Forbidden))
+						.await
+						.map_err(Into::into);
+				}
+				access.subjects = chain.clone();
+			}
+			access
 		};
 		Ok(Scope {
 			runtime: self.runtime.clone(),
 			access: Box::new(access),
+			chain: self.chain.clone(),
 		})
 	}
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Scope, Description)> {
@@ -755,18 +807,19 @@ impl HomeRepository for Repository {
 			Scope {
 				runtime: self.runtime.clone(),
 				access: Box::new(access),
+				chain: None,
 			},
 			description,
 		))
 	}
 	async fn request<T: DeserializeOwned + Send>(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		node: &str,
 		path: &str,
 		input: &Value,
 	) -> Result<T> {
-		// Home calls as the Node the Workspace belongs to, for the Tenant of the
+		// Home calls as the Node the Thread belongs to, for the Tenant of the
 		// subject that acts.
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
@@ -774,7 +827,7 @@ impl HomeRepository for Repository {
 		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.runtime,
 			&aidash_domain::federation::route::Sender {
-				node: Some(self.workspace_node(workspace).await?),
+				node: Some(self.thread_node(thread).await?),
 				..crate::authorization::peer::node_sender(&identity.tenant)?
 			},
 			node,
@@ -826,19 +879,71 @@ pub(crate) async fn cancel_deleted_node_grant(
 	node: &str,
 	id: Uuid,
 ) -> NativeResult<bool> {
+	cancel_grant(f, tenant, Some(node), id, false).await
+}
+
+/// A flow's stop (#1012, ADR 0143) cancels work the flow handed to another
+/// Deployment as the system, like the Node cancellation queue: the person who
+/// stops a flow need not be the grant's root person. The grant is revoked
+/// first, so it renews no more even when the receiver is unreachable; once the
+/// receiver acknowledges the cancel, the Home closes its side as a person's
+/// cancel does (`aidash_application::authorization::home::control`), without
+/// waiting for the receiver's Run to end. A grant nothing was admitted for
+/// is only revoked.
+pub(crate) async fn cancel_flow_grant(f: &Federation, tenant: &str, id: Uuid) -> NativeResult<()> {
+	cancel_grant(f, tenant, None, id, true).await.map(|_| ())
+}
+
+/// A flow's stop revokes the grant of a Task that already ended, so no grant
+/// of the flow is left unrevoked (#1012). The work is over, so the receiver
+/// is not asked to cancel anything.
+pub(crate) async fn revoke_flow_grant(f: &Federation, tenant: &str, id: Uuid) -> NativeResult<()> {
 	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
 	let mut tx = f.store.pool.begin(&scope).await?;
 	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
 	crate::transactions::gate::read_in(&mut tx).await?;
+	crate::apps::identity::repositories::remote_grants::persistence::revoke_for_node_in(
+		&f.store,
+		tx.as_mut(),
+		tenant,
+		id,
+	)
+	.await?;
+	tx.commit().await?;
+	Ok(())
+}
+
+/// Revokes grant `id` (of `node`, when one is named), asks the receiver to
+/// cancel the admission bound to it, then closes the Home Task. The Home side
+/// closes once the receiver's Run has ended, or, with `on_acknowledge`, as
+/// soon as the receiver accepted the cancel.
+async fn cancel_grant(
+	f: &Federation,
+	tenant: &str,
+	node: Option<&str>,
+	id: Uuid,
+	on_acknowledge: bool,
+) -> NativeResult<bool> {
+	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+	let mut tx = f.store.pool.begin(&scope).await?;
+	crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+	crate::transactions::gate::read_in(&mut tx).await?;
+	let mut select = Query::select();
+	select
+		.column(Asterisk)
+		.from(Alias::new("authorization_remote_grants"))
+		.and_where(Expr::col("id").eq(Expr::value(id)))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())));
+	if let Some(node) = node {
+		select.and_where(
+			Expr::col("node")
+				.eq(Expr::value(node))
+				.or(Expr::col("node_id")
+					.eq(Expr::value(format!("{}/{}", f.config.deployment, node)))),
+		);
+	}
 	let grant: GrantRow = crate::database::native::query_as(
-		&Query::select()
-			.column(Asterisk)
-			.from(Alias::new("authorization_remote_grants"))
-			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-			.and_where(Expr::col("node").eq(Expr::value(node)).or(
-				Expr::col("node_id").eq(Expr::value(format!("{}/{}", f.config.deployment, node))),
-			))
+		&select
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -893,14 +998,16 @@ pub(crate) async fn cancel_deleted_node_grant(
 	use aidash_domain::federation::execution::admission::{
 		RemoteExecutionControlState, RemoteExecutionPhase,
 	};
-	if !(matches!(
+	// The receiver's answer settles the remote work when it has ended, or when
+	// an admitted execution was cancelled before it ever started.
+	let ended = matches!(
 		response.phase,
 		RemoteExecutionPhase::Completed
 			| RemoteExecutionPhase::Failed
 			| RemoteExecutionPhase::Cancelled
 	) || (matches!(response.phase, RemoteExecutionPhase::Admitted)
-		&& matches!(response.control, RemoteExecutionControlState::Cancelled)))
-	{
+		&& matches!(response.control, RemoteExecutionControlState::Cancelled));
+	if !(on_acknowledge || ended) {
 		return Ok(false);
 	}
 	let mut tx = f.store.pool.begin(&scope).await?;

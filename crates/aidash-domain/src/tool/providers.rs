@@ -60,11 +60,16 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 	Some(match operation {
 		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message"
 		| "workspace_search" => "core.workspace@1",
+		// The Thread tools that replace the Workspace tools (#1008, ADR 0140).
+		"thread_read" | "thread_observe" | "task_wait" | "thread_message" | "thread_search" => {
+			"core.threads@1"
+		}
 		"human_request" | "connection_request" => "core.human@1",
 		"subnode_create"
 		| "subnode_task"
 		| "subnode_add_member"
 		| "subnode_remove_member"
+		| "delete_subnode"
 		| "subnode_dissolve"
 		| "subnode_message" => "core.subnodes@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
@@ -84,9 +89,10 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"file_save" | "file_remove" | "file_copy" => "core.scratch@1",
 		"process_list" | "process_log" | "process_stop" => "core.processes@1",
 		"mcp_stdio" => "core.mcp_stdio@1",
-		"schedule_create" | "schedule_list" | "schedule_update" | "schedule_delete" => {
-			"core.schedules@1"
+		"duty_create" | "duty_list" | "duty_update" | "duty_delete" | "duty_notify" => {
+			"core.duties@1"
 		}
+		"node_create" | "node_delete" => "core.nodes@1",
 		_ => return None,
 	})
 }
@@ -163,6 +169,7 @@ pub fn research_contract(_operation: ResearchOperation) -> ToolContract {
 			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
+			authority_change: false,
 		},
 		disclosure: DisclosureBoundary::External,
 		// Page reading is a Research operation: never offered to a remote Run (ADR 0139).
@@ -381,8 +388,8 @@ pub fn validate_concurrency(contract: &ToolContract, narrow: &Narrowing) -> Resu
 pub fn validate_restrictions(operation: &str, narrow: &Narrowing) -> Result<()> {
 	let (hosts, scopes, limits): (bool, &[&str], &[&str]) = match operation {
 		"outbound_get" => (true, &[], &[]),
-		"workspace_read" => (false, &["kind", "id"], &["max_chars"]),
-		"workspace_observe" => (false, &[], &["limit"]),
+		"workspace_read" | "thread_read" => (false, &["kind", "id"], &["max_chars"]),
+		"workspace_observe" | "thread_observe" => (false, &[], &["limit"]),
 		"file_search" => (false, &["scope"], &["limit"]),
 		"file_read" => (false, &["file_id", "representation"], &["max_bytes"]),
 		"file_share" => (

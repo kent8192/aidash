@@ -8,7 +8,7 @@ fn run() -> RunMetadata {
 	RunMetadata {
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		home_node: "home".into(),
 		agent_id: "agent".into(),
@@ -30,7 +30,7 @@ fn run() -> RunMetadata {
 fn message(run: &RunMetadata, key: &str) -> Message {
 	Message {
 		id: Uuid::new_v4(),
-		workspace_id: run.workspace_id,
+		thread_id: run.thread_id,
 		sender: "human".into(),
 		content: "correction".into(),
 		idempotency_key: Some(full_key("executor", run.task_id, key)),
@@ -57,7 +57,7 @@ fn historical_inputs_keep_qualified_identity_and_stable_order(run: RunMetadata) 
 }
 
 #[rstest]
-#[case("workspace", "historical run message workspace changed")]
+#[case("thread", "historical run message thread changed")]
 #[case("key", "historical run message key changed")]
 fn historical_inputs_reject_foreign_identity(
 	run: RunMetadata,
@@ -66,7 +66,7 @@ fn historical_inputs_reject_foreign_identity(
 ) {
 	let mut input = message(&run, "key");
 	match changed {
-		"workspace" => input.workspace_id = Uuid::new_v4(),
+		"thread" => input.thread_id = Uuid::new_v4(),
 		"key" => input.idempotency_key = Some(full_key("other-node", run.task_id, "key")),
 		_ => panic!("unknown fixture"),
 	}
@@ -77,13 +77,13 @@ fn historical_inputs_reject_foreign_identity(
 }
 
 #[rstest]
-#[case("workspace")]
+#[case("thread")]
 #[case("content")]
 #[case("key")]
 fn delivered_record_must_match_the_committed_correction(run: RunMetadata, #[case] changed: &str) {
 	let mut input = message(&run, "key");
 	match changed {
-		"workspace" => input.workspace_id = Uuid::new_v4(),
+		"thread" => input.thread_id = Uuid::new_v4(),
 		"content" => input.content = "changed".into(),
 		"key" => input.idempotency_key = None,
 		_ => panic!("unknown fixture"),

@@ -206,7 +206,7 @@ async fn a_rejected_input_batch_finishes_the_round_and_replays_its_error(mut fix
 			.backend
 			.events()
 			.iter()
-			.any(|event| event == "run.waiting")
+			.any(|event| event == "execution.waiting")
 	);
 }
 
@@ -354,7 +354,7 @@ async fn live_form_wait_reduces_the_next_modern_input_deadline(mut fixture: Fixt
 	let active = checkpoint.active.as_ref().unwrap();
 	assert_eq!(
 		(active.deadline - active.started_at).num_milliseconds() as u64,
-		900_000 - checkpoint.waited_millis
+		7 * 86_400_000 - checkpoint.waited_millis
 	);
 }
 
@@ -369,7 +369,7 @@ async fn resuming_human_input_journals_only_answers_intended_for_the_model(
 ) {
 	let request = HumanRequest {
 		id: Uuid::new_v4(),
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: kind.into(),
 		prompt: "Server-only personal form".into(),

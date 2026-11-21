@@ -13,7 +13,7 @@ async fn withdrawn_operation_fixture(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -363,7 +363,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/shell", run.id),
+		&format!("/api/executions/{}/shell", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf must-not-run"}),
 	)
 	.await;
@@ -379,7 +379,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 		Value::Null,
 	)
 	.await;
@@ -519,7 +519,7 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 	);
 	for path in [
 		"/api/state".to_owned(),
-		format!("/api/runs/{}", admitted.id),
+		format!("/api/executions/{}", admitted.id),
 	] {
 		let (status, public) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
 		assert_eq!(status, 200, "{public}");
@@ -575,7 +575,7 @@ async fn direct_host_http_rejects_a_withdrawn_bound_tool_before_creating_an_oper
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/data"}),
 	)
 	.await;
@@ -658,7 +658,6 @@ async fn command_cleanup_fixture(
 					"home_node",
 					"agent_id",
 					"owner",
-					"workspace_id",
 					"thread_id",
 					"state",
 				]
@@ -670,8 +669,7 @@ async fn command_cleanup_fixture(
 				run.home_node.clone().into(),
 				run.agent_id.clone().into(),
 				"alice".into(),
-				run.workspace_id.into(),
-				Uuid::new_v4().into(),
+				run.thread_id.into(),
 				"running".into(),
 			])
 			.unwrap()
@@ -1498,7 +1496,7 @@ async fn waiting_area_reader_sees_the_committed_revision(
 	use reinhardt::query::{IntoValue as _, LockType, QueryStatementBuilder as _};
 	let c = Box::pin(capability_fixture).await;
 	let run = admit(&c).await;
-	let path = format!("/api/runs/{}/working-area", run.id);
+	let path = format!("/api/executions/{}/working-area", run.id);
 	let (status, before) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200, "{before}");
 	let area: Uuid = serde_json::from_value(before["id"].clone()).unwrap();

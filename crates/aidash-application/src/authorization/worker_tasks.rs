@@ -19,7 +19,7 @@ async fn subnode_members(
 	scope: &mut dyn WorkerTaskScope,
 	run: &RunMetadata,
 ) -> Result<Option<Vec<EntityRef>>> {
-	let members = scope.subnode_members(run.workspace_id).await?;
+	let members = scope.subnode_members(run.thread_id).await?;
 	if let Some(members) = &members {
 		let caller = EntityRef {
 			id: run.agent_id.clone(),
@@ -38,13 +38,14 @@ pub async fn assign(
 	task: Uuid,
 	policy: &str,
 	reason: &str,
+	draft: Option<&aidash_domain::generation::policy::Draft>,
 ) -> Result<Assignment> {
 	let members = subnode_members(scope, run).await?;
-	if scope.task_workspace(task).await? != Some(run.workspace_id) {
+	if scope.task_thread(task).await? != Some(run.thread_id) {
 		return Err(task_not_visible(task));
 	}
 	let assignment = scope
-		.assign(task, policy, reason, members.as_deref())
+		.assign(task, policy, reason, members.as_deref(), draft)
 		.await?;
 	scope.record_output(run, "task", task).await?;
 	if let Assignment::Generated { generation } = &assignment {
@@ -61,12 +62,12 @@ pub async fn create_task(
 	input: &NewTask,
 ) -> Result<Task> {
 	subnode_members(scope, run).await?;
-	let workspace = scope.workspace(run.workspace_id).await?;
-	scope.require(&workspace, "task.create").await?;
-	scope.related_tasks(run.workspace_id, input).await?;
+	let thread = scope.thread(run.thread_id).await?;
+	scope.require(&thread, "task.create").await?;
+	scope.related_tasks(run.thread_id, input).await?;
 	let creator = scope.subjects().last().ok_or(Error::Forbidden)?.clone();
 	let task = scope
-		.create_task(run.workspace_id, input, &creator, key)
+		.create_task(run.thread_id, input, &creator, key)
 		.await?;
 	let resource = scope.task_resource(&task).await?;
 	scope.require(&resource, "task.read").await?;
@@ -109,7 +110,7 @@ pub async fn delegate(
 			"Subnode delegation target is not a member".into(),
 		));
 	}
-	if scope.task_workspace(task).await? != Some(run.workspace_id) {
+	if scope.task_thread(task).await? != Some(run.thread_id) {
 		return Err(task_not_visible(task));
 	}
 	let record = scope.task_read(task).await.map_err(|error| match error {

@@ -96,7 +96,7 @@ async fn repeated_rewrites_prune_unheld_revisions_and_unique_blob_usage(
 		let (status, area) = common::get(
 			&c.app,
 			&c.token,
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
@@ -151,7 +151,7 @@ async fn a_cited_revision_survives_until_its_last_hold_is_released(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -175,7 +175,7 @@ async fn a_cited_revision_survives_until_its_last_hold_is_released(
 			.clone(),
 	)
 	.unwrap();
-	let message = source(&c, run.workspace_id, "cite the HTML page").await;
+	let message = source(&c, run.thread_id, "cite the HTML page").await;
 	let holder = Holder::Message {
 		message_id: message,
 	};
@@ -262,7 +262,7 @@ async fn a_tenant_over_its_storage_ceiling_cannot_retain_a_version(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -277,7 +277,7 @@ async fn a_tenant_over_its_storage_ceiling_cannot_retain_a_version(
 		.execute(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let message = source(&c, run.workspace_id, "cite over quota").await;
+	let message = source(&c, run.thread_id, "cite over quota").await;
 	let error = aidash_server::capabilities::retention::retain_for(
 		&c.f,
 		actor(&c).await,
@@ -315,12 +315,12 @@ async fn cleanup_releases_holds_and_lets_their_versions_go(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
 	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
-	let message = source(&c, run.workspace_id, "cite for cleanup").await;
+	let message = source(&c, run.thread_id, "cite for cleanup").await;
 	aidash_server::capabilities::retention::retain_for(
 		&c.f,
 		actor(&c).await,
@@ -387,7 +387,7 @@ async fn the_reclamation_sweep_releases_an_expired_federation_hold(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -435,7 +435,7 @@ async fn citations_of_two_files_at_one_revision_share_one_hold(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -456,7 +456,7 @@ async fn citations_of_two_files_at_one_revision_share_one_hold(
 			.clone(),
 	)
 	.unwrap();
-	let message = source(&c, run.workspace_id, "cite two versions").await;
+	let message = source(&c, run.thread_id, "cite two versions").await;
 	let holder = Holder::Message {
 		message_id: message,
 	};
@@ -504,12 +504,12 @@ async fn concurrent_identical_citations_leave_one_hold(#[future] capability_fixt
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
 	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
-	let message = source(&c, run.workspace_id, "cite concurrently").await;
+	let message = source(&c, run.thread_id, "cite concurrently").await;
 	let holder = Holder::Message {
 		message_id: message,
 	};
@@ -544,21 +544,18 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	let c = capability_fixture.await;
 	let first = admit(&c).await;
 	let node = aidash_domain::nodes::NodeName::derived("acme");
-	let (status, workspace) = common::post(
+	let (status, thread) = common::post(
 		&c.app,
 		&c.token,
-		"/api/workspaces",
-		json!({"title":"Dedup","goal":"Independent files","node":node}),
+		"/api/threads",
+		json!({"title":"Dedup","node":node}),
 	)
 	.await;
-	assert_eq!(status, 200, "{workspace}");
+	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&c.app,
 		&c.token,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
+		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 		json!({"title":"Second area","description":"Write the same content"}),
 	)
 	.await;
@@ -586,8 +583,12 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 			format!("*** Begin Patch\n*** Add File: {path}\n+identical bytes\n*** End Patch");
 		let (status, body) = common::post(&c.app, &c.token, &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{(path):null},"patch":patch})).await;
 		assert_eq!(status, 200, "{body}");
-		let (status, area) =
-			common::get(&c.app, &c.token, &format!("/api/runs/{run}/working-area")).await;
+		let (status, area) = common::get(
+			&c.app,
+			&c.token,
+			&format!("/api/executions/{run}/working-area"),
+		)
+		.await;
 		assert_eq!(status, 200, "{area}");
 		areas.push(area);
 		let quota = Query::select()
@@ -674,7 +675,7 @@ async fn retained_manifest_uses_the_covering_hold_revision_and_requires_a_live_h
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{}/working-area", run.id),
+		&format!("/api/executions/{}/working-area", run.id),
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -686,7 +687,7 @@ async fn retained_manifest_uses_the_covering_hold_revision_and_requires_a_live_h
 	let original = entries.iter().find(|f| f["path"] == "app.js").unwrap();
 	let original_id: Uuid = serde_json::from_value(original["file_id"].clone()).unwrap();
 	let holder = Holder::Message {
-		message_id: source(&c, run.workspace_id, "hold this page").await,
+		message_id: source(&c, run.thread_id, "hold this page").await,
 	};
 	aidash_server::capabilities::retention::retain_for(
 		&c.f,

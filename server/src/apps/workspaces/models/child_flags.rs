@@ -22,7 +22,7 @@ fn this_task() -> (Alias, Alias) {
 pub(crate) fn started() -> SimpleExpr {
 	let run = Query::select()
 		.expr(Expr::value(1_i64))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("task_id").equals(this_task()))
 		.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 		.and_where(Expr::col("control").ne("CANCELLED"))
@@ -56,7 +56,7 @@ pub(crate) fn started() -> SimpleExpr {
 pub(crate) fn abandonable(parent: Uuid) -> SimpleExpr {
 	let parent_runs = Query::select()
 		.column(Alias::new("id"))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("task_id").eq(Expr::value(parent)))
 		.to_owned();
 	let local = Query::select()

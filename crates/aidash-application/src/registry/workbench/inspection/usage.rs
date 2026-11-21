@@ -8,7 +8,7 @@ use aidash_domain::{
 	identity::Principal,
 	registry::{
 		EntityRef,
-		workbench::inspection::{Inspection, TestEvidence, WorkspaceUse},
+		workbench::inspection::{Inspection, TestEvidence, ThreadUse},
 	},
 };
 use chrono::Utc;
@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 async fn run_visible(scope: &mut dyn InspectionScope, run: &RunMetadata) -> Result<bool> {
 	let result = async {
-		let workspace = scope.workspace(run.workspace_id).await?;
-		if !scope.decide(&workspace, "workspace.read").await? {
+		let thread = scope.thread(run.thread_id).await?;
+		if !scope.decide(&thread, "thread.read").await? {
 			return Ok(false);
 		}
 		scope.run_visible(run).await
@@ -54,22 +54,22 @@ async fn visible_runs(
 }
 async fn add_use(
 	scope: &mut dyn InspectionScope,
-	uses: &mut BTreeMap<Uuid, WorkspaceUse>,
+	uses: &mut BTreeMap<Uuid, ThreadUse>,
 	run: &RunMetadata,
 ) -> Result<()> {
 	let active = !run.phase().is_terminal();
-	if let Some(existing) = uses.get_mut(&run.workspace_id) {
+	if let Some(existing) = uses.get_mut(&run.thread_id) {
 		existing.current |= active;
 		if run.updated_at > existing.latest_run_at {
 			existing.latest_run_at = run.updated_at;
 		}
 		return Ok(());
 	}
-	if let Some(title) = scope.workspace_title(run.workspace_id).await? {
+	if let Some(title) = scope.thread_title(run.thread_id).await? {
 		uses.insert(
-			run.workspace_id,
-			WorkspaceUse {
-				workspace_id: run.workspace_id,
+			run.thread_id,
+			ThreadUse {
+				thread_id: run.thread_id,
 				title,
 				current: active,
 				latest_run_at: run.updated_at,
@@ -134,7 +134,7 @@ pub async fn inspect(
 			entry,
 			source_node: repository.node_id().into(),
 			observed_at: Utc::now(),
-			workspaces: uses.into_values().collect(),
+			threads: uses.into_values().collect(),
 			usage_truncated: truncated,
 			test_evidence,
 			test_evidence_truncated,

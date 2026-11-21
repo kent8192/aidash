@@ -16,7 +16,7 @@ async fn all_run_lists_are_light_and_detail_still_has_context(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
 		.bind(task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
@@ -30,20 +30,26 @@ async fn all_run_lists_are_light_and_detail_still_has_context(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let id: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	let id: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let (status, detail) =
-		common::request(&app, &token, "GET", &format!("/api/runs/{id}"), Value::Null).await;
+	let (status, detail) = common::request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/executions/{id}"),
+		Value::Null,
+	)
+	.await;
 	assert_eq!(status, 200, "{detail}");
 	let full = &detail["run"];
 	assert!(full["context"].is_object(), "{detail}");
 	for path in [
 		"/api/state".to_owned(),
-		format!("/api/tasks/{task}/runs"),
-		format!("/api/workspaces/{workspace}/runs"),
+		format!("/api/tasks/{task}/executions"),
+		format!("/api/threads/{thread}/executions"),
 	] {
 		let (status, response) = common::request(&app, &token, "GET", &path, Value::Null).await;
 		assert_eq!(status, 200, "{path}: {response}");

@@ -7,7 +7,7 @@ use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Root {
-	Workspace,
+	Thread,
 	Run,
 	Task,
 	Area,
@@ -20,7 +20,6 @@ pub enum Root {
 	MemoryOperation,
 	SemanticOperation,
 	RemoteUsage,
-	Thread,
 	Observation,
 	Message,
 	RetentionHold,
@@ -29,6 +28,7 @@ pub enum Root {
 	Subnode,
 	ScratchSpace,
 	Record,
+	Duty,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -60,8 +60,8 @@ use Root::*;
 /// classification is itself proof that a reviewed table survives Node purge.
 pub fn ownership(name: &str) -> Result<Ownership> {
 	Ok(match name {
-		"workspaces"
-		| "runs"
+		"threads"
+		| "task_executions"
 		| "generation_requests"
 		| "node_cancellation_jobs"
 		| "authorization_catalog"
@@ -73,6 +73,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "authorization_remote_grants"
 		| "federation_token_ids"
 		| "subnodes"
+		| "node_instructions"
 		| "scratch_spaces"
 		| "egress_scope_state"
 		| "egress_scope_daily"
@@ -104,15 +105,17 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
 		"tasks"
-		| "schedules"
-		| "schedule_ticks"
+		| "duties"
+		| "duty_ticks"
+		| "duty_triggers"
+		| "duty_events"
+		| "duty_bookings"
 		| "artifacts"
 		| "messages"
 		| "conversations"
-		| "channel_threads"
 		| "channel_attachments"
 		| "channel_message_context"
-		| "authorization_workspaces"
+		| "authorization_threads"
 		| "semantic_image_ledgers"
 		| "semantic_image_publications"
 		| "semantic_indexes"
@@ -121,11 +124,14 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "semantic_history"
 		| "semantic_vectors"
 		| "memory_banks"
-		| "memory_participants" => Link("workspace_id", Workspace),
+		| "memory_participants" => Link("thread_id", Thread),
+		// Script versions, script runs and delivery records go with their Duty.
+		"duty_script_versions" | "duty_script_runs" | "duty_deliveries" | "duty_pending_events" => {
+			Link("duty_id", Duty)
+		}
 		"core_operations" => Link("area_id", Area),
-		"core_runs" | "egress_run_revocations" => Link("run_id", Run),
-		"core_task_sessions"
-		| "delegations"
+		"core_runs" | "egress_run_revocations" | "stints" => Link("run_id", Run),
+		"delegations"
 		| "memory_task_participants"
 		| "generation_remote_intents" => Link("task_id", Task),
 		"authorization_task_origins" => Link("task_id", Task),
@@ -160,7 +166,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "subnode_operation_receipts" => Link("run_id", Run),
 		"generation_budgets" => Link("request_id", Request),
 		"generation_remote_usage" => RemoteUsageRows,
-		"generation_embedding_usage" => Link("workspace_id", Workspace),
+		"generation_embedding_usage" => Link("thread_id", Thread),
 		"generation_history" => Link("request_id", Request),
 		"generation_remote_finalizations" => Finalizations,
 		"generation_remote_dispatches" => Dispatches,
@@ -277,9 +283,17 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "agent_incidents"
 		| "agent_knowledge_images"
 		| "subnode_limits"
-		| "schedule_limits"
 		| "tenant_data_protection_history"
 		| "tenant_data_protection"
+		| "tenant_instructions"
+		| "tenant_execution_settings"
+		// A Node's Budget stays until a person removes it, and spend stays with
+		// the Tenant so purging a Node gives no money back (#1012); so does
+		// the lineage that carves a created Node's spend out of its creator's.
+		| "budgets"
+		| "budget_notices"
+		| "budget_spend"
+		| "budget_lineage"
 		| "agent_knowledge"
 		| "agent_plugin_copies"
 		| "agent_test_limits"

@@ -935,7 +935,7 @@ function EvaluationPanel({
               <Input
                 name="action"
                 required
-                defaultValue="workspace.read"
+                defaultValue="thread.read"
                 className="font-mono"
               />
             </Field>
@@ -943,7 +943,7 @@ function EvaluationPanel({
               <Input
                 name="kind"
                 required
-                defaultValue="workspace"
+                defaultValue="thread"
                 className="font-mono"
               />
             </Field>

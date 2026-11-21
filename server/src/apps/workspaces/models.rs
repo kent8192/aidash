@@ -10,8 +10,6 @@ mod channel_attachments;
 pub use channel_attachments::ChannelAttachment;
 mod channel_message_context;
 pub use channel_message_context::ChannelMessageContext;
-mod channel_threads;
-pub use channel_threads::ChannelThread;
 mod conversations;
 pub use conversations::Conversation;
 mod messages;
@@ -22,13 +20,16 @@ mod task_dependencies;
 pub use task_dependencies::TaskDependency;
 mod tasks;
 pub use tasks::Task;
-mod workspaces;
-pub use workspaces::Workspace;
+mod threads;
+pub use threads::Thread;
 
 pub mod states;
 
 mod scratch_spaces;
 pub use scratch_spaces::{ScratchSpace, ScratchSpaceMember, ScratchSpaceSettings};
 
-mod schedules;
-pub use schedules::{ScheduleLimitRecord, ScheduleRecord, ScheduleTickRecord};
+mod duties;
+pub use duties::{
+	DutyBookingRecord, DutyEventRecord, DutyRecord, DutyScriptRunRecord, DutyScriptVersionRecord,
+	DutyTickRecord, DutyTriggerRecord,
+};

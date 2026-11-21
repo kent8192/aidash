@@ -58,7 +58,7 @@ impl RemoteRunMessageFence {
 		let terminal = terminal(&task.status);
 		let now = database_time(tx).await?;
 		let delivered = Message::objects()
-			.filter(Message::field_workspace_id().eq(task.workspace_id))
+			.filter(Message::field_thread_id().eq(task.thread_id))
 			.filter(Message::field_idempotency_key().eq(Some(format!("{peer}:{task_id}:{key}"))))
 			.filter(Message::field_sender().eq(format!("human@{peer}")))
 			.filter(Message::field_content().eq(content))
@@ -179,7 +179,7 @@ impl RemoteRunMessageFence {
 		let task = locked_task(tx, task_id).await?;
 		for key in keys {
 			let delivered = Message::objects()
-				.filter(Message::field_workspace_id().eq(task.workspace_id))
+				.filter(Message::field_thread_id().eq(task.thread_id))
 				.filter(
 					Message::field_idempotency_key().eq(Some(format!("{peer}:{task_id}:{key}"))),
 				)

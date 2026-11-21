@@ -1,5 +1,5 @@
 //! Application route registration and identity boundaries.
-use super::views::management;
+use super::views::{duty_templates, management};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
@@ -36,6 +36,15 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(management::administration)
 			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::publication_access)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			// Duty templates (#1011 D4).
+			.endpoint(duty_templates::draft)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_templates::publish)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_templates::install)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_templates::update)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 	})
 }

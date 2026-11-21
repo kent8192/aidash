@@ -75,7 +75,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     const copy = COPY[locale];
     const { errors } = await setup(page, { subject: true, locale });
     const cursors: (string | null)[] = [];
-    await page.route("**/api/runs/*/inference/stream", (route) => {
+    await page.route("**/api/executions/*/inference/stream", (route) => {
       cursors.push(route.request().headers()["last-event-id"] ?? null);
       return route.fulfill({
         status: 200,
@@ -83,7 +83,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         body,
       });
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page.getByRole("button", { name: copy.history, exact: true }).click();
     await page
       .getByRole("dialog")
@@ -148,7 +148,7 @@ test("a pending attempt keeps streaming until its outcome after the Run ends", a
   });
   const cursors: (string | null)[] = [];
   let outcome = false;
-  await page.route("**/api/runs/*/inference/stream", (route) => {
+  await page.route("**/api/executions/*/inference/stream", (route) => {
     const cursor = route.request().headers()["last-event-id"] ?? null;
     cursors.push(cursor);
     const rows =
@@ -166,7 +166,7 @@ test("a pending attempt keeps streaming until its outcome after the Run ends", a
       body: [": keepalive\n\n", ...rows].join(""),
     });
   });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
@@ -205,28 +205,28 @@ test("subjects never subscribe to a foreign-home run's inference stream", async 
     locale: "en-US",
   });
   let streams = 0;
-  await page.route("**/api/runs/*/inference/stream", (route) => {
+  await page.route("**/api/executions/*/inference/stream", (route) => {
     streams += 1;
     return route.fulfill({
       status: 403,
       json: { error: { message: "denied" } },
     });
   });
-  await page.route("**/api/runs/run-0/management", (route) =>
+  await page.route("**/api/executions/run-0/management", (route) =>
     route.fulfill({
       json: { id: "run-0", phase: "THINKING", control: "RUNNING" },
     }),
   );
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
   // The Run is stored here but homed on another node.
   const stored = await page.evaluate(() =>
-    fetch("/api/runs/run-0").then((response) => response.json()),
+    fetch("/api/executions/run-0").then((response) => response.json()),
   );
   await page.route(
-    (url) => url.pathname === "/api/runs/run-0",
+    (url) => url.pathname === "/api/executions/run-0",
     (route) =>
       route.fulfill({
         json: {
@@ -269,11 +269,11 @@ for (const { label, home } of [
     });
     revokeAgents();
     let streams = 0;
-    await page.route("**/api/runs/*/inference/stream", (route) => {
+    await page.route("**/api/executions/*/inference/stream", (route) => {
       streams += 1;
       return route.abort();
     });
-    await page.goto("/collaboration?channel=workspace-one");
+    await page.goto("/collaboration?channel=thread-one");
     await page
       .getByRole("button", { name: "Execution history", exact: true })
       .click();

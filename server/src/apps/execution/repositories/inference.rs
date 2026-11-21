@@ -41,7 +41,7 @@ const STORAGE_MARGIN: usize = 64;
 pub(crate) struct RunTarget {
 	pub id: Uuid,
 	pub task_id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub node: String,
 	pub home_node: String,
 	pub control: String,
@@ -49,7 +49,7 @@ pub(crate) struct RunTarget {
 crate::native_record!(RunTarget {
 	id,
 	task_id,
-	workspace_id,
+	thread_id,
 	node,
 	home_node,
 	control
@@ -141,18 +141,8 @@ pub(crate) async fn target(executor: impl Executor, run: Uuid) -> Result<RunTarg
 	rows::<RunTarget>(
 		executor,
 		Query::select()
-			.columns(
-				[
-					"id",
-					"task_id",
-					"workspace_id",
-					"node",
-					"home_node",
-					"control",
-				]
-				.map(Alias::new),
-			)
-			.from(Alias::new("runs"))
+			.columns(["id", "task_id", "thread_id", "node", "home_node", "control"].map(Alias::new))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run))),
 	)
 	.await?
@@ -211,7 +201,11 @@ async fn insert_row(
 					.expr(Expr::value(kind))
 					.expr(Expr::value(item).cast_as("jsonb"))
 					.expr(Expr::current_timestamp())
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			),
 	)
@@ -230,17 +224,17 @@ async fn marker(
 	let mut data = json!({
 		"run_id": run.id,
 		"task_id": run.task_id,
-		"workspace_id": run.workspace_id,
+		"thread_id": run.thread_id,
 		"attempt_id": attempt,
 	});
 	if let Some(reason) = reason {
 		data["reason"] = json!(reason);
 	}
-	// The same workspace rule as the Run's own events keeps run-scoped visibility.
+	// The same thread rule as the Run's own events keeps run-scoped visibility.
 	event_records::append_run(
 		tx,
 		run.id,
-		run.is_local(node).then_some(run.workspace_id),
+		run.is_local(node).then_some(run.thread_id),
 		kind,
 		data,
 	)
@@ -323,13 +317,16 @@ pub(crate) async fn close_orphans(
 	let runs = rows::<OrphanedRun>(
 		&mut *tx,
 		Query::select()
-			.column((Alias::new("runs"), Alias::new("id")))
-			.from(Alias::new("runs"))
+			.column((Alias::new("task_executions"), Alias::new("id")))
+			.from(Alias::new("task_executions"))
 			.cond_where(
 				Condition::any()
-					.add(Expr::col((Alias::new("runs"), Alias::new("lease_until"))).is_null())
 					.add(
-						Expr::col((Alias::new("runs"), Alias::new("lease_until")))
+						Expr::col((Alias::new("task_executions"), Alias::new("lease_until")))
+							.is_null(),
+					)
+					.add(
+						Expr::col((Alias::new("task_executions"), Alias::new("lease_until")))
 							.lte(Expr::current_timestamp()),
 					),
 			)
@@ -339,7 +336,7 @@ pub(crate) async fn close_orphans(
 					.from(attempts.clone())
 					.and_where(
 						Expr::col((attempts.clone(), Alias::new("run_id")))
-							.equals((Alias::new("runs"), Alias::new("id"))),
+							.equals((Alias::new("task_executions"), Alias::new("id"))),
 					)
 					.and_where(Expr::col((attempts, Alias::new("outcome"))).is_null())
 					.to_owned(),
@@ -398,7 +395,11 @@ pub(crate) async fn start(
 					.expr(Expr::value(seq))
 					.expr(Expr::value(seq))
 					.expr(Expr::current_timestamp())
-					.expr(crate::database::scope::tenant_of("runs", "id", run))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run,
+					))
 					.to_owned(),
 			),
 	)

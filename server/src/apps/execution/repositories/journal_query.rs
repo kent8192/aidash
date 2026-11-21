@@ -47,7 +47,7 @@ async fn lock_active(access: &mut Access, run: Uuid) -> Result<()> {
 	let phase: Option<String> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("phase"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("control").eq("ACTIVE"))
 			.lock(LockType::Update)
@@ -528,7 +528,7 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 			let phase: Option<String> = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("phase"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(run)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -547,7 +547,7 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 			let phase: Option<String> = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("phase"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(run)))
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder),

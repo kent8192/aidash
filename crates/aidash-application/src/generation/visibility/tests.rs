@@ -17,7 +17,7 @@ struct Scope {
 	missing_task: bool,
 	task_visible: bool,
 	denied: BTreeSet<&'static str>,
-	workspace_failure: bool,
+	thread_failure: bool,
 	calls: Vec<String>,
 	decisions: Vec<Resource>,
 }
@@ -25,11 +25,11 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		inherited: false,
-		context: json!({"stale":"previous workspace"}),
+		context: json!({"stale":"previous thread"}),
 		missing_task: false,
 		task_visible: true,
 		denied: BTreeSet::new(),
-		workspace_failure: false,
+		thread_failure: false,
 		calls: vec![],
 		decisions: vec![],
 	}
@@ -58,23 +58,23 @@ impl GenerationVisibility for Scope {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.calls.push(format!("workspace:{id}"));
-		if self.workspace_failure {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.calls.push(format!("thread:{id}"));
+		if self.thread_failure {
 			return Err(crate::Error::External("authority unavailable".into()));
 		}
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			id: id.to_string(),
 			attributes: json!({"team":"research","policy_id":"untrusted context"}),
 		})
 	}
-	async fn task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
-		self.calls.push(format!("task:{id}:{workspace}"));
+	async fn task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
+		self.calls.push(format!("task:{id}:{thread}"));
 		Ok((!self.missing_task).then(|| Task {
 			id,
-			workspace_id: workspace,
+			thread_id: thread,
 			title: "Task".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
@@ -99,7 +99,7 @@ impl GenerationVisibility for Scope {
 }
 #[rstest]
 #[tokio::test]
-async fn local_request_rechecks_task_and_workspace_before_generation_disclosure(
+async fn local_request_rechecks_task_and_thread_before_generation_disclosure(
 	job: Request,
 	mut scope: Scope,
 ) {
@@ -108,11 +108,11 @@ async fn local_request_rechecks_task_and_workspace_before_generation_disclosure(
 		scope.calls,
 		vec![
 			"context".into(),
-			format!("workspace:{}", job.workspace_id),
-			format!("task:{}:{}", job.task_id, job.workspace_id),
+			format!("thread:{}", job.thread_id),
+			format!("task:{}:{}", job.task_id, job.thread_id),
 			format!("task_visible:{}", job.task_id),
 			"context".into(),
-			format!("decide:workspace.read:{}", job.workspace_id),
+			format!("decide:thread.read:{}", job.thread_id),
 			format!("decide:generation.read:{}", job.id)
 		]
 	);
@@ -130,14 +130,14 @@ async fn local_request_rechecks_task_and_workspace_before_generation_disclosure(
 #[rstest]
 #[case("missing_task", false)]
 #[case("task_visibility", false)]
-#[case("workspace.read", true)]
+#[case("thread.read", true)]
 #[case("generation.read", true)]
 #[tokio::test]
 async fn every_current_local_visibility_gate_can_block_a_saved_request(
 	job: Request,
 	mut scope: Scope,
 	#[case] gate: &'static str,
-	#[case] workspace_decided: bool,
+	#[case] thread_decided: bool,
 ) {
 	match gate {
 		"missing_task" => scope.missing_task = true,
@@ -151,8 +151,8 @@ async fn every_current_local_visibility_gate_can_block_a_saved_request(
 		scope
 			.calls
 			.iter()
-			.any(|call| call.starts_with("decide:workspace.read:")),
-		workspace_decided
+			.any(|call| call.starts_with("decide:thread.read:")),
+		thread_decided
 	);
 	if gate != "generation.read" {
 		assert!(
@@ -168,7 +168,7 @@ async fn every_current_local_visibility_gate_can_block_a_saved_request(
 /// leaves only the walk to other Nodes (`task_visible`) to the earlier check.
 #[rstest]
 #[case::task("task.read", 1)]
-#[case::workspace("workspace.read", 2)]
+#[case::thread("thread.read", 2)]
 #[case::generation("generation.read", 3)]
 #[tokio::test]
 async fn the_row_check_decides_locally_again_and_never_walks_other_nodes(
@@ -221,7 +221,7 @@ async fn foreign_request_requires_remote_task_and_generation_read_without_local_
 		!scope
 			.calls
 			.iter()
-			.any(|call| call.starts_with("workspace:") || call.starts_with("task:"))
+			.any(|call| call.starts_with("thread:") || call.starts_with("task:"))
 	);
 }
 #[rstest]
@@ -233,7 +233,7 @@ async fn inherited_worker_context_survives_foreign_generation_visibility(
 	job.home_node = "aidash://home".into();
 	job.foreign_intent = Some(serde_json::json!({}));
 	scope.inherited = true;
-	scope.context = json!({"workspace_id":job.workspace_id,"team":"leased"});
+	scope.context = json!({"thread_id":job.thread_id,"team":"leased"});
 	assert!(visible(&mut scope, &job).await.unwrap());
 	assert_eq!(
 		scope.calls,
@@ -250,7 +250,7 @@ async fn authority_lookup_failure_keeps_its_error_and_never_discloses_request(
 	job: Request,
 	mut scope: Scope,
 ) {
-	scope.workspace_failure = true;
+	scope.thread_failure = true;
 	assert!(
 		matches!(visible(&mut scope,&job).await,Err(crate::Error::External(message)) if message=="authority unavailable")
 	);
@@ -269,7 +269,7 @@ fn portable_request_omits_internal_foreign_intent_and_credential_from_json(mut j
 #[rstest]
 #[case("missing_task")]
 #[case("task_visibility")]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("generation.read")]
 #[tokio::test]
 async fn native_local_reader_keeps_local_task_authority_even_with_a_home_marker(
@@ -287,14 +287,10 @@ async fn native_local_reader_keeps_local_task_authority_even_with_a_home_marker(
 		}
 	}
 	assert!(!local_visible(&mut scope, &job).await.unwrap());
+	assert!(scope.calls.contains(&format!("thread:{}", job.thread_id)));
 	assert!(
 		scope
 			.calls
-			.contains(&format!("workspace:{}", job.workspace_id))
-	);
-	assert!(
-		scope
-			.calls
-			.contains(&format!("task:{}:{}", job.task_id, job.workspace_id))
+			.contains(&format!("task:{}:{}", job.task_id, job.thread_id))
 	);
 }

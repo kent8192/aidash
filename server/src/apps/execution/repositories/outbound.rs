@@ -167,7 +167,7 @@ impl OutboundScope for Scope<'_> {
 		let run = approvals::authorize(self.store, &mut self.access, &native(record)).await?;
 		Ok(AuthorizedRun {
 			id: run.id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 		})
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
@@ -187,7 +187,7 @@ impl OutboundScope for Scope<'_> {
 		self.store
 			.event(
 				&mut self.access.tx,
-				Some(run.workspace_id),
+				Some(run.thread_id),
 				"capability.outbound_completed",
 				json!({"operation_id":id,"run_id":run.id,"http_status":status}),
 			)

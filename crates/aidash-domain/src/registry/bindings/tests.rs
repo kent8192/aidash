@@ -191,6 +191,16 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	assert!(agent.normalize("aidash://node-a").is_err());
 }
 
+/// A saved `workspace_wait` 1.0.0 resolves as 1.1.0, which only adds inputs.
+fn with_current_wait(mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
+	for item in &mut bindings {
+		if item.binding.target.id == "aidash.workspace_wait" {
+			item.binding.target.version = "1.1.0".into();
+		}
+	}
+	bindings
+}
+
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
@@ -201,21 +211,22 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 		registry_deployment: "aidash://node-a".into(),
 		bindings: old.clone(),
 	});
-	assert_eq!(entry.normalized_bindings("aidash://node-a").unwrap(), old);
+	assert_eq!(
+		entry.normalized_bindings("aidash://node-a").unwrap(),
+		with_current_wait(old)
+	);
 	entry.version = "1.1.0".into();
 	entry.normalize_agent("aidash://node-a").unwrap();
+	// A new version binds today's defaults: the Thread tools (#1008).
 	let current = entry.normalized_bindings("aidash://node-a").unwrap();
 	assert!(
 		current
 			.iter()
-			.any(|b| b.binding.target.id == "aidash.workspace_search")
+			.any(|b| b.binding.target.id == "aidash.thread_search")
 	);
-	assert!(
-		current
-			.iter()
-			.any(|b| b.binding.target.id == "aidash.workspace_read"
-				&& b.binding.target.version == "1.1.0")
-	);
+	assert!(current.iter().any(
+		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.0.0"
+	));
 }
 
 #[test]
@@ -234,7 +245,10 @@ fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	current.binding_normalization = None;
 	current.normalize_agent(node).unwrap();
 	assert!(current.supports_thread_attachment_selection(node).unwrap());
-	assert_eq!(entry.normalized_bindings(node).unwrap(), old);
+	assert_eq!(
+		entry.normalized_bindings(node).unwrap(),
+		with_current_wait(old.clone())
+	);
 	assert!(
 		!old.iter()
 			.any(|binding| binding.binding.target.id == "aidash.attachment_copy")
@@ -675,7 +689,7 @@ fn structured_harness_contracts_require_the_native_projection_version() {
 fn unknown_harness_contract_versions_are_rejected() {
 	let mut input = serde_json::to_value(agent()).unwrap();
 	// structured@1 and structured@2 were removed by #532; nothing accepts them.
-	for contract in ["structured@1", "structured@2", "structured@4"] {
+	for contract in ["structured@1", "structured@2", "structured@5"] {
 		input["harness_contract"] = json!(contract);
 		assert!(serde_json::from_value::<AgentBindings>(input.clone()).is_err());
 	}
@@ -727,7 +741,7 @@ fn a_workbench_test_excludes_only_the_schedule_tools() {
 			version: "1.0.0".into(),
 		},
 		remote: false,
-		bindings: vec![bound("schedule_create"), bound("task_create")],
+		bindings: vec![bound("duty_create"), bound("task_create")],
 		definitions: vec![],
 		agent_plugins: vec![],
 	};
@@ -774,11 +788,12 @@ fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
 
 #[test]
 fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
-	// Arrange: today's defaults, schedule tools included, as stored before
-	// #745 moved file_read, file_search and attachment_copy to 1.0.1.
+	// Arrange: the defaults before #1008 (set 7), schedule tools included, as
+	// stored before #745 moved file_read, file_search and attachment_copy to
+	// 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();
-	let today = config.normalize(node).unwrap();
+	let today = config.normalize_mode(node, 7).unwrap();
 	let mut saved = today.clone();
 	for item in &mut saved {
 		if POD_FILE_TOOLS
@@ -818,10 +833,11 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 #[test]
 fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 	// Arrange: a normalization saved between image retrieval (#639) and
-	// Thread Attachment image search (#622 part 2), as it was stored then.
+	// Thread Attachment image search (#622 part 2), as it was stored then
+	// (the defaults before #1008, set 7).
 	let node = "aidash://node-a";
 	let config = agent();
-	let mut saved = config.normalize(node).unwrap();
+	let mut saved = config.normalize_mode(node, 7).unwrap();
 	for item in &mut saved {
 		match item.binding.target.id.as_str() {
 			"aidash.workspace_message" => item.binding.target.version = "1.0.1".into(),
@@ -863,7 +879,7 @@ fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 }
 
 #[test]
-fn an_agent_from_before_image_retrieval_binds_workspace_message_1_1_0() {
+fn an_agent_from_before_image_retrieval_binds_thread_message_1_1_0() {
 	// Arrange: the #640-era defaults (mode 2) with workspace_message 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();

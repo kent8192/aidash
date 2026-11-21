@@ -150,7 +150,7 @@ fn administrator_only() -> Error {
 	)
 }
 
-async fn readable(
+pub(crate) async fn readable(
 	access: &mut Access,
 	id: Uuid,
 	node: &str,
@@ -160,7 +160,7 @@ async fn readable(
 		aidash_server::database::query_as(
 			&Query::select()
 				.column(Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id=?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -172,8 +172,8 @@ async fn readable(
 	}
 	.ok_or(Error::Forbidden)?;
 	let run = raw.inspect();
-	let workspace = if run.is_local(node) {
-		access.workspace(run.workspace_id).await?
+	let thread = if run.is_local(node) {
+		access.thread(run.thread_id).await?
 	} else {
 		let tenant: Option<String> = {
 			let query_bind_1 = id;
@@ -200,13 +200,13 @@ async fn readable(
 			return Err(Error::Forbidden);
 		}
 		access.resource(
-			"workspace",
-			format!("{}/workspaces/{}", run.home_node, run.workspace_id),
+			"thread",
+			format!("{}/threads/{}", run.home_node, run.thread_id),
 			json!({}),
 		)
 	};
-	access.require(&workspace, "workspace.read").await?;
-	let resource = access.resource("run", id, workspace.attributes);
+	access.require(&thread, "thread.read").await?;
+	let resource = access.resource("run", id, thread.attributes);
 	Ok((run, resource))
 }
 

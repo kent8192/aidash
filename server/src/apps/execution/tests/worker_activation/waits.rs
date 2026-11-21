@@ -10,7 +10,7 @@ fn wait_router(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc<
 			async move {
 				let n = calls.fetch_add(1, Ordering::SeqCst);
 				let message = if n.is_multiple_of(2) {
-					json!({"role":"assistant","content":null,"tool_calls":[{"id":"wait","type":"function","function":{"name":"workspace_wait","arguments":json!({"seconds":if n == 6 {5} else {300}}).to_string()}}]})
+					json!({"role":"assistant","content":null,"tool_calls":[{"id":"wait","type":"function","function":{"name":"task_wait","arguments":json!({"seconds":if n == 6 {5} else {300}}).to_string()}}]})
 				} else { json!({"role":"assistant","content":"Awake"}) };
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if n.is_multiple_of(2) {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
@@ -22,7 +22,7 @@ async fn waiting(f: &Federation, run: Uuid) {
 	let start = Instant::now();
 	loop {
 		let current = f.store.run(&TEST_FIXTURE, run).await.unwrap();
-		if matches!(current.state, aidash_server::domain::RunState::Waiting(ref w) if matches!(w.as_ref(), aidash_server::domain::WaitingState::Workspace { .. }))
+		if matches!(current.state, aidash_server::domain::RunState::Waiting(ref w) if matches!(w.as_ref(), aidash_server::domain::WaitingState::TaskWait { .. }))
 		{
 			return;
 		}
@@ -37,7 +37,7 @@ async fn waiting(f: &Federation, run: Uuid) {
 
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn workspace_wait_wakes_for_child_input_and_resume(
+async fn thread_wait_wakes_for_child_input_and_resume(
 	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 	#[from(wait_router)]
@@ -78,7 +78,7 @@ async fn workspace_wait_wakes_for_child_input_and_resume(
 			post_json(
 				&f,
 				&token,
-				&format!("/api/runs/{run}/message"),
+				&format!("/api/executions/{run}/message"),
 				json!({"content":"New instruction","idempotency_key":Uuid::new_v4()}),
 			)
 			.await;
@@ -86,7 +86,7 @@ async fn workspace_wait_wakes_for_child_input_and_resume(
 			let child = post_json(
 				&f,
 				&token,
-				&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+				&format!("/api/threads/{}/tasks", parent.thread_id),
 				json!({"title":"Child","description":"Wait fixture","parent_id":task}),
 			)
 			.await;
@@ -105,7 +105,7 @@ async fn workspace_wait_wakes_for_child_input_and_resume(
 				"starting a child must not wake the parent"
 			);
 			if scenario == "paused" {
-				sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+				sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 					.bind(run)
 					.execute(db)
 					.await
@@ -123,7 +123,7 @@ async fn workspace_wait_wakes_for_child_input_and_resume(
 					before,
 					"paused Run must remain asleep"
 				);
-				sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+				sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 					.bind(run)
 					.execute(db)
 					.await

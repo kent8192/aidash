@@ -45,8 +45,13 @@ pub struct Selection {
 pub struct ModelFileSelection {
 	pub file_id: Uuid,
 	pub expected_digest: String,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub workspace_id: Option<Uuid>,
+	/// Saved as `workspace_id` in a Run's `pending` before #1008.
+	#[serde(
+		default,
+		skip_serializing_if = "Option::is_none",
+		alias = "workspace_id"
+	)]
+	pub thread_id: Option<Uuid>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub area_id: Option<Uuid>,
 }
@@ -80,7 +85,7 @@ impl ModelMedia {
 	}
 }
 
-/// A current Workspace image selected by its Area and immutable File version.
+/// A current Thread image selected by its Area and immutable File version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkingImageSelection {
@@ -115,7 +120,7 @@ pub fn selected_attachment(
 		let crate::context::ContextEvent::Tool { call, result } = &entry.event else {
 			return None;
 		};
-		if call.name != "workspace_read"
+		if !crate::tool::thread_tools::is(&call.name, "thread_read")
 			|| call.arguments["kind"] != "attachment"
 			|| call.arguments["representation"] != "model_input"
 			|| result["status"] != "completed"

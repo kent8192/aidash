@@ -4,7 +4,7 @@ use aidash_domain::{
 	RunControl, RunPhase,
 	identity::{tenancy, tenant_administration as admin},
 	policy::{Decision, Effect, Policy, ResourceSelector, SubjectSelector},
-	subnodes::{Member, State, SubnodeId, SubnodeLimits},
+	subnodes::{Member, State, SubnodeId},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -15,7 +15,7 @@ fn run() -> RunMetadata {
 	RunMetadata {
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "creator".into(),
@@ -55,9 +55,6 @@ struct Scope {
 	decisions: Vec<(Evaluation, Decision)>,
 	inserted: usize,
 	member_required: Allowance,
-	nested: bool,
-	active: usize,
-	limits: SubnodeLimits,
 }
 fn scope() -> Scope {
 	let run = run();
@@ -80,9 +77,6 @@ fn scope() -> Scope {
 		decisions: vec![],
 		inserted: 0,
 		member_required: Allowance::default(),
-		nested: false,
-		active: 0,
-		limits: SubnodeLimits::default(),
 	}
 }
 impl Scope {
@@ -135,17 +129,8 @@ impl CreateScope for Scope {
 			attributes: json!({}),
 		})
 	}
-	async fn workspace_is_subnode(&mut self, _: Uuid) -> Result<bool> {
-		Ok(self.nested)
-	}
 	async fn replay(&mut self, _: &RunMetadata, _: &str, _: &Create) -> Result<Option<Subnode>> {
 		Ok(None)
-	}
-	async fn limits(&mut self) -> Result<SubnodeLimits> {
-		Ok(self.limits)
-	}
-	async fn active_count(&mut self, _: Uuid) -> Result<usize> {
-		Ok(self.active)
 	}
 	async fn creator_authority(&mut self, _: &RunMetadata) -> Result<Allowance> {
 		Ok(Allowance::default())
@@ -178,7 +163,7 @@ impl CreateScope for Scope {
 				})
 				.collect(),
 			allowance: input.allowance.clone(),
-			workspace_id: Uuid::from_u128(5),
+			thread_id: Uuid::from_u128(5),
 			title: input.title.clone(),
 			state: State::Active,
 			created_at: now,
@@ -188,19 +173,15 @@ impl CreateScope for Scope {
 	}
 }
 
+/// Creating a Subnode is an ordinary member action (#1012, ADR 0143): an
+/// approved agent in the members group needs no named grant.
 #[tokio::test]
-async fn creator_agent_needs_an_explicit_grant_but_the_root_does_not() {
+async fn a_member_agent_creates_a_subnode_without_a_named_grant() {
 	let mut scope = scope();
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Forbidden)
-	));
-	assert_eq!(scope.inserted, 0);
-	scope.grant();
 	let created = create(&mut scope, &run(), "key", &input()).await.unwrap();
 	assert_eq!(created.creator_run_id, run().id);
 	assert_eq!(scope.inserted, 1);
-	assert_eq!(scope.decisions.len(), 2);
+	assert_eq!(scope.decisions.len(), 1);
 	assert!(
 		scope
 			.decisions
@@ -210,21 +191,11 @@ async fn creator_agent_needs_an_explicit_grant_but_the_root_does_not() {
 }
 
 #[tokio::test]
-async fn creation_refuses_nested_over_limit_and_uncovered_members_but_admits_the_creator_agent() {
+async fn creation_refuses_uncovered_members_but_admits_the_creator_agent() {
+	// Nesting and the number of Subnodes are not limited (#1012, ADR 0143), and a
+	// remote Run's consent comes from the Federation tool lists (ADR 0139).
 	let mut scope = scope();
 	scope.grant();
-	scope.nested = true;
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Refused(_))
-	));
-	scope.nested = false;
-	scope.active = 3;
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Refused(_))
-	));
-	scope.active = 0;
 	scope.member_required.tools.insert("private@1".into());
 	assert!(
 		matches!(create(&mut scope, &run(), "key", &input()).await, Err(Error::Refused(message)) if message.contains("private@1"))
@@ -243,16 +214,6 @@ async fn creation_refuses_nested_over_limit_and_uncovered_members_but_admits_the
 			.iter()
 			.any(|member| member.agent_id == run().agent_id)
 	);
-}
-
-#[tokio::test]
-async fn a_remote_grant_run_needs_no_tenant_setting_to_create() {
-	// The Federation tool lists decide before create runs; the removed Tenant setting is ignored.
-	let mut scope = scope();
-	scope.grant();
-	scope.limits.remote_runs_may_create = false;
-	create(&mut scope, &run(), "key", &input()).await.unwrap();
-	assert_eq!(scope.inserted, 1);
 }
 
 fn list(patterns: &[&str]) -> aidash_domain::federation::tool_lists::ToolList {
@@ -337,6 +298,8 @@ struct Management {
 	member_required: Allowance,
 	has_work: bool,
 	effects: Vec<&'static str>,
+	/// The Root Task of each Task the fake knows.
+	flows: std::collections::BTreeMap<Uuid, Uuid>,
 }
 impl Management {
 	fn new() -> Self {
@@ -361,7 +324,7 @@ impl Management {
 					added_at: now,
 				}],
 				allowance: Allowance::default(),
-				workspace_id: Uuid::from_u128(5),
+				thread_id: Uuid::from_u128(5),
 				title: None,
 				state: State::Active,
 				created_at: now,
@@ -371,16 +334,23 @@ impl Management {
 			member_required: Allowance::default(),
 			has_work: false,
 			effects: vec![],
+			flows: Default::default(),
 		}
 	}
 }
 #[async_trait]
 impl crate::ports::subnodes::ManageScope for Management {
+	async fn flow_roots(
+		&mut self,
+		tasks: &[Uuid],
+	) -> Result<std::collections::BTreeMap<Uuid, Uuid>> {
+		Ok(tasks
+			.iter()
+			.filter_map(|task| Some((*task, *self.flows.get(task)?)))
+			.collect())
+	}
 	async fn lock(&mut self, id: SubnodeId) -> Result<Option<Subnode>> {
 		Ok((id == self.subnode.id).then(|| self.subnode.clone()))
-	}
-	async fn limits(&mut self, _: &str) -> Result<SubnodeLimits> {
-		Ok(SubnodeLimits::default())
 	}
 	async fn creator_authority(&mut self, subnode: &Subnode) -> Result<Allowance> {
 		Ok(subnode.allowance.clone())
@@ -432,7 +402,7 @@ async fn management_requires_creator_or_member_and_preserves_leader() {
 	let id = scope.subnode.id;
 	let mut member = run();
 	member.id = Uuid::from_u128(9);
-	member.workspace_id = scope.subnode.workspace_id;
+	member.thread_id = scope.subnode.thread_id;
 	member.agent_id = "leader".into();
 	let mut outsider = member.clone();
 	outsider.agent_id = "outsider".into();
@@ -480,6 +450,30 @@ async fn addition_refuses_an_uncovered_binding_and_dissolution_requires_creator(
 	assert_eq!(scope.effects, ["dissolve"]);
 }
 
+/// The creating Agent deletes its Subnode from another Run of the same flow,
+/// but not from a flow of the same person that did not create it (#1012
+/// decision 46).
+#[rstest::rstest]
+#[case::same_flow(Uuid::from_u128(2), true)]
+#[case::another_flow_of_the_same_person(Uuid::from_u128(77), false)]
+#[tokio::test]
+async fn only_the_creating_flow_deletes_a_subnode(#[case] flow: Uuid, #[case] allowed: bool) {
+	// Arrange: a later Run of the creating Agent, on Task 21, whose flow is
+	// `flow`; the creating Run's Task 2 is its own Root Task.
+	let mut scope = Management::new();
+	let id = scope.subnode.id;
+	let mut later = run();
+	later.id = Uuid::from_u128(20);
+	later.task_id = Uuid::from_u128(21);
+	scope.flows.insert(Uuid::from_u128(2), Uuid::from_u128(2));
+	scope.flows.insert(later.task_id, flow);
+	// Act
+	let result = dissolve(&mut scope, &later, id).await;
+	// Assert
+	assert_eq!(result.is_ok(), allowed, "{result:?}");
+	assert_eq!(scope.effects.len(), usize::from(allowed));
+}
+
 #[derive(Default)]
 struct Ending {
 	marks: Vec<subnodes::EndReason>,
@@ -487,8 +481,12 @@ struct Ending {
 }
 #[async_trait]
 impl crate::ports::subnodes::EndScope for Ending {
-	async fn active_subnodes(&mut self, _: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
-		Ok(vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))])
+	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+		Ok(if creator == run().id {
+			vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))]
+		} else {
+			vec![]
+		})
 	}
 	async fn mark_ended(
 		&mut self,
@@ -499,8 +497,8 @@ impl crate::ports::subnodes::EndScope for Ending {
 		self.marks.push(reason);
 		Ok(())
 	}
-	async fn active_runs(&mut self, _: Uuid) -> Result<Vec<Uuid>> {
-		Ok(vec![Uuid::from_u128(8), Uuid::from_u128(9)])
+	async fn member_runs(&mut self, _: Uuid, _: bool) -> Result<Vec<(Uuid, bool)>> {
+		Ok(vec![(Uuid::from_u128(8), true), (Uuid::from_u128(9), true)])
 	}
 	async fn control_run(
 		&mut self,
@@ -560,17 +558,25 @@ struct Logged {
 }
 #[async_trait]
 impl crate::ports::subnodes::EndScope for Logged {
-	async fn active_subnodes(&mut self, _: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
 		self.calls.push("subnodes");
-		Ok(vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))])
+		let thread = if creator == run().id { 5 } else { 6 };
+		Ok(vec![(
+			SubnodeId(Uuid::from_u128(thread + 10)),
+			Uuid::from_u128(thread),
+		)])
 	}
 	async fn mark_ended(&mut self, _: SubnodeId, _: Uuid, _: subnodes::EndReason) -> Result<()> {
 		self.calls.push("mark_ended");
 		Ok(())
 	}
-	async fn active_runs(&mut self, _: Uuid) -> Result<Vec<Uuid>> {
+	async fn member_runs(&mut self, thread: Uuid, _: bool) -> Result<Vec<(Uuid, bool)>> {
 		self.calls.push("runs");
-		Ok(vec![Uuid::from_u128(8)])
+		Ok(if thread == Uuid::from_u128(5) {
+			vec![(Uuid::from_u128(8), true)]
+		} else {
+			vec![(run().id, true)]
+		})
 	}
 	async fn control_run(
 		&mut self,
@@ -583,7 +589,7 @@ impl crate::ports::subnodes::EndScope for Logged {
 	}
 }
 #[tokio::test]
-async fn an_end_locks_subnodes_then_runs_before_it_marks_anything_ended() {
+async fn an_end_locks_nested_subnodes_before_any_effect_and_visits_a_cycle_once() {
 	use aidash_domain::{ControlSource, RunControlAction};
 	let mut scope = Logged::default();
 	control_for_creator(
@@ -595,13 +601,21 @@ async fn an_end_locks_subnodes_then_runs_before_it_marks_anything_ended() {
 	)
 	.await
 	.unwrap();
-	let first_mark = scope.calls.iter().position(|call| *call == "mark_ended");
-	let first_runs = scope.calls.iter().position(|call| *call == "runs");
-	assert!(first_runs < first_mark, "{:?}", scope.calls);
-	assert_eq!(scope.calls[..2], ["subnodes", "runs"]);
+	assert_eq!(
+		scope.calls,
+		[
+			"subnodes",
+			"runs",
+			"subnodes",
+			"runs",
+			"mark_ended",
+			"mark_ended",
+			"control_run"
+		]
+	);
 	let mut locking = Logged::default();
 	lock_end(&mut locking, run().id).await.unwrap();
-	assert_eq!(locking.calls, ["subnodes", "runs"]);
+	assert_eq!(locking.calls, ["subnodes", "runs", "subnodes", "runs"]);
 }
 
 #[tokio::test]
@@ -611,4 +625,123 @@ async fn creator_agent_can_be_added_as_member() {
 	let creator = scope.subnode.creator_agent.clone();
 	add_member(&mut scope, &run(), id, &creator).await.unwrap();
 	assert_eq!(scope.effects, ["add"]);
+}
+
+/// A creating Run whose Agent version stands as the Tenant says (#1012).
+struct Removal {
+	ending: Ending,
+	creator: Option<(EntityRef, String)>,
+	catalog: Option<bool>,
+	subject: Option<bool>,
+	asked: Vec<String>,
+}
+impl Removal {
+	fn new(catalog: Option<bool>, subject: Option<bool>) -> Self {
+		Self {
+			ending: Ending::default(),
+			creator: Some((
+				EntityRef {
+					id: "creator".into(),
+					version: "1".into(),
+				},
+				"aidash://local/brave-otter-k3m9q2xa".into(),
+			)),
+			catalog,
+			subject,
+			asked: vec![],
+		}
+	}
+}
+#[async_trait]
+impl crate::ports::subnodes::EndScope for Removal {
+	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+		self.ending.active_subnodes(creator).await
+	}
+	async fn mark_ended(
+		&mut self,
+		id: SubnodeId,
+		thread: Uuid,
+		reason: subnodes::EndReason,
+	) -> Result<()> {
+		self.ending.mark_ended(id, thread, reason).await
+	}
+	async fn member_runs(&mut self, thread: Uuid, resuming: bool) -> Result<Vec<(Uuid, bool)>> {
+		self.ending.member_runs(thread, resuming).await
+	}
+	async fn control_run(
+		&mut self,
+		run: Uuid,
+		action: aidash_domain::RunControlAction,
+		source: aidash_domain::ControlSource,
+	) -> Result<()> {
+		assert_eq!(source, aidash_domain::ControlSource::Tenant);
+		self.ending.control_run(run, action, source).await
+	}
+}
+#[async_trait]
+impl crate::ports::subnodes::CreatorRemovalScope for Removal {
+	async fn lock_creator(&mut self, creator: Uuid) -> Result<Option<(EntityRef, String)>> {
+		assert_eq!(creator, run().id);
+		Ok(self.creator.clone())
+	}
+	async fn catalog_enabled(&mut self, node: &str, agent: &EntityRef) -> Result<Option<bool>> {
+		self.asked
+			.push(format!("catalog {node} {}@{}", agent.id, agent.version));
+		Ok(self.catalog)
+	}
+	async fn subject_enabled(&mut self, subject: &str) -> Result<Option<bool>> {
+		self.asked.push(format!("subject {subject}"));
+		Ok(self.subject)
+	}
+}
+
+#[rstest::rstest]
+#[case::approval_withdrawn(Some(false), Some(true), true)]
+#[case::subject_disabled(Some(true), Some(false), true)]
+#[case::still_usable(Some(true), Some(true), false)]
+#[case::no_approval_row(None, Some(true), false)]
+#[case::absent_from_policy_and_catalog(None, None, false)]
+#[tokio::test]
+async fn a_disabled_creator_deletes_its_subnodes_and_an_absent_one_does_not(
+	#[case] catalog: Option<bool>,
+	#[case] subject: Option<bool>,
+	#[case] removed: bool,
+) {
+	use aidash_domain::RunControlAction;
+	let mut scope = Removal::new(catalog, subject);
+	let ended = end_if_creator_removed(&mut scope, run().id).await.unwrap();
+	assert_eq!(ended, removed);
+	// Both facts are read on the creator's own Node, for its exact version.
+	assert_eq!(
+		scope.asked,
+		[
+			"catalog aidash://local/brave-otter-k3m9q2xa creator@1",
+			"subject aidash://local/brave-otter-k3m9q2xa/agents/creator@1"
+		]
+	);
+	if removed {
+		assert_eq!(
+			scope.ending.marks,
+			[subnodes::EndReason::CreatorAgentRemoved]
+		);
+		assert_eq!(
+			scope.ending.controls,
+			[
+				(Uuid::from_u128(8), RunControlAction::Cancel),
+				(Uuid::from_u128(9), RunControlAction::Cancel)
+			]
+		);
+	} else {
+		assert!(scope.ending.marks.is_empty());
+		assert!(scope.ending.controls.is_empty());
+	}
+}
+
+#[tokio::test]
+async fn a_creator_without_active_subnodes_reads_nothing_more() {
+	let mut scope = Removal::new(Some(false), Some(false));
+	scope.creator = None;
+	assert!(!end_if_creator_removed(&mut scope, run().id).await.unwrap());
+	assert!(scope.asked.is_empty());
+	assert!(scope.ending.marks.is_empty());
 }

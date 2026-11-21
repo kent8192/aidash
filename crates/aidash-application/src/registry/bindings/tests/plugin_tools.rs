@@ -44,7 +44,7 @@ async fn pinned_plugin_tools_are_offered_beside_the_bindings_with_their_specific
 
 	let tools = resolver(Some(sessions)).tools(&run).await.unwrap();
 
-	assert!(tools.contains_key("workspace_read"));
+	assert!(tools.contains_key("thread_read"));
 	let search = &tools["acme__docs__search"];
 	assert_eq!(
 		json!(search.specification()),
@@ -66,7 +66,7 @@ async fn without_sessions_no_plugin_tool_is_offered() {
 
 	let tools = resolver(None).tools(&run).await.unwrap();
 
-	assert!(tools.contains_key("workspace_read"));
+	assert!(tools.contains_key("thread_read"));
 	assert!(!tools.keys().any(|alias| alias.starts_with("acme__")));
 }
 
@@ -83,7 +83,7 @@ async fn a_run_that_has_not_pinned_yet_offers_no_plugin_tool() {
 #[tokio::test]
 async fn a_plugin_tool_never_replaces_the_tool_of_a_binding() {
 	let (mut run, sessions) = pinned_run().await;
-	run.context.plugin_tools.as_mut().unwrap().servers[0].tools[0].alias = "workspace_read".into();
+	run.context.plugin_tools.as_mut().unwrap().servers[0].tools[0].alias = "thread_read".into();
 
 	let result = resolver(Some(sessions)).tools(&run).await;
 

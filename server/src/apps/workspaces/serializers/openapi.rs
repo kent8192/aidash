@@ -8,67 +8,77 @@ use crate::apps::workspaces::serializers::channels::ChannelHistoryQuery;
 use crate::apps::workspaces::serializers::channels::ChannelMessage;
 use crate::apps::workspaces::serializers::channels::ChannelMessageInput;
 use crate::apps::workspaces::serializers::channels::ChannelMessagePage;
-use crate::apps::workspaces::serializers::channels::ChannelThread;
-use crate::apps::workspaces::serializers::channels::ChannelThreadInput;
 use crate::apps::workspaces::serializers::entities::NewTask;
 use crate::apps::workspaces::serializers::entities::Task;
-use crate::apps::workspaces::serializers::entities::Workspace;
-use crate::apps::workspaces::serializers::entities::WorkspaceSnapshot;
+use crate::apps::workspaces::serializers::entities::Thread;
+use crate::apps::workspaces::serializers::entities::ThreadSnapshot;
 use crate::apps::workspaces::serializers::management::AbandonInput;
-use crate::apps::workspaces::serializers::management::ConversationInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
-use crate::apps::workspaces::serializers::management::StateInput;
-use crate::apps::workspaces::serializers::management::WorkspaceInput;
+use crate::apps::workspaces::serializers::management::ThreadInput;
+use crate::apps::workspaces::serializers::management::TitleInput;
 use crate::apps::workspaces::serializers::scratch::{
 	ScratchCreate, ScratchLimits, ScratchList, ScratchMember, ScratchView,
 };
-use crate::apps::workspaces::serializers::tasks::ConversationResponse;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::{Result, config::openapi::Contracts};
 use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
-	// Schedules (#557).
+	// Duties (#1011, from the Schedules of #557).
 	{
-		use super::schedules::{
-			DeletedView, DetailView, LimitsView, NoticesView, RunNowView, ScheduleListQuery,
-			ScheduleView, SuccessorInput,
+		use super::duties::{
+			DeletedView, DetailView, DutyListQuery, DutyView, NoticesView, RunNowView,
+			SuccessorInput,
 		};
-		use aidash_domain::schedules::{Definition, Limits, Patch};
+		use aidash_domain::duties::{Definition, Patch};
 		let json = "application/json";
-		contracts.path(document, views::schedules::workspace_list, &["Uuid"])?;
-		contracts.response::<_, Vec<ScheduleView>>(
-			document,
-			views::schedules::workspace_list,
-			200,
-			json,
-		)?;
-		contracts.path(document, views::schedules::create, &["Uuid"])?;
-		contracts.request::<_, Definition>(document, views::schedules::create)?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::create, 200, json)?;
-		contracts.query::<_, ScheduleListQuery>(document, views::schedules::list)?;
-		contracts.response::<_, Vec<ScheduleView>>(document, views::schedules::list, 200, json)?;
-		contracts.response::<_, NoticesView>(document, views::schedules::notices, 200, json)?;
-		contracts.response::<_, LimitsView>(document, views::schedules::limits, 200, json)?;
-		contracts.request::<_, Limits>(document, views::schedules::set_limits)?;
-		contracts.response::<_, LimitsView>(document, views::schedules::set_limits, 200, json)?;
-		contracts.path(document, views::schedules::read, &["Uuid"])?;
-		contracts.response::<_, DetailView>(document, views::schedules::read, 200, json)?;
-		contracts.path(document, views::schedules::update, &["Uuid"])?;
-		contracts.request::<_, Patch>(document, views::schedules::update)?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::update, 200, json)?;
-		contracts.path(document, views::schedules::pause, &["Uuid"])?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::pause, 200, json)?;
-		contracts.path(document, views::schedules::resume, &["Uuid"])?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::resume, 200, json)?;
-		contracts.path(document, views::schedules::successor, &["Uuid"])?;
-		contracts.request::<_, SuccessorInput>(document, views::schedules::successor)?;
-		contracts.response::<_, ScheduleView>(document, views::schedules::successor, 200, json)?;
-		contracts.path(document, views::schedules::run_now, &["Uuid"])?;
-		contracts.response::<_, RunNowView>(document, views::schedules::run_now, 200, json)?;
-		contracts.path(document, views::schedules::remove, &["Uuid"])?;
-		contracts.response::<_, DeletedView>(document, views::schedules::remove, 200, json)?;
+		contracts.path(document, views::duties::thread_list, &["Uuid"])?;
+		contracts.response::<_, Vec<DutyView>>(document, views::duties::thread_list, 200, json)?;
+		contracts.path(document, views::duties::create, &["Uuid"])?;
+		contracts.request::<_, Definition>(document, views::duties::create)?;
+		contracts.response::<_, DutyView>(document, views::duties::create, 200, json)?;
+		contracts.query::<_, DutyListQuery>(document, views::duties::list)?;
+		contracts.response::<_, Vec<DutyView>>(document, views::duties::list, 200, json)?;
+		contracts.response::<_, NoticesView>(document, views::duties::notices, 200, json)?;
+		contracts.path(document, views::duties::read, &["Uuid"])?;
+		contracts.response::<_, DetailView>(document, views::duties::read, 200, json)?;
+		contracts.path(document, views::duties::update, &["Uuid"])?;
+		contracts.request::<_, Patch>(document, views::duties::update)?;
+		contracts.response::<_, DutyView>(document, views::duties::update, 200, json)?;
+		contracts.path(document, views::duties::pause, &["Uuid"])?;
+		contracts.response::<_, DutyView>(document, views::duties::pause, 200, json)?;
+		contracts.path(document, views::duties::resume, &["Uuid"])?;
+		contracts.response::<_, DutyView>(document, views::duties::resume, 200, json)?;
+		contracts.path(document, views::duties::successor, &["Uuid"])?;
+		contracts.request::<_, SuccessorInput>(document, views::duties::successor)?;
+		contracts.response::<_, DutyView>(document, views::duties::successor, 200, json)?;
+		contracts.path(document, views::duties::run_now, &["Uuid"])?;
+		contracts.response::<_, RunNowView>(document, views::duties::run_now, 200, json)?;
+		contracts.path(document, views::duties::remove, &["Uuid"])?;
+		contracts.response::<_, DeletedView>(document, views::duties::remove, 200, json)?;
+	}
+	// Duty Triggers and events (#1011).
+	{
+		use super::duties::{DeletedView, DutyEventReceipt};
+		use crate::apps::workspaces::services::duty_events::TriggerView;
+		use aidash_domain::duties::events::{DutyEvent, TriggerKind};
+		use views::duty_events as view;
+		let json = "application/json";
+		contracts.path(document, view::list, &["Uuid"])?;
+		contracts.response::<_, Vec<TriggerView>>(document, view::list, 200, json)?;
+		contracts.path(document, view::create, &["Uuid"])?;
+		contracts.request::<_, TriggerKind>(document, view::create)?;
+		contracts.response::<_, TriggerView>(document, view::create, 200, json)?;
+		contracts.path(document, view::remove, &["Uuid", "Uuid"])?;
+		contracts.response::<_, DeletedView>(document, view::remove, 200, json)?;
+		contracts.path(document, view::events, &["Uuid"])?;
+		contracts.response::<_, Vec<DutyEvent>>(document, view::events, 200, json)?;
+		contracts.path(document, view::webhook, &["Uuid"])?;
+		contracts.response::<_, DutyEventReceipt>(document, view::webhook, 200, json)?;
+		// Another Node's event for a `node_event` trigger (#1013).
+		contracts.request::<_, super::duties::NodeEventInput>(document, view::node_event)?;
+		contracts.response::<_, DutyEventReceipt>(document, view::node_event, 200, json)?;
 	}
 	contracts.request::<_, ScratchCreate>(document, views::scratch::create)?;
 	contracts.response::<_, ScratchView>(
@@ -144,28 +154,28 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.query::<_, PageQuery>(document, views::management::task_list)?;
-	contracts.response::<_, Workspace>(
+	contracts.response::<_, aidash_domain::threads::ThreadOpened>(
 		document,
-		views::management::workspace_create,
+		views::management::thread_create,
 		200,
 		"application/json",
 	)?;
-	contracts.request::<_, WorkspaceInput>(document, views::management::workspace_create)?;
-	contracts.response::<_, WorkspaceSnapshot>(
+	contracts.request::<_, ThreadInput>(document, views::management::thread_create)?;
+	contracts.response::<_, ThreadSnapshot>(
 		document,
-		views::management::workspace_get,
+		views::management::thread_get,
 		200,
 		"application/json",
 	)?;
-	contracts.path(document, views::management::workspace_get, &["Uuid"])?;
-	contracts.response::<_, Workspace>(
+	contracts.path(document, views::management::thread_get, &["Uuid"])?;
+	contracts.response::<_, Thread>(
 		document,
-		views::management::workspace_update,
+		views::management::thread_update,
 		200,
 		"application/json",
 	)?;
-	contracts.request::<_, StateInput>(document, views::management::workspace_update)?;
-	contracts.path(document, views::management::workspace_update, &["Uuid"])?;
+	contracts.request::<_, TitleInput>(document, views::management::thread_update)?;
+	contracts.path(document, views::management::thread_update, &["Uuid"])?;
 	contracts.response::<_, Task>(
 		document,
 		views::management::task_create,
@@ -190,21 +200,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, AbandonInput>(document, views::management::task_abandon)?;
 	contracts.path(document, views::management::task_abandon, &["Uuid"])?;
-	contracts.response::<_, ConversationResponse>(
-		document,
-		views::management::conversation_create,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, ConversationInput>(document, views::management::conversation_create)?;
-	contracts.response::<_, ChannelThread>(
-		document,
-		views::channels::channel_thread_create,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, ChannelThreadInput>(document, views::channels::channel_thread_create)?;
-	contracts.path(document, views::channels::channel_thread_create, &["Uuid"])?;
 	contracts.response::<_, ChannelMessage>(
 		document,
 		views::channels::channel_message_create,

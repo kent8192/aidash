@@ -133,7 +133,7 @@ container id and network policy. The remote container is created lazily by
 OpenRouter, and later sends and worker recovery reuse the durable pin. The
 network policy defaults to `disabled`; a Binding may instead pin at most 32
 exact lowercase hostnames. Wildcards, unrestricted egress, local/native engines,
-caller-selected container ids and attached workspace files are refused. The
+caller-selected container ids and attached thread files are refused. The
 policy cannot change during a Run. Ended Runs cannot initiate another shell send.
 
 **Aidash does not delete containers.** OpenRouter exposes no container deletion
@@ -172,7 +172,7 @@ to the Run's signed shell container.
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bash`, including `engine: openrouter` | Messages-only; Aidash does not implement that transport. Client-side bash is also outside the Provider tool execution boundary.                                                                       |
 | `apply_patch`                          | OpenRouter validates a patch but requires the client to execute it and return a result. There is no provider-owned patch executor to bind here.                                                       |
-| `files`                                | API-key-wide workspace access, indefinite storage and no configurable per-call file count, size or path limits; mandatory Binding bounds cannot be guaranteed.                                        |
+| `files`                                | API-key-wide thread access, indefinite storage and no configurable per-call file count, size or path limits; mandatory Binding bounds cannot be guaranteed.                                           |
 | `image_generation`                     | The documented tool has no enforceable image-count parameter; size/options depend on the chosen image model. A bounded image contract is needed before adding it. The outer broker remains text-only. |
 
 Registry migration `0062_provider_warning_tools` extends the previous closed union

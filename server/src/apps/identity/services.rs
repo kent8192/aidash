@@ -43,17 +43,25 @@ pub mod tenants;
 pub mod node_purge;
 pub mod remote_renewal;
 
+pub mod budgets;
+pub(crate) mod creator_removal;
 pub(crate) mod data_protection;
+pub(crate) mod execution_settings;
+pub(crate) mod flows;
 pub(crate) mod manual_keys;
 pub(crate) mod memory_scope;
 pub mod oauth_clients;
+pub(crate) mod org_chart;
+pub(crate) mod standing_instructions;
 
 pub mod oauth_connections;
 
 pub(crate) mod data_protection_backfill;
+pub(crate) mod duty_actions_backfill;
+pub(crate) mod duty_policy_backfill;
 pub(crate) mod package_index_approvals;
 pub(crate) mod research_approval_cleanup;
-pub(crate) mod schedule_policy_backfill;
 pub(crate) mod scratch_policy_backfill;
+pub(crate) mod thread_policy_backfill;
 
 pub(crate) mod catalog_mail;

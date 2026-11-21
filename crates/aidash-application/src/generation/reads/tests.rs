@@ -199,10 +199,10 @@ impl GenerationVisibility for Scope {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, _id: Uuid) -> Result<Resource> {
-		panic!("foreign request must not query a local workspace")
+	async fn thread(&mut self, _id: Uuid) -> Result<Resource> {
+		panic!("foreign request must not query a local thread")
 	}
-	async fn task(&mut self, _id: Uuid, _workspace: Uuid) -> Result<Option<Task>> {
+	async fn task(&mut self, _id: Uuid, _thread: Uuid) -> Result<Option<Task>> {
 		panic!("foreign request must not query a local task")
 	}
 	async fn task_visible(&mut self, _task: &Task) -> Result<bool> {

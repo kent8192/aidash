@@ -21,7 +21,7 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 	#[case] scenario: &str,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let pool = store.pool.fixture_driver();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let bank_id = Uuid::new_v4();
@@ -31,15 +31,15 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 			.node(aidash_domain::nodes::NodeName::parse(&node).unwrap())
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	sqlx::query(
-		"INSERT INTO memory_banks (id,tenant,home,workspace_id,revision) VALUES ($1,'acme',$2,$3,1)",
+		"INSERT INTO memory_banks (id,tenant,home,thread_id,revision) VALUES ($1,'acme',$2,$3,1)",
 	)
 	.bind(bank_id)
 	.bind(&bank.home)
-	.bind(workspace)
+	.bind(thread)
 	.execute(pool)
 	.await
 	.unwrap();
@@ -47,7 +47,7 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 	let mut source_bank = bank_id;
 	if scenario == "foreign" {
 		let foreign = aidash_domain::nodes::NodeName::derived("other").to_string();
-		let other_workspace = Uuid::new_v4();
+		let other_thread = Uuid::new_v4();
 		sqlx::query("INSERT INTO tenants (name,personal,created_at,created_by_kind) VALUES ('other',false,clock_timestamp(),'deployment_administrator')").execute(pool).await.unwrap();
 		sqlx::query(
 			"INSERT INTO node_names (name,tenant,created_at) VALUES ($1,'other',clock_timestamp())",
@@ -61,14 +61,14 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 			pool, "other", &foreign, "reader",
 		)
 		.await;
-		sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other','Other','{}',1,$3,'reader')").bind(other_workspace).bind(foreign).bind(scratch).execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other',1,$3,'reader')").bind(other_thread).bind(foreign).bind(scratch).execute(pool).await.unwrap();
 		source_bank = Uuid::new_v4();
 		sqlx::query(
-			"INSERT INTO memory_banks (id,tenant,home,workspace_id,revision) VALUES ($1,'other',$2,$3,1)",
+			"INSERT INTO memory_banks (id,tenant,home,thread_id,revision) VALUES ($1,'other',$2,$3,1)",
 		)
 		.bind(source_bank)
 		.bind(&bank.home)
-		.bind(other_workspace)
+		.bind(other_thread)
 		.execute(pool)
 		.await
 		.unwrap();
@@ -84,9 +84,9 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 	let credential = Uuid::new_v4();
 	sqlx::query("INSERT INTO authorization_credentials (id,tenant,subject,token_hash,created_at,expires_at,issued_by) VALUES ($1,'acme','reader',$2,clock_timestamp(),clock_timestamp()+interval '1 day','fixture')").bind(credential).bind(vec![1u8;32]).execute(pool).await.unwrap();
 	let task = Uuid::new_v4();
-	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'reader','reader','OPEN',1,'reader')").bind(task).bind(workspace).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'reader','reader','OPEN',1,'reader')").bind(task).bind(thread).execute(pool).await.unwrap();
 	let grant = Uuid::new_v4();
-	sqlx::query("INSERT INTO authorization_remote_grants (id,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(task).bind(workspace).bind(node).bind(credential).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_grants (id,tenant,task_id,task_revision,thread_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(task).bind(thread).bind(node).bind(credential).execute(pool).await.unwrap();
 	let provider = Provider {
 		node_id: bank.home.clone(),
 		entry: reference("p"),
@@ -214,7 +214,7 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 		results::{Match, SearchResult},
 	};
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let pool = store.pool.fixture_driver();
 	let node = aidash_domain::nodes::NodeName::derived("acme");
 	let home = store.deployment.node(node.clone()).to_string();
@@ -223,14 +223,14 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 	let credential = Uuid::new_v4();
 	let grant = Uuid::new_v4();
 	sqlx::query("INSERT INTO authorization_credentials(id,tenant,subject,token_hash,created_at,expires_at,issued_by) VALUES ($1,'acme','reader',$2,clock_timestamp(),clock_timestamp()+interval '1 day','fixture')").bind(credential).bind(vec![9u8;32]).execute(pool).await.unwrap();
-	sqlx::query("INSERT INTO tasks(id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'reader','reader','COMPLETED',1,'reader')").bind(task).bind(workspace).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO tasks(id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'reader','reader','COMPLETED',1,'reader')").bind(task).bind(thread).execute(pool).await.unwrap();
 	let pending = aidash_domain::run_state::encode(
 		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	sqlx::query("INSERT INTO runs(id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'a','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(workspace).bind(node.as_str()).bind(&home).bind(pending).execute(pool).await.unwrap();
-	sqlx::query("INSERT INTO authorization_remote_grants(id,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(task).bind(workspace).bind(node.as_str()).bind(credential).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO task_executions(id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'a','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(node.as_str()).bind(&home).bind(pending).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_grants(id,tenant,task_id,task_revision,thread_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(task).bind(thread).bind(node.as_str()).bind(credential).execute(pool).await.unwrap();
 	// A fixture Entry written as system work in the Tenant: knowledge is
 	// Tenant content and a Deployment Administrator holds none (#484).
 	let mut lease = crate::apps::knowledge::repositories::access::Lease::within(
@@ -241,7 +241,7 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 	.unwrap();
 	let put = aidash_application::semantic::mutations::put(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
-		workspace,
+		thread,
 		crate::semantic::PutEntry {
 			key: "source".into(),
 			expected_revision: 0,
@@ -301,7 +301,7 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 		operation_digest: operation.digest().unwrap(),
 		home_node: home,
 		tenant: "acme".into(),
-		workspace_id: workspace,
+		thread_id: thread,
 		grant_id: grant,
 		admission_id: run,
 		executor: "reader".into(),
@@ -315,7 +315,7 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 			content_digest: crate::semantic::service::content_digest("source body"),
 		}],
 		result: SearchResult {
-			workspace_id: workspace,
+			thread_id: thread,
 			index_revision: 1,
 			model: "fixture".into(),
 			model_version: "1".into(),
@@ -429,7 +429,7 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 		let mut tx = store.pool.begin(&scope).await.unwrap();
 		assert!(
 			crate::apps::knowledge::services::remote::journal::resume_in(
-				&store, &mut tx, grant, run, workspace, "reader"
+				&store, &mut tx, grant, run, thread, "reader"
 			)
 			.await
 			.is_err()

@@ -17,10 +17,10 @@ fn manifest() -> Manifest {
 		deadline: "2030-01-01T01:00:00Z".parse().unwrap(),
 		participants: vec![Participant {
 			node_id: "aidash://home/airy-hawk-2lu4as22".into(),
-			mutations: vec![Mutation::WorkspaceState {
-				workspace_id: Uuid::from_u128(2),
+			mutations: vec![Mutation::ThreadTitle {
+				thread_id: Uuid::from_u128(2),
 				expected_revision: 0,
-				state: json!({}),
+				title: "Title".into(),
 			}],
 		}],
 	}

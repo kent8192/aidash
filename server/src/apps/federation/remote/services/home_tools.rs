@@ -2,7 +2,7 @@
 //!
 //! Each call is a scoped command to the Home, which executes it under its own authority for
 //! the delegation chain. The command names the Run and its call key and nothing that steers
-//! the Home: the memory banks, the assignee's Node and the Workspace all come from the grant.
+//! the Home: the memory banks, the assignee's Node and the Thread all come from the grant.
 use super::runtime::Home;
 use crate::Result;
 use aidash_domain::{
@@ -30,13 +30,10 @@ impl Home {
 		)
 		.await
 	}
-	/// `workspace_search` over the Home's Workspace, by text.
-	pub(crate) async fn forward_workspace_search(&self, input: Value) -> Result<Value> {
-		self.command(
-			"workspace_search",
-			json!({"run_id":self.run.id,"input":input}),
-		)
-		.await
+	/// `thread_search` over the Home's Thread, by text.
+	pub(crate) async fn forward_thread_search(&self, input: Value) -> Result<Value> {
+		self.command("thread_search", json!({"run_id":self.run.id,"input":input}))
+			.await
 	}
 	/// `connection_request`: the Home's person at the root of the chain is asked to connect.
 	pub(crate) async fn forward_connection_request(

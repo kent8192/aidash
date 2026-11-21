@@ -1407,19 +1407,9 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&old_ref.version,
 	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("a"),"roles":["manager"]});
 	policy(&f, "a", 1, authority.clone()).await;
-	let workspace = request(
-		&app,
-		&a,
-		"POST",
-		"/api/workspaces",
-		json!({"title":"Pinned","goal":"Test pinned definitions"}),
-	)
-	.await;
-	assert_eq!(workspace.0, 200, "{workspace:?}");
-	let task_path = format!(
-		"/api/workspaces/{}/tasks",
-		workspace.1["id"].as_str().unwrap()
-	);
+	let thread = request(&app, &a, "POST", "/api/threads", json!({"title":"Pinned"})).await;
+	assert_eq!(thread.0, 200, "{thread:?}");
+	let task_path = format!("/api/threads/{}/tasks", thread.1["id"].as_str().unwrap());
 	let task = request(
 		&app,
 		&a,
@@ -1480,7 +1470,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
-	let area_path = format!("/api/runs/{}/working-area", run.id);
+	let area_path = format!("/api/executions/{}/working-area", run.id);
 	let available = request(&app, &a, "GET", &area_path, Value::Null).await;
 	assert_eq!(
 		available.0, 200,
@@ -2007,7 +1997,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 			.unwrap()
 	};
 	// The shared SSE service must include authorized global Marketplace events,
-	// even though this subject has no Workspace events. Audit events stay hidden.
+	// even though this subject has no Thread events. Audit events stay hidden.
 	let mut readable = app
 		.clone()
 		.native_oneshot(get("/api/events/stream?after=0"))
@@ -2757,7 +2747,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		aidash_server::authorization::identity::Actor::Subject(identity) => identity,
 		_ => unreachable!(),
 	};
-	let reader = aidash_server::authorization::workspace::Workspaces {
+	let reader = aidash_server::authorization::thread::Threads {
 		store: f.store.clone(),
 		identity,
 	};
@@ -3284,7 +3274,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 #[rstest::rstest]
 #[timeout(common::TEST_BOUND)]
 #[tokio::test]
-async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
+async fn global_event_cursors_bound_thread_and_marketplace_candidates(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
@@ -3296,16 +3286,9 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	let workspace = request(
-		&app,
-		&a,
-		"POST",
-		"/api/workspaces",
-		json!({"title":"Cursor", "goal":"Bound replay"}),
-	)
-	.await;
-	assert_eq!(workspace.0, 200);
-	let ws = workspace.1["id"].as_str().unwrap().parse().unwrap();
+	let thread = request(&app, &a, "POST", "/api/threads", json!({"title":"Cursor"})).await;
+	assert_eq!(thread.0, 200);
+	let ws = thread.1["id"].as_str().unwrap().parse().unwrap();
 	let mut after = 0;
 	for i in 0..501 {
 		after = f
@@ -3313,7 +3296,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 			.emit(
 				&TEST_FIXTURE,
 				Some(ws),
-				"workspace.updated",
+				"thread.updated",
 				json!({"id":ws,"number":i}),
 			)
 			.await
@@ -3335,7 +3318,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 		.emit(
 			&TEST_FIXTURE,
 			Some(ws),
-			"workspace.updated",
+			"thread.updated",
 			json!({"id":ws,"number":502}),
 		)
 		.await
@@ -3351,7 +3334,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 		),
 	)
 	.await
-	.expect("global polling must advance past a full page of old workspace events");
+	.expect("global polling must advance past a full page of old thread events");
 	assert_eq!(result.0, 200);
 	let events = result.1["events"].as_array().unwrap();
 	assert!(
@@ -3381,7 +3364,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	let frame = String::from_utf8_lossy(&frame);
 	assert!(
 		frame.contains("marketplace.published"),
-		"old workspace frames must not replay: {frame}"
+		"old thread frames must not replay: {frame}"
 	);
 	drop(frames);
 	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;

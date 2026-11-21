@@ -251,7 +251,7 @@ impl PodOperationRepository for Repository<'_> {
 		let phase: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("phase"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(operation.run_id)))
 				.and_where(
 					Expr::col(Alias::new("tenant")).eq(Expr::value(operation.tenant.clone())),
@@ -276,7 +276,7 @@ impl PodOperationRepository for Repository<'_> {
 
 	async fn context(&self, operation: &PodOperation) -> Result<PodContext> {
 		let policy = policy(self.store)?;
-		// A Workspace never changes its Scratch Space (#697), and a deleted one
+		// A Thread never changes its Scratch Space (#697), and a deleted one
 		// fails `scratch::read`, so the recorded id stays the Run's space.
 		let space_id: Uuid = operation.input["scratch_space_id"]
 			.as_str()

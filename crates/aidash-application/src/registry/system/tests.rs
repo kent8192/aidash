@@ -78,9 +78,11 @@ fn compare_develop_builtin_declarations() {
 		changed,
 		[
 			"aidash.workspace_search",
+			"aidash.workspace_wait",
 			"aidash.workspace_message",
 			"aidash.attachment_copy",
 			"aidash.memory_mutate",
+			"aidash.task_assign",
 			"aidash.subnode_task"
 		]
 	);
@@ -187,6 +189,10 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			+ EXPOSURE_TOOLS.len()
 			+ SUBNODE_TOOLS.len()
 			+ JOURNAL_TOOLS.len()
+			+ NODE_TOOLS.len()
+			+ NOTIFY_TOOLS.len()
+			// The Workspace tools the Thread tools replace stay declared (#1008).
+			+ aidash_domain::tool::thread_tools::WORKSPACE_TOOLS.len()
 			+ 2
 	);
 	let specifications = validation.node_specifications();

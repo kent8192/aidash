@@ -1,4 +1,4 @@
-//! Generation disclosure uses the same task/workspace authority as workers.
+//! Generation disclosure uses the same task/thread authority as workers.
 use crate::{Result, ports::generation::visibility::GenerationVisibility};
 use aidash_domain::{generation::requests::Request, policy::Resource};
 use serde_json::json;
@@ -36,19 +36,19 @@ pub async fn visible_row(scope: &mut dyn GenerationVisibility, job: &Request) ->
 	if !scope.inherited_lease() {
 		scope.context(json!({}));
 	}
-	let workspace = scope.workspace(job.workspace_id).await?;
-	let Some(task) = scope.task(job.task_id, job.workspace_id).await? else {
+	let thread = scope.thread(job.thread_id).await?;
+	let Some(task) = scope.task(job.task_id, job.thread_id).await? else {
 		return Ok(false);
 	};
-	let mut attributes = workspace.attributes.clone();
+	let mut attributes = thread.attributes.clone();
 	attributes["created_by"] = json!(task.created_by);
 	attributes["task_id"] = json!(task.id);
 	let task_resource = scope.resource("task", &task.id.to_string(), attributes);
 	if !scope.decide(&task_resource, "task.read").await? {
 		return Ok(false);
 	}
-	scope.context(workspace.attributes.clone());
-	Ok(scope.decide(&workspace, "workspace.read").await?
+	scope.context(thread.attributes.clone());
+	Ok(scope.decide(&thread, "thread.read").await?
 		&& scope
 			.decide(&resource(scope, job), "generation.read")
 			.await?)
@@ -58,15 +58,15 @@ pub async fn local_visible(scope: &mut dyn GenerationVisibility, job: &Request) 
 	if !scope.inherited_lease() {
 		scope.context(json!({}));
 	}
-	let workspace = scope.workspace(job.workspace_id).await?;
-	let Some(task) = scope.task(job.task_id, job.workspace_id).await? else {
+	let thread = scope.thread(job.thread_id).await?;
+	let Some(task) = scope.task(job.task_id, job.thread_id).await? else {
 		return Ok(false);
 	};
 	if !scope.task_visible(&task).await? {
 		return Ok(false);
 	}
-	scope.context(workspace.attributes.clone());
-	Ok(scope.decide(&workspace, "workspace.read").await?
+	scope.context(thread.attributes.clone());
+	Ok(scope.decide(&thread, "thread.read").await?
 		&& scope
 			.decide(&resource(scope, job), "generation.read")
 			.await?)

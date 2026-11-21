@@ -1,4 +1,4 @@
-//! Workspace-level, advisory attachment readability; no file bytes or authority grants.
+//! Thread-level, advisory attachment readability; no file bytes or authority grants.
 use super::{ChannelAttachment, access::Lease};
 use crate::Result;
 use aidash_domain::{
@@ -73,10 +73,10 @@ impl Reader {
 	}
 }
 
-/// Resolve all Workspace assignments and definitions in bounded query batches.
+/// Resolve all Thread assignments and definitions in bounded query batches.
 pub(crate) async fn annotate(
 	lease: &mut Lease,
-	workspace: Uuid,
+	thread: Uuid,
 	node: &str,
 	attachments: &mut [&mut ChannelAttachment],
 ) -> Result<()> {
@@ -99,7 +99,7 @@ pub(crate) async fn annotate(
 					.equals((Alias::new("d"), Alias::new("task_id"))),
 			)
 			.and_where(
-				Expr::col((Alias::new("t"), Alias::new("workspace_id"))).eq(Expr::value(workspace)),
+				Expr::col((Alias::new("t"), Alias::new("thread_id"))).eq(Expr::value(thread)),
 			)
 			.and_where(
 				Expr::col((Alias::new("d"), Alias::new("tenant"))).eq(Expr::value(tenant.clone())),
@@ -121,7 +121,7 @@ pub(crate) async fn annotate(
 		&Query::select()
 			.column(Alias::new("target"))
 			.from(Alias::new("conversations"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.clone())))
 			.and_where(Expr::col(Alias::new("target_kind")).eq("agent"))
 			.to_string(PostgresQueryBuilder),
@@ -184,7 +184,7 @@ pub(crate) async fn annotate(
 		&Query::select()
 			.columns([Alias::new("id"), Alias::new("duration_ms")])
 			.from(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.into_iter().map(Expr::value)))
 			.to_string(PostgresQueryBuilder),
 	)

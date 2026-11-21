@@ -10,7 +10,7 @@ pub struct FetchPolicy {
 }
 pub struct AuthorizedRun {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 }
 #[async_trait]
 pub trait OutboundTransport: Send + Sync {

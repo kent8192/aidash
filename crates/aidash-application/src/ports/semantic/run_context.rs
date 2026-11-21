@@ -1,5 +1,5 @@
 //! Retrieved semantic text is disclosed only after its durable Run dependency journal commits.
-use crate::{Result, semantic::retrieval::WorkspaceContext};
+use crate::{Result, semantic::retrieval::ThreadContext};
 use aidash_domain::{Task, semantic::InputRead};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -18,7 +18,7 @@ pub trait RunSemanticScope: Send {
 		query: &str,
 		budget: usize,
 		partial: bool,
-	) -> Result<WorkspaceContext>;
+	) -> Result<ThreadContext>;
 	/// Authority and source locks remain held by this scope through journal commit.
 	async fn begin_dependencies(&mut self) -> Result<Box<dyn RunSemanticJournal + '_>>;
 }

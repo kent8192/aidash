@@ -108,7 +108,7 @@ async fn database_snapshot_covers_all_rows_and_fails_closed() -> Result<(), Erro
 	];
 	for (table, columns) in [
 		(
-			"runs",
+			"task_executions",
 			vec![
 				("phase", "text"),
 				("control", "text"),
@@ -182,7 +182,7 @@ async fn database_snapshot_covers_all_rows_and_fails_closed() -> Result<(), Erro
 		.await?;
 	let mut insert = Query::insert();
 	insert
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(["phase", "control", "pending"].map(Alias::new));
 	for _ in 0..600 {
 		insert.values(vec![
@@ -197,7 +197,7 @@ async fn database_snapshot_covers_all_rows_and_fails_closed() -> Result<(), Erro
 	assert_eq!(snapshot["busy"], true);
 	let mut update = Query::update();
 	update
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value(Alias::new("phase"), "COMPLETED")
 		.value_expr(Alias::new("updated_at"), Expr::current_timestamp());
 	run(&database, &update).await?;

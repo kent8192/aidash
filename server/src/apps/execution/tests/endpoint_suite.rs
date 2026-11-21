@@ -63,8 +63,8 @@ mod tenant_authority;
 mod channel_attachments;
 #[path = "../../workspaces/tests/channel_fixtures.rs"]
 mod channel_fixtures;
-#[path = "../../workspaces/tests/channel_threads.rs"]
-mod channel_threads;
+#[path = "../../workspaces/tests/thread_messages.rs"]
+mod thread_messages;
 
 #[path = "../../federation/peer/tests/registration.rs"]
 mod peer_registration;

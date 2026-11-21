@@ -18,7 +18,7 @@ pub(crate) async fn issue(
 	let id = crate::semantic::native_memory::request_id(
 		origin.intent_id,
 		&serde_json::to_string(
-			&json!({"purpose":"generated-home-logical-agent","home":template.home,"tenant":template.tenant,"workspace":template.workspace,"template":template.participant,"executor":origin.node_id}),
+			&json!({"purpose":"generated-home-logical-agent","home":template.home,"tenant":template.tenant,"thread":template.thread,"template":template.participant,"executor":origin.node_id}),
 		)?,
 	)?;
 	let mut bank = template.clone();
@@ -46,7 +46,7 @@ pub(crate) async fn issue(
 						"id",
 						"home",
 						"tenant",
-						"workspace_id",
+						"thread_id",
 						"principal",
 						"agent_id",
 						"agent_version",
@@ -60,7 +60,7 @@ pub(crate) async fn issue(
 						.expr(Expr::value(id))
 						.expr(Expr::value(&bank.home))
 						.expr(Expr::value(&bank.tenant))
-						.expr(Expr::value(bank.workspace))
+						.expr(Expr::value(bank.thread))
 						.expr(Expr::value(principal))
 						.expr(Expr::value(&agent.id))
 						.expr(Expr::value(&agent.version))
@@ -89,7 +89,7 @@ pub(crate) async fn issue(
 	if row.try_get::<bool>("deleted")?
 		|| row.try_get::<String>("home")? != bank.home
 		|| row.try_get::<String>("tenant")? != bank.tenant
-		|| row.try_get::<uuid::Uuid>("workspace_id")? != bank.workspace
+		|| row.try_get::<uuid::Uuid>("thread_id")? != bank.thread
 		|| row.try_get::<String>("agent_id")? != agent.id
 		|| row.try_get::<String>("agent_version")? != agent.version
 	{

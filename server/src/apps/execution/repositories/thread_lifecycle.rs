@@ -8,17 +8,14 @@ use crate::apps::execution::capabilities::{
 };
 use crate::{Error as NativeError, Result as NativeResult};
 use aidash_application::{Error, Result, ports::capabilities::thread_lifecycle::ThreadScope};
-use aidash_domain::{
-	capabilities::{
-		cleanup::Choice,
-		sessions::Area,
-		thread_lifecycle::{DeleteThread, FileChoice},
-	},
-	workspaces::channels::ChannelThread,
+use aidash_domain::capabilities::{
+	cleanup::Choice,
+	sessions::Area,
+	thread_lifecycle::{DeleteThread, FileChoice},
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
@@ -61,60 +58,53 @@ impl From<NativeDeleteThread> for DeleteThread {
 	}
 }
 #[async_trait]
-impl ThreadScope for Scope<'_> {
-	async fn channel(&mut self, workspace: Uuid, thread: Uuid) -> Result<Option<ChannelThread>> {
-		let result: NativeResult<Option<ChannelThread>> = async {
-			let access = &mut *self.access;
-			let row: Option<crate::apps::workspaces::models::ChannelThread> = {
-				let query_bind_1 = thread;
-				let query_bind_2 = workspace;
-				crate::database::query_as(
-					&sessions::select("channel_threads")
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(row.map(crate::collaboration::ChannelThread::from))
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn owned_areas(
+impl aidash_application::ports::capabilities::thread_lifecycle::DeletionAuthority for Scope<'_> {
+	async fn decide(
 		&mut self,
-		workspace: Uuid,
-		thread: Uuid,
-		offset: u64,
-	) -> Result<Vec<Area>> {
+		resource: &aidash_domain::policy::Resource,
+		action: &str,
+	) -> Result<bool> {
+		self.access
+			.decide(resource, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn node_resource(&mut self, thread: Uuid) -> Result<aidash_domain::policy::Resource> {
+		let node = self.access.thread_node(thread).await?;
+		Ok(self
+			.access
+			.resource("node", node.as_str(), serde_json::json!({})))
+	}
+}
+#[async_trait]
+impl ThreadScope for Scope<'_> {
+	async fn lock_for_deletion(&mut self, thread: Uuid) -> Result<()> {
+		crate::apps::workspaces::models::Thread::lock_for_deletion(&mut *self.access.tx, thread)
+			.await
+			.map_err(Into::into)
+	}
+	async fn mark_deleted(&mut self, thread: Uuid) -> Result<()> {
+		let query = Query::update()
+			.table(Alias::new("threads"))
+			.value_expr(Alias::new("deleted_at"), Expr::cust("CURRENT_TIMESTAMP"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
+			.and_where(Expr::col(Alias::new("deleted_at")).is_null())
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut **self.access.tx)
+			.await?;
+		Ok(())
+	}
+	async fn owned_areas(&mut self, thread: Uuid, offset: u64) -> Result<Vec<Area>> {
 		let result: NativeResult<Vec<NativeArea>> = async {
 			let access = &mut *self.access;
 			Ok({
-				let query_bind_1 = workspace;
-				let query_bind_2 = thread;
+				let query_bind_1 = thread;
 				let query_bind_3 = &access.identity.subject;
 				crate::database::native::query_as(
 					&sessions::select("core_areas")
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(query_bind_1.to_owned())))
-				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_2.to_owned())))
-				// Deleting a shared conversation never grants management of another
+				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_1.to_owned())))
+				// Deleting a shared Thread never grants management of another
 				// subject's private files. Their areas remain available in settings.
 				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_3.to_owned())))
 				.order_by(Alias::new("id"), Order::Asc)
@@ -131,29 +121,14 @@ impl ThreadScope for Scope<'_> {
 			.map(|areas| areas.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn delete_attachments(
-		&mut self,
-		workspace: Uuid,
-		thread: Uuid,
-		root: Uuid,
-	) -> Result<()> {
-		let replies = Query::select()
-			.column(Alias::new("message_id"))
-			.from(Alias::new("channel_message_context"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
-			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
-			.to_owned();
-		let in_thread = Condition::any()
-			.add(Expr::col(Alias::new("message_id")).eq(Expr::value(root)))
-			.add(Expr::col(Alias::new("message_id")).in_subquery(replies));
-		// Indexed images leave the Workspace index with their attachments
+	async fn delete_attachments(&mut self, thread: Uuid) -> Result<()> {
+		// Indexed images leave the Thread index with their attachments
 		// (#622 decision 11); the cleanup sweep removes their vectors.
 		let images = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("media_type")).like("image/%"))
-			.cond_where(in_thread.clone())
 			.to_string(PostgresQueryBuilder);
 		let images: Vec<Uuid> = crate::database::native::query_scalar(&images)
 			.scalar_all(&mut **self.access.tx)
@@ -163,15 +138,14 @@ impl ThreadScope for Scope<'_> {
 				crate::apps::knowledge::repositories::access::Lease::Inherited(&mut *self.access);
 			for image in images {
 				crate::apps::knowledge::repositories::attachment_images::retire(
-					&mut lease, workspace, image,
+					&mut lease, thread, image,
 				)
 				.await?;
 			}
 		}
 		let query = Query::delete()
 			.from_table(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
-			.cond_where(in_thread)
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&query)
 			.execute(&mut **self.access.tx)
@@ -180,7 +154,7 @@ impl ThreadScope for Scope<'_> {
 	}
 	async fn stop_schedules(&mut self, thread: Uuid) -> Result<()> {
 		let tenant = self.access.identity.tenant.clone();
-		crate::apps::workspaces::services::schedules::stop_for_thread(
+		crate::apps::workspaces::services::duties::stop_for_thread(
 			&mut **self.access.tx,
 			&tenant,
 			thread,
@@ -195,7 +169,7 @@ impl ThreadScope for Scope<'_> {
 				let query_bind_1 = area.id;
 				crate::database::native::query(
 					&Query::update()
-						.table(Alias::new("runs"))
+						.table(Alias::new("task_executions"))
 						.value(Alias::new("control"), "CANCELLED")
 						.and_where(
 							Expr::col(Alias::new("id")).in_subquery(
@@ -224,10 +198,98 @@ impl ThreadScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn stop_work(&mut self, thread: Uuid) -> Result<()> {
+		let store = self
+			.store
+			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?;
+		let result: NativeResult<()> = async {
+			let terminal = ["COMPLETED", "FAILED", "CANCELLED"];
+			let runs: Vec<Uuid> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("task_executions"))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
+					.and_where(Expr::col(Alias::new("phase")).is_not_in(terminal))
+					.order_by(Alias::new("id"), Order::Asc)
+					.lock(LockType::Update)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut **self.access.tx)
+			.await?;
+			// Lock every end before the first control event takes the event
+			// lock, as a Node's cancellation does.
+			for run in &runs {
+				super::subnodes::lock_for_end(&mut **self.access.tx, *run).await?;
+			}
+			for run in runs {
+				// A creator's cascade, or the Area cancellation above, may
+				// already have cancelled it.
+				let open: bool = crate::database::native::query_scalar(
+					&Query::select()
+						.expr(Expr::exists(
+							Query::select()
+								.expr(Expr::value(1_i32))
+								.from(Alias::new("task_executions"))
+								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
+								.and_where(Expr::col(Alias::new("phase")).is_not_in(terminal))
+								.and_where(
+									Expr::col(Alias::new("control")).ne(Expr::value("CANCELLED")),
+								)
+								.to_owned(),
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **self.access.tx)
+				.await?;
+				if open {
+					store
+						.control_in_as(
+							&mut **self.access.tx,
+							run,
+							aidash_domain::RunControlAction::Cancel,
+							aidash_domain::ControlSource::Tenant,
+						)
+						.await?;
+				}
+			}
+			let tasks: Vec<(Uuid, i64, Option<String>)> = crate::database::native::query_as(
+				&Query::select()
+					.columns(["id", "revision", "owner"].map(Alias::new))
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
+					.and_where(Expr::col(Alias::new("status")).is_not_in([
+						"COMPLETED",
+						"FAILED",
+						"CANCELLED",
+						"ABANDONED",
+					]))
+					.order_by(Alias::new("id"), Order::Asc)
+					.lock(LockType::Update)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["id", "revision", "owner"])
+			.fetch_all(&mut **self.access.tx)
+			.await?;
+			for (task, revision, owner) in tasks {
+				store
+					.transition_in(
+						&mut self.access.tx,
+						task,
+						revision,
+						owner.as_deref().unwrap_or("thread-deletion"),
+						aidash_domain::TaskStatus::Cancelled,
+					)
+					.await?;
+			}
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
 			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

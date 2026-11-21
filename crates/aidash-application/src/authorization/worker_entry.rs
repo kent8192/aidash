@@ -65,7 +65,7 @@ pub async fn execution<S: Send>(
 	);
 	if entry.agent.core_capabilities.enabled() && run.control != RunControl::Cancelled {
 		// A Run executing for another Home gets the receiving Node's Working Area (ADR 0139);
-		// a local Run, the Area its Workspace's thread keeps.
+		// a local Run, the Area of its Thread (#1008).
 		if entry.remote {
 			repository
 				.initialize_remote(&entry.scope, run, &entry.agent)

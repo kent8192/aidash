@@ -21,9 +21,9 @@ pub(crate) async fn claimed(
 	let run: Option<aidash_domain::Run> = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(crate::database::scope::local_home(
-				"runs",
+				"task_executions",
 				store.deployment.as_str(),
 			))
 			.and_where(Expr::col("task_id").eq(Expr::value(task)))
@@ -129,7 +129,7 @@ pub(crate) async fn load(
 		&& provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
 	if p.try_get::<bool>("deleted")?
 		|| p.try_get::<i64>("revision")? != revision
-		|| p.try_get::<Uuid>("workspace_id")? != run.workspace_id
+		|| p.try_get::<Uuid>("thread_id")? != run.thread_id
 		|| p.try_get::<String>("home")? != run.home_node
 		|| (!builtin
 			&& (p.try_get::<String>("agent_id")? != run.agent_id
@@ -143,7 +143,7 @@ pub(crate) async fn load(
 		bank: Bank {
 			home: p.try_get("home")?,
 			tenant: p.try_get("tenant")?,
-			workspace: run.workspace_id,
+			thread: run.thread_id,
 			participant: Some(participant),
 		},
 		participant_revision: revision,
@@ -163,8 +163,8 @@ pub(crate) async fn admit(
 	let tenant: String = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("tenant"))
-			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
+			.from(Alias::new("authorization_threads"))
+			.and_where(Expr::col("thread_id").eq(Expr::value(run.thread_id)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -206,7 +206,7 @@ pub(crate) async fn admit(
 		let bank = Bank {
 			home: run.home_node.clone(),
 			tenant: tenant.clone(),
-			workspace: run.workspace_id,
+			thread: run.thread_id,
 			participant: Some(id),
 		};
 		units::authorize(lease, &bank, "memory.participant.use").await?;
@@ -231,10 +231,7 @@ pub(crate) async fn admit(
 		(id, observed, false)
 	} else {
 		let id = if builtin {
-			crate::semantic::native_memory::request_id(
-				run.workspace_id,
-				"builtin-memory-workspace",
-			)?
+			crate::semantic::native_memory::request_id(run.thread_id, "builtin-memory-thread")?
 		} else {
 			Uuid::now_v7()
 		};
@@ -250,7 +247,7 @@ pub(crate) async fn admit(
 					"id",
 					"home",
 					"tenant",
-					"workspace_id",
+					"thread_id",
 					"principal",
 					"agent_id",
 					"agent_version",
@@ -264,7 +261,7 @@ pub(crate) async fn admit(
 					.expr(Expr::value(id))
 					.expr(Expr::value(run.home_node.as_str()))
 					.expr(Expr::value(&tenant))
-					.expr(Expr::value(run.workspace_id))
+					.expr(Expr::value(run.thread_id))
 					.expr(Expr::value(principal))
 					.expr(Expr::value(&agent.id))
 					.expr(Expr::value(&agent.version))
@@ -294,7 +291,7 @@ pub(crate) async fn admit(
 			if prior.try_get::<bool>("deleted")?
 				|| prior.try_get::<String>("home")? != run.home_node
 				|| prior.try_get::<String>("tenant")? != tenant
-				|| prior.try_get::<Uuid>("workspace_id")? != run.workspace_id
+				|| prior.try_get::<Uuid>("thread_id")? != run.thread_id
 			{
 				return Err(Error::Conflict(
 					"built-in memory participant changed".into(),
@@ -309,7 +306,7 @@ pub(crate) async fn admit(
 		bank: Bank {
 			home: run.home_node.clone(),
 			tenant,
-			workspace: run.workspace_id,
+			thread: run.thread_id,
 			participant: Some(participant),
 		},
 		participant_revision: revision,
@@ -345,7 +342,11 @@ pub(crate) async fn admit(
 					.expr(Expr::value(&binding.provider.id))
 					.expr(Expr::value(&binding.provider.version))
 					.expr(Expr::value(revision))
-					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run.id,
+					))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

@@ -93,7 +93,7 @@ pub(in crate::apps::execution) async fn record(
 	let runs: Vec<RawRun> = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 			.and_where(
 				Expr::col("id").in_subquery(
@@ -119,7 +119,7 @@ pub(in crate::apps::execution) async fn record(
 		let raw: RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(raw.metadata.id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -212,7 +212,7 @@ pub(crate) async fn require_fresh_run(
 	let raw: RawRun = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
@@ -484,7 +484,7 @@ async fn stop_run(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 	let raw: Option<RawRun> = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(job.work_id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
 			.lock(LockType::Update)
@@ -514,7 +514,7 @@ async fn stop_run(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 		raw = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(job.work_id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -599,7 +599,7 @@ async fn settle_saved_run(
 	}
 	run.state = RunState::Completed(TerminalState {});
 	f.store
-		.save_run(scope, &run, token, "run.completed")
+		.save_run(scope, &run, token, "execution.completed")
 		.await?;
 	Ok(true)
 }
@@ -647,11 +647,11 @@ async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 	.await?;
 	// A local saved finalization/failure still owns this exact Home Task. Its
 	// Run job may be retrying transport, so this tick must leave the Task intact.
-	let workspace: aidash_domain::Workspace = crate::database::query_as(
+	let thread: aidash_domain::Thread = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(task.workspace_id)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(task.thread_id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -660,13 +660,13 @@ async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 	let saved: Vec<RawRun> = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
 			.and_where(Expr::col("task_id").eq(Expr::value(task.id)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(task.workspace_id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(task.thread_id)))
 			.and_where(Expr::col("home_node").eq(Expr::value(format!(
 				"{}/{}",
-				f.config.deployment, workspace.node
+				f.config.deployment, thread.node
 			))))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.to_string(PostgresQueryBuilder),

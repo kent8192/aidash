@@ -62,6 +62,7 @@ import type {
 } from "./generated/models";
 import type { State, Task } from "./types";
 import { entityRef, type Submit } from "./forms";
+import { tokenLimitLabel } from "./generation-limits";
 
 const key = (reference: EntityRef) => `${reference.id}@${reference.version}`;
 const localized = (
@@ -246,11 +247,11 @@ export function GenerationPage({ data }: { data: State }) {
                       <MetricRow compact columns={4} className="border-b-0">
                         <Metric
                           label={t("generationCount")}
-                          value={`${policy.generated_count} / ${policy.spec.limits.max_agents}`}
+                          value={`${policy.generated_count} / ${policy.spec.limits.max_agents ?? t("generationNoLimit")}`}
                         />
                         <Metric
                           label={t("generationAllocated")}
-                          value={`${policy.allocated_tokens.toLocaleString(locale)} / ${policy.spec.limits.token_budget.toLocaleString(locale)}`}
+                          value={`${policy.allocated_tokens.toLocaleString(locale)} / ${policy.spec.limits.token_budget?.toLocaleString(locale) ?? t("generationNoLimit")}`}
                         />
                         <Metric
                           label={t("generationEmbeddingBudget")}
@@ -464,6 +465,12 @@ function PolicyEditor({
     initial?.embedding ? key(initial.embedding.provider) : "",
   );
   const [error, setError] = useState("");
+  // Free-form mode (#1012, ADR 0143): the Agent writes the specialist within
+  // the components a person allows here.
+  const [freeForm, setFreeForm] = useState(Boolean(initial?.free_form));
+  const [anyApproved, setAnyApproved] = useState(
+    initial?.free_form?.any_approved ?? false,
+  );
   const embeddings = entries.filter((entry) => entry.kind === "embedding");
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
@@ -471,14 +478,18 @@ function PolicyEditor({
   const minTokens = window
     ? window + Math.min(4096, Math.max(256, Math.floor(window / 8)))
     : 1;
-  const limits = initial?.limits ?? {
-    max_agents: 20,
-    max_concurrent: 4,
-    max_depth: 3,
-    token_budget: 1000000,
-    tokens_per_agent: 200000,
-    lifetime_seconds: 3600,
-  };
+  // Count, concurrency, depth, lifetime and tokens are optional and uncapped
+  // (#1012); a blank token field means no token limit, and Budgets limit spend.
+  const limits: {
+    max_agents?: number | null;
+    max_concurrent?: number | null;
+    max_depth?: number | null;
+    token_budget?: number | null;
+    tokens_per_agent?: number | null;
+    lifetime_seconds?: number | null;
+  } = initial?.limits ?? {};
+  const optional = (value: string) =>
+    value.trim() === "" ? undefined : Number(value);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
@@ -528,7 +539,6 @@ function PolicyEditor({
           instructions: text("instructions"),
           schema_version: 1,
           ...bindings,
-          max_steps: Number(text("max_steps")),
         },
       };
       void save(id, {
@@ -543,18 +553,28 @@ function PolicyEditor({
             }
           : undefined,
         template,
+        free_form: freeForm
+          ? {
+              any_approved: anyApproved,
+              components: anyApproved
+                ? []
+                : form
+                    .getAll("free_form_components")
+                    .map((value) => entityRef(String(value))),
+            }
+          : undefined,
         permissions: {
           roles: split(text("roles")),
           groups: split(text("groups")),
           attributes: attributes as Record<string, unknown>,
         },
         limits: {
-          max_agents: Number(text("max_agents")),
-          max_concurrent: Number(text("max_concurrent")),
-          max_depth: Number(text("max_depth")),
-          token_budget: Number(text("token_budget")),
-          tokens_per_agent: Number(text("tokens_per_agent")),
-          lifetime_seconds: Number(text("lifetime_seconds")),
+          max_agents: optional(text("max_agents")),
+          max_concurrent: optional(text("max_concurrent")),
+          max_depth: optional(text("max_depth")),
+          token_budget: optional(text("token_budget")),
+          tokens_per_agent: optional(text("tokens_per_agent")),
+          lifetime_seconds: optional(text("lifetime_seconds")),
         },
       });
     } catch {
@@ -708,6 +728,49 @@ function PolicyEditor({
       </Section>
       <Section
         level={3}
+        title={t("generationFreeForm")}
+        description={t("generationFreeFormHelp")}
+      >
+        <Check
+          checked={freeForm}
+          onChange={(event) => setFreeForm(event.target.checked)}
+        >
+          {t("generationFreeFormEnable")}
+        </Check>
+        {freeForm && (
+          <>
+            <Check
+              checked={anyApproved}
+              onChange={(event) => setAnyApproved(event.target.checked)}
+            >
+              {t("generationFreeFormAnyApproved")}
+            </Check>
+            {!anyApproved && (
+              <Field label={t("generationFreeFormComponents")}>
+                <NativeSelect
+                  name="free_form_components"
+                  multiple
+                  size={6}
+                  className="h-auto min-h-24"
+                  defaultValue={(initial?.free_form?.components ?? []).map(key)}
+                >
+                  {entries
+                    .filter((entry) =>
+                      ["model", "tool", "skill"].includes(entry.kind),
+                    )
+                    .map((entry) => (
+                      <option key={key(entry)} value={key(entry)}>
+                        {entityLabel(entry)}
+                      </option>
+                    ))}
+                </NativeSelect>
+              </Field>
+            )}
+          </>
+        )}
+      </Section>
+      <Section
+        level={3}
         title={t("permissions")}
         description={t("generationPermissionsHelp")}
       >
@@ -801,43 +864,46 @@ function PolicyEditor({
         <div className="grid gap-3 sm:grid-cols-2">
           {(
             [
-              ["max_agents", "generationMaxAgents", 1, 512],
-              ["max_concurrent", "generationMaxConcurrent", 1, 512],
-              ["max_depth", "generationMaxDepth", 1, 31],
-              ["token_budget", "generationTokenBudget", 1, 1000000000000],
+              ["max_agents", "generationMaxAgents", 1, undefined, false],
+              [
+                "max_concurrent",
+                "generationMaxConcurrent",
+                1,
+                undefined,
+                false,
+              ],
+              ["max_depth", "generationMaxDepth", 1, undefined, false],
+              [
+                "token_budget",
+                "generationTokenBudget",
+                1,
+                1000000000000,
+                false,
+              ],
               [
                 "tokens_per_agent",
                 "generationTokensPerAgent",
                 minTokens,
                 1000000000000,
+                false,
               ],
-              ["lifetime_seconds", "generationLifetime", 1, 2592000],
+              ["lifetime_seconds", "generationLifetime", 1, undefined, false],
             ] as const
-          ).map(([name, label, min, max]) => (
+          ).map(([name, label, min, max, required]) => (
             <Field key={name} label={t(label)}>
               <Input
                 type="number"
-                required
+                required={required}
                 name={name}
                 min={min}
                 max={max}
                 step={1}
+                placeholder={required ? undefined : t("generationNoLimit")}
                 className="font-mono tabular"
-                defaultValue={limits[name]}
+                defaultValue={limits[name] ?? ""}
               />
             </Field>
           ))}
-          <Field label={t("generationMaxSteps")}>
-            <Input
-              type="number"
-              name="max_steps"
-              required
-              min={1}
-              max={1000}
-              className="font-mono tabular"
-              defaultValue={config?.max_steps ?? 64}
-            />
-          </Field>
         </div>
       </Section>
       <section className="grid min-w-0 gap-3 border-t border-border pt-4">
@@ -919,8 +985,14 @@ function RequestDetail({
           t("generationGroups"),
           pinned.data.permissions.groups?.join(", ") || "-",
         ],
-        [t("generationMaxConcurrent"), pinned.data.limits.max_concurrent],
-        [t("generationMaxDepth"), pinned.data.limits.max_depth],
+        [
+          t("generationMaxConcurrent"),
+          pinned.data.limits.max_concurrent ?? t("generationNoLimit"),
+        ],
+        [
+          t("generationMaxDepth"),
+          pinned.data.limits.max_depth ?? t("generationNoLimit"),
+        ],
         [
           t("generationEmbedder"),
           pinned.data.embedding
@@ -1018,7 +1090,7 @@ function RequestDetail({
           <MetricRow compact columns={4} className="border-y">
             <Metric
               label={t("generationUsedTokens")}
-              value={`${usage.data.used_tokens.toLocaleString(locale)} / ${usage.data.token_limit.toLocaleString(locale)}`}
+              value={`${usage.data.used_tokens.toLocaleString(locale)} / ${tokenLimitLabel(usage.data.token_limit, locale, t("generationNoLimit"))}`}
             />
             <Metric
               label={t("generationInferenceAttempts")}
@@ -1228,7 +1300,7 @@ export function GenerationAssignForm({
       </form>
       <RemoteGenerationAssignForm
         task={task.id}
-        workspace={task.workspace_id}
+        thread={task.thread_id}
         entries={data.registry}
         submit={submit}
       />

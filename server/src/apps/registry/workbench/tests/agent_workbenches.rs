@@ -91,7 +91,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		200
 	);
 	let token = &common::subject_credential(&f.store, "acme", "alice").await;
-	// The default test limits (20,000 input bytes, 16,384 total tokens) no
+	// The default test limits (40,000 input bytes, 32,768 total tokens) no
 	// longer hold an Agent with every default tool. This test is about the
 	// simulated tool, so it raises them to the Deployment's ceilings.
 	let limits_path = "/api/workbench/test-limits/acme";
@@ -466,7 +466,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let (status, inspection) = common::get(&app, alice_token, &trust_path).await;
 	assert_eq!(status, 200, "inspection: {inspection}");
 	assert_eq!(inspection["external_assessment_available"], false);
-	assert_eq!(inspection["workspaces"], json!([]));
+	assert_eq!(inspection["threads"], json!([]));
 	assert_eq!(inspection["test_evidence"], json!([]));
 	let (status, incident) = common::post(&app, alice_token, &format!("{trust_path}/incidents"), json!({"severity":"medium","owner":"alice","notes":"Manual report","evidence":[{"title":"Observation","content":"Fixed copy"}]})).await;
 	assert_eq!(status, 200, "incident: {incident}");

@@ -77,10 +77,15 @@ pub struct ReadyState {}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThinkingState {
-	pub force_workspace_read_compaction: bool,
-	pub deferred_workspace_read: Option<Box<DeferredRead>>,
+	// The aliases decode `pending` saved before the Workspace became the
+	// Thread (#1008); nothing rewrote stored Runs.
+	#[serde(alias = "force_workspace_read_compaction")]
+	pub force_thread_read_compaction: bool,
+	#[serde(alias = "deferred_workspace_read")]
+	pub deferred_thread_read: Option<Box<DeferredRead>>,
 	pub deferred_skill_read: Option<Box<DeferredRead>>,
-	pub deferred_workspace_observation: Option<Box<DeferredRead>>,
+	#[serde(alias = "deferred_workspace_observation")]
+	pub deferred_thread_observation: Option<Box<DeferredRead>>,
 	pub selected_media: Vec<ModelMedia>,
 	pub media_intake_through_seq: Option<i64>,
 	pub deferred_run_message_reads: Vec<Uuid>,
@@ -144,7 +149,9 @@ pub struct ToolCallState {
 	pub run_message_summary_end_seq: i64,
 	pub run_message_summary_limit: usize,
 	pub deferred_reads: ThinkingState,
-	pub workspace_read_plan: Option<ReadPlan>,
+	/// Saved as `workspace_read_plan` before #1008.
+	#[serde(alias = "workspace_read_plan")]
+	pub thread_read_plan: Option<ReadPlan>,
 	pub skill_read_plan: Option<ReadPlan>,
 	pub workspace_observation_plan: Option<ReadPlan>,
 	/// Only a Run executing for another Node: Home's answer to the call at `cursor`.
@@ -272,8 +279,10 @@ pub enum WaitingState {
 		cadence: OutageCadence,
 		resume: ResumeState,
 	},
-	/// A Run waits for relevant workspace changes, input, or a ceiling.
-	Workspace {
+	/// A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).
+	/// Saved with the reason `workspace` before #1008.
+	#[serde(alias = "workspace")]
+	TaskWait {
 		wake_at: DateTime<Utc>,
 		cursor: i64,
 		resume: ResumeState,
@@ -318,10 +327,34 @@ pub enum WaitingState {
 	},
 }
 impl WaitingState {
+	/// Whether entering this wait ends the Agent's Stint (#1009, ADR 0141): the
+	/// Agent cannot move the Task forward itself, so it sleeps until a person,
+	/// an outside result, a child Task, a command, its own timer or a service
+	/// that answers again (an Outage Wait) wakes it. A wait for a failure to be
+	/// delivered is the worker's own retry and keeps the Stint open. The database records Stints from the same rule.
+	pub fn ends_stint(&self) -> bool {
+		!matches!(self, Self::FailureDelivery { .. })
+	}
+
+	/// The persisted name of this wait, which a Stint records as why it ended.
+	pub fn reason(&self) -> &'static str {
+		match self {
+			Self::Outage { .. } => "outage",
+			Self::TaskWait { .. } => "task_wait",
+			Self::Operation { .. } => "operation",
+			Self::Dependencies { .. } => "dependencies",
+			Self::Timer { .. } => "timer",
+			Self::Human { .. } => "human",
+			Self::Approval { .. } => "approval",
+			Self::Reconciliation { .. } => "reconciliation",
+			Self::FailureDelivery { .. } => "failure_delivery",
+		}
+	}
+
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
 			Self::Outage { wake_at, .. }
-			| Self::Workspace { wake_at, .. }
+			| Self::TaskWait { wake_at, .. }
 			| Self::Operation { wake_at, .. }
 			| Self::Dependencies { wake_at, .. }
 			| Self::Timer { wake_at, .. }
@@ -356,11 +389,17 @@ pub const OUTAGE_BOUND: chrono::Duration = chrono::Duration::hours(24);
 pub enum OutageCadence {
 	Service,
 	PlanAllowance,
+	/// A Budget at its Hard Limit set to sleep (#1012): rechecked every hour
+	/// until the window resets or a person raises the limit, with no deadline.
+	Budget,
 }
 
 impl OutageCadence {
 	/// The deadline is fixed from the first failed attempt, including lease retries.
 	pub fn next_wake(self, started_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+		if let Self::Budget = self {
+			return Some(now + chrono::Duration::hours(1));
+		}
 		let deadline = started_at + OUTAGE_BOUND;
 		if now >= deadline {
 			return None;
@@ -368,6 +407,7 @@ impl OutageCadence {
 		let interval = match self {
 			Self::Service => chrono::Duration::minutes(5),
 			Self::PlanAllowance => chrono::Duration::hours(1),
+			Self::Budget => unreachable!("a Budget wait has no deadline"),
 		};
 		Some((now + interval).min(deadline))
 	}
@@ -465,8 +505,15 @@ impl RunState {
 		}
 	}
 }
-/// Maximum consecutive Lease Recoveries before a Crash Loop Failure (#604).
-pub const LEASE_RECOVERY_LIMIT: u32 = 3;
+/// Maximum consecutive Lease Recoveries before a Crash Loop Failure (#604),
+/// widened from 3 to 5 (#1009), unless the Tenant sets a limit within
+/// [`LEASE_RECOVERY_LIMITS`].
+pub const LEASE_RECOVERY_LIMIT: u32 = 5;
+/// The longest a Run may wait in one `workspace_wait`: 30 days, since its
+/// Stint sleeps meanwhile (#1009, #1011 decision B).
+pub const MAX_WAIT_SECONDS: u64 = 30 * 86_400;
+/// The Lease Recovery limits a Tenant may set (#1009).
+pub const LEASE_RECOVERY_LIMITS: std::ops::RangeInclusive<u32> = 1..=20;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -474,9 +521,14 @@ pub struct RecoveryState {
 	/// Start of the current external-service outage, retained across wake-ups.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub outage: Option<OutageTracking>,
-	/// Last workspace event delivered to this Run.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub workspace_event_cursor: Option<i64>,
+	/// Last thread event delivered to this Run; `workspace_event_cursor`
+	/// before #1008.
+	#[serde(
+		default,
+		skip_serializing_if = "Option::is_none",
+		alias = "workspace_event_cursor"
+	)]
+	pub thread_event_cursor: Option<i64>,
 	/// Fingerprint of remote terminal child Tasks observed before inference.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub remote_task_fingerprint: Option<String>,
@@ -617,7 +669,7 @@ impl RecoveryState {
 		self.standing_declines.clear();
 		self
 	}
-	/// Whether this attempt may degrade an unavailable workspace slot: it is
+	/// Whether this attempt may degrade an unavailable thread slot: it is
 	/// the last one of the bounded outage retry, or an earlier step of the Run
 	/// already degraded and no retrieval has succeeded since (ADR 0059).
 	///

@@ -98,6 +98,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		("GET", "/federation/v0.1/transactions/{id}/decision"),
 		("POST", "/federation/v0.1/scoped/dependencies/verify"),
 		("POST", "/federation/v0.1/scoped/discover"),
+		("POST", "/federation/v0.1/scoped/duty-events"),
 		("POST", "/federation/v0.1/scoped/tools/discover"),
 		("POST", "/federation/v0.1/scoped/execution/admissions"),
 		(
@@ -190,7 +191,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 	let removed: Vec<_> = [
 		("POST", "/federation/v0.1/control"),
 		("POST", "/federation/v0.1/offers"),
-		("POST", "/federation/v0.1/workspace"),
+		("POST", "/federation/v0.1/thread"),
 		("POST", "/api/remote"),
 	]
 	.into_iter()

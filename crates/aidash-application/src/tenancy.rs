@@ -119,15 +119,15 @@ pub enum DeploymentScopeReason {
 	/// Resolving an inbound peer's local Tenant, until #241 gives every Node a
 	/// Tenant.
 	FederationInbound,
-	/// Finding the Tenant of a Run, a Workspace or a remote operation from the
+	/// Finding the Tenant of a Run, a Thread or a remote operation from the
 	/// row that records it, when the caller names only an id.
 	RunTenant,
 	/// Resolve the Tenant of a Scratch Space named by an operator.
 	ScratchSpaceTenant,
-	/// Finding due Schedules and the started ticks whose Runs ended, across
-	/// Tenants (#557). Each one is then handled in its Tenant's scope, as its
-	/// Registrant.
-	ScheduleTicks,
+	/// Finding due Duties and the started ticks whose Runs ended, across
+	/// Tenants (#557, #1011). Each one is then handled in its Tenant's scope,
+	/// as its Requester.
+	DutyTicks,
 	/// Reading current Data Protection policies along a Run's delegation ancestry.
 	DataProtectionEvaluation,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
@@ -191,7 +191,7 @@ impl DeploymentScopeReason {
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
 			Self::ScratchSpaceTenant => "scratch-space-tenant",
-			Self::ScheduleTicks => "schedule-ticks",
+			Self::DutyTicks => "duty-ticks",
 			Self::DataProtectionEvaluation => "data-protection-evaluation",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::OAuthAuthorization => "oauth-authorization",
@@ -240,7 +240,7 @@ impl DeploymentScopeReason {
 			| Self::FederationInbound
 			| Self::RunTenant
 			| Self::ScratchSpaceTenant
-			| Self::ScheduleTicks
+			| Self::DutyTicks
 			| Self::DataProtectionEvaluation
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
@@ -296,7 +296,7 @@ mod tests {
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::ScratchSpaceTenant,
-			DeploymentScopeReason::ScheduleTicks,
+			DeploymentScopeReason::DutyTicks,
 			DeploymentScopeReason::DataProtectionEvaluation,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::OAuthAuthorization,

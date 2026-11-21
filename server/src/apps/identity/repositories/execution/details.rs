@@ -61,7 +61,7 @@ impl RunDetailsRepository for Details<'_> {
 	}
 }
 /// Whether the subject of the caller's authorization transaction may see the
-/// Run, decided exactly as `GET /api/runs/{id}` decides it but inside that
+/// Run, decided exactly as `GET /api/executions/{id}` decides it but inside that
 /// transaction, so the locks the decision takes also cover the caller's own
 /// changes. The transaction's policy context is left as it was.
 pub(crate) async fn visible_within(
@@ -81,7 +81,7 @@ pub(crate) async fn visible_within_state(
 }
 
 /// [`visible_within_state`] for many Runs at once, each `None` where it is
-/// `Forbidden`. Each Workspace's Runs are read and prepared together.
+/// `Forbidden`. Each Thread's Runs are read and prepared together.
 pub(crate) async fn visible_many_within_state(
 	federation: &Federation,
 	access: &mut Access,
@@ -146,8 +146,8 @@ pub(crate) async fn may_decline_run(
 	};
 	let own =
 		grant.tenant == access.identity.tenant && grant.root_subject == access.identity.subject;
-	let workspace = access.workspace(run.workspace_id).await?;
-	let previous_context = std::mem::replace(&mut access.context, workspace.attributes);
+	let thread = access.thread(run.thread_id).await?;
+	let previous_context = std::mem::replace(&mut access.context, thread.attributes);
 	let resource = access.resource("run", run.id, serde_json::json!({}));
 	let result = access
 		.decide(
@@ -184,7 +184,7 @@ impl RunDetailsScope for Scope<'_> {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -208,7 +208,7 @@ impl RunDetailsScope for Scope<'_> {
 		}
 		let query = Query::select()
 			.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 			.to_string(PostgresQueryBuilder);
 		let result: NativeResult<Vec<RawRun>> = async {
@@ -219,8 +219,8 @@ impl RunDetailsScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.get().workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.get().thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access

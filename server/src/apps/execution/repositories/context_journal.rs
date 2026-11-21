@@ -27,7 +27,7 @@ async fn handed_grant(
 		&Query::select()
 			.columns(["id", "creator_run_id", "state"].map(Alias::new))
 			.from(Alias::new("subnodes"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(reader.workspace_id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(reader.thread_id)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -64,7 +64,7 @@ async fn handed_grant(
 				.column(Alias::new("journal_range"))
 				.from(Alias::new("tasks"))
 				.and_where(Expr::col("id").eq(Expr::value(task)))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(reader.workspace_id)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(reader.thread_id)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_optional(&mut **access.tx.native_mut())
@@ -91,7 +91,7 @@ async fn handed_grant(
 			return Ok(Some((creator, grant)));
 		}
 		let parent = store.run(scope, source).await?;
-		if parent.workspace_id != reader.workspace_id {
+		if parent.thread_id != reader.thread_id {
 			return Ok(Some((creator, None)));
 		}
 		task = parent.task_id;
@@ -219,7 +219,7 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 				crate::apps::identity::models::AuthorizationRunRead::record_sources(
 					tx.as_mut(),
 					reader_run,
-					target.workspace_id,
+					target.thread_id,
 					&[("run".into(), target_run)],
 				)
 				.await?;
@@ -324,7 +324,7 @@ pub(crate) async fn append(
 				Expr::value(origin).into(),
 				Expr::value(event).into(),
 				Expr::value(digest).into(),
-				crate::database::scope::tenant_of("runs", "id", run),
+				crate::database::scope::tenant_of("task_executions", "id", run),
 			])
 			.expect("one value per column");
 		pending = true;
@@ -353,7 +353,7 @@ async fn fence(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<
 	let leased: Option<Uuid> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
 			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
@@ -527,7 +527,7 @@ impl Store {
 					Expr::value(attempt.base_revision).into(),
 					Expr::value(attempt.observed_input_seq).into(),
 					Expr::value(signed(attempt.before_tokens)?).into(),
-					crate::database::scope::tenant_of("runs", "id", run.id),
+					crate::database::scope::tenant_of("task_executions", "id", run.id),
 				])
 				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),

@@ -70,7 +70,7 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			bank.workspace,
+			bank.thread,
 			&aidash_domain::NewTask {
 				title: "Reader".into(),
 				description: "Read one Unit".into(),
@@ -92,11 +92,11 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut rows = vec![
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -109,7 +109,7 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 			vec![
 				Expr::value(run),
 				Expr::value(task.id),
-				Expr::value(bank.workspace),
+				Expr::value(bank.thread),
 				Expr::value(
 					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 						.to_string(),
@@ -175,8 +175,8 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 	run
 }
 
-async fn cause(store: &Store, actor: &Actor, workspace: Uuid, run: Uuid) -> Option<Failure> {
-	let mut lease = Lease::begin(store, actor, workspace).await.unwrap();
+async fn cause(store: &Store, actor: &Actor, thread: Uuid, run: Uuid) -> Option<Failure> {
+	let mut lease = Lease::begin(store, actor, thread).await.unwrap();
 	let result = invalidity(&mut lease, run).await;
 	lease.finish(result).await.unwrap()
 }
@@ -198,11 +198,11 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 ) {
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -226,7 +226,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	.await
 	.unwrap();
 	let (run, actor) = reader(&store, &bank, id, "p").await;
-	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
+	assert_eq!(cause(&store, &actor, bank.thread, run).await, None);
 
 	// Act
 	let corrected = |edit: fn(&mut Content)| {
@@ -314,7 +314,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 
 	// Assert
 	assert_eq!(
-		cause(&store, &actor, bank.workspace, run).await,
+		cause(&store, &actor, bank.thread, run).await,
 		expected,
 		"{change} must report its own cause"
 	);
@@ -338,11 +338,11 @@ async fn builtin_memory_read_journal_fails_only_on_lost_authority(
 ) {
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -372,7 +372,7 @@ async fn builtin_memory_read_journal_fails_only_on_lost_authority(
 		aidash_domain::registry::bindings::memory_defaults::MEMORY_ID,
 	)
 	.await;
-	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
+	assert_eq!(cause(&store, &actor, bank.thread, run).await, None);
 
 	// Act
 	let corrected = |edit: fn(&mut Content)| {
@@ -429,7 +429,7 @@ async fn builtin_memory_read_journal_fails_only_on_lost_authority(
 
 	// Assert
 	assert_eq!(
-		cause(&store, &actor, bank.workspace, run).await,
+		cause(&store, &actor, bank.thread, run).await,
 		expected,
 		"{change} of a built-in Unit"
 	);
@@ -473,11 +473,11 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -503,7 +503,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&aidash_domain::NewTask {
 				title: "Produced task".into(),
 				description: "Continue the producer work".into(),
@@ -521,7 +521,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	let root_task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&aidash_domain::NewTask {
 				title: "Root task".into(),
 				description: "Read the dependency".into(),
@@ -543,11 +543,11 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -560,7 +560,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			vec![
 				Expr::value(consumer),
 				Expr::value(task.id),
-				Expr::value(workspace),
+				Expr::value(thread),
 				Expr::value(
 					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 						.to_string(),
@@ -575,11 +575,11 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			],
 		),
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -592,7 +592,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			vec![
 				Expr::value(root),
 				Expr::value(root_task),
-				Expr::value(workspace),
+				Expr::value(thread),
 				Expr::value(
 					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 						.to_string(),
@@ -611,14 +611,14 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			vec![
 				"run_id",
 				"tenant",
-				"workspace_id",
+				"thread_id",
 				"resource_kind",
 				"resource_id",
 			],
 			vec![
 				Expr::value(root),
 				Expr::value("acme"),
-				Expr::value(workspace),
+				Expr::value(thread),
 				Expr::value("run"),
 				Expr::value(consumer),
 			],
@@ -628,14 +628,14 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			vec![
 				"run_id",
 				"tenant",
-				"workspace_id",
+				"thread_id",
 				"resource_kind",
 				"resource_id",
 			],
 			vec![
 				Expr::value(producer),
 				Expr::value("acme"),
-				Expr::value(workspace),
+				Expr::value(thread),
 				Expr::value("task"),
 				Expr::value(task.id),
 			],

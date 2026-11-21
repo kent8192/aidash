@@ -78,10 +78,10 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.unwrap();
 	let (tenant, context) = d.tenant_of(&alice, "Deleted data").await;
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
-	let workspace = d
+	let thread = d
 		.federation
 		.store
-		.create_workspace(&scope, "alice", "Private workspace", "Keep data private")
+		.create_thread(&scope, "alice", "Private thread")
 		.await
 		.unwrap();
 	let task = d
@@ -89,7 +89,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&aidash_domain::NewTask {
 				title: "Private task".into(),
 				description: "Deleted Tenant data".into(),
@@ -102,7 +102,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		)
 		.await
 		.unwrap();
-	let path = format!("/api/workspaces/{}", workspace.id);
+	let path = format!("/api/threads/{}", thread.id);
 	let tenant_event = d
 		.federation
 		.store
@@ -231,7 +231,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				method,
 				&path,
 				Some(&context),
-				json!({"revision":workspace.revision,"state":{}}),
+				json!({"revision":thread.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 410, "{method}: {body}");
@@ -240,7 +240,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			.as_deployment_administrator(
 				method,
 				&path,
-				json!({"revision":workspace.revision,"state":{}}),
+				json!({"revision":thread.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 403, "{method}: {body}");
@@ -250,7 +250,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				method,
 				&path,
 				Some("deployment_administrator"),
-				json!({"revision":workspace.revision,"state":{}}),
+				json!({"revision":thread.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 403, "browser {method}: {body}");
@@ -273,11 +273,11 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.await;
 	assert_eq!(status, 200, "{state}");
 	assert!(
-		state["workspaces"]
+		state["threads"]
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|row| row["id"] != workspace.id.to_string()),
+			.all(|row| row["id"] != thread.id.to_string()),
 		"{state}"
 	);
 	assert!(
@@ -285,7 +285,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|row| row["workspace_id"] != workspace.id.to_string()),
+			.all(|row| row["thread_id"] != thread.id.to_string()),
 		"{state}"
 	);
 	assert!(
@@ -786,22 +786,22 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	let d = Deployment::new(runtime, open_rules()).await;
 	let alice = d.person("alice").await;
 	let (tenant, context) = d.tenant_of(&alice, "Team").await;
-	let (status, workspace) = d
+	let (status, thread) = d
 		.as_person(
 			&alice,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			Some(&context),
-			json!({"title":"Work","goal":"Run something"}),
+			json!({"title":"Work"}),
 		)
 		.await;
-	assert_eq!(status, 200, "{workspace}");
-	let workspace: Uuid = workspace["id"].as_str().unwrap().parse().unwrap();
+	assert_eq!(status, 200, "{thread}");
+	let thread: Uuid = thread["id"].as_str().unwrap().parse().unwrap();
 	let (status, task) = d
 		.as_person(
 			&alice,
 			"POST",
-			&format!("/api/workspaces/{workspace}/tasks"),
+			&format!("/api/threads/{thread}/tasks"),
 			Some(&context),
 			json!({"title":"work","description":"keep working"}),
 		)
@@ -817,23 +817,23 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO runs (id, task_id, workspace_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
-		 VALUES ($1, $2, $3, $4 || '/' || (SELECT node FROM workspaces WHERE id = $3), (SELECT node FROM workspaces WHERE id = $3), 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM workspaces WHERE id = $3))",
+		"INSERT INTO task_executions (id, task_id, thread_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
+		 VALUES ($1, $2, $3, $4 || '/' || (SELECT node FROM threads WHERE id = $3), (SELECT node FROM threads WHERE id = $3), 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM threads WHERE id = $3))",
 	)
 	.bind(run)
 	.bind(task)
-	.bind(workspace)
+	.bind(thread)
 	.bind(d.federation.config.deployment.as_str())
 	.execute(&mut *tx)
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO authorization_execution (run_id, task_id, workspace_id, tenant, credential_id, root_subject, subject_chain) \
+		"INSERT INTO authorization_execution (run_id, task_id, thread_id, tenant, credential_id, root_subject, subject_chain) \
 		 SELECT $1, $2, $3, $4, credential_id, subject, ARRAY[subject, 'agent'] FROM dashboard_mappings WHERE tenant = $4",
 	)
 	.bind(run)
 	.bind(task)
-	.bind(workspace)
+	.bind(thread)
 	.bind(&tenant)
 	.execute(&mut *tx)
 	.await
@@ -843,9 +843,9 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	// A blocked mutation must keep deletion's policy fence until its effect commits.
 	for (table, id, endpoint, input) in [
 		(
-			"runs",
+			"task_executions",
 			run,
-			format!("/api/runs/{run}/management"),
+			format!("/api/executions/{run}/management"),
 			json!({"tenant":tenant,"action":"pause","expected_control_revision":0,"reason":"Deployment Administrator cleanup"}),
 		),
 		(
@@ -938,7 +938,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	}
 	let state = || async {
 		sqlx::query_as::<_, (String, Option<String>)>(
-			"SELECT control, error FROM runs WHERE id = $1",
+			"SELECT control, error FROM task_executions WHERE id = $1",
 		)
 		.bind(run)
 		.fetch_one(pool)
@@ -1018,10 +1018,10 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 	let (tenant, context) = d.tenant_of(&alice, "Team").await;
 	let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
-	let workspace = d
+	let thread = d
 		.federation
 		.store
-		.create_workspace(&scope, "alice", "Reports", "Weekly reports")
+		.create_thread(&scope, "alice", "Reports")
 		.await
 		.unwrap();
 	let schedule = |registrant: &'static str| {
@@ -1032,12 +1032,12 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 		async move {
 			let id = Uuid::new_v4();
 			sqlx::query(
-				"INSERT INTO schedules (id, tenant, workspace_id, registrant, credential_id, title, request, agent_id, agent_version, trigger, max_lateness_seconds, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
-				 VALUES ($1, $2, $3, $4, $5, 'Weekly', 'Report', 'reporter', '1.0.0', '{\"kind\":\"interval\",\"every_seconds\":3600}', 3600, now(), now() + interval '1 hour', now() + interval '1 hour', 0, 0, now(), now())",
+				"INSERT INTO duties (id, tenant, thread_id, requester, credential_id, title, mission, procedure, agent_id, agent_version, trigger, max_lateness_seconds, pause_after_failures, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
+				 VALUES ($1, $2, $3, $4, $5, 'Weekly', 'Report', '', 'reporter', '1.0.0', '{\"kind\":\"interval\",\"every_seconds\":3600}', 3600, 3, now(), now() + interval '1 hour', now() + interval '1 hour', 0, 0, now(), now())",
 			)
 			.bind(id)
 			.bind(&tenant)
-			.bind(workspace.id)
+			.bind(thread.id)
 			.bind(registrant)
 			.bind(Uuid::new_v4())
 			.execute(&pool)
@@ -1051,7 +1051,7 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 	let halt = |id: Uuid| {
 		let pool = d.federation.store.pool.fixture_driver().clone();
 		async move {
-			sqlx::query_scalar::<_, Option<String>>("SELECT halt FROM schedules WHERE id = $1")
+			sqlx::query_scalar::<_, Option<String>>("SELECT halt FROM duties WHERE id = $1")
 				.bind(id)
 				.fetch_one(&pool)
 				.await
@@ -1070,18 +1070,18 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 		.await;
 	// Assert: his Schedule waits for a successor at once; Alice's runs on.
 	assert_eq!(status, 204, "{body}");
-	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("requester_left"));
 	assert_eq!(halt(alices).await, None);
 	// Act: the Tenant is deleted, then restored.
 	let (status, body) = d.delete(&alice, &context, &tenant).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(halt(alices).await.as_deref(), Some("tenant_deleted"));
-	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("requester_left"));
 	let (status, body) = d.restore(&alice, &context, &tenant).await;
 	assert_eq!(status, 200, "{body}");
 	// Assert: nothing resumes with the restore.
 	assert_eq!(halt(alices).await.as_deref(), Some("tenant_deleted"));
-	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("requester_left"));
 	d.finish().await;
 }
 
@@ -1094,7 +1094,7 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_was_registered_with(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	use aidash_server::apps::workspaces::services::schedules::pass;
+	use aidash_server::apps::workspaces::services::duties::pass;
 	// Arrange: Bob, a member, can start an Agent of the Tenant.
 	let d = Deployment::new(runtime, open_rules()).await;
 	let alice = d.person("alice").await;
@@ -1156,37 +1156,37 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 	assert_eq!(status, 200, "{issued}");
 	let token = issued["token"].as_str().unwrap().to_owned();
 	let token_id: Uuid = serde_json::from_value(issued["credential"]["id"].clone()).unwrap();
-	let (status, workspace, _) = d
+	let (status, thread, _) = d
 		.send(
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			None,
 			None,
 			Some(&token),
-			json!({"title":"Reports","goal":"Weekly reports"}),
+			json!({"title":"Reports"}),
 		)
 		.await;
-	assert_eq!(status, 200, "{workspace}");
-	let workspace = workspace["id"]
+	assert_eq!(status, 200, "{thread}");
+	let thread = thread["id"]
 		.as_str()
-		.or(workspace["workspace"]["id"].as_str())
+		.or(thread["thread"]["id"].as_str())
 		.unwrap()
 		.to_owned();
 	let (status, schedule, _) = d
 		.send(
 			"POST",
-			&format!("/api/workspaces/{workspace}/schedules"),
+			&format!("/api/threads/{thread}/duties"),
 			None,
 			None,
 			Some(&token),
-			json!({"title":"Weekly","request":"Report","agent":{"id":"reporter","version":"1.0.0"},"trigger":{"kind":"interval","every_seconds":3600}}),
+			json!({"title":"Weekly","mission":"Report","agent":{"id":"reporter","version":"1.0.0"},"trigger":{"kind":"interval","every_seconds":3600}}),
 		)
 		.await;
 	assert_eq!(status, 200, "{schedule}");
 	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
 	let pool = d.federation.store.pool.fixture_driver().clone();
 	let (credential, mapping_credential): (Uuid, Uuid) = sqlx::query_as(
-		"SELECT s.credential_id, m.credential_id FROM schedules s JOIN dashboard_mappings m ON m.tenant = s.tenant AND m.subject = s.registrant WHERE s.id = $1",
+		"SELECT s.credential_id, m.credential_id FROM duties s JOIN dashboard_mappings m ON m.tenant = s.tenant AND m.subject = s.requester WHERE s.id = $1",
 	)
 	.bind(id)
 	.fetch_one(&pool)
@@ -1199,7 +1199,7 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 		let pool = pool.clone();
 		async move {
 			sqlx::query(
-				"UPDATE schedules SET anchor = now() - interval '1 day' - interval '90 seconds', next_scheduled_at = now() - interval '90 seconds', next_fire_at = now() - interval '90 seconds' WHERE id = $1",
+				"UPDATE duties SET anchor = now() - interval '1 day' - interval '90 seconds', next_scheduled_at = now() - interval '90 seconds', next_fire_at = now() - interval '90 seconds' WHERE id = $1",
 			)
 			.bind(id)
 			.execute(&pool)
@@ -1250,11 +1250,11 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 		.await;
 	assert!((200..300).contains(&status), "{status}: {body}");
 	// Assert: the Schedule waits for a successor.
-	let halt: Option<String> = sqlx::query_scalar("SELECT halt FROM schedules WHERE id = $1")
+	let halt: Option<String> = sqlx::query_scalar("SELECT halt FROM duties WHERE id = $1")
 		.bind(id)
 		.fetch_one(&pool)
 		.await
 		.unwrap();
-	assert_eq!(halt.as_deref(), Some("registrant_left"));
+	assert_eq!(halt.as_deref(), Some("requester_left"));
 	d.finish().await;
 }

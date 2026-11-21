@@ -12,7 +12,7 @@ use reinhardt::db::backends::TransactionExecutor;
 /// selector) or a Run's chain, and a Node of another Tenant is refused as an
 /// unknown Node is, so a sender cannot speak as a Node it does not hold. A
 /// sender that names no Node is its Tenant's default Node: the one seam that
-/// stands in until Workspaces carry their own Node.
+/// stands in until Threads carry their own Node.
 pub(crate) async fn sending_node(
 	tx: &mut dyn TransactionExecutor,
 	sender: &Sender,

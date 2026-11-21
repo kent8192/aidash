@@ -165,8 +165,8 @@ export type Inspection = {
   entry: AgentEntry;
   source_node: string;
   observed_at: string;
-  workspaces: {
-    workspace_id: string;
+  threads: {
+    thread_id: string;
     title: string;
     current: boolean;
     latest_run_at: string;
@@ -225,7 +225,7 @@ export type Incident = {
 export type PermissionContext = {
   tenant: string;
   subject: string;
-  workspace_id: string | null;
+  thread_id: string | null;
   policy_revision: number;
   observed_at: string;
   requested_capabilities: string[];
@@ -300,8 +300,8 @@ const text = {
     emptyTrust: "閲覧できる登録済みエージェントがありません。",
     noAssessment: "外部の審査体制が整うまで、Trust評価・認証は行いません。",
     policyContext:
-      "実効権限は対象のテナント・主体・ワークスペースを指定した時点で判定されます。",
-    workspaces: "この版を使用したワークスペース",
+      "実効権限は対象のテナント・主体・スレッドを指定した時点で判定されます。",
+    threads: "この版を使用したスレッド",
     noModel: "モデル未選択",
     source: "接続中のNode",
     registered: "Registryに登録しました。Marketplace公開や実行許可は別です。",
@@ -370,8 +370,8 @@ const text = {
     noAssessment:
       "Trust assessments and certification are unavailable until external review arrangements exist.",
     policyContext:
-      "Effective permissions require a specific tenant, subject and workspace at observation time.",
-    workspaces: "Workspaces using this version",
+      "Effective permissions require a specific tenant, subject and thread at observation time.",
+    threads: "Threads using this version",
     noModel: "No model selected",
     source: "Connected node",
     registered:
@@ -565,7 +565,7 @@ export function Workbench({
   const [policySubject, setPolicySubject] = useState(
     data.access.kind === "subject" ? data.access.subject : "",
   );
-  const [policyWorkspace, setPolicyWorkspace] = useState("");
+  const [policyThread, setPolicyThread] = useState("");
   const [permissionResult, setPermissionContext] = useState<
     (PermissionContext & { agent_ref: string }) | null
   >(null);
@@ -1357,8 +1357,8 @@ export function Workbench({
       if (permissionContext) {
         params.set("tenant", permissionContext.tenant);
         params.set("subject", permissionContext.subject);
-        if (permissionContext.workspace_id)
-          params.set("workspace_id", permissionContext.workspace_id);
+        if (permissionContext.thread_id)
+          params.set("thread_id", permissionContext.thread_id);
       }
       const response = await authenticatedFetch(
         `/api/workbench/versions/${encodeURIComponent(selectedAgent.id)}/${encodeURIComponent(selectedAgent.version)}/report?${params.toString()}`,
@@ -1386,7 +1386,7 @@ export function Workbench({
           body: JSON.stringify({
             tenant: policyTenant,
             subject: policySubject,
-            workspace_id: policyWorkspace || null,
+            thread_id: policyThread || null,
           }),
         },
       );
@@ -3202,14 +3202,10 @@ export function Workbench({
                 onChange={(event) => setPolicySubject(event.target.value)}
               />
             </Field>
-            <Field
-              label={
-                ja ? "ワークスペースID（任意）" : "Workspace ID (optional)"
-              }
-            >
+            <Field label={ja ? "スレッドID（任意）" : "Thread ID (optional)"}>
               <Input
-                value={policyWorkspace}
-                onChange={(event) => setPolicyWorkspace(event.target.value)}
+                value={policyThread}
+                onChange={(event) => setPolicyThread(event.target.value)}
               />
             </Field>
           </div>
@@ -3252,8 +3248,8 @@ export function Workbench({
             <>
               <p className="font-mono text-[11px] text-faint">
                 {permissionContext.tenant} / {permissionContext.subject} /{" "}
-                {permissionContext.workspace_id ||
-                  (ja ? "ワークスペース未指定" : "No workspace selected")}{" "}
+                {permissionContext.thread_id ||
+                  (ja ? "スレッド未指定" : "No thread selected")}{" "}
                 ·{" "}
                 {new Date(permissionContext.observed_at).toLocaleString(locale)}
               </p>
@@ -3329,11 +3325,11 @@ export function Workbench({
                 </Table>
               </div>
               <Hint>
-                {permissionContext.workspace_id
-                  ? `${t.workspaces}: ${permissionContext.workspace_read ? "✓" : "—"}`
+                {permissionContext.thread_id
+                  ? `${t.threads}: ${permissionContext.workspace_read ? "✓" : "—"}`
                   : ja
-                    ? "ワークスペース未指定"
-                    : "No workspace selected"}
+                    ? "スレッド未指定"
+                    : "No thread selected"}
               </Hint>
               <Hint>{permissionContext.note}</Hint>
             </>

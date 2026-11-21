@@ -143,15 +143,15 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let mut different = input.clone();
 	different["agent"]["id"] = json!("nonexistent");
 	assert_ne!(common::post(&aa, &token, &path, different).await.0, 200);
-	// Workspace data is filtered before delivery and durable dependencies survive
+	// Thread data is filtered before delivery and durable dependencies survive
 	// a fresh source connection. Revocation of an already observed sibling must
 	// deny the whole grant, even though its execution task is still readable.
-	let workspace: Uuid = {
+	let thread: Uuid = {
 		let query_bind_1 = task;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::Alias::new("workspace_id")),
+					reinhardt::query::Expr::col(reinhardt::query::Alias::new("thread_id")),
 				))
 				.from(reinhardt::query::Alias::new("tasks"))
 				.and_where(SimpleExpr::CustomWithExpr(
@@ -167,7 +167,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let (status, sibling) = common::post(
 		&aa,
 		&token,
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Sibling secret","description":"Scoped snapshot fixture"}),
 	)
 	.await;
@@ -610,7 +610,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		let count: i64 = sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.fetch_one(f.store.pool.fixture_driver())

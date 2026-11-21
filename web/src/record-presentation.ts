@@ -23,7 +23,7 @@ const primaryKeys = new Set([
   "digest",
 ]);
 const references = new Set([
-  "workspace_id",
+  "thread_id",
   "task_id",
   "run_id",
   "run",
