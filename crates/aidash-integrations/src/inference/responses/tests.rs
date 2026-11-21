@@ -200,6 +200,7 @@ fn envelope(source: NativeSource, content: Value) -> Envelope {
 fn native_request() -> ModelRequest {
 	ModelRequest {
 		context: ModelContext::Native(NativeContext {
+			standalone: false,
 			attachments: vec![envelope(NativeSource::Task, json!("original task"))],
 			history: vec![],
 			volatile: json!({"step":1}).to_string(),

@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub struct RunDetails {
 	pub provider_tool_activity: Vec<aidash_domain::tool::provider_tools::Activity>,
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
+	pub stints: Vec<aidash_domain::model_call::Stint>,
 	pub run: RunInspection,
 	/// The call the Run is paused on, only for a caller who may decline it.
 	pub declinable_call: Option<aidash_domain::run_state::DeclinableCall>,
@@ -62,6 +63,9 @@ pub trait RunDetailsScope: Send {
 		_id: Uuid,
 		_offset: u64,
 	) -> Result<Vec<aidash_domain::egress::RequestRecord>> {
+		Ok(vec![])
+	}
+	async fn stints(&mut self, _id: Uuid) -> Result<Vec<aidash_domain::model_call::Stint>> {
 		Ok(vec![])
 	}
 	async fn provider_tool_activity(

@@ -134,6 +134,7 @@ pub(crate) mod bindings;
 pub(crate) mod context_journal;
 pub mod decisions;
 pub(crate) mod inference;
+pub(crate) mod model_calls;
 pub(crate) mod task_evidence;
 
 pub(crate) mod events;

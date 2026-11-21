@@ -514,6 +514,18 @@ impl ExecutionStore for RunStore {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn complete_model_call(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		usage: &UsageOutcome,
+		outcome: aidash_domain::model_call::Outcome,
+	) -> Result<()> {
+		self.store
+			.complete_model_call(&self.scope, run, attempt, usage, outcome)
+			.await
+			.map_err(Into::into)
+	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		Store::run_message_has_media(&self.store, &self.scope, messages)
 			.await

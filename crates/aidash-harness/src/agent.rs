@@ -908,7 +908,11 @@ impl<'a> Executor<'a> {
 				if let Some(last) = plan.absorbed.last() {
 					plan.people.retain(|entry| entry.seq <= last.seq);
 				}
-				let request = summary_request(&plan, fitting.pinned, max_tokens);
+				let mut request = summary_request(&plan, fitting.pinned, max_tokens);
+				request.input_format = aidash_domain::provider::InputFormat::for_model(
+					&model_cfg,
+					aidash_domain::projection::ProjectionVersion::Native,
+				);
 				if request.ensure_fits(summary_window).is_ok() {
 					break request;
 				}
@@ -962,6 +966,10 @@ impl<'a> Executor<'a> {
 				}
 			}
 		};
+		let model_call = aidash_domain::model_call::Dispatch::new(
+			aidash_domain::model_call::Purpose::CompactionSummary,
+			&request,
+		)?;
 		let provider = self
 			.environment
 			.provider(summary_model)
@@ -1095,6 +1103,7 @@ impl<'a> Executor<'a> {
 					harness_contract: harness_contract.number(),
 					upstream_model: model_cfg.model_id.clone(),
 					purpose: UsagePurpose::Summary,
+					model_call: Some(model_call),
 					requested_route: model_cfg
 						.provider_route
 						.as_ref()
@@ -1124,7 +1133,12 @@ impl<'a> Executor<'a> {
 		// Persist provider facts before resuming authorization or validating the
 		// summary. Refusal, truncation and post-I/O revocation still incur work.
 		let recorded = store
-			.complete_usage_record(run, attempt.id, &usage_outcome(&result))
+			.complete_model_call(
+				run,
+				attempt.id,
+				&usage_outcome(&result),
+				aidash_application::model_calls::outcome(&result),
+			)
 			.await;
 		let resumed = visibility.resume().await;
 		if let Some(reservation) = reservation
@@ -2476,6 +2490,7 @@ impl<'a> Executor<'a> {
 							harness_contract: agent.harness_contract.number(),
 							upstream_model: model_cfg.model_id.clone(),
 							purpose: UsagePurpose::Main,
+							model_call: None,
 							requested_route: model_cfg.provider_route.as_ref().map(|route| route.tag.clone()),
 							shadow_estimates: diagnostic_estimates(&request, &model_cfg, agent.projection_version, run.step),
 							estimate: request_estimate.clone(),

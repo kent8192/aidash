@@ -395,14 +395,13 @@ pub fn summary_request(plan: &SummaryPlan, pinned: &Value, max_tokens: u32) -> M
 	ModelRequest {
 		provider_tools: vec![],
 		instructions: SUMMARY_INSTRUCTIONS.into(),
-		context: json!({
+		context: ModelContext::native_data(&json!({
 			"task": pinned.get("task").cloned().unwrap_or(Value::Null),
 			"previous_summary": previous,
 			"previous_item_ids": SummaryContent::retained_ids(plan.pruned.execution_summary.as_deref()),
 			"history": plan.absorbed.iter().map(|entry| &entry.event).collect::<Vec<_>>(),
 			"people": plan.people.iter().map(|entry| &entry.event).collect::<Vec<_>>(),
-		})
-		.into(),
+		})),
 		tools: vec![],
 		max_output_tokens: max_tokens,
 		response_format: Some(SummaryContent::response_format()),

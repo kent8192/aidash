@@ -4857,6 +4857,27 @@ impl Store {
 		tx.commit().await?;
 		Ok(completed)
 	}
+	pub(crate) async fn complete_model_call(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		attempt: Uuid,
+		usage: &aidash_domain::provider::usage::UsageOutcome,
+		outcome: aidash_domain::model_call::Outcome,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if InferenceUsage::complete(tx.as_mut(), run.id, attempt, usage).await? {
+			super::model_calls::finish(
+				tx.as_mut(),
+				attempt,
+				outcome,
+				super::model_calls::reported(usage),
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
+	}
 	/// The newest Deployment-wide calibration samples of one key (ADR 0017).
 	pub async fn calibration_samples(
 		&self,

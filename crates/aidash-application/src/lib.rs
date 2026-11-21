@@ -13,6 +13,7 @@ pub mod federation;
 pub mod flows;
 pub mod lifecycle;
 pub mod memory;
+pub mod model_calls;
 pub mod nodes;
 pub mod oauth_connections;
 pub mod org_chart;

@@ -7,7 +7,10 @@ use aidash_application::{
 	provider_access::MaintenancePurpose,
 };
 use aidash_domain::{
-	memory::*, model::ModelConfig, provider::ModelRequest, registry::EntityRef,
+	memory::*,
+	model::ModelConfig,
+	provider::{InputFormat, ModelContext, ModelRequest},
+	registry::EntityRef,
 	semantic::EmbeddingConfig,
 };
 use async_trait::async_trait;
@@ -47,6 +50,7 @@ pub(crate) struct Models {
 }
 pub(crate) struct Reservation {
 	id: Uuid,
+	prior_attempts: Vec<Uuid>,
 	tokens: usize,
 	cost: u64,
 }
@@ -776,7 +780,16 @@ impl Models {
 		.execute(&mut *tx)
 		.await?;
 		tx.commit().await?;
-		Ok(Prepared::Reserved(Reservation { id, tokens, cost }))
+		let prior_attempts = attempts
+			.iter()
+			.map(|attempt| attempt.try_get("id"))
+			.collect::<std::result::Result<Vec<_>, _>>()?;
+		Ok(Prepared::Reserved(Reservation {
+			id,
+			prior_attempts,
+			tokens,
+			cost,
+		}))
 	}
 	pub async fn settle<T: Serialize>(
 		&self,
@@ -893,7 +906,7 @@ impl Models {
 		let request = ModelRequest {
 			provider_tools: vec![],
 			instructions: instruction.into(),
-			context: context.into(),
+			context: ModelContext::native_data(&context),
 			tools: vec![],
 			max_output_tokens: output as u32,
 			response_format: None,
@@ -904,16 +917,26 @@ impl Models {
 				.then_some(self.run)
 				.flatten(),
 			disable_provider_transforms: false,
-			input_format: Default::default(),
+			input_format: InputFormat::for_model(
+				&config,
+				aidash_domain::projection::ProjectionVersion::Native,
+			),
 			estimate: Default::default(),
 		};
 		request.ensure_fits(config.context_window)?;
 		let charge = rate.charge(input as u64, output as u64)?;
 
 		self.require_origins(Some(reference)).await?;
+		// Keep the existing operation replay key across the wire representation change.
+		let mut identity = serde_json::to_value(&request)?;
+		identity["context"] = context;
+		identity
+			.as_object_mut()
+			.expect("model request serializes as an object")
+			.remove("input_format");
 		let reservation = match self
 			.prepare::<T>(
-				&json!({"role":reference,"request":request}),
+				&json!({"role":reference,"request":identity}),
 				input + output,
 				charge,
 				allowance,
@@ -942,14 +965,47 @@ impl Models {
 			None
 		};
 
-		// Memory role requests are Legacy (`cache_scope: None`); no salt applies.
+		use crate::apps::execution::repositories::model_calls;
 		let provider = crate::bootstrap::admitted_model_provider(
 			&self.store,
-			config,
+			config.clone(),
 			self.run,
 			self.bank.tenant.clone(),
 			self.run.is_none().then_some(purpose),
 		)?;
+		let tenant = &self.bank.tenant;
+		let model_call =
+			self.store
+				.control_pool
+				.atomic(
+					&aidash_application::tenancy::TenancyScope::tenant(tenant)?,
+					async |tx| {
+						let owner =
+							match self.run {
+								Some(run) => model_calls::Attribution::for_run(tx, run).await?,
+								None => {
+									let charge = crate::apps::identity::repositories::budgets::thread_charge(
+							tx, tenant, self.bank.thread,
+						).await?;
+									model_calls::Attribution::node(charge.tenant, charge.node)
+								}
+							};
+						model_calls::start_auxiliary(
+							tx,
+							&owner,
+							model_calls::Auxiliary {
+								model: reference,
+								config: &config,
+								request: &request,
+								purpose: aidash_domain::model_call::Purpose::MemoryRole,
+							},
+							reservation.id,
+							&reservation.prior_attempts,
+						)
+						.await
+					},
+				)
+				.await?;
 		let response = tokio::time::timeout(
 			std::time::Duration::from_secs(u64::from(self.policy.bounds.max_call_seconds)),
 			provider.infer(request, &aidash_application::ports::NoProgress),
@@ -1008,6 +1064,7 @@ impl Models {
 		} else {
 			Ok(())
 		};
+		model_calls::finish_auxiliary(&self.store, tenant, model_call, &response).await?;
 		let response = response?;
 		if let Some(origin) = origin {
 			origin.settle(&response).await?;

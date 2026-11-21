@@ -140,6 +140,19 @@ impl From<Value> for ModelContext {
 }
 
 impl ModelContext {
+	/// Data of a standalone Native request, carried in its user message.
+	pub fn native_data(data: &Value) -> Self {
+		let mut data = data.clone();
+		data.sort_all_objects();
+		Self::Native(crate::projection::native::NativeContext {
+			standalone: true,
+			attachments: Vec::new(),
+			history: Vec::new(),
+			volatile: data.to_string(),
+			harness: None,
+		})
+	}
+
 	pub fn legacy_mut(&mut self) -> Option<&mut Value> {
 		match self {
 			Self::Legacy(value) => Some(value),
@@ -147,18 +160,36 @@ impl ModelContext {
 		}
 	}
 
+	pub fn is_standalone(&self) -> bool {
+		matches!(
+			self,
+			Self::Sampling(_)
+				| Self::Native(crate::projection::native::NativeContext {
+					standalone: true,
+					..
+				})
+		)
+	}
+
 	/// The Projection Version this context was rendered under.
 	pub fn projection_version(&self) -> crate::projection::ProjectionVersion {
 		match self {
-			Self::Legacy(_) | Self::Sampling(_) => crate::projection::ProjectionVersion::Legacy,
+			Self::Legacy(_) => crate::projection::ProjectionVersion::Legacy,
 			Self::Ordered(_) => crate::projection::ProjectionVersion::Ordered,
-			Self::Native(_) => crate::projection::ProjectionVersion::Native,
+			Self::Native(_) | Self::Sampling(_) => crate::projection::ProjectionVersion::Native,
 		}
 	}
 
 	/// Whether this context may carry cache breakpoints (ADR 0019).
 	fn caches(&self) -> bool {
-		matches!(self, Self::Ordered(_) | Self::Native(_))
+		matches!(
+			self,
+			Self::Ordered(_)
+				| Self::Native(crate::projection::native::NativeContext {
+					standalone: false,
+					..
+				})
+		)
 	}
 
 	/// Leading text parts of the single user message of a Legacy or Ordered
@@ -714,6 +745,14 @@ impl ModelRequest {
 			identity["input_format"] = json!(self.input_format);
 		}
 		Some(crate::registry::rules::digest(&identity))
+	}
+
+	/// Canonical model-visible input before transport-specific controls.
+	pub fn model_input_body(&self) -> Result<Value> {
+		match self.input_format {
+			InputFormat::Chat => Ok(self.input_body()),
+			InputFormat::Responses => responses::encoded_input_body(self),
+		}
 	}
 
 	/// Bind the exact request metadata and ordered media hashes without persisting media bytes.

@@ -744,6 +744,30 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let mut reversed = input;
 	reversed["attachment_ids"] = json!([image["id"], audio["id"]]);
 	assert_eq!(common::post(&app, &token, &path, reversed).await.0, 409);
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/executions/{}", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	let calls: Vec<_> = details["stints"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.flat_map(|stint| stint["model_calls"].as_array().unwrap())
+		.filter(|call| call["purpose"] == "media_check" && call["outcome"] == "accepted")
+		.collect();
+	assert_eq!(
+		calls.len(),
+		1,
+		"replaying the media input does not duplicate its check"
+	);
+	assert_eq!(calls[0]["owner"]["run_id"], json!(run.id));
+	assert_eq!(calls[0]["usage"], Value::Null);
+
 	let worker = Harness {
 		federation: f.clone(),
 	};

@@ -405,6 +405,24 @@ async fn incomplete_usage_blocks_test_before_tool_or_second_inference(
 	assert!(session["error"].as_str().unwrap().contains("usage"));
 	assert_eq!(session["tool_calls"], json!([]));
 	assert_eq!(wb.hits.load(Ordering::SeqCst), 1);
+	let calls: Vec<(String, Option<uuid::Uuid>, Option<uuid::Uuid>, String)> = sqlx::query_as(
+		"SELECT m.node, m.run_id, m.stint_id, m.outcome
+		 FROM model_calls m JOIN inference_usage u ON u.model_call_id = m.id AND u.stint_id IS NULL
+		 WHERE m.tenant = 'acme' AND m.purpose = 'workbench_test'",
+	)
+	.fetch_all(wb.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		calls,
+		[(
+			aidash_domain::nodes::NodeName::derived("acme").to_string(),
+			None,
+			None,
+			"accepted".into()
+		)]
+	);
+
 	wb.cleanup().await;
 }
 

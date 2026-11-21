@@ -2522,6 +2522,7 @@ pub(crate) fn workbench_sandbox_execution(
 
 /// Sandbox models retain Keyless access until they have Tenant admission authority.
 pub(crate) struct WorkbenchSandboxModels {
+	store: Store,
 	clients: aidash_integrations::keyless::Clients,
 	keyless: Arc<dyn aidash_application::provider_access::ProviderAccess>,
 }
@@ -2531,27 +2532,37 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 	fn provider(
 		&self,
 		tenant: &str,
+		reference: &aidash_domain::registry::EntityRef,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
-		// Sandbox requests are always Legacy, so they never need a salt.
 		if model.provider_credential.is_some() {
 			return Err(aidash_application::Error::Invalid(
 				"Workbench tests do not support Tenant Provider Credentials".into(),
 			));
 		}
-		aidash_integrations::inference::provider(
+		let provider = aidash_integrations::inference::provider(
 			self.clients.clone(),
-			model,
+			model.clone(),
 			self.keyless.clone(),
 			aidash_application::provider_access::Context {
 				tenant: tenant.to_owned(),
 				..Default::default()
 			},
-		)
+		)?;
+		Ok(Arc::new(
+			crate::apps::execution::repositories::model_calls::WorkbenchProvider {
+				store: self.store.clone(),
+				tenant: tenant.to_owned(),
+				model: reference.clone(),
+				config: model,
+				provider,
+			},
+		))
 	}
 }
 pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandboxModels {
 	WorkbenchSandboxModels {
+		store: runtime.store.clone(),
 		clients: aidash_integrations::keyless::Clients {
 			direct: runtime.client.clone(),
 			permitted: runtime.store.provider_clients.permitted.clone(),

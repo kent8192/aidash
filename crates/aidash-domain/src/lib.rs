@@ -17,6 +17,7 @@ pub mod keyless;
 pub mod media;
 pub mod memory;
 pub mod model;
+pub mod model_call;
 pub mod nodes;
 pub mod oauth_connections;
 pub mod offering;

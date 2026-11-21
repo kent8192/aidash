@@ -353,6 +353,16 @@ pub trait ExecutionStore: Send + Sync {
 		attempt: Uuid,
 		outcome: &UsageOutcome,
 	) -> Result<()>;
+	/// Settle both the provider facts and the outcome of an auxiliary call.
+	async fn complete_model_call(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		usage: &UsageOutcome,
+		_outcome: aidash_domain::model_call::Outcome,
+	) -> Result<()> {
+		self.complete_usage_record(run, attempt, usage).await
+	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool>;
 	/// Original Context Journal entries with `from <= seq <= through`, in order.
 	async fn context_journal(

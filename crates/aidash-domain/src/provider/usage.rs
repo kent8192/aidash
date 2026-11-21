@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Usage exactly as the provider reported it. Scalar counts are `None` when
 /// omitted or invalid. An empty tool-use map means no counts were reported.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReportedUsage {
 	/// Provider-owned tool counts; never added to token usage or Request Estimates.
 	pub server_tool_use: std::collections::BTreeMap<String, u64>,
@@ -23,7 +23,7 @@ pub struct ReportedUsage {
 }
 
 /// Allowlisted response metadata. Missing or invalid fields remain unknown.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderIdentity {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,7 +40,7 @@ pub struct ProviderIdentity {
 pub const PROVIDER_IDENTITY_FIELD_BYTES: usize = 256;
 
 /// Provider cost in billionths of an OpenRouter credit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProviderCost {
 	pub nanocredits: i64,
 	pub upstream_nanocredits: Option<i64>,
@@ -196,6 +196,7 @@ pub struct ShadowEstimate {
 pub enum UsagePurpose {
 	Main,
 	Summary,
+	Auxiliary,
 }
 
 impl UsagePurpose {
@@ -203,6 +204,7 @@ impl UsagePurpose {
 		match self {
 			Self::Main => "main",
 			Self::Summary => "summary",
+			Self::Auxiliary => "auxiliary",
 		}
 	}
 }
@@ -211,6 +213,8 @@ impl UsagePurpose {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageDispatch {
 	pub purpose: UsagePurpose,
+	/// Auxiliary requests belong to a Model Call of the current Stint.
+	pub model_call: Option<crate::model_call::Dispatch>,
 	/// Public Inference Attempt identifier; never the worker lease token.
 	pub attempt: Uuid,
 	/// Worker lease that dispatched the attempt.

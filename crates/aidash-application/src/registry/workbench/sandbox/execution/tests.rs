@@ -480,7 +480,7 @@ fn job(model: Arc<Model>) -> Job {
 		request: ModelRequest {
 			provider_tools: vec![],
 			instructions: "sandbox".into(),
-			context: json!({"test_message":"original"}).into(),
+			context: ModelContext::native_data(&json!({"test_message":"original"})),
 			tools: vec![],
 			max_output_tokens: 128,
 			response_format: None,
@@ -529,9 +529,10 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 	let requests = model.requests.lock().unwrap();
 	assert_eq!(requests.len(), 2);
 	assert_eq!(requests[1].max_output_tokens, 123);
-	let aidash_domain::provider::ModelContext::Legacy(context) = &requests[1].context else {
-		panic!("Legacy request context");
+	let aidash_domain::provider::ModelContext::Native(context) = &requests[1].context else {
+		panic!("Native request context");
 	};
+	let context: Value = serde_json::from_str(&context.volatile).unwrap();
 	assert_eq!(context["conversation"].as_array().unwrap().len(), 3);
 	let state = repository.state.lock().unwrap();
 	assert_eq!(state.commits, 2);

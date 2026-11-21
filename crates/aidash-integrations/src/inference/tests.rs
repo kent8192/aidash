@@ -47,6 +47,7 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 	let history = json!({"history":"quoted \\\"text\\\" and 日本語"});
 	let context = match version {
 		ProjectionVersion::Native => aidash_domain::provider::ModelContext::Native(NativeContext {
+			standalone: false,
 			attachments: Vec::new(),
 			history: Vec::new(),
 			volatile: history.to_string(),

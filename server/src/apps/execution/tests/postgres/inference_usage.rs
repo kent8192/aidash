@@ -73,6 +73,7 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		harness_contract: aidash_domain::harness_contract::HarnessContract::Legacy.number(),
 		upstream_model: "vendor/model".into(),
 		purpose: UsagePurpose::Main,
+		model_call: None,
 		requested_route: None,
 		shadow_estimates: vec![],
 		estimate: EstimateSnapshot::conservative(0).request_estimate(&BYTES),
@@ -726,6 +727,18 @@ async fn summary_usage_is_independent_from_main_and_keeps_prompt_free_evidence(
 	let snapshot = EstimateSnapshot::calibrated(3, 250_000, 20);
 	let auxiliary = UsageDispatch {
 		purpose: UsagePurpose::Summary,
+		model_call: Some(
+			aidash_domain::model_call::Dispatch::new(
+				aidash_domain::model_call::Purpose::CompactionSummary,
+				&aidash_domain::provider::ModelRequest {
+					context: aidash_domain::provider::ModelContext::native_data(
+						&serde_json::json!({"history":"private summary source"}),
+					),
+					..Default::default()
+				},
+			)
+			.unwrap(),
+		),
 		requested_route: Some("fixture-route".into()),
 		shadow_estimates: vec![ShadowEstimate {
 			snapshot,
@@ -757,16 +770,39 @@ async fn summary_usage_is_independent_from_main_and_keeps_prompt_free_evidence(
 		provider_identity: Some(identity.clone()),
 		..Default::default()
 	};
-	assert!(
-		store
-			.complete_usage_record(
-				&ACME,
-				&run,
-				auxiliary.attempt,
-				&UsageOutcome::Completed(usage)
-			)
+	aidash_application::ports::execution::ExecutionStore::complete_model_call(
+		&store.for_run((*ACME).clone()),
+		&run,
+		auxiliary.attempt,
+		&UsageOutcome::Completed(usage),
+		aidash_domain::model_call::Outcome::Accepted,
+	)
+	.await
+	.unwrap();
+	let summary: (Uuid, Uuid, String, String) = sqlx::query_as(
+		"SELECT m.run_id, m.stint_id, m.purpose, m.outcome
+		 FROM context_compaction_attempts c JOIN model_calls m ON c.model_call_id = m.id
+		 JOIN inference_usage u ON u.model_call_id = m.id AND u.stint_id IS NULL
+		 WHERE c.id = $1 AND u.attempt_id = $1",
+	)
+	.bind(auxiliary.attempt)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let stint: Uuid =
+		sqlx::query_scalar("SELECT id FROM stints WHERE run_id = $1 AND ended_at IS NULL")
+			.bind(run.id)
+			.fetch_one(store.pool.fixture_driver())
 			.await
-			.unwrap()
+			.unwrap();
+	assert_eq!(
+		summary,
+		(
+			run.id,
+			stint,
+			"compaction_summary".into(),
+			"accepted".into()
+		)
 	);
 	let sql = Query::select()
 		.columns(

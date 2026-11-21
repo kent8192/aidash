@@ -15,7 +15,7 @@ use crate::{
 use aidash_domain::{
 	agent_plugin::PluginTools,
 	model::ModelConfig,
-	provider::ModelRequest,
+	provider::{InputFormat, ModelContext, ModelRequest},
 	registry::{
 		AgentConfig,
 		workbench::{
@@ -294,27 +294,22 @@ async fn prepare(
 	let documents: Vec<aidash_domain::registry::ReferenceDocument> =
 		serde_json::from_value(draft.documents.clone())?;
 	let visible = aidash_domain::registry::knowledge::visible_documents(&documents)?;
-	let mut request = ModelRequest {
- provider_tools: vec![],
-		content_parts: Vec::new(),
+	let mut data = json!({"test_message":input.message,"private_references":visible,"test_mode":input.mode,"profile_id":input.profile_id});
+	if input.continue_from.is_some() {
+		data["conversation"] = json!(conversation);
+	}
+	let request = ModelRequest {
 		instructions,
-		context: json!({"test_message":input.message,"private_references":visible,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
+		context: ModelContext::native_data(&data),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
-		response_format: None,
-		cache_scope: None,
-		cache_breakpoints: false,
-		routing_run: None,
-		disable_provider_transforms: false,
-		input_format: Default::default(),
-		estimate: Default::default(),
+		input_format: InputFormat::for_model(
+			&model_config,
+			aidash_domain::projection::ProjectionVersion::Native,
+		),
+		..Default::default()
 	};
-	if input.continue_from.is_some()
-		&& let Some(context) = request.context.legacy_mut()
-	{
-		context["conversation"] = json!(conversation);
-	}
-	let serialized_bytes = serde_json::to_vec(&request)?.len();
+	let serialized_bytes = request.model_input_body()?.to_string().len();
 	if serialized_bytes > limits.max_input_bytes as usize
 		|| request.estimated_total_tokens() > model_config.context_window
 		|| request.estimated_total_tokens() > limits.max_total_tokens as usize
@@ -324,7 +319,9 @@ async fn prepare(
 		));
 	}
 	let context_window = model_config.context_window;
-	let model_provider = admission.models.provider(&draft.tenant, model_config)?;
+	let model_provider = admission
+		.models
+		.provider(&draft.tenant, &config.model, model_config)?;
 	let fixtures = serde_json::to_value(&input.fixtures)?;
 	if fixtures.to_string().len() > 65_536 {
 		return Err(Error::Invalid("test fixtures exceed 64 KiB".into()));

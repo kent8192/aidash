@@ -11,6 +11,9 @@ pub struct RunDetails {
 	/// Metadata-only gateway requests, paged with the inspection offset.
 	#[serde(default)]
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
+	/// Awake stretches of this execution, in start order.
+	#[serde(default)]
+	pub stints: Vec<aidash_domain::model_call::Stint>,
 	pub run: crate::domain::RunInspection,
 	/// The tool call a paused Run stopped on, present only when the caller may decline it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

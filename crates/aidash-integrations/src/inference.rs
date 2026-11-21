@@ -531,10 +531,13 @@ impl ModelProvider for OpenRouterProvider {
 
 			// A Run's pinned version was checked at registration and Run
 			// creation; a request forced past them still never reaches the
-			// provider, and never falls back to Legacy (ADR 0015). Legacy is
-			// the baseline every model renders, including auxiliary requests.
+			// provider, and never falls back to Legacy (ADR 0015). Standalone
+			// calls have no Run projection declaration (ADR 0144).
 			let version = request.context.projection_version();
-			if !version.is_legacy() && !self.config.supports_projection(version) {
+			if !request.context.is_standalone()
+				&& !version.is_legacy()
+				&& !self.config.supports_projection(version)
+			{
 				return Err(Error::UnsupportedProjection {
 					model: self.config.model_id.clone(),
 					version,

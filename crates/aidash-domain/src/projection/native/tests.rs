@@ -980,6 +980,7 @@ fn without_history_the_breakpoint_ends_the_attachments() {
 #[test]
 fn a_partial_turn_is_rejected_before_any_request_is_sent() {
 	let native = NativeContext {
+		standalone: false,
 		attachments: vec![],
 		history: vec![NativeMessage::Assistant {
 			text: None,

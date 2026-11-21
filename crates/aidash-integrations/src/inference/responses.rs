@@ -378,7 +378,10 @@ impl ResponsesProvider {
 		stall: std::time::Duration,
 	) -> Result<ModelResponse> {
 		let version = request.context.projection_version();
-		if !version.is_legacy() && !self.config.supports_projection(version) {
+		if !request.context.is_standalone()
+			&& !version.is_legacy()
+			&& !self.config.supports_projection(version)
+		{
 			return Err(Error::UnsupportedProjection {
 				model: self.config.model_id.clone(),
 				version,
