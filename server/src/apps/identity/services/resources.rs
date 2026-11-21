@@ -50,15 +50,50 @@ impl Access {
 		let block = self.read_block.take();
 		match result {
 			Ok(Ok(task)) => Ok(Ok(task)),
-			Ok(Err(refusal)) => match self.named_since(mark, crate::Error::Forbidden) {
-				silent @ crate::Error::NodeUnreachable { .. } => Err(silent),
-				_ => Ok(Err(match refusal {
-					TaskRefusal::Policy => OwnTaskRefusal::Policy,
-					TaskRefusal::Outputs => OwnTaskRefusal::Read(block),
-				})),
-			},
+			Ok(Err(refusal)) => {
+				if let silent @ crate::Error::NodeUnreachable { .. } =
+					self.named_since(mark, crate::Error::Forbidden)
+				{
+					return Err(silent);
+				}
+				Ok(Err(match (refusal, block) {
+					(TaskRefusal::Policy, _) => OwnTaskRefusal::Policy,
+					(TaskRefusal::Outputs, Some(block)) => {
+						if self.reader_recorded(&block).await? {
+							OwnTaskRefusal::Read(Some(block))
+						} else {
+							OwnTaskRefusal::OtherRunRead(Some(block))
+						}
+					}
+					(TaskRefusal::Outputs, None) => OwnTaskRefusal::OtherRunRead(None),
+				}))
+			}
 			Err(error) => Err(self.named_since(mark, error)),
 		}
+	}
+	/// Whether the reading Run recorded `block` itself. A block reached through
+	/// another Run's reads is not the reader's to have named by id (#1058).
+	async fn reader_recorded(&mut self, block: &ReadBlock) -> Result<bool> {
+		let Some(run) = self.read_run else {
+			return Ok(false);
+		};
+		Ok(match block {
+			ReadBlock::Source { kind, id } => {
+				crate::apps::identity::models::AuthorizationRunRead::for_run(self.tx.as_mut(), run)
+					.await?
+					.iter()
+					.any(|(_, read_kind, read_id)| read_kind == kind && read_id == id)
+			}
+			ReadBlock::Definition(definition) => {
+				crate::apps::identity::models::AuthorizationRunRegistryRead::for_run(
+					self.tx.as_mut(),
+					run,
+				)
+				.await?
+				.contains(definition)
+			}
+			ReadBlock::RemoteRead | ReadBlock::SemanticRead => false,
+		})
 	}
 	/// The Run that created `task` with `task_create`, if one did.
 	pub(crate) async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
@@ -74,7 +109,6 @@ impl Access {
 		)
 		.scalar_optional(&mut **self.tx)
 		.await
-		.map_err(Into::into)
 	}
 	pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_visible(

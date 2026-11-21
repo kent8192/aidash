@@ -21,13 +21,26 @@ pub fn task_not_visible(task: Uuid) -> Error {
 pub enum OwnTaskRefusal {
 	/// The `task.read` policy refuses the Task to this Run's authority.
 	Policy,
-	/// A Read dependency of a Run that produced the Task is refused; `None`
-	/// when the check that refused did not say which read.
+	/// A read the calling Run recorded itself is refused; `None` when the check
+	/// that refused did not say which read.
 	Read(Option<ReadBlock>),
+	/// A read recorded by another Run the Task depends on is refused. The
+	/// calling Run never read it, so only its kind is named.
+	OtherRunRead(Option<ReadBlock>),
+}
+fn block_kind(block: &ReadBlock) -> String {
+	match block {
+		ReadBlock::Source { kind, .. } => kind.clone(),
+		ReadBlock::Definition(_) => "definition".into(),
+		ReadBlock::RemoteRead => "read from another Node".into(),
+		ReadBlock::SemanticRead => "semantic".into(),
+	}
 }
 /// The real reason for a refusal of the Run's own Task. A Run may hear it: the
-/// Task is its own, so naming it discloses nothing the Run could probe for.
-/// A Node that did not answer is not a refusal and never reaches this text.
+/// Task is its own, so naming it discloses nothing the Run could probe for. An
+/// id is named only for a read the Run recorded itself; a read of another Run
+/// the Task depends on is named by kind alone. A Node that did not answer is
+/// not a refusal and never reaches this text.
 pub fn own_task_refused(task: Uuid, refusal: &OwnTaskRefusal) -> Error {
 	let what = match refusal {
 		OwnTaskRefusal::Policy => format!("the task.read policy refuses task {task}"),
@@ -38,13 +51,14 @@ pub fn own_task_refused(task: Uuid, refusal: &OwnTaskRefusal) -> Error {
 			"a read it depends on is refused: definition {}@{}",
 			definition.id, definition.version
 		),
-		OwnTaskRefusal::Read(Some(ReadBlock::RemoteRead)) => {
-			"a read it depends on is refused: a read from another Node".into()
+		OwnTaskRefusal::Read(Some(block)) => {
+			format!("a read it depends on is refused: a {}", block_kind(block))
 		}
-		OwnTaskRefusal::Read(Some(ReadBlock::SemanticRead)) => {
-			"a read it depends on is refused: a semantic read".into()
-		}
-		OwnTaskRefusal::Read(None) => {
+		OwnTaskRefusal::OtherRunRead(Some(block)) => format!(
+			"a {} read by another Run this task depends on is refused",
+			block_kind(block)
+		),
+		OwnTaskRefusal::Read(None) | OwnTaskRefusal::OtherRunRead(None) => {
 			"a read it depends on is refused; the check did not say which".into()
 		}
 	};

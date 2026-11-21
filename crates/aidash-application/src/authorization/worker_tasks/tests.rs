@@ -811,3 +811,37 @@ async fn a_task_of_another_run_keeps_the_single_text(
 		"task 00000000-0000-0000-0000-000000000004 was not found or is not visible to this Run"
 	);
 }
+
+/// #1058: a refused read another Run recorded is named by kind only; its id is
+/// not the calling Run's to learn.
+#[rstest]
+#[case::source(
+	ReadBlock::Source { kind: "message".into(), id: id(42) },
+	"a message read by another Run this task depends on is refused"
+)]
+#[case::definition(
+	ReadBlock::Definition(agent()),
+	"a definition read by another Run this task depends on is refused"
+)]
+#[tokio::test]
+async fn a_refused_read_of_another_run_names_no_id(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] block: ReadBlock,
+	#[case] reason: &str,
+) {
+	scope.source_run = Some(run.id);
+	scope.own_read = Some(Ok(OwnTaskRefusal::OtherRunRead(Some(block))));
+	let Err(Error::Refused(message)) =
+		delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await
+	else {
+		panic!("the Run's own Task must be refused with its reason");
+	};
+	assert!(message.contains(reason), "{message}");
+	assert!(!message.contains(&id(42).to_string()), "{message}");
+	assert!(!message.contains("coordinator"), "{message}");
+	assert!(
+		message.contains("Retrying will not change this"),
+		"{message}"
+	);
+}
