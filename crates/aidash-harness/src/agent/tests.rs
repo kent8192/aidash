@@ -1301,7 +1301,7 @@ impl ExecutionAuthority for Backend {
 		}
 	}
 	fn is_remote(&self) -> bool {
-		false
+		self.0.remote_home
 	}
 }
 
@@ -2165,7 +2165,11 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		answer_by: None,
 		resume: ResumeState::Ready(ReadyState::default()),
 	}));
-	for _ in 0..2 {
+	assert_eq!(
+		fixture.run.recovery.home_poll.delay(),
+		chrono::Duration::seconds(2)
+	);
+	for expected in [4, 8, 16, 30, 30] {
 		Executor::new(&fixture.backend)
 			.advance(
 				&mut fixture.run,
@@ -2174,6 +2178,10 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 			)
 			.await
 			.unwrap();
+		assert_eq!(
+			fixture.run.recovery.home_poll.delay(),
+			chrono::Duration::seconds(expected)
+		);
 		assert!(
 			matches!(&fixture.run.state, RunState::Waiting(wait) if wait.request_id() == Some(id))
 		);
@@ -2206,6 +2214,10 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		.await
 		.unwrap();
 	assert_eq!(fixture.run.phase(), RunPhase::Ready);
+	assert_eq!(
+		fixture.run.recovery.home_poll.delay(),
+		chrono::Duration::seconds(2)
+	);
 	assert_eq!(
 		fixture.backend.0.writes.lock().unwrap().last().unwrap().0,
 		"execution.resumed"
@@ -4236,20 +4248,30 @@ async fn new_input_mid_stream_discards_the_attempt_and_replans_with_it(fixture: 
 }
 
 #[rstest]
+#[case::local(false, 1)]
+#[case::remote(true, 10)]
 #[tokio::test(start_paused = true)]
-async fn revoked_authority_mid_stream_interrupts_and_stops_progress(fixture: Fixture) {
+async fn revoked_authority_mid_stream_interrupts_and_stops_progress(
+	fixture: Fixture,
+	#[case] remote: bool,
+	#[case] seconds: u64,
+) {
 	// Arrange
 	let metrics = Metrics::default();
 	let _recorder = metrics::set_default_local_recorder(&metrics);
 	let mut fixture = thinking(fixture);
-	Arc::get_mut(&mut fixture.backend.0).unwrap().deny_recheck = true;
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.deny_recheck = true;
+	state.remote_home = remote;
 	fixture.backend.script(
-		(0..50)
+		(0..150)
 			.flat_map(|_| [text("chunk "), Step::Sleep(Duration::from_millis(100))])
 			.collect(),
 	);
 	// Act
+	let started = tokio::time::Instant::now();
 	let result = advance_sources(&mut fixture).await;
+	assert_eq!(started.elapsed(), Duration::from_secs(seconds));
 	// Assert
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(

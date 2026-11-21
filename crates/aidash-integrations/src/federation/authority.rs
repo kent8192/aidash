@@ -45,7 +45,11 @@ impl Transport for HttpTransport {
 			} else {
 				4_194_304
 			};
-			crate::response::bytes(response, limit).await
+			crate::response::within(response, limit)
+				.await?
+				.map_err(|_| {
+					aidash_application::Error::External(format!("response exceeds {limit} bytes"))
+				})
 		} else {
 			if status.as_u16() == 503
 				&& !transaction_pending

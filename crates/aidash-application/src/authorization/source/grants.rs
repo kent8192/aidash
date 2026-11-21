@@ -13,9 +13,11 @@ use crate::{
 use aidash_domain::{
 	TaskStatus,
 	federation::execution::{
-		Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
-		home::PreparationAuthority,
+		Description, Inspection, PrepareInput, Prepared,
+		admission::InspectInput,
+		home::{Grant, PreparationAuthority},
 	},
+	identity::execution::ExecutionPrincipal,
 	nodes::NodeAddress,
 	policy::SubjectKind,
 	registry::{EntityRef, Search},
@@ -23,6 +25,13 @@ use aidash_domain::{
 };
 use serde_json::json;
 use uuid::Uuid;
+
+mod evidence;
+pub use evidence::{DependencyChecks, GrantPeerCache};
+use evidence::{Observed, Revision};
+use std::{sync::Arc, time::Duration};
+use tokio::time::Instant;
+
 async fn finish<S: HomeScope, T>(scope: S, result: Result<T>) -> Result<T> {
 	match result {
 		Ok(value) => {
@@ -37,12 +46,7 @@ async fn finish<S: HomeScope, T>(scope: S, result: Result<T>) -> Result<T> {
 		}
 	}
 }
-async fn inspect<R: GrantRepository>(
-	repository: &R,
-	scope: &mut R::Scope,
-	node: &str,
-	input: InspectInput,
-) -> Result<Inspection> {
+async fn inspection_route<S: GrantScope>(scope: &mut S, node: &str) -> Result<()> {
 	let resource = scope.source_resource("node", node, json!({"remote_node":node}));
 	scope
 		.source_require(&resource, "federation.execute")
@@ -53,25 +57,25 @@ async fn inspect<R: GrantRepository>(
 			aidash_domain::federation::execution::Refusal::NodeUnreachable,
 		));
 	}
-	let identity = scope.identity();
-	let inspection: Inspection = match repository
+	Ok(())
+}
+
+async fn fetch_inspection<R: GrantRepository>(
+	repository: &R,
+	home: &str,
+	node: &str,
+	identity: &ExecutionPrincipal,
+	input: &InspectInput,
+) -> Result<Inspection> {
+	let inspection = repository
 		.source_request(
-			&scope.home_address(),
+			home,
 			node,
 			"/scoped/execution/inspect",
 			&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements}),
-			&identity,
+			identity,
 		)
-		.await
-	{
-		Err(Error::External(message)) if message == "remote execution authority unavailable" => {
-			scope.record_refusal(&resource, "node_unreachable").await?;
-			return Err(Error::RemoteExecutionRefused(
-				aidash_domain::federation::execution::Refusal::NodeUnreachable,
-			));
-		}
-		other => other?,
-	};
+		.await?;
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,
@@ -80,6 +84,38 @@ async fn inspect<R: GrantRepository>(
 		&input.requirements,
 	)?;
 	Ok(inspection)
+}
+
+fn inspection_unavailable(error: &Error) -> bool {
+	matches!(error, Error::External(message) if message == "remote execution authority unavailable")
+		|| matches!(error, Error::NodeUnreachable { .. })
+}
+
+async fn inspect<R: GrantRepository>(
+	repository: &R,
+	scope: &mut R::Scope,
+	node: &str,
+	input: InspectInput,
+) -> Result<Inspection> {
+	inspection_route(scope, node).await?;
+	match fetch_inspection(
+		repository,
+		&scope.home_address(),
+		node,
+		&scope.identity(),
+		&input,
+	)
+	.await
+	{
+		Err(error) if inspection_unavailable(&error) => {
+			let resource = scope.source_resource("node", node, json!({"remote_node":node}));
+			scope.record_refusal(&resource, "node_unreachable").await?;
+			Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::NodeUnreachable,
+			))
+		}
+		other => other,
+	}
 }
 fn inspection_input(task: Uuid, agent: &EntityRef, requirements: Search) -> InspectInput {
 	InspectInput {
@@ -216,48 +252,148 @@ pub async fn revoke<R: GrantRepository>(
 	.await;
 	finish(scope, result).await
 }
-/// Read-only description retries only the race between authorized task read and shared row lock.
+/// Revalidate local authority under the grant lease after collecting peer evidence.
 pub async fn description<R: GrantRepository>(
 	repository: &R,
 	node: &str,
 	id: Uuid,
 ) -> Result<(R::Scope, Description)> {
-	for attempt in 0..3 {
-		let mut revision_race = false;
-		match description_mode(repository, node, id, false, &mut revision_race).await {
-			Err(Error::Forbidden) if revision_race && attempt < 2 => {
-				tokio::time::sleep(std::time::Duration::from_millis(10)).await
-			}
-			result => return result,
-		}
-	}
-	unreachable!("the last verification attempt returns")
+	description_mode(repository, node, id, false).await
 }
+
 pub async fn description_mode<R: GrantRepository>(
 	repository: &R,
 	node: &str,
 	id: Uuid,
 	command: bool,
-	revision_race: &mut bool,
 ) -> Result<(R::Scope, Description)> {
-	let grant = repository
-		.source_grant(id, node)
-		.await?
-		.ok_or(Error::Forbidden)?;
-	let mut scope = repository.begin_grant(&grant).await.map_err(|error| {
+	let cache = repository.peer_cache();
+	let deadline = Instant::now() + Duration::from_secs(20);
+	for attempt in 0..3 {
+		let grant = repository
+			.source_grant(id, node)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let mut fresh = None;
+		let mut revision_race = false;
+		for _ in 0..(aidash_domain::federation::dependencies::LIMIT + 2) {
+			match description_pass(
+				repository,
+				&grant,
+				command,
+				&cache,
+				fresh.as_ref(),
+				&mut revision_race,
+			)
+			.await
+			{
+				Ok(Pass::Ready(scope, description)) => return Ok((scope, *description)),
+				Ok(Pass::Inspect(request)) => {
+					let InspectionRequest {
+						revision,
+						home,
+						identity,
+						input,
+					} = *request;
+					let result = match cache.inspection(&revision) {
+						Some(inspection) => inspection,
+						None => match fetch_inspection(repository, &home, node, &identity, &input)
+							.await
+						{
+							Ok(value) => {
+								let inspected = Observed::new(value);
+								cache.remember_inspection(revision.clone(), inspected.clone());
+								inspected
+							}
+							// Another request may have filled the cache while this call was in flight.
+							Err(error) if inspection_unavailable(&error) => cache
+								.inspection(&revision)
+								.ok_or_else(|| unreachable_before_command(node))?,
+							Err(error) => return Err(error),
+						},
+					};
+					fresh = Some((revision, result));
+				}
+				Ok(Pass::Dependency(checks, route, input)) => {
+					let remaining = deadline.saturating_duration_since(Instant::now());
+					if remaining.is_zero() {
+						return Err(unreachable_before_command(input.reference.node()));
+					}
+					let check = repository.check_dependency(&route, &input, remaining).await;
+					let target = route.target.to_string();
+					if !checks.remember(*route, input, check) {
+						return Err(unreachable_before_command(&target));
+					}
+				}
+				Err(Error::Forbidden) if revision_race && attempt < 2 => break,
+				Err(error) => return Err(error),
+			}
+		}
+		if !revision_race {
+			return Err(Error::Forbidden);
+		}
+		tokio::time::sleep(Duration::from_millis(10)).await;
+	}
+	unreachable!("the last revision attempt returns")
+}
+
+fn unreachable_before_command(node: &str) -> Error {
+	Error::NodeUnreachable {
+		node: node.to_owned(),
+		after_effect: false,
+	}
+}
+
+struct InspectionRequest {
+	revision: Revision,
+	home: String,
+	identity: ExecutionPrincipal,
+	input: InspectInput,
+}
+
+enum Pass<S> {
+	Inspect(Box<InspectionRequest>),
+	Dependency(
+		DependencyChecks,
+		Box<aidash_domain::federation::route::Route>,
+		aidash_domain::federation::dependencies::Input,
+	),
+	Ready(S, Box<Description>),
+}
+
+async fn description_pass<R: GrantRepository>(
+	repository: &R,
+	grant: &Grant,
+	command: bool,
+	cache: &Arc<GrantPeerCache>,
+	fresh: Option<&(Revision, Observed<Inspection>)>,
+	revision_race: &mut bool,
+) -> Result<Pass<R::Scope>> {
+	let node = &grant.node_id;
+	let id = grant.id;
+	let mut scope = repository.begin_grant(grant).await.map_err(|error| {
 		if matches!(error, Error::Unauthorized) {
 			Error::Forbidden
 		} else {
 			error
 		}
 	})?;
+	let mut dependencies = None;
 	let result = async {
 		// Serialize journals before task row locks so simultaneous shared leases cannot upgrade together.
-		if command {
+		if command && fresh.is_some() {
 			scope.command_lock(id).await?;
 		}
-		let current = scope.current_grant(grant.id).await?;
+		let current = if fresh.is_some() {
+			scope.current_grant(id).await?
+		} else {
+			grant.clone()
+		};
 		if !scope.live(current.id).await? {
+			return Err(Error::Forbidden);
+		}
+		if *grant != current {
+			*revision_race = true;
 			return Err(Error::Forbidden);
 		}
 		let inspection: Inspection = serde_json::from_value(current.inspection.clone())?;
@@ -276,10 +412,29 @@ pub async fn description_mode<R: GrantRepository>(
 			chain
 		};
 		scope.replace_subjects(sending.clone());
+		// Establish the evidence key before evaluating task provenance, which
+		// may itself traverse a receiver dependency.
+		let projected = scope
+			.control_task(current.task_id)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if projected.thread_id != current.thread_id {
+			return Err(Error::Forbidden);
+		}
+		scope.thread(projected.thread_id).await?;
+		let home = scope.home_address();
+		let revision = Revision::new(&current, projected.revision, &home);
+		let checks = DependencyChecks::new(cache.clone(), revision.clone());
+		scope.set_dependency_checks(Some(checks.clone()));
+		dependencies = Some(checks);
 		let task = scope.task_read(current.task_id).await?;
-		scope.thread(task.thread_id).await?;
-		let locked = scope.locked_task(task.id).await?;
-		if locked.revision != task.revision {
+		if projected.revision != task.revision
+			|| (fresh.is_some() && scope.locked_task(task.id).await?.revision != task.revision)
+		{
+			*revision_race = true;
+			return Err(Error::Forbidden);
+		}
+		if fresh.is_some_and(|(checked, value)| *checked != revision || !value.current()) {
 			*revision_race = true;
 			return Err(Error::Forbidden);
 		}
@@ -297,15 +452,27 @@ pub async fn description_mode<R: GrantRepository>(
 		if !scope.grant_reads_visible(current.id).await? {
 			return Err(Error::Forbidden);
 		}
-		let agent = EntityRef {
-			id: inspection.agent.id.clone(),
-			version: inspection.agent.version.clone(),
+		inspection_route(&mut scope, node).await?;
+		let Some((_, fresh)) = fresh else {
+			let agent = EntityRef {
+				id: inspection.agent.id.clone(),
+				version: inspection.agent.version.clone(),
+			};
+			let requirements = serde_json::from_value(task.requirements.clone())?;
+			return Ok(Pass::Inspect(Box::new(InspectionRequest {
+				revision,
+				home,
+				identity: scope.identity(),
+				input: inspection_input(task.id, &agent, requirements),
+			})));
 		};
-		let requirements = serde_json::from_value(task.requirements.clone())?;
+		if !fresh.current() {
+			*revision_race = true;
+			return Err(Error::Forbidden);
+		}
+		let fresh = &fresh.value;
 		let semantic: Binding = serde_json::from_value(current.semantic)?;
 		let request = semantic.request();
-		let input = inspection_input(task.id, &agent, requirements);
-		let fresh = inspect(repository, &mut scope, node, input).await?;
 		if !fresh.satisfies(&inspection) {
 			return Err(Error::Forbidden);
 		}
@@ -315,7 +482,7 @@ pub async fn description_mode<R: GrantRepository>(
 		if receiver_only {
 			scope.append_subject(executor);
 		}
-		let rebound = scope.semantic_binding(&task, node, &fresh, &request).await;
+		let rebound = scope.semantic_binding(&task, node, fresh, &request).await;
 		scope.replace_subjects(sending);
 		if rebound? != semantic {
 			return Err(Error::RemoteSemantic(Failure::Configuration));
@@ -332,22 +499,39 @@ pub async fn description_mode<R: GrantRepository>(
 			None => None,
 		};
 		let authorization_details = authorization_details(request.as_ref());
-		Ok(Description {
-			grant_id: current.id,
-			source_node: scope.home_address(),
-			target_node: current.node_id,
-			source_tenant: current.tenant,
-			source_subject: current.root_subject,
-			task: admitted,
-			inspection,
-			expires_at: current.expires_at,
-			semantic,
-			authorization_details,
-		})
+		Ok(Pass::Ready(
+			(),
+			Box::new(Description {
+				grant_id: current.id,
+				source_node: scope.home_address(),
+				target_node: current.node_id,
+				source_tenant: current.tenant,
+				source_subject: current.root_subject,
+				task: admitted,
+				inspection,
+				expires_at: current.expires_at,
+				semantic,
+				authorization_details,
+			}),
+		))
 	}
 	.await;
+	if let Some(checks) = dependencies
+		&& let Some((route, input)) = checks.take_missing()
+	{
+		scope.release_probe().await?;
+		return Ok(Pass::Dependency(checks, Box::new(route), input));
+	}
 	match result {
-		Ok(description) => Ok((scope, description)),
+		Ok(Pass::Ready((), description)) => {
+			scope.set_dependency_checks(None);
+			Ok(Pass::Ready(scope, description))
+		}
+		Ok(Pass::Inspect(request)) => {
+			scope.release_probe().await?;
+			Ok(Pass::Inspect(request))
+		}
+		Ok(Pass::Dependency(checks, route, input)) => Ok(Pass::Dependency(checks, route, input)),
 		Err(error) => {
 			scope.finish(Err(error)).await?;
 			Err(Error::External(

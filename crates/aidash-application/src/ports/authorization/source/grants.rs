@@ -1,6 +1,7 @@
 //! Source grant scopes preserve current actor authority, shared leases and command serialization.
 use crate::{
 	Result,
+	authorization::source::grants::{DependencyChecks, GrantPeerCache},
 	ports::authorization::{
 		home::HomeScope,
 		source::{SourceAuthorityScope, SourcePeerScope},
@@ -10,7 +11,9 @@ use crate::{
 use aidash_domain::{
 	Task,
 	federation::{
+		dependencies::Input,
 		execution::{Inspection, PrepareInput, home::Grant},
+		route::Route,
 		tool_lists::FederationToolRequest,
 	},
 	identity::execution::ExecutionPrincipal,
@@ -19,6 +22,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 #[async_trait]
 pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
@@ -55,6 +59,10 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 	async fn current_grant(&mut self, id: Uuid) -> Result<Grant>;
 	async fn live(&mut self, id: Uuid) -> Result<bool>;
 	async fn locked_task(&mut self, id: Uuid) -> Result<Task>;
+	/// Limit dependency traversal to evidence already fetched outside this scope.
+	fn set_dependency_checks(&mut self, checks: Option<DependencyChecks>);
+	/// Roll back a read-only pass and release its locks before contacting a peer.
+	async fn release_probe(self) -> Result<()>;
 	async fn grant_reads_visible(&mut self, id: Uuid) -> Result<bool>;
 	async fn semantic_binding(
 		&mut self,
@@ -78,6 +86,13 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 #[async_trait]
 pub trait GrantRepository: Send + Sync {
 	type Scope: GrantScope;
+	fn peer_cache(&self) -> Arc<GrantPeerCache>;
+	async fn check_dependency(
+		&self,
+		route: &Route,
+		input: &Input,
+		remaining: Duration,
+	) -> crate::ports::federation::dependencies::Check;
 	fn source_node_id(&self) -> &str;
 	fn source_identity(&self) -> Option<ExecutionPrincipal>;
 	fn validation(&self) -> DefinitionValidation;

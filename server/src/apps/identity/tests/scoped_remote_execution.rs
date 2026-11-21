@@ -1966,6 +1966,103 @@ async fn describe_from_receiver(p: &Pair) -> (u16, Value) {
 	.await
 }
 
+/// Hold and fail the first inspect. The second command must fill the cache
+/// while the first inspection is still outstanding.
+struct HoldFirstInspection {
+	entered: Arc<Notify>,
+	release: Arc<Notify>,
+	first: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl reinhardt::Middleware for HoldFirstInspection {
+	async fn process(
+		&self,
+		request: reinhardt::Request,
+		next: Arc<dyn reinhardt::Handler>,
+	) -> reinhardt::Result<reinhardt::Response> {
+		if request.uri.path() == "/federation/v0.1/scoped/execution/inspect"
+			&& self.first.swap(false, Ordering::AcqRel)
+		{
+			self.entered.notify_one();
+			self.release.notified().await;
+			return Ok(reinhardt::Response::new(
+				http::StatusCode::SERVICE_UNAVAILABLE,
+			));
+		}
+		next.handle(request).await
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn slow_receiver_inspection_does_not_block_another_command_on_the_grant(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	use std::time::Duration;
+
+	let mut p = scoped_pair;
+	// Start with an empty Home cache after activation warmed the original Store.
+	reconnect(&mut p.a, Arc::new(Notify::new())).await;
+	p.aa = common::application(p.a.clone()).await;
+
+	let receiver = p.servers.pop().unwrap();
+	receiver.shutdown().await;
+	let entered = Arc::new(Notify::new());
+	let release = Arc::new(Notify::new());
+	let router = aidash_server::routes()
+		.into_server()
+		.with_di_context(p.ba.context.clone())
+		.with_middleware(HoldFirstInspection {
+			entered: entered.clone(),
+			release: release.clone(),
+			first: AtomicBool::new(true),
+		});
+	let endpoint = reqwest::Url::parse(&p.b.config.endpoint).unwrap();
+	let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
+		.await
+		.unwrap();
+	p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
+		Arc::new(listener),
+		Arc::new(router),
+		Some(p.ba.context.clone()),
+	));
+
+	let home = common::default_node(&p.a.store, "acme").await;
+	let command = || {
+		common::peer_request(
+			&p.aa,
+			(&p.b, "acme"),
+			&home,
+			"",
+			"/federation/v0.1/scoped/execution/commands",
+			json!({"grant_id":p.grant,"admission_id":p.admission,"operation":"task","data":{}}),
+		)
+	};
+	let (first, second) = tokio::join!(command(), async {
+		let second = match tokio::time::timeout(Duration::from_secs(5), entered.notified()).await {
+			Ok(()) => tokio::time::timeout(Duration::from_secs(5), command())
+				.await
+				.ok(),
+			Err(_) => None,
+		};
+		release.notify_one();
+		second
+	});
+	let task = p.task.to_string();
+	p.close().await;
+	let (status, body) =
+		second.expect("second command did not finish while the first inspect was held");
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["id"], task);
+	assert_eq!(
+		first.0, 200,
+		"the failed first inspect can use the second reply: {}",
+		first.1
+	);
+	assert_eq!(first.1["id"], task);
+}
+
 /// A grant without Home semantic access must not disclose corpus changes.
 #[rstest::rstest]
 #[tokio::test]

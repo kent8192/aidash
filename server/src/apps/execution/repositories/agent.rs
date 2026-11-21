@@ -963,7 +963,7 @@ impl ExecutionAuthority for Authority<'_> {
 	/// stays suspended, whether or not the Run may still infer.
 	async fn recheck_inference(&self) -> Result<()> {
 		let authorized = match self.guard.resume(self.federation).await {
-			Ok(()) => self.guard.inference().await,
+			Ok(()) => self.guard.inference_after_resume().await,
 			Err(error) => Err(error),
 		};
 		let suspended = self.guard.suspend().await;

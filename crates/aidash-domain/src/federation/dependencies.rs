@@ -33,7 +33,7 @@ pub struct Input {
 	pub reference: Reference,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Checked {
 	pub visible: bool,
 	pub pending: Vec<Reference>,

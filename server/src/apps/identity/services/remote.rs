@@ -50,9 +50,7 @@ pub(crate) async fn delivery_lease(
 	node: &str,
 	id: Uuid,
 ) -> Result<(Access, Description)> {
-	let mut revision_race = false;
-	let (mut access, description) =
-		description_lease_mode(f, node, id, true, &mut revision_race).await?;
+	let (mut access, description) = description_lease_mode(f, node, id, true).await?;
 	access.worker();
 	access.read_grant = Some(id);
 	Ok((access, description))
@@ -62,14 +60,12 @@ async fn description_lease_mode(
 	node: &str,
 	id: Uuid,
 	command: bool,
-	revision_race: &mut bool,
 ) -> Result<(Access, Description)> {
 	aidash_application::authorization::source::grants::description_mode(
 		&crate::bootstrap::peer_home_execution_repository(f),
 		node,
 		id,
 		command,
-		revision_race,
 	)
 	.await
 	.map(|(scope, description)| (scope.into_access(), description))
