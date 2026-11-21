@@ -8380,7 +8380,7 @@ async fn a_paused_subnode_member_run_can_be_cancelled(
 			reinhardt::query::Alias::new("error"),
 			Expr::value("thread_read: an authority check refused this step"),
 		)
-		.and_where(Expr::col("id").eq(member.id))
+		.and_where(Expr::col("id").eq(Expr::value(member.id)))
 		.to_string(reinhardt::query::PostgresQueryBuilder);
 	sqlx::query(&pause)
 		.execute(f.store.pool.fixture_driver())

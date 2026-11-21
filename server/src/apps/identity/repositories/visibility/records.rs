@@ -72,15 +72,15 @@ pub(crate) async fn in_creator_thread(
 	let creator_thread = Query::select()
 		.column(Alias::new("thread_id"))
 		.from(Alias::new("task_executions"))
-		.and_where(Expr::col("id").eq(creator))
-		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("id").eq(Expr::value(creator)))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.to_owned();
 	let thread_column = if kind == "thread" { "id" } else { "thread_id" };
 	let mut record = Query::select();
 	record
 		.expr(Expr::value(true))
 		.from(Alias::new(table))
-		.and_where(Expr::col("id").eq(id))
+		.and_where(Expr::col("id").eq(Expr::value(id)))
 		.and_where(Expr::col(thread_column).in_subquery(creator_thread));
 	if kind == "attachment" {
 		record.and_where(Expr::col("message_id").is_not_null());
