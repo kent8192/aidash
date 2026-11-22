@@ -57,6 +57,11 @@ struct Fixture {
 	memory_recovery_directory: Arc<tempfile::TempDir>,
 }
 impl Fixture {
+	async fn drive_with_new_queries(&self) {
+		self.advance_query.store(true, Ordering::SeqCst);
+		self.drive().await;
+	}
+
 	async fn drive(&self) {
 		// Native Bank retrieval and generated-origin accounting span several real
 		// database/provider turns, also under parallel coverage. This bounded
@@ -287,8 +292,7 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
-	fixture.advance_query.store(true, Ordering::SeqCst);
-	fixture.drive().await;
+	fixture.drive_with_new_queries().await;
 	assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 3);
 	assert_eq!(fixture.inference.load(Ordering::SeqCst), 2);
 	let usage = fixture.usage().await;
@@ -325,7 +329,7 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 	semantic_fixture_2: Fixture,
 ) {
 	let fixture = semantic_fixture_1;
-	fixture.drive().await;
+	fixture.drive_with_new_queries().await;
 	let reserved: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::SimpleExpr::from(
@@ -890,7 +894,7 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 		}
 		.unwrap();
 	}
-	fixture.drive().await;
+	fixture.drive_with_new_queries().await;
 	assert_eq!(
 		fixture.embeddings.load(Ordering::SeqCst),
 		1 + usize::from(approved)
