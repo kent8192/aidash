@@ -394,8 +394,8 @@ mod tests {
 
 	/// `tenant = ? AND node = ? AND node_id = ?`, the Home's one liveness rule
 	/// (`live_condition`) instead of the lifetime alone, and a Run that lives:
-	/// bound, its activation recorded, its Task held by the receiver, started and
-	/// not ended. Ordered by expiry.
+	/// activated, with a nonterminal Task held by the receiver or still OPEN,
+	/// unowned and at the revision of the queued activation. Ordered by expiry.
 	#[test]
 	fn home_grants_are_built_without_raw_sql_and_only_of_live_runs() {
 		let sql = home_grants_query("acme", "default", &source(), Some(Uuid::nil()))
@@ -413,17 +413,23 @@ mod tests {
 			WHERE \"live_binding\".\"grant_id\" = \"authorization_remote_grants\".\"id\" \
 			AND \"live_binding\".\"task_id\" = \"authorization_remote_grants\".\"task_id\" \
 			AND \"live_binding\".\"activated_at\" IS NOT NULL \
-			AND array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
+			AND (array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
 			= ANY(array_positions(\"authorization_remote_grants\".\"subject_chain\", \"live_task\".\"owner\")) \
-			AND \"live_task\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED'))) \
+			AND \"live_task\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED') \
+			OR \"live_task\".\"status\" = 'OPEN' AND \"live_task\".\"owner\" IS NULL \
+			AND \"live_task\".\"revision\" = \"authorization_remote_grants\".\"task_revision\" \
+			AND \"live_task\".\"revision\" = \"live_binding\".\"task_revision\"))) \
 			AND EXISTS (SELECT TRUE FROM \"authorization_remote_execution\" AS \"b\" \
 			INNER JOIN \"tasks\" AS \"t\" ON \"t\".\"id\" = \"b\".\"task_id\" \
 			AND \"t\".\"revision\" = \"b\".\"task_revision\" \
 			WHERE \"b\".\"grant_id\" = \"authorization_remote_grants\".\"id\" \
 			AND \"b\".\"activated_at\" IS NOT NULL \
-			AND array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
+			AND (array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
 			= ANY(array_positions(\"authorization_remote_grants\".\"subject_chain\", \"t\".\"owner\")) \
-			AND \"t\".\"status\" NOT IN ('OPEN', 'COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED')) \
+			AND \"t\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED') \
+			OR \"t\".\"status\" = 'OPEN' AND \"t\".\"owner\" IS NULL \
+			AND \"t\".\"revision\" = \"authorization_remote_grants\".\"task_revision\" \
+			AND \"t\".\"revision\" = \"b\".\"task_revision\")) \
 			AND \"id\" = '00000000-0000-0000-0000-000000000000' \
 			ORDER BY \"expires_at\" ASC, \"id\" ASC LIMIT 100"
 		);
