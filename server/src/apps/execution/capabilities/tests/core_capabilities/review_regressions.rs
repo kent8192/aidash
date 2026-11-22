@@ -478,12 +478,14 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 		.as_ref()
 		.expect("Source read precedes model HTTP");
 	assert!(
-		!observed.content["skill_context"]
-			.as_str()
-			.unwrap()
+		!observed
+			.skill
+			.as_ref()
+			.expect("the pinned Skill revision was cached")
+			.context
 			.is_empty()
 	);
-	let content = observed.content.clone();
+	let skill_digest = observed.skill.as_ref().unwrap().digest.clone();
 	let mut policy = c.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-skill-list","effect":"deny","subjects":{"any":true},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[aidash_domain::registry::bindings::QualifiedRef::builtin(c.f.config.deployment.as_str(),"skill_list").resource_id()]}}));
 	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
@@ -513,8 +515,16 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 		Some("skill_list: tool.invoke was denied")
 	);
 	assert_eq!(
-		blocked.context.source_observation.as_ref().unwrap().content,
-		content,
+		blocked
+			.context
+			.source_observation
+			.as_ref()
+			.unwrap()
+			.skill
+			.as_ref()
+			.unwrap()
+			.digest,
+		skill_digest,
 		"the retry retains its original observation"
 	);
 	for path in [

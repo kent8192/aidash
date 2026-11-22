@@ -358,6 +358,45 @@ def tool_binding(node, name, alias="research_lookup"):
             "alias": alias, "narrow": {}}
 
 
+def native_run_context(body):
+    """Read the Task, Thread evidence and executed calls from Native messages."""
+    snapshot = {"thread": {"tasks": [], "artifacts": []}}
+    calls = {}
+    results = []
+    for message in body["messages"]:
+        for call in message.get("tool_calls", []):
+            calls[call["id"]] = {"name": call["function"]["name"], "arguments": json.loads(call["function"]["arguments"])}
+        content = message["content"]
+        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content or []
+        for part in parts:
+            kind = part["type"]
+            if kind == "tool_use":
+                calls[part["id"]] = {"name": part["name"], "arguments": part["input"]}
+                continue
+            if kind == "tool_result":
+                content = part["content"]
+                text = content if isinstance(content, str) else content[0]["text"]
+            elif kind == "text" and message["role"] in ("user", "tool"):
+                text = part["text"]
+            else:
+                continue
+            envelope = json.loads(text)
+            source = envelope.get("source")
+            if source in ("identity", "task"):
+                snapshot[source] = envelope["content"]
+            elif source == "evidence":
+                thread = envelope["content"].get("thread", {})
+                for field in ("tasks", "artifacts"):
+                    snapshot["thread"][field].extend(thread.get(field, []))
+            elif source == "tool":
+                invocation = envelope["provenance"]["invocation"]
+                if invocation in calls:
+                    results.append({"kind": "tool", "call": calls[invocation], "result": envelope["content"]})
+    tasks = snapshot["thread"]["tasks"]
+    snapshot["thread"]["tasks"] = list({task["id"]: task for task in tasks}.values())
+    return snapshot, results
+
+
 class Fixture:
     def __init__(self, node_a, node_b):
         self.node_a = node_a
@@ -372,12 +411,10 @@ class Fixture:
         # A new Tenant starts at No Training; stricter levels ask for ZDR (#963).
         assert body["provider"].get("data_collection") == "deny" or body["provider"].get("zdr") is True
         self.provider_calls["openrouter"] += 1
-        context = json.loads(body["messages"][0 if "system" in body else 1]["content"])
-        current = context["current"]
-        history = context.get("history", [])
+        current, history = native_run_context(body)
         task = current["task"]
         thread = current["thread"]
-        tools = [(event.get("call", {}).get("name"), event.get("result")) for event in history]
+        tools = [(event["call"]["name"], event["result"]) for event in history]
         calls = []
         text = ""
 

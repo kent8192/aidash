@@ -11,6 +11,7 @@ import {
 import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
+import { nativeUserData } from "./native-request";
 
 test("subject dashboard completes a conversation and clears expired access", async ({
   page,
@@ -23,9 +24,8 @@ test("subject dashboard completes a conversation and clears expired access", asy
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString());
-    const context = JSON.parse(body.messages[1].content);
-    const answered = context.history.some(
-      (entry: { kind: string }) => entry.kind === "human",
+    const answered = nativeUserData(body.messages).some(
+      (entry) => entry.in_reply_to?.source === "human_request",
     );
     const message = answered
       ? { role: "assistant", content: "Scoped task completed" }

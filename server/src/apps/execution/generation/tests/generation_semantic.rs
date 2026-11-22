@@ -19,7 +19,7 @@ use reinhardt::query::ExprTrait as _;
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
-	atomic::{AtomicUsize, Ordering},
+	atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use uuid::Uuid;
 
@@ -49,6 +49,7 @@ struct Fixture {
 	inference: Arc<AtomicUsize>,
 	response_mode: Arc<AtomicUsize>,
 	remember: Arc<AtomicUsize>,
+	advance_query: Arc<AtomicBool>,
 	derivations: Arc<AtomicUsize>,
 	maintenance_origins: Arc<AtomicUsize>,
 	embedding_started: Arc<tokio::sync::Notify>,
@@ -64,6 +65,7 @@ impl Fixture {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
+			let mut last_query_step = None;
 			loop {
 				worker.worker_once().await.unwrap();
 				let run = self
@@ -75,6 +77,13 @@ impl Fixture {
 					.into_iter()
 					.find(|run| run.agent_id == self.job["agent_id"].as_str().unwrap())
 					.unwrap();
+				if self.advance_query.load(Ordering::SeqCst)
+					&& waiting_for_query_input(&run)
+					&& last_query_step != Some(run.step)
+				{
+					self.send_query_input(&run).await;
+					last_query_step = Some(run.step);
+				}
 				if matches!(run.phase().as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
 					|| run.control == aidash_server::domain::RunControl::Paused
 				{
@@ -104,6 +113,19 @@ impl Fixture {
 			);
 		}
 	}
+	async fn send_query_input(&self, run: &aidash_domain::Run) {
+		// Native reuses a retrieval across ordinary tool rounds. Change the
+		// accepted inputs to force the next turn to reserve a new embedding.
+		let (status, body) = common::post(
+			&self.app,
+			&self.token,
+			&format!("/api/executions/{}/message", run.id),
+			json!({"content":format!("Research another vehicle example after step {}.", run.step)}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+
 	async fn remember(&self) -> Uuid {
 		self.remember_source(1).await
 	}
@@ -212,6 +234,11 @@ fn remembered_id(ordinal: usize) -> Uuid {
 	}
 }
 
+fn waiting_for_query_input(run: &aidash_domain::Run) -> bool {
+	use aidash_domain::run_state::{RunState, WaitingState};
+	matches!(&run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::TaskWait { .. }))
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn generated_semantic_context_without_embedding_approval_never_calls_provider(
@@ -259,6 +286,7 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
+	fixture.advance_query.store(true, Ordering::SeqCst);
 	fixture.drive().await;
 	assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 3);
 	assert_eq!(fixture.inference.load(Ordering::SeqCst), 2);
@@ -905,6 +933,7 @@ fn uncertain_embedding(
 	async move {
 		let scenario = scenario.await;
 		scenario.response_mode.store(2, Ordering::SeqCst);
+		scenario.advance_query.store(true, Ordering::SeqCst);
 		scenario
 	}
 	.boxed()
@@ -1015,8 +1044,13 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	let worker = WorkerProcess::spawn(restart);
 	// Recovery repeats native retrieval and durable reservation boundaries.
 	tokio::time::timeout(std::time::Duration::from_secs(90), async {
+		let mut sent = false;
 		loop {
 			let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+			if waiting_for_query_input(&run) && !sent {
+				fixture.send_query_input(&run).await;
+				sent = true;
+			}
 			if run.phase().as_str() == "FAILED" {
 				break;
 			}
@@ -1970,6 +2004,12 @@ fn recovery_runtime(
 	.shared()
 }
 
+fn standalone_derivation(request: &Value) -> Option<Value> {
+	let content = &request["messages"][1]["content"];
+	let text = content.as_str().or_else(|| content[0]["text"].as_str())?;
+	serde_json::from_str(text).ok()
+}
+
 #[rstest::fixture]
 fn semantic_router(
 	#[default(None)] allowance: Option<i64>,
@@ -1982,6 +2022,7 @@ fn semantic_router(
 		inference,
 		response_mode,
 		remember,
+		advance_query,
 		derivations,
 		maintenance_origins,
 		embedding_started,
@@ -1993,6 +2034,7 @@ let embedding_calls = embeddings.clone();
 		let embedding_mode = response_mode.clone();
 
 		let model_mode = remember.clone();
+		let query_turns = advance_query.clone();
 
 		let derived_calls = derivations.clone();
 
@@ -2029,12 +2071,13 @@ let embedding_calls = embeddings.clone();
 .route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
                 let calls = model_calls.clone();
                 let remember = model_mode.clone();
+                let query_turns = query_turns.clone();
                 let derived = derived_calls.clone();
                 let mode = derivation_mode.clone();
                 let pool = model_pool.clone();
                 let expected_origins = expected_origins.clone();
                 async move {
-                    if let Some(context) = input["messages"][1]["content"].as_str().and_then(|value| serde_json::from_str::<Value>(value).ok())
+                    if let Some(context) = standalone_derivation(&input)
                         && context.get("units").is_some() {
                         use aidash_domain::memory::{Content, Unit, Verification};
                         use reinhardt::query::{Alias, Expr, ExprTrait, Func, PostgresQueryBuilder, Query, QueryStatementBuilder};
@@ -2062,6 +2105,8 @@ let embedding_calls = embeddings.clone();
                     let (name, arguments) = if mode > 0 {
                         let id = remembered_id(mode);
                         ("memory_mutate", serde_json::to_string(&json!({"changes":[{"operation":"add","id":id,"content":{"text":"Generated vehicle findings","kind":"experience","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).unwrap())
+                    } else if query_turns.load(Ordering::SeqCst) {
+                        ("task_wait", json!({"seconds":300}).to_string())
                     } else { ("workspace_observe", "{}".to_owned()) };
                     reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":name,"arguments":arguments}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
                 }
@@ -2104,6 +2149,7 @@ mod semantic_fixture_composition {
 			inference,
 			response_mode,
 			remember,
+			advance_query,
 			derivations,
 			maintenance_origins,
 			embedding_started,
@@ -2233,6 +2279,7 @@ mod semantic_fixture_composition {
 			inference,
 			response_mode,
 			remember,
+			advance_query,
 			derivations,
 			maintenance_origins,
 			embedding_started,
@@ -2250,6 +2297,7 @@ struct SemanticProviderState {
 	inference: Arc<AtomicUsize>,
 	response_mode: Arc<AtomicUsize>,
 	remember: Arc<AtomicUsize>,
+	advance_query: Arc<AtomicBool>,
 	derivations: Arc<AtomicUsize>,
 	maintenance_origins: Arc<AtomicUsize>,
 	embedding_started: Arc<tokio::sync::Notify>,
@@ -2269,6 +2317,7 @@ fn semantic_provider_state(
 		inference,
 		response_mode,
 		remember,
+		advance_query: Arc::new(AtomicBool::new(false)),
 		derivations,
 		maintenance_origins,
 		embedding_started,

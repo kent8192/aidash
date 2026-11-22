@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from golden_path import tool_descriptor, tool_binding, api_request, entity, tenant_subject, default_node, register_node, list_federation_tools, wait_for
+from golden_path import tool_descriptor, tool_binding, api_request, entity, tenant_subject, default_node, register_node, list_federation_tools, native_run_context, wait_for
 
 # Budget for a scoped Run to reach its crash boundary, and again to complete
 # after the SIGKILL. Each durable phase performs bounded Home RPCs before its
@@ -172,11 +172,11 @@ class Providers:
                         result = {"accepted": body["scenario"]}
                     else:
                         assert self.path == "/v1/chat/completions"
-                        context = json.loads(body["messages"][1]["content"])
-                        scenario = context["current"]["task"]["title"]
+                        context, history = native_run_context(body)
+                        scenario = context["task"]["title"]
                         with fixture.lock:
                             fixture.model_calls[scenario] += 1
-                        tools = {item.get("call", {}).get("name") for item in context.get("history", []) if item.get("kind") == "tool"}
+                        tools = {item["call"]["name"] for item in history}
                         if "thread_message" not in tools:
                             name, arguments = "thread_message", {"content": "Scoped progress: " + scenario}
                         elif "scoped_effect" not in tools:

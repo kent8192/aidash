@@ -427,8 +427,13 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
-		json!(run.context)["history"][1]["event"]["result"]["text"],
-		"Approved guide"
+		run.context.events().find_map(|event| match event {
+			aidash_domain::context::ContextEvent::Tool { call, result }
+				if call.id == "read-guide" =>
+				Some(&result["text"]),
+			_ => None,
+		}),
+		Some(&json!("Approved guide"))
 	);
 	cleanup(f, &url, &schema).await;
 }
