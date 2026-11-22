@@ -65,7 +65,7 @@ impl Fixture {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
-			let mut last_query_step = None;
+			let mut last_query_turn = None;
 			loop {
 				worker.worker_once().await.unwrap();
 				let run = self
@@ -77,12 +77,13 @@ impl Fixture {
 					.into_iter()
 					.find(|run| run.agent_id == self.job["agent_id"].as_str().unwrap())
 					.unwrap();
+				let turn = self.inference.load(Ordering::SeqCst);
 				if self.advance_query.load(Ordering::SeqCst)
 					&& waiting_for_query_input(&run)
-					&& last_query_step != Some(run.step)
+					&& last_query_turn != Some(turn)
 				{
-					self.send_query_input(&run).await;
-					last_query_step = Some(run.step);
+					self.send_query_input(run.id, turn).await;
+					last_query_turn = Some(turn);
 				}
 				if matches!(run.phase().as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
 					|| run.control == aidash_server::domain::RunControl::Paused
@@ -113,14 +114,14 @@ impl Fixture {
 			);
 		}
 	}
-	async fn send_query_input(&self, run: &aidash_domain::Run) {
+	async fn send_query_input(&self, run: Uuid, turn: usize) {
 		// Native reuses a retrieval across ordinary tool rounds. Change the
 		// accepted inputs to force the next turn to reserve a new embedding.
 		let (status, body) = common::post(
 			&self.app,
 			&self.token,
-			&format!("/api/executions/{}/message", run.id),
-			json!({"content":format!("Research another vehicle example after step {}.", run.step)}),
+			&format!("/api/executions/{run}/message"),
+			json!({"content":format!("Research another vehicle example after model turn {turn}.")}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -1048,7 +1049,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 		loop {
 			let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 			if waiting_for_query_input(&run) && !sent {
-				fixture.send_query_input(&run).await;
+				fixture.send_query_input(run.id, 1).await;
 				sent = true;
 			}
 			if run.phase().as_str() == "FAILED" {
@@ -2097,7 +2098,7 @@ let embedding_calls = embeddings.clone();
                         result.text = "Derived generated vehicle findings / 生成された車両の知見".into();
                         return reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap();
                     }
-                    calls.fetch_add(1, Ordering::SeqCst);
+                    let turn = calls.fetch_add(1, Ordering::SeqCst) + 1;
                     let mode = remember.load(Ordering::SeqCst);
                     if mode == usize::MAX {
                         return reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Vehicle research complete."}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
@@ -2108,7 +2109,7 @@ let embedding_calls = embeddings.clone();
                     } else if query_turns.load(Ordering::SeqCst) {
                         ("task_wait", json!({"seconds":300}).to_string())
                     } else { ("workspace_observe", "{}".to_owned()) };
-                    reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":name,"arguments":arguments}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+                    reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":format!("observe-{turn}"),"type":"function","function":{"name":name,"arguments":arguments}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
                 }
             })).into_server_router();
 
