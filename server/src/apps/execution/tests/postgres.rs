@@ -1771,10 +1771,18 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	.await
 	.unwrap();
 	let run = store.runs(&ACME).await.unwrap().remove(0);
-	let aidash_server::context::ContextEvent::Tool { result, .. } = &run.context.history[0].event
-	else {
-		panic!("expected tool result")
-	};
+	let result = run
+		.context
+		.events()
+		.find_map(|event| match event {
+			aidash_server::context::ContextEvent::Tool { call, result }
+				if call.id == "read-guide" =>
+			{
+				Some(result)
+			}
+			_ => None,
+		})
+		.expect("skill_read records its Tool result");
 	let text = result["text"].as_str().unwrap();
 	assert!(!text.is_empty() && text.len() < 8000);
 	assert_eq!(result["budget_limited"], true);
@@ -1859,12 +1867,17 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	}
 	.unwrap();
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	assert!(
-		json!(run.context)["history"][0]["event"]["result"]["error"]
-			.as_str()
-			.unwrap()
-			.contains("missing_tool")
-	);
+	let result = run
+		.context
+		.events()
+		.find_map(|event| match event {
+			aidash_server::context::ContextEvent::Tool { call, result } if call.id == "bad" => {
+				Some(result)
+			}
+			_ => None,
+		})
+		.expect("the unavailable Tool still records a result");
+	assert!(result["error"].as_str().unwrap().contains("missing_tool"));
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
 	let child = store
