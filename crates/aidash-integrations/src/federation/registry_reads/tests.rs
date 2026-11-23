@@ -89,7 +89,7 @@ async fn registry_rpc_signs_each_call_as_the_mapped_reader() {
 	let calls = calls.lock().unwrap();
 	assert_eq!(calls.len(), 2);
 	for (headers, body) in calls.iter() {
-		assert_eq!(headers["x-aidash-protocol"], "0.5");
+		assert_eq!(headers["x-aidash-protocol"], "0.6");
 		let claims = verified(
 			&key,
 			headers,
