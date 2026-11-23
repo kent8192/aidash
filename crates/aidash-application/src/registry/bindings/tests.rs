@@ -2606,7 +2606,11 @@ async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() 
 		description: "Search".into(),
 		parameters: json!({"type":"object"}),
 	}];
-	let projection = aidash_domain::context::RequestProjection::Legacy;
+	let projection =
+		aidash_domain::context::RequestProjection::Native(aidash_domain::projection::CacheScope {
+			tenant: String::new(),
+			key_version: 1,
+		});
 	let budget = aidash_domain::context::RequestBudget {
 		instructions: "Test",
 		tools: &specs,

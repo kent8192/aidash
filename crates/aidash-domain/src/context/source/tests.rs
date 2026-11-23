@@ -168,11 +168,8 @@ fn declared_mixed_sources_place_independently_and_defaults_keep_request_bytes() 
 		tenant: "fixture".into(),
 		key_version: 1,
 	};
-	for projection in [
-		RequestProjection::Legacy,
-		RequestProjection::Ordered(scope.clone()),
-		RequestProjection::Native(scope),
-	] {
+	let projection = RequestProjection::Native(scope);
+	{
 		let pinned = json!({"reference_documents":[{"text":"step-reference"},{"text":"default-reference"}],"semantic_memory":{"matches":[{"text":"run-retrieval"}]}});
 		let budget = RequestBudget {
 			input_format: Default::default(),
@@ -226,16 +223,6 @@ fn declared_mixed_sources_place_independently_and_defaults_keep_request_bytes() 
 		);
 		match &request.context {
 			ModelContext::Sampling(_) => panic!("expected a Run context"),
-			ModelContext::Ordered(context) => {
-				let stable: Value = serde_json::from_str(&context.stable).unwrap();
-				assert_eq!(
-					stable["reference_documents"],
-					json!([null,{"text":"default-reference"}])
-				);
-				assert!(!context.stable.contains("step-reference"));
-				assert!(context.stable.contains("run-retrieval"));
-				assert!(!context.volatile.contains("run-retrieval"));
-			}
 			ModelContext::Native(context) => {
 				assert!(
 					context
@@ -253,10 +240,6 @@ fn declared_mixed_sources_place_independently_and_defaults_keep_request_bytes() 
 				);
 				assert!(!context.volatile.contains("run-retrieval"));
 			}
-			ModelContext::Legacy(context) => assert_eq!(
-				context["current"]["reference_documents"],
-				json!([null,{"text":"default-reference"}])
-			),
 		}
 		let mut wrong_placement = run.clone();
 		wrong_placement.placement.as_mut().unwrap().volatility = Some(Volatility::Step);
@@ -277,11 +260,8 @@ fn final_budget_drops_optional_envelopes_without_treating_equal_history_as_deliv
 		tenant: "fixture".into(),
 		key_version: 1,
 	};
-	for projection in [
-		RequestProjection::Legacy,
-		RequestProjection::Ordered(scope.clone()),
-		RequestProjection::Native(scope),
-	] {
+	let projection = RequestProjection::Native(scope);
+	{
 		let content = "source body ".repeat(700);
 		let mut item = placed(
 			"private-skill",

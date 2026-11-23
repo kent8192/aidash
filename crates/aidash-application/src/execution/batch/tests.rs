@@ -177,9 +177,17 @@ fn calls_outside_the_request_exposure_set_end_the_batch(
 fn worst_case_result_encoding_must_fit_beside_later_call_reserves() {
 	let calls = calls(&["read", "read", "read", "patch"]);
 	let tools = tools();
+	let mut context = Context::default();
+	context.push(ContextEvent::Assistant {
+		epoch: 1,
+		text: String::new(),
+		calls: calls.iter().map(|call| call.id.clone()).collect(),
+		reasoning: None,
+		provider_activity: vec![],
+	});
 	let planned = |request_tokens, request_window| {
 		plan_tool_batch(
-			&Context::default(),
+			&context,
 			&calls,
 			0,
 			&tools,
@@ -192,17 +200,28 @@ fn worst_case_result_encoding_must_fit_beside_later_call_reserves() {
 		)
 	};
 	// Every bounded byte as an escaped control character, as the planner probes.
-	let one = context::tool_event_growth(
-		&Context::default(),
-		&ContextEvent::tool(
-			calls[0].clone(),
-			json!({"bound": "\u{1}".repeat(64 + RESULT_ENVELOPE_BYTES)}),
-		),
-	);
+	let mut probe = context.clone();
+	let mut cumulative = 0;
+	let bounds: Vec<_> = calls
+		.iter()
+		.take(3)
+		.map(|call| {
+			let event = ContextEvent::tool(
+				call.clone(),
+				json!({"bound": "\u{1}".repeat(64 + RESULT_ENVELOPE_BYTES)}),
+			);
+			cumulative += context::tool_event_growth(&probe, &event);
+			probe.push(event);
+			cumulative
+		})
+		.collect();
+	let [one, two, three] = bounds[..] else {
+		panic!("three reads precede the write");
+	};
 	assert!(one > 7 * (64 + RESULT_ENVELOPE_BYTES));
 	let reserve = TOOL_EVENT_RESERVE;
-	assert_eq!(planned(0, 2 * one + 2 * reserve - 16), 0);
-	assert_eq!(planned(0, 2 * one + 2 * reserve + 16), 2);
-	assert_eq!(planned(0, 3 * one + reserve + 16), 3);
-	assert_eq!(planned(one, 3 * one + 2 * reserve + 16), 2);
+	assert_eq!(planned(0, two + 2 * reserve - 1), 0);
+	assert_eq!(planned(0, two + 2 * reserve), 2);
+	assert_eq!(planned(0, three + reserve), 3);
+	assert_eq!(planned(one, one + two + 2 * reserve), 2);
 }

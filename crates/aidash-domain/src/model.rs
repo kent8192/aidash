@@ -72,10 +72,6 @@ pub struct ModelConfig {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider_route: Option<ProviderRouteEvidence>,
 	pub cost: Value,
-	/// Projection Versions this model accepts (ADR 0015). Omitted means Legacy
-	/// only and is not serialized, so existing model definitions keep bytes.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub projection_versions: Vec<crate::projection::ProjectionVersion>,
 	/// How the provider route caches prompt prefixes (ADR 0019). Omitted means
 	/// `none` and is not serialized, so existing model definitions keep bytes.
 	/// Only `explicit` lets an opted-in Agent send cache breakpoints.
@@ -185,15 +181,11 @@ impl ModelConfig {
 			.estimate_diagnostics
 			.as_ref()
 			.is_some_and(|diagnostics| {
-				diagnostics
-					.calibrations
-					.iter()
-					.any(|(projection, calibration)| {
-						!projection.is_implemented()
-							|| calibration.ratio_ppm == 0
-							|| u64::from(calibration.ratio_ppm) > PPM
-							|| calibration.samples as usize > CALIBRATION_WINDOW
-					})
+				diagnostics.calibrations.values().any(|calibration| {
+					calibration.ratio_ppm == 0
+						|| u64::from(calibration.ratio_ppm) > PPM
+						|| calibration.samples as usize > CALIBRATION_WINDOW
+				})
 			}) {
 			return Err(Error::Invalid(
 				"estimate_diagnostics requires bounded implemented projection calibrations".into(),
@@ -315,49 +307,21 @@ impl ModelConfig {
 		self.request_estimator.unwrap_or_default()
 	}
 
-	/// Projection Versions this model accepts; Legacy when none are declared.
-	pub fn supports_projection(&self, version: crate::projection::ProjectionVersion) -> bool {
-		if self.projection_versions.is_empty() {
-			version.is_legacy()
-		} else {
-			self.projection_versions.contains(&version)
-		}
-	}
-
-	/// Model definitions may declare only implemented versions, each once.
-	pub fn validate_projection_versions(&self) -> Result<()> {
-		let mut declared = std::collections::BTreeSet::new();
-		for version in &self.projection_versions {
-			if !version.is_implemented() {
-				return Err(Error::Invalid(format!(
-					"model {} declares Projection Version {version}, which is not implemented",
-					self.model_id
-				)));
-			}
-			if !declared.insert(version) {
-				return Err(Error::Invalid(format!(
-					"model {} declares Projection Version {version} more than once",
-					self.model_id
-				)));
+	/// Decode a persisted definition without changing the JSON that is pinned
+	/// into its digest. New definitions use the strict deserializer directly.
+	pub fn from_stored(mut value: Value) -> Result<Self> {
+		if let Some(fields) = value.as_object_mut() {
+			fields.remove("projection_versions");
+			if let Some(calibrations) = fields
+				.get_mut("estimate_diagnostics")
+				.and_then(|diagnostics| diagnostics.get_mut("calibrations"))
+				.and_then(Value::as_object_mut)
+			{
+				calibrations.remove("legacy");
+				calibrations.remove("ordered");
 			}
 		}
-		Ok(())
-	}
-
-	/// An Agent may pin only an implemented version its model declares.
-	pub fn require_projection(&self, version: crate::projection::ProjectionVersion) -> Result<()> {
-		if !version.is_implemented() {
-			return Err(Error::Invalid(format!(
-				"Projection Version {version} is not implemented"
-			)));
-		}
-		if !self.supports_projection(version) {
-			return Err(Error::Invalid(format!(
-				"model {} does not declare Projection Version {version}",
-				self.model_id
-			)));
-		}
-		Ok(())
+		Ok(serde_json::from_value(value)?)
 	}
 
 	/// Whether calls are served by a Plan Connection (ADR 0007).
@@ -410,8 +374,7 @@ impl ModelConfig {
 
 	/// Plan usage reaches only OpenAI's Responses API, which needs a stream and
 	/// supports neither OpenRouter media routes, cache breakpoints nor audio
-	/// input. Native messages and tool turns do not retain provider reasoning
-	/// (ADR 0083).
+	/// input. The request carries the Run’s model turns and recorded reasoning.
 	pub fn validate_plan_usage(&self) -> Result<()> {
 		if !self.uses_plan_connection() {
 			return Ok(());
@@ -500,14 +463,8 @@ impl ModelConfig {
 		Ok(())
 	}
 
-	/// An Agent may opt in to explicit prompt caching only with the Ordered
-	/// or a later Projection Version on a model that accepts cache
-	/// breakpoints. Callers never drop an opt-in silently (ADR 0019).
-	pub fn require_prompt_cache(
-		&self,
-		prompt_cache: crate::projection::PromptCache,
-		version: crate::projection::ProjectionVersion,
-	) -> Result<()> {
+	/// Explicit prompt caching requires a model that accepts cache breakpoints (ADR 0019).
+	pub fn require_prompt_cache(&self, prompt_cache: crate::projection::PromptCache) -> Result<()> {
 		if prompt_cache == crate::projection::PromptCache::Off {
 			return Ok(());
 		}
@@ -517,11 +474,6 @@ impl ModelConfig {
 				self.model_id,
 				EXPLICIT_CACHE_PREFIXES.join(", ")
 			)));
-		}
-		if version.is_legacy() {
-			return Err(Error::Invalid(
-				"Agent prompt_cache explicit requires projection_version ordered or native".into(),
-			));
 		}
 		Ok(())
 	}

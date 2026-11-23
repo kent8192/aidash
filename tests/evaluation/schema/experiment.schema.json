@@ -148,6 +148,14 @@
           "label": { "type": "string" },
           "agent": { "$ref": "#/$defs/registration" },
           "agent_fields": { "type": "object" },
+          "agent_defaults": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "projection_version": { "type": "string" },
+              "harness_contract": { "type": "string" }
+            }
+          },
           "model": { "$ref": "#/$defs/registration" },
           "tools": {
             "type": "array",

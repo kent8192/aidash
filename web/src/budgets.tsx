@@ -3,10 +3,19 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "./components/ui/table";
 import { Textarea } from "./components/ui/textarea";
 import { budgets, budgetsCreate, budgetsDelete } from "./generated/aidash";
 import type {
   BudgetView,
+  ModelCallUsageByPurpose,
   RequestBudgetDefinition as BudgetDefinition,
 } from "./generated/models";
 import { Alert, Hint, Loading } from "./components/patterns";
@@ -45,9 +54,11 @@ function scopeLabel(scope: BudgetView["scope"]): string {
 export function BudgetSettings({
   tenant,
   subject,
+  modelCallUsage,
 }: {
   tenant: string;
   subject: string | null;
+  modelCallUsage?: ModelCallUsageByPurpose[] | null;
 }) {
   const { t } = useI18n();
   const client = useQueryClient();
@@ -87,6 +98,9 @@ export function BudgetSettings({
         <Alert retry={() => void query.refetch()}>{query.error.message}</Alert>
       )}
       {error && <Alert>{error}</Alert>}
+      {modelCallUsage && modelCallUsage.length > 0 && (
+        <ModelCallUsage rows={modelCallUsage} />
+      )}
       {query.data && query.data.length > 0 && (
         <ul className="grid gap-2">
           {query.data.map((budget) => (
@@ -225,5 +239,57 @@ export function BudgetSettings({
         </div>
       </form>
     </Panel>
+  );
+}
+
+function ModelCallUsage({ rows }: { rows: ModelCallUsageByPurpose[] }) {
+  const { locale, t } = useI18n();
+  const credits = new Intl.NumberFormat(locale, { maximumFractionDigits: 9 });
+  const quantities = new Intl.NumberFormat(locale);
+  const reported = (value: number | null) =>
+    value === null ? t("modelCallUnreported") : quantities.format(value);
+
+  return (
+    <Table>
+      <caption className="caption-top px-3 py-2 text-left font-medium">
+        {t("modelCallUsage")}
+      </caption>
+      <TableHeader>
+        <TableRow>
+          <TableHead>{t("modelCallPurpose")}</TableHead>
+          <TableHead className="text-right">{t("modelCallCount")}</TableHead>
+          <TableHead className="text-right">
+            {t("modelCallInputTokens")}
+          </TableHead>
+          <TableHead className="text-right">
+            {t("modelCallOutputTokens")}
+          </TableHead>
+          <TableHead className="text-right">{t("modelCallCost")}</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <TableRow key={row.purpose}>
+            <TableHead scope="row">
+              {t(`modelCallPurpose_${row.purpose}`)}
+            </TableHead>
+            <TableCell className="text-right">
+              {quantities.format(row.calls)}
+            </TableCell>
+            <TableCell className="text-right">
+              {reported(row.input_tokens)}
+            </TableCell>
+            <TableCell className="text-right">
+              {reported(row.output_tokens)}
+            </TableCell>
+            <TableCell className="text-right">
+              {row.cost_nanocredits === null
+                ? t("modelCallUnreported")
+                : credits.format(row.cost_nanocredits / 1e9)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }

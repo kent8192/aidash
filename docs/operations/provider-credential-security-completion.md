@@ -128,7 +128,6 @@ cancellation and bounded resource handling.
 Request Estimates and Stable Prefix handling use the serialized Native request.
 Store no reasoning output and request no encrypted reasoning replay. Validate
 multi-step tool execution and resumed Runs in addition to a single completion.
-Legacy and Ordered projection behavior remains covered by regression checks.
 
 ## Cloud sandbox and evidence
 

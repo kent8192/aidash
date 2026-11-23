@@ -1033,6 +1033,20 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `execution/0154_worker_stints` opens Stints at authorized worker entry. A lease acquired while a Run is waiting for its Working Area creates no Stint. The SQL replaces the trigger function that tracks lease holders and ends Stints, including a Stint already open when its Run has to queue. Reinhardt has no typed operation for a PostgreSQL function body. Reversal restores the phase-based trigger from `execution/0152_stint_leases`.
 
+`execution/0155_model_calls` (after `execution/0154_worker_stints`) adds
+prompt-free Model Calls and their links to Compaction Attempts, Inference
+Attempts and Usage Records (#1068, ADR 0144). A recorded call names a Tenant
+and Node and may name a Stint of the same Tenant and Run. The insert trigger
+associates a step with its open Stint and requires exactly one owner on each
+new Inference Attempt and Usage Record. Rows from older versions may lack
+attribution and remain readable. Reinhardt has no typed operation for the
+ownership trigger or Tenant policy, and its PostgreSQL migration renderer
+omits changes in column nullability. The SQL assets therefore implement
+those three changes. `execution/0156_model_call_state` records the optional
+Run relation and Model Call ID in the Usage Record model state. Rollback
+requires background Usage Records to be cleared before restoring the
+required Run relation.
+
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 
 `execution/0094_subnodes`, `0095_subnodes_row_level_security`, and

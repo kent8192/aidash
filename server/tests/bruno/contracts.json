@@ -36798,10 +36798,19 @@
               },
               "run": {
                 "$ref": "#/components/schemas/RunInspection"
+              },
+              "stints": {
+                "default": [],
+                "description": "Awake stretches of this execution, in start order.",
+                "items": {
+                  "$ref": "#/components/schemas/Stint"
+                },
+                "type": "array"
               }
             },
             "required": [
               "egress_requests",
+              "stints",
               "run",
               "invocations",
               "memory",
@@ -38174,6 +38183,273 @@
                 "type": "string"
               }
             },
+            "type": "object"
+          },
+          "ModelCall": {
+            "properties": {
+              "ended_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "model": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ModelCallOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "owner": {
+                "$ref": "#/components/schemas/ModelCallOwner"
+              },
+              "purpose": {
+                "$ref": "#/components/schemas/ModelCallPurpose"
+              },
+              "request_digest": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReportedUsage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "purpose",
+              "owner",
+              "model",
+              "request_digest",
+              "outcome",
+              "usage",
+              "started_at",
+              "ended_at"
+            ],
+            "type": "object"
+          },
+          "ModelCallOutcome": {
+            "enum": ["accepted", "failed", "refused"],
+            "type": "string"
+          },
+          "ModelCallOwner": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["stint"],
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "stint_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "stint_id", "run_id"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["node"],
+                    "type": "string"
+                  },
+                  "node": {
+                    "type": "string"
+                  },
+                  "tenant": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "tenant", "node"],
+                "type": "object"
+              }
+            ]
+          },
+          "ModelCallPurpose": {
+            "enum": [
+              "compaction_summary",
+              "memory_role",
+              "workbench_test",
+              "mcp_sampling"
+            ],
+            "type": "string"
+          },
+          "ProviderCost": {
+            "description": "Provider cost in billionths of an OpenRouter credit.",
+            "properties": {
+              "nanocredits": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "upstream_nanocredits": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              }
+            },
+            "required": ["nanocredits", "upstream_nanocredits"],
+            "type": "object"
+          },
+          "ProviderIdentity": {
+            "additionalProperties": false,
+            "description": "Allowlisted response metadata. Missing or invalid fields remain unknown.",
+            "properties": {
+              "provider_request_id": {
+                "type": ["string", "null"]
+              },
+              "reported_model": {
+                "type": ["string", "null"]
+              },
+              "reported_provider": {
+                "type": ["string", "null"]
+              },
+              "reported_route": {
+                "type": ["string", "null"]
+              }
+            },
+            "type": "object"
+          },
+          "ReportedUsage": {
+            "description": "Usage exactly as the provider reported it. Scalar counts are `None` when\nomitted or invalid. An empty tool-use map means no counts were reported.",
+            "properties": {
+              "cache_read_tokens": {
+                "description": "Breakdown of `input_tokens` served from the provider's prompt cache.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "cache_write_tokens": {
+                "description": "Breakdown of `input_tokens` written to the provider's prompt cache.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "cost": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ProviderCost"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "provider_identity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ProviderIdentity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Only identities explicitly reported upstream, never requested values."
+              },
+              "reasoning_tokens": {
+                "description": "Breakdown of `output_tokens` spent on reasoning.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "server_tool_use": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "description": "Provider-owned tool counts; never added to token usage or Request Estimates.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "server_tool_use",
+              "input_tokens",
+              "output_tokens",
+              "cache_read_tokens",
+              "cache_write_tokens",
+              "reasoning_tokens",
+              "cost",
+              "provider_identity"
+            ],
+            "type": "object"
+          },
+          "Stint": {
+            "description": "One awake stretch and its auxiliary requests in execution inspection.",
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "agent_version": {
+                "type": "string"
+              },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
+              "ended_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "model_calls": {
+                "items": {
+                  "$ref": "#/components/schemas/ModelCall"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "node",
+              "agent_id",
+              "agent_version",
+              "started_at",
+              "ended_at",
+              "end_reason",
+              "model_calls"
+            ],
             "type": "object"
           }
         },
@@ -42029,7 +42305,111 @@
     "path": "/api/tenants/{tenant}/administration",
     "query_parameters": [],
     "source": "server/src/apps/identity/views/tenant_administration.rs",
-    "uuid_parameters": []
+    "uuid_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ModelCallPurpose": {
+            "enum": [
+              "compaction_summary",
+              "memory_role",
+              "workbench_test",
+              "mcp_sampling"
+            ],
+            "type": "string"
+          },
+          "ModelCallUsageByPurpose": {
+            "description": "Counts and reported consumption for one purpose outside a Run.",
+            "properties": {
+              "calls": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "cost_nanocredits": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "input_tokens": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "output_tokens": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "purpose": {
+                "$ref": "#/components/schemas/ModelCallPurpose"
+              }
+            },
+            "required": [
+              "purpose",
+              "calls",
+              "input_tokens",
+              "output_tokens",
+              "cost_nanocredits"
+            ],
+            "type": "object"
+          },
+          "TenantAdministration": {
+            "description": "The actions the caller's Tenant policy permits, and what it may assign.",
+            "properties": {
+              "actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "assignable_groups": {
+                "description": "Empty unless the caller holds a Tenant Administrator action.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              "issuable_subjects": {
+                "description": "Service/agent subjects this caller may issue a credential for.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "label": {
+                "description": "The Tenant label every member sees.",
+                "type": ["string", "null"]
+              },
+              "model_call_usage": {
+                "description": "Out-of-Run Model Calls, visible to holders of the Tenant Budget action.",
+                "items": {
+                  "$ref": "#/components/schemas/ModelCallUsageByPurpose"
+                },
+                "type": ["array", "null"]
+              },
+              "policy_revision": {
+                "description": "The policy revision a membership update must name.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tenant",
+              "label",
+              "actions",
+              "issuable_subjects",
+              "assignable_groups",
+              "policy_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/TenantAdministration"
+        }
+      }
+    }
   },
   {
     "json": false,

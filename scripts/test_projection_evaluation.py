@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import projection_evaluation as projection
-from test_fixed_task_evaluation import cli, corpus, full_result, observation
+from test_fixed_task_evaluation import cli, corpus, full_result, observation, runner
 
 
 def example():
@@ -166,6 +166,28 @@ class EvidenceImportTest(unittest.TestCase):
                 export["manifest_sha256"] = projection.canonical_sha256(manifest)
                 imported = projection.load_evidence(manifest, export, corpus=historical_corpus)
                 self.assertEqual(len(imported["runs"]), len(manifest["runs"]))
+
+    def test_import_uses_the_contract_registered_for_an_omitted_arm_field(self):
+        manifest, export = copy.deepcopy(self.manifest), copy.deepcopy(self.export)
+        variants = manifest["experiment"]["variants"]
+        value = corpus()
+        planned = projection.evaluation.plan(value, [variants[0]["task"]], [variants[0]["comparison"]])
+        arm = variants[0]["arm"]
+        item = next(run for run in planned if run["arm"] == arm)
+        experiment = mock.Mock(prefix="evaluation")
+        experiment.register.return_value = variants[0]["agent"]
+        model = variants[0]["model"]
+        registered, errors = runner.register_variants(experiment, value, [item], {item["model"]: model}, "http://fixture")
+        self.assertEqual(errors, {})
+        variants[0]["agent_defaults"] = registered[0]["agent_defaults"]
+        run_ids = {run["run_id"] for run in manifest["runs"] if run["arm"] == arm}
+        for row in export["inference_usage"]:
+            if row["run_id"] in run_ids and row["purpose"] == "main":
+                row.update(harness_contract=5, projection_version=3)
+        export["manifest_sha256"] = projection.canonical_sha256(manifest)
+        imported = projection.load_evidence(manifest, export)
+        self.assertEqual({run["harness_contract"] for run in imported["runs"] if run["arm"] == arm}, {5})
+        self.assertEqual({run["harness_contract"] for run in imported["runs"] if run["arm"] != arm}, {1})
 
     def test_harness_contract_arm_field_is_numeric_with_a_legacy_default(self):
         for value, expected in ((None, 1), ("legacy@1", 1), ("structured@3", 4), (1, 1), (2, 2), (3, 3), (4, 4), ("2", 2)):
@@ -332,6 +354,18 @@ class AccountingReportTest(unittest.TestCase):
         self.assertIsNone(report["runs"][1]["cost"]["total_nanocredits"])
         self.assertEqual(report["campaign_all_work"]["total_cost_nanocredits"]["total"], 35 * len(self.manifest["runs"]) + 7)
         self.assertEqual(report["campaign_all_work"]["cost_by_purpose"]["memory"]["nanocredits"]["total"], 7)
+        export["run_inventory"][0]["attempt_ids"]["inference_usage"].append("shared-memory")
+        export["inference_usage"].append({"attempt_id": "shared-memory", "run_id": owners[0],
+            "purpose": "auxiliary", "cost_nanocredits": 7, "input_tokens": 10})
+        duplicated = self.analyze(export)
+        self.assertEqual(duplicated["campaign_all_work"]["total_cost_nanocredits"],
+                         report["campaign_all_work"]["total_cost_nanocredits"])
+        self.assertEqual(duplicated["campaign_all_work"]["cost_by_purpose"],
+                         report["campaign_all_work"]["cost_by_purpose"])
+        self.assertIsNone(duplicated["runs"][0]["cost"]["total_nanocredits"])
+        export["inference_usage"][-1]["cost_nanocredits"] = 8
+        with self.assertRaisesRegex(projection.EvidenceError, "incompatible duplicate provider-work charge"):
+            self.analyze(export)
 
     def test_incompatible_units_are_preserved_and_cannot_pass_the_cost_gate(self):
         export = copy.deepcopy(self.export)

@@ -531,6 +531,8 @@ def plan_errors(result, corpus):
                                                                               item["agent_fields"]):
             errors.append(f"$.experiment.variants: {variant['task']}/{variant['comparison']}/{variant['arm']} is not "
                           "a corpus pair with its label and Agent fields")
+        if variant.get("agent_defaults", {}).keys() & variant["agent_fields"].keys():
+            errors.append("$.experiment.variants: Agent defaults must only describe omitted fields")
     for run in result["runs"]:
         item = pairs.get((run["task"], run["comparison"], run["arm"]))
         if item is None or run["label"] != item["label"] or run["oracle"]["kind"] != item["task"]["oracle"]["kind"] \
@@ -542,6 +544,10 @@ def plan_errors(result, corpus):
 # Regraded oracles by corpus digest, task and recorded evidence: grading is a function of those,
 # and a code oracle runs its tests, so repeated validations reuse the result.
 REGRADED = {}
+
+
+def agent_field(arm, key):
+    return arm.get("agent_fields", {}).get(key, arm.get("agent_defaults", {}).get(key))
 
 
 def comparable_oracle(oracle):
@@ -583,7 +589,7 @@ def oracle_errors(result, corpus):
                           "executes it")
             continue
         observation = {"final_answer": answer, "tool_calls": run["tool_calls"], "human_answers": run["human_answers"],
-                       "native_projection": variant["agent_fields"].get("projection_version") == "native",
+                       "native_projection": agent_field(variant, "projection_version") == "native",
                        "compactions": run["compactions"], "recovery_operations": run.get("recovery_operations", []),
                        "fixture_record_pages": evidence.get("fixture_record_pages")}
         try:
@@ -1544,8 +1550,7 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
     live = tier == "live"
     # Live code is executable only by the resource-bounded container oracle.
     execution = allow_code_execution if not live or isinstance(allow_code_execution, ContainerCodeOracle) else False
-    grading_observation = dict(observation, native_projection=planned.get("agent_fields", {}).get(
-        "projection_version") == "native")
+    grading_observation = dict(observation, native_projection=agent_field(planned, "projection_version") == "native")
     try:
         oracle = grade(corpus, task, grading_observation, execution, required_loads)
     except Exception as error:
@@ -2083,10 +2088,9 @@ def check_matched_live_models(corpus, planned, mapping, models, *, execution_est
             continue
         if config.get("reasoning_effort") != "medium":
             raise GuardRefusal(f"primary route {route} model {reference} must pin reasoning_effort=medium")
-        version = item["agent_fields"].get("projection_version", "legacy")
-        supported = config.get("projection_versions") or ["legacy"]
-        if version not in supported:
-            raise GuardRefusal(f"model {reference} does not explicitly support projection {version}")
+        version = item["agent_fields"].get("projection_version", "native")
+        if version != "native":
+            raise GuardRefusal(f"Projection Version {version} is retired. Select a Native arm.")
         if item["agent_fields"].get("prompt_cache") == "explicit" and config.get("cache_mode") != "explicit":
             raise GuardRefusal(f"explicit route model {reference} must declare cache_mode=explicit")
         provider_route_evidence(config, reference)

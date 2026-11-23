@@ -39,7 +39,6 @@ fn config(
 		modalities: vec!["text".into()],
 		media_routes: vec![],
 		cost: json!({}),
-		projection_versions: vec![],
 		cache_mode: None,
 		request_estimator: None,
 		provider_route: None,
@@ -226,17 +225,17 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 ) {
 	use aidash_domain::{
 		model::CacheMode,
-		projection::ProjectionVersion,
-		provider::{ModelContext, OrderedContext},
+		projection::native::{self, NativeContext},
+		provider::ModelContext,
 	};
 	let mut fixture = completion_server.await;
 	let endpoint = format!("{}/api/v1/", fixture.server.url);
-	let ordered = |cache_breakpoints| ModelRequest {
+	let request_for_step = |cache_breakpoints| ModelRequest {
 		provider_tools: vec![],
 		instructions: "Follow the task".into(),
-		context: ModelContext::Ordered(OrderedContext {
-			stable: r#"{"task":"Read notes","history":[{"n":1},{"n":2}]}"#.into(),
-			volatile: r#"{"agent_state":{"step":3}}"#.into(),
+		context: ModelContext::Native(NativeContext {
+			volatile: r#"{"semantic_memory":{"value":"fixture"}}"#.into(),
+			..native::native_context(&Default::default(), &json!({"task":"Read notes"}))
 		}),
 		tools: vec![],
 		max_output_tokens: 1024,
@@ -252,10 +251,12 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 	let mut explicit = config("openrouter", endpoint.clone());
 	explicit.model_id = "anthropic/claude-fixture".into();
 	explicit.cache_mode = Some(CacheMode::Explicit);
-	explicit.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
 	let model = fixture_provider(http_client.clone(), explicit).unwrap();
 
-	model.infer(ordered(true), &NoProgress).await.unwrap();
+	model
+		.infer(request_for_step(true), &NoProgress)
+		.await
+		.unwrap();
 	let request = fixture.received.recv().await.unwrap();
 	let ephemeral = json!({"type":"ephemeral"});
 	assert_eq!(
@@ -268,18 +269,26 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 		.iter()
 		.map(|part| part.get("cache_control").is_some())
 		.collect::<Vec<_>>();
-	assert_eq!(marked, [true, false]);
+	assert_eq!(marked, [true]);
+	assert!(!request["messages"][2].to_string().contains("cache_control"));
 	assert_eq!(request["provider"]["zdr"], true);
 
-	model.infer(ordered(false), &NoProgress).await.unwrap();
+	model
+		.infer(request_for_step(false), &NoProgress)
+		.await
+		.unwrap();
 	let request = fixture.received.recv().await.unwrap();
 	assert!(!request.to_string().contains("cache_control"));
 
 	let mut automatic = config("openrouter", endpoint);
 	automatic.cache_mode = Some(CacheMode::Automatic);
-	automatic.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
 	let model = fixture_provider(http_client, automatic).unwrap();
-	assert!(model.infer(ordered(true), &NoProgress).await.is_err());
+	assert!(
+		model
+			.infer(request_for_step(true), &NoProgress)
+			.await
+			.is_err()
+	);
 	assert!(
 		fixture.received.try_recv().is_err(),
 		"nothing reaches the route"

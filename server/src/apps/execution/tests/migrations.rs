@@ -184,6 +184,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0152_stint_leases"),
 	("execution", "0153_area_queue_sleep"),
 	("execution", "0154_worker_stints"),
+	("execution", "0155_model_calls"),
+	("execution", "0156_model_call_state"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -248,6 +250,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0152_stint_leases"),
 	("execution", "0153_area_queue_sleep"),
 	("execution", "0154_worker_stints"),
+	("execution", "0155_model_calls"),
+	("execution", "0156_model_call_state"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -275,6 +279,8 @@ async fn reverse_task_executions(
 		"0152_stint_leases",
 		"0153_area_queue_sleep",
 		"0154_worker_stints",
+		"0155_model_calls",
+		"0156_model_call_state",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -352,7 +358,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0154_worker_stints"]);
+	assert_eq!(head("execution"), ["0156_model_call_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0066_deleted_duty_flow_ancestry"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -366,7 +372,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		135
+		136
 	);
 	let tables = migrations
 		.iter()
@@ -632,12 +638,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0155_policy_probe")
+		.get_migration("execution", "0157_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0154_worker_stints".to_owned())]
+		vec![("execution".to_owned(), "0156_model_call_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -729,6 +735,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -1222,7 +1230,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		135
+		136
 	);
 }
 
@@ -2472,6 +2480,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5159,6 +5169,8 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0152_stint_leases"),
 	("execution", "0153_area_queue_sleep"),
 	("execution", "0154_worker_stints"),
+	("execution", "0155_model_calls"),
+	("execution", "0156_model_call_state"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5723,6 +5735,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5820,6 +5834,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5925,6 +5941,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6450,6 +6468,8 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 		.migrate_excluding(&[
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6567,6 +6587,8 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6816,6 +6838,8 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0152_stint_leases"),
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7059,4 +7083,105 @@ async fn thread_source_scope_migration_admits_thread_and_reverses(
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(accepts("thread").await);
 	pool.close().await;
+}
+
+/// The new write contract is enforced by PostgreSQL, even outside the worker.
+#[rstest]
+#[tokio::test]
+async fn model_call_usage_requires_one_owner_after_upgrade(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0155_model_calls"),
+			("execution", "0156_model_call_state"),
+		])
+		.await;
+	let tenant = "call-owner";
+	fixture.tenant_root(tenant).await;
+	let scratch = fixture.scratch_space(tenant).await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let node = aidash_domain::nodes::NodeName::derived(tenant).to_string();
+	let (thread, run, historical) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+	sqlx::query(
+		"INSERT INTO threads (id, tenant, node, title, revision, scratch_space_id, created_by)
+		 VALUES ($1, $2, $3, 'Pre-upgrade', 0, $4, 'alice')",
+	)
+	.bind(thread)
+	.bind(tenant)
+	.bind(&node)
+	.bind(scratch)
+	.execute(&pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO task_executions (id, tenant, task_id, thread_id, node, home_node, agent_id, agent_version, phase, control, pending)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'agent', '1', 'WAITING', 'ACTIVE', $7)",
+	).bind(run).bind(tenant).bind(Uuid::new_v4()).bind(thread).bind(&node)
+	 .bind(format!("aidash://migration/{node}")).bind(json!({"data":{"reason":"task_wait"},"state_version":1}))
+	 .execute(&pool).await.unwrap();
+	sqlx::query(
+		"INSERT INTO inference_usage
+		 (attempt_id, tenant, run_id, lease_token, response_epoch, model_id, model_version,
+		  projection_version, harness_contract, estimator, estimator_version, estimated_tokens, estimate_confidence, purpose, outcome)
+		 VALUES ($1, $2, $3, $1, 0, 'fixture', '1', 3, 1, 'bytes', 1, 9, 'conservative', 'main', 'dispatched')",
+	).bind(historical).bind(tenant).bind(run).execute(&pool).await.unwrap();
+
+	fixture.migrate().await;
+	let updated = sqlx::query(
+		"UPDATE inference_usage SET outcome = 'unknown', completed_at = now()
+		 WHERE attempt_id = $1 AND stint_id IS NULL AND model_call_id IS NULL",
+	)
+	.bind(historical)
+	.execute(&pool)
+	.await
+	.unwrap();
+	assert_eq!(updated.rows_affected(), 1);
+
+	let model_call = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO model_calls
+		 (id, tenant, node, purpose, model_id, model_version, request_digest, started_at)
+		 VALUES ($1, $2, $3, 'workbench_test', 'fixture', '1', $4, now())",
+	)
+	.bind(model_call)
+	.bind(tenant)
+	.bind(node)
+	.bind(format!("sha256:{}", "0".repeat(64)))
+	.execute(&pool)
+	.await
+	.unwrap();
+	let usage = |stint: Option<Uuid>, call: Option<Uuid>| {
+		sqlx::query(
+			"INSERT INTO inference_usage
+			 (attempt_id, tenant, lease_token, response_epoch, model_id, model_version, projection_version, harness_contract,
+			  estimator, estimator_version, estimated_tokens, estimate_confidence, purpose, outcome, stint_id, model_call_id)
+			 VALUES ($1, $2, $1, 0, 'fixture', '1', 3, 1, 'bytes', 1, 9, 'conservative', 'main', 'dispatched', $3, $4)",
+		)
+		.bind(Uuid::new_v4())
+		.bind(tenant)
+		.bind(stint)
+		.bind(call)
+	};
+	// A Stint link needs a Run id for its composite FK to check the owner.
+	for (stint, call) in [
+		(None, None),
+		(Some(Uuid::new_v4()), None),
+		(Some(Uuid::new_v4()), Some(model_call)),
+	] {
+		let error = usage(stint, call).execute(&pool).await.unwrap_err();
+		assert_eq!(
+			error.as_database_error().unwrap().code().as_deref(),
+			Some("23514")
+		);
+	}
+	usage(None, Some(model_call)).execute(&pool).await.unwrap();
+	let checked: (bool, bool) = sqlx::query_as(
+		"SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'model_calls'::regclass",
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(checked, (true, true));
 }

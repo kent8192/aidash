@@ -10,7 +10,7 @@ mod common;
 use aidash_server::{federation::Federation, harness::Harness};
 
 use base64::Engine;
-use common::{bootstrap, cleanup, request};
+use common::{bootstrap, cleanup, current_chat_parts, request};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -87,6 +87,7 @@ async fn upload(
 }
 
 struct AudioBatchCase<'a> {
+	agent_version: &'a str,
 	first_audio: &'a [u8],
 	with_text: bool,
 	leading_text: Option<&'a str>,
@@ -100,7 +101,7 @@ async fn verify_audio_batches(
 	member: &str,
 	case: AudioBatchCase<'_>,
 ) {
-	let (status, audio_created) = common::post(app, member, "/api/threads", json!({"title":"Audio batching", "request":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}))
+	let (status, audio_created) = common::post(app, member, "/api/threads", json!({"title":"Audio batching", "request":"Inspect both clips", "target":{"id":"research","version":case.agent_version},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{audio_created}");
 	let audio_thread = audio_created["id"].as_str().unwrap();
@@ -116,10 +117,12 @@ async fn verify_audio_batches(
 	// still forces separate provider requests; tool declarations determine the
 	// remaining window, so a fixed text length is not a stable fixture boundary.
 	let message_limit = f.run_message_limit(&audio_run).await.unwrap();
-	let message_text = if case.with_text {
-		"a".repeat(message_limit / 3)
-	} else {
-		String::new()
+	let message_text = |index| {
+		if case.with_text {
+			format!("Clip {index}: {}", "a".repeat(message_limit / 3))
+		} else {
+			String::new()
+		}
 	};
 	let leading_text = case
 		.leading_text
@@ -162,38 +165,47 @@ async fn verify_audio_batches(
 		&second_audio,
 	)
 	.await;
-	for attachment in [first, second] {
-		let (status, sent) = common::post(app, member, &format!("/api/executions/{}/message", audio_run.id), json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}))
+	for (index, attachment) in [first, second].into_iter().enumerate() {
+		let (status, sent) = common::post(app, member, &format!("/api/executions/{}/message", audio_run.id), json!({"content":message_text(index), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}))
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
 	let mut audio_batches = Vec::new();
 	let mut saw_prefix_batch = false;
 	for _ in 0..12 {
-		assert!(worker.worker_once().await.unwrap());
+		assert!(
+			worker.worker_once().await.unwrap(),
+			"audio Run after {} batches: {:?}",
+			audio_batches.len(),
+			f.store
+				.run(&TEST_FIXTURE, audio_run.id)
+				.await
+				.unwrap()
+				.error
+		);
 		while let Ok(body) = received.try_recv() {
-			let Some(parts) = body["messages"][1]["content"].as_array() else {
-				if let Some(prefix) = &leading_text
-					&& body["messages"][1]["content"]
-						.as_str()
-						.is_some_and(|content| content.contains(prefix.as_str()))
-				{
-					assert!(body.get("tools").is_none());
-					saw_prefix_batch = true;
-				}
-				continue;
-			};
+			let parts = current_chat_parts(&body);
 			let audio: Vec<String> = parts
 				.iter()
 				.filter_map(|part| part["input_audio"]["data"].as_str().map(str::to_owned))
 				.collect();
-			if !audio.is_empty() {
+			if audio.is_empty() {
+				if let Some(prefix) = &leading_text
+					&& body["messages"].to_string().contains(prefix.as_str())
+				{
+					assert!(body.get("tools").is_none());
+					saw_prefix_batch = true;
+				}
+			} else {
 				assert_eq!(audio.len(), 1, "audio messages must fit individually");
 				if case.with_text {
-					assert!(parts.iter().any(|part| {
-						part["text"]
+					let context = common::captured_context(&body);
+					let messages = context["snapshot"]["run_messages"].as_array().unwrap();
+					let expected_text = message_text(audio_batches.len());
+					assert!(messages.iter().any(|message| {
+						message["content"]
 							.as_str()
-							.is_some_and(|text| text.contains(&message_text))
+							.is_some_and(|text| text.contains(&expected_text))
 					}));
 				}
 				audio_batches.push(audio[0].clone());
@@ -255,17 +267,42 @@ async fn verify_attachment_labels_count_toward_admission(
 	let short_name = "s.wav";
 	let long_name = format!("{}.wav", "x".repeat(251));
 	let short_label = format!("Run message {seq} attachment: {short_name}");
-	let text_body = json!({"messages":[
-		{"role":"system","content":""},
-		{"role":"user","content":[
-			{"type":"text","text":json!({"run_message":""}).to_string()},
-			{"type":"text","text":short_label}
-		]}
-	]});
+	let entry = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
+	let model = serde_json::from_value(entry.config).unwrap();
+	use aidash_domain::provider::{ContentPart, ModelContext, ModelRequest};
+	let request = aidash_application::execution::media::admission_request(
+		&model,
+		json!({"run_message":""}),
+		vec![
+			ContentPart::Text(short_label),
+			ContentPart::Audio {
+				format: "wav".into(),
+				bytes: vec![],
+			},
+		],
+	);
+	let run_request = ModelRequest {
+		context: ModelContext::Native(aidash_domain::projection::native::native_context(
+			&Default::default(),
+			&Value::Null,
+		)),
+		..request.clone()
+	};
+	let framing = request
+		.estimated_total_tokens()
+		.max(run_request.estimated_total_tokens());
 	// Leave a little room for the short label while the 255-byte filename
-	// pushes the otherwise identical audio beyond the admission boundary.
+	// pushes the same audio beyond the Run batch or the media check budget.
 	let audio_tokens = (f.run_message_limit(&run).await.unwrap() * 4)
-		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
+		.checked_sub(framing + 16)
 		.unwrap();
 	let audio = wav_bytes(audio_tokens * 16);
 	let long = upload(app, member, thread, &long_name, "audio/wav", &audio).await;
@@ -279,6 +316,12 @@ async fn verify_attachment_labels_count_toward_admission(
 	)
 	.await;
 	assert_eq!(status, 400, "{rejected}");
+	assert!(
+		rejected["error"]
+			.as_str()
+			.unwrap()
+			.contains("context window")
+	);
 	assert!(
 		f.store
 			.run_inputs(&TEST_FIXTURE, run.id)
@@ -467,9 +510,7 @@ async fn verify_separate_format_routes(
 	for _ in 0..12 {
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
-			let Some(parts) = body["messages"][1]["content"].as_array() else {
-				continue;
-			};
+			let parts = current_chat_parts(&body);
 			let urls: Vec<_> = parts
 				.iter()
 				.filter_map(|part| part["image_url"]["url"].as_str())
@@ -541,11 +582,13 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;
-	policy["subjects"][aidash_server::domain::qualified_agent(
-		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
-		"research",
-		"1.0.1",
-	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
+	for version in ["1.0.1", "1.0.4"] {
+		policy["subjects"][aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+			"research",
+			version,
+		)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
+	}
 	let (status, body) = common::post(
 		&app,
 		&f.config.api_token,
@@ -564,7 +607,8 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		.await
 		.unwrap();
 	model.version = "1.0.1".into();
-	model.config["context_window"] = json!(64_000);
+	// Final media batches include the Native history and the full tool set.
+	model.config["context_window"] = json!(88_000);
 	model.config["modalities"] = json!(["text", "image", "audio"]);
 	model.config["media_routes"] = json!([{
 		"tag":"fixture/verified", "formats":["image/png", "wav"],
@@ -593,6 +637,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true,"carry_over":false}))
+	.await;
+	assert_eq!(status, 200, "{body}");
+	// Reserve space at admission for capabilities this prefix-batching case
+	// never loads, leaving room at dispatch for the preceding Native evidence.
+	agent.version = "1.0.4".into();
+	agent.config["exposure"] = json!({"version":"deferred@1", "skill_bytes":12_288});
+	let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.4"},"expected_revision":0,"enabled":true,"carry_over":false}))
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, created) = common::post(&app, &token, "/api/threads", json!({"title":"Media input","request":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
@@ -744,6 +797,24 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let mut reversed = input;
 	reversed["attachment_ids"] = json!([image["id"], audio["id"]]);
 	assert_eq!(common::post(&app, &token, &path, reversed).await.0, 409);
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/executions/{}", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	assert!(
+		details["stints"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|stint| stint["model_calls"].as_array().unwrap().is_empty()),
+		"local attachment checks must not be recorded as provider calls: {details}"
+	);
+
 	let worker = Harness {
 		federation: f.clone(),
 	};
@@ -751,7 +822,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	for _ in 0..6 {
 		assert!(worker.worker_once().await.unwrap());
 		if let Ok(body) = received.try_recv() {
-			let parts = body["messages"][1]["content"].as_array().unwrap();
+			let parts = current_chat_parts(&body);
 			let types: Vec<_> = parts
 				.iter()
 				.map(|part| part["type"].as_str().unwrap())
@@ -798,9 +869,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	);
 	assert!(worker.worker_once().await.unwrap());
 	let retried = received.try_recv().expect("stale media was not reinferred");
-	let retried_types: Vec<_> = retried["messages"][1]["content"]
-		.as_array()
-		.unwrap()
+	let retried_types: Vec<_> = current_chat_parts(&retried)
 		.iter()
 		.map(|part| part["type"].as_str().unwrap())
 		.collect();
@@ -896,11 +965,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	}
 	let mut media_batches = Vec::new();
 	for _ in 0..12 {
-		assert!(worker.worker_once().await.unwrap());
+		let advanced = worker.worker_once().await.unwrap();
 		while let Ok(body) = received.try_recv() {
-			let Some(parts) = body["messages"][1]["content"].as_array() else {
-				continue;
-			};
+			let parts = current_chat_parts(&body);
 			let urls: Vec<String> = parts
 				.iter()
 				.filter_map(|part| part["image_url"]["url"].as_str().map(str::to_owned))
@@ -914,14 +981,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 				media_batches.push(urls);
 			}
 		}
-		if media_batches.len() == 3 {
+		if media_batches.len() == 3 || !advanced {
 			break;
 		}
 	}
 	let final_member_run = f.store.run(&TEST_FIXTURE, member_run.id).await.unwrap();
 	assert!(
 		media_batches.len() == 3,
-		"subject run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
+		"subject run sent {} media batches instead of retrying the empty observation and inferring both accepted batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
+		media_batches.len(),
 		final_member_run.phase().as_str(),
 		final_member_run.control,
 		final_member_run.error,
@@ -956,6 +1024,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&mut received,
 		&member,
 		AudioBatchCase {
+			agent_version: "1.0.1",
 			first_audio: &large_audio,
 			with_text: false,
 			leading_text: None,
@@ -969,6 +1038,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&mut received,
 		&member,
 		AudioBatchCase {
+			agent_version: "1.0.1",
 			first_audio: &large_audio[..380 * 1024],
 			with_text: true,
 			leading_text: None,
@@ -984,6 +1054,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&mut received,
 		&member,
 		AudioBatchCase {
+			agent_version: "1.0.4",
 			first_audio: &near_window_audio,
 			with_text: false,
 			leading_text: Some(&leading_text),
@@ -1059,7 +1130,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	for _ in 0..8 {
 		assert!(worker.worker_once().await.unwrap());
 		if let Ok(body) = received.try_recv() {
-			let parts = body["messages"][1]["content"].as_array().unwrap();
+			let parts = current_chat_parts(&body);
 			assert!(
 				parts
 					.iter()
@@ -1139,10 +1210,10 @@ fn media_router(
 			let sent = sent.clone();
 			let empty_media_observation = empty_media_observation.clone();
 			async move {
-				let image_count = body["messages"][1]["content"]
-					.as_array()
-					.map(|parts| parts.iter().filter(|part| part["type"] == "image_url").count())
-					.unwrap_or(0);
+				let image_count = current_chat_parts(&body)
+					.iter()
+					.filter(|part| part["type"] == "image_url")
+					.count();
 				let no_tools = body.get("tools").is_none();
 				sent.send(body).unwrap();
 				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {

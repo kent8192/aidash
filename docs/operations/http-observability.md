@@ -185,7 +185,7 @@ sum by (family) (rate(aidash_model_tokens_total{direction="input_cached_write"}[
 
 A healthy Run reads most of its input and writes little more than each step's
 growth, so a read share near zero or a write share above 0.5 on a route that caches
-needs a look. Legacy Runs and Agents with caching off are expected to read little.
+needs a look. Agents with caching off are expected to read little.
 
 These counters are operational observations, not billing records. A direction
 receives a sample only when the provider reported that value; missing usage is

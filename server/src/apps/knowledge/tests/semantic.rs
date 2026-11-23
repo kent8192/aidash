@@ -32,36 +32,6 @@ struct ControlledContext {
 	fault: std::sync::Arc<EmbeddingFault>,
 }
 
-/// A runtime whose node holds a Cache Salt Key when `ordered`, so it can create
-/// Runs on the Ordered Projection Version.
-#[rstest::fixture]
-fn context_runtime(
-	#[default(false)] ordered: bool,
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
-) -> common::RuntimeFuture {
-	use futures_util::FutureExt as _;
-	async move {
-		let mut owner = runtime.await;
-		if ordered {
-			// A node without Cache Salt Keys creates only Legacy Runs.
-			let store = &mut owner.federation.store;
-			*store = store.clone().with_cache_salt(Some(
-				aidash_integrations::inference::CacheSaltKeys::new(
-					&[aidash_integrations::inference::CacheSaltKey {
-						version: 1,
-						secret: "fixture-cache-salt-secret".into(),
-					}],
-					1,
-				)
-				.unwrap(),
-			));
-		}
-		owner
-	}
-	.boxed()
-	.shared()
-}
-
 mod controlled_context_composition {
 	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
 	// Each flag selects an independent context shape that tests combine through `#[with]`.
@@ -71,13 +41,10 @@ mod controlled_context_composition {
 	pub(super) async fn controlled_context(
 		#[default(true)] memory: bool,
 		#[default(true)] workspace_retrieval: bool,
-		#[default(false)] ordered: bool,
 		#[default(false)] degrade: bool,
 		#[default(false)] on_demand_memory: bool,
 		#[default(None)] selection: Option<source_selection::SelectionCase>,
-		#[from(context_runtime)]
-		#[with(ordered)]
-		_runtime: common::RuntimeFuture,
+		#[from(common::runtime)] _runtime: common::RuntimeFuture,
 		#[future(awt)]
 		#[from(common::native_application)]
 		#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|r| r), _runtime.clone())]
@@ -114,35 +81,6 @@ mod controlled_context_composition {
 		let mut agent = f.registry.get(&acme, "research", "1.0.0").await.unwrap();
 		agent.version = "1.0.1".into();
 		agent.binding_normalization = None;
-		if ordered {
-			// The bootstrap model declares only Legacy; an Ordered Agent needs a
-			// model that also declares Ordered.
-			let version = agent.config["model"]["version"]
-				.as_str()
-				.unwrap()
-				.to_owned();
-			let mut model = f
-				.registry
-				.get(
-					&acme,
-					agent.config["model"]["id"].as_str().unwrap(),
-					&version,
-				)
-				.await
-				.unwrap();
-			model.id = "ordered-model".into();
-			model.binding_normalization = None;
-			model.config["projection_versions"] = json!(["legacy", "ordered"]);
-			f.registry.register(&acme, model).await.unwrap();
-			assert_eq!(
-				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true}))
-				.await
-				.0,
-				200
-			);
-			agent.config["model"] = json!({"id":"ordered-model","version":version});
-			agent.config["projection_version"] = json!("ordered");
-		}
 		let mut bindings = vec![];
 		for (enabled, id, kind, adapter) in [
 			(memory, "context-memory", "memory", "semantic_memory"),
@@ -320,7 +258,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		"run: {:?}",
 		fixture.f.store.runs(&TEST_FIXTURE).await.unwrap()[0]
 	);
-	let semantic = &contexts[0]["current"]["semantic_memory"]["thread"];
+	let semantic = &contexts[0]["snapshot"]["semantic_memory"]["thread"];
 	if !memory && !workspace_retrieval {
 		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
 	} else {
@@ -352,14 +290,14 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 #[tokio::test]
 async fn on_demand_memory_does_not_leak_through_an_always_thread_source(
 	#[future(awt)]
-	#[with(true, true, false, false, true)]
+	#[with(true, true, false, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
 	fixture.worker.worker_once().await.unwrap();
 	let contexts = fixture.captured.lock().unwrap().clone();
 	assert_eq!(contexts.len(), 1);
-	let matches = contexts[0]["current"]["semantic_memory"]["thread"]["matches"]
+	let matches = contexts[0]["snapshot"]["semantic_memory"]["thread"]["matches"]
 		.as_array()
 		.expect("thread result remains available");
 	let mut kinds = matches
@@ -606,7 +544,7 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 	let contexts = fixture.captured.lock().unwrap().clone();
 	assert_eq!(contexts.len(), 1, "the woken step reaches inference");
 	assert!(
-		contexts[0]["current"]["semantic_memory"]["thread"]["matches"]
+		contexts[0]["snapshot"]["semantic_memory"]["thread"]["matches"]
 			.as_array()
 			.is_some_and(|matches| !matches.is_empty()),
 		"the resumed step carries semantic context: {}",
@@ -699,16 +637,13 @@ async fn run_to_inference(fixture: &ControlledContext, count: usize) {
 	);
 }
 
-/// The `semantic_memory` an Ordered model request carried in its volatile part.
-fn ordered_semantic_memory(fixture: &ControlledContext, request: usize) -> Value {
+/// The `semantic_memory` a Native model request carried in its current step.
+fn request_semantic_memory(fixture: &ControlledContext, request: usize) -> Value {
 	let contexts = fixture.captured.lock().unwrap();
-	let parts = contexts[request - 1]["ordered"]
-		.as_array()
-		.expect("an Ordered request");
-	parts[1]["semantic_memory"].clone()
+	contexts[request - 1]["snapshot"]["semantic_memory"].clone()
 }
 
-/// Issue #236: a local Ordered Run reuses its semantic retrieval while its
+/// Issue #236: a local Run reuses its semantic retrieval while its
 /// Retrieval Key holds (ADR 0020), so an embedding outage after the first
 /// retrieval does not touch the steps that reuse it. A Run message sent during
 /// the outage changes the key's query inputs; only the step that then needs a
@@ -718,10 +653,10 @@ fn ordered_semantic_memory(fixture: &ControlledContext, request: usize) -> Value
 #[case::run_message(false)]
 #[case::pending_entry(true)]
 #[tokio::test]
-async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
+async fn local_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
 	#[case] pending_entry: bool,
 	#[future(awt)]
-	#[with(false, true, true)]
+	#[with(false, true)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::TaskStatus;
@@ -739,7 +674,7 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 		1,
 		"step 1 embeds its query"
 	);
-	let retrieved = ordered_semantic_memory(&fixture, 1);
+	let retrieved = request_semantic_memory(&fixture, 1);
 	assert!(
 		retrieved["thread"]["matches"]
 			.as_array()
@@ -754,7 +689,7 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 		run_to_inference(&fixture, step).await;
 		// Assert: the reuse reaches inference with the same bytes, untouched.
 		assert_eq!(
-			ordered_semantic_memory(&fixture, step),
+			request_semantic_memory(&fixture, step),
 			retrieved,
 			"step {step}"
 		);
@@ -843,14 +778,14 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 		"the retry embeds its query"
 	);
 	assert!(run().await.recovery.retry.is_none());
-	let refreshed = ordered_semantic_memory(&fixture, 4);
+	let refreshed = request_semantic_memory(&fixture, 4);
 	run_to_inference(&fixture, 5).await;
 	assert_eq!(
 		fixture.fault.requests() - recovered,
 		1,
 		"step 5 reuses step 4"
 	);
-	assert_eq!(ordered_semantic_memory(&fixture, 5), refreshed);
+	assert_eq!(request_semantic_memory(&fixture, 5), refreshed);
 
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
@@ -870,7 +805,7 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 	#[case] embedding_outage: bool,
 	#[future(awt)]
-	#[with(false, true, false, true)]
+	#[with(false, true, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -930,7 +865,7 @@ async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 			1,
 			"the degraded step reaches inference: {run:?}"
 		);
-		let semantic = &contexts[0]["current"]["semantic_memory"];
+		let semantic = &contexts[0]["snapshot"]["semantic_memory"];
 		assert_eq!(
 			semantic.get("thread").unwrap_or(semantic),
 			&json!({"status":"unavailable","cause":"embedding_provider"}),
@@ -966,13 +901,10 @@ async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 
 /// A budget skip is not evidence that a previously unavailable index recovered.
 #[rstest::rstest]
-#[case::legacy(false)]
-#[case::ordered(true)]
 #[tokio::test]
 async fn a_skipped_thread_read_keeps_the_durable_outage(
-	#[case] _ordered: bool,
 	#[future(awt)]
-	#[with(false, true, _ordered, true)]
+	#[with(false, true, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -1601,11 +1533,11 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
-		context["current"]["semantic_memory"]["thread"]["matches"][0]["entry_id"],
+		context["snapshot"]["semantic_memory"]["thread"]["matches"][0]["entry_id"],
 		cars["id"]
 	);
 	assert_eq!(
-		context["current"]["semantic_memory"]["thread"]["model_version"],
+		context["snapshot"]["semantic_memory"]["thread"]["model_version"],
 		"1"
 	);
 	let count: i64 = {
@@ -2066,13 +1998,7 @@ fn controlled_context_router(
 			let received = received.clone();
 			let tool_rounds = tool_rounds.clone();
 			async move {
-				// A Legacy context is one JSON text; an Ordered context sends its
-				// stable and volatile parts as separate JSON text parts.
-				let content = &body["messages"][1]["content"];
-				let context: Value = match content.as_str() {
-					Some(text) => serde_json::from_str(text).unwrap(),
-					None => json!({"ordered":content.as_array().unwrap().iter().map(|part| serde_json::from_str::<Value>(part["text"].as_str().unwrap()).unwrap()).collect::<Vec<_>>()}),
-				};
+				let context = common::captured_context(&body);
 				let count = {
 					let mut received = received.lock().unwrap();
 					received.push(context);
@@ -2128,7 +2054,7 @@ fn semantic_context_is_provenanced_and_revocation_hides_run_journals_router(
 .route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
             let requests=requests.clone();
             async move {
-                let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+                let context:Value=crate::common::captured_context(&body);
                 requests.lock().unwrap().push(context);
                 reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"remember-car","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
             }

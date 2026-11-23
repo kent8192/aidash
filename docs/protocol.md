@@ -216,6 +216,11 @@ Controls are cooperative at persisted step boundaries. Pause lets an in-flight c
 
 A call of a Tenant's HTTP or MCP tool that needs approval raises a Tool call approval, a capability approval of kind `tool_call` decided by an Eligible approver: the requester alone when the policy lets them approve it, otherwise whichever Eligible approver decides first (ADR 0135). A later decision gets 409 with error code `APPROVAL_ALREADY_DECIDED` and `details` naming `decided_by` and `outcome` (`allowed` or `denied`). The Run waits for it in `WaitingState::Approval`. The approver lists it with `GET /api/capabilities/approvals` and decides it with `POST /api/capabilities/approvals/{id}/decide` and `allow_once`, `allow_run`, `allow_always` or `deny`. `allow_always` also creates an allow Approval Rule for the person the Run's delegation chain starts at. It expires after the Deployment's `approval_seconds` (86400 by default). An `allow_run` grant covers one operation of the tool until `grant_seconds` (3600 by default), and new user input does not end it. A page reading grant is narrower: it covers one host and ends at the Run's next user input. Direct permission, the `tool.call_unapproved` action in the Tenant's policy, lets the call proceed without an approval, and so does a Read-only operation, which the tool's definition version declares with `replay: "read_only"` (ADR 0078). Before the approver is asked, the Approval Rules and Approval Mode of the person the Run's chain starts at may give the approval in advance (see [Approval Rules and Modes](authorization.md#approval-rules-and-modes)). In Auto, the Tenant's approval Decider judges the call instead of a person, as [Approval hook](decision-gate.md#approval-hook) describes. An allowed call runs at once, without another model response. A blocked call gets `{"error": "tool call was blocked by Auto: <reason>"}`, where the reason is `data_exfiltration`, `destructive`, `beyond_request`, `injected`, `boundary` or `unavailable`. Generation requests are not judged, so they still wait for a person. On a Run that executes on its home Node in Auto, the model is also told not to stop to ask clarifying questions unless the person's input relies on one, and to make a reasonable assumption and continue. Every approval kind resumes the exact approved call, so the model never repeats it. A denied, expired, revoked or closed approval refuses the call. The model then sees `{"error": "tool call approval was denied"}`, or the matching text (`tool call approval expired`, `tool call approval was revoked`, `tool call approval was closed`), and the Run continues. A call the Tenant's policy refuses, or that no person may approve, gets `tool call was refused by the Tenant's policy` or `tool call approval was refused: no person is eligible to approve it`. An Approval Rule that denies the call, or the person's Don't ask mode, gets `tool call was refused by an Approval Rule` or `tool call was refused: the person asked not to be asked`. A Run executing for another Node still asks its Home Node through an `APPROVAL_REQUIRED` human request that expires after 15 minutes, because the approver is at that Node (ADR 0075). Approval Rules and Modes never cover such a Run (ADR 0076). Pending Tool call approvals close with `closed_reason: run_ended` when their Run ends.
 
+A Run whose Binding snapshot explicitly pins a retired Projection Version or
+Harness Contract fails at the next worker step with `PROJECTION_RETIRED`. The
+terminal failure path delivers the outcome to its Home. Omitted pins select
+Native and `structured@4`.
+
 Transient execution errors have a bounded retry budget per persisted operation. A successful operation resets the counter. Exhausted or permanent failures persist a `terminal_transition` intent in a waiting run. The worker retries home-Node delivery across outages and restarts and only finalizes its local journal after the home acknowledges that outcome. It does not re-execute the failed tool while delivering this intent.
 
 A coordinator's final response remains gated while a child is unresolved. A Tenant's subject can call `POST /api/tasks/{id}/abandon` with the current revision and a nonempty reason for a failed, blocked, or cancelled child. Nested children must be completed or abandoned first. The home records `ABANDONED` with the prior status and reason; a resumed parent can finish with remaining artifacts. Dependencies still require actual completion: abandonment does not satisfy a task dependency.
@@ -246,7 +251,7 @@ step budget.
 A model definition may set `reasoning_passback: false` to stop a route from
 recording and resending the provider's reasoning (#942). Omitting it means
 `true`. A Run's model version is immutable, so the choice holds for the whole
-Run; only Native Runs record reasoning.
+Run.
 
 A model definition that sets `request_estimator: calibrated` scales only the
 byte basis. The ratio is the nearest-rank 99th percentile of reported
@@ -287,7 +292,7 @@ estimate for the rest of the Run after a Context Overflow, from the same step,
 or when the provider reports more input tokens than the snapshot estimated,
 from the next step. Run inspection shows the pinned snapshot without its sample
 count. Snapshot quotas are byte budgets that convert through the snapshot's
-ratio, while the Ordered Stable Prefix quota and the semantic budget always use
+ratio, while the Stable Prefix quota and the semantic budget always use
 the byte estimate, so calibration never changes the Stable Prefix or the
 Retrieval Key. Summary Stage requests, Jev, Registry workbench requests, the
 run-message limit and the media headroom keep the byte estimate.
@@ -299,8 +304,7 @@ reservation and the snapshot ratio, so the estimation error of an attempt is
 Under a `deferred@1` [Exposure policy](operations/registry-capabilities.md#deferred-capability-exposure),
 the model-visible tool definitions are only the request's Exposure set, and the
 instructions add the resident Skill blocks and the capability index. The same
-estimate covers them; `context.usage.exposure` records their bytes per request.
-Legacy requests are measured exactly as before.
+estimate covers them. `context.usage.exposure` records their bytes per request.
 
 The model's pinned thread and `workspace_observe` use the same bounded view.
 Observations include goal/task previews, artifact IDs and metadata, message
@@ -343,8 +347,7 @@ exposed through the public API. The inspection API returns each history event
 with its `seq`, the `journal` cursor and any `execution_summary`.
 
 Every Agent uses Context Recovery. An immutable `context_policy` can override
-its defaults; omitted or null settings use the same pipeline on Native, Ordered
-and Legacy projections.
+the defaults for the Native pipeline.
 
 | Field                      | Default | Bounds    | Meaning                                                          |
 | -------------------------- | ------- | --------- | ---------------------------------------------------------------- |
@@ -499,7 +502,7 @@ The executing Node reserves every remote inference and compaction at the Home
 through `POST /scoped/usage/reserve`; the Home calls back the executing Node's
 `POST /scoped/usage/verify` before it charges anything. Both carry a `boundary`
 of `{"step":n}`, and the executing Node's verify requires a READY semantic operation of
-its own for that step. An `ordered` Run reuses one retrieval across steps
+its own for that step. A Run reuses one retrieval across steps
 (ADR 0020), so a reuse step instead sends `{"step":n,"reuses":"<operation ID>"}`,
 naming the operation whose receipt it reuses. The boundary is bound in the
 executing Node's durable dispatch record, so the Home cannot substitute it in the

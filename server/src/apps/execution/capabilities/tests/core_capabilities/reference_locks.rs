@@ -195,7 +195,7 @@ async fn a_run_on_an_agent_with_a_source_completes_its_tool_calls_after_copying_
 	let node = run.home_node.to_string();
 	d.script(move |_, context| {
 		// The delegated child Run is answered by the same provider.
-		if context["current"]["task"]["id"] != parent_task.as_str() {
+		if context["snapshot"]["task"]["id"] != parent_task.as_str() {
 			return Reply::Text("Read the documents.");
 		}
 		let calls = events(context);

@@ -16,7 +16,7 @@ use crate::{
 use aidash_domain::{
 	agent_plugin::PluginTools,
 	exposure::ExposureState,
-	provider::ModelRequest,
+	provider::{ModelContext, ModelRequest},
 	registry::{
 		EntityRef,
 		workbench::{
@@ -72,6 +72,10 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		..
 	} = job;
 	let mut request = job.request.clone();
+	let ModelContext::Native(context) = &request.context else {
+		return Err(Error::Invalid("expected a Native Workbench request".into()));
+	};
+	let mut data: Value = serde_json::from_str(&context.volatile)?;
 	let mut conversation = job.initial_conversation.clone();
 	let mut exposure = job.exposure.clone();
 	let mut calls = Vec::new();
@@ -193,8 +197,9 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 						let mut next = request.clone();
 						let mut retained = conversation.clone();
 						retained.push(json!({"role":"tool","content":{"id":call.id,"name":call.name,"arguments":call.arguments,"result":output,"outcome":deferred::EVALUATED}}));
-						next.context.legacy_mut().expect("Legacy request context")["conversation"] =
-							json!(retained);
+						let mut next_data = data.clone();
+						next_data["conversation"] = json!(retained);
+						next.context = ModelContext::native_data(&next_data);
 						!exceeds_limits(
 							&next,
 							limits,
@@ -301,10 +306,8 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		}
 		request.max_output_tokens =
 			(limits.max_output_tokens as u64 - output_tokens).min(u32::MAX as u64) as u32;
-		request
-			.context
-			.legacy_mut()
-			.expect("Legacy request context")["conversation"] = json!(conversation);
+		data["conversation"] = json!(conversation);
+		request.context = ModelContext::native_data(&data);
 		// Load/Unload results of this response shape the next request.
 		if let (Some(discoverable), Some(session)) = (&discoverable, exposure.as_mut()) {
 			session.state.activate();
@@ -433,13 +436,9 @@ fn exceeds_limits(
 	reserve: usize,
 ) -> bool {
 	let estimated = request.estimated_total_tokens().saturating_add(reserve);
-	request
-		.input_body()
-		.to_string()
-		.len()
-		.saturating_add(reserve)
-		> limits.max_input_bytes as usize
-		|| estimated > context_window
+	request.model_input_body().map_or(true, |body| {
+		body.to_string().len().saturating_add(reserve) > limits.max_input_bytes as usize
+	}) || estimated > context_window
 		|| input_tokens
 			.saturating_add(output_tokens)
 			.saturating_add(estimated as u64)

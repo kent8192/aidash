@@ -4,7 +4,7 @@
 //!
 //! The harness builds this IR; `ModelRequest::input_body` gives it its
 //! canonical chat serialization, which transport and request budgeting share.
-use crate::context::{Context, ContextEvent, EvidenceItem, HistoryEntry, ORDERED_STABLE_KEYS};
+use crate::context::{Context, ContextEvent, EvidenceItem, HistoryEntry, STABLE_KEYS};
 use crate::provider::ToolCall;
 use crate::{Error, Result};
 use schemars::JsonSchema;
@@ -158,6 +158,9 @@ pub enum NativeMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NativeContext {
+	/// Standalone model input has no Run projection declaration.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub standalone: bool,
 	/// Run-stable sources, one envelope each, sent in one user message right
 	/// after `system`. They are part of the Stable Prefix.
 	pub attachments: Vec<Envelope>,
@@ -495,6 +498,7 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		fields.retain(|_, value| !value.is_null());
 	}
 	NativeContext {
+		standalone: false,
 		attachments,
 		history,
 		volatile: crate::context::volatile_part(&pinned, None),
@@ -541,6 +545,7 @@ pub fn summary_continuation(
 		.unwrap_or(context.history.len());
 	let (history, _) = render_history(&context.history[..end], context.reasoning_withheld_from_seq);
 	NativeContext {
+		standalone: false,
 		attachments,
 		history,
 		volatile: serde_json::to_string(&json!({"summary_request": fold}))
@@ -901,7 +906,7 @@ fn single<'a>(
 fn attachments(context: &Context, pinned: &Value) -> Vec<Envelope> {
 	let mut attachments = Vec::new();
 	for (key, source) in
-		ORDERED_STABLE_KEYS
+		STABLE_KEYS
 			.iter()
 			.zip([Source::Identity, Source::Task, Source::ReferenceDocuments])
 	{
@@ -986,8 +991,11 @@ impl NativeContext {
 		if self.volatile == "{}" && self.harness.is_none() && media.peek().is_none() {
 			return messages;
 		}
-		let volatile =
-			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
+		let volatile = if self.standalone {
+			self.volatile.clone()
+		} else {
+			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile)
+		};
 		let content = if self.harness.is_none() && media.peek().is_none() {
 			Value::String(volatile)
 		} else {

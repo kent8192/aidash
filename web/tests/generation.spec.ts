@@ -17,6 +17,7 @@ import {
 import { createServer } from "node:http";
 import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
+import { nativeUserData } from "./native-request";
 
 async function createGenerationScenario(
   page: Page,
@@ -47,7 +48,10 @@ async function createGenerationScenario(
       return;
     }
     semanticContexts.push(
-      JSON.parse(input.messages[1].content).current.semantic_memory.thread,
+      nativeUserData(input.messages).find(
+        (entry) =>
+          entry.source === "step" && entry.provenance.scope === "request",
+      )?.content.semantic_memory?.thread,
     );
     res.end(
       JSON.stringify({

@@ -190,7 +190,7 @@ def model_config(model, fixture_url, name):
     config = {"provider": "openrouter", "model_id": model["model_id"], "endpoint": fixture_url + "/v1",
               "context_window": model["context_window"],
               "max_output_tokens": model["max_output_tokens"], "modalities": ["text"], "cost": {},
-              "projection_versions": ["legacy", "ordered", "native"], "request_estimator": "bytes",
+              "request_estimator": "bytes",
               "reasoning_effort": "medium"}
     if model.get("cache_mode"):
         config["cache_mode"] = model["cache_mode"]
@@ -218,13 +218,8 @@ def agent_config(corpus, task, model_ref, tool_refs, fields):
     if task.get("context_policy"):
         config["context_policy"] = copy.deepcopy(task["context_policy"])
     config.update(json.loads(json.dumps(fields)))
-    # New Agents on a Native-capable model now default to Native with structured@3 (#532). An arm
-    # compares only the fields it names, so an arm that names no Projection Version stays Legacy, and
-    # a Native arm that names no Harness Contract stays on legacy@1, the contract the evaluator
-    # expects for an omitted field (`projection_evaluation._variant_harness_contract`).
-    config.setdefault("projection_version", "legacy")
-    if config["projection_version"] == "native":
-        config.setdefault("harness_contract", "legacy@1")
+    config.setdefault("projection_version", "native")
+    config.setdefault("harness_contract", "structured@4")
     return config
 
 
@@ -647,10 +642,15 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
             errors[planned["comparison"]["id"]] = f"Agent registration rejected: {str(error)[:300]}"
             continue
         planned["agent_ref"] = agent
+        agent_defaults = {key: config[key] for key in ("projection_version", "harness_contract")
+                          if key not in planned["agent_fields"]}
+        if agent_defaults:
+            planned["agent_defaults"] = agent_defaults
         # Grading needs the Registry ids a deferred Skill load must name.
         planned["skill_refs"] = skills[task["id"]]
         variants.append({"task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
                          "label": planned["label"], "agent": agent, "agent_fields": planned["agent_fields"],
+                         **({"agent_defaults": agent_defaults} if agent_defaults else {}),
                          **({"route_id": planned["route_id"], "model_configuration": planned["model_configuration"]}
                             if planned.get("route_id") else {}),
                          "model": model_ref, "tools": [ref for _, ref in tools[task["id"]]],

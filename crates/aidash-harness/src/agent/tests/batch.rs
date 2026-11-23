@@ -1094,7 +1094,6 @@ impl ExecutionEnvironment for Bench {
 			conversation_memory: false,
 			context_policy: None,
 			tool_parallelism: self.0.parallelism,
-			projection_version: Default::default(),
 			harness_contract: Default::default(),
 			prompt_cache: Default::default(),
 			completion: None,
@@ -1133,7 +1132,10 @@ impl ExecutionEnvironment for Bench {
 		unexpected("ExecutionEnvironment.skill_revision")
 	}
 	async fn cache_scope(&self, _run: &Run) -> Result<aidash_domain::projection::CacheScope> {
-		unexpected("ExecutionEnvironment.cache_scope")
+		Ok(aidash_domain::projection::CacheScope {
+			tenant: "fixture".into(),
+			key_version: 1,
+		})
 	}
 	async fn retrieval_scope(&self, _run: &Run) -> Result<RetrievalScope> {
 		unexpected("ExecutionEnvironment.retrieval_scope")

@@ -3308,6 +3308,7 @@ pub async fn details_page(
 	Ok(RunDetails {
 		provider_tool_activity: details.provider_tool_activity,
 		egress_requests: details.egress_requests,
+		stints: details.stints,
 		run: details.run,
 		declinable_call: details.declinable_call,
 		invocations: details.invocations.into_iter().map(Into::into).collect(),

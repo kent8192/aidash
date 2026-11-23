@@ -417,7 +417,7 @@ fn journey_router(
 		let capture = capture.clone();
 		let target = target.clone();
 		async move {
-			let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+			let context: Value = crate::common::captured_context(&body);
 			let count = { let mut requests = capture.lock().unwrap(); requests.push(body); requests.len() };
 			let action = next(&context, &target.lock().unwrap());
 			// Polling is observable work and consumes a model step; let the real

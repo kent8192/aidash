@@ -213,9 +213,8 @@ async fn a_paused_overflow_keeps_the_demotion_for_the_resumed_step(mut fixture: 
 
 /// A large task under large fixed instructions: the Stable Prefix snapshot
 /// quota is bound by the headroom beside the fixed content.
-fn ordered_with_large_task(calibration: Option<Vec<CalibrationSample>>) -> Fixture {
+fn fixture_with_large_task(calibration: Option<Vec<CalibrationSample>>) -> Fixture {
 	let mut fixture = canonical(fixture());
-	ordered(&mut fixture);
 	if let Some(samples) = calibration {
 		calibrated(&mut fixture, samples);
 	}
@@ -230,8 +229,8 @@ fn ordered_with_large_task(calibration: Option<Vec<CalibrationSample>>) -> Fixtu
 #[tokio::test]
 async fn calibration_never_moves_the_stable_prefix_or_the_semantic_budget() {
 	// Arrange
-	let mut bytes = ordered_with_large_task(None);
-	let mut calibrated = ordered_with_large_task(Some(warm(4)));
+	let mut bytes = fixture_with_large_task(None);
+	let mut calibrated = fixture_with_large_task(Some(warm(4)));
 	// Act
 	for fixture in [&mut bytes, &mut calibrated] {
 		assert!(matches!(
@@ -244,9 +243,19 @@ async fn calibration_never_moves_the_stable_prefix_or_the_semantic_budget() {
 	let scaled = calibrated.backend.0.requests.lock().unwrap()[0].clone();
 	assert!(conservative.estimate.is_conservative());
 	assert!(!scaled.estimate.is_conservative());
-	let (stable, _) = ordered_parts(&scaled);
-	assert_eq!(stable, ordered_parts(&conservative).0);
-	assert!(stable.len() < 40_000, "the snapshot quota must bind");
+	let (ModelContext::Native(scaled_context), ModelContext::Native(byte_context)) =
+		(&scaled.context, &conservative.context)
+	else {
+		panic!("expected Native requests");
+	};
+	assert_eq!(scaled_context.attachments, byte_context.attachments);
+	assert!(
+		serde_json::to_string(&scaled_context.attachments)
+			.unwrap()
+			.len() < 40_000,
+		"the snapshot quota must bind"
+	);
+
 	assert_eq!(semantic_memory(&scaled), semantic_memory(&conservative));
 	assert_eq!(scaled.cache_identity(), conservative.cache_identity());
 }

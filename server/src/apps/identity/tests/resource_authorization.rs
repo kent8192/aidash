@@ -1379,8 +1379,8 @@ fn retained_snapshot_revocation_provider_router(
 .route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
-            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let artifact_id = context["current"]["thread"]["artifacts"][0]["id"].clone();
+            let context: Value = crate::common::captured_context(&body);
+            let artifact_id = context["snapshot"]["thread"]["artifacts"][0]["id"].clone();
             assert!(artifact_id.is_string());
             assert!(!body.to_string().contains("private-artifact-content"));
             let sources:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(reinhardt::query::Expr::cust("resource_kind = 'artifact'")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();

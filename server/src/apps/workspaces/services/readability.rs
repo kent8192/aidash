@@ -64,7 +64,7 @@ impl Reader {
 				))
 			})
 			.and_then(|key| definitions.get(&key))
-			.and_then(|e| serde_json::from_value(e.config.clone()).ok());
+			.and_then(|e| ModelConfig::from_stored(e.config.clone()).ok());
 		Self {
 			select,
 			copy,
@@ -212,7 +212,7 @@ mod tests {
 	fn fixture() -> (Entry, HashMap<(String, String), Entry>) {
 		let mut agent: Entry = serde_json::from_value(json!({"id":"agent", "version":"1.0.0", "kind":"agent", "name":{"en":"Agent"}, "description":{"en":"Agent"}, "schema":{}, "config":{"schema_version":1,"instructions":"Work", "model":{"id":"model", "version":"1.0.0"}}})).unwrap();
 		agent.normalize_agent("aidash://local").unwrap();
-		let model: Entry = serde_json::from_value(json!({"id":"model", "version":"1.0.0", "kind":"model", "name":{"en":"Model"}, "description":{"en":"Model"}, "schema":{}, "config":{"provider":"openrouter", "model_id":"example", "endpoint":"https://example.com", "context_window":128000, "modalities":["text","image","audio"], "media_routes":[{"tag":"route", "formats":["image/png", "wav"], "source":"fixture", "verified_at":Utc::now()-Duration::hours(1), "expires_at":Utc::now()+Duration::hours(1)}], "cost":{}}})).unwrap();
+		let model: Entry = serde_json::from_value(json!({"id":"model", "version":"1.0.0", "kind":"model", "name":{"en":"Model"}, "description":{"en":"Model"}, "schema":{}, "config":{"provider":"openrouter", "model_id":"example", "projection_versions":["legacy","ordered"], "endpoint":"https://example.com", "context_window":128000, "modalities":["text","image","audio"], "media_routes":[{"tag":"route", "formats":["image/png", "wav"], "source":"fixture", "verified_at":Utc::now()-Duration::hours(1), "expires_at":Utc::now()+Duration::hours(1)}], "cost":{}}})).unwrap();
 		(
 			agent,
 			[((model.id.clone(), model.version.clone()), model)].into(),

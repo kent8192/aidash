@@ -57,7 +57,7 @@ struct BatchStep<'a> {
 
 mod connections;
 mod context_sources;
-use context_sources::{cached_data_phase, collect_data_phase, read_planned_source};
+use context_sources::{collect_data_phase, read_planned_source};
 
 pub struct Executor<'a> {
 	environment: &'a dyn ExecutionEnvironment,
@@ -703,7 +703,7 @@ impl<'a> Executor<'a> {
 				.await?;
 		}
 		if !answer.delivered {
-			record_model_turn(run, agent.projection_version, answer.text, answer.calls)?;
+			record_model_turn(run, answer.text, answer.calls)?;
 			if !answer.text.is_empty() {
 				self.publish_model_text(home, guard, run, token, answer.text)
 					.await?;
@@ -857,14 +857,9 @@ impl<'a> Executor<'a> {
 		};
 		// Thread records other than messages are filtered one by one, and a
 		// summary rechecks only message sources: they stay verbatim instead.
-		if fitting.native() {
-			aidash_application::context::retain_summarizable_turns(&mut plan.absorbed, |event| {
-				summarizable(event, tools)
-			});
-		} else {
-			plan.absorbed
-				.retain(|entry| summarizable(&entry.event, tools));
-		}
+		aidash_application::context::retain_summarizable_turns(&mut plan.absorbed, |event| {
+			summarizable(event, tools)
+		});
 		// Use the Agent's model pinned in the Run's admission closure.
 		let entry = match self
 			.environment
@@ -882,7 +877,7 @@ impl<'a> Executor<'a> {
 				&entry,
 			)?),
 		};
-		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
+		let model_cfg: ModelConfig = ModelConfig::from_stored(entry.config)?;
 		let summary_window = model_cfg.context_window;
 		let max_tokens = max_tokens
 			.min(summary.max_tokens)
@@ -891,8 +886,7 @@ impl<'a> Executor<'a> {
 		// model, reasoning settings, instructions, tools and history, so its
 		// input is read from the prompt cache. Its output limit reserves the
 		// main request's room for reasoning on top of the summary.
-		let mut continuation = None;
-		if fitting.native() {
+		let continuation = {
 			let output = max_tokens
 				.saturating_add(model_cfg.output_token_limit())
 				.min(model_cfg.provider_max_output_tokens.unwrap_or(u32::MAX));
@@ -905,9 +899,11 @@ impl<'a> Executor<'a> {
 			}) && let Some(rendered) =
 				continuation_dependencies(&plan, &store.run_inputs(run.id).await?, tools)
 			{
-				continuation = Some((request, rendered));
+				Some((request, rendered))
+			} else {
+				None
 			}
-		}
+		};
 		let mut summary_model = model_cfg.clone();
 		let mut rendered_dependencies = None;
 		let request = if let Some((mut request, rendered)) = continuation {
@@ -923,7 +919,8 @@ impl<'a> Executor<'a> {
 				if let Some(last) = plan.absorbed.last() {
 					plan.people.retain(|entry| entry.seq <= last.seq);
 				}
-				let request = summary_request(&plan, fitting.pinned, max_tokens);
+				let mut request = summary_request(&plan, fitting.pinned, max_tokens);
+				request.input_format = aidash_domain::provider::InputFormat::for_model(&model_cfg);
 				if request.ensure_fits(summary_window).is_ok() {
 					break request;
 				}
@@ -938,7 +935,7 @@ impl<'a> Executor<'a> {
 				) {
 					continue;
 				}
-				if fitting.native() {
+				{
 					let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
 					let Some(last) = turns.iter().flatten().max().copied() else {
 						return Err(Error::Context(ContextFailure::ContextUnreducible));
@@ -964,19 +961,16 @@ impl<'a> Executor<'a> {
 					if plan.absorbed.len() == before {
 						return Err(Error::Context(ContextFailure::ContextUnreducible));
 					}
-				} else if plan.absorbed.len() == 1 {
-					if !aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0)
-					{
-						return Err(Error::Context(ContextFailure::ContextUnreducible));
-					}
-				} else {
-					plan.absorbed.pop();
 				}
 				if plan.absorbed.is_empty() {
 					return Err(Error::Context(ContextFailure::ContextUnreducible));
 				}
 			}
 		};
+		let model_call = aidash_domain::model_call::Dispatch::new(
+			aidash_domain::model_call::Purpose::CompactionSummary,
+			&request,
+		)?;
 		let provider = self
 			.environment
 			.provider(summary_model)
@@ -1110,6 +1104,7 @@ impl<'a> Executor<'a> {
 					harness_contract: harness_contract.number(),
 					upstream_model: model_cfg.model_id.clone(),
 					purpose: UsagePurpose::Summary,
+					model_call: Some(model_call),
 					requested_route: model_cfg
 						.provider_route
 						.as_ref()
@@ -1139,7 +1134,12 @@ impl<'a> Executor<'a> {
 		// Persist provider facts before resuming authorization or validating the
 		// summary. Refusal, truncation and post-I/O revocation still incur work.
 		let recorded = store
-			.complete_usage_record(run, attempt.id, &usage_outcome(&result))
+			.complete_model_call(
+				run,
+				attempt.id,
+				&usage_outcome(&result),
+				aidash_application::model_calls::outcome(&result),
+			)
 			.await;
 		let resumed = visibility.resume().await;
 		if let Some(reservation) = reservation
@@ -1174,7 +1174,7 @@ impl<'a> Executor<'a> {
 				if retry_truncated
 					&& matches!(error, Error::Context(ContextFailure::OutputTruncated))
 				{
-					let keep = if fitting.native() {
+					let keep = {
 						let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
 						let count = turns.iter().flatten().max().map_or(0, |last| last + 1);
 						let retained = count / 2;
@@ -1186,8 +1186,6 @@ impl<'a> Executor<'a> {
 								.position(|turn| turn.is_some_and(|turn| turn >= retained))
 								.unwrap_or(plan.absorbed.len())
 						}
-					} else {
-						plan.absorbed.len() / 2
 					};
 					if keep > 0 && keep < plan.absorbed.len() {
 						plan.absorbed.truncate(keep);
@@ -1584,12 +1582,12 @@ impl<'a> Executor<'a> {
 					.environment
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
-				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
+				let model_cfg: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
 				// Registration enforces the same pairing; never drop an opt-in
 				// silently or send breakpoints to another route (ADR 0019).
-				model_cfg.require_prompt_cache(agent.prompt_cache, agent.projection_version)?;
+				model_cfg.require_prompt_cache(agent.prompt_cache)?;
 				let explicit_cache = agent.prompt_cache == PromptCache::Explicit;
-				let input_format = aidash_domain::provider::InputFormat::for_model(&model_cfg, agent.projection_version);
+				let input_format = aidash_domain::provider::InputFormat::for_model(&model_cfg);
 				// A proven provider overflow shrinks the effective window for the Run.
 				let window = run.context.recovery.effective_window(model_cfg.context_window);
 				let policy = context::policy::Effective::of(agent.context_policy.as_ref());
@@ -1605,15 +1603,7 @@ impl<'a> Executor<'a> {
 					return Ok(());
 				}
 				let inputs = store.run_inputs(run.id).await?;
-				let projection = match agent.projection_version {
-					ProjectionVersion::Legacy => context::RequestProjection::Legacy,
-					ProjectionVersion::Ordered => {
-						context::RequestProjection::Ordered(self.environment.cache_scope(run).await?)
-					}
-					ProjectionVersion::Native => {
-						context::RequestProjection::Native(self.environment.cache_scope(run).await?)
-					}
-				};
+				let projection = context::RequestProjection::Native(self.environment.cache_scope(run).await?);
 				// Pin this step's Estimate Snapshot before any fitting relies on it
 				// (ADR 0017). Only an opted-in, undemoted model needs calibration,
 				// and only its snapshot is saved: a resumed step reuses it even if
@@ -1633,7 +1623,7 @@ impl<'a> Executor<'a> {
 						&& !run.context.estimate.demoted =>
 					{
 						let samples = store
-							.calibration_samples(&model_cfg.model_id, agent.projection_version.number())
+							.calibration_samples(&model_cfg.model_id, ProjectionVersion::Native.number())
 							.await?;
 						let snapshot = EstimateSnapshot::choose(
 							run.step,
@@ -1647,55 +1637,28 @@ impl<'a> Executor<'a> {
 					}
 					None => EstimateSnapshot::conservative(run.step),
 				};
-				// Ordered and Native share the Stable Prefix rules: a Run-stable
-				// snapshot quota and Retrieval Key reuse (ADR 0020). Only Ordered
-				// keeps per-turn paragraphs out of `system`; a structured Harness
-				// Contract moves them to the `aidash` envelope instead.
-				let ordered = !projection.version().is_legacy();
-				let ordered_turn_paragraphs =
-					matches!(projection, context::RequestProjection::Ordered(_));
 				let contract = agent.harness_contract;
 				let source_input_seq = inputs
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
-				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self
 					.environment
 					.catalog()
 					.content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
-				// Ordered Runs key their sources by provider retrieval keys and revisions.
+				// Runs key their sources by provider retrieval keys and revisions.
 				let source_plan = self.environment.context_source_plan(run)?;
-				let cached_sources = if ordered || source_plan.iter().any(|source| source.refresh_each_step) {
-					None
-				} else {
-					run.context
-						.source_observation
-						.as_ref()
-						.map(|observation| observation.at(&source_boundary, &binding_digest))
-						.transpose()?
-						.flatten()
-						.cloned()
-				};
-				if let Some(content) = &cached_sources {
-					self.environment
-						.recheck_source_observation(run, content)
-						.await?;
-				}
-				let mut source_skill_context = String::new();
-				let mut ordered_skill = OrderedSkill::Absent;
+				let mut skill_read = SkillRead::Absent;
 				let mut prepared_sources = vec![];
 				// Exposure activation is independent of context providers. The native
 				// provider receives prepared, attributed resident blocks in the frame.
 				run.context.exposure.activate();
 				let mut exposure = match deferred_exposure(run)? {
 					Some((snapshot, budgets)) => {
-						let catalog = exposure_catalog(self.environment, run, snapshot, &tools, agent.harness_contract).await?;
+						let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
 						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
-						if cached_sources.is_none() {
-							prepared_sources =
-								prepared_skill_sources(self.environment, run, snapshot, &catalog, &selection)
-									.await?;
-						}
+						prepared_sources =
+							prepared_skill_sources(self.environment, run, snapshot, &catalog, &selection)
+								.await?;
 						Some(selection)
 					}
 					None => None,
@@ -1721,30 +1684,18 @@ impl<'a> Executor<'a> {
 							"instruction source targets request data".into(),
 						));
 					}
-					let caches_text = matches!(
-						source.cache,
-						ContextSourceCache::Boundary | ContextSourceCache::Revision
-					);
-					let text = if ordered && source.cache == ContextSourceCache::Revision {
+					let text = if source.cache == ContextSourceCache::Revision {
 						let (text, observed) = self
-							.ordered_instruction_source(run, token, &binding_digest, source, source_frame)
+							.revisioned_instruction_source(run, token, &binding_digest, source, source_frame)
 							.await?;
-						ordered_skill = observed;
+						skill_read = observed;
 						text
-					} else if let Some(cached) = cached_sources.as_ref().filter(|_| caches_text) {
-						cached["skill_context"]
-							.as_str()
-							.unwrap_or_default()
-							.to_owned()
 					} else {
 						read_planned_source(self.environment, run, token, source, source_frame)
 							.await?
 							.and_then(|value| value.as_str().map(str::to_owned))
 							.unwrap_or_default()
 					};
-					if caches_text {
-						source_skill_context.push_str(&text);
-					}
 					instruction_fragments.push((source.contribution_slot.as_str(), text));
 				}
 				let index = exposure
@@ -1758,7 +1709,6 @@ impl<'a> Executor<'a> {
 				let standing = run.context.standing_instructions.clone().unwrap_or_default();
 				let mut instructions = aidash_domain::harness_contract::system_text(
 					contract,
-					agent.projection_version,
 					&standing,
 					&agent.instructions,
 					&fragments,
@@ -1766,7 +1716,6 @@ impl<'a> Executor<'a> {
 				);
 				let floor = aidash_domain::harness_contract::fragments_start(
 					contract,
-					agent.projection_version,
 					&standing,
 					&agent.instructions,
 				);
@@ -1961,19 +1910,9 @@ impl<'a> Executor<'a> {
 				} else {
 					output_limit
 				};
-				// Ordered keeps per-turn paragraphs out of the cached system prompt.
-				// A structured Harness Contract moves them into the `aidash` envelope.
-				let harness_paragraphs = contract.leaves_data_envelopes();
-				let mut turn_instructions = String::new();
-				let mut harness_turn_instructions: Vec<String> = Vec::new();
+				let mut harness_turn_instructions = Vec::new();
 				let mut push_turn_paragraph = |paragraph: &str| {
-					if harness_paragraphs {
-						harness_turn_instructions.push(paragraph.trim().to_owned());
-					} else if ordered_turn_paragraphs {
-						turn_instructions.push_str(paragraph);
-					} else {
-						instructions.push_str(paragraph);
-					}
+					harness_turn_instructions.push(paragraph.trim().to_owned());
 				};
 				if run_message_catchup {
 					let instruction = if inputs.iter().any(|input| input.is_data) {
@@ -1998,15 +1937,10 @@ impl<'a> Executor<'a> {
 				// A Native step state is recorded whenever it changes (#942), so it
 				// carries no step counter; a notice at 80 % and 90 % of the
 				// limit replaces it.
-				let agent_state = if agent.projection_version == ProjectionVersion::Native {
-					let mut state = json!({"phase":run.phase()});
-					if let Some(notice) = aidash_domain::projection::native::step_limit_notice(run.step, agent.max_steps) {
-						state["step_limit"] = json!(notice);
-					}
-					state
-				} else {
-					json!({"phase":run.phase(),"step":run.step})
-				};
+				let mut agent_state = json!({"phase":run.phase()});
+				if let Some(notice) = aidash_domain::projection::native::step_limit_notice(run.step, agent.max_steps) {
+					agent_state["step_limit"] = json!(notice);
+				}
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":agent_state});
                 pinned.as_object_mut().expect("request snapshot").extend(snapshot_sources);
 				if let Some(deferred_read) = &thinking.deferred_thread_read {
@@ -2023,7 +1957,7 @@ impl<'a> Executor<'a> {
 					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
 					.filter(|(_, tool)| !run_message_catchup || tool.contract().behavior.permits(ToolUseMode::MessageCatchUp))
 					.map(|(_, tool)| tool)
-					.map(|t| contract_tool_specification(t.as_ref(), contract))
+					.map(|t| t.specification())
 					.collect::<Vec<_>>();
 				let selected_media = thinking.selected_media.clone();
 				let media_headroom = self.environment.run_request_headroom(run).await?;
@@ -2042,7 +1976,7 @@ impl<'a> Executor<'a> {
 				}
 				let media = Box::pin(resolve_model_input_media(
 					self.environment,
-					agent.projection_version,
+					ProjectionVersion::Native,
 					guard,
 					if run_message_catchup {
 						&[]
@@ -2089,7 +2023,7 @@ impl<'a> Executor<'a> {
 				let context_window = window.saturating_sub(
 					aidash_domain::provider::ModelRequest::content_parts_reservation(
 						&media.parts,
-						agent.projection_version,
+						ProjectionVersion::Native,
 						input_format,
 					)?,
 				);
@@ -2120,14 +2054,8 @@ impl<'a> Executor<'a> {
 					harness_requirements
 						.insert("run_message_read_instruction".into(), instruction.clone());
 				}
-				// Ordered per-turn paragraphs are request content the fixed
-				// reservations must count, exactly as Legacy counts them in system.
-				let turn_instructions = turn_instructions.trim_start().to_owned();
 				let mut fixed_context = private_context.clone();
-				if !turn_instructions.is_empty() {
-					fixed_context["turn_instructions"] = json!(turn_instructions);
-				}
-				if contract.leaves_data_envelopes() && !harness_requirements.is_empty() {
+				if !harness_requirements.is_empty() {
 					fixed_context[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
 						Value::Object(harness_requirements.clone());
 				}
@@ -2187,24 +2115,22 @@ impl<'a> Executor<'a> {
 						.as_ref()
 						.map_or(0, |payload| context::estimated_tokens(&payload.to_string()));
 				let volatile_budget = available.saturating_sub(message_size) / 4;
-				let snapshot_fit = if ordered {
+				let snapshot_fit = {
 					// Stable fields use a Run-stable quota so every step renders the
 					// same Stable Prefix bytes for the same task. It never exceeds
 					// half the headroom left beside the fixed content, run messages
 					// and volatile fields (the rest absorbs JSON string escaping and
 					// history), so oversized fixed content truncates the snapshot,
-					// or reports overflow, as Legacy does.
+					// or reports overflow.
 					let stable = conservative
 						.remaining(&Context::default(), &fixed_context)
 							.saturating_sub(message_size);
 					let headroom = stable.saturating_sub(stable / 4) / 2;
-					context::bound_ordered_snapshot(
+					context::bound_native_snapshot(
 						&mut pinned,
-						context::ordered_stable_quota(window, output_limit).min(headroom),
+						context::stable_snapshot_quota(window, output_limit).min(headroom),
 						volatile_budget,
 					)
-				} else {
-					context::bound_snapshot(&mut pinned, volatile_budget)
 				};
 				pinned.as_object_mut().expect("request snapshot").extend(fixed_sources);
 				// The snapshot quota is a heuristic. Required IDs and other minimum
@@ -2240,20 +2166,9 @@ impl<'a> Executor<'a> {
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);
 				}
-				if contract.leaves_data_envelopes() {
-					// The `aidash` envelope is built by `native_context`, which also
-					// adds this step's open continuation markers. The reserved key
-					// is set even when empty so those markers have a destination.
-					pinned[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
-						Value::Object(harness_requirements);
-				} else {
-					if let Some(instruction) = read_instruction {
-						pinned["run_message_read_instruction"] = instruction;
-					}
-					if !turn_instructions.is_empty() {
-						pinned["turn_instructions"] = json!(turn_instructions);
-					}
-				}
+				// Keep an envelope destination even when only continuation markers are present.
+				pinned[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
+					Value::Object(harness_requirements);
 				if snapshot_fit.is_err()
 					&& budget
 						.request(&Context::default(), &pinned)
@@ -2262,16 +2177,11 @@ impl<'a> Executor<'a> {
 				{
 					return Err(unreducible(guard));
 				}
-				// Legacy gives semantic memory half the remaining headroom. Ordered
-				// keeps a Run-fixed budget (part of the Retrieval Key) so steps reuse
-				// one read, but never more than that same headroom: pinned semantic
-				// content cannot be compacted away later.
+				// Stable Retrieval Keys share a Run-fixed quota, bounded by what
+				// still fits in this request.
 				let headroom = conservative.remaining(&Context::default(), &pinned) / 2;
-				let semantic_budget = if ordered {
-					context::sources::ordered_semantic_budget(window, output_limit).min(headroom)
-				} else {
-					headroom
-				};
+				let semantic_budget = context::sources::semantic_retrieval_budget(window, output_limit)
+					.min(headroom);
 				let semantic_inputs = inputs
 					.iter()
 					.filter_map(|input| {
@@ -2294,9 +2204,8 @@ impl<'a> Executor<'a> {
 					..source_frame
 				};
 				let retrieves = guard.is_some() || home.local();
-				if ordered {
-					let collected = self
-						.ordered_data_sources(
+				let collected = self
+						.semantic_sources(
 							run,
 							token,
 							&source_plan,
@@ -2316,55 +2225,13 @@ impl<'a> Executor<'a> {
 					} else if let Some(observation) = collected.observation(
 						&pinned,
 						&binding_digest,
-						ordered_skill,
+						skill_read,
 						context.source_observation.as_ref(),
 					)? {
 						context.source_observation = Some(observation);
 						run.context = context.clone();
 						store.observe_sources(run, token).await?;
 					}
-				} else {
-					let values = if let Some(cached) = &cached_sources {
-						cached_data_phase(&source_plan, ContextSourcePhase::BudgetedData, cached)
-					} else if retrieves {
-						collect_data_phase(
-							self.environment,
-							run,
-							token,
-							&source_plan,
-							ContextSourcePhase::BudgetedData,
-							budgeted_frame,
-						)
-						.await?
-					} else {
-						serde_json::Map::new()
-					};
-					copy_source_records(&run.context, &mut context);
-					pinned
-						.as_object_mut()
-						.expect("request snapshot")
-						.extend(values.clone());
-					if let Some(cause) = values
-						.values()
-						.find_map(aidash_domain::semantic::degraded::degraded)
-					{
-						run.context = context.clone();
-						degrade_context(store, run, token, cause).await?;
-					} else if cached_sources.is_none() {
-						let mut observed = serde_json::Map::from_iter([
-							("memory".into(), pinned["memory"].clone()),
-							("skill_context".into(), json!(source_skill_context)),
-						]);
-						observed.extend(values);
-						context.source_observation = Some(context::sources::SourceObservation::new(
-							source_boundary,
-							binding_digest,
-							Value::Object(observed),
-						)?);
-						run.context = context.clone();
-						store.observe_sources(run, token).await?;
-					}
-				}
                 self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 // History imported from a pre-journal Run may never have been
                 // saved; journal it whole before a summary absorbs any.
@@ -2379,10 +2246,8 @@ impl<'a> Executor<'a> {
                 // compaction and the request see the bytes the next step keeps.
                 // New evidence is admitted under this step's snapshot budget and
                 // then stays; refused items leave this request (#942).
-                if agent.projection_version == ProjectionVersion::Native {
-                    aidash_domain::projection::native::record_step_state(&mut context, &pinned);
-                    aidash_domain::projection::native::record_evidence(&mut context, &mut pinned, volatile_budget);
-                }
+                aidash_domain::projection::native::record_step_state(&mut context, &pinned);
+                aidash_domain::projection::native::record_evidence(&mut context, &mut pinned, volatile_budget);
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
                 context::observation::normalize_history(&mut context.history);
                 match aidash_application::context::compact(&context, &fitting, current_step)
@@ -2487,12 +2352,13 @@ impl<'a> Executor<'a> {
 							response_epoch: response_epoch(run.revision, run.step),
 							model_id: agent.model.id.clone(),
 							model_version: agent.model.version.clone(),
-							projection_version: agent.projection_version.number(),
+							projection_version: ProjectionVersion::Native.number(),
 							harness_contract: agent.harness_contract.number(),
 							upstream_model: model_cfg.model_id.clone(),
 							purpose: UsagePurpose::Main,
+							model_call: None,
 							requested_route: model_cfg.provider_route.as_ref().map(|route| route.tag.clone()),
-							shadow_estimates: diagnostic_estimates(&request, &model_cfg, agent.projection_version, run.step),
+							shadow_estimates: diagnostic_estimates(&request, &model_cfg, ProjectionVersion::Native, run.step),
 							estimate: request_estimate.clone(),
 							// Media allowances and provider-internal tool turns do not measure
 							// the tokenization of our initial text request.
@@ -2589,12 +2455,10 @@ impl<'a> Executor<'a> {
 				let result = match inference {
 					Inference::Response(response) => {
 						let mut response = *response;
-						// Reasoning is passed back only by Native Runs on routes
+						// Reasoning is passed back on routes
 						// that keep it on (#942). The model version is immutable,
 						// so a Run records it on every turn or on none.
-						if agent.projection_version != ProjectionVersion::Native
-							|| !model_cfg.reasoning_passback()
-						{
+						if !model_cfg.reasoning_passback() {
 							response.reasoning = None;
 						}
 						response
@@ -2804,7 +2668,7 @@ connection: None,
 					mcp: None,
 				}));
 				run.error = None;
-				record_provider_turn(run, agent.projection_version)?;
+				record_provider_turn(run)?;
 				store.save_run(run, token, "model.completed").await?;
 				metrics::histogram!("aidash_inference_accepted_seconds")
 					.record(started.elapsed().as_secs_f64());
@@ -2824,7 +2688,7 @@ connection: None,
 						.await;
 				}
 				// Recover a pending response written before activity was journaled.
-				record_provider_turn(run, agent.projection_version)?;
+				record_provider_turn(run)?;
 				// An old home replica can still accept a correction directly from
 				// an old executor. Wait for its upgraded database gate before any
 				// model output or final completion crosses this boundary.
@@ -3019,7 +2883,7 @@ connection: None,
 						declared_message_read_range(&tools, event)
 							.is_some_and(|(id, _, _, _)| summarized_ids.contains(&id))
 					};
-					if agent.projection_version == ProjectionVersion::Native {
+					{
 						// A Model Turn keeps every call it ran (ADR 0015).
 						let mut offloaded = false;
 						for entry in &mut context.history {
@@ -3033,8 +2897,6 @@ connection: None,
 						if offloaded {
 							context.offloaded.get_or_insert_default();
 						}
-					} else {
-						context.history.retain(|entry| !summarized(&entry.event));
 					}
 					for id in &required_reads {
 						context.message_read_coverage.remove(id);
@@ -3160,7 +3022,6 @@ connection: None,
 						// The final answer is a Model Turn without calls.
 						record_model_turn(
 							run,
-							agent.projection_version,
 							&result.text,
 							&result.tool_calls,
 						)?;
@@ -3224,7 +3085,6 @@ connection: None,
 				// the first of its Tool events.
 				record_model_turn(
 					run,
-					agent.projection_version,
 					&result.text,
 					&result.tool_calls,
 				)?;
@@ -3240,7 +3100,7 @@ connection: None,
 						// advertised, as checked below for a sequential call.
 						let exposed = match deferred_exposure(run)? {
 							Some((snapshot, budgets)) => {
-								let catalog = exposure_catalog(self.environment, run, snapshot, &tools, agent.harness_contract).await?;
+								let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
 								Some(exposure::select(&budgets, &catalog, &run.context.exposure)?.tools)
 							}
 							None => None,
@@ -3317,7 +3177,7 @@ connection: None,
 				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
 					// Every call is checked against the Exposure set its request
 					// advertised; Load/Unload in this response apply to the next one.
-					let catalog = exposure_catalog(self.environment, run, snapshot, &tools, agent.harness_contract).await?;
+					let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
 					if !exposure::select(&budgets, &catalog, &run.context.exposure)?.tools.contains(&call.name) {
 						let message = if exposure::select(&budgets, &catalog, &run.context.exposure.effective())?.tools.contains(&call.name) {
 							format!("capability {} was loaded in this response; call it after the next model request", call.name)
@@ -3601,7 +3461,7 @@ connection: None,
 				if matches!(selection, Some(aidash_domain::media::ModelMedia::WorkingImage(_))) {
 					let entry = self.environment.catalog()
 						.get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
-					let model: ModelConfig = serde_json::from_value(entry.config)?;
+					let model: ModelConfig = ModelConfig::from_stored(entry.config)?;
 					if !selection.as_ref().expect("image selection").supported_by(&model.modalities) {
 						selection = None;
 					}
@@ -3641,14 +3501,14 @@ connection: None,
 					// References. A withdrawn Source still stops the Run.
 					let headroom = self.environment.run_request_headroom(run).await?;
 					let model_entry = self.environment.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
-					let model: ModelConfig = serde_json::from_value(model_entry.config)?;
+					let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
 					if let Some(adjusted) = aidash_application::execution::media::route_selected_renditions(&model, &selections, &parts)
 						&& adjusted != selections {
 						parts = tool_step!(*call, Box::pin(guard.model_media(&adjusted)), unfinished_key);
 						selections = adjusted;
 					}
 					tool_step!(*call, async {
-						check_model_media_headroom(headroom, parts, &model, agent.projection_version)
+						check_model_media_headroom(headroom, parts, &model, ProjectionVersion::Native)
 					}, unfinished_key);
 					let progress = run.state.tool_mut()?;
 					progress.deferred_selected_media = selections[..deferred_count].to_vec();
@@ -4144,13 +4004,13 @@ fn deliver_declined_calls(run: &mut Run, context: &mut Context) -> Result<()> {
 	Ok(())
 }
 
-fn record_provider_turn(run: &mut Run, version: ProjectionVersion) -> Result<()> {
+fn record_provider_turn(run: &mut Run) -> Result<()> {
 	let response = &run.state.tool()?.response;
 	if response.provider_activity.is_empty() {
 		return Ok(());
 	}
 	let calls = response.tool_calls.clone();
-	record_model_turn(run, version, "", &calls)
+	record_model_turn(run, "", &calls)
 }
 
 /// The answer a Run holds back while its children are pending.
@@ -4177,28 +4037,13 @@ fn told_tasks(run: &Run) -> std::collections::BTreeSet<Uuid> {
 
 /// Open the Model Turn of a response, with the text it may keep and its
 /// calls, once per response epoch however often this boundary is re-entered.
-/// Provider-owned activity also opens a turn in Legacy and Ordered Runs;
-/// ordinary responses retain their previous projection behavior.
 fn record_model_turn(
 	run: &mut Run,
-	version: ProjectionVersion,
 	text: &str,
 	calls: &[aidash_domain::provider::ToolCall],
 ) -> Result<()> {
 	let provider_activity = run.state.tool()?.response.provider_activity.clone();
-	// Acceptance already kept reasoning only for Native Runs on routes that
-	// pass it back (#942); a Legacy or Ordered turn never carries any.
-	let reasoning = (version == ProjectionVersion::Native)
-		.then(|| {
-			run.state
-				.tool()
-				.map(|state| state.response.reasoning.clone())
-		})
-		.transpose()?
-		.flatten();
-	if version != ProjectionVersion::Native && provider_activity.is_empty() {
-		return Ok(());
-	}
+	let reasoning = run.state.tool()?.response.reasoning.clone();
 	let epoch = run.state.tool()?.response_epoch;
 	let recorded = run.context.history.iter().rposition(
 		|entry| matches!(entry.event, ContextEvent::Assistant { epoch: recorded, .. } if recorded == epoch),
@@ -4554,7 +4399,7 @@ fn page_reading(run: &Run, identity: &ToolIdentity) -> bool {
 }
 
 /// The pinned snapshot and budgets of a `deferred@1` Run, read from its
-/// Agent definition; `None` under `legacy@1` or without a Binding snapshot.
+/// Agent definition; `None` with eager Exposure or without a Binding snapshot.
 fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::DeferredBudgets)>> {
 	let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
 		return Ok(None);
@@ -4568,48 +4413,16 @@ fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::De
 		serde_json::from_value::<AgentBindings>(agent.definition.config.clone())?.exposure_policy();
 	Ok(policy.budgets().map(|budgets| (snapshot, *budgets)))
 }
-/// Older Harness Contracts retain the original thread reader's model-visible bytes.
-fn contract_tool_specification(
-	tool: &dyn ExecutionTool,
-	contract: aidash_domain::harness_contract::HarnessContract,
-) -> aidash_domain::provider::ToolSpec {
-	let mut spec = tool.specification();
-	if tool.contract().behavior.fitting == Some(ResultFitting::ThreadRecord) {
-		const SUBNODE_READ: &str = " To read a Subnode created by this Run, pass its thread_id.";
-		if contract < aidash_domain::harness_contract::HarnessContract::Structured3 {
-			spec.description = spec.description.replace(SUBNODE_READ, "");
-			if let Some(properties) = spec
-				.parameters
-				.get_mut("properties")
-				.and_then(Value::as_object_mut)
-			{
-				properties.remove("thread_id");
-			}
-		} else {
-			spec.description = spec.description.replace(
-				SUBNODE_READ,
-				" To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread.",
-			);
-		}
-	}
-	spec
-}
 /// Discoverable capabilities over the specifications dispatch advertises.
 async fn exposure_catalog(
 	environment: &dyn ExecutionEnvironment,
 	run: &Run,
 	snapshot: &BindingSnapshot,
 	tools: &Tools,
-	contract: aidash_domain::harness_contract::HarnessContract,
 ) -> Result<Vec<exposure::Capability>> {
 	let specs = tools
 		.iter()
-		.map(|(alias, tool)| {
-			(
-				alias.clone(),
-				contract_tool_specification(tool.as_ref(), contract),
-			)
-		})
+		.map(|(alias, tool)| (alias.clone(), tool.specification()))
 		.collect();
 	let direct = environment.direct_skills(run).await?;
 	let mut catalog =
@@ -4661,8 +4474,8 @@ async fn prepared_skill_sources(
 	}
 	Ok(blocks)
 }
-/// How this step obtained an Ordered Run's Skill context.
-enum OrderedSkill {
+/// How this step obtained the Run's revisioned Skill context.
+enum SkillRead {
 	/// This request carries no Skill context.
 	Absent,
 	/// The cached entry is still current.
@@ -4671,13 +4484,13 @@ enum OrderedSkill {
 	Retrieved(Option<context::sources::SkillObservation>),
 }
 
-/// An Ordered Run's semantic read for this step.
-struct OrderedSemantic {
+/// A Run's semantic read for this step.
+struct SemanticRead {
 	values: serde_json::Map<String, Value>,
 	boundary: String,
 	retrieved: bool,
 }
-impl OrderedSemantic {
+impl SemanticRead {
 	/// The outage cause when this step retrieved Degraded context.
 	fn degraded(&self) -> Option<aidash_domain::semantic::degraded::OutageCause> {
 		self.retrieved
@@ -4694,14 +4507,14 @@ impl OrderedSemantic {
 		&self,
 		pinned: &Value,
 		bindings: &str,
-		skill: OrderedSkill,
+		skill: SkillRead,
 		previous: Option<&context::sources::SourceObservation>,
 	) -> Result<Option<context::sources::SourceObservation>> {
 		let previous_skill = previous.and_then(|observation| observation.skill.clone());
 		let (skill, skill_changed) = match skill {
-			OrderedSkill::Absent => (None, previous_skill.is_some()),
-			OrderedSkill::Reused => (previous_skill, false),
-			OrderedSkill::Retrieved(skill) => (skill, true),
+			SkillRead::Absent => (None, previous_skill.is_some()),
+			SkillRead::Reused => (previous_skill, false),
+			SkillRead::Retrieved(skill) => (skill, true),
 		};
 		if !self.retrieved && !skill_changed {
 			return Ok(None);
@@ -5155,17 +4968,6 @@ fn request_source_slot(
 	};
 	match &request.context {
 		ModelContext::Sampling(_) => None,
-		ModelContext::Legacy(context) => context.get("current")?.get(key).cloned(),
-		ModelContext::Ordered(context) => {
-			serde_json::from_str::<Value>(if key == "reference_documents" {
-				&context.stable
-			} else {
-				&context.volatile
-			})
-			.ok()?
-			.get(key)
-			.cloned()
-		}
 		ModelContext::Native(context) => {
 			if key == "reference_documents" {
 				context

@@ -84,8 +84,7 @@ impl Model {
 			.filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
 			.collect();
 		self.offered.lock().unwrap().push(offered.clone());
-		let context: Value =
-			serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+		let context: Value = common::captured_context(&body);
 		let called = context["history"]
 			.as_array()
 			.unwrap()
@@ -1287,6 +1286,39 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	);
 	assert_eq!(results(&after).len(), 1);
 	assert_eq!(world.mcp.sessions_issued(), 0);
+
+	let provenance: Vec<(uuid::Uuid, Option<uuid::Uuid>, Option<uuid::Uuid>, String)> =
+		sqlx::query_as(
+			"SELECT m.stint_id, a.stint_id, u.stint_id, m.outcome
+		 FROM model_calls m JOIN inference_attempts a ON a.model_call_id = m.id
+		 JOIN inference_usage u ON u.model_call_id = m.id
+		 WHERE m.run_id = $1 AND m.purpose = 'mcp_sampling' ORDER BY m.started_at, m.id",
+		)
+		.bind(world.run.id)
+		.fetch_all(world.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(provenance.len(), 2);
+	assert_eq!(provenance[0].0, provenance[1].0);
+	assert!(
+		provenance
+			.iter()
+			.all(|row| row.1.is_none() && row.2.is_none() && row.3 == "accepted")
+	);
+	let spend: i64 = sqlx::query_scalar(
+		"SELECT COALESCE(SUM(b.unpriced_calls), 0)::bigint
+		 FROM budget_spend b JOIN task_executions r ON r.tenant = b.tenant AND r.node = b.node
+		 JOIN authorization_execution e ON e.run_id = r.id AND e.root_subject = b.root_subject
+		 WHERE r.id = $1",
+	)
+	.bind(world.run.id)
+	.fetch_one(world.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		spend, 3,
+		"the model step and both samples reach the Run's Budget ledger"
+	);
 
 	// A crash can leave the earlier input checkpoint after both accepted
 	// sampling responses have committed. Reuse those responses even when the

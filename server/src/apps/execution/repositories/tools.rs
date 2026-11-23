@@ -75,7 +75,9 @@ pub(crate) fn run_model(run: &aidash_domain::Run) -> Result<aidash_domain::model
 				&& entry.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or(aidash_application::Error::Forbidden)?;
-	Ok(serde_json::from_value(model.definition.config.clone())?)
+	Ok(aidash_domain::model::ModelConfig::from_stored(
+		model.definition.config.clone(),
+	)?)
 }
 #[async_trait]
 impl ToolOperations for Operations {

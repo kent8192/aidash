@@ -197,6 +197,7 @@ mod tests {
 				parameters: json!({"type":"object"}),
 			}],
 			context: crate::provider::ModelContext::Native(NativeContext {
+				standalone: false,
 				attachments: vec![],
 				history: vec![NativeMessage::Assistant {
 					text: Some("Looking".into()),

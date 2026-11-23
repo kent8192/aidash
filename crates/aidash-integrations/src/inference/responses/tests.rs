@@ -3,7 +3,7 @@ use aidash_application::provider_access::Access;
 use aidash_domain::{
 	agent_plugin::interaction::SamplingMessage,
 	projection::native::{Envelope, NativeContext, NativeMessage, Source as NativeSource, Trust},
-	provider::{ModelContext, OrderedContext, SamplingContext},
+	provider::{ModelContext, SamplingContext},
 };
 use axum::{
 	Json, Router,
@@ -163,10 +163,6 @@ fn requests_carry_the_projected_context_without_server_state() {
 }
 
 #[rstest::rstest]
-#[case::ordered(
-	ModelContext::Ordered(OrderedContext { stable: "stable-part".into(), volatile: "volatile-part".into() }),
-	json!([{"role":"user","content":[{"type":"input_text","text":"stable-part"},{"type":"input_text","text":"volatile-part"}]}])
-)]
 #[case::sampling(
 	ModelContext::Sampling(SamplingContext { sampling_messages: vec![
 		SamplingMessage { role: "assistant".into(), text: "Earlier answer".into() },
@@ -200,6 +196,7 @@ fn envelope(source: NativeSource, content: Value) -> Envelope {
 fn native_request() -> ModelRequest {
 	ModelRequest {
 		context: ModelContext::Native(NativeContext {
+			standalone: false,
 			attachments: vec![envelope(NativeSource::Task, json!("original task"))],
 			history: vec![],
 			volatile: json!({"step":1}).to_string(),
@@ -870,8 +867,8 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 		}),
 	);
 	let (url, _server) = serve(app).await;
-	let (mut plan, _) = provider(&url, true);
-	plan.config.projection_versions = vec![aidash_domain::projection::ProjectionVersion::Native];
+	let (plan, _) = provider(&url, true);
+
 	let recorder = Recorder::default();
 	let mut request = native_request();
 	for (step, expected_ids) in [(1, vec!["step-1-a", "step-1-b"]), (2, vec!["step-2-a"])] {
@@ -1463,7 +1460,7 @@ mod openrouter {
 			}));
 		let mut config = config("http://unused", true);
 		let now = chrono::Utc::now();
-		config.projection_versions = vec![aidash_domain::projection::ProjectionVersion::Native];
+
 		config.provider_route = Some(ProviderRouteEvidence {
 			tag: "vendor/route".into(),
 			source: "approval".into(),
@@ -1547,8 +1544,8 @@ mod openrouter {
 				}
 			}),
 		);
-		let mut config = config("http://unused", false);
-		config.projection_versions = vec![aidash_domain::projection::ProjectionVersion::Native];
+		let config = config("http://unused", false);
+
 		openrouter_provider(app, config, Arc::new(AtomicUsize::new(0))).await
 	}
 
@@ -1564,7 +1561,7 @@ mod openrouter {
 		request
 	}
 
-	/// Decision 3 of #776: every step of an Ordered or Native Run sends the
+	/// Decision 3 of #776: every Run step sends the
 	/// sticky-routing id, on the Responses transport as on Chat (ADR 0115).
 	#[tokio::test]
 	async fn every_step_of_a_run_sends_one_opaque_session_id() {

@@ -207,7 +207,7 @@ mechanism needs regression and acceptance work in every contract that uses it.
 
 - **(a) Run-context continuity and compaction.** Owned by #113 and #116. It covers how
   a Run's context survives restart and is reduced when it grows, through the Context
-  Journal and Context Projection. Per-Run retrieval reuse for Ordered Runs is part of
+  Journal and Context Projection. Per-Run retrieval reuse is part of
   #172 (closed) and PR #186 (merged). This contract does not store memory.
 - **(b) Persistent source ingestion and semantic retrieval.** Owned by #110, with
   retrieval reuse from #172 and PR #186. It covers Source ingestion, the semantic

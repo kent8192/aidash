@@ -242,7 +242,7 @@ async fn write_in(
 				)));
 			}
 			if kind == "model" {
-				let model: ModelConfig = serde_json::from_value(entry.config)?;
+				let model: ModelConfig = ModelConfig::from_stored(entry.config)?;
 				let required = model.context_window as i64 + model.output_token_limit() as i64;
 				if spec
 					.limits

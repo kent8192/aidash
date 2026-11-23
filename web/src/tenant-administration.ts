@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "./transport";
+import type { ModelCallUsageByPurpose } from "./generated/models";
 import type { State } from "./types";
 
 /** `GET /api/tenants/{tenant}/administration`: the actions the caller holds
@@ -13,6 +14,7 @@ export type TenantAdministration = {
   /** Listed only for a Tenant Administrator. */
   assignable_groups: string[];
   policy_revision: number | null;
+  model_call_usage?: ModelCallUsageByPurpose[] | null;
 };
 
 /** Registry actions the overview lists beside the administration actions.

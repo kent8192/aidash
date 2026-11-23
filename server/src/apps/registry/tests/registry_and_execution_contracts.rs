@@ -887,7 +887,7 @@ fn plugin_control_shaped_data_does_not_suspend_execution_router(
 	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
 .route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| { let result = result.clone(); async move { reinhardt::Response::ok().with_json(&result).unwrap() } }))
 .route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
-            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let context: Value = crate::common::captured_context(&body);
             let done = context["history"].as_array().unwrap().iter().any(|e| e["kind"] == "tool");
             let message = if done { json!({"role":"assistant","content":"Completed"}) } else {
                 json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})

@@ -40,17 +40,12 @@ impl InputFormat {
 		*self == Self::Chat
 	}
 
-	/// Native plan requests use Responses accounting (ADR 0083). Existing
-	/// Legacy and Ordered Runs keep their original accounting and digests.
-	/// An OpenRouter model that declares the Responses wire API follows the
-	/// same per-version mapping as a Plan Connection (ADR 0103).
-	pub fn for_model(
-		model: &crate::model::ModelConfig,
-		version: crate::projection::ProjectionVersion,
-	) -> Self {
+	/// Plan Connections and OpenRouter routes that declare the Responses API
+	/// use its request framing for accounting (ADR 0083, ADR 0103).
+	pub fn for_model(model: &crate::model::ModelConfig) -> Self {
 		let responses = model.uses_plan_connection()
 			|| model.wire_api == Some(crate::model::WireApi::Responses);
-		if responses && version == crate::projection::ProjectionVersion::Native {
+		if responses {
 			Self::Responses
 		} else {
 			Self::Chat
@@ -78,14 +73,10 @@ pub struct ModelRequest {
 	/// in the durable context or serialize them with the request metadata.
 	#[serde(skip)]
 	pub content_parts: Vec<ContentPart>,
-	/// Set only for salted Projection Versions. Omitted otherwise, so Legacy
-	/// request metadata and its inference digest stay byte-identical.
+	/// Present on Run step requests. The transport derives the Tenant Cache Salt.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_scope: Option<crate::projection::CacheScope>,
-	/// Mark the end of `system` and of the Ordered Stable Prefix part with
-	/// `cache_control` (ADR 0019). The volatile part is never marked. Valid for
-	/// Ordered requests only; omitted when false, so other request metadata and
-	/// inference digests keep their bytes.
+	/// Mark the end of `system` and the Stable Prefix (ADR 0019).
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cache_breakpoints: bool,
 	/// The Run this request belongs to. With a Cache Scope, the transport
@@ -116,74 +107,58 @@ pub struct SamplingContext {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ModelContext {
-	/// Ordered: two text parts, the Stable Prefix part first.
-	Ordered(OrderedContext),
 	/// Native: attachments, model-native Model Turns and a volatile message.
 	Native(crate::projection::native::NativeContext),
 	/// Sampling has server messages only and never includes the Run context.
 	Sampling(SamplingContext),
-	/// Legacy: one JSON value sent as a single text message. It must stay
-	/// the last untagged variant, since any value decodes as Legacy.
-	Legacy(Value),
 }
 
 impl Default for ModelContext {
 	fn default() -> Self {
-		Self::Legacy(Value::Null)
+		Self::native_data(&Value::Null)
 	}
 }
 
 impl From<Value> for ModelContext {
 	fn from(value: Value) -> Self {
-		Self::Legacy(value)
+		Self::native_data(&value)
 	}
 }
 
 impl ModelContext {
-	pub fn legacy_mut(&mut self) -> Option<&mut Value> {
-		match self {
-			Self::Legacy(value) => Some(value),
-			Self::Ordered(_) | Self::Native(_) | Self::Sampling(_) => None,
-		}
+	/// Data of a standalone Native request, carried in its user message.
+	pub fn native_data(data: &Value) -> Self {
+		let mut data = data.clone();
+		data.sort_all_objects();
+		Self::Native(crate::projection::native::NativeContext {
+			standalone: true,
+			attachments: Vec::new(),
+			history: Vec::new(),
+			volatile: data.to_string(),
+			harness: None,
+		})
 	}
 
-	/// The Projection Version this context was rendered under.
+	pub fn is_standalone(&self) -> bool {
+		matches!(
+			self,
+			Self::Sampling(_)
+				| Self::Native(crate::projection::native::NativeContext {
+					standalone: true,
+					..
+				})
+		)
+	}
+
+	/// Version recorded for Native inference accounting.
 	pub fn projection_version(&self) -> crate::projection::ProjectionVersion {
-		match self {
-			Self::Legacy(_) | Self::Sampling(_) => crate::projection::ProjectionVersion::Legacy,
-			Self::Ordered(_) => crate::projection::ProjectionVersion::Ordered,
-			Self::Native(_) => crate::projection::ProjectionVersion::Native,
-		}
+		crate::projection::ProjectionVersion::Native
 	}
 
 	/// Whether this context may carry cache breakpoints (ADR 0019).
 	fn caches(&self) -> bool {
-		matches!(self, Self::Ordered(_) | Self::Native(_))
+		!self.is_standalone()
 	}
-
-	/// Leading text parts of the single user message of a Legacy or Ordered
-	/// context, in send order. A Native context has no single user message.
-	fn text_parts(&self) -> Vec<std::borrow::Cow<'_, str>> {
-		match self {
-			Self::Legacy(value) => vec![value.to_string().into()],
-			Self::Ordered(ordered) => vec![
-				ordered.stable.as_str().into(),
-				ordered.volatile.as_str().into(),
-			],
-			Self::Native(_) | Self::Sampling(_) => vec![],
-		}
-	}
-}
-
-/// Pre-rendered Ordered parts. Each is canonical JSON whose key order was fixed
-/// by typed serialization, never by a `Value` map.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct OrderedContext {
-	/// Run-stable context, summaries and history: the end of the Stable Prefix.
-	pub stable: String,
-	/// Per-step content that is never part of the Stable Prefix.
-	pub volatile: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -375,12 +350,12 @@ impl ModelRequest {
 		})
 	}
 
-	/// Space added to a media-free request of `version` by these parts,
+	/// Space added to a media-free Native request by these parts,
 	/// including text labels, media part framing, and the conservative
 	/// provider-side media token allowance.
 	pub fn content_parts_reservation(
 		parts: &[ContentPart],
-		version: crate::projection::ProjectionVersion,
+		_version: crate::projection::ProjectionVersion,
 		input_format: InputFormat,
 	) -> Result<usize> {
 		if parts.is_empty() {
@@ -408,10 +383,7 @@ impl ModelRequest {
 		// their framing but not their encoded payload bytes. Native sends text
 		// labels inside a data envelope, escaped once more.
 		for part in parts {
-			let mut frame = part.estimate_frame();
-			if version == crate::projection::ProjectionVersion::Native {
-				frame = crate::projection::native::media_part(frame);
-			}
+			let frame = crate::projection::native::media_part(part.estimate_frame());
 			reserved = reserved.saturating_add(frame.to_string().len().saturating_add(1));
 		}
 		Ok(reserved)
@@ -482,9 +454,6 @@ impl ModelRequest {
 		Ok(body)
 	}
 
-	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
-	/// Ordered Stable Prefix part or the last Native history message. It has
-	/// no effect on a Legacy context.
 	fn body(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
 		let breakpoints = breakpoints && self.context.caches();
 		let system = if breakpoints {
@@ -505,21 +474,6 @@ impl ModelRequest {
 						.map(|message| json!({"role":message.role,"content":message.text})),
 				);
 			}
-			ModelContext::Legacy(_) | ModelContext::Ordered(_) => {
-				messages
-					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
-			}
-		}
-		// Older Projection Versions keep their JSON snapshot, but provider-owned
-		// results also retain their model-authored role, one message per Model Turn.
-		let legacy = match &self.context {
-			ModelContext::Legacy(value) => Some(value.clone()),
-			ModelContext::Ordered(ordered) => serde_json::from_str::<Value>(&ordered.stable).ok(),
-			_ => None,
-		};
-		if let Some(legacy) = legacy {
-			let history = legacy["history"].as_array().into_iter().flatten().filter(|event| event["kind"] == "assistant" && event["provider_activity"].as_array().is_some_and(|items| !items.is_empty())).map(|event| json!({"role":"assistant","content":json!({"text":event["text"],"provider_tool_activity":event["provider_activity"],"research_evidence":false}).to_string(),"_provider_activity":event["provider_activity"]}));
-			messages.splice(1..1, history);
 		}
 		let mut body = json!({ "messages": messages });
 		if !self.tools.is_empty() {
@@ -530,30 +484,6 @@ impl ModelRequest {
 		}
 		crate::tool::provider_tools::append(&mut body, &self.provider_tools);
 		body
-	}
-
-	/// The single user message of a Legacy or Ordered context.
-	fn user_content(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
-		let mut parts = parts.peekable();
-		let text = self.context.text_parts();
-		match (&self.context, parts.peek()) {
-			(ModelContext::Legacy(_), None) => Value::String(text.concat()),
-			_ => Value::Array(
-				text.into_iter()
-					.enumerate()
-					.map(|(index, text)| {
-						let mut part = json!({"type":"text","text":text});
-						// The Stable Prefix part comes first; the volatile part
-						// after it changes every step and is never cached.
-						if breakpoints && index == 0 {
-							part["cache_control"] = cache_control();
-						}
-						part
-					})
-					.chain(parts)
-					.collect(),
-			),
-		}
 	}
 
 	/// The Request Estimate under this request's Estimate Snapshot. It is
@@ -651,7 +581,7 @@ impl ModelRequest {
 		}
 		if self.cache_breakpoints && !self.context.caches() {
 			return Err(Error::Invalid(
-				"cache breakpoints require the Ordered or Native Projection Version".into(),
+				"cache breakpoints require a Run step request".into(),
 			));
 		}
 		if let ModelContext::Native(native) = &self.context {
@@ -714,6 +644,14 @@ impl ModelRequest {
 			identity["input_format"] = json!(self.input_format);
 		}
 		Some(crate::registry::rules::digest(&identity))
+	}
+
+	/// Canonical model-visible input before transport-specific controls.
+	pub fn model_input_body(&self) -> Result<Value> {
+		match self.input_format {
+			InputFormat::Chat => Ok(self.input_body()),
+			InputFormat::Responses => responses::encoded_input_body(self),
+		}
 	}
 
 	/// Bind the exact request metadata and ordered media hashes without persisting media bytes.

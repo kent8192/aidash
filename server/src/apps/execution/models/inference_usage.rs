@@ -1,7 +1,7 @@
 //! One Usage Record per Inference Attempt. Reported counts, provider cost and the
 //! request estimate stay separate; unknown values stay NULL.
 use crate::{Error, Result};
-use aidash_domain::provider::usage::{UsageDispatch, UsageOutcome};
+use aidash_domain::provider::usage::{UsageDispatch, UsageOutcome, UsagePurpose};
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::associations::ForeignKeyField;
@@ -29,9 +29,12 @@ pub struct InferenceUsage {
 		db_constraint = "inference_usage_run",
 		db_index = false,
 		on_delete = Cascade,
-		on_update = Restrict
+		on_update = Restrict,
+		null = true
 	)]
 	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
+	#[field(null = true)]
+	pub model_call_id: Option<Uuid>,
 	#[field]
 	pub lease_token: Uuid,
 	#[field]
@@ -124,10 +127,72 @@ impl InferenceUsage {
 		Self::abandon(tx, run, None, Some(dispatch.purpose.as_str())).await?;
 		let tenant =
 			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
+		if let Some(call) = &dispatch.model_call {
+			let owner =
+				crate::apps::execution::repositories::model_calls::Attribution::awake(tx, run)
+					.await?;
+			crate::apps::execution::repositories::model_calls::start(
+				tx,
+				dispatch.attempt,
+				&owner,
+				&aidash_domain::registry::EntityRef {
+					id: dispatch.model_id.clone(),
+					version: dispatch.model_version.clone(),
+				},
+				call,
+			)
+			.await?;
+		}
+		Self::insert_dispatch(
+			tx,
+			tenant,
+			Some(run),
+			dispatch.model_call.as_ref().map(|_| dispatch.attempt),
+			dispatch,
+		)
+		.await?;
+		if dispatch.purpose.as_str() == "summary" {
+			// Creation of a compaction journal precedes authorization and may
+			// finish without I/O. Only this durable dispatch establishes that the
+			// provider could incur work; commit it with its Usage Record.
+			let (sql, values) = Query::update()
+				.table(Alias::new("context_compaction_attempts"))
+				.value_expr(Alias::new("provider_dispatched"), Expr::value(true))
+				.value_expr(
+					Alias::new("model_call_id"),
+					Expr::value(dispatch.model_call.as_ref().map(|_| dispatch.attempt)),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(dispatch.attempt)))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("stage").eq(Expr::value("summary")))
+				.and_where(Expr::col("outcome").is_null())
+				.build(PostgresQueryBuilder);
+			if tx
+				.execute(&sql, convert_values(values))
+				.await?
+				.rows_affected
+				!= 1
+			{
+				return Err(Error::Conflict(
+					"Summary dispatch has no open compaction attempt".into(),
+				));
+			}
+		}
+		Ok(())
+	}
+
+	pub(crate) async fn insert_dispatch(
+		tx: &mut dyn TransactionExecutor,
+		tenant: String,
+		run: Option<Uuid>,
+		model_call: Option<Uuid>,
+		dispatch: &UsageDispatch,
+	) -> Result<()> {
 		let record = Self::build()
 			.tenant(tenant)
 			.attempt_id(dispatch.attempt)
-			.run(run)
+			.run_id(run)
+			.model_call_id(model_call)
 			.lease_token(dispatch.lease)
 			.response_epoch(dispatch.response_epoch)
 			.model_id(dispatch.model_id.clone())
@@ -166,29 +231,6 @@ impl InferenceUsage {
 			.insert_with_executor(tx, &record)
 			.await
 			.map_err(FrameworkError::from)?;
-		if dispatch.purpose.as_str() == "summary" {
-			// Creation of a compaction journal precedes authorization and may
-			// finish without I/O. Only this durable dispatch establishes that the
-			// provider could incur work; commit it with its Usage Record.
-			let (sql, values) = Query::update()
-				.table(Alias::new("context_compaction_attempts"))
-				.value_expr(Alias::new("provider_dispatched"), Expr::value(true))
-				.and_where(Expr::col("id").eq(Expr::value(dispatch.attempt)))
-				.and_where(Expr::col("run_id").eq(Expr::value(run)))
-				.and_where(Expr::col("stage").eq(Expr::value("summary")))
-				.and_where(Expr::col("outcome").is_null())
-				.build(PostgresQueryBuilder);
-			if tx
-				.execute(&sql, convert_values(values))
-				.await?
-				.rows_affected
-				!= 1
-			{
-				return Err(Error::Conflict(
-					"Summary dispatch has no open compaction attempt".into(),
-				));
-			}
-		}
 		Ok(())
 	}
 
@@ -219,15 +261,28 @@ impl InferenceUsage {
 			)
 			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)));
+			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
+			.and_where(Expr::col("purpose").ne(UsagePurpose::Auxiliary.as_str()));
 		if let Some(purpose) = purpose {
 			update.and_where(Expr::col("purpose").eq(Expr::value(purpose)));
 		}
 		if let Some(kept) = kept {
 			update.and_where(Expr::col("lease_token").ne(Expr::value(kept)));
 		}
-		let (sql, values) = update.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await?;
+		update.returning([Alias::new("model_call_id")]);
+		let abandoned: Vec<Option<Uuid>> =
+			crate::database::native::query_scalar(&update.to_string(PostgresQueryBuilder))
+				.scalar_all(&mut *tx)
+				.await?;
+		for id in abandoned.into_iter().flatten() {
+			crate::apps::execution::repositories::model_calls::finish(
+				tx,
+				id,
+				aidash_domain::model_call::Outcome::Failed,
+				None,
+			)
+			.await?;
+		}
 		Ok(())
 	}
 
@@ -238,6 +293,58 @@ impl InferenceUsage {
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
 		attempt: Uuid,
+		outcome: &UsageOutcome,
+	) -> Result<bool> {
+		let written = Self::write_completion_for(tx, attempt, Some(run), outcome).await?;
+		if written && matches!(outcome, UsageOutcome::Completed(_)) {
+			Self::record_calibration_sample(tx, attempt).await?;
+		}
+		// The Budget ledger (#1012): a reported cost, or one call whose cost
+		// is unknown. A rejected call cost nothing.
+		if written {
+			let cost = match outcome {
+				UsageOutcome::Completed(usage) => Some(usage.cost.map(|cost| cost.nanocredits)),
+				UsageOutcome::Unknown => Some(None),
+				UsageOutcome::Rejected { .. } => None,
+			};
+			if let Some(cost) = cost {
+				crate::apps::identity::repositories::budgets::record_spend(
+					tx,
+					run,
+					cost,
+					Utc::now(),
+				)
+				.await?;
+			}
+		} else if let UsageOutcome::Completed(usage) = outcome
+			&& Self::abandoned(tx, run, attempt).await?
+		{
+			// A newer lease made this attempt unknown, so its record keeps
+			// no usage, but the provider billed the call when it finished:
+			// the Budget ledger still takes its cost, or one unpriced call.
+			crate::apps::identity::repositories::budgets::record_spend(
+				tx,
+				run,
+				usage.cost.map(|cost| cost.nanocredits),
+				Utc::now(),
+			)
+			.await?;
+		}
+		Ok(written)
+	}
+
+	pub(crate) async fn write_completion(
+		tx: &mut dyn TransactionExecutor,
+		attempt: Uuid,
+		outcome: &UsageOutcome,
+	) -> Result<bool> {
+		Self::write_completion_for(tx, attempt, None, outcome).await
+	}
+
+	async fn write_completion_for(
+		tx: &mut dyn TransactionExecutor,
+		attempt: Uuid,
+		run: Option<Uuid>,
 		outcome: &UsageOutcome,
 	) -> Result<bool> {
 		let mut update = Query::update();
@@ -280,51 +387,18 @@ impl InferenceUsage {
 			}
 			UsageOutcome::Unknown => {}
 		}
+		if let Some(run) = run {
+			update.and_where(Expr::col("run_id").eq(Expr::value(run)));
+		}
 		let (sql, values) = update
 			.and_where(Expr::col("attempt_id").eq(Expr::value(attempt)))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
 			.build(PostgresQueryBuilder);
-		let written = tx
+		Ok(tx
 			.execute(&sql, convert_values(values))
 			.await?
 			.rows_affected
-			== 1;
-		if written && matches!(outcome, UsageOutcome::Completed(_)) {
-			Self::record_calibration_sample(tx, attempt).await?;
-		}
-		// The Budget ledger (#1012): a reported cost, or one call whose cost
-		// is unknown. A rejected call cost nothing.
-		if written {
-			let cost = match outcome {
-				UsageOutcome::Completed(usage) => Some(usage.cost.map(|cost| cost.nanocredits)),
-				UsageOutcome::Unknown => Some(None),
-				UsageOutcome::Rejected { .. } => None,
-			};
-			if let Some(cost) = cost {
-				crate::apps::identity::repositories::budgets::record_spend(
-					tx,
-					run,
-					cost,
-					Utc::now(),
-				)
-				.await?;
-			}
-		} else if let UsageOutcome::Completed(usage) = outcome
-			&& Self::abandoned(tx, run, attempt).await?
-		{
-			// A newer lease made this attempt unknown, so its record keeps
-			// no usage, but the provider billed the call when it finished:
-			// the Budget ledger still takes its cost, or one unpriced call.
-			crate::apps::identity::repositories::budgets::record_spend(
-				tx,
-				run,
-				usage.cost.map(|cost| cost.nanocredits),
-				Utc::now(),
-			)
-			.await?;
-		}
-		Ok(written)
+			== 1)
 	}
 
 	/// Whether the attempt was made unknown before its completion arrived.

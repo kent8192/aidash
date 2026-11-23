@@ -89,8 +89,8 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 	};
 	match old.kind.as_str() {
 		"model" => {
-			let a: ModelConfig = serde_json::from_value(old.config.clone())?;
-			let b: ModelConfig = serde_json::from_value(new.config.clone())?;
+			let a: ModelConfig = ModelConfig::from_stored(old.config.clone())?;
+			let b: ModelConfig = ModelConfig::from_stored(new.config.clone())?;
 			add(a.provider != b.provider, "provider");
 			add(host_changed(&a.endpoint, &b.endpoint), "endpoint host");
 			add(

@@ -3,14 +3,14 @@
 use super::*;
 
 impl Executor<'_> {
-	pub(super) async fn ordered_instruction_source(
+	pub(super) async fn revisioned_instruction_source(
 		&self,
 		run: &mut Run,
 		token: Uuid,
 		bindings: &str,
 		source: &PlannedContextSource,
 		frame: ContextSourceFrame<'_>,
-	) -> Result<(String, OrderedSkill)> {
+	) -> Result<(String, SkillRead)> {
 		let revision = self
 			.environment
 			.source_revision(&source.handle, run)
@@ -27,7 +27,7 @@ impl Executor<'_> {
 				.recheck_source_observation(run, &json!({}))
 				.await
 			{
-				Ok(()) => return Ok((text, OrderedSkill::Reused)),
+				Ok(()) => return Ok((text, SkillRead::Reused)),
 				Err(Error::Conflict(_)) => {}
 				Err(error) => return Err(error),
 			}
@@ -39,10 +39,10 @@ impl Executor<'_> {
 		let observation = revision
 			.map(|revision| context::sources::SkillObservation::new(revision, text.clone()))
 			.transpose()?;
-		Ok((text, OrderedSkill::Retrieved(observation)))
+		Ok((text, SkillRead::Retrieved(observation)))
 	}
 
-	pub(super) async fn ordered_data_sources(
+	pub(super) async fn semantic_sources(
 		&self,
 		run: &mut Run,
 		token: Uuid,
@@ -50,7 +50,7 @@ impl Executor<'_> {
 		bindings: &str,
 		retrieves: bool,
 		frame: ContextSourceFrame<'_>,
-	) -> Result<OrderedSemantic> {
+	) -> Result<SemanticRead> {
 		let has_sources = plan
 			.iter()
 			.any(|source| source.phase == ContextSourcePhase::BudgetedData);
@@ -88,7 +88,7 @@ impl Executor<'_> {
 				.await
 			{
 				Ok(()) => {
-					return Ok(OrderedSemantic {
+					return Ok(SemanticRead {
 						values: cached_data_phase(plan, ContextSourcePhase::BudgetedData, &content),
 						boundary,
 						retrieved: false,
@@ -114,7 +114,7 @@ impl Executor<'_> {
 		} else {
 			serde_json::Map::new()
 		};
-		Ok(OrderedSemantic {
+		Ok(SemanticRead {
 			values,
 			boundary,
 			retrieved: true,

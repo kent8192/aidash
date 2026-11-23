@@ -380,6 +380,7 @@ pub(crate) async fn start(
 					"id",
 					"run_id",
 					"usage_attempt",
+					"model_call_id",
 					"first_seq",
 					"last_seq",
 					"started_at",
@@ -392,6 +393,14 @@ pub(crate) async fn start(
 					.expr(Expr::value(attempt.0))
 					.expr(Expr::value(run))
 					.expr(Expr::value(token))
+					.expr(Expr::subquery(
+						Query::select()
+							.column(Alias::new("model_call_id"))
+							.from(Alias::new("inference_usage"))
+							.and_where(Expr::col("attempt_id").eq(Expr::value(attempt.0)))
+							.and_where(Expr::col("run_id").eq(Expr::value(run)))
+							.to_owned(),
+					))
 					.expr(Expr::value(seq))
 					.expr(Expr::value(seq))
 					.expr(Expr::current_timestamp())

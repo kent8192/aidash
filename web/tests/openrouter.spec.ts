@@ -206,12 +206,12 @@ test("searches and selects a model without credential input", async ({
   const config = (await submitted).postDataJSON().config;
   // Omitted, so registration chooses by route.
   expect(config).not.toHaveProperty("cache_mode");
+  expect(config).not.toHaveProperty("projection_versions");
   expect(config).toMatchObject({
     provider: "openrouter",
     model_id: "vendor/fixture-model",
     endpoint: "https://openrouter.ai/api/v1",
     provider_credential: "openrouter",
-    projection_versions: ["legacy", "ordered", "native"],
     reasoning_effort: "high",
     context_window: 65536,
     max_output_tokens: 65536,
@@ -398,10 +398,10 @@ test("provider-first selection discovers personal plan models and submits an exp
     model_id: "gpt-plan-fixture",
     context_window: 128000,
     max_output_tokens: 16384,
-    projection_versions: ["legacy", "ordered", "native"],
     cost: {},
   });
   expect(config).not.toHaveProperty("provider_credential");
+  expect(config).not.toHaveProperty("projection_versions");
 });
 
 test("switching to a Keyless endpoint discards a provider catalog selection", async ({

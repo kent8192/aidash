@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use rstest::{fixture, rstest};
 use serde_json::Value;
+use serde_json::json;
 use std::collections::BTreeMap;
 fn id(value: u128) -> Uuid {
 	Uuid::from_u128(value)
@@ -59,7 +60,6 @@ fn model() -> ModelConfig {
 		media_routes: vec![routes(vec!["image/png".into(), "mp3".into()])],
 		provider_route: None,
 		cost: json!({}),
-		projection_versions: vec![],
 		cache_mode: None,
 		request_estimator: None,
 		estimate_diagnostics: None,
@@ -1024,15 +1024,15 @@ const PIXEL: [u8; 67] = [
 ];
 
 #[rstest]
-#[case::chat(false, 2)]
-#[case::native_plan(true, 1)]
+#[case::chat(false)]
+#[case::plan(true)]
 #[tokio::test]
 async fn escaped_attachment_labels_keep_the_selected_batch_within_dispatch_headroom(
 	mut model: ModelConfig,
 	#[case] plan: bool,
-	#[case] through: i64,
 ) {
-	// Eight valid PNGs fit Chat framing but not Native data envelopes at this window.
+	// Four PNGs fit. The Native framing on their escaped labels leaves no
+	// room for the second message's attachments.
 	if plan {
 		model.plan_connection = Some("chatgpt".into());
 	}
@@ -1045,34 +1045,28 @@ async fn escaped_attachment_labels_keep_the_selected_batch_within_dispatch_headr
 		..Default::default()
 	};
 	let headroom = 41_000;
-	let projection = if plan {
-		ProjectionVersion::Native
-	} else {
-		ProjectionVersion::Legacy
-	};
 	let batch = load(
 		&mut scope,
 		id(10),
 		&[(1, id(1), headroom), (2, id(2), headroom)],
 		&model,
-		projection,
+		ProjectionVersion::Native,
 	)
 	.await
 	.unwrap();
-	assert_eq!(batch.through_seq, Some(through));
-	assert_eq!(batch.has_more, plan);
+	assert_eq!(batch.through_seq, Some(1));
+	assert!(batch.has_more);
 	// Inspect the actual provider input, independently of the batching probe.
-	let mut request = ModelRequest {
+	let request = ModelRequest {
+		context: aidash_domain::provider::ModelContext::Native(
+			aidash_domain::projection::native::native_context(&Default::default(), &Value::Null),
+		),
 		content_parts: batch.parts,
 		..Default::default()
 	};
 	let body = if plan {
-		request.context = aidash_domain::provider::ModelContext::Native(
-			aidash_domain::projection::native::native_context(&Default::default(), &json!({})),
-		);
 		aidash_domain::provider::responses::encoded_input_body(&request).unwrap()
 	} else {
-		request.context = json!({}).into();
 		request.input_body()
 	};
 	let images = request.content_parts.len() / 2;

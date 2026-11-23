@@ -71,48 +71,11 @@ const WITHOUT_DELEGATION: usize = 3;
 /// Discover, create, delegate, then finish.
 const WITH_DELEGATION: usize = 4;
 
-/// The first UUID within `window` bytes after the last `anchor` in `text`.
-fn uuid_after(text: &str, anchor: &str, window: usize) -> Option<String> {
-	let at = text.rfind(anchor)?;
-	let to = (at + anchor.len() + window).min(text.len());
-	let slice = text.get(at..to)?;
-	let bytes = slice.as_bytes();
-	(0..bytes.len().saturating_sub(35)).find_map(|start| {
-		let candidate = slice.get(start..start + 36)?;
-		let shaped = candidate.char_indices().all(|(index, character)| {
-			if matches!(index, 8 | 13 | 18 | 23) {
-				character == '-'
-			} else {
-				character.is_ascii_hexdigit()
-			}
-		});
-		shaped.then(|| candidate.to_owned())
-	})
-}
-
 fn next_message(script: &Script, request: &Value) -> Value {
-	// The history travels inside the prompt, so the coordinator's progress is
-	// counted here and the Task it created is read out of the transcript.
-	let transcript = request["messages"].to_string();
-	if script
-		.read_delegated
-		.load(std::sync::atomic::Ordering::SeqCst)
-		&& request["messages"].as_array().is_some_and(|messages| {
-			messages
-				.iter()
-				.filter_map(|message| message["content"].as_str())
-				.filter_map(|content| serde_json::from_str::<Value>(content).ok())
-				.any(|context| {
-					context
-						.pointer("/current/identity/agent_id")
-						.and_then(Value::as_str)
-						== Some("sibling-agent")
-				})
-		}) {
-		return json!({"role":"assistant","content":"Done"});
-	}
-	if !transcript.contains(COORDINATOR_TASK) {
-		// The receiver on the second Node.
+	let context = common::captured_context(request);
+	if context["snapshot"]["identity"]["agent_id"] == "sibling-agent"
+		|| context["snapshot"]["task"]["description"] != COORDINATOR_TASK
+	{
 		return json!({"role":"assistant","content":"Done"});
 	}
 	let created = script.tasks.load(std::sync::atomic::Ordering::SeqCst);
@@ -149,8 +112,13 @@ fn next_message(script: &Script, request: &Value) -> Value {
 			if stage == (if read_delegated { 3 } else { 2 })
 				&& *script.delegate.lock().unwrap() =>
 		{
-			let task = uuid_after(&transcript, HANDED_OVER, 300)
-				.expect("the created Task's id is in the transcript");
+			let task = context["history"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|entry| entry["call"]["name"] == "task_create")
+				.and_then(|entry| entry["result"]["id"].as_str())
+				.expect("the task_create result carries the created Task's id");
 			tool_call(
 				"delegate",
 				"task_delegate",

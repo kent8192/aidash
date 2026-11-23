@@ -261,7 +261,6 @@ async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_
 	mut fixture: Fixture,
 ) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.projection = aidash_domain::projection::ProjectionVersion::Native;
 	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured3;
 	sampling(&mut fixture);
 	fixture

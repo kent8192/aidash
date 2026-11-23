@@ -833,7 +833,7 @@ pub fn media_request_headroom(
 	model: &ModelConfig,
 	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = media::admission_request(model, projection, json!({}), Vec::new());
+	let request = media::run_media_budget_request(model, projection, Vec::new());
 	request
 		.ensure_fits_with_parts(headroom, parts)
 		.map_err(Into::into)
@@ -885,7 +885,7 @@ pub fn check_model_media_headroom(
 	model: &ModelConfig,
 	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = media::admission_request(model, projection, json!({}), parts);
+	let request = media::run_media_budget_request(model, projection, parts);
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {
 		return Err(Error::Invalid(format!(

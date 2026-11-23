@@ -267,8 +267,8 @@ def _metadata(row, allowed, tenant, table):
             _count(row["projection_version"], "projection_version")
         if "harness_contract" in row:
             _count(row["harness_contract"], "harness_contract")
-        if row.get("purpose", "main") not in ("main", "summary"):
-            raise EvidenceError("inference purpose must be main or summary")
+        if row.get("purpose", "main") not in ("main", "summary", "auxiliary"):
+            raise EvidenceError("inference purpose must be main, summary or auxiliary")
         if row.get("estimated_tokens") is not None and row.get("output_reservation") is not None and row["estimated_tokens"] < row["output_reservation"]:
             raise EvidenceError("request estimate is smaller than its output reservation")
     if table == "generation_embedding_usage" and (row.get("accounting_kind") != "reservation" or row.get("provider_work_unpriced") is not True or row.get("cost_nanocredits") is not None or row.get("cost_amount") is not None):
@@ -281,7 +281,7 @@ def _metadata(row, allowed, tenant, table):
 
 
 def _variant_projection(variant):
-    value = variant.get("agent_fields", {}).get("projection_version")
+    value = evaluation.agent_field(variant, "projection_version")
     return {1: "legacy", 2: "ordered", 3: "native", "1": "legacy", "2": "ordered", "3": "native"}.get(
         value, value or (variant.get("label") if variant.get("label") in ("legacy", "ordered", "native") else None))
 
@@ -291,11 +291,11 @@ def _variant_harness_contract(variant):
 
     Numbers 2 and 3 belonged to structured@1 and structured@2, removed by #532;
     historical exports may still carry either spelling, so both stay readable."""
-    value = variant.get("agent_fields", {}).get("harness_contract")
+    value = evaluation.agent_field(variant, "harness_contract")
     if isinstance(value, bool):
         raise EvidenceError("arm harness_contract must be a version string or number")
-    return {"legacy@1": 1, "structured@1": 2, "structured@2": 3, "structured@3": 4,
-            1: 1, 2: 2, 3: 3, 4: 4, "1": 1, "2": 2, "3": 3, "4": 4}.get(value, 1 if value is None else value)
+    return {"legacy@1": 1, "structured@1": 2, "structured@2": 3, "structured@3": 4, "structured@4": 5,
+            1: 1, 2: 2, 3: 3, 4: 4, 5: 5, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5}.get(value, 1 if value is None else value)
 
 
 def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
@@ -481,6 +481,7 @@ def _charge(row):
 
 def _cost(run, complete):
     work = {}
+    memory = {_attempt_id(row): row for row in run["memory_model_attempts"]}
     for table, default_purpose in (("inference_usage", "main"), ("decision_attempts", "decider"),
                                    ("memory_model_attempts", "memory"), ("context_compaction_attempts", "summary")):
         for row in run[table]:
@@ -492,6 +493,15 @@ def _cost(run, complete):
             identifier = row.get("provider_work_id") or _attempt_id(row)
             unit, amount = _charge(row)
             purpose = row.get("purpose") or default_purpose
+            if table == "inference_usage" and purpose == "auxiliary":
+                attempt = memory.get(_attempt_id(row))
+                if attempt is not None:
+                    # Both rows carry the same physical attempt. The memory
+                    # journal owns the charge and its full list of source Runs.
+                    memory_unit, memory_amount = _charge(attempt)
+                    if unit != memory_unit or (amount is not None and amount != memory_amount):
+                        raise EvidenceError("incompatible duplicate provider-work charge")
+                    continue
             if identifier in work:
                 previous = work[identifier]
                 if table != "context_compaction_attempts" or previous["purpose"] != "summary":
@@ -504,8 +514,7 @@ def _cost(run, complete):
             else:
                 work[identifier] = {"provider_work_id": identifier, "unit": unit, "amount": amount, "purpose": purpose,
                                     "sources": [table], "shared_run_ids": row.get("source_run_ids", [run["run_id"]])}
-    memory_ids = {_attempt_id(row) for row in run["memory_model_attempts"]}
-    unpriced_embeddings = {_attempt_id(row) for row in run["generation_embedding_usage"] if _attempt_id(row) not in memory_ids}
+    unpriced_embeddings = {_attempt_id(row) for row in run["generation_embedding_usage"] if _attempt_id(row) not in memory}
     by_unit = defaultdict(list)
     purposes = defaultdict(lambda: defaultdict(list))
     for item in work.values():

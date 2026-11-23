@@ -188,6 +188,26 @@ impl BrowserAdministrator {
 		self.inner.headers()
 	}
 }
+/// Claim a Run for a fixture that starts below worker admission.
+#[allow(dead_code)] // Only Usage Record and inference progress fixtures dispatch at this boundary.
+pub async fn lease_entered_run(store: &Store, worker: Uuid) -> aidash_server::domain::Run {
+	let run = store.lease_run(worker, 30).await.unwrap().unwrap();
+	sqlx::query(
+		"INSERT INTO stints
+		 (id, tenant, run_id, agent_id, agent_version, node, started_at, lease_owner)
+		 SELECT $1, tenant, id, agent_id, agent_version, node, now(), lease_owner
+		 FROM task_executions WHERE id = $2 AND lease_owner = $3
+		 ON CONFLICT DO NOTHING",
+	)
+	.bind(Uuid::new_v4())
+	.bind(run.id)
+	.bind(worker)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	run
+}
+
 #[path = "tenant_roots.rs"]
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that issue the first Subject Credential use it.
@@ -942,6 +962,17 @@ pub async fn native_migrations() -> Vec<reinhardt::db::migrations::Migration> {
 	migrations
 }
 
+pub(crate) fn fixture_cache_salt() -> aidash_integrations::inference::CacheSaltKeys {
+	aidash_integrations::inference::CacheSaltKeys::new(
+		&[aidash_integrations::inference::CacheSaltKey {
+			version: 1,
+			secret: "fixture-cache-salt-secret".into(),
+		}],
+		1,
+	)
+	.unwrap()
+}
+
 /// A Store on the server role's URL, after migrating the same database as its owner.
 #[allow(dead_code)]
 pub async fn native_store(database_url: &str, node: &str) -> Store {
@@ -959,7 +990,14 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 	)
 	.await
 	.unwrap()
+	.with_cache_salt(Some(fixture_cache_salt()))
 }
+
+#[allow(dead_code)]
+#[path = "native_request.rs"]
+mod native_request;
+#[allow(unused_imports)]
+pub use native_request::{captured_context, current_chat_parts};
 
 #[path = "state.rs"]
 mod state;
@@ -1114,7 +1152,8 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				),
 			)
 			.await
-			.unwrap();
+			.unwrap()
+			.with_cache_salt(Some(fixture_cache_salt()));
 		// Fixtures permit their origins on the Store after startup.
 		let registry = Registry::new(database.pool.clone(), &store.deployment)
 			.unwrap()

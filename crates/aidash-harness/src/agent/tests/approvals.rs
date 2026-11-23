@@ -1270,19 +1270,20 @@ async fn only_while_auto_is_effective_the_model_is_told_not_to_stop_for_question
 		panic!("one request");
 	};
 	assert_eq!(
-		request
-			.instructions
-			.contains(aidash_application::capabilities::approvals::AUTO_MODE_INSTRUCTION.trim()),
+		step_state(request)["turn_instructions"]
+			.as_array()
+			.is_some_and(|instructions| instructions.contains(&json!(
+				aidash_application::capabilities::approvals::AUTO_MODE_INSTRUCTION.trim()
+			),)),
 		told
 	);
 	assert!(request.instructions.contains("Do the task"));
 }
 
 #[tokio::test]
-async fn an_ordered_request_keeps_the_auto_instruction_out_of_the_cached_system_prompt() {
+async fn auto_instructions_stay_out_of_the_cached_system_prompt() {
 	// Arrange
 	let mut fixture = canonical(fixture());
-	ordered(&mut fixture);
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.scoped = true;
 	state.approval_mode = Some(ApprovalMode::Auto);
@@ -1299,11 +1300,8 @@ async fn an_ordered_request_keeps_the_auto_instruction_out_of_the_cached_system_
 	};
 	let instruction = aidash_application::capabilities::approvals::AUTO_MODE_INSTRUCTION;
 	assert!(!request.instructions.contains(instruction.trim()));
-	let volatile: Value = serde_json::from_str(ordered_parts(request).1).unwrap();
-	assert_eq!(
-		volatile["turn_instructions"],
-		json!(instruction.trim_start())
-	);
+	let step = step_state(request);
+	assert_eq!(step["turn_instructions"], json!([instruction.trim()]));
 }
 
 /// An outbound read of a Run executing for another Home waits on the Home's person (ADR 0139,

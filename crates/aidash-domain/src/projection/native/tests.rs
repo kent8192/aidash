@@ -401,17 +401,6 @@ fn run_start_memory_is_projected_as_data() {
 			.unwrap()
 			.contains("prior fact")
 	);
-	assert!(
-		context
-			.model_view(&json!({}))
-			.to_string()
-			.contains("prior fact")
-	);
-	assert!(
-		crate::context::ordered_context(&context, &json!({}))
-			.stable
-			.contains("prior fact")
-	);
 }
 
 #[test]
@@ -980,6 +969,7 @@ fn without_history_the_breakpoint_ends_the_attachments() {
 #[test]
 fn a_partial_turn_is_rejected_before_any_request_is_sent() {
 	let native = NativeContext {
+		standalone: false,
 		attachments: vec![],
 		history: vec![NativeMessage::Assistant {
 			text: None,

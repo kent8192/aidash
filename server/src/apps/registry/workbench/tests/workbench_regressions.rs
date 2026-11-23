@@ -184,7 +184,7 @@ fn workbench(
 			(
 				"fixture-model",
 				"model",
-				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 			),
 			(
 				"fixture-tool",
@@ -405,6 +405,24 @@ async fn incomplete_usage_blocks_test_before_tool_or_second_inference(
 	assert!(session["error"].as_str().unwrap().contains("usage"));
 	assert_eq!(session["tool_calls"], json!([]));
 	assert_eq!(wb.hits.load(Ordering::SeqCst), 1);
+	let calls: Vec<(String, Option<uuid::Uuid>, Option<uuid::Uuid>, String)> = sqlx::query_as(
+		"SELECT m.node, m.run_id, m.stint_id, m.outcome
+		 FROM model_calls m JOIN inference_usage u ON u.model_call_id = m.id AND u.stint_id IS NULL
+		 WHERE m.tenant = 'acme' AND m.purpose = 'workbench_test'",
+	)
+	.fetch_all(wb.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		calls,
+		[(
+			aidash_domain::nodes::NodeName::derived("acme").to_string(),
+			None,
+			None,
+			"accepted".into()
+		)]
+	);
+
 	wb.cleanup().await;
 }
 
@@ -1152,7 +1170,7 @@ async fn trust_inspection_reaches_older_runs_in_authorized_threads(
 async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
 	wb.register().await;
-	assert_eq!(request(&wb.app,&wb.token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_deployment":wb.f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.deployment,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
+	assert_eq!(request(&wb.app,&wb.token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(300_000)},"config":{"registry_deployment":wb.f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.deployment,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
 	wb
 }
 

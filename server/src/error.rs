@@ -44,6 +44,8 @@ pub enum Error {
 	Framework(#[from] FrameworkError),
 	#[error("{0}")]
 	Invalid(String),
+	#[error("PROJECTION_RETIRED: {0}")]
+	ProjectionRetired(String),
 	#[error("{0}")]
 	Conflict(String),
 	#[error("QUEUE_LIMIT")]
@@ -172,6 +174,7 @@ impl Error {
 		let run_message_pending = self.has_database_code("A3301");
 		let (status, message) = match &self {
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
+			Self::ProjectionRetired(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::Conflict(s) => {
 				tracing::debug!(reason = s, "request conflicts with current state");
 				(StatusCode::CONFLICT, s.clone())
@@ -581,9 +584,7 @@ impl From<aidash_application::Error> for Error {
 			}
 			ApplicationError::ContextOverflow => Self::ContextOverflow,
 			ApplicationError::DeciderOutage => Self::DeciderOutage,
-			error @ ApplicationError::UnsupportedProjection { .. } => {
-				Self::Invalid(error.to_string())
-			}
+			ApplicationError::ProjectionRetired(reason) => Self::ProjectionRetired(reason),
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::MemoryClosed => Self::MemoryClosed,
 			ApplicationError::BudgetExhausted { stop, message } => {
@@ -660,6 +661,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Context(reason) => Self::Context(reason),
 			Error::DeciderOutage => Self::DeciderOutage,
 			Error::ContextOverflow => Self::ContextOverflow,
+			Error::ProjectionRetired(reason) => Self::ProjectionRetired(reason),
 			Error::MediaRouteUnavailable { model, candidates } => {
 				Self::MediaRouteUnavailable { model, candidates }
 			}

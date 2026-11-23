@@ -427,6 +427,9 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		// also reports invariant and allowance violations, which never retry.
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
+		NativeError::ProjectionRetired(reason) => {
+			ExecutionFailure::ProjectionRetired(reason.clone())
+		}
 		NativeError::DeciderOutage => ExecutionFailure::DeciderOutage,
 		NativeError::MemoryClosed => ExecutionFailure::ServiceOutage(MEMORY.into()),
 		NativeError::BudgetExhausted { stop, message } => ExecutionFailure::Budget {
