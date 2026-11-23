@@ -1010,13 +1010,8 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	#[from(initial_process)]
 	#[with(prepared.clone(), "server", 0, true, true)]
 	server: Process,
-	#[future(awt)]
-	#[from(initial_process)]
-	#[with(prepared.clone(), "worker", 0, true, true)]
-	worker: Process,
 ) {
 	let mut server = server;
-	let mut worker = worker;
 
 	let prepared = prepared.await;
 	let (f, url, schema) = prepared.runtime.parts();
@@ -1026,12 +1021,41 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	let broker = prepared.broker.clone();
 	let provider = prepared.provider.clone();
 
+	// Startup recovery runs immediately, even with the 60s test cadence.
+	// Start the replacement while there is no Run to recover and keep its
+	// pulls paused until the original worker has acknowledged and died.
+	let replacement_directory = directory.join("replacement");
+	std::fs::create_dir_all(&replacement_directory).unwrap();
+	let replacement_pause = replacement_directory.join("pause-consumers");
+	std::fs::write(&replacement_pause, b"crash checkpoint").unwrap();
+	let mut worker = Process::start(
+		&f,
+		&url,
+		&schema,
+		"worker",
+		&directory,
+		(0, true),
+		binary.clone(),
+	);
+	let mut replacement = Process::start(
+		&f,
+		&url,
+		&schema,
+		"worker",
+		&replacement_directory,
+		(1, true),
+		binary,
+	);
+	tokio::join!(worker.ready(), replacement.ready());
+	let recovery_window = Instant::now();
+
 	let barrier = directory.join("pause-after-ack");
 	std::fs::write(&barrier, b"crash checkpoint").unwrap();
 	let id = admit(&f, &token, task).await;
 	wait_count(&f, "state = 'claimed'", 1).await;
 	let leased = f.store.run(&TEST_FIXTURE, id).await.unwrap();
 	let owner = leased.lease_owner.unwrap();
+	let lease_until = leased.lease_until.unwrap();
 	let stream = broker
 		.context
 		.get_stream(&broker.stream_name)
@@ -1049,8 +1073,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	worker.child.wait().unwrap();
 	drop(worker);
 	std::fs::remove_file(&barrier).unwrap();
-	let mut replacement = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (1, true), binary.clone());
-	replacement.ready().await;
+	std::fs::remove_file(&replacement_pause).unwrap();
 	// Keep the real lease duration. No SQL timestamp shortening hides early takeover.
 	loop {
 		let current = f.store.run(&TEST_FIXTURE, id).await.unwrap();
@@ -1062,7 +1085,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-		if now >= leased.lease_until.unwrap() {
+		if now >= lease_until {
 			break;
 		}
 		assert_eq!(current.lease_owner, Some(owner));
@@ -1072,12 +1095,41 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	}
 	complete(&f, id).await;
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
-	assert_eq!(
-		count(&f, "claim_source = 'recovery'").await,
-		0,
-		"explicit lease-expiry obligation must activate recovery"
+	let (claimed_at, source, publication_epoch): (chrono::DateTime<chrono::Utc>, String, i64) =
+		sqlx::query_as(
+			&Query::select()
+				.columns([a("claimed_at"), a("claim_source"), a("publication_epoch")])
+				.from(a("run_activations"))
+				.and_where(Expr::col(a("run_id")).eq(Expr::value(id)))
+				.and_where(Expr::col(a("worker_pid")).eq(i64::from(replacement.child.id())))
+				.and_where(Expr::col(a("claimed_at")).is_not_null())
+				.order_by(a("claimed_at"), reinhardt::query::Order::Asc)
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		claimed_at >= lease_until,
+		"replacement claimed at {claimed_at} before lease expiration {lease_until}"
 	);
-	std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"result":"passed","server_pid":server.child.id(),"replacement_pid":replacement.child.id(),"crash_checkpoint":"committed lease and broker ACK before execution","original_lease_until":leased.lease_until,"early_takeover":false,"recovery_claims":0,"provider_calls":calls.load(Ordering::SeqCst)})).unwrap()).unwrap();
+	assert_eq!(source, "notification");
+	assert!(
+		publication_epoch > 0,
+		"the expired lease must be re-published"
+	);
+	assert_eq!(
+		count(
+			&f,
+			&format!("run_id = '{id}' AND claim_source = 'recovery'")
+		)
+		.await,
+		0,
+		"broad recovery raced the lease-expiry notification after {:?}",
+		recovery_window.elapsed()
+	);
+	std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"result":"passed","server_pid":server.child.id(),"replacement_pid":replacement.child.id(),"crash_checkpoint":"committed lease and broker ACK before execution","original_lease_until":lease_until,"replacement_claimed_at":claimed_at,"publication_epoch":publication_epoch,"early_takeover":false,"recovery_claims":0,"provider_calls":calls.load(Ordering::SeqCst)})).unwrap()).unwrap();
 	replacement.stop();
 	server.stop();
 	drop(replacement);
