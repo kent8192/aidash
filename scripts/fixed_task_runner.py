@@ -642,10 +642,15 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
             errors[planned["comparison"]["id"]] = f"Agent registration rejected: {str(error)[:300]}"
             continue
         planned["agent_ref"] = agent
+        agent_defaults = {key: config[key] for key in ("projection_version", "harness_contract")
+                          if key not in planned["agent_fields"]}
+        if agent_defaults:
+            planned["agent_defaults"] = agent_defaults
         # Grading needs the Registry ids a deferred Skill load must name.
         planned["skill_refs"] = skills[task["id"]]
         variants.append({"task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
                          "label": planned["label"], "agent": agent, "agent_fields": planned["agent_fields"],
+                         **({"agent_defaults": agent_defaults} if agent_defaults else {}),
                          **({"route_id": planned["route_id"], "model_configuration": planned["model_configuration"]}
                             if planned.get("route_id") else {}),
                          "model": model_ref, "tools": [ref for _, ref in tools[task["id"]]],
