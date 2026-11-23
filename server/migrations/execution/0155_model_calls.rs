@@ -132,7 +132,10 @@ pub(super) fn migration() -> Migration {
 		})
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "inference_usage".into(),
-			constraint: Constraint::Check { name: "inference_usage_at_most_one_owner".into(), expression: "stint_id IS NULL OR model_call_id IS NULL".into() },
+			constraint: Constraint::Check {
+				name: "inference_usage_owner_links".into(),
+				expression: "stint_id IS NULL OR (model_call_id IS NULL AND run_id IS NOT NULL)".into(),
+			},
 		})
 		.add_operation(Operation::AddColumn {
 			table: "context_compaction_attempts".into(),

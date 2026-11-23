@@ -7164,7 +7164,12 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 		.bind(stint)
 		.bind(call)
 	};
-	for (stint, call) in [(None, None), (Some(Uuid::new_v4()), Some(model_call))] {
+	// A Stint link needs a Run id for its composite FK to check the owner.
+	for (stint, call) in [
+		(None, None),
+		(Some(Uuid::new_v4()), None),
+		(Some(Uuid::new_v4()), Some(model_call)),
+	] {
 		let error = usage(stint, call).execute(&pool).await.unwrap_err();
 		assert_eq!(
 			error.as_database_error().unwrap().code().as_deref(),
