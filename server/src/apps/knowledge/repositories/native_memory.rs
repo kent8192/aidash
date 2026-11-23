@@ -1,11 +1,12 @@
 //! Unit changes, exact-request receipts and dependent fences share one authority transaction.
 use super::{access::Lease, units};
 use crate::{Error, Result, database::native};
+use aidash_application::ports::memory::KeywordQuery;
 use aidash_domain::memory::*;
 use chrono::{SubsecRound, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, Func, LockType, OnConflict, Order, PostgresQueryBuilder,
-	Query, QueryStatementBuilder, SimpleExpr,
+	Alias, ArrayType, ColumnRef, Expr, ExprTrait, Func, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr, Value,
 };
 use std::collections::{BTreeSet, VecDeque};
 
@@ -1347,7 +1348,7 @@ pub(crate) async fn recall_including_dormant(
 pub(crate) async fn keyword(
 	lease: &mut Lease<'_>,
 	bank: &Bank,
-	text: &str,
+	query: KeywordQuery<'_>,
 	allowed: &[Uuid],
 	limit: usize,
 ) -> Result<Vec<Uuid>> {
@@ -1355,10 +1356,36 @@ pub(crate) async fn keyword(
 		return Ok(Vec::new());
 	}
 	let bank_id = bank_id(lease, bank, false).await?.ok_or(Error::Forbidden)?;
-	let expression = SimpleExpr::CustomWithExpr(
-		"? &@~ ?".into(),
-		vec![Expr::col("text").into(), Expr::value(text).into()],
-	);
+	let (expression, score) = match query {
+		KeywordQuery::Text(text) => (
+			SimpleExpr::CustomWithExpr(
+				"? &@~ ?".into(),
+				vec![Expr::col("text").into(), Expr::value(text).into()],
+			),
+			Expr::cust("pgroonga_score(tableoid, ctid)").into(),
+		),
+		KeywordQuery::Any(terms) => {
+			if terms.is_empty() {
+				return Ok(Vec::new());
+			}
+			let terms = Expr::value(Value::Array(
+				ArrayType::String,
+				Some(Box::new(terms.iter().copied().map(Value::from).collect())),
+			));
+			let args = vec![Expr::col("text").into(), terms.into()];
+			(
+				// PGroonga interprets each array element as a literal keyword.
+				SimpleExpr::CustomWithExpr("? &@| ?::text[]".into(), args.clone()),
+				// Count matching positions even when PostgreSQL scans a small bank
+				// without the PGroonga index. Each position is one row of the array.
+				SimpleExpr::CustomWithExpr(
+					"coalesce(array_length(pgroonga_match_positions_byte(?, ?::text[]), 1), 0)"
+						.into(),
+					args,
+				),
+			)
+		}
+	};
 	native::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
@@ -1368,7 +1395,7 @@ pub(crate) async fn keyword(
 			.and_where(expression)
 			.and_where(Expr::col("deleted").eq(false))
 			.and_where(Expr::col("stale").eq(false))
-			.order_by_expr(Expr::cust("pgroonga_score(tableoid, ctid)"), Order::Desc)
+			.order_by_expr(score, Order::Desc)
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(limit as u64)
 			.to_string(PostgresQueryBuilder),

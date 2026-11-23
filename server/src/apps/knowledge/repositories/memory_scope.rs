@@ -505,11 +505,11 @@ impl MemoryScope for Scope<'_, '_> {
 	async fn keyword(
 		&mut self,
 		bank: &Bank,
-		text: &str,
+		query: KeywordQuery<'_>,
 		allowed: &[Uuid],
 		limit: usize,
 	) -> aidash_application::Result<Vec<Uuid>> {
-		repository::keyword(self.lease, bank, text, allowed, limit)
+		repository::keyword(self.lease, bank, query, allowed, limit)
 			.await
 			.map_err(Into::into)
 	}

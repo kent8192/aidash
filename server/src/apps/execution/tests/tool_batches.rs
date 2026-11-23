@@ -1285,10 +1285,8 @@ async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
 		.unwrap();
 }
 
-/// Create a task in a fresh Thread whose title and description are both
-/// `description`, and return its id. Start recall searches the Task text with
-/// PGroonga query syntax, where every word must match the fact.
-async fn task_in_new_thread(b: &Batching, description: &str) -> Uuid {
+/// Create a task in a fresh Thread and return its id.
+async fn task_in_new_thread(b: &Batching, title: &str, description: &str) -> Uuid {
 	let (status, thread) =
 		common::post(&b.app, &b.token, "/api/threads", json!({"title":"Memory"})).await;
 	assert_eq!(status, 200, "{thread}");
@@ -1296,7 +1294,7 @@ async fn task_in_new_thread(b: &Batching, description: &str) -> Uuid {
 		&b.app,
 		&b.token,
 		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
-		json!({"title":description,"description":description}),
+		json!({"title":title,"description":description}),
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
@@ -1382,8 +1380,8 @@ async fn learn(b: &Batching, run: &Run, facts: &[&str]) -> Vec<Uuid> {
 
 /// #852 decision 8: a Unit a Run recalled at start is deleted mid-Run (as
 /// eviction, correction or reconciliation would do). The Run goes on, and
-/// later inferences no longer carry that fact. Start recall's 1024-byte
-/// budget holds one serialized Unit, so this covers a single recalled fact.
+/// later inferences still carry the other short facts selected within the
+/// 1024-byte budget.
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
@@ -1407,18 +1405,24 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					let pool = b.f.store.pool.fixture_driver().clone();
 					let gone = "The staging deploy key rotates every quarter.";
 					let source = b.delegate(b.task).await;
-					let units = learn(&b, &source, &[gone]).await;
+					let retained = [
+						"The staging deploy key is held in the vault.",
+						"The staging deploy key is managed by Platform.",
+					];
+					let oversized = format!("The staging deploy key audit recorded {}", "鍵".repeat(400));
+					let units = learn(&b, &source, &[gone, retained[0], retained[1], &oversized]).await;
 					let (status, task) = common::post(
 						&b.app,
 						&b.token,
 						&format!("/api/threads/{}/tasks", source.thread_id),
-						json!({"title":"staging deploy key","description":"staging deploy key"}),
+						json!({"title":"Staging deploy key","description":"Check what we know about rotating it before Friday."}),
 					)
 					.await;
 					assert_eq!(status, 200, "{task}");
 					let reader = b
 						.delegate(serde_json::from_value(task["id"].clone()).unwrap())
 						.await;
+					let before = b.requests.lock().unwrap().len();
 					b.script(&[(
 						"before",
 						"file_search",
@@ -1440,17 +1444,18 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					assert!(worker.worker_once().await.unwrap());
 					let state = b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap();
 					let recalled = start_recall_units(&state);
-					let rows: Vec<Value> = sqlx::query_scalar(
-						"SELECT to_jsonb(u) FROM memory_units u WHERE id = ANY($1)",
-					)
-					.bind(&units)
-					.fetch_all(&pool)
-					.await
-					.unwrap();
-					assert!(
-						units.iter().all(|unit| recalled.contains(unit)),
-						"start recall must hold the fact: {recalled:?}\nunits: {rows:?}"
-					);
+					assert_eq!(recalled.len(), 3, "start recall must hold all three short facts");
+					assert!(units[..3].iter().all(|unit| recalled.contains(unit)));
+					assert!(!recalled.contains(&units[3]), "the oversized fact must be skipped");
+					let request = b.requests.lock().unwrap()[before].clone();
+					let context = common::captured_context(&request);
+					let recall = &context["snapshot"]["memory_recall"];
+					assert_eq!(recall["status"], "ready", "{recall}");
+					let recall_json = recall.to_string();
+					assert!(recall_json.len() <= 1024, "{recall}");
+					for fact in [gone, retained[0], retained[1]] {
+						assert!(recall_json.contains(fact), "{recall}");
+					}
 
 					// Act: the first fact leaves the bank, then the Run uses a tool, whose
 					// result never carries memory text.
@@ -1475,6 +1480,9 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					for request in &requests {
 						let request = request.to_string();
 						assert!(!request.contains(gone), "the gone fact leaves the context");
+						for fact in retained {
+							assert!(request.contains(fact), "a retained fact must reach the model");
+						}
 					}
 					b.close().await;
 				});
@@ -1510,12 +1518,17 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_thread(
 					let b = Batching::new(runtime, scripted_model, 1, 1).await;
 					let pool = b.f.store.pool.fixture_driver().clone();
 					let fact = "The staging deploy key rotates every quarter.";
+					let weaker = "Deploy jobs use rolling restarts.";
+					let unrelated = "Mercury orbits Sol.";
 					let source = b.delegate(b.task).await;
-					let unit = learn(&b, &source, &[fact]).await[0];
-					let description = "staging deploy key";
+					let units = learn(&b, &source, &[weaker, fact, unrelated]).await;
+					let title = "Review Friday's change";
+					let description = "Check who can rotate the staging deploy key before Friday.";
 
 					// Act: one Run under the default scope, one after widening it.
-					let local = b.delegate(task_in_new_thread(&b, description).await).await;
+					let local = b
+						.delegate(task_in_new_thread(&b, title, description).await)
+						.await;
 					complete(&b.f, local.id).await;
 					sqlx::query(
 						"INSERT INTO memory_tenant_scope (tenant, scope, revision, updated_at) \
@@ -1525,21 +1538,23 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_thread(
 					.await
 					.unwrap();
 					let seen = b.requests.lock().unwrap().len();
-					let widened = b.delegate(task_in_new_thread(&b, description).await).await;
+					let widened = b
+						.delegate(task_in_new_thread(&b, title, description).await)
+						.await;
 					complete(&b.f, widened.id).await;
 
 					// Assert
 					let local = b.f.store.run(&TEST_FIXTURE, local.id).await.unwrap();
 					assert!(
-						!start_recall_units(&local).contains(&unit),
+						start_recall_units(&local).is_empty(),
 						"the default scope stays within one Thread"
 					);
 					let widened = b.f.store.run(&TEST_FIXTURE, widened.id).await.unwrap();
 					assert_eq!(widened.phase(), RunPhase::Completed, "{:?}", widened.error);
-					assert!(
-						start_recall_units(&widened).contains(&unit),
-						"{:?}",
-						widened.context.history
+					assert_eq!(
+						start_recall_units(&widened),
+						vec![units[1], units[0]],
+						"the strongest match comes first and unrelated facts are omitted"
 					);
 					let requests = b.requests.lock().unwrap()[seen..].to_vec();
 					assert!(
@@ -1596,7 +1611,14 @@ async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
 					.await
 					.unwrap();
 					let reader = b
-						.delegate(task_in_new_thread(&b, "staging deploy key").await)
+						.delegate(
+							task_in_new_thread(
+								&b,
+								"Prepare the staging rollout",
+								"Find out who owns the deploy key for this change.",
+							)
+							.await,
+						)
 						.await;
 					b.script(&[(
 						"before",

@@ -39,6 +39,32 @@ impl Budget {
 	}
 }
 
+/// Model-facing data for Built-in Memory at Task start.
+pub fn start_recall_content(units: &[Unit]) -> serde_json::Value {
+	if units.is_empty() {
+		return serde_json::json!({"status": "empty"});
+	}
+	let facts: Vec<_> = units
+		.iter()
+		.map(|unit| {
+			serde_json::json!({
+				"id": unit.id,
+				"revision": unit.revision,
+				"text": unit.content.text,
+				"evidence": unit.content.evidence,
+			})
+		})
+		.collect();
+	serde_json::json!({"status": "ready", "facts": facts})
+}
+
+#[derive(Clone, Copy)]
+enum RecallMode<'a> {
+	Active,
+	IncludingDormant,
+	TaskStart { keywords: &'a [&'a str] },
+}
+
 pub struct Engine<'a> {
 	pub provider: &'a EntityRef,
 	pub policy: &'a Policy,
@@ -284,7 +310,7 @@ impl Engine<'_> {
 			scope
 				.keyword(
 					&trigger.bank,
-					&trigger.content.text,
+					KeywordQuery::Text(&trigger.content.text),
 					&known.keys().copied().collect::<Vec<_>>(),
 					self.policy.bounds.max_candidates,
 				)
@@ -465,10 +491,28 @@ impl Engine<'_> {
 			bank,
 			query,
 			&mut Budget::new(&self.policy.bounds),
-			false,
+			RecallMode::Active,
 		)
 		.await
 	}
+	/// Recall by literal keywords and pack the data shown to the model.
+	pub async fn recall_at_task_start(
+		&self,
+		scope: &mut dyn MemoryScope,
+		bank: &Bank,
+		query: &RecallQuery,
+		keywords: &[&str],
+	) -> Result<Recall> {
+		self.recall_in(
+			scope,
+			bank,
+			query,
+			&mut Budget::new(&self.policy.bounds),
+			RecallMode::TaskStart { keywords },
+		)
+		.await
+	}
+
 	pub async fn recall_including_dormant(
 		&self,
 		scope: &mut dyn MemoryScope,
@@ -483,7 +527,7 @@ impl Engine<'_> {
 			bank,
 			query,
 			&mut Budget::new(&self.policy.bounds),
-			true,
+			RecallMode::IncludingDormant,
 		)
 		.await
 	}
@@ -493,7 +537,7 @@ impl Engine<'_> {
 		bank: &Bank,
 		query: &RecallQuery,
 		budget: &mut Budget,
-		include_dormant: bool,
+		mode: RecallMode<'_>,
 	) -> Result<Recall> {
 		self.validate()?;
 		self.query(query)?;
@@ -502,6 +546,7 @@ impl Engine<'_> {
 			return Ok(Recall::NoSpace);
 		}
 		let limit = self.policy.bounds.max_units;
+		let include_dormant = matches!(mode, RecallMode::IncludingDormant);
 		let snapshot = if include_dormant {
 			scope.recall_including_dormant_snapshot(bank, limit).await?
 		} else {
@@ -551,7 +596,11 @@ impl Engine<'_> {
 		} else {
 			Vec::new()
 		};
-		let keyword = scope.keyword(bank, &query.text, &ids, limit).await?;
+		let keyword_query = match mode {
+			RecallMode::TaskStart { keywords } => KeywordQuery::Any(keywords),
+			_ => KeywordQuery::Text(&query.text),
+		};
+		let keyword = scope.keyword(bank, keyword_query, &ids, limit).await?;
 		if semantic.len() > limit || keyword.len() > limit {
 			return Err(Error::Invalid(
 				"memory search exceeded candidate limit".into(),
@@ -649,14 +698,17 @@ impl Engine<'_> {
 		for (id, _) in scores.into_iter().take(self.policy.bounds.max_results) {
 			let mut proposed = selected.clone();
 			proposed.push(by_id[&id].clone());
-			let envelope = serde_json::to_string(&Recall::Ready {
-				units: proposed.clone(),
-			})?;
-			if self
-				.models
-				.tokens(&self.policy.tokenizer, &envelope)
-				.await? <= query.max_tokens
-			{
+			let size = if matches!(mode, RecallMode::TaskStart { .. }) {
+				serde_json::to_vec(&start_recall_content(&proposed))?.len()
+			} else {
+				let envelope = serde_json::to_string(&Recall::Ready {
+					units: proposed.clone(),
+				})?;
+				self.models
+					.tokens(&self.policy.tokenizer, &envelope)
+					.await?
+			};
+			if size <= query.max_tokens {
 				selected = proposed;
 			}
 		}
@@ -730,7 +782,7 @@ impl Engine<'_> {
 		let mut budget = Budget::new(&self.policy.bounds);
 		let mut context = Vec::<Unit>::new();
 		let initial = self
-			.recall_in(scope, bank, query, &mut budget, false)
+			.recall_in(scope, bank, query, &mut budget, RecallMode::Active)
 			.await?;
 		if let Recall::Ready { units } = initial {
 			context = units;
@@ -775,7 +827,7 @@ impl Engine<'_> {
 						return Err(Error::Invalid("reflection context budget exhausted".into()));
 					}
 					let recall = self
-						.recall_in(scope, bank, &followup, &mut budget, false)
+						.recall_in(scope, bank, &followup, &mut budget, RecallMode::Active)
 						.await?;
 					if let Recall::Ready { units } = recall {
 						context = units;
