@@ -1171,6 +1171,14 @@ impl Access {
 			.await
 			.map(|verdict| verdict == Verdict::Allowed)
 	}
+
+	/// Evaluate a display hint with the current authority and no decision audit.
+	pub(crate) async fn decide_hint(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		let audit = std::mem::replace(&mut self.audit, false);
+		let result = self.decide(resource, action).await;
+		self.audit = audit;
+		result
+	}
 	/// [`Self::decide`], and whether a refusal comes from the Subnode read-only rule rather than
 	/// from the Tenant's policy. The rule is structural: no change of policy lifts it.
 	async fn decide_with_cause(&mut self, resource: &Resource, action: &str) -> Result<Verdict> {
@@ -1268,6 +1276,7 @@ impl Access {
 			"revision": self.snapshot.revision,
 			"subjects": self.subjects,
 			"environment": self.environment,
+			"audit": self.audit,
 			"action": action,
 			"resource": resource,
 		})

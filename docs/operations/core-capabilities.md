@@ -449,6 +449,12 @@ working-area routes. Revoking a file is not limited to its uploader: any subject
 the Tenant's policy grants `reference.delete` can revoke it, and one the policy
 refuses gets 404, as for a missing file. `GET /api/references/{id}/revocation`
 gives such a subject the revision and state to revoke with, never the content.
+For a Source version with bound Reference files, `GET /api/registry/versions`
+includes a `reference_revocations` list with each file's `may_revoke` flag and,
+when true, its current revision.
+Source details use that response to offer Revoke. The advisory flag comes from
+an unaudited policy check. The revoke request checks the current policy and
+the expected revision.
 Revoking one file refuses new Runs of every version that
 binds it, and the error names its path. A Run that already holds the set stops
 reading a revoked file too: `file_read` and the copy refuse it, `file_search`

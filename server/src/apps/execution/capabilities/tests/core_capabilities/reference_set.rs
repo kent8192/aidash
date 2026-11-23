@@ -461,6 +461,89 @@ fn only_alice_uses_references(c: &mut CoreFixture, bob_may_revoke: bool) {
 
 #[rstest::rstest]
 #[tokio::test]
+async fn source_versions_offer_reference_revocation_without_auditing_the_hint(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use reinhardt::query::{Alias, Expr, ExprTrait as _, Func, PostgresQueryBuilder, Query};
+
+	let mut c = Box::pin(capability_fixture).await;
+	let (status, added) = add(&c, &c.token, vec![file("plan.md", "plan\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	let reference = &added["files"][0]["reference"];
+	let id = reference["reference_id"].as_str().unwrap();
+	let source_id = "source-revocation-hints";
+	let (status, source) = register_source(&c, &c.token, source_id, &added["references"]).await;
+	assert_eq!(status, 200, "{source}");
+	only_alice_uses_references(&mut c, false);
+	c.policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-reads-registry","effect":"allow","subjects":{"ids":["bob"]},
+		"actions":["registry.read"],"resources":{"kinds":["registry","source"]}
+	}));
+	let (status, policy) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":c.policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let versions = format!("/api/registry/versions?node={node}");
+	let decisions = Query::select()
+		.expr(Func::count(Expr::col("sequence").into()))
+		.from(Alias::new("authorization_decisions"))
+		.and_where(Expr::col("tenant").eq("acme"))
+		.and_where(Expr::col("action").eq("reference.delete"))
+		.and_where(Expr::col("resource_id").eq(id))
+		.to_string(PostgresQueryBuilder);
+	let audit_count = || async {
+		sqlx::query_scalar::<_, i64>(&decisions)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	let before = audit_count().await;
+	// The old page's probe writes a denial even though the request rolls back.
+	let (status, probe) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/revocation"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 404, "{probe}");
+	assert_eq!(audit_count().await, before + 1);
+
+	for (token, expected) in [
+		(
+			bob,
+			json!([{ "reference_id": id, "path": "plan.md", "may_revoke": false }]),
+		),
+		(
+			&c.token,
+			json!([{ "reference_id": id, "path": "plan.md", "may_revoke": true, "revision": reference["revision"] }]),
+		),
+	] {
+		let (status, page) = request(&c.app, token, "GET", &versions, Value::Null).await;
+		assert_eq!(status, 200, "{page}");
+		let source = page["versions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry"]["id"] == source_id)
+			.unwrap();
+		assert_eq!(source["reference_revocations"], expected);
+	}
+	assert_eq!(audit_count().await, before + 1);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_subject_the_policy_grants_reference_delete_revokes_a_file_it_did_not_upload(
 	#[future] capability_fixture: CoreFixture,
 ) {

@@ -23433,6 +23433,27 @@
             "required": ["registry_deployment", "id", "version"],
             "type": "object"
           },
+          "ReferenceRevocationHint": {
+            "properties": {
+              "may_revoke": {
+                "type": "boolean"
+              },
+              "path": {
+                "type": "string"
+              },
+              "reference_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "description": "The current revision for an allowed revoke, omitted otherwise.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              }
+            },
+            "required": ["reference_id", "path", "may_revoke"],
+            "type": "object"
+          },
           "RegistryVersion": {
             "description": "One version in the Tenant's Registry with its approval state and history.\nDiscovery and execution see only approved versions; this view sees every\nversion the caller may read.",
             "properties": {
@@ -23462,6 +23483,13 @@
               "provider_warning": {
                 "description": "Disclosure shown only when approving this exact Provider tool version.",
                 "type": ["string", "null"]
+              },
+              "reference_revocations": {
+                "description": "Revocation hints for the Reference files bound to this Source.",
+                "items": {
+                  "$ref": "#/components/schemas/ReferenceRevocationHint"
+                },
+                "type": "array"
               },
               "subject": {
                 "anyOf": [

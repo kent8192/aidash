@@ -3,13 +3,20 @@
 use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationCatalogHistory};
 use crate::apps::registry::models::Definition;
 use crate::apps::registry::serializers::contracts::{
-	AgentSubject, ApprovalRecord, Entry, RegistryVersion, RegistryVersions, VersionApproval,
+	AgentSubject, ApprovalRecord, Entry, ReferenceRevocationHint, RegistryVersion,
+	RegistryVersions, VersionApproval,
 };
 use crate::authorization::access::Access;
 use crate::{Error, Result};
-use aidash_domain::nodes::NodeName;
+use aidash_domain::{
+	capabilities::ReferenceAttachment,
+	nodes::NodeName,
+	registry::bindings::sources::{NativeContext, NativeSource},
+};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::Model;
+use serde::Deserialize;
+use std::collections::BTreeSet;
 
 const PAGE: usize = 100;
 
@@ -124,13 +131,54 @@ pub(crate) async fn page(
 			),
 			needs_approval: !aidash_application::registry::system::is_builtin(&entry),
 			entry,
+			reference_revocations: Vec::new(),
 			approval,
 			history,
 			subject,
 		});
 	}
+	let attachments: Vec<_> = versions
+		.iter()
+		.map(|version| reference_attachments(&version.entry))
+		.collect();
+	let ids: Vec<_> = attachments
+		.iter()
+		.flatten()
+		.map(|attachment| attachment.reference_id)
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.collect();
+	let revisions =
+		crate::apps::execution::repositories::references::revocation_revisions(access, &ids)
+			.await?;
+	for (version, files) in versions.iter_mut().zip(attachments) {
+		version.reference_revocations = files
+			.into_iter()
+			.map(|file| {
+				let revision = revisions.get(&file.reference_id).copied();
+				ReferenceRevocationHint {
+					reference_id: file.reference_id,
+					path: file.path,
+					may_revoke: revision.is_some(),
+					revision,
+				}
+			})
+			.collect();
+	}
 	Ok(RegistryVersions {
 		versions,
 		next_offset,
 	})
+}
+
+fn reference_attachments(entry: &Entry) -> Vec<ReferenceAttachment> {
+	if entry.kind == "source"
+		&& let Ok(NativeContext {
+			source: NativeSource::ReferenceAttachments { references },
+			..
+		}) = NativeContext::deserialize(&entry.config)
+	{
+		return references;
+	}
+	Vec::new()
 }
