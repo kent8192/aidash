@@ -18,7 +18,7 @@ fn pod_timeout(path: &str, body: &Value) -> Duration {
 			.and_then(Value::as_u64)
 			.unwrap_or(0)
 			.saturating_add(15),
-		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" => 60,
+		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" | "/v2/python/cell" => 60,
 		// Ensuring a Pod waits for its admission and startup.
 		path if path.starts_with("/v2/pods/") => 1900,
 		_ => 30,

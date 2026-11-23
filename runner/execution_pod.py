@@ -1483,6 +1483,8 @@ print(json.dumps(r))'''
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
                       'status', 'background', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
                       'error_code', 'message', 'session_replaced', 'output_fetched_at', 'left_running') if key in record}
+            if record.get('kind') == 'python_cell' and 'session_operation_id' in record:
+                result['session_id'] = record['session_operation_id']
             if record['status'] == 'running' and operation_id in self.live_output:
                 result.update(self.live_output[operation_id])
             if record.get('kind') == 'python_cell' and record['status'] == 'completed' and record.get('exit_code') == 0:
@@ -2707,7 +2709,7 @@ print(json.dumps(r))'''
         with self._space_lock(scratch_space_id):
             return self._start_python(scratch_space_id, run_id, proxy_credential)
 
-    def _start_python(self, scratch_space_id, run_id, proxy_credential=None):
+    def _start_python(self, scratch_space_id, run_id, proxy_credential=None, *, expected_session_id=None):
         import json
         import shlex
         import uuid
@@ -2716,8 +2718,11 @@ print(json.dumps(r))'''
         if not self.admitted:
             raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         path = self._python_session_path(scratch_space_id, run_id)
-        if path.exists():
-            prior = json.loads(path.read_bytes())
+        prior = json.loads(path.read_bytes()) if path.exists() else None
+        reset_message = 'The expected Python session ended or was replaced. Rebuild its state before retrying.'
+        if expected_session_id is not None and (not prior or prior['operation_id'] != expected_session_id):
+            raise ExecutionPodError('session_reset', reset_message)
+        if prior:
             record = self._read_command(prior['operation_id'])
             pod = self._get('pod', scratch_resource_name(scratch_space_id))
             same_pod = bool(pod and pod.get('metadata', {}).get('uid') == record.get('pod_uid'))
@@ -2739,6 +2744,8 @@ print(json.dumps(r))'''
             replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
         else:
             replaced = False
+        if expected_session_id is not None:
+            raise ExecutionPodError('session_reset', reset_message)
         self._check_python(scratch_space_id)
         operation_id = str(uuid.uuid4())
         socket_path = '/run/aidash/' + operation_id + '.sock'
@@ -2773,6 +2780,10 @@ print(json.dumps(r))'''
             raise ExecutionPodError('python_unavailable', 'This image has no python3. Install it with apt (for example `apt-get install -y python3`) and try again.')
 
     def python_cell(self, request):
+        with self._space_lock(request['scratch_space_id']):
+            return self._python_cell(request)
+
+    def _python_cell(self, request):
         import base64
         import hashlib
         import json
@@ -2799,7 +2810,8 @@ print(json.dumps(r))'''
         if any(not isinstance(request.get(key, '.'), str) or '\x00' in request.get(key, '.') for key in ('cwd', 'run_id')):
             raise ValueError('Python request contains NUL')
         seconds = execution_timeout(request)
-        session = self.start_python(request['scratch_space_id'], request['run_id'], request.get('proxy_credential'))
+        session = self._start_python(request['scratch_space_id'], request['run_id'], request.get('proxy_credential'),
+                                     expected_session_id=request.get('expected_session_id'))
         output_limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         cell_limit = max(1, min(8388608, (output_limit - 4096) // 6))
         encoded = base64.b64encode(code.encode('utf-8')).decode('ascii')

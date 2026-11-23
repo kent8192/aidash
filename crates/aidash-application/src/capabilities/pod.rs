@@ -8,10 +8,7 @@ use crate::{
 	Error, Result,
 	ports::capabilities::{
 		AcceptedOperation, OperationAdmissionScope,
-		execution_pod::{
-			CommandRequest, CommandResult, ExecutionPodError, ExecutionPodErrorCode,
-			PythonStartRequest,
-		},
+		execution_pod::{CommandRequest, CommandResult, ExecutionPodError, ExecutionPodErrorCode},
 		pod_operations::{PodContext, PodOperation, PodOperationRepository},
 	},
 };
@@ -43,12 +40,16 @@ pub async fn accept<O: Send>(
 	scope: &mut dyn OperationAdmissionScope<O>,
 	run: &RunMetadata,
 	input: ShellRequest,
+	expected_session_id: Option<Uuid>,
 	kind: &str,
 	scratch_space_id: &str,
 ) -> Result<Value> {
 	let limits = scope.limits();
 	let seconds = input.seconds(limits)?;
-	let extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id});
+	let mut extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id});
+	if let Some(session_id) = expected_session_id {
+		extra["expected_session_id"] = json!(session_id);
+	}
 	let digest = input.digest(kind, run.id, &extra);
 	let key = input.key(run.id);
 	if let Some((previous, previous_digest)) = scope.previous(&key).await? {
@@ -108,6 +109,9 @@ pub fn command_request(operation: &PodOperation, context: &PodContext) -> Result
 			.as_str()
 			.ok_or_else(|| Error::Invalid("Pod operation has no command".into()))?
 			.to_owned(),
+		expected_session_id: serde_json::from_value(
+			operation.input["expected_session_id"].clone(),
+		)?,
 		cwd: None,
 		timeout_seconds: Some(u32::try_from(seconds).unwrap_or(u32::MAX)),
 		background: false,
@@ -157,6 +161,9 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 	}
 	if let Some(left) = &reply.left_running {
 		object.insert("left_running".into(), json!(left));
+	}
+	if python && let Some(session_id) = reply.session_id {
+		object.insert("session_id".into(), json!(session_id));
 	}
 	let terminal = !matches!(status, "queued" | "running");
 	let mut output = Vec::new();
@@ -346,20 +353,9 @@ async fn submit(
 		return Ok(());
 	}
 	let reply = if operation.kind == PYTHON {
-		// The cell would start a session without the Run credential, so the
-		// session is started first with it (ADR 0136).
-		match context
-			.runtime
-			.python_start(&PythonStartRequest {
-				scratch_space_id: request.scratch_space_id.clone(),
-				run_id: request.run_id.clone(),
-				proxy_credential: context.credential.clone(),
-			})
-			.await
-		{
-			Ok(_) => context.runtime.python_cell(&request).await,
-			Err(error) => Err(error),
-		}
+		// The Runner selects the interpreter and queues the cell together.
+		// The credential authorizes a fresh interpreter (ADR 0136).
+		context.runtime.python_cell(&request).await
 	} else {
 		context.runtime.execute(&request).await
 	};
@@ -389,13 +385,12 @@ async fn submit(
 		}
 		Err(ExecutionPodError::Remote { code, message }) => {
 			// The Runner answered, so it holds nothing for this operation.
+			let mut result = refused(operation, &code.to_string(), &message);
+			if code == ExecutionPodErrorCode::SessionReset {
+				result["session_reset"] = json!(true);
+			}
 			repository
-				.save(
-					operation.id,
-					&operation.state,
-					"failed",
-					&refused(operation, &code.to_string(), &message),
-				)
+				.save(operation.id, &operation.state, "failed", &result)
 				.await?;
 			Ok(())
 		}
