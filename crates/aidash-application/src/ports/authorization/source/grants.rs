@@ -53,8 +53,8 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 		reason: &str,
 	) -> Result<()>;
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()>;
-	/// A Subnode Thread may delegate only to its local members.
-	async fn require_non_subnode_thread(&mut self, thread: Uuid) -> Result<()>;
+	/// Whether the owning Thread belongs to a Subnode.
+	async fn is_subnode_thread(&mut self, thread: Uuid) -> Result<bool>;
 	async fn command_lock(&mut self, id: Uuid) -> Result<()>;
 	async fn current_grant(&mut self, id: Uuid) -> Result<Grant>;
 	async fn live(&mut self, id: Uuid) -> Result<bool>;

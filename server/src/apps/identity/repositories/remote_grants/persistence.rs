@@ -216,7 +216,7 @@ impl GrantScope for Scope {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn require_non_subnode_thread(&mut self, thread: Uuid) -> Result<()> {
+	async fn is_subnode_thread(&mut self, thread: Uuid) -> Result<bool> {
 		use crate::apps::execution::models::subnodes::SubnodeRecord;
 		use reinhardt::db::orm::Model;
 		let records = SubnodeRecord::objects()
@@ -226,11 +226,7 @@ impl GrantScope for Scope {
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(crate::Error::from)?;
-		if records.is_empty() {
-			Ok(())
-		} else {
-			Err(aidash_application::Error::Forbidden)
-		}
+		Ok(!records.is_empty())
 	}
 	async fn live(&mut self, id: Uuid) -> Result<bool> {
 		crate::apps::execution::repositories::node_cancellations::require_grant_open(
