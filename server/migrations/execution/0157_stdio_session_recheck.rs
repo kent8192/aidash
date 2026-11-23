@@ -1,6 +1,6 @@
 // reinhardt-migration-source: 1
 //! Remember the authority and Scratch Space of a potentially live stdio session.
-use reinhardt::db::migrations::prelude::*;
+use reinhardt::db::migrations::{FieldType, prelude::*};
 
 pub(super) fn migration() -> Migration {
 	Migration::new("0157_stdio_session_recheck", "execution")
