@@ -20,14 +20,17 @@ use aidash_domain::federation::tool_lists::{
 };
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{NodeAddress, NodeName};
+use futures_util::{StreamExt as _, future, stream};
 use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Home asks answered from one request: more would take longer than a page is worth waiting for.
+/// The most Home asks a registration lists.
 const HOME_ASKS: usize = 25;
+/// The most status requests in flight while looking for Home asks.
+const STATUS_CONCURRENCY: usize = 25;
 /// How long the receiving Node may take to say whether a Run waits, before the Home skips it.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -176,15 +179,8 @@ impl NodeRegistrations {
 							.await?;
 						let hosted =
 							asks::receiver_asks(tx, &tenant, node.as_str(), &source).await?;
-						let mut issued = Vec::new();
-						for grant in asks::home_grants(tx, &tenant, node.as_str(), &source, None)
-							.await?
-							.into_iter()
-							.take(HOME_ASKS)
-						{
-							let title = asks::task_title(tx, grant.task_id).await?;
-							issued.push((grant, title));
-						}
+						let issued =
+							asks::home_grants(tx, &tenant, node.as_str(), &source, None).await?;
 						Ok((hosted, issued))
 					})
 					.await
@@ -205,30 +201,36 @@ impl NodeRegistrations {
 				paused_since: Some(ask.paused_since),
 			})
 			.collect();
-		// The Home learns a remote Run's pause only by asking the receiving Node.
-		let waiting = futures_util::future::join_all(issued.into_iter().map(|(grant, title)| {
-			let (tenant, node, source) = (&tenant, &node, &source);
-			async move {
-				let activation = self.home_status(tenant, node, source, grant.id).await?;
-				let call = activation.declinable_call?;
-				// A key that names no single tool could not be answered (`answer_as_home`).
-				let key = call.home_list_key.filter(|key| names_one_tool(key))?;
-				Some(ToolAskRecord {
-					side: AskSide::Home,
-					id: grant.id,
-					run_id: activation.run_id,
-					grant_id: grant.id,
-					task_id: grant.task_id,
-					task_title: title,
-					tool: call.tool,
-					key,
-					call: call.call,
-					paused_since: None,
-				})
-			}
-		}))
-		.await;
-		records.extend(waiting.into_iter().flatten());
+		// Only the receiving Node knows whether a Run waits. Cap the confirmed asks
+		// and keep status requests bounded, preserving the grants' expiry order.
+		let waiting = stream::iter(issued)
+			.map(|grant| {
+				let (tenant, node, source) = (&tenant, &node, &source);
+				async move {
+					let activation = self.home_status(tenant, node, source, grant.id).await?;
+					let call = activation.declinable_call?;
+					// A key that names no single tool could not be answered (`answer_as_home`).
+					let key = call.home_list_key.filter(|key| names_one_tool(key))?;
+					Some(ToolAskRecord {
+						side: AskSide::Home,
+						id: grant.id,
+						run_id: activation.run_id,
+						grant_id: grant.id,
+						task_id: grant.task_id,
+						task_title: grant.task_title,
+						tool: call.tool,
+						key,
+						call: call.call,
+						paused_since: None,
+					})
+				}
+			})
+			.buffered(STATUS_CONCURRENCY)
+			.filter_map(future::ready)
+			.take(HOME_ASKS)
+			.collect::<Vec<_>>()
+			.await;
+		records.extend(waiting);
 		Ok(ToolAsks { asks: records })
 	}
 

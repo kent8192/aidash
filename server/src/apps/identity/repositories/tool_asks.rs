@@ -246,11 +246,16 @@ pub(crate) async fn lock_ask(
 pub(crate) struct HomeGrant {
 	pub id: Uuid,
 	pub task_id: Uuid,
+	pub task_title: Option<String>,
 }
-crate::native_record!(HomeGrant { id, task_id });
+crate::native_record!(HomeGrant {
+	id,
+	task_id,
+	task_title
+});
 
 /// The Remote Grants `node` issued to `receiver` that are live and whose Run lives, so it may
-/// wait for the Home's people; the soonest to expire first, a fixed order for a bounded page.
+/// wait for the Home's people, soonest to expire first.
 fn home_grants_query(
 	tenant: &str,
 	node: &str,
@@ -261,6 +266,19 @@ fn home_grants_query(
 	query
 		.column(Alias::new("id"))
 		.column(Alias::new("task_id"))
+		.expr_as(
+			Expr::subquery(
+				Query::select()
+					.column(Alias::new("title"))
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col((Alias::new("tasks"), Alias::new("id"))).equals((
+						Alias::new("authorization_remote_grants"),
+						Alias::new("task_id"),
+					)))
+					.to_owned(),
+			),
+			Alias::new("task_title"),
+		)
 		.from(Alias::new("authorization_remote_grants"))
 		.and_where(Expr::col(Alias::new("tenant")).eq(tenant))
 		.and_where(Expr::col(Alias::new("node")).eq(node))
@@ -268,8 +286,7 @@ fn home_grants_query(
 		.and_where(live_condition("authorization_remote_grants"))
 		.and_where(run_holds_task())
 		.order_by(Alias::new("expires_at"), Order::Asc)
-		.order_by(Alias::new("id"), Order::Asc)
-		.limit(LIMIT);
+		.order_by(Alias::new("id"), Order::Asc);
 	if let Some(id) = only {
 		query.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)));
 	}
@@ -288,23 +305,6 @@ pub(crate) async fn home_grants(
 	crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
 		.fetch_all(&mut *tx)
 		.await
-}
-
-/// A Task's title, for a person who answers an ask about its Run.
-pub(crate) async fn task_title(
-	tx: &mut dyn TransactionExecutor,
-	task: Uuid,
-) -> Result<Option<String>> {
-	let title: Option<String> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("title"))
-			.from(Alias::new("tasks"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(task)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await?;
-	Ok(title)
 }
 
 /// Add `pattern` to the Run-only list kept in `column` of `table` for `id`, under a row lock, and
@@ -396,14 +396,15 @@ mod tests {
 
 	/// `tenant = ? AND node = ? AND node_id = ?`, the Home's one liveness rule
 	/// (`live_condition`) instead of the lifetime alone. An activated Run
-	/// must already hold its Task to be in the bounded Tool Ask page.
+	/// must already hold its Task to be considered for the Tool Ask page.
 	#[test]
 	fn home_grants_are_built_without_raw_sql_and_only_of_live_runs() {
 		let sql = home_grants_query("acme", "default", &source(), Some(Uuid::nil()))
 			.to_string(PostgresQueryBuilder);
 		assert_eq!(
 			sql,
-			"SELECT \"id\", \"task_id\" FROM \"authorization_remote_grants\" \
+			"SELECT \"id\", \"task_id\", (SELECT \"title\" FROM \"tasks\" WHERE \"tasks\".\"id\" = \"authorization_remote_grants\".\"task_id\") AS \"task_title\" \
+			FROM \"authorization_remote_grants\" \
 			WHERE \"tenant\" = 'acme' AND \"node\" = 'default' \
 			AND \"node_id\" = 'aidash://calm-heron/able-oak-abcd1234' \
 			AND NOT \"authorization_remote_grants\".\"revoked\" \
@@ -430,7 +431,7 @@ mod tests {
 			AND \"t\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED') \
 			AND \"t\".\"status\" <> 'OPEN') \
 			AND \"id\" = '00000000-0000-0000-0000-000000000000' \
-			ORDER BY \"expires_at\" ASC, \"id\" ASC LIMIT 100"
+			ORDER BY \"expires_at\" ASC, \"id\" ASC"
 		);
 	}
 }

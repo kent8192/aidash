@@ -4739,6 +4739,87 @@ async fn the_home_answers_the_tool_ask_of_a_run_that_slept_past_its_grants_lifet
 
 #[rstest::rstest]
 #[tokio::test]
+async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let db = p.a.store.pool.fixture_driver();
+	sqlx::query(
+		"UPDATE authorization_remote_grants SET expires_at = now() + interval '1 hour' WHERE id = $1",
+	)
+	.bind(p.grant)
+	.execute(db)
+	.await
+	.unwrap();
+	let receiver = node_of(&p.b);
+	for index in 0..25 {
+		let (status, created) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/threads/{}/tasks", task.thread_id),
+			json!({"title": format!("Other remote task {index}"), "description": "Unrelated work"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{created}");
+		let task_id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+		let grant = Uuid::new_v4();
+		let path = format!("/api/tasks/{task_id}/remote-grants");
+		let (status, prepared) = request(
+			&p.aa, &p.token, "POST", &path,
+			json!({"id":grant,"node_id":receiver,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300,"semantic":{"mode":"disabled"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{prepared}");
+		let (status, activated) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("{path}/{grant}/activate"),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{activated}");
+		// Record the receiver's claim without stepping its Run into model work.
+		let claim = sqlx::query(
+			"UPDATE tasks SET owner = $2, status = 'CLAIMED' WHERE id = $1 AND EXISTS \
+			 (SELECT 1 FROM authorization_remote_execution WHERE task_id = $1 AND activated_at IS NOT NULL)",
+		)
+		.bind(task_id)
+		.bind(
+			task.owner
+				.as_deref()
+				.expect("the receiver owns the original Task"),
+		)
+		.execute(db)
+		.await
+		.unwrap();
+		assert_eq!(claim.rows_affected(), 1, "{activated}");
+	}
+	let node = common::default_node(&p.a.store, "acme").await.node;
+	let receiver = receiver.replace(':', "%3A").replace('/', "%2F");
+	let asks = format!("/api/tenants/acme/nodes/{node}/registrations/{receiver}/tool-asks");
+	let administrator = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let (status, listed) = administrator.send("GET", &asks, Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	let home: Vec<_> = listed["asks"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|ask| ask["side"] == "home")
+		.collect();
+	assert_eq!(home.len(), 1, "{listed}");
+	assert_eq!(home[0]["id"], json!(p.grant), "{listed}");
+	assert_eq!(home[0]["call"], json!(call), "{listed}");
+	assert_eq!(home[0]["task_title"], json!(task.title), "{listed}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn home_tool_asks_resume_only_the_matching_system_pause(#[future(awt)] scoped_pair: Pair) {
 	let p = scoped_pair;
 	p.step().await;
