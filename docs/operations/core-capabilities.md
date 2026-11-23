@@ -515,10 +515,15 @@ other files are read on demand. Name collisions use distinct identities. Loading
 instructions does not execute scripts. Existing Registry Skills remain readable
 through their exact old identities and authority.
 
-Under the legacy Exposure policy, `skill_list`, `skill_load` and `skill_read`
-behave as before, and `skill_load` marks the Skill loaded in the Run's Skill
-record. Under `deferred@1`, those tools are not bound. Direct and Registry Skills
-become Discoverable capabilities with `skill_` Model aliases. The model finds them
+Under the legacy Exposure policy, `skill_list` lists the Run's pinned direct
+Skills. A Run with a Working Area and no direct Skill configuration gets an
+empty list. Registry Skill Bindings contribute instructions to the model
+request and use `skill_read` with the exact Registry identity for packaged
+files. For direct Skills, `skill_load` marks the Skill loaded in the Run's
+Skill record.
+
+Under `deferred@1`, direct and Registry Skills become Discoverable capabilities
+with `skill_` Model aliases. The model finds them
 with `capability_search` and loads their bodies with `capability_load`. A loaded
 body is resident in later requests within `skill_bytes`, and `capability_unload`
 removes it. The load state is kept only in the Run's `context.exposure`, never in
