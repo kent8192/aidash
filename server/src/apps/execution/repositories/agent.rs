@@ -386,6 +386,7 @@ impl ExecutionStore for RunStore {
 			result: result.result,
 			uncertain_reason: result.uncertain_reason,
 			retrying: result.delivery_pending,
+			unexecuted: false,
 		})
 	}
 	async fn invocation_not_delivered(
@@ -409,6 +410,19 @@ impl ExecutionStore for RunStore {
 	) -> Result<()> {
 		self.store
 			.invocation_refused(&self.scope, run, token, key, refusal)
+			.await
+			.map_err(Into::into)
+	}
+	async fn batch_admission_refused(
+		&self,
+		run: &Run,
+		token: Uuid,
+		refused_key: &str,
+		undispatched: &[&str],
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		self.store
+			.invocations_refused(&self.scope, run, token, refused_key, undispatched, refusal)
 			.await
 			.map_err(Into::into)
 	}
@@ -456,11 +470,12 @@ impl ExecutionStore for RunStore {
 			Store::invocation_start_batch(&self.store, &self.scope, run, token, &calls)
 				.await?
 				.into_iter()
-				.map(|invocation| InvocationOutcome {
+				.map(|(invocation, unexecuted)| InvocationOutcome {
 					status: invocation.status,
 					result: invocation.result,
 					uncertain_reason: invocation.uncertain_reason,
 					retrying: invocation.delivery_pending,
+					unexecuted,
 				})
 				.collect(),
 		)

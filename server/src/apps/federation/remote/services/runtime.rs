@@ -794,6 +794,19 @@ impl Home {
 		self.command("thread_record", json!({"kind":kind,"id":id}))
 			.await
 	}
+	/// Model calls get a corrective message for missing records. Run-wide reads
+	/// use `read_record`, where the same miss is a visibility failure.
+	pub(crate) async fn read_tool_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
+			return authority
+				.tool_thread_record(self.run.thread_id, kind, id)
+				.await;
+		}
+		self.read_record(kind, id).await
+	}
 	pub async fn read_record_chunk(
 		&self,
 		kind: &str,
@@ -801,13 +814,18 @@ impl Home {
 		offset: usize,
 		max_chars: usize,
 	) -> Result<Value> {
+		let id = id
+			.parse::<Uuid>()
+			.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
+		if kind == "thread" && id != self.run.thread_id && self.tool_authority().is_some() {
+			return self
+				.read_subnode_record_chunk(id, kind, &id.to_string(), offset, max_chars)
+				.await;
+		}
 		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
-			let id = id
-				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			let record = authority
-				.thread_record(self.run.thread_id, kind, id)
+				.tool_thread_record(self.run.thread_id, kind, id)
 				.await?;
 			return crate::context::observation::chunk_record(
 				record,
@@ -818,9 +836,6 @@ impl Home {
 			);
 		}
 		if self.local() {
-			let id = id
-				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			let record = self
 				.federation
 				.store
@@ -834,9 +849,6 @@ impl Home {
 				max_chars,
 			);
 		}
-		let id = id
-			.parse::<Uuid>()
-			.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 		self.command(
 			"thread_record_chunk",
 			json!({"kind":kind,"id":id,"offset":offset,"max_chars":max_chars.min(16000)}),
