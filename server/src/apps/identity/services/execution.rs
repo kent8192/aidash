@@ -2477,27 +2477,13 @@ impl WorkerAuthority {
 			let not_visible = || {
 				Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task))
 			};
-			// The Run's own Task in its Thread says why it cannot be read (#1058).
-			let own = lease.task_source_run(task).await? == Some(run.id);
-			let record = if own {
-				match lease.own_task_read(task).await {
-					Ok(Ok(record)) if record.thread_id == run.thread_id => record,
-					Ok(Ok(_)) | Err(Error::Forbidden) => return Err(not_visible()),
-					Ok(Err(refusal)) => {
-						return Err(Error::from(
-							aidash_application::authorization::worker_tasks::own_task_refused(
-								task, &refusal,
-							),
-						));
-					}
-					Err(error) => return Err(error),
-				}
-			} else {
-				lease.task_read(task).await.map_err(|error| match error {
+			let record = lease
+				.delegation_task_read(task, &run.metadata())
+				.await
+				.map_err(|error| match error {
 					Error::Forbidden => not_visible(),
 					error => error,
-				})?
-			};
+				})?;
 			if record.thread_id != run.thread_id {
 				return Err(not_visible());
 			}

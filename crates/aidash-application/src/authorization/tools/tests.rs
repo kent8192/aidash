@@ -508,7 +508,7 @@ impl AgentToolScope for Scope<'_> {
 			None => Ok(false),
 		}
 	}
-	async fn task_read(&mut self, key: Uuid) -> Result<Task> {
+	async fn task_read(&mut self, key: Uuid, _: Option<&RunMetadata>) -> Result<Task> {
 		self.0.record(format!("task_read:{key}"));
 		self.0.check("task_read")?;
 		if self.0.unreadable_task {

@@ -49,7 +49,9 @@ pub trait AgentToolScope: Send {
 	/// Whether the policy explicitly denies `action` on `resource` for any
 	/// subject of the current authority. A missing allow is not a denial.
 	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool>;
-	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
+	/// A Task named by a delegation may explain a refused read when that Run created it.
+	async fn task_read(&mut self, task: Uuid, delegating_run: Option<&RunMetadata>)
+	-> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource>;
 	async fn memory_resource(&mut self, run: &RunMetadata) -> Result<Resource>;

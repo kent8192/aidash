@@ -7531,6 +7531,74 @@ async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A Task the Run created reaches the model with a specific read refusal.
+#[rstest::rstest]
+#[tokio::test]
+async fn task_delegate_explains_a_policy_denial_for_the_runs_own_task(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["delegate-target"], true).await;
+	let creator = rig.creator_run;
+	let task = rig.create_task(creator, "Review", &[]).await;
+	let mut policy = rig.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-own-task-read",
+		"effect":"deny",
+		"subjects":{"any":true},
+		"actions":["task.read"],
+		"resources":{"kinds":["task"],"ids":[task.to_string()]}
+	}));
+	let (status, body) = request(
+		&fixture.application,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f.store.run(&TEST_FIXTURE, creator).await.unwrap();
+	aidash_server::authorization::services::execution::Step::begin(&f, &run)
+		.await
+		.expect("the Run still has authority for its own work")
+		.commit()
+		.await
+		.unwrap();
+
+	let call = "delegate-own-task";
+	assert!(
+		rig.script(
+			creator,
+			"task_delegate",
+			json!({"task_id":task,"node_id":rig.node.to_string(),"agent":{"id":"delegate-target","version":"1.0.0"}}),
+			call,
+		)
+		.await
+	);
+	let run = f.store.run(&TEST_FIXTURE, creator).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig
+		.result_of(creator, call)
+		.await
+		.expect("rejected call result");
+	assert_eq!(
+		result["error"].as_str(),
+		Some(format!(
+			"task {task} was created by this Run, but the task.read policy refuses task {task}. Retrying will not change this"
+		).as_str()),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 /// #1058: Run A delegates to local Run B in its Thread; B reads A and fails with a journal
 /// operation pending; A reads B's messages and the Subnode leader's message. A's Read Recheck
 /// passes, so A delegates a new Task, the delegated Run reads it, and A and that Run read A's

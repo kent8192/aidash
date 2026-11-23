@@ -248,8 +248,7 @@ impl ReadLookups {
 			);
 		}
 	}
-	/// Whether a Run's Working Area was readable in this walk, and the context that
-	/// checking it left behind.
+	/// Whether a Run's Working Area was readable in this walk.
 	pub(crate) fn area(&self, run: Uuid) -> Option<bool> {
 		if !self.walking {
 			return None;

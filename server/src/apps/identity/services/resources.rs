@@ -3,10 +3,11 @@ use super::{access::Access, policy::Resource};
 use crate::apps::identity::models::DecisionOwner;
 use crate::{
 	Result,
-	domain::{Artifact, Event, Message, Task},
+	domain::{Artifact, Event, Message, RunMetadata, Task},
 };
 use aidash_application::authorization::{
-	visibility::provenance::ReadBlock, worker_tasks::OwnTaskRefusal,
+	visibility::provenance::ReadBlock,
+	worker_tasks::{OwnTaskRefusal, own_task_refused},
 };
 use uuid::Uuid;
 
@@ -31,6 +32,24 @@ impl Access {
 		// when this read's own walk met the Node and not an earlier call of the authority.
 		result.map_err(|error| self.named_since(mark, error))
 	}
+	/// Read a named delegation Task. Only a Task created in the Run's own Thread
+	/// can disclose why it was refused.
+	pub(crate) async fn delegation_task_read(
+		&mut self,
+		id: Uuid,
+		run: &RunMetadata,
+	) -> Result<Task> {
+		if self.task_source_run(id).await? == Some(run.id)
+			&& self.task_thread(id).await? == Some(run.thread_id)
+		{
+			return self
+				.own_task_read(id)
+				.await?
+				.map_err(|refusal| own_task_refused(id, &refusal).into());
+		}
+		self.task_read(id).await
+	}
+
 	/// [`Self::task_read`] for a Task the calling Run created, saying which check refused
 	/// (#1058). A refusal reached while a Node did not answer stays that Node's silence.
 	pub(crate) async fn own_task_read(
@@ -95,7 +114,22 @@ impl Access {
 			ReadBlock::RemoteRead | ReadBlock::SemanticRead => false,
 		})
 	}
-	/// The Run that created `task` with `task_create`, if one did.
+	pub(crate) async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("thread_id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.tx)
+		.await
+	}
+
+	/// The Run that created `task`, if one did.
 	pub(crate) async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
 		use reinhardt::query::{
 			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
