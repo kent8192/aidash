@@ -362,3 +362,29 @@ fn an_envelope_without_a_node_or_another_code_is_not_unreachable() {
 			.after_effect
 	);
 }
+
+#[rstest]
+#[case(400, None)]
+#[case(401, None)]
+#[case(403, Some("node_unreachable"))]
+#[case(404, Some("unknown_receiver_code"))]
+#[case(
+	422,
+	Some("{\"code\":\"tool_never_remote\",\"tool\":\"private/reference.md\"}")
+)]
+fn an_unclassified_inspection_refusal_never_uses_peer_text(
+	#[case] status: u16,
+	#[case] header: Option<&str>,
+) {
+	use aidash_domain::federation::execution::{ReceiverRefusal, Refusal};
+
+	let mut response = reply(status);
+	response.execution_refusal = header.and_then(Refusal::from_header);
+	response.body = Ok(b"{\"error\":\"private reference.md\"}".to_vec());
+	assert!(matches!(
+		classify_request("/scoped/execution/inspect", response),
+		Err(Error::RemoteExecutionRefused(Refusal::ReceiverRefused(
+			ReceiverRefusal::Unclassified
+		)))
+	));
+}

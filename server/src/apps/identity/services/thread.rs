@@ -293,6 +293,20 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	pub(crate) async fn tool_thread_record(
+		&mut self,
+		run_thread: Uuid,
+		thread: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Value> {
+		let mut scope = crate::bootstrap::run_visibility_scope(self);
+		scope.tool_thread = Some(run_thread);
+		aidash_application::authorization::records::record(&mut scope, thread, kind, id)
+			.await
+			.map_err(Into::into)
+	}
+
 	pub(crate) async fn thread_children(
 		&mut self,
 		thread_id: Uuid,

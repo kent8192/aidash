@@ -122,24 +122,31 @@ impl WorkerEntryRepository<Scope> for Repository {
 		.await?;
 		Ok(agent(self.0.lock().unwrap().files))
 	}
-	async fn initialize(&self, scope: &Scope, run: &Run, config: &AgentConfig) -> Result<()> {
+	async fn initialize(
+		&self,
+		scope: &Scope,
+		run: &Run,
+		config: &AgentConfig,
+	) -> Result<Initialization> {
 		assert!(!scope.remote);
 		assert_eq!(run.revision, 7);
 		assert!(config.core_capabilities.enabled());
 		assert_eq!(self.0.lock().unwrap().alive, 1);
-		self.step("initialize").await
+		self.step("initialize").await?;
+		Ok(Initialization::Ready)
 	}
 	async fn initialize_remote(
 		&self,
 		scope: &Scope,
 		run: &Run,
 		config: &AgentConfig,
-	) -> Result<()> {
+	) -> Result<Initialization> {
 		assert!(scope.remote);
 		assert_eq!(run.revision, 7);
 		assert!(config.core_capabilities.enabled());
 		assert_eq!(self.0.lock().unwrap().alive, 1);
-		self.step("initialize_remote").await
+		self.step("initialize_remote").await?;
+		Ok(Initialization::Ready)
 	}
 	async fn scratch_space(&self, _: &mut Scope, _: &Run) -> Result<Uuid> {
 		self.step("scratch").await?;

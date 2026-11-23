@@ -96,6 +96,7 @@ pub(crate) async fn control(
 		id,
 		input.grant_id,
 		input.action,
+		input.tool_ask.as_ref(),
 	)
 	.await
 	.map_err(Into::into)
@@ -113,6 +114,7 @@ pub(crate) async fn decline_call(
 		input.grant_id,
 		&input.call,
 		input.rest_of_run,
+		input.tool_ask_key.as_deref(),
 	)
 	.await
 	.map_err(Into::into)

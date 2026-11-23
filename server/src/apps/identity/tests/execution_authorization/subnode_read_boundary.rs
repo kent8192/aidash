@@ -22,7 +22,8 @@ impl SubnodeRig {
 		app: &common::TestApplication,
 		files: bool,
 	) -> Self {
-		let (mut policy, token, node, _) = Self::register(f, app, &MEMBERS, true, files).await;
+		let (mut policy, token, node, _) =
+			Self::register(f, app, &MEMBERS, true, files, "http://127.0.0.1:9").await;
 		policy["policies"][0]["actions"] = json!(aidash_domain::identity::tenancy::MEMBER_ACTIONS);
 		set_policy(f, app, &policy).await;
 		let (status, created) = request(
@@ -55,9 +56,7 @@ impl SubnodeRig {
 		}
 	}
 
-	/// Call a tool as `run` while every other Run stays paused, so the worker
-	/// selects this one, and return its result. A refused call leaves no result,
-	/// and the panic names why the Run stopped.
+	/// Run a tool call that is expected to succeed.
 	pub(super) async fn call(
 		&self,
 		run: Uuid,
@@ -65,6 +64,13 @@ impl SubnodeRig {
 		arguments: Value,
 		call_id: &str,
 	) -> Value {
+		let result = self.call_result(run, name, arguments, call_id).await;
+		assert!(result.get("error").is_none(), "{call_id}: {result}");
+		result
+	}
+
+	/// Select `run` and wait for its tool result. The other Runs stay paused.
+	async fn call_result(&self, run: Uuid, name: &str, arguments: Value, call_id: &str) -> Value {
 		sqlx::query(
 			"UPDATE task_executions SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END \
 			 WHERE control IN ('ACTIVE', 'PAUSED')",
@@ -91,10 +97,7 @@ impl SubnodeRig {
 			harness.worker_once().await.unwrap();
 		}
 		match self.result_of(run, call_id).await {
-			Some(result) => {
-				assert!(result.get("error").is_none(), "{call_id}: {result}");
-				result
-			}
+			Some(result) => result,
 			None => {
 				let stopped = self.f.store.run(&TEST_FIXTURE, run).await.unwrap();
 				panic!(
@@ -665,19 +668,24 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 	)
 	.await;
 	assert_eq!(status, 200, "the owner reads the helper's Task: {body}");
-	rig.script(
-		helper,
-		"thread_read",
-		json!({"thread_id":thread,"kind":"task","id":root}),
-		"helper-names-subnode",
-	)
-	.await;
-	assert!(
-		rig.result_of(helper, "helper-names-subnode")
-			.await
-			.is_none(),
-		"only the creator reads the Subnode's Thread"
+	let result = rig
+		.call_result(
+			helper,
+			"thread_read",
+			json!({"thread_id":thread,"kind":"task","id":root}),
+			"helper-names-subnode",
+		)
+		.await;
+	assert_eq!(
+		result,
+		json!({"error": format!(
+			"task {root} is not in the Thread this call reads. To read a Subnode this Run created, pass its thread_id. Do not repeat this call unchanged."
+		)})
 	);
+
+	let run = f.store.run(&TEST_FIXTURE, helper).await.unwrap();
+	assert_eq!(run.control, aidash_domain::RunControl::Active);
+	assert!(run.recovery.paused_call.is_none());
 	cleanup(f, &url, &schema).await;
 }
 

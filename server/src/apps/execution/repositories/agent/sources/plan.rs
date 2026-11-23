@@ -60,7 +60,7 @@ fn compile_context_source_plan(
 	let bindings: aidash_domain::registry::bindings::AgentBindings =
 		serde_json::from_value(agent.definition.config.clone())?;
 	let deferred = bindings.exposure_policy().budgets().is_some();
-	let local_skills = local_authority
+	let mounted_skills = (local_authority || remote)
 		&& snapshot.bindings.iter().any(|binding| {
 			binding.excluded_reason.is_none() && binding.alias.as_deref() == Some("skill_list")
 		});
@@ -114,7 +114,7 @@ fn compile_context_source_plan(
 		if (matches!(slot, Slot::ResidentSkills) && !deferred)
 			|| (matches!(slot, Slot::ReferenceImages) && bindings.reference_embedding.is_none())
 			|| (matches!(slot, Slot::RegistrySkills | Slot::Skills) && deferred)
-			|| (matches!(slot, Slot::Skills) && !local_skills)
+			|| (matches!(slot, Slot::Skills) && !mounted_skills)
 		{
 			continue;
 		}

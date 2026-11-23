@@ -556,9 +556,14 @@ async fn settle_saved_run(
 	{
 		let result = async {
 			f.deliver_run_message_metadata(&raw.metadata).await?;
-			f.transition_terminal_metadata(&raw.metadata, target.task_status(), None)
-				.await
-				.map(|task| task.status)
+			f.transition_terminal_metadata(
+				&raw.metadata,
+				target.task_status(),
+				None,
+				target.reason(),
+			)
+			.await
+			.map(|task| task.status)
 		}
 		.await;
 		let settled = result.is_ok();

@@ -6,6 +6,7 @@ use aidash_domain::{
 		operations::available,
 		sessions::{Area, REMOTE_HOME, SessionStatus, received_scope_matches, reusable_context},
 	},
+	federation::execution::admission::RunQueued,
 	registry::AgentConfig,
 };
 use serde_json::{Value, json};
@@ -203,7 +204,7 @@ pub async fn admit(
 	}
 	let queue = status(scope, &area).await?.queue;
 	if queue.len() >= 100 {
-		return Err(Error::Conflict("QUEUE_LIMIT".into()));
+		return Err(Error::QueueLimit);
 	}
 	let initialized = area.state == "active" && queue.is_empty();
 	if initialized {
@@ -219,31 +220,36 @@ pub async fn admit(
 		.await?;
 	Ok(())
 }
+pub enum Initialization {
+	Ready,
+	/// Only a remote Run's first entry into the queue carries a Home notice.
+	Queued(Option<RunQueued>),
+}
+
 pub async fn initialize(
 	scope: &mut dyn SessionScope,
 	run: &RunMetadata,
 	config: &AgentConfig,
-) -> Result<()> {
+) -> Result<Initialization> {
 	let initialized = scope
 		.initialized(run.id)
 		.await?
 		.ok_or_else(|| Error::NotFound("working area unavailable".into()))?;
 	if initialized {
-		return Ok(());
+		return Ok(Initialization::Ready);
 	}
 	let mut area = for_run(scope, run).await?;
-	if status(scope, &area).await?.active_run_id != Some(run.id) {
-		return Err(Error::Conflict(
-			"RUN_QUEUED: wait for the preceding Run".into(),
-		));
+	let head = scope.queue(&area).await?.first().map(|entry| entry.run_id);
+	if head != Some(run.id) {
+		return Ok(Initialization::Queued(None));
 	}
 	available(&area.state)?;
 	// Recheck after acquiring the area lock so simultaneous callers pin only once.
-	if scope.initialized_locked(run.id).await? {
-		return Ok(());
+	if !scope.initialized_locked(run.id).await? {
+		scope.pin(run.id, &mut area, config).await?;
+		scope.mark_initialized(run.id).await?;
 	}
-	scope.pin(run.id, &mut area, config).await?;
-	scope.mark_initialized(run.id).await
+	Ok(Initialization::Ready)
 }
 /// A receiving Node's Working Area for a Run executing here for another Home (ADR 0139): the Area
 /// per Home Thread, Agent and Home person (#1008), kept for follow-up Runs, with the Agent
@@ -255,12 +261,17 @@ pub async fn initialize_remote(
 	run: &RunMetadata,
 	owner: &str,
 	config: &AgentConfig,
-) -> Result<()> {
+) -> Result<Initialization> {
 	match scope.initialized(run.id).await? {
-		Some(true) => return Ok(()),
+		Some(true) => return Ok(Initialization::Ready),
 		Some(false) => {}
 		None => {
 			let mut area = scope.ensure_remote_area(run, owner).await?;
+			// The Area lock serializes joins, including two entries for
+			// this Run around an expired worker lease.
+			if scope.initialized(run.id).await?.is_some() {
+				return initialize(scope, run, config).await;
+			}
 			area.require_kind(true)?;
 			authorize(scope, &area, "file.read").await?;
 			if !matches!(area.state.as_str(), "active" | "running") {
@@ -268,15 +279,24 @@ pub async fn initialize_remote(
 					"AREA_UNAVAILABLE: restore or recreate the area before starting work".into(),
 				));
 			}
-			let queue = status(scope, &area).await?.queue;
-			if queue.len() >= 100 {
-				return Err(Error::Conflict("QUEUE_LIMIT".into()));
+			let runs_ahead = scope.queue(&area).await?.len();
+			if runs_ahead >= 100 {
+				return Err(Error::QueueLimit);
 			}
-			let initialized = area.state == "active" && queue.is_empty();
+			let initialized = area.state == "active" && runs_ahead == 0;
 			if initialized {
 				scope.pin(run.id, &mut area, config).await?;
 			}
+			let queued_at = chrono::Utc::now();
 			scope.enqueue(run.id, &area, initialized).await?;
+			if runs_ahead > 0 {
+				return Ok(Initialization::Queued(Some(RunQueued {
+					task_id: run.task_id,
+					run_id: run.id,
+					runs_ahead,
+					queued_at,
+				})));
+			}
 		}
 	}
 	initialize(scope, run, config).await
@@ -284,7 +304,7 @@ pub async fn initialize_remote(
 pub async fn status(scope: &mut dyn SessionScope, area: &Area) -> Result<SessionStatus> {
 	let rows = scope.queue(area).await?;
 	if rows.len() > 100 {
-		return Err(Error::Conflict("QUEUE_LIMIT".into()));
+		return Err(Error::QueueLimit);
 	}
 	let last = scope.last(area).await?;
 	Ok(SessionStatus {

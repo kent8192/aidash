@@ -35,3 +35,5 @@ Amended 2026-10-27 (#486): this ADR once also let a Peer Graph Grant pin the oth
 ## Amendment (2026-11-17)
 
 Federation tokens could be replayed within their 60-second lifetime, and handlers were relied on to be idempotent. The receiving Node now records the sending Deployment and the `jti` of every Federation token that passes signature verification until the token expires plus 30 seconds. A token whose `jti` it has already seen gets the same `401` as any other refusal, and a request whose `jti` it cannot record is refused. Senders already mint a new token for every request, so a legitimate retry is unaffected. Credential Broker tokens are #1001.
+
+Amended 2026-11-23 (#1071). Protocol `0.6` carries the Home's Federation Tool Request in new grant inspections and identifies the exact Authority Pause when answering a tool ask. Deployments must use `0.6` to federate with one another. The receiver rejects `0.5` before reading the token.

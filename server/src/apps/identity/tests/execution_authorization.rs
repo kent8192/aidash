@@ -7237,7 +7237,7 @@ impl SubnodeRig {
 		members: &[&str],
 		grant: bool,
 	) -> Self {
-		Self::build(f, app, members, grant, false).await
+		Self::build(f, app, members, grant, false, "http://127.0.0.1:9").await
 	}
 
 	/// Like [`SubnodeRig::new`], but members keep the file tools and
@@ -7248,7 +7248,7 @@ impl SubnodeRig {
 		members: &[&str],
 		grant: bool,
 	) -> Self {
-		Self::build(f, app, members, grant, true).await
+		Self::build(f, app, members, grant, true, "http://127.0.0.1:9").await
 	}
 
 	async fn build(
@@ -7257,8 +7257,10 @@ impl SubnodeRig {
 		members: &[&str],
 		grant: bool,
 		files: bool,
+		endpoint: &str,
 	) -> Self {
-		let (policy, token, node, task_id) = Self::register(f, app, members, grant, files).await;
+		let (policy, token, node, task_id) =
+			Self::register(f, app, members, grant, files, endpoint).await;
 		let (status, body) = request(
 			app,
 			&token,
@@ -7288,11 +7290,12 @@ impl SubnodeRig {
 		members: &[&str],
 		grant: bool,
 		files: bool,
+		endpoint: &str,
 	) -> (Value, String, aidash_domain::nodes::NodeAddress, Uuid) {
 		let (mut policy, token, task_id) = if files {
-			bootstrap_with_area(f, app, "http://127.0.0.1:9").await
+			bootstrap_with_area(f, app, endpoint).await
 		} else {
-			bootstrap(f, app, "http://127.0.0.1:9").await
+			bootstrap(f, app, endpoint).await
 		};
 		let node = aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme");
 		let creator = qualified_agent(&node, "subnode-creator", "1.0.0");
@@ -8425,8 +8428,23 @@ async fn a_run_creates_several_subnodes_with_several_members(
 	cleanup(f, &url, &schema).await;
 }
 
-/// A member Run works in the Subnode Thread and cannot read the creating
-/// Run's Thread.
+const CREATOR_BOUNDARY: &str = "That record is in the Thread of the Agent that created this Subnode, which members cannot read. Ask the creator to put what you need in the Task or the Subnode Workspace. Do not repeat this call.";
+
+fn fake_tool_call(id: &str, name: &str, arguments: Value) -> Value {
+	json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments.to_string()}})
+}
+
+fn recorded_tool_result<'a>(run: &'a aidash_domain::Run, id: &str) -> Option<&'a Value> {
+	run.context.events().find_map(|event| match event {
+		aidash_server::context::ContextEvent::Tool { call, result } if call.id == id => {
+			Some(result)
+		}
+		_ => None,
+	})
+}
+
+/// Replay the two benchmark scenes with a loopback model and the real worker.
+/// The member can use its own Thread, and the creator-only boundary rejects a call.
 #[rstest::rstest]
 #[tokio::test]
 async fn subnode_member_cannot_read_the_creating_runs_thread(
@@ -8435,17 +8453,93 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 	fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
-	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let replies = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+		Vec<Value>,
+	>::new()));
+	let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+	let router = reinhardt::test::stub::StubRouter::new()
+		.route(
+			"/v1/chat/completions",
+			Method::POST,
+			reply({
+				let (replies, requests) = (replies.clone(), requests.clone());
+				move |request: reinhardt::Request| {
+					requests
+						.lock()
+						.unwrap()
+						.push(request.json::<Value>().unwrap());
+					let calls = replies.lock().unwrap().pop_front();
+					async move {
+						let (message, reason) = match calls {
+							Some(tool_calls) => (
+								json!({"role":"assistant","content":null,"tool_calls":tool_calls}),
+								"tool_calls",
+							),
+							None => (
+								json!({"role":"assistant","content":"I can continue with the Task."}),
+								"stop",
+							),
+						};
+						reinhardt::Response::ok()
+							.with_json(&json!({
+								"choices":[{"index":0,"finish_reason":reason,"message":message}],
+								"usage":{"prompt_tokens":1,"completion_tokens":1}
+							}))
+							.unwrap()
+					}
+				}
+			}),
+		)
+		.into_server_router();
+	let model = upstream_fixtures::upstream(Arc::new(router)).await;
+	let rig = SubnodeRig::build(
+		&f,
+		&fixture.application,
+		&["subnode-leader"],
+		true,
+		true,
+		&model.url,
+	)
+	.await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
 	let creator = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
 	let created = rig
 		.inject(
 			"subnode_create",
-			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}}),
+			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_FILE_TOOLS,"secrets":[]},"title":"Subnode scene"}),
 			"create-subnode",
 		)
 		.await;
-	let thread = Uuid::parse_str(created["thread_id"].as_str().unwrap()).unwrap();
+	let thread: Uuid = serde_json::from_value(created["thread_id"].clone()).unwrap();
 	assert_ne!(thread, creator.thread_id);
+	replies.lock().unwrap().push_back(vec![fake_tool_call(
+		"architect-reads-subnode",
+		"thread_read",
+		json!({"kind":"thread","id":thread}),
+	)]);
+	let read = step_until(&harness, &f, creator.id, |run| {
+		recorded_tool_result(run, "architect-reads-subnode").is_some()
+			|| run.control != aidash_domain::RunControl::Active
+	})
+	.await;
+	assert_eq!(
+		read.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		read.error
+	);
+	let record = recorded_tool_result(&read, "architect-reads-subnode").unwrap();
+	assert_eq!(record["id"], json!(thread));
+	assert!(
+		record["content"]
+			.as_str()
+			.unwrap()
+			.contains("Subnode scene"),
+		"{record}"
+	);
+
 	let task = rig
 		.inject(
 			"subnode_task",
@@ -8453,7 +8547,7 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 			"subnode-task",
 		)
 		.await;
-	let child_task = Uuid::parse_str(task["task_id"].as_str().unwrap()).unwrap();
+	let child_task: Uuid = serde_json::from_value(task["task_id"].clone()).unwrap();
 	let member = f
 		.store
 		.runs(&TEST_FIXTURE)
@@ -8463,15 +8557,15 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 		.find(|run| run.task_id == child_task)
 		.expect("leader Run admitted")
 		.id;
-	// Fence the creator so worker_once selects the member Run.
-	rig.set_run_control(rig.creator_run, "PAUSED").await;
-	// Without `thread_id` the read stays in the Run's own Thread.
+	rig.set_run_control(creator.id, "PAUSED").await;
+	let (message, attachment) =
+		post_pixel(&rig, creator.thread_id, "A pixel from the creator").await;
 	assert!(
 		rig.script(
 			member,
 			"thread_read",
 			json!({"kind":"task","id":child_task}),
-			"member-reads-own",
+			"member-reads-own"
 		)
 		.await
 	);
@@ -8480,32 +8574,175 @@ async fn subnode_member_cannot_read_the_creating_runs_thread(
 		.await
 		.expect("the member reads its own Thread");
 	assert!(own.to_string().contains("Member work"), "own read: {own}");
-	// Neither the creating Run's Task nor its named Thread is reachable: the
-	// denial pauses the member without recording a tool result.
-	let denied = async |arguments: Value, call_id: &str| {
-		rig.script(member, "thread_read", arguments, call_id).await;
-		assert!(
-			rig.result_of(member, call_id).await.is_none(),
-			"a denied call must not record a tool result"
-		);
+
+	let denied = async |arguments: Value, call_id: &str, expected: &str| {
+		assert!(rig.script(member, "thread_read", arguments, call_id).await);
 		let run = f.store.run(&TEST_FIXTURE, member).await.unwrap();
-		assert_eq!(run.control, aidash_domain::RunControl::Paused, "{call_id}");
 		assert_eq!(
-			run.error.as_deref(),
-			Some("thread_read: an authority check refused this step")
+			run.control,
+			aidash_domain::RunControl::Active,
+			"{call_id}: {:?}",
+			run.error
 		);
-		rig.set_run_control(member, "ACTIVE").await;
+		assert!(run.recovery.paused_call.is_none());
+		assert_eq!(
+			rig.result_of(member, call_id).await,
+			Some(json!({"error":expected}))
+		);
 	};
 	denied(
 		json!({"kind":"task","id":creator.task_id}),
 		"member-reads-creator-task",
+		CREATOR_BOUNDARY,
 	)
 	.await;
 	denied(
 		json!({"thread_id":creator.thread_id,"kind":"task","id":creator.task_id}),
 		"member-names-creator-thread",
+		CREATOR_BOUNDARY,
 	)
 	.await;
+	let unknown = Uuid::new_v4();
+	denied(
+		json!({"kind":"message","id":unknown}),
+		"member-reads-unknown-message",
+		&format!("message {unknown} is not in the Thread this call reads. To read a Subnode this Run created, pass its thread_id. Do not repeat this call unchanged."),
+	).await;
+
+	let requests_before = requests.lock().unwrap().len();
+	replies.lock().unwrap().push_back(vec![
+		fake_tool_call(
+			"lead-reads-creator-message",
+			"thread_read",
+			json!({"kind":"message","id":message}),
+		),
+		fake_tool_call(
+			"lead-copies-creator-attachment",
+			"attachment_copy",
+			json!({
+				"id":attachment,"path":"copied.png","expected_revision":0,"idempotency_key":Uuid::new_v4()
+			}),
+		),
+	]);
+	let member_run = step_until(&harness, &f, member, |run| {
+		requests.lock().unwrap().len() >= requests_before + 2
+			|| run.control != aidash_domain::RunControl::Active
+	})
+	.await;
+	assert_eq!(
+		member_run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		member_run.error
+	);
+	assert!(member_run.recovery.paused_call.is_none());
+	for call_id in [
+		"lead-reads-creator-message",
+		"lead-copies-creator-attachment",
+	] {
+		assert_eq!(
+			recorded_tool_result(&member_run, call_id),
+			Some(&json!({"error":CREATOR_BOUNDARY})),
+			"{call_id}"
+		);
+	}
+	let wire = requests.lock().unwrap().last().unwrap().to_string();
+	assert!(wire.matches(CREATOR_BOUNDARY).count() >= 2, "{wire}");
+	assert!(wire.contains("lead-reads-creator-message"), "{wire}");
+	assert!(wire.contains("lead-copies-creator-attachment"), "{wire}");
+	assert!(!wire.contains("A pixel from the creator"), "{wire}");
+	let denials: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM authorization_decisions WHERE run_id = $1 AND decision->>'allowed' = 'false'",
+	)
+	.bind(member)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		denials, 0,
+		"structural refusals write no denied authorization decisions"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case::run_person(false)]
+#[case::node_administrator(true)]
+#[tokio::test]
+async fn a_paused_subnode_member_run_can_be_cancelled(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] node_administrator: bool,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let member = late_subnode(&rig, &SUBNODE_TOOLS).await.member;
+	let path = format!("/api/executions/{}/control", member.id);
+	// Recreate an unnamed system pause left by a worker before #1057.
+	rig.stage(
+		member.id,
+		"thread_read",
+		json!({"kind":"message","id":Uuid::new_v4()}),
+		"old-refusal",
+	)
+	.await;
+	let key = format!("{}:{}:0", member.id, rig.epoch.get());
+	let pause = reinhardt::query::Query::update()
+		.table(reinhardt::query::Alias::new("task_executions"))
+		.value_expr(
+			reinhardt::query::Alias::new("control"),
+			Expr::value("PAUSED"),
+		)
+		.value_expr(
+			reinhardt::query::Alias::new("control_source"),
+			Expr::value("system"),
+		)
+		.value_expr(
+			reinhardt::query::Alias::new("error"),
+			Expr::value("thread_read: an authority check refused this step"),
+		)
+		.and_where(Expr::col("id").eq(Expr::value(member.id)))
+		.to_string(reinhardt::query::PostgresQueryBuilder);
+	sqlx::query(&pause)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, declined) = request(
+		&rig.app,
+		&rig.token,
+		"POST",
+		&format!("/api/executions/{}/declined-calls", member.id),
+		json!({"call":key}),
+	)
+	.await;
+	assert_eq!(status, 409, "{declined}");
+	let token = if node_administrator {
+		let mut policy = rig.policy.clone();
+		policy["policies"][0]["subjects"] = json!({"kinds":["agent"],"ids":["alice"]});
+		policy["subjects"]["node-operator"] = json!({"kind":"user"});
+		policy["policies"].as_array_mut().unwrap().extend([
+			json!({"id":"administer-run-node","effect":"allow","subjects":{"ids":["node-operator"]},"actions":["node.administer"],"resources":{"kinds":["node"],"ids":[rig.node.node.as_str()]}}),
+			json!({"id":"manage-runs","effect":"allow","subjects":{"ids":["node-operator"]},"actions":["run.control"],"resources":{"kinds":["run"],"ids":[member.id]}}),
+		]);
+		common::replace_policy(&f.store, "acme", policy).await;
+		common::subject_credential(&f.store, "acme", "node-operator").await
+	} else {
+		rig.token.clone()
+	};
+	let (status, cancelled) =
+		request(&rig.app, &token, "POST", &path, json!({"action":"cancel"})).await;
+	assert_eq!(status, 200, "{cancelled}");
+	assert_eq!(cancelled["control"], "CANCELLED");
+	assert_cancelled(&run_to_its_end(&rig, member.id).await);
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, rig.creator_run)
+			.await
+			.unwrap()
+			.control,
+		aidash_domain::RunControl::Paused
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -8593,6 +8830,40 @@ async fn end_subnode(rig: &SubnodeRig) -> (u16, Value) {
 	.await
 }
 
+async fn post_pixel(rig: &SubnodeRig, thread: Uuid, content: &str) -> (Uuid, Uuid) {
+	let path = format!(
+		"/api/threads/{}/attachments?filename=pixel.png&media_type=image%2Fpng&idempotency_key={}",
+		thread,
+		Uuid::new_v4()
+	);
+	let response = rig
+		.app
+		.api_http
+		.request(Method::POST, &path)
+		.body(bytes::Bytes::copy_from_slice(LATE_PIXEL))
+		.header(http::header::CONTENT_TYPE, "application/octet-stream")
+		.header("authorization", format!("Bearer {}", rig.token))
+		.send()
+		.await
+		.unwrap();
+	let attachment = response.json_value().unwrap();
+	assert_eq!(response.status_code(), 200, "upload: {attachment}");
+	let attachment_id = attachment["id"].clone();
+	let (status, posted) = request(
+		&rig.app,
+		&rig.token,
+		"POST",
+		&format!("/api/threads/{}/channel-messages", thread),
+		json!({"content":content,"idempotency_key":Uuid::new_v4(),"attachment_ids":[attachment_id]}),
+	)
+	.await;
+	assert_eq!(status, 200, "post: {posted}");
+	(
+		serde_json::from_value(posted["message"]["id"].clone()).unwrap(),
+		serde_json::from_value(attachment_id).unwrap(),
+	)
+}
+
 /// A member Run that holds a copy of a Thread Attachment in its Working Area.
 struct LateFiles {
 	late: LateSubnode,
@@ -8613,37 +8884,11 @@ impl LateFiles {
 		.await;
 		assert_eq!(status, 200, "working area: {area}");
 		let area = Uuid::parse_str(area["id"].as_str().unwrap()).unwrap();
-		let path = format!(
-			"/api/threads/{}/attachments?filename=pixel.png&media_type=image%2Fpng&idempotency_key={}",
-			late.thread,
-			Uuid::new_v4()
-		);
-		let response = rig
-			.app
-			.api_http
-			.request(Method::POST, &path)
-			.body(bytes::Bytes::copy_from_slice(LATE_PIXEL))
-			.header(http::header::CONTENT_TYPE, "application/octet-stream")
-			.header("authorization", format!("Bearer {}", rig.token))
-			.send()
-			.await
-			.unwrap();
-		let attachment = response.json_value().unwrap();
-		assert_eq!(response.status_code(), 200, "upload: {attachment}");
-		let attachment_id = attachment["id"].clone();
-		let (status, posted) = request(
-			&rig.app,
-			&rig.token,
-			"POST",
-			&format!("/api/threads/{}/channel-messages", late.thread),
-			json!({"content":"A pixel","idempotency_key":Uuid::new_v4(),"attachment_ids":[attachment_id]}),
-		)
-		.await;
-		assert_eq!(status, 200, "post: {posted}");
+		let (_, attachment) = post_pixel(rig, late.thread, "A pixel").await;
 		Self {
 			late,
 			area,
-			attachment: Uuid::parse_str(attachment_id.as_str().unwrap()).unwrap(),
+			attachment,
 		}
 	}
 
@@ -10461,7 +10706,7 @@ async fn a_claim_pins_tenant_and_node_instructions(
 	cleanup(f, &url, &schema).await;
 }
 
-/// A claim opens a Stint; entering a wait the Agent cannot move forward
+/// An authorized worker opens a Stint; entering a wait the Agent cannot move forward
 /// itself ends it with the wait's name; waking opens the next one; a failure
 /// delivery wait keeps the Stint open (#1009, ADR 0141).
 #[rstest::rstest]
@@ -10485,6 +10730,9 @@ async fn stints_follow_waking_and_sleeping(
 	assert_eq!(status, 200, "claim: {body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let driver = f.store.pool.fixture_driver();
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
 	let stints = async |run: Uuid| -> Vec<(bool, Option<String>)> {
 		sqlx::query_as::<_, (bool, Option<String>)>(&format!(
 			"SELECT ended_at IS NOT NULL, end_reason FROM stints WHERE run_id = '{run}' ORDER BY started_at, id"
@@ -10498,7 +10746,7 @@ async fn stints_follow_waking_and_sleeping(
 			Some(reason) => {
 				format!("jsonb_set(pending, '{{data}}', jsonb_build_object('reason', '{reason}'))")
 			}
-			None => "pending".to_owned(),
+			None => "jsonb_set(pending, '{data}', '{}'::jsonb)".to_owned(),
 		};
 		sqlx::query(&format!(
 			"UPDATE task_executions SET phase = '{phase}', pending = {pending} WHERE id = '{}'",
@@ -10508,6 +10756,8 @@ async fn stints_follow_waking_and_sleeping(
 		.await
 		.unwrap();
 	};
+	assert!(stints(run.id).await.is_empty());
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(stints(run.id).await, [(false, None)]);
 	set("WAITING", Some("failure_delivery")).await;
 	assert_eq!(
@@ -10518,6 +10768,7 @@ async fn stints_follow_waking_and_sleeping(
 	set("WAITING", Some("human")).await;
 	assert_eq!(stints(run.id).await, [(true, Some("human".into()))]);
 	set("READY", None).await;
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
 		stints(run.id).await,
 		[(true, Some("human".into())), (false, None)]
@@ -10558,6 +10809,10 @@ async fn stints_record_the_last_lease_holder_and_lease_recoveries(
 	assert_eq!(status, 200, "claim: {body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let driver = f.store.pool.fixture_driver();
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
 	// Lease writes pass the input ledger gate as an upgraded worker's do.
 	let lease = async |owner: Option<Uuid>| {
 		let (owner, until) = match owner {
@@ -10611,23 +10866,28 @@ async fn stints_record_the_last_lease_holder_and_lease_recoveries(
 	.await
 	.unwrap();
 	sqlx::query(&format!(
-		"UPDATE task_executions SET phase = 'READY' WHERE id = '{}'",
+		"UPDATE task_executions SET phase = 'READY', pending = jsonb_set(pending, '{{data}}', '{{}}'::jsonb) WHERE id = '{}'",
 		run.id
 	))
 	.execute(driver)
 	.await
 	.unwrap();
+	assert!(worker.worker_once().await.unwrap());
+	let recorded = stints().await;
+	assert_eq!(recorded.len(), 2);
+	assert_eq!(recorded[0], (true, Some(third.to_string()), 2));
+	assert!(!recorded[1].0);
+	assert!(recorded[1].1.is_some());
 	assert_eq!(
-		stints().await,
-		[(true, Some(third.to_string()), 2), (false, None, 0)],
+		recorded[1].2, 0,
 		"the next Stint counts its own Lease Recoveries"
 	);
 	cleanup(f, &url, &schema).await;
 }
 
 /// A pause ends the Stint, since the Agent cannot move a paused Task forward
-/// itself; writes while paused open none; a resume opens the next one through
-/// the phase rule; a paused Run that is cancelled opens none (#1009, ADR 0141
+/// itself; writes while paused open none. The worker opens the next Stint
+/// when it takes up the resumed Run. A paused Run that is cancelled opens none (#1009, ADR 0141
 /// amendment of 2026-11-20).
 #[rstest::rstest]
 #[tokio::test]
@@ -10671,6 +10931,10 @@ async fn a_pause_ends_the_stint_and_a_resume_opens_the_next(
 		.await;
 		assert_eq!(status, 200, "{action}: {body}");
 	};
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(stints().await, [(false, None)]);
 
 	// Act and Assert: a person pauses the Run.
@@ -10688,8 +10952,9 @@ async fn a_pause_ends_the_stint_and_a_resume_opens_the_next(
 		[(true, Some("paused".into()))],
 		"a write while paused opens no Stint"
 	);
-	// The resume opens the next Stint.
+	// The worker resumes the Run and opens its next Stint.
 	control("resume").await;
+	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
 		stints().await,
 		[(true, Some("paused".into())), (false, None)]

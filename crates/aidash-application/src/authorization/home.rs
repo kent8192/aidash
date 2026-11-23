@@ -223,6 +223,7 @@ async fn resume_grant<R: HomeRepository>(
 	grant: &Grant,
 	admission: Uuid,
 	by: &str,
+	tool_ask: &aidash_domain::federation::execution::admission::ToolAskTarget,
 ) -> Result<Activation> {
 	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
 		let (mut authority, description) = repository.description(&grant.node_id, grant.id).await?;
@@ -236,7 +237,7 @@ async fn resume_grant<R: HomeRepository>(
 			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/control"),
-			&json!({"grant_id":grant.id,"action":RemoteExecutionControl::Resume}),
+			&json!({"grant_id":grant.id,"action":RemoteExecutionControl::Resume,"tool_ask":tool_ask}),
 		)
 		.await?;
 	if activation.grant_id != grant.id
@@ -254,10 +255,11 @@ pub async fn resume_after_tool_answer<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
 	id: Uuid,
+	tool_ask: &aidash_domain::federation::execution::admission::ToolAskTarget,
 ) -> Result<Activation> {
 	let identity = subject(repository)?;
 	let (grant, admission) = answered_grant(repository, task, id).await?;
-	resume_grant(repository, &grant, admission, &identity.subject).await
+	resume_grant(repository, &grant, admission, &identity.subject, tool_ask).await
 }
 /// The Home's people decline the call a remote Run is paused on because the Home's Request lacks
 /// its tool (ADR 0139). Like [`decline_call`] but decided by the Home's list permission rather than
@@ -267,6 +269,7 @@ pub async fn decline_tool_ask<R: HomeRepository>(
 	task: Uuid,
 	id: Uuid,
 	call: &str,
+	key: &str,
 ) -> Result<Activation> {
 	if call.is_empty() || call.len() > 256 {
 		return Err(Error::Invalid("call key is empty or too long".into()));
@@ -285,7 +288,7 @@ pub async fn decline_tool_ask<R: HomeRepository>(
 			grant.thread_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
-			&json!({"grant_id":id,"call":call}),
+			&json!({"grant_id":id,"call":call,"tool_ask_key":key}),
 		)
 		.await?;
 	let activation = declined.activation;

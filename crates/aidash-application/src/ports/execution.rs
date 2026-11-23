@@ -82,6 +82,8 @@ pub struct InvocationOutcome {
 	pub result: Option<Value>,
 	pub uncertain_reason: Option<String>,
 	pub retrying: bool,
+	/// A new or previously refused invocation with no earlier delivery.
+	pub unexecuted: bool,
 }
 /// One call journaled by Tool Batch admission.
 pub struct BatchInvocation<'a> {
@@ -296,6 +298,19 @@ pub trait ExecutionStore: Send + Sync {
 		_refusal: &aidash_domain::tool::AuthorityRefusal,
 	) -> Result<()> {
 		Ok(())
+	}
+	/// Record the calls that never dispatched when a batch paused during admission.
+	async fn batch_admission_refused(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_refused_key: &str,
+		_undispatched: &[&str],
+		_refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		Err(crate::Error::Invalid(
+			"tool batch refusal journal unavailable".into(),
+		))
 	}
 	/// Record an answer lost after sending, before releasing the worker lease.
 	async fn invocation_answer_lost(&self, _run: &Run, _token: Uuid, _key: &str) -> Result<()> {

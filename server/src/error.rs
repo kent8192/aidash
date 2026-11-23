@@ -46,6 +46,8 @@ pub enum Error {
 	Invalid(String),
 	#[error("{0}")]
 	Conflict(String),
+	#[error("QUEUE_LIMIT")]
+	QueueLimit,
 	/// Someone else decided the approval first (ADR 0135); 409 naming who and how.
 	#[error("APPROVAL_ALREADY_DECIDED")]
 	ApprovalDecided {
@@ -174,7 +176,9 @@ impl Error {
 				tracing::debug!(reason = s, "request conflicts with current state");
 				(StatusCode::CONFLICT, s.clone())
 			}
-			Self::ApprovalDecided { .. } => (StatusCode::CONFLICT, self.to_string()),
+			Self::QueueLimit | Self::ApprovalDecided { .. } => {
+				(StatusCode::CONFLICT, self.to_string())
+			}
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized | Self::CredentialUnauthorized(_) => {
@@ -314,6 +318,13 @@ impl Error {
 			}),
 			_ => json!({"error": message}),
 		};
+		if let Self::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::ReceiverRefused(reason),
+		) = &self
+		{
+			envelope = serde_json::to_value(reason).expect("execution refusal serializes");
+			envelope["error"] = json!(message);
+		}
 		match &self {
 			Self::CredentialUnauthorized(reason) | Self::CredentialForbidden(reason) => {
 				envelope["reason"] = json!(reason.as_str())
@@ -328,10 +339,7 @@ impl Error {
 			.with_body(serde_json::to_vec(&envelope).expect("error envelope serializes"))
 			.with_header("Content-Type", "application/json");
 		if let Self::RemoteExecutionRefused(reason) = &self
-			&& let Some(code) = serde_json::to_value(reason)
-				.ok()
-				.and_then(|v| v.as_str().map(str::to_owned))
-			&& let Ok(value) = HeaderValue::from_str(&code)
+			&& let Ok(value) = HeaderValue::from_str(&reason.header())
 		{
 			response.headers.insert("x-aidash-execution-refusal", value);
 		}
@@ -513,6 +521,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Json(error) => Self::Json(error),
 			ApplicationError::Invalid(message) => Self::Invalid(message),
 			ApplicationError::Conflict(message) => Self::Conflict(message),
+			ApplicationError::QueueLimit => Self::QueueLimit,
 			ApplicationError::ApprovalDecided {
 				decided_by,
 				outcome,
@@ -611,6 +620,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Connection(cause) => Self::Connection(cause),
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
+			Error::QueueLimit => Self::QueueLimit,
 			Error::ApprovalDecided {
 				decided_by,
 				outcome,

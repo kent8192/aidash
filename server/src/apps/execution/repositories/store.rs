@@ -4327,7 +4327,7 @@ impl Store {
 				.await?;
 		}
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
-		let invocation = self
+		let (invocation, _) = self
 			.start_invocation_in(&mut tx, run, key, tool, input, replay_safe)
 			.await?;
 		tx.commit().await?;
@@ -4341,7 +4341,7 @@ impl Store {
 		run: &Run,
 		worker: Uuid,
 		calls: &[(&str, &str, &Value)],
-	) -> Result<Vec<Invocation>> {
+	) -> Result<Vec<(Invocation, bool)>> {
 		let mut tx = self.pool.begin(scope).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
@@ -4517,7 +4517,7 @@ impl Store {
 		tool: &str,
 		input: &Value,
 		replay_safe: bool,
-	) -> Result<Invocation> {
+	) -> Result<(Invocation, bool)> {
 		let created = {
 			let query_bind_1 = key;
 			let query_bind_2 = run.id;
@@ -4597,6 +4597,7 @@ impl Store {
 				"tool idempotency key reused with different input".into(),
 			));
 		}
+		let unexecuted = created || invocation.status == "REFUSED";
 		if !created
 			&& invocation.status == "STARTED"
 			&& (invocation.delivery_pending || invocation.replay_safe)
@@ -4660,7 +4661,7 @@ impl Store {
 			)
 			.await?;
 		}
-		Ok(invocation)
+		Ok((invocation, unexecuted))
 	}
 	pub async fn invocation_not_delivered(
 		&self,
@@ -4719,14 +4720,34 @@ impl Store {
 		key: &str,
 		refusal: &aidash_domain::tool::AuthorityRefusal,
 	) -> Result<()> {
+		self.invocations_refused(scope, run, worker, key, &[key], refusal)
+			.await
+	}
+	pub(crate) async fn invocations_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		refused_key: &str,
+		undispatched: &[&str],
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost while recording tool refusal".into(),
 			));
 		}
-		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
-		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		let refused = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		let sibling = json!({"error":{"kind":"batch_admission_paused"}});
+		for &key in undispatched {
+			let result = if key == refused_key {
+				&refused
+			} else {
+				&sibling
+			};
+			InvocationRecord::refuse(tx.as_mut(), run.id, key, result).await?;
+		}
 		tx.commit().await?;
 		Ok(())
 	}

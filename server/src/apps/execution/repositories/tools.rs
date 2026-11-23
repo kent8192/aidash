@@ -370,7 +370,7 @@ impl ToolOperations for Operations {
 		} else {
 			None
 		};
-		let record = self.0.home.read_record("attachment", id).await?;
+		let record = self.0.home.read_tool_record("attachment", id).await?;
 		let metadata = record["attachment"].clone();
 		if !model_input {
 			return Ok(json!({"status":"completed", "metadata":metadata}));
@@ -459,7 +459,10 @@ impl ToolOperations for Operations {
 		authority
 			.copy_thread_attachment(&self.0.store, &self.0.run, input)
 			.await
-			.map_err(operation_error)
+			.map_err(|error| match error {
+				crate::Error::Forbidden => error.into(),
+				other => operation_error(other),
+			})
 	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		self.0
@@ -666,7 +669,7 @@ impl ToolOperations for Operations {
 		Ok(specifications)
 	}
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
-		match &self.0.home.authority {
+		match self.0.home.tool_authority() {
 			Some(authority) => authority
 				.direct_skills(&self.0.store, &self.0.run)
 				.await
@@ -682,8 +685,7 @@ impl ToolOperations for Operations {
 	) -> Result<Option<Vec<u8>>> {
 		self.0
 			.home
-			.authority
-			.as_ref()
+			.tool_authority()
 			.ok_or_else(|| aidash_application::Error::NotFound("skill unavailable".into()))?
 			.direct_skill_file(&self.0.store, &self.0.run, skill_id, digest, path)
 			.await

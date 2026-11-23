@@ -470,7 +470,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 			&sender_keys,
 			chrono::Utc::now().timestamp() as u64,
 			&aidash_capability::federation::RequestBinding {
-				protocol: "0.5",
+				protocol: "0.6",
 				method: "POST",
 				path: "/scoped/discover",
 				body: request.raw.as_bytes(),
@@ -481,7 +481,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		assert_eq!(claims.sub, source_node.to_string());
 		assert_eq!(claims.aud, destination_node.to_string());
 		assert_eq!(claims.subject, "alice");
-		assert_eq!(request.protocol, "0.5");
+		assert_eq!(request.protocol, "0.6");
 		let mut keys: Vec<_> = request
 			.body
 			.as_object()
@@ -838,7 +838,7 @@ async fn sibling_node_use_distinguishes_ancestor_deny_from_missing_allow(
 		Refusal::NodeUseAsk
 	};
 	assert!(
-		matches!(result, Err(aidash_application::Error::RemoteExecutionRefused(reason)) if reason == expected),
+		matches!(&result, Err(aidash_application::Error::RemoteExecutionRefused(reason)) if reason == &expected),
 		"{result:?}"
 	);
 }

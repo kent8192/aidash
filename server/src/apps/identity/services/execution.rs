@@ -1192,7 +1192,7 @@ impl WorkerAuthority {
 			.await?;
 			let record = lease
 				.access_mut()
-				.thread_record(run.thread_id, "attachment", attachment_id)
+				.tool_thread_record(run.thread_id, run.thread_id, "attachment", attachment_id)
 				.await?;
 			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
 			let (attachment, content) = aidash_application::threads::channels::download(
@@ -2430,16 +2430,35 @@ impl WorkerAuthority {
 			.await
 			.map_err(reinhardt::core::exception::Error::from)?;
 		if matching.is_empty() {
-			return Err(Error::Forbidden);
+			use crate::apps::identity::repositories::visibility::records;
+			if records::in_creator_thread(&mut lease, run.thread_id, kind, id).await? {
+				return Err(records::creator_thread_boundary());
+			}
+			return Err(records::wrong_thread(kind, id));
 		}
 		let mut access = Access::under_lease(&lease).await?;
 		// The creator keeps its own Thread and gains read access to this one;
 		// the producers of the Subnode's records may have read in the creator's.
 		access.context = json!({"thread_id":run.thread_id,"subnode_read_threads":[thread]});
-		let result = access.thread_record(thread, kind, id).await;
+		let result = access
+			.tool_thread_record(run.thread_id, thread, kind, id)
+			.await;
 
 		access.finish(result).await
 	}
+	pub(crate) async fn tool_thread_record(
+		&self,
+		thread: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Value> {
+		self.access
+			.write()
+			.await
+			.tool_thread_record(thread, thread, kind, id)
+			.await
+	}
+
 	pub async fn thread_record(&self, thread: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
 			.write()
@@ -2561,9 +2580,19 @@ pub(crate) struct Guard {
 #[doc(hidden)]
 pub struct Step(Guard);
 
+pub(crate) enum GuardEntry {
+	Ready(Box<Guard>),
+	Queued(Option<aidash_domain::federation::execution::admission::RunQueued>),
+}
+
 impl Step {
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
-		Ok(Self(Guard::begin(f, run).await?))
+		match Guard::begin(f, run).await? {
+			GuardEntry::Ready(guard) => Ok(Self(*guard)),
+			GuardEntry::Queued(_) => Err(Error::Conflict(
+				aidash_domain::capabilities::sessions::QUEUED.into(),
+			)),
+		}
 	}
 
 	/// The Run's Home carrying the step's authority, as the worker's tools see it.
@@ -2674,20 +2703,26 @@ impl Guard {
 		})
 	}
 
-	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
+	pub async fn begin(f: &Federation, run: &Run) -> Result<GuardEntry> {
 		let entry = aidash_application::authorization::worker_entry::execution(
 			&crate::bootstrap::worker_entry_repository(f),
 			run,
 		)
 		.await?;
-		Ok(Self {
+		if let aidash_application::capabilities::sessions::Initialization::Queued(notice) =
+			entry.initialization
+		{
+			entry.scope.finish(Ok(())).await?;
+			return Ok(GuardEntry::Queued(notice));
+		}
+		Ok(GuardEntry::Ready(Box::new(Self {
 			scratch_space_id: entry.scratch_space_id.ok_or(Error::Forbidden)?,
 			tenancy: entry.scope.tenancy()?,
 			remote: entry.remote.then(|| f.clone()),
 			access: Arc::new(RwLock::new(entry.scope)),
 			run: run.clone(),
 			agent: entry.agent,
-		})
+		})))
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.write().await;

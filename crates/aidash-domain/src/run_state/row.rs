@@ -73,7 +73,15 @@ impl RawRun {
 			.and_then(|(_, recovery)| recovery.paused_call)
 	}
 	pub fn inspect(self) -> RunInspection {
-		let declinable_call = self.paused_call().map(|paused| paused.declinable());
+		let declinable_call = self.paused_call().map(|paused| {
+			let mut call = paused.declinable();
+			if self.metadata.control != crate::RunControl::Paused
+				|| self.metadata.control_source != crate::ControlSource::System
+			{
+				call.home_list_key = None;
+			}
+			call
+		});
 		let lease_wait = StateRequirements::from_pending(&self.pending)
 			.ok()
 			.and_then(|requires| self.metadata.lease_wait(&requires));

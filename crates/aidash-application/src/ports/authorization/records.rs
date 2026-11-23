@@ -1,5 +1,5 @@
 //! Single records and child summaries keep the caller's authority and read journal.
-use crate::Result;
+use crate::{Error, Result};
 use aidash_domain::{
 	Artifact, Event, Message, Task, TaskStatus, Thread, ThreadSnapshot, policy::Resource,
 };
@@ -10,6 +10,10 @@ pub trait ThreadRecordScope: Send {
 	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
+	/// Worker reads can give the model instructions when a record is outside its Thread.
+	async fn missing_record(&mut self, _kind: &str, _id: Uuid) -> Result<Error> {
+		Ok(Error::Forbidden)
+	}
 	async fn thread_row(&mut self, thread_id: Uuid) -> Result<Thread>;
 	async fn task_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Task>>;
 	async fn artifact_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Artifact>>;

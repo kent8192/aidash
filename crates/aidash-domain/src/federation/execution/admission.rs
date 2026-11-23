@@ -11,6 +11,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 mod semantic_failure;
+
+/// First entry into a receiving Working Area behind one or more awake Runs.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunQueued {
+	pub task_id: Uuid,
+	pub run_id: Uuid,
+	pub runs_ahead: usize,
+	pub queued_at: DateTime<Utc>,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RemoteExecutionPhase {
@@ -70,9 +80,19 @@ impl RemoteExecutionControl {
 		}
 	}
 }
-#[derive(Deserialize)]
+/// A list answer may continue only the specific Authority Pause shown to its author.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAskTarget {
+	pub call: String,
+	pub key: String,
+}
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectInput {
+	/// Sent while preparing a new grant. Live rechecks refresh the lists through its Description.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_request: Option<crate::federation::tool_lists::ToolList>,
 	#[serde(default)]
 	pub task_id: Option<Uuid>,
 	pub agent: EntityRef,
