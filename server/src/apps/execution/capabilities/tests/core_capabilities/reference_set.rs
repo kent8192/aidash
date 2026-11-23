@@ -762,6 +762,23 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
+	let patch = |revision: Value, path: &'static str| {
+		let endpoint = path_for_patch(run.id);
+		let app = &c.app;
+		let token = &token;
+		async move {
+			request(
+				app,
+				token,
+				"POST",
+				&endpoint,
+				json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{path:null},"patch":format!("*** Begin Patch\n*** Add File: {path}\n+note\n*** End Patch")}),
+			)
+			.await
+		}
+	};
+	let (status, first) = patch(area["revision"].clone(), "first.md").await;
+	assert_eq!(status, 200, "{first}");
 	let approve = |revision: i64, enabled: bool| {
 		request(
 			&c.app,
@@ -774,6 +791,9 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	let (status, withdrawn) = approve(1, false).await;
 	assert_eq!(status, 200, "{withdrawn}");
 
+	let (status, denied) = patch(first["revision"].clone(), "second.md").await;
+	assert_eq!(status, 403, "{denied}");
+
 	for (route, input) in [
 		(
 			"files/read",
@@ -785,7 +805,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		),
 		(
 			"files/materialize",
-			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
+			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":first["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
 		),
 	] {
 		let (status, denied) = request(
@@ -813,6 +833,9 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "needle\n", "{read}");
+	// The rejected patch did not publish a revision or leave a file behind.
+	let (status, second) = patch(first["revision"].clone(), "second.md").await;
+	assert_eq!(status, 200, "{second}");
 	c.close().await;
 }
 

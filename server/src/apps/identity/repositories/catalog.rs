@@ -295,12 +295,8 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 
 /// Reserved spelling alone is insufficient: persisted bytes must match Node composition.
 async fn system_document(access: &mut Access, reference: &EntityRef) -> Result<Value> {
-	let expected = aidash_application::registry::system::pinned_declaration(
-		&crate::bootstrap::registry_validation(),
-		&access.node_id,
-		reference,
-	)?
-	.ok_or(crate::Error::Forbidden)?;
+	let expected = crate::bootstrap::pinned_system_declaration(&access.node_id, reference)?
+		.ok_or(crate::Error::Forbidden)?;
 	let entry: Entry = if let Some(entry) = access.state_definition(reference) {
 		entry?
 	} else {
