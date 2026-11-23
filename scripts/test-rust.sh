@@ -2,7 +2,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export RUSTC_WRAPPER=
-export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 # Match hosted runner concurrency and bound shared service load on large hosts.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
 # Local cleanup protocol fixtures authenticate through the normal runner resolver.
@@ -26,6 +25,13 @@ while (($#)); do
     *) echo 'Usage: scripts/test-rust.sh [--coverage] [--partition NAME] [--shard 1|2]' >&2; exit 2 ;;
   esac
 done
+# The instrumented semantic outage cases drive several nested worker turns.
+# Keep their larger stack allowance local to the coverage partition.
+if "$coverage" && [[ "$partition" == knowledge-marketplace ]]; then
+  export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+else
+  export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
+fi
 if [[ "$partition" == server-unit ]]; then
   # Bound concurrent code generation for the large server libtest and binaries.
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"

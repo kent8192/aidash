@@ -88,6 +88,7 @@ pub enum ExecutionFailure {
 		stop: bool,
 		message: String,
 	},
+	QueueLimit,
 	Deferred,
 	/// The database could not serve the step. The Run waits and resumes for as
 	/// long as that lasts, spending none of its attempts (#728).
@@ -130,6 +131,7 @@ impl ExecutionFailure {
 			| Self::Budget { message, .. }
 			| Self::Inference { message, .. }
 			| Self::Other(message) => message.clone(),
+			Self::QueueLimit => aidash_domain::capabilities::sessions::QUEUE_LIMIT.into(),
 			Self::Deferred => "execution state is temporarily unavailable".into(),
 			Self::DatabaseUnavailable => "the database is temporarily unavailable".into(),
 			Self::ToolRetry { message, .. } => message.clone(),

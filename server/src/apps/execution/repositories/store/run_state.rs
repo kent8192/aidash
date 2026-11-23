@@ -306,7 +306,12 @@ impl Store {
 						));
 					}
 				};
-				(state, None, kind)
+				let error = if status == TaskStatus::Failed {
+					delivery.target.reason().map(str::to_owned)
+				} else {
+					None
+				};
+				(state, error, kind)
 			}
 			Err(error) => {
 				let text: String = error.to_string().chars().take(512).collect();

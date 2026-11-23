@@ -133,7 +133,7 @@ impl Federation {
 		run: &Run,
 		target: TaskStatus,
 	) -> Result<Task> {
-		self.transition_terminal_metadata(&run.metadata(), target, None)
+		self.transition_terminal_metadata(&run.metadata(), target, None, None)
 			.await
 	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
@@ -950,6 +950,15 @@ impl Home {
 		}
 	}
 	pub async fn transition_terminal(&self, next: TaskStatus, through_seq: i64) -> Result<Task> {
+		self.transition_terminal_with_reason(next, through_seq, None)
+			.await
+	}
+	pub(crate) async fn transition_terminal_with_reason(
+		&self,
+		next: TaskStatus,
+		through_seq: i64,
+		reason: Option<&str>,
+	) -> Result<Task> {
 		let scope = self.tenancy().await?;
 		let task = self.task().await?;
 		if self.local() {
@@ -959,17 +968,18 @@ impl Home {
 				.transition(&scope, task.id, task.revision, &self.owner(), next)
 				.await;
 		}
+		let mut data = json!({
+			"revision":task.revision,
+			"status":next,
+			"run_id":self.run.id,
+			"keys":[],
+			"through_seq":through_seq
+		});
+		if let Some(reason) = reason {
+			data["reason"] = json!(reason);
+		}
 		if let Some(task) = self
-			.optional_command(
-				"run_message_terminal_transition",
-				json!({
-					"revision":task.revision,
-					"status":next,
-					"run_id":self.run.id,
-					"keys":[],
-					"through_seq":through_seq
-				}),
-			)
+			.optional_command("run_message_terminal_transition", data)
 			.await?
 		{
 			return Ok(task);
@@ -1340,11 +1350,13 @@ impl Federation {
 		run: &RunMetadata,
 		target: TaskStatus,
 		authority: Option<crate::authorization::execution::WorkerAuthority>,
+		reason: Option<&str>,
 	) -> Result<Task> {
 		let scope = self.store.run_tenancy(run.id).await?;
 		let through_seq = self.store.run_input_high_watermark(&scope, run.id).await?;
 		let home = Home::for_delivery(self.clone(), run.clone()).with_authority(authority);
-		home.transition_terminal(target, through_seq).await
+		home.transition_terminal_with_reason(target, through_seq, reason)
+			.await
 	}
 }
 

@@ -196,6 +196,7 @@ fn liveness(expired: bool, held: bool, task: Option<crate::TaskStatus>) -> Liven
 		},
 		activated: true,
 		held,
+		pending_claim: false,
 		task,
 	}
 }
@@ -280,6 +281,11 @@ fn liveness_reads_this_grants_binding_and_the_executor_that_owns_its_task() {
 	assert!(!Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
 	held.owner = None;
 	held.status = crate::TaskStatus::Open;
+	held.revision = grant.task_revision;
+	binding.task_revision = held.revision;
+	assert!(Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
+	held.revision += 1;
+	binding.task_revision = held.revision;
 	assert!(!Liveness::of(&grant, Some(&binding), Some(&held)).live(Utc::now()));
 	assert!(!Liveness::of(&grant, Some(&binding), None).live(Utc::now()));
 }

@@ -33,6 +33,7 @@ pub enum Effect<'a> {
 		revision: i64,
 		next: TaskStatus,
 		through: Option<i64>,
+		reason: Option<&'static str>,
 	},
 	Artifact {
 		artifact: &'a ArtifactInput,
