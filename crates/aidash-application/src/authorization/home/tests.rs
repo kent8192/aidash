@@ -626,12 +626,12 @@ async fn an_ask_after_admission_stays_an_authority_pause_for_the_tool(#[case] as
 	// Arrange: a person on the target Node can lift an ask, so ADR 0109 keeps it a pause.
 	let repository = Repository::default();
 	repository.state.lock().unwrap().rpc_error =
-		Some((ACTIVATE, Error::RemoteExecutionRefused(ask)));
+		Some((ACTIVATE, Error::RemoteExecutionRefused(ask.clone())));
 	// Act
 	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
 	// Assert
 	assert!(
-		matches!(&result, Err(Error::RemoteExecutionRefused(reason)) if *reason == ask),
+		matches!(&result, Err(Error::RemoteExecutionRefused(reason)) if reason == &ask),
 		"{result:?}"
 	);
 }
@@ -1106,9 +1106,15 @@ async fn a_tool_ask_is_declined_by_a_list_holder_without_the_runs_own_rights() {
 		state.grant_root = Some("other");
 		state.replies = vec![declined_reply()];
 	}
-	decline_tool_ask(&repository, task().id, Uuid::from_u128(4), "run:7:0")
-		.await
-		.unwrap();
+	decline_tool_ask(
+		&repository,
+		task().id,
+		Uuid::from_u128(4),
+		"run:7:0",
+		"file_read",
+	)
+	.await
+	.unwrap();
 	let calls = repository.calls();
 	for held in ["run.decline_call", "run.control", "task.delegate"] {
 		assert!(!calls.contains(&held.into()), "{held}: {calls:?}");
@@ -1127,9 +1133,17 @@ async fn an_answer_that_allows_the_tool_resumes_the_remote_run_without_the_runs_
 		state.grant_root = Some("other");
 		state.replies = vec![activation()];
 	}
-	resume_after_tool_answer(&repository, task().id, Uuid::from_u128(4))
-		.await
-		.unwrap();
+	resume_after_tool_answer(
+		&repository,
+		task().id,
+		Uuid::from_u128(4),
+		&aidash_domain::federation::execution::admission::ToolAskTarget {
+			call: "run:7:0".into(),
+			key: "file_read".into(),
+		},
+	)
+	.await
+	.unwrap();
 	let calls = repository.calls();
 	assert!(calls.iter().any(|c| c.ends_with("/control")), "{calls:?}");
 	assert!(!calls.contains(&"run.control".into()));

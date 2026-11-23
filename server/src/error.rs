@@ -314,6 +314,13 @@ impl Error {
 			}),
 			_ => json!({"error": message}),
 		};
+		if let Self::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::ReceiverRefused(reason),
+		) = &self
+		{
+			envelope = serde_json::to_value(reason).expect("execution refusal serializes");
+			envelope["error"] = json!(message);
+		}
 		match &self {
 			Self::CredentialUnauthorized(reason) | Self::CredentialForbidden(reason) => {
 				envelope["reason"] = json!(reason.as_str())
@@ -328,10 +335,7 @@ impl Error {
 			.with_body(serde_json::to_vec(&envelope).expect("error envelope serializes"))
 			.with_header("Content-Type", "application/json");
 		if let Self::RemoteExecutionRefused(reason) = &self
-			&& let Some(code) = serde_json::to_value(reason)
-				.ok()
-				.and_then(|v| v.as_str().map(str::to_owned))
-			&& let Ok(value) = HeaderValue::from_str(&code)
+			&& let Ok(value) = HeaderValue::from_str(&reason.header())
 		{
 			response.headers.insert("x-aidash-execution-refusal", value);
 		}

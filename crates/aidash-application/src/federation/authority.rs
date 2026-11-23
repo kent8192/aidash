@@ -64,7 +64,7 @@ impl Client {
 				}
 			})?;
 		let status = reply.status;
-		let value = classify(reply).inspect_err(|error| {
+		let value = classify_request(path, reply).inspect_err(|error| {
 			if matches!(error,Error::External(message) if message=="remote execution authority unavailable")
 			{
 				tracing::warn!(%node,%path,status,"authority request rejected");
@@ -74,6 +74,20 @@ impl Client {
 			.map_err(|_| Error::External("invalid remote authority response".into()))
 	}
 }
+fn classify_request(path: &str, reply: Reply) -> Result<Vec<u8>> {
+	if path == "/scoped/execution/inspect" && (400..500).contains(&reply.status) {
+		use aidash_domain::federation::execution::{ReceiverRefusal, Refusal};
+
+		return Err(Error::RemoteExecutionRefused(
+			reply
+				.execution_refusal
+				.filter(|reason| *reason != Refusal::NodeUnreachable)
+				.unwrap_or(Refusal::ReceiverRefused(ReceiverRefusal::Unclassified)),
+		));
+	}
+	classify(reply)
+}
+
 fn classify(reply: Reply) -> Result<Vec<u8>> {
 	if reply.status == 403
 		&& let Some(reason) = reply.execution_refusal

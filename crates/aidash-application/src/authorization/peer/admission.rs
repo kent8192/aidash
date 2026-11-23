@@ -11,7 +11,7 @@ use aidash_domain::{
 		Described, Description,
 		admission::{
 			Activation, Admission, InspectInput, Message, MessageReceipt, RemoteExecutionControl,
-			RemoteExecutionControlState, RemoteExecutionPhase,
+			RemoteExecutionControlState, RemoteExecutionPhase, ToolAskTarget,
 		},
 	},
 	nodes::NodeName,
@@ -78,7 +78,8 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		scope.context()["source_thread_id"] = json!(description.task.thread_id);
 		scope.context()["source_task_id"] = json!(description.task.id);
 		scope.context()["source_task_revision"] = json!(description.task.revision);
-		let input = InspectInput {
+		let mut input = InspectInput {
+			tool_request: None,
 			task_id: Some(description.task.id),
 			agent: EntityRef {
 				id: description.inspection.agent.id.clone(),
@@ -94,6 +95,14 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		// still lives (#1013): its lifetime bounds only the admission, and the
 		// Home keeps a started grant while its Task is open, Stint asleep or not.
 		let started = activated.is_some();
+		if !started {
+			// A stale preparation or an older Home cannot bypass the receiver's lists.
+			input.tool_request = Some(
+				super::tool_request::requested_tools(&description)?
+					.map(|request| request.tools)
+					.unwrap_or_default(),
+			);
+		}
 		let retained = activated.is_some_and(|run| {
 			run.context.binding_snapshot.as_deref()
 				== Some(&description.inspection.binding_snapshot)
@@ -456,7 +465,13 @@ pub async fn control<R: PeerAdmissionRepository>(
 	id: Uuid,
 	grant: Uuid,
 	action: RemoteExecutionControl,
+	tool_ask: Option<&ToolAskTarget>,
 ) -> Result<Activation> {
+	if tool_ask.is_some() && !matches!(action, RemoteExecutionControl::Resume) {
+		return Err(Error::Invalid(
+			"a tool ask answer must resume the Run".into(),
+		));
+	}
 	if matches!(action, RemoteExecutionControl::Cancel) {
 		return repository
 			.cancel_admission(admitted, request, id, grant)
@@ -489,7 +504,7 @@ pub async fn control<R: PeerAdmissionRepository>(
 	{
 		run
 	} else {
-		repository.control(id, &action).await?
+		repository.control(id, &action, tool_ask).await?
 	};
 	repository.notify();
 	Ok(Activation {
@@ -516,6 +531,7 @@ pub async fn decline_call<R: PeerAdmissionRepository>(
 	grant: Uuid,
 	call: &str,
 	rest_of_run: bool,
+	tool_ask_key: Option<&str>,
 ) -> Result<aidash_domain::federation::execution::admission::Declined> {
 	if call.is_empty() || call.len() > 256 {
 		return Err(Error::Invalid("call key is empty or too long".into()));
@@ -540,7 +556,9 @@ pub async fn decline_call<R: PeerAdmissionRepository>(
 		.await?
 		.ok_or(Error::Forbidden)?;
 	finish(scope, Ok(())).await?;
-	let (run, declined) = repository.decline_call(id, call, rest_of_run).await?;
+	let (run, declined) = repository
+		.decline_call(id, call, rest_of_run, tool_ask_key)
+		.await?;
 	repository.notify();
 	Ok(aidash_domain::federation::execution::admission::Declined {
 		activation: Activation {

@@ -26,6 +26,8 @@ pub(crate) struct Admission {
 pub(crate) struct RemoteExecutionControlInput {
 	pub(crate) grant_id: Uuid,
 	pub(crate) action: crate::authorization::remote::execution::RemoteExecutionControl,
+	#[serde(default)]
+	pub(crate) tool_ask: Option<aidash_domain::federation::execution::admission::ToolAskTarget>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -34,6 +36,8 @@ pub(crate) struct PeerDeclineCallInput {
 	pub(crate) grant_id: Uuid,
 	#[validate(length(min = 1, max = 256))]
 	pub(crate) call: String,
+	#[serde(default)]
+	pub(crate) tool_ask_key: Option<String>,
 	/// Also decline later calls to this tool for the same kind of refusal in this Run.
 	#[serde(default)]
 	pub(crate) rest_of_run: bool,

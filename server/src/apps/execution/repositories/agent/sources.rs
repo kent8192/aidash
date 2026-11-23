@@ -1169,7 +1169,7 @@ impl Environment<'_> {
 					let Some(authority) = self
 						.authority
 						.as_ref()
-						.and_then(|authority| authority.guard.local_authority())
+						.map(|authority| authority.guard.authority())
 					else {
 						continue;
 					};

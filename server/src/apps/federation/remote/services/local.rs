@@ -85,7 +85,8 @@ fn response(response: Response) -> Outcome {
 			.filter_map(|name| header(&response.headers, name))
 			.find_map(|reason| serde_json::from_value(json!(reason)).ok()),
 		execution_refusal: header(&response.headers, "x-aidash-execution-refusal")
-			.and_then(|reason| serde_json::from_value(json!(reason)).ok()),
+			.as_deref()
+			.and_then(aidash_domain::federation::execution::Refusal::from_header),
 		transaction_pending: header(&response.headers, "x-aidash-transaction-pending")
 			.is_some_and(|value| value == "1"),
 		policy_busy: header(&response.headers, "x-aidash-policy-busy")

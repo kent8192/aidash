@@ -1634,7 +1634,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		match self
 			.authority
 			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
+			.map(|authority| authority.guard.authority())
 		{
 			Some(authority) => authority
 				.direct_skills(&self.federation.store, run)
@@ -1651,7 +1651,7 @@ impl ExecutionEnvironment for Environment<'_> {
 	) -> Result<Option<String>> {
 		self.authority
 			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
+			.map(|authority| authority.guard.authority())
 			.ok_or_else(|| aidash_application::Error::NotFound("skill unavailable".into()))?
 			.direct_skill_body(&self.federation.store, run, skill_id, digest)
 			.await
@@ -1983,7 +1983,7 @@ impl Environment<'_> {
 		if let Some(authority) = self
 			.authority
 			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
+			.map(|authority| authority.guard.authority())
 		{
 			authority
 				.skill_context(&self.federation.store, run)

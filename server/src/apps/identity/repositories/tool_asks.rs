@@ -2,7 +2,7 @@
 //! the tools one side allowed for one Run only. Every statement runs in the Tenant's scope.
 use super::remote_grants::{live_condition, run_live};
 use crate::Result;
-use aidash_domain::federation::tool_lists::{ToolAsk, ToolList, ToolPattern, receiver_may_answer};
+use aidash_domain::federation::tool_lists::{AskSide, ToolAsk, ToolList, ToolPattern};
 use aidash_domain::nodes::NodeAddress;
 use aidash_domain::run_state::PausedCall;
 use aidash_domain::{ControlSource, RunControl};
@@ -54,7 +54,7 @@ crate::native_record!(PausedRow {
 /// The Runs of `node` admitted from `source` that wait in the Authority Pause of a call the
 /// receiving Node's lists lack, and nothing else holds: a person's pause or a Safety Stop laid
 /// over it replaces the `system` control source the pause left
-/// ([`receiver_may_answer`]).
+/// ([`aidash_domain::federation::tool_lists::may_answer`]).
 fn receiver_asks_query(tenant: &str, node: &str, source: &NodeAddress) -> SelectStatement {
 	let mut query = Query::select();
 	query
@@ -203,14 +203,15 @@ crate::native_record!(PauseRow {
 	paused_call
 });
 
-/// Lock the Run `run` and say whether it still waits for the receiving Node's people on the
-/// call `call` about `key` and on nothing else ([`receiver_may_answer`]). The lock holds until
+/// Lock the Run and say whether it still waits for the specified side on the
+/// call about `key` and on nothing else. The lock holds until
 /// the caller's transaction ends, so no pause, resume or other answer comes in between.
-pub(crate) async fn lock_receiver_ask(
+pub(crate) async fn lock_ask(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
 	call: &str,
 	key: &str,
+	side: AskSide,
 ) -> Result<bool> {
 	let row: Option<PauseRow> = crate::database::native::query_as(
 		&Query::select()
@@ -232,12 +233,13 @@ pub(crate) async fn lock_receiver_ask(
 	let paused = row
 		.paused_call
 		.and_then(|value| serde_json::from_value::<PausedCall>(value).ok());
-	Ok(receiver_may_answer(
+	Ok(aidash_domain::federation::tool_lists::may_answer(
 		control,
 		source,
 		paused.as_ref(),
 		call,
 		key,
+		side,
 	))
 }
 
