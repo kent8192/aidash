@@ -26,7 +26,7 @@ pub fn allows(
 		.filter(|(tool, _)| tool.finalizing);
 	let saved_failure = decoded.as_ref().and_then(|(state, _)| match state {
 		crate::RunState::Waiting(wait) => match wait.as_ref() {
-			crate::WaitingState::FailureDelivery { target, .. } => Some(target.task_status()),
+			crate::WaitingState::FailureDelivery { target, .. } => Some(*target),
 			_ => None,
 		},
 		_ => None,
@@ -35,7 +35,7 @@ pub fn allows(
 		RunPhase::Completed => Some(TaskStatus::Completed),
 		RunPhase::Failed => Some(TaskStatus::Failed),
 		RunPhase::Cancelled => Some(TaskStatus::Cancelled),
-		_ if saved_failure.is_some() => saved_failure,
+		_ if saved_failure.is_some() => saved_failure.map(|target| target.task_status()),
 		_ if raw.metadata.control == RunControl::Cancelled => Some(TaskStatus::Cancelled),
 		_ => None,
 	};
@@ -74,8 +74,24 @@ pub fn allows(
 				})
 		}
 		"run_message_terminal_transition" => {
+			let shape: &[&str] =
+				if let Some(reason) = saved_failure.and_then(|target| target.reason()) {
+					if data["reason"] != reason {
+						return false;
+					}
+					&[
+						"revision",
+						"status",
+						"run_id",
+						"keys",
+						"through_seq",
+						"reason",
+					]
+				} else {
+					&["revision", "status", "run_id", "keys", "through_seq"]
+				};
 			original_run
-				&& keys_only(&["revision", "status", "run_id", "keys", "through_seq"])
+				&& keys_only(shape)
 				&& terminal.is_some_and(|target| data["status"] == json!(target))
 				&& data["keys"] == json!([])
 				&& data["through_seq"].as_i64()

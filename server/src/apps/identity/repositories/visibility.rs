@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 pub(crate) struct Reads<'a> {
 	pub access: &'a mut Access,
+	pub tool_thread: Option<Uuid>,
 }
 struct AttachmentMetadataRow {
 	message_id: Uuid,

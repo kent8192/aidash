@@ -94,7 +94,7 @@ impl HttpTransport {
 				|| path.starts_with("/scoped/execution/admissions")
 				|| path.starts_with("/scoped/usage/")
 			{
-				Duration::from_secs(60)
+				aidash_application::federation::authority::HOME_REQUEST_TIMEOUT
 			} else if path == "/scoped/graph" {
 				// The peer's projection may itself wait up to 10 s on a third Node
 				// that does not answer, and its dependency walk up to 20 s. Outlast

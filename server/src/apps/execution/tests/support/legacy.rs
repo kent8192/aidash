@@ -188,6 +188,26 @@ impl BrowserAdministrator {
 		self.inner.headers()
 	}
 }
+/// Claim a Run for a fixture that starts below worker admission.
+#[allow(dead_code)] // Only Usage Record and inference progress fixtures dispatch at this boundary.
+pub async fn lease_entered_run(store: &Store, worker: Uuid) -> aidash_server::domain::Run {
+	let run = store.lease_run(worker, 30).await.unwrap().unwrap();
+	sqlx::query(
+		"INSERT INTO stints
+		 (id, tenant, run_id, agent_id, agent_version, node, started_at, lease_owner)
+		 SELECT $1, tenant, id, agent_id, agent_version, node, now(), lease_owner
+		 FROM task_executions WHERE id = $2 AND lease_owner = $3
+		 ON CONFLICT DO NOTHING",
+	)
+	.bind(Uuid::new_v4())
+	.bind(run.id)
+	.bind(worker)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	run
+}
+
 #[path = "tenant_roots.rs"]
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that issue the first Subject Credential use it.

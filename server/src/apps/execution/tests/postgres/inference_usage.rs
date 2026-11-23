@@ -137,7 +137,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 		.unwrap();
 	common::local_run(&store, &ACME, &task, &agent).await;
 	let token = Uuid::new_v4();
-	let run = store.lease_run(token, 30).await.unwrap().unwrap();
+	let run = common::lease_entered_run(&store, token).await;
 	let completed = dispatch(token);
 	let reported = ReportedUsage {
 		server_tool_use: std::collections::BTreeMap::from([("web_search_requests".into(), 2)]),
@@ -276,7 +276,7 @@ async fn leased_run(store: &Store, token: Uuid) -> Run {
 		.await
 		.unwrap();
 	common::local_run(store, &ACME, &task, &agent).await;
-	store.lease_run(token, 30).await.unwrap().unwrap()
+	common::lease_entered_run(store, token).await
 }
 
 /// The worker's retained authority transaction keeps key-share locks on its Run

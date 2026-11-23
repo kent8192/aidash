@@ -133,7 +133,7 @@ impl Federation {
 		run: &Run,
 		target: TaskStatus,
 	) -> Result<Task> {
-		self.transition_terminal_metadata(&run.metadata(), target, None)
+		self.transition_terminal_metadata(&run.metadata(), target, None, None)
 			.await
 	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
@@ -794,6 +794,19 @@ impl Home {
 		self.command("thread_record", json!({"kind":kind,"id":id}))
 			.await
 	}
+	/// Model calls get a corrective message for missing records. Run-wide reads
+	/// use `read_record`, where the same miss is a visibility failure.
+	pub(crate) async fn read_tool_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
+			return authority
+				.tool_thread_record(self.run.thread_id, kind, id)
+				.await;
+		}
+		self.read_record(kind, id).await
+	}
 	pub async fn read_record_chunk(
 		&self,
 		kind: &str,
@@ -801,13 +814,18 @@ impl Home {
 		offset: usize,
 		max_chars: usize,
 	) -> Result<Value> {
+		let id = id
+			.parse::<Uuid>()
+			.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
+		if kind == "thread" && id != self.run.thread_id && self.tool_authority().is_some() {
+			return self
+				.read_subnode_record_chunk(id, kind, &id.to_string(), offset, max_chars)
+				.await;
+		}
 		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
-			let id = id
-				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			let record = authority
-				.thread_record(self.run.thread_id, kind, id)
+				.tool_thread_record(self.run.thread_id, kind, id)
 				.await?;
 			return crate::context::observation::chunk_record(
 				record,
@@ -818,9 +836,6 @@ impl Home {
 			);
 		}
 		if self.local() {
-			let id = id
-				.parse::<Uuid>()
-				.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 			let record = self
 				.federation
 				.store
@@ -834,9 +849,6 @@ impl Home {
 				max_chars,
 			);
 		}
-		let id = id
-			.parse::<Uuid>()
-			.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 		self.command(
 			"thread_record_chunk",
 			json!({"kind":kind,"id":id,"offset":offset,"max_chars":max_chars.min(16000)}),
@@ -950,6 +962,15 @@ impl Home {
 		}
 	}
 	pub async fn transition_terminal(&self, next: TaskStatus, through_seq: i64) -> Result<Task> {
+		self.transition_terminal_with_reason(next, through_seq, None)
+			.await
+	}
+	pub(crate) async fn transition_terminal_with_reason(
+		&self,
+		next: TaskStatus,
+		through_seq: i64,
+		reason: Option<&str>,
+	) -> Result<Task> {
 		let scope = self.tenancy().await?;
 		let task = self.task().await?;
 		if self.local() {
@@ -959,17 +980,18 @@ impl Home {
 				.transition(&scope, task.id, task.revision, &self.owner(), next)
 				.await;
 		}
+		let mut data = json!({
+			"revision":task.revision,
+			"status":next,
+			"run_id":self.run.id,
+			"keys":[],
+			"through_seq":through_seq
+		});
+		if let Some(reason) = reason {
+			data["reason"] = json!(reason);
+		}
 		if let Some(task) = self
-			.optional_command(
-				"run_message_terminal_transition",
-				json!({
-					"revision":task.revision,
-					"status":next,
-					"run_id":self.run.id,
-					"keys":[],
-					"through_seq":through_seq
-				}),
-			)
+			.optional_command("run_message_terminal_transition", data)
 			.await?
 		{
 			return Ok(task);
@@ -1340,11 +1362,13 @@ impl Federation {
 		run: &RunMetadata,
 		target: TaskStatus,
 		authority: Option<crate::authorization::execution::WorkerAuthority>,
+		reason: Option<&str>,
 	) -> Result<Task> {
 		let scope = self.store.run_tenancy(run.id).await?;
 		let through_seq = self.store.run_input_high_watermark(&scope, run.id).await?;
 		let home = Home::for_delivery(self.clone(), run.clone()).with_authority(authority);
-		home.transition_terminal(target, through_seq).await
+		home.transition_terminal_with_reason(target, through_seq, reason)
+			.await
 	}
 }
 

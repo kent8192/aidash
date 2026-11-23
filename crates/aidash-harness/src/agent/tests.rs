@@ -158,6 +158,7 @@ struct State {
 	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
 	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
 	/// Fields the thread observation carries beside its ID.
+	fitting_denial: Option<&'static str>,
 	observation_extra: serde_json::Map<String, Value>,
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
@@ -630,6 +631,7 @@ impl ExecutionStore for Backend {
 			status,
 			result,
 			uncertain_reason: self.0.invocation_reasons.lock().unwrap().get(key).cloned(),
+			unexecuted: false,
 			retrying: self
 				.0
 				.invocation_delivery_pending
@@ -1018,6 +1020,9 @@ impl ExecutionHome for Backend {
 		maximum: usize,
 	) -> Result<Value> {
 		let _ = (kind, id, offset, maximum);
+		if self.0.fitting_denial == Some("thread_read") {
+			return Err(Error::Forbidden);
+		}
 		unexpected("ExecutionHome.read_record_chunk")
 	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
@@ -1039,6 +1044,9 @@ impl ExecutionHome for Backend {
 		fits: &ObservationFit<'_>,
 	) -> Result<Option<(usize, Value)>> {
 		let _ = (offset, limit, fits);
+		if self.0.fitting_denial == Some("thread_observe") {
+			return Err(Error::Forbidden);
+		}
 		unexpected("ExecutionHome.observation_fitted")
 	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
@@ -1300,7 +1308,7 @@ impl ExecutionAuthority for Backend {
 		}
 	}
 	fn is_remote(&self) -> bool {
-		false
+		self.0.remote_home
 	}
 }
 
@@ -1888,6 +1896,7 @@ fn fixture() -> Fixture {
 		journal: Mutex::new(vec![]),
 		compaction_attempts: Mutex::new(vec![]),
 		context_policy: None,
+		fitting_denial: None,
 		observation_extra: serde_json::Map::new(),
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
@@ -2159,7 +2168,11 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		answer_by: None,
 		resume: ResumeState::Ready(ReadyState::default()),
 	}));
-	for _ in 0..2 {
+	assert_eq!(
+		fixture.run.recovery.home_poll.delay(),
+		chrono::Duration::seconds(2)
+	);
+	for expected in [4, 8, 16, 30, 30] {
 		Executor::new(&fixture.backend)
 			.advance(
 				&mut fixture.run,
@@ -2168,6 +2181,10 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 			)
 			.await
 			.unwrap();
+		assert_eq!(
+			fixture.run.recovery.home_poll.delay(),
+			chrono::Duration::seconds(expected)
+		);
 		assert!(
 			matches!(&fixture.run.state, RunState::Waiting(wait) if wait.request_id() == Some(id))
 		);
@@ -2201,6 +2218,10 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		.unwrap();
 	assert_eq!(fixture.run.phase(), RunPhase::Ready);
 	assert_eq!(
+		fixture.run.recovery.home_poll.delay(),
+		chrono::Duration::seconds(2)
+	);
+	assert_eq!(
 		fixture.backend.0.writes.lock().unwrap().last().unwrap().0,
 		"execution.resumed"
 	);
@@ -2210,7 +2231,7 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 			.iter()
 			.filter(|call| **call == "authority.human_read")
 			.count(),
-		3
+		6
 	);
 	assert!(!calls.contains(&"provider.infer"));
 }
@@ -4256,20 +4277,30 @@ async fn new_input_mid_stream_discards_the_attempt_and_replans_with_it(fixture: 
 }
 
 #[rstest]
+#[case::local(false, 1)]
+#[case::remote(true, 10)]
 #[tokio::test(start_paused = true)]
-async fn revoked_authority_mid_stream_interrupts_and_stops_progress(fixture: Fixture) {
+async fn revoked_authority_mid_stream_interrupts_and_stops_progress(
+	fixture: Fixture,
+	#[case] remote: bool,
+	#[case] seconds: u64,
+) {
 	// Arrange
 	let metrics = Metrics::default();
 	let _recorder = metrics::set_default_local_recorder(&metrics);
 	let mut fixture = thinking(fixture);
-	Arc::get_mut(&mut fixture.backend.0).unwrap().deny_recheck = true;
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.deny_recheck = true;
+	state.remote_home = remote;
 	fixture.backend.script(
-		(0..50)
+		(0..150)
 			.flat_map(|_| [text("chunk "), Step::Sleep(Duration::from_millis(100))])
 			.collect(),
 	);
 	// Act
+	let started = tokio::time::Instant::now();
 	let result = advance_sources(&mut fixture).await;
+	assert_eq!(started.elapsed(), Duration::from_secs(seconds));
 	// Assert
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(
@@ -6216,6 +6247,124 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 		));
 		assert_eq!(original_tool_result(&fixture, &saved), description);
 	}
+}
+
+struct RefusedEarlyRead {
+	tool: Arc<dyn ExecutionTool>,
+	noted: bool,
+}
+
+#[async_trait]
+impl ExecutionTool for RefusedEarlyRead {
+	fn specification(&self) -> ToolSpec {
+		self.tool.specification()
+	}
+
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.tool.contract()
+	}
+
+	fn replay_safe(&self) -> bool {
+		self.tool.replay_safe()
+	}
+
+	async fn invoke(&self, _: &Run, _: Value, key: &str) -> Result<Value> {
+		assert!(
+			key.is_empty(),
+			"must refuse during fitting, before journaled delivery"
+		);
+		if self.noted {
+			refusal_note::set(RefusalNote::new(
+				RefusalCheck::Policy,
+				Some("registry.read"),
+			));
+		}
+		Err(Error::Forbidden)
+	}
+}
+
+#[rstest]
+#[case::thread_read("thread_read", json!({"kind":"message","id":Uuid::new_v4()}))]
+#[case::thread_observe("thread_observe", json!({}))]
+#[case::skill_read("skill_read", json!({"skill":"testing@1.0.0"}))]
+#[case::skill_asset_read("skill_asset_read", json!({"skill":"testing@1.0.0","path":"guide.md"}))]
+#[case::journal_read("journal_read", json!({"from_seq":1,"through_seq":2}))]
+#[case::journal_search("journal_search", json!({"query":"Correction"}))]
+#[case::capability_search("capability_search", json!({"query":"search"}))]
+#[case::capability_describe("capability_describe", json!({"alias":"thread_read"}))]
+#[tokio::test]
+async fn early_read_refusals_reach_the_next_model_request(
+	mut fixture: Fixture,
+	#[case] name: &'static str,
+	#[case] arguments: Value,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.projection = ProjectionVersion::Native;
+	state.fitting_denial = Some(name);
+	state.tools_by_alias.insert(
+		name.into(),
+		Arc::new(RefusedEarlyRead {
+			tool: Advertised::builtin(name),
+			noted: false,
+		}),
+	);
+	respond(
+		&mut fixture.run,
+		vec![call("refused-read", name, arguments)],
+	);
+	fixture.run.state.tool_mut().unwrap().request_window = 120_000;
+
+	advance_sources(&mut fixture).await.unwrap();
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "execution.tool_recorded");
+	assert_eq!(saved.state.tool().unwrap().cursor, 1);
+	assert!(fixture.backend.0.invocations.lock().unwrap().is_empty());
+
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one model request, got {}", requests.len());
+	};
+	let wire = request.input_body().to_string();
+	assert!(wire.contains("refused-read"), "{wire}");
+	assert!(
+		wire.contains("An internal check refused this call."),
+		"{wire}"
+	);
+	assert!(wire.contains(DO_NOT_REPEAT), "{wire}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_early_read_with_a_refusal_note_names_the_stopped_call(mut fixture: Fixture) {
+	let name = "skill_read";
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.tools_by_alias
+		.insert(
+			name.into(),
+			Arc::new(RefusedEarlyRead {
+				tool: Advertised::builtin(name),
+				noted: true,
+			}),
+		);
+	let stopped = call("refused-read", name, json!({"skill":"testing@1.0.0"}));
+	respond(&mut fixture.run, vec![stopped.clone()]);
+	fixture.run.state.tool_mut().unwrap().request_window = 120_000;
+
+	let Err(Error::AuthorityRefused(refusal)) = advance_sources(&mut fixture).await else {
+		panic!("the policy refusal must pause the call");
+	};
+	assert_eq!(refusal.check, RefusalCheck::Policy);
+	assert_eq!(refusal.action.as_deref(), Some("registry.read"));
+	let refused_call = refusal.call.expect("the pause names the call");
+	assert_eq!(refused_call.key, format!("{}:0:0", fixture.run.id));
+	assert_eq!(refused_call.index, 0);
+	let refused_tool = refused_call.tool_call.unwrap();
+	assert_eq!(refused_tool.name, stopped.name);
+	assert_eq!(refused_tool.arguments, stopped.arguments);
+	assert!(fixture.backend.0.invocations.lock().unwrap().is_empty());
 }
 
 #[rstest]

@@ -728,6 +728,7 @@ async fn admit(
 	store
 		.invocation_start_batch(&TEST_FIXTURE, run, worker, &calls)
 		.await
+		.map(|invocations| invocations.into_iter().map(|(row, _)| row).collect())
 }
 
 #[rstest::rstest]

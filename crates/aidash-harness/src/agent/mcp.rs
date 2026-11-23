@@ -208,20 +208,20 @@ impl Executor<'_> {
 				// Freeze the payload of this send while live callbacks update
 				// the logical call's cumulative wait in the outer checkpoint.
 				let wire_checkpoint = checkpoint.clone();
-				let future = tool.mcp_round(
+				let future = refusal_note::scoped(tool.mcp_round(
 					&state,
 					call.call.arguments.clone(),
 					&round_key,
 					Some(&wire_checkpoint),
 					Some(input_handler),
-				);
+				));
 				tokio::pin!(future);
 				let mut wire_remaining = std::time::Duration::from_secs(120);
 				let result = loop {
 					let wire_started = tokio::time::Instant::now();
 					tokio::select! {
 						result = &mut future => break result,
-						_ = tokio::time::sleep(wire_remaining) => break Err(Error::External("MCP request timed out".into())),
+						_ = tokio::time::sleep(wire_remaining) => break (Err(Error::External("MCP request timed out".into())), None),
 						Some(input) = inputs.recv() => {
 							wire_remaining = wire_remaining.saturating_sub(wire_started.elapsed());
 							let answer = self.mcp_live_input(run, token, &mut call, &checkpoint, input.id, input.request).await;
@@ -240,8 +240,14 @@ impl Executor<'_> {
 						}
 					}
 				};
-				let result = match result {
-					Ok(result) => {
+				let delivered = DeliveredTool {
+					name: &call.call.name,
+					arguments: &call.call.arguments,
+					index: run.state.tool()?.cursor,
+					replay_safe: tool.replay_safe(),
+				};
+				let result = match Self::tool_step_result(run, &round_key, delivered, result) {
+					Ok(Ok(result)) => {
 						if matches!(&result, ToolRound::Complete(_)) {
 							self.checkpoint_connection_success(run, token, &call.call.name)
 								.await?;
@@ -263,11 +269,7 @@ impl Executor<'_> {
 						.await?;
 						return Err(Error::Connection(cause));
 					}
-					Err(
-						Error::Invalid(message)
-						| Error::Refused(message)
-						| Error::Domain(aidash_domain::Error::Invalid(message)),
-					) => ToolRound::Complete(json!({"error": message})),
+					Ok(Err(message)) => ToolRound::Complete(json!({"error": message})),
 					Err(Error::ToolNotDelivered {
 						message,
 						retry_after,
@@ -737,7 +739,7 @@ impl Executor<'_> {
 		let result = tokio::select! {
 			result = provider.infer(request, &progress) => result,
 			_ = self.environment.wait_for_inference_interruption(run.id, i64::MAX) => Err(Error::Invalid("MCP_SAMPLING_CANCELLED".into())),
-			error = async { loop { tokio::time::sleep(INFERENCE_RECHECK_INTERVAL).await; if let Err(error) = call.guard.recheck_inference().await { break error; } } } => Err(error),
+			error = wait_for_inference_refusal(call.guard) => Err(error),
 		};
 		let outcome = match &result {
 			Ok(response) => UsageOutcome::Completed(response.reported.clone()),

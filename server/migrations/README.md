@@ -1031,7 +1031,10 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `execution/0153_area_queue_sleep` (after `execution/0152_stint_leases`) lets an execution hold its Working Area's queue only while it is awake (#1008, ADR 0140 amendment of 2026-11-20). `core_runs.asleep` (typed `AddColumn`, default `false`) marks an execution that sleeps in a wait that ends its Stint (every wait but failure delivery, the rule `aidash_stint_transition` follows) or is paused, once no worker holds it: the executions queued behind it run meanwhile, and the lease puts it back at the tail of the queue when it wakes. Existing executions are marked in Deployment Scope by Reinhardt Query output from `execution::services::area_queue_sleep_backfill`, checked by `migrationseeds`. The backfill and trigger both use `aidash_area_queue_should_sleep` to decide which execution states yield the queue. The eligibility function, the trigger `aidash_area_queue_sleep` on `task_executions` that sets the mark, the function `aidash_area_queue_release` that notifies the executions no awake one precedes any longer, and the re-created `aidash_activation_trigger` that calls it when an execution ends are the documented raw-SQL exception: Reinhardt has no operation for a function body or a trigger. Reversal restores 0150's activation trigger and drops the mark, so every execution queues behind the first of its Area that has not ended, as before.
 
-`execution/0154_model_calls` (after `execution/0153_area_queue_sleep`) adds
+`execution/0154_worker_stints` opens Stints at authorized worker entry. A lease acquired while a Run is waiting for its Working Area creates no Stint. The SQL replaces the trigger function that tracks lease holders and ends Stints, including a Stint already open when its Run has to queue. Reinhardt has no typed operation for a PostgreSQL function body. Reversal restores the phase-based trigger from `execution/0152_stint_leases`.
+
+
+`execution/0155_model_calls` (after `execution/0154_worker_stints`) adds
 prompt-free Model Calls and their links to Compaction Attempts, Inference
 Attempts and Usage Records (#1068, ADR 0144). A recorded call names a Tenant
 and Node and may name a Stint of the same Tenant and Run. The insert trigger
@@ -1040,7 +1043,7 @@ new Inference Attempt and Usage Record. Rows from older versions may lack
 attribution and remain readable. Reinhardt has no typed operation for the
 ownership trigger or Tenant policy, and its PostgreSQL migration renderer
 omits changes in column nullability. The SQL assets therefore implement
-those three changes. `execution/0155_model_call_state` records the optional
+those three changes. `execution/0156_model_call_state` records the optional
 Run relation and Model Call ID in the Usage Record model state. Rollback
 requires background Usage Records to be cleared before restoring the
 required Run relation.

@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0154_model_calls", "execution")
-		.add_dependency("execution", "0153_area_queue_sleep")
+	Migration::new("0155_model_calls", "execution")
+		.add_dependency("execution", "0154_worker_stints")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddConstraintDefinition {
@@ -196,11 +196,11 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0154_model_calls_row_level_security.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0154_model_calls_row_level_security.sql").into()),
+			sql: include_str!("sql/forward/0155_model_calls_row_level_security.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0155_model_calls_row_level_security.sql").into()),
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0154_model_calls.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0154_model_calls.sql").into()),
+			sql: include_str!("sql/forward/0155_model_calls.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0155_model_calls.sql").into()),
 		})
 }

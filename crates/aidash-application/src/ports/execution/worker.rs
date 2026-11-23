@@ -13,6 +13,11 @@ pub trait WorkerLeases: Send + Sync {
 	async fn control(&self, run: Uuid) -> Result<RunControl>;
 }
 
+pub enum Admission {
+	Ready,
+	Queued,
+}
+
 #[async_trait]
 pub trait WorkerStep: Send {
 	fn metadata(&self) -> RunMetadata;
@@ -34,7 +39,7 @@ pub trait WorkerStep: Send {
 	fn recovery_store(&self) -> &dyn ExecutionRecoveryStore;
 	fn classify_failure(&self, error: Error) -> ExecutionFailure;
 	async fn cancel_scoped(&mut self, token: Uuid) -> Result<bool>;
-	async fn admit(&mut self) -> Result<()>;
+	async fn admit(&mut self) -> Result<Admission>;
 	async fn invoke(&mut self, token: Uuid) -> Result<()>;
 	/// Finish the retained authority boundary with the original operation outcome.
 	async fn finish_authority(&mut self, result: Result<()>) -> Result<()>;

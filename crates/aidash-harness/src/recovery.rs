@@ -503,6 +503,8 @@ pub async fn recover(
 	} else {
 		let target = if current.control == RunControl::Cancelled {
 			FailureTarget::Cancelled
+		} else if matches!(failure, ExecutionFailure::QueueLimit) {
+			FailureTarget::QueueLimit
 		} else {
 			FailureTarget::Failed
 		};

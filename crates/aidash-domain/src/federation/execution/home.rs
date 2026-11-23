@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
 	pub id: Uuid,
 	pub task_id: Uuid,
@@ -121,9 +121,9 @@ impl Grant {
 ///
 /// A grant's lifetime (at most an hour) is its admission deadline: it bounds
 /// the grant only until the receiver has started the Task. From then on the
-/// grant lives while its Task has not ended, whether the Run's Stint is awake
-/// or asleep waiting for an approval, CI or a child Task, so the Home keeps it
-/// renewed for as long as the Task is open. Revocation ends it at once. A broken
+/// grant lives while its Task has not ended. This includes a Run waiting to
+/// enter its Working Area before claiming the original Task, and a Run asleep
+/// waiting for an approval, CI or a child Task. Revocation ends it at once. A broken
 /// chain is not part of this rule: the Home re-evaluates the whole chain at
 /// every use, so every use of such a grant is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +137,8 @@ pub struct Liveness {
 	/// subject of the grant's chain, which only that receiver's claim makes it.
 	/// A Task someone else claimed, or one a retry reopened, is not held.
 	pub held: bool,
+	/// The activated Run is still waiting to claim the original, untouched Task.
+	pub pending_claim: bool,
 	/// The Home Task's status, if the Task still exists.
 	pub task: Option<crate::TaskStatus>,
 }
@@ -157,17 +159,26 @@ impl Liveness {
 					&& task.owner.is_some()
 					&& task.owner.as_ref() == grant.subject_chain.last()
 			}),
+			pending_claim: task.zip(binding).is_some_and(|(task, binding)| {
+				task.id == grant.task_id
+					&& task.thread_id == grant.thread_id
+					&& task.status == crate::TaskStatus::Open
+					&& task.owner.is_none()
+					&& task.revision == grant.task_revision
+					&& task.revision == binding.task_revision
+			}),
 			task: task.map(|task| task.status),
 		}
 	}
 
 	/// Whether the grant is live at `now`: inside its lifetime, or activated,
-	/// held by its receiver and its Task not ended.
+	/// still waiting to claim the original Task or holding a Task that has not ended.
 	pub fn live(&self, now: DateTime<Utc>) -> bool {
 		!self.revoked
 			&& (self.expires_at > now
 				|| (self.activated
-					&& self.held && self.task.is_some_and(|status| !status.is_terminal())))
+					&& (self.pending_claim
+						|| (self.held && self.task.is_some_and(|status| !status.is_terminal())))))
 	}
 }
 

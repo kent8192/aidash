@@ -235,6 +235,7 @@ fn access() -> Access {
 			.into(),
 		read_run: None,
 		read_grant: None,
+		grant_dependency_checks: None,
 		shared_area: false,
 		home_corpus_digest: None,
 		environment,

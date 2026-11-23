@@ -16,7 +16,7 @@ impl Transport for HttpTransport {
 			.headers()
 			.get("x-aidash-execution-refusal")
 			.and_then(|value| value.to_str().ok())
-			.and_then(|value| serde_json::from_value(json!(value)).ok());
+			.and_then(aidash_domain::federation::execution::Refusal::from_header);
 		let semantic_headers = ["x-aidash-semantic-cause", "x-aidash-semantic-reason"];
 		let semantic_reason = semantic_headers
 			.iter()
@@ -45,7 +45,11 @@ impl Transport for HttpTransport {
 			} else {
 				4_194_304
 			};
-			crate::response::bytes(response, limit).await
+			crate::response::within(response, limit)
+				.await?
+				.map_err(|_| {
+					aidash_application::Error::External(format!("response exceeds {limit} bytes"))
+				})
 		} else {
 			if status.as_u16() == 503
 				&& !transaction_pending

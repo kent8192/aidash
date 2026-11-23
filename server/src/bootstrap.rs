@@ -1605,7 +1605,10 @@ pub(crate) fn execution_admission_scope<'a>(
 pub(crate) fn run_visibility_scope(
 	access: &mut crate::authorization::access::Access,
 ) -> crate::apps::identity::repositories::visibility::Reads<'_> {
-	crate::apps::identity::repositories::visibility::Reads { access }
+	crate::apps::identity::repositories::visibility::Reads {
+		access,
+		tool_thread: None,
+	}
 }
 pub(crate) fn native_run_visibility_scope(
 	access: &mut crate::authorization::access::NativeAccess,

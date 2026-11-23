@@ -325,6 +325,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 	#[case] second_count: usize,
 	#[case] duplicate: bool,
 	#[case] accepted: bool,
+	#[values(false, true)] remote: bool,
 ) {
 	fn source(adapter: &str, count: usize, offset: usize) -> Value {
 		let ids = (offset..offset + count).map(|id| uuid::Uuid::from_u128(id as u128));
@@ -362,7 +363,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 			exposure: None,
 		});
 	}
-	let result = snapshot(&mut catalog, &config, false).await;
+	let result = snapshot(&mut catalog, &config, remote).await;
 	assert_eq!(result.is_ok(), accepted, "{adapter}: {result:?}");
 	if let Ok(snapshot) = result {
 		snapshot.validate().unwrap();
@@ -1022,23 +1023,26 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		exposure: None,
 	});
 	config.instructions.clear();
-	let sources = snapshot(&mut catalog, &config, false).await.unwrap();
-	for operation in SKILL_TOOLS {
-		assert!(
-			sources
-				.bindings
-				.iter()
-				.any(|b| b.identity == QualifiedRef::builtin(NODE, operation)
-					&& b.origin == BindingOrigin::SkillSupport)
-		);
+	for remote in [false, true] {
+		let sources = snapshot(&mut catalog, &config, remote).await.unwrap();
+		for operation in SKILL_TOOLS {
+			assert_eq!(
+				sources.operation(operation).unwrap().origin,
+				BindingOrigin::SkillSupport,
+			);
+		}
 	}
-	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 	config.remove_default.push("skill_load".into());
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	for remote in [false, true] {
+		assert!(snapshot(&mut catalog, &config, remote).await.is_err());
+	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases() {
+async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases(
+	#[values(false, true)] remote: bool,
+) {
 	let mut catalog = Catalog::new();
 	catalog.insert(entry(
 		"skills-root",
@@ -1058,7 +1062,7 @@ async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases(
 		members: vec![],
 		exposure: None,
 	});
-	let sources = snapshot(&mut catalog, &config, false).await.unwrap();
+	let sources = snapshot(&mut catalog, &config, remote).await.unwrap();
 	sources.validate().unwrap();
 	let origin = |operation: &str| {
 		sources
@@ -1089,9 +1093,9 @@ async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases(
 		members: vec![],
 		exposure: None,
 	});
-	assert!(snapshot(&mut catalog, &renamed, false).await.is_err());
+	assert!(snapshot(&mut catalog, &renamed, remote).await.is_err());
 	config.remove_default.push(SKILL_ASSET_READ.into());
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	assert!(snapshot(&mut catalog, &config, remote).await.is_err());
 }
 
 /// Binds builtin `operation` explicitly under `admitted`, where it resolves,

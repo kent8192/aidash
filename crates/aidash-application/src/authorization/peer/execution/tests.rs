@@ -75,6 +75,20 @@ impl PeerInspectionScope for Scope {
 	fn push_subject(&mut self, subject: String) {
 		self.subjects.push(subject);
 	}
+	async fn record_binding_refusal(&mut self, _: &Resource, _: &str) -> Result<()> {
+		Ok(())
+	}
+	async fn federation_tool_lists(
+		&mut self,
+		_: &str,
+	) -> Result<
+		Option<(
+			aidash_domain::federation::tool_lists::ToolList,
+			aidash_domain::federation::tool_lists::ToolList,
+		)>,
+	> {
+		Ok(None)
+	}
 	async fn invalid_executor(&mut self, _: &Resource) -> Result<()> {
 		Ok(())
 	}

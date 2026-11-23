@@ -130,6 +130,8 @@ pub struct Store {
 	/// reaches the other Nodes of its Deployment (#751). Empty in a process
 	/// that never built a `Federation`. Shared by every clone of this Store.
 	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
+	pub(crate) grant_peer_cache:
+		std::sync::Arc<aidash_application::authorization::source::grants::GrantPeerCache>,
 	/// Nodes that did not answer a list read, so the next list does not wait on
 	/// them again (#770). Shared by every clone of this Store.
 	pub(crate) silent_nodes:
@@ -558,6 +560,7 @@ impl Store {
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 			in_process: Default::default(),
+			grant_peer_cache: Default::default(),
 			silent_nodes: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
@@ -705,6 +708,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			grant_peer_cache: self.grant_peer_cache.clone(),
 			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
@@ -768,6 +772,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			grant_peer_cache: self.grant_peer_cache.clone(),
 			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
@@ -4334,7 +4339,7 @@ impl Store {
 				.await?;
 		}
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
-		let invocation = self
+		let (invocation, _) = self
 			.start_invocation_in(&mut tx, run, key, tool, input, replay_safe)
 			.await?;
 		tx.commit().await?;
@@ -4348,7 +4353,7 @@ impl Store {
 		run: &Run,
 		worker: Uuid,
 		calls: &[(&str, &str, &Value)],
-	) -> Result<Vec<Invocation>> {
+	) -> Result<Vec<(Invocation, bool)>> {
 		let mut tx = self.pool.begin(scope).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
@@ -4524,7 +4529,7 @@ impl Store {
 		tool: &str,
 		input: &Value,
 		replay_safe: bool,
-	) -> Result<Invocation> {
+	) -> Result<(Invocation, bool)> {
 		let created = {
 			let query_bind_1 = key;
 			let query_bind_2 = run.id;
@@ -4604,6 +4609,7 @@ impl Store {
 				"tool idempotency key reused with different input".into(),
 			));
 		}
+		let unexecuted = created || invocation.status == "REFUSED";
 		if !created
 			&& invocation.status == "STARTED"
 			&& (invocation.delivery_pending || invocation.replay_safe)
@@ -4667,7 +4673,7 @@ impl Store {
 			)
 			.await?;
 		}
-		Ok(invocation)
+		Ok((invocation, unexecuted))
 	}
 	pub async fn invocation_not_delivered(
 		&self,
@@ -4726,14 +4732,34 @@ impl Store {
 		key: &str,
 		refusal: &aidash_domain::tool::AuthorityRefusal,
 	) -> Result<()> {
+		self.invocations_refused(scope, run, worker, key, &[key], refusal)
+			.await
+	}
+	pub(crate) async fn invocations_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		refused_key: &str,
+		undispatched: &[&str],
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost while recording tool refusal".into(),
 			));
 		}
-		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
-		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		let refused = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		let sibling = json!({"error":{"kind":"batch_admission_paused"}});
+		for &key in undispatched {
+			let result = if key == refused_key {
+				&refused
+			} else {
+				&sibling
+			};
+			InvocationRecord::refuse(tx.as_mut(), run.id, key, result).await?;
+		}
 		tx.commit().await?;
 		Ok(())
 	}

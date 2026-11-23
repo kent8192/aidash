@@ -382,6 +382,8 @@ pub(crate) struct Access {
 	pub(super) pool: Pool,
 	pub read_run: Option<Uuid>,
 	pub read_grant: Option<Uuid>,
+	pub(crate) grant_dependency_checks:
+		Option<aidash_application::authorization::source::grants::DependencyChecks>,
 	/// A batchable read loads its Working Area and records without excluding concurrent reads.
 	pub shared_area: bool,
 	/// A remote worker's Home Thread corpus digest, from the describe reply
@@ -724,6 +726,7 @@ impl Access {
 			pool: pool.clone(),
 			read_run: None,
 			read_grant: None,
+			grant_dependency_checks: None,
 			shared_area: false,
 			home_corpus_digest: None,
 			home_tool_request: None,
@@ -894,6 +897,7 @@ impl Access {
 			pool: pool.clone(),
 			read_run: lease.read_run,
 			read_grant: lease.read_grant,
+			grant_dependency_checks: None,
 			shared_area: false,
 			home_corpus_digest: None,
 			home_tool_request: None,

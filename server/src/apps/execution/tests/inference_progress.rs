@@ -81,7 +81,7 @@ async fn conversation(
 
 impl Conversation {
 	async fn lease(&self, worker: Uuid) -> Run {
-		let leased = self.f.store.lease_run(worker, 30).await.unwrap().unwrap();
+		let leased = common::lease_entered_run(&self.f.store, worker).await;
 		assert_eq!(leased.id, self.run.id);
 		leased
 	}

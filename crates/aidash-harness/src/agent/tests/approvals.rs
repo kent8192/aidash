@@ -71,6 +71,33 @@ async fn reconciliation_prompt_names_the_uncertainty(
 
 #[rstest]
 #[tokio::test]
+async fn a_denied_reconciliation_request_keeps_the_invocation_uncertain(mut fixture: Fixture) {
+	let tool = tenant_tool(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().denied_action = Some("human.request");
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	respond(&mut fixture.run, vec![call("call-0", "crm", json!({}))]);
+	let key = base_key(&fixture.run);
+	fixture
+		.backend
+		.0
+		.invocations
+		.lock()
+		.unwrap()
+		.insert(key.clone(), ("UNCERTAIN".into(), None));
+
+	let result = advance_sources(&mut fixture).await;
+
+	assert_eq!(
+		fixture.backend.0.invocations.lock().unwrap()[&key].0,
+		"UNCERTAIN"
+	);
+	assert!(result.is_err(), "the unresolved effect must stop the Run");
+	assert_eq!(fixture.run.state.tool().unwrap().cursor, 0);
+	assert_eq!(tool.invocations(), 0);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_failed_http_call_reaches_the_next_model_request(mut fixture: Fixture) {
 	let tool = tenant_tool(&mut fixture);
 	let output = json!({"error":{"kind":"http_status","status":422,"body":"invalid input"}});

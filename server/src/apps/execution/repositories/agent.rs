@@ -386,6 +386,7 @@ impl ExecutionStore for RunStore {
 			result: result.result,
 			uncertain_reason: result.uncertain_reason,
 			retrying: result.delivery_pending,
+			unexecuted: false,
 		})
 	}
 	async fn invocation_not_delivered(
@@ -409,6 +410,19 @@ impl ExecutionStore for RunStore {
 	) -> Result<()> {
 		self.store
 			.invocation_refused(&self.scope, run, token, key, refusal)
+			.await
+			.map_err(Into::into)
+	}
+	async fn batch_admission_refused(
+		&self,
+		run: &Run,
+		token: Uuid,
+		refused_key: &str,
+		undispatched: &[&str],
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		self.store
+			.invocations_refused(&self.scope, run, token, refused_key, undispatched, refusal)
 			.await
 			.map_err(Into::into)
 	}
@@ -456,11 +470,12 @@ impl ExecutionStore for RunStore {
 			Store::invocation_start_batch(&self.store, &self.scope, run, token, &calls)
 				.await?
 				.into_iter()
-				.map(|invocation| InvocationOutcome {
+				.map(|(invocation, unexecuted)| InvocationOutcome {
 					status: invocation.status,
 					result: invocation.result,
 					uncertain_reason: invocation.uncertain_reason,
 					retrying: invocation.delivery_pending,
+					unexecuted,
 				})
 				.collect(),
 		)
@@ -975,7 +990,7 @@ impl ExecutionAuthority for Authority<'_> {
 	/// stays suspended, whether or not the Run may still infer.
 	async fn recheck_inference(&self) -> Result<()> {
 		let authorized = match self.guard.resume(self.federation).await {
-			Ok(()) => self.guard.inference().await,
+			Ok(()) => self.guard.inference_after_resume().await,
 			Err(error) => Err(error),
 		};
 		let suspended = self.guard.suspend().await;
@@ -1649,7 +1664,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		match self
 			.authority
 			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
+			.map(|authority| authority.guard.authority())
 		{
 			Some(authority) => authority
 				.direct_skills(&self.federation.store, run)
@@ -1666,7 +1681,7 @@ impl ExecutionEnvironment for Environment<'_> {
 	) -> Result<Option<String>> {
 		self.authority
 			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
+			.map(|authority| authority.guard.authority())
 			.ok_or_else(|| aidash_application::Error::NotFound("skill unavailable".into()))?
 			.direct_skill_body(&self.federation.store, run, skill_id, digest)
 			.await
@@ -1998,7 +2013,7 @@ impl Environment<'_> {
 		if let Some(authority) = self
 			.authority
 			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
+			.map(|authority| authority.guard.authority())
 		{
 			authority
 				.skill_context(&self.federation.store, run)

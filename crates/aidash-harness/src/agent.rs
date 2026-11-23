@@ -88,52 +88,15 @@ impl<'a> Executor<'a> {
 			}),
 			other => other,
 		};
-		match result {
-			Ok(value) => Ok(value),
-			Err(
-				Error::Invalid(message)
-				| Error::Refused(message)
-				| Error::Domain(aidash_domain::Error::Invalid(message)),
-			) => {
-				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call refused");
-				Ok(json!({"error":message}))
-			}
-			// A refusal that names its check pauses the Run, and so does a plain one whose check
-			// left a note.
+		match Self::tool_step_result(run, key, tool, (result, note)) {
+			Ok(Ok(value)) => Ok(value),
+			Ok(Err(message)) => Ok(json!({"error":message})),
 			Err(Error::AuthorityRefused(refusal)) => {
-				Self::tool_refused(store, run, token, key, tool, *refusal).await
+				if tool.replay_safe && refusal.check != RefusalCheck::RunAuthority {
+					store.invocation_refused(run, token, key, &refusal).await?;
+				}
+				Err(Error::AuthorityRefused(refusal))
 			}
-			Err(Error::Forbidden | Error::Unauthorized) => match note {
-				Some(note) => {
-					let refusal = AuthorityRefusal {
-						tool: tool.name.to_owned(),
-						check: note.check,
-						action: note.action,
-						subject: note.subject,
-						call: None,
-					};
-					Self::tool_refused(store, run, token, key, tool, refusal).await
-				}
-				// Nothing classified this refusal. No authority is lost by telling the model:
-				// every model request checks the Run's authority again.
-				None => {
-					tracing::warn!(
-						run_id = %run.id,
-						tool = tool.name,
-						key,
-						"unclassified refusal after the gate returned to the model"
-					);
-					let partly = if tool.replay_safe {
-						""
-					} else {
-						PARTLY_HAPPENED
-					};
-					Ok(json!({"error":format!(
-						"An internal check refused this call. Changing authority will not help, so \
-						 another way is needed.{partly} {DO_NOT_REPEAT}"
-					)}))
-				}
-			},
 			// A swallowed denial could leave a note behind; never read it here.
 			Err(Error::NotFound(message)) => {
 				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call found nothing");
@@ -168,22 +131,56 @@ impl<'a> Executor<'a> {
 			Err(error) => Err(error),
 		}
 	}
-	/// Pause the Run on `refusal`. A replay-safe call that proved nothing ran ends `REFUSED` so
-	/// resuming runs it again. An `Unsafe` call stays `STARTED`, since running it again could
-	/// repeat the effect, and so does a call whose effect had already happened.
-	async fn tool_refused(
-		store: &dyn ExecutionStore,
+	/// Classify a check belonging to one call. The caller owns the invocation
+	/// journal: a check after an effect must never mark that invocation REFUSED.
+	fn tool_step_result<T>(
 		run: &Run,
-		token: Uuid,
 		key: &str,
 		tool: DeliveredTool<'_>,
-		mut refusal: AuthorityRefusal,
-	) -> Result<Value> {
+		(result, note): (Result<T>, Option<RefusalNote>),
+	) -> Result<std::result::Result<T, String>> {
+		let mut refusal = match result {
+			Ok(value) => return Ok(Ok(value)),
+			Err(
+				Error::Invalid(message)
+				| Error::Refused(message)
+				| Error::Domain(aidash_domain::Error::Invalid(message)),
+			) => {
+				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call refused");
+				return Ok(Err(message));
+			}
+			Err(Error::AuthorityRefused(refusal)) => *refusal,
+			Err(Error::Forbidden | Error::Unauthorized) => match note {
+				Some(note) => AuthorityRefusal {
+					tool: tool.name.to_owned(),
+					check: note.check,
+					action: note.action,
+					subject: note.subject,
+					call: None,
+				},
+				None => {
+					tracing::warn!(
+						run_id = %run.id,
+						tool = tool.name,
+						key,
+						"unclassified tool refusal returned to the model"
+					);
+					let partly = if !tool.replay_safe {
+						PARTLY_HAPPENED
+					} else {
+						""
+					};
+					return Ok(Err(format!(
+						"An internal check refused this call. Changing authority will not help, so \
+						 another way is needed.{partly} {DO_NOT_REPEAT}"
+					)));
+				}
+			},
+			Err(error) => return Err(error),
+		};
 		if refusal.tool.is_empty() {
 			refusal.tool = tool.name.to_owned();
 		}
-		// A refusal without a policy decision leaves no row in `authorization_decisions`; this
-		// line is what explains it afterwards.
 		tracing::info!(
 			run_id = %run.id,
 			tool = %refusal.tool,
@@ -191,10 +188,7 @@ impl<'a> Executor<'a> {
 			action = ?refusal.action,
 			"tool call refused by an authority check; pausing the Run"
 		);
-		if tool.replay_safe && refusal.check != RefusalCheck::RunAuthority {
-			store.invocation_refused(run, token, key, &refusal).await?;
-		}
-		// The store offers the call to a person only if the row it left says nothing ran.
+		// The store offers the call for decline only when its journal proves it did not run.
 		refusal.call = Some(RefusedCall {
 			key: key.to_owned(),
 			index: tool.index,
@@ -354,30 +348,21 @@ impl<'a> Executor<'a> {
 			let Some(guard) = guard else { continue };
 			let call = &calls[index];
 			let contract = tool(call)?.contract();
-			match guard.tool(call, &contract).await {
-				Ok(()) => {}
-				Err(
-					Error::Invalid(message)
-					| Error::NotFound(message)
-					| Error::Domain(aidash_domain::Error::Invalid(message)),
-				) => {
+			let outcome = refusal_note::scoped(guard.tool(call, &contract)).await;
+			let tool = DeliveredTool {
+				name: &call.name,
+				arguments: &call.arguments,
+				index,
+				replay_safe: contract.replay_safe(),
+			};
+			match Self::tool_step_result(run, &key, tool, outcome) {
+				Ok(Ok(())) => {}
+				Ok(Err(message)) | Err(Error::NotFound(message)) => {
 					if !resumed {
 						end = index;
 						break;
 					}
 					denied[index - cursor] = Some(message);
-				}
-				Err(Error::AuthorityRefused(mut refusal)) => {
-					refusal.call = Some(RefusedCall {
-						key,
-						index,
-						replay_safe: contract.replay_safe(),
-						tool_call: Some(RefusedToolCall {
-							name: call.name.clone(),
-							arguments: call.arguments.clone(),
-						}),
-					});
-					return Err(Error::AuthorityRefused(refusal));
 				}
 				Err(error) => return Err(error),
 			}
@@ -405,12 +390,12 @@ impl<'a> Executor<'a> {
 		let mut dispatch = Vec::new();
 		// Admit every call before dispatching any, so checks that need the Run's
 		// authority scope exclusively never wait behind a sibling's execution.
-		for (offset, outcome) in outcomes.into_iter().enumerate() {
+		for (offset, outcome) in outcomes.iter().enumerate() {
 			let call = &calls[cursor + offset];
 			let denial = denied[offset].take();
 			match outcome.status.as_str() {
 				"COMPLETED" => {
-					let result = outcome.result.ok_or_else(|| {
+					let result = outcome.result.clone().ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?;
 					outputs[offset] =
@@ -428,15 +413,45 @@ impl<'a> Executor<'a> {
 			let tool = tool(call)?;
 			let input = match denial {
 				Some(message) => Err(message),
-				None => match tool.admit(run, call.arguments.clone()).await {
-					Ok(input) => Ok(input),
-					Err(
-						Error::Invalid(message)
-						| Error::Refused(message)
-						| Error::Domain(aidash_domain::Error::Invalid(message)),
-					) => Err(message),
-					Err(error) => return Err(error),
-				},
+				None => {
+					let key = &keys[offset];
+					let delivered = DeliveredTool {
+						name: &call.name,
+						arguments: &call.arguments,
+						index: cursor + offset,
+						replay_safe: true,
+					};
+					let outcome =
+						refusal_note::scoped(tool.admit(run, call.arguments.clone())).await;
+					match Self::tool_step_result(run, key, delivered, outcome) {
+						Err(Error::AuthorityRefused(refusal)) => {
+							if refusal.check != RefusalCheck::RunAuthority {
+								// No sibling dispatched in this attempt. Keep that evidence only
+								// for rows that the journal also proves did not dispatch earlier.
+								let undispatched: Vec<&str> = keys
+									.iter()
+									.zip(&outcomes)
+									.filter_map(|(key, outcome)| {
+										outcome.unexecuted.then_some(key.as_str())
+									})
+									.collect();
+								if !undispatched.is_empty() {
+									store
+										.batch_admission_refused(
+											run,
+											token,
+											key,
+											&undispatched,
+											&refusal,
+										)
+										.await?;
+								}
+							}
+							return Err(Error::AuthorityRefused(refusal));
+						}
+						result => result?,
+					}
+				}
 			};
 			dispatch.push((offset, tool, input));
 		}
@@ -1425,7 +1440,7 @@ impl<'a> Executor<'a> {
 				.save_run(
 					run,
 					token,
-					if target == FailureTarget::Failed {
+					if target.task_status() == aidash_domain::TaskStatus::Failed {
 						"execution.failed"
 					} else {
 						"execution.cancelled"
@@ -2390,12 +2405,7 @@ impl<'a> Executor<'a> {
 					let Some(guard) = guard else {
 						return std::future::pending().await;
 					};
-					loop {
-						tokio::time::sleep(INFERENCE_RECHECK_INTERVAL).await;
-						if let Err(error) = guard.recheck_inference().await {
-							return error;
-						}
-					}
+					wait_for_inference_refusal(guard).await
 				};
 				let inference = tokio::select! {
 					biased;
@@ -3181,35 +3191,51 @@ connection: None,
 				if !pending_selected_media(run.state.tool()?).is_empty() && !contract.behavior.permits(ToolUseMode::MediaPending) {
 					return self.tool_error(run, token, &call, cursor, "selected model media must be inferred before this tool call; retry it after the next model response".into()).await;
 				}
+				// Use a fresh refusal note for each check so an earlier success or
+				// an unrelated worker check cannot classify this call's failure.
+				macro_rules! tool_step {
+					($call:expr, $operation:expr) => {
+						tool_step!($call, $operation, None)
+					};
+					($call:expr, $operation:expr, $unfinished:expr) => {{
+						let outcome = refusal_note::scoped($operation).await;
+						let delivered = DeliveredTool {
+							name: &$call.name,
+							arguments: &$call.arguments,
+							index: cursor,
+							replay_safe: contract.replay_safe(),
+						};
+						match Self::tool_step_result(run, &key, delivered, outcome)? {
+							Ok(value) => value,
+							Err(message) => return self
+								.tool_invocation_error(run, token, &$call, cursor, $unfinished, message)
+								.await,
+						}
+					}};
+				}
 				// Retrieval must have current authority before any resource is fetched.
 				if let Some(guard) = guard {
-					match guard.tool(&call, &contract).await {
-						Ok(()) => {},
-						Err(Error::Invalid(message) | Error::NotFound(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
-						// The gate runs before the call is journaled, so the pause names the call.
-						Err(Error::AuthorityRefused(mut refusal)) => {
-							refusal.call = Some(RefusedCall { key, index: cursor, replay_safe: contract.replay_safe(), tool_call: Some(RefusedToolCall { name: call.name.clone(), arguments: call.arguments.clone() }) });
-							return Err(Error::AuthorityRefused(refusal));
-						}
-						Err(error) => return Err(error),
-					}
+					tool_step!(call, async {
+						guard.tool(&call, &contract).await.map_err(|error| match error {
+							Error::NotFound(message) => Error::Invalid(message),
+							error => error,
+						})
+					});
 				}
 				// A person who asked not to be asked is not asked by the model either.
 				if contract.behavior.continuation == Continuation::Human
                     && !contract.behavior.connection_request
 					&& home.local()
 					&& let Some(guard) = guard
-					&& guard.approval_mode(run).await? == Some(ApprovalMode::DontAsk)
+					&& tool_step!(call, guard.approval_mode(run)) == Some(ApprovalMode::DontAsk)
 				{
 					return self.tool_error(run, token, &call, cursor, DONT_ASK_HUMAN_REQUEST.into()).await;
 				}
 				let mut prepared_result = None;
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
-					let (range, saved) = match tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor) {
-						Ok(plan) => plan,
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
-						Err(error) => return Err(error),
-					};
+					let (range, saved) = tool_step!(call, async {
+						tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor)
+					});
 					if let Some(output) = saved { prepared_result = Some(output); }
 					else {
 						let budget = ThreadReadFitBudget {
@@ -3219,17 +3245,19 @@ connection: None,
 							request_window: run.state.tool()?.request_window,
 							remaining_calls: result.tool_calls.len().saturating_sub(cursor + 1),
 						};
-						let fitted = prepare_tool_result(home.as_ref(), tool.as_ref(), run, &context, &call, fitting, budget).await;
+						let fitted = tool_step!(call, prepare_tool_result(
+							home.as_ref(), tool.as_ref(), run, &context, &call, fitting, budget,
+						));
 						match fitted {
-							Ok(PreparedResult::Skip) => {},
-							Ok(PreparedResult::NoEnvelopeRoom) => {
+							PreparedResult::Skip => {},
+							PreparedResult::NoEnvelopeRoom => {
 								if !run_message_catchup || !contract.behavior.catch_up { run.step += 1; }
 								let (next, event) = defer_result(fitting, &call, pending_selected_media(run.state.tool()?));
 								run.state = RunState::Thinking(next);
 								store.save_run(run, token, event).await?;
 								return Ok(());
 							},
-							Ok(PreparedResult::Fitted { call: bounded, result: output }) => {
+							PreparedResult::Fitted { call: bounded, result: output } => {
 								call = bounded;
 								result.tool_calls[cursor] = call.clone();
 								run.state.tool_mut()?.response = result.clone();
@@ -3237,8 +3265,6 @@ connection: None,
 								*result_plan_mut(run.state.tool_mut()?, fitting) = Some(plan);
 								prepared_result = Some(output);
 							},
-							Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
-							Err(error) => return Err(error),
 						}
 					}
 				}
@@ -3281,12 +3307,12 @@ connection: None,
 							host: page_reading.then(|| aidash_application::research::page_host(&call.arguments)).flatten(),
 							context_revision: page_reading.then_some(run.observed_input_seq),
 						};
-						let mut outcome = guard.tool_call_approval(run, request.clone()).await?;
+						let mut outcome = tool_step!(*call, guard.tool_call_approval(run, request.clone()));
 						if let ToolCallApproval::Pending { approval_id, .. } = outcome {
 							let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
 							// Asked again, the approval answers as the Decider settled it.
-							if self.judge_approval(run, token, guard, &pending, approval_id).await?.settled() {
-								outcome = guard.tool_call_approval(run, request).await?;
+							if tool_step!(*call, self.judge_approval(run, token, guard, &pending, approval_id)).settled() {
+								outcome = tool_step!(*call, guard.tool_call_approval(run, request));
 							}
 						}
 						match outcome {
@@ -3327,7 +3353,7 @@ connection: None,
 						}
 					} else {
 						if let Some(guard) = guard {
-							guard.action("human.request", "run", run.id).await?;
+							tool_step!(*call, guard.action("human.request", "run", run.id));
 						}
 						// The person who can approve is at the Node the Run executes for.
 						let prompt = format!(
@@ -3335,14 +3361,12 @@ connection: None,
 							target.label(),
 							serde_json::to_string(call)?
 						);
-						let request = home
-							.human_request(
+						let request = tool_step!(*call, home.human_request(
 								run,
 								"APPROVAL_REQUIRED",
 								&prompt,
 								&format!("{call_key}:workbench-approval"),
-							)
-							.await?;
+							));
 						run.state = RunState::Waiting(Box::new(WaitingState::Approval {
 							approval: ApprovalRef::Home {
 								request_id: request.id,
@@ -3359,7 +3383,7 @@ connection: None,
 					}
 				}
 				let invocation = if let Some(refused) = run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()) {
-                    InvocationOutcome { status:"COMPLETED".into(), result:Some(refused), uncertain_reason: None, retrying: false }
+                    InvocationOutcome { status:"COMPLETED".into(), result:Some(refused), uncertain_reason: None, retrying: false, unexecuted: false }
                 } else if tool.mcp_rounds() {
                     let Some(guard) = guard else { return self.tool_error(run, token, call, cursor, "MCP inputs require local authority".into()).await; };
                     let output = match self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await {
@@ -3367,7 +3391,7 @@ connection: None,
                         Err(Error::Connection(_))=>run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()).ok_or_else(||Error::Conflict("typed MCP refusal was not checkpointed".into()))?,
                         Err(error)=>return Err(error),
                     };
-                    InvocationOutcome { status: "COMPLETED".into(), result: Some(output), uncertain_reason: None, retrying: false }
+                    InvocationOutcome { status: "COMPLETED".into(), result: Some(output), uncertain_reason: None, retrying: false, unexecuted: false }
                 } else {
                     store
 					.invocation_start(
@@ -3381,6 +3405,7 @@ connection: None,
 					.await?
                 };
 				if invocation.status == "UNCERTAIN" {
+					// A reconciliation refusal must leave the effect unresolved.
 					if let Some(guard) = guard {
 						guard.action("human.request", "run", run.id).await?;
 					}
@@ -3471,53 +3496,20 @@ connection: None,
 							)
 							.await;
 					};
-					match Box::pin(guard.model_media(&selections)).await {
-						Ok(mut parts) => {
-							let headroom = self.environment.run_request_headroom(run).await?;
-							let model_entry = self.environment.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
-							let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
-							if let Some(adjusted) = aidash_application::execution::media::route_selected_renditions(&model, &selections, &parts)
-								&& adjusted != selections {
-								parts = match Box::pin(guard.model_media(&adjusted)).await {
-									Ok(parts) => parts,
-									Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-										return self.tool_invocation_error(run, token, call, cursor, unfinished_key, message).await;
-									}
-									Err(error) => return Err(error),
-								};
-								selections = adjusted;
-							}
-							match check_model_media_headroom(headroom, parts, &model, ProjectionVersion::Native) {
-								Ok(()) => {}
-								Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-									return self
-										.tool_invocation_error(
-											run,
-											token,
-											call,
-											cursor,
-											unfinished_key,
-											message,
-										)
-										.await;
-								}
-								Err(error) => return Err(error),
-							}
-						}
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-							return self
-								.tool_invocation_error(
-									run,
-									token,
-									call,
-									cursor,
-									unfinished_key,
-									message,
-								)
-								.await;
-						}
-						Err(error) => return Err(error),
+					let mut parts = tool_step!(*call, Box::pin(guard.model_media(&selections)), unfinished_key);
+					// Headroom checks the Run's admitted Sources, including private
+					// References. A withdrawn Source still stops the Run.
+					let headroom = self.environment.run_request_headroom(run).await?;
+					let model_entry = self.environment.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
+					let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
+					if let Some(adjusted) = aidash_application::execution::media::route_selected_renditions(&model, &selections, &parts)
+						&& adjusted != selections {
+						parts = tool_step!(*call, Box::pin(guard.model_media(&adjusted)), unfinished_key);
+						selections = adjusted;
 					}
+					tool_step!(*call, async {
+						check_model_media_headroom(headroom, parts, &model, ProjectionVersion::Native)
+					}, unfinished_key);
 					let progress = run.state.tool_mut()?;
 					progress.deferred_selected_media = selections[..deferred_count].to_vec();
 					progress.selected_media = selections[deferred_count..].to_vec();
@@ -3539,7 +3531,9 @@ connection: None,
                 let output = if !reraised && invocation.status != "COMPLETED" && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
                 } else { output };
-                let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
+                let Some(output) = tool_step!(*call, self.connection_result(
+					run, token, connections::RefusedCall { call, tool: tool.as_ref(), guard, key: &key }, output,
+				)) else { return Ok(()) };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() || resumed_operation {
@@ -3547,6 +3541,11 @@ connection: None,
 				} else {
 					FrameworkResult::decode(&contract, &output, &call.arguments)?
 				};
+				if !home.local()
+					&& !matches!(framework, FrameworkResult::Approval(id) if Some(id) == run.state.tool()?.approval)
+				{
+					run.recovery.home_poll.observe(true);
+				}
 				// The operation's end wakes the Run, so the wait is not cut at the
 				// command's deadline: saving its files comes after the stop, and a
 				// poll between the two would otherwise return at once every time.
@@ -3584,7 +3583,7 @@ connection: None,
 				if let FrameworkResult::Approval(approval_id) = framework {
 					if let Some(guard) = guard {
 						let pending = approval::PendingCall { call, tool: tool.as_ref(), contract: &contract, instructions: &agent.instructions };
-						match self.judge_approval(run, token, guard, &pending, approval_id).await? {
+						match tool_step!(*call, self.judge_approval(run, token, guard, &pending, approval_id)) {
 							// The call runs again at once under the approval's own key.
 							approval::Judged::Allowed => {
 								run.state.tool_mut()?.approval = Some(approval_id);
@@ -3685,9 +3684,11 @@ connection: None,
 					if !home.local() && h.response.is_none() {
 						// A remote scheduler polls Home; an unanswered continuation
 						// remains waiting and advances the next polling deadline.
+						run.recovery.home_poll.observe(false);
 						store.save_run(run, token, "execution.waiting").await?;
 						return Ok(());
 					}
+					run.recovery.home_poll.observe(true);
 					if h.response.is_none()
 						&& let WaitingState::Human { answer_by: Some(answer_by), .. } = &waiting
 					{
@@ -3771,6 +3772,9 @@ connection: None,
 						let ThreadEvents { events, dropped } = store.workspace_events(run, cursor).await?;
 						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
 						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
+						if !home.local() {
+							run.recovery.home_poll.observe(input || !events.is_empty() || remote_changed);
+						}
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
 							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 							run.state = RunState::Waiting(Box::new(WaitingState::TaskWait { wake_at, cursor, resume }));
@@ -3820,6 +3824,7 @@ connection: None,
 							if !unassigned_tasks.is_empty() { result["unassigned_tasks"] = json!(unassigned_tasks); }
 							state.wait_result = Some(result);
 						}
+						run.recovery.home_poll.observe(true);
 						resume.into_state()
 					}
 					WaitingState::Outage { resume, .. } => {
@@ -3870,6 +3875,12 @@ connection: None,
 							if let Some(guard) = guard { guard.tool(call, &original.contract()).await?; }
 							self.environment.poll_operation(run, poll_name, arguments).await?
 						});
+						RunState::ToolCall(resume)
+					}
+					WaitingState::Approval { approval: ApprovalRef::Capability { .. }, resume } => {
+						if !home.local() {
+							run.recovery.home_poll.observe(false);
+						}
 						RunState::ToolCall(resume)
 					}
 					WaitingState::Approval { resume, .. }
@@ -4078,7 +4089,15 @@ fn record_model_turn(
 }
 
 /// Authority is rechecked at most this often while the provider call runs.
-const INFERENCE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+async fn wait_for_inference_refusal(guard: &dyn ExecutionAuthority) -> Error {
+	let interval = std::time::Duration::from_secs(if guard.is_remote() { 10 } else { 1 });
+	loop {
+		tokio::time::sleep(interval).await;
+		if let Err(error) = guard.recheck_inference().await {
+			return error;
+		}
+	}
+}
 
 enum Inference {
 	Response(Box<aidash_domain::provider::ModelResponse>),

@@ -490,30 +490,34 @@ pub fn answered_pattern(key: &str, pattern: Option<&str>) -> Result<ToolPattern>
 	Ok(pattern)
 }
 
-/// Whether the receiving Node's people may answer the call `call` about `key` now, and so
+/// Whether one side's list holders may answer the call `call` about `key` now, and so
 /// resume the Run: it is paused, the pause is the Authority Pause that stopped exactly that
-/// call because the receiver's lists lack `key`, and nothing has paused the Run since.
+/// call because that side's lists lack `key`, and nothing has paused the Run since.
 ///
 /// The worker's Authority Pause names no control source, so the Run's source becomes
 /// `System`. A person's pause laid over it (`Tenant`, the Home's people included) or a Safety
 /// Stop (`DeploymentAdministrator`) replaces the source and keeps the paused call; only its
 /// own holder lifts that pause (ADR 0101; ADR 0118 as amended limits the receiver's people
 /// to the list ask). A page that shows an older call or key no longer matches either.
-pub fn receiver_may_answer(
+pub fn may_answer(
 	control: crate::RunControl,
 	source: crate::ControlSource,
 	paused: Option<&crate::run_state::PausedCall>,
 	call: &str,
 	key: &str,
+	side: AskSide,
 ) -> bool {
 	control == crate::RunControl::Paused
 		&& source == crate::ControlSource::System
 		&& paused.is_some_and(|paused| {
 			paused.key == call
-				&& paused
-					.ask
-					.as_ref()
-					.is_some_and(|ask| ask.key == key && ask.lacking.receiver)
+				&& paused.ask.as_ref().is_some_and(|ask| {
+					ask.key == key
+						&& match side {
+							AskSide::Home => ask.lacking.home,
+							AskSide::Receiver => ask.lacking.receiver,
+						}
+				})
 		})
 }
 

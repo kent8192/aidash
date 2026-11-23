@@ -2,7 +2,7 @@
 use super::{RecoveryRepository, store::run_state::FailureDelivery};
 use crate::{
 	Error as NativeError,
-	authorization::execution::{self, DeliveryGuard, Guard},
+	authorization::execution::{self, DeliveryGuard, Guard, GuardEntry},
 	federation::{Federation, Home},
 	store::Store,
 	transactions::gate::ReadLease,
@@ -14,7 +14,7 @@ use aidash_application::{
 		ExecutionRecoveryStore,
 		execution::{
 			terminal::{FailureScope, TerminalRepository},
-			worker::{WorkerLeases, WorkerStep},
+			worker::{Admission, WorkerLeases, WorkerStep},
 		},
 	},
 	recovery::{AuthorityFailure, ExecutionFailure},
@@ -81,6 +81,71 @@ pub(crate) struct Step {
 	pub(crate) tenant: Option<String>,
 	pub(crate) offloaded: Vec<aidash_application::context::offload::JournalRange>,
 }
+impl Step {
+	/// A lease is only a scheduling claim. Open the Stint after entry
+	/// authorizes a runnable phase and confirms its turn in the Working Area.
+	async fn open_stint(&mut self, token: Uuid) -> Result<()> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, OnConflict, PostgresQueryBuilder, Query,
+			QueryStatementBuilder as _,
+		};
+
+		if !matches!(
+			self.run.phase(),
+			aidash_domain::RunPhase::Ready
+				| aidash_domain::RunPhase::Thinking
+				| aidash_domain::RunPhase::ToolCall
+		) {
+			return Ok(());
+		}
+		let open = Query::select()
+			.expr(Expr::val(1))
+			.from(Alias::new("stints"))
+			.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
+			.and_where(Expr::col("ended_at").is_null())
+			.to_owned();
+		let execution = Query::select()
+			.expr(Expr::value(Uuid::new_v4()))
+			.columns(["tenant", "id", "agent_id", "agent_version", "node"].map(Alias::new))
+			.expr(Expr::current_timestamp())
+			.column(Alias::new("lease_owner"))
+			.from(Alias::new("task_executions"))
+			.and_where(Expr::col("id").eq(Expr::value(self.run.id)))
+			.and_where(Expr::col("lease_owner").eq(Expr::value(token)))
+			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
+			.and_where(Expr::col("control").eq("ACTIVE"))
+			.and_where(Expr::exists(open).not())
+			.lock(reinhardt::query::LockType::NoKeyUpdate)
+			.to_owned();
+		let insert = Query::insert()
+			.into_table(Alias::new("stints"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"run_id",
+					"agent_id",
+					"agent_version",
+					"node",
+					"started_at",
+					"lease_owner",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(execution)
+			.on_conflict(OnConflict::new().do_nothing().to_owned())
+			.to_string(PostgresQueryBuilder);
+		self.federation
+			.store
+			.pool
+			.atomic(&claimed(), async |tx| {
+				crate::database::native::query(&insert).execute(tx).await?;
+				Ok(())
+			})
+			.await?;
+		Ok(())
+	}
+}
 #[async_trait]
 impl WorkerStep for Step {
 	fn metadata(&self) -> RunMetadata {
@@ -123,7 +188,7 @@ impl WorkerStep for Step {
 			.await
 			.map_err(Into::into)
 	}
-	async fn admit(&mut self) -> Result<()> {
+	async fn admit(&mut self) -> Result<Admission> {
 		// A new step is new work: it waits behind an Authority Change, giving up
 		// its visibility lease while it does (ADR 0121). A Run whose Tenant cannot
 		// be read goes on to `Guard::begin`, which meets the same failure itself.
@@ -136,10 +201,32 @@ impl WorkerStep for Step {
 			.await?;
 			self.tenant = Some(tenant.as_str().to_owned());
 		}
-		self.guard = Some(Guard::begin(&self.federation, &self.run).await?);
-		Ok(())
+		match Guard::begin(&self.federation, &self.run).await? {
+			GuardEntry::Ready(guard) => {
+				self.guard = Some(*guard);
+				Ok(Admission::Ready)
+			}
+			GuardEntry::Queued(notice) => {
+				if let Some(notice) = notice {
+					let home = Home::for_delivery(self.federation.clone(), self.run.metadata());
+					// The queue row has committed. Delivery is one best-effort
+					// attempt and cannot delay releasing this worker lease.
+					drop(tokio::spawn(async move {
+						let run = notice.run_id;
+						if let Err(error) = home
+							.command::<serde_json::Value>("run_queued", serde_json::json!(notice))
+							.await
+						{
+							tracing::warn!(%error, %run, "remote queue notice could not be delivered");
+						}
+					}));
+				}
+				Ok(Admission::Queued)
+			}
+		}
 	}
 	async fn invoke(&mut self, token: Uuid) -> Result<()> {
+		self.open_stint(token).await?;
 		let environment = crate::bootstrap::execution_environment(
 			&self.federation,
 			self.guard.as_ref(),
@@ -286,6 +373,7 @@ impl FailureScope for Failure {
 				&self.record.metadata,
 				status,
 				self.guard.as_ref().and_then(DeliveryGuard::local_authority),
+				self.record.target.reason(),
 			)
 			.await
 			.map_err(Into::into)
@@ -333,6 +421,7 @@ const MEMORY: &str = "Native memory";
 /// Keep backend codes and native failure identity out of the application use case.
 pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 	match error {
+		NativeError::QueueLimit => ExecutionFailure::QueueLimit,
 		// A local embedding or vector outage is typed `Unavailable` where it
 		// occurs, so it retries and pauses like a Home one. `SemanticUnavailable`
 		// also reports invariant and allowance violations, which never retry.

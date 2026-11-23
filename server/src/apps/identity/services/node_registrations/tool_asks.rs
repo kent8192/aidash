@@ -344,7 +344,7 @@ impl NodeRegistrations {
 				let mut tx = store.pool.begin(&administrator.scope()?).await?;
 				require_manage(administrator, &mut *tx, registration).await?;
 				crate::transactions::gate::read_in(&mut tx).await?;
-				if !asks::lock_receiver_ask(&mut *tx, run, &input.call, &key).await? {
+				if !asks::lock_ask(&mut *tx, run, &input.call, &key, AskSide::Receiver).await? {
 					return Err(not_waiting());
 				}
 				let declined = store
@@ -409,7 +409,7 @@ impl NodeRegistrations {
 						// The Run is locked after the admission or registration row, the order a
 						// Home's cancel takes; a Run that no longer waits on this ask alone rolls
 						// the list change back.
-						if !asks::lock_receiver_ask(tx, run, &input.call, &key).await? {
+						if !asks::lock_ask(tx, run, &input.call, &key, AskSide::Receiver).await? {
 							return Err(not_waiting());
 						}
 						// The pause's own call is answered by the next attempt: allowed, it runs;
@@ -498,6 +498,7 @@ impl NodeRegistrations {
 					grant.task_id,
 					grant.id,
 					&call.call,
+					&key,
 				)
 				.await
 				.map_err(Error::from)?;
@@ -546,6 +547,10 @@ impl NodeRegistrations {
 					&repository,
 					grant.task_id,
 					grant.id,
+					&aidash_domain::federation::execution::admission::ToolAskTarget {
+						call: call.call,
+						key: key.clone(),
+					},
 				)
 				.await
 				.map_err(Error::from)?;

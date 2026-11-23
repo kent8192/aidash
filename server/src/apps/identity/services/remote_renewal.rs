@@ -5,14 +5,16 @@
 //!
 //! Renewal runs in two places. A watched loop looks, every few minutes, at the
 //! grants that expire within the renewal window while their Run lives by the
-//! Home's one liveness rule ([`run_live`]: the activation recorded, the receiver
-//! holding the Task, the Task started and not ended), so a Run that waits for a
+//! Home's one liveness rule ([`run_live_or_queued`]: a recorded activation and a Task that
+//! is still waiting for its first claim or held by the receiver), so a Run that waits for a
 //! person's answer without making calls is renewed too, and a grant whose
 //! activation was never recorded is not. Serving a description or verification of such a grant
 //! renews it as well. Both extend the expiry only from the value they read, so
 //! replicas and the two paths together renew a grant once per window.
 use crate::Result;
-use crate::apps::identity::repositories::remote_grants::{clock_timestamp, run_live, unexpired};
+use crate::apps::identity::repositories::remote_grants::{
+	clock_timestamp, run_live_or_queued, unexpired,
+};
 use crate::federation::Federation;
 use aidash_application::authorization::source::renewal::{
 	GrantLife, RENEW_WITHIN, RENEWAL_BATCH, Renewal, RenewalRepository, renew, renew_after_use,
@@ -72,7 +74,7 @@ pub async fn sweep(f: &Federation) -> Result<Pass> {
 				.from(Alias::new("authorization_remote_grants"))
 				.and_where(unexpired())
 				.and_where(Expr::col(Alias::new("expires_at")).lte(seconds_from_now(window)))
-				.and_where(run_live())
+				.and_where(run_live_or_queued())
 				.order_by(Alias::new("expires_at"), Order::Asc)
 				.limit(RENEWAL_BATCH)
 				.build(PostgresQueryBuilder);
@@ -146,7 +148,7 @@ impl RenewalRepository for Grants {
 					.column(Alias::new("revoked"))
 					.column(Alias::new("expires_at"))
 					.expr_as(clock_timestamp(), Alias::new("now"))
-					.expr_as(run_live(), Alias::new("run_live"))
+					.expr_as(run_live_or_queued(), Alias::new("run_live"))
 					.from(Alias::new("authorization_remote_grants"))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.build(PostgresQueryBuilder);
@@ -213,7 +215,7 @@ impl RenewalRepository for Grants {
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.and_where(Expr::col("expires_at").eq(Expr::value(seen)))
 					.and_where(unexpired())
-					.and_where(run_live())
+					.and_where(run_live_or_queued())
 					.build(PostgresQueryBuilder);
 				Ok(tx
 					.execute(&sql, convert_values(values))

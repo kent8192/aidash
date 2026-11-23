@@ -1,7 +1,9 @@
 //! Worker entry prefers a scoped receiver and otherwise authorizes the current
 //! local Run. A Run with neither belongs to no Tenant and never executes.
-use crate::Error;
-use crate::{Result, ports::authorization::worker_entry::WorkerEntryRepository};
+use crate::{
+	Error, Result, capabilities::sessions::Initialization,
+	ports::authorization::worker_entry::WorkerEntryRepository,
+};
 use aidash_domain::{Run, RunControl, RunMetadata, registry::AgentConfig};
 
 /// A Scratch Space authority denial is a named, fail-closed worker refusal.
@@ -23,6 +25,7 @@ pub fn scratch_refusal(error: Error) -> Error {
 	}
 }
 pub struct WorkerEntry<S> {
+	pub initialization: Initialization,
 	pub scope: S,
 	pub agent: AgentConfig,
 	pub remote: bool,
@@ -37,6 +40,7 @@ async fn acquire<S: Send>(
 		return Ok(WorkerEntry {
 			scope,
 			agent,
+			initialization: Initialization::Ready,
 			remote: true,
 			scratch_space_id: None,
 		});
@@ -48,6 +52,7 @@ async fn acquire<S: Send>(
 	Ok(WorkerEntry {
 		scope,
 		agent,
+		initialization: Initialization::Ready,
 		remote: false,
 		scratch_space_id: None,
 	})
@@ -66,15 +71,15 @@ pub async fn execution<S: Send>(
 	if entry.agent.core_capabilities.enabled() && run.control != RunControl::Cancelled {
 		// A Run executing for another Home gets the receiving Node's Working Area (ADR 0139);
 		// a local Run, the Area of its Thread (#1008).
-		if entry.remote {
+		entry.initialization = if entry.remote {
 			repository
 				.initialize_remote(&entry.scope, run, &entry.agent)
-				.await?;
+				.await?
 		} else {
 			repository
 				.initialize(&entry.scope, run, &entry.agent)
-				.await?;
-		}
+				.await?
+		};
 	}
 	Ok(entry)
 }

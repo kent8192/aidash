@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0155_model_call_state", "execution")
-		.add_dependency("execution", "0154_model_calls")
+	Migration::new("0156_model_call_state", "execution")
+		.add_dependency("execution", "0155_model_calls")
 		.state_only(true)
 		.add_operation(Operation::AddColumn {
 			table: "inference_usage".into(),
