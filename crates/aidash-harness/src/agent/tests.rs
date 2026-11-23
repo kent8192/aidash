@@ -2,6 +2,7 @@
 use super::*;
 use aidash_application::capabilities::approvals::JudgeRequest;
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
+use aidash_application::recovery::ExecutionFailure;
 use aidash_domain::capabilities::skills::SkillMetadata;
 use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
@@ -2235,45 +2236,136 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 	);
 	assert!(!calls.contains(&"provider.infer"));
 }
-/// An Outage Wait wakes with the short retries its outage spent still spent, so
-/// a failure of the woken step waits again instead of retrying for another
-/// minute. A Decider or Node outage keeps its own count, and its wait no
-/// generic one (ADR 0129).
 #[rstest]
-#[case::service(Some(aidash_domain::semantic::OUTAGE_RETRIES))]
-#[case::decider_or_node(None)]
+#[case::service(ExecutionFailure::ServiceOutage("Native memory".into()), "Native memory", false)]
+#[case::legacy_service(ExecutionFailure::ServiceOutage("Native memory".into()), "Native memory", true)]
+#[case::semantic(
+	ExecutionFailure::Semantic(aidash_domain::semantic::Failure::Unavailable),
+	"Semantic context",
+	false
+)]
+#[case::decider_after_node_retries(ExecutionFailure::DeciderOutage, "Decider", false)]
 #[tokio::test]
-async fn an_outage_wake_keeps_the_short_retries_its_wait_spent(
+async fn inference_failure_after_outage_wake_gets_its_first_retry(
 	mut fixture: Fixture,
-	#[case] spent: Option<u32>,
+	#[case] outage: ExecutionFailure,
+	#[case] service: &str,
+	#[case] legacy: bool,
 ) {
-	let wake_at = chrono::Utc::now();
-	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Outage {
-		service: "Native memory".into(),
-		started_at: wake_at - chrono::Duration::minutes(5),
+	use aidash_domain::semantic::OUTAGE_RETRIES;
+	use chrono::{Duration, Utc};
+
+	let backend = fixture.backend.clone();
+	let token = backend.0.token;
+	let now = Utc::now();
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	if matches!(outage, ExecutionFailure::DeciderOutage) {
+		fixture.run.recovery.decider_retry = OUTAGE_RETRIES;
+	} else {
+		fixture.run.recovery.retry = Some(aidash_domain::RetryState {
+			count: OUTAGE_RETRIES,
+			at: now,
+		});
+	}
+	backend
+		.persist(&fixture.run, "fixture.saved", None)
+		.unwrap();
+	crate::recovery::recover(&backend, token, outage, now)
+		.await
+		.unwrap();
+	let (_, mut waiting) = last_write(&fixture);
+	let RunState::Waiting(wait) = &waiting.state else {
+		panic!("expected an Outage Wait");
+	};
+	let WaitingState::Outage {
+		service: waiting_for,
 		wake_at,
-		cadence: aidash_domain::run_state::OutageCadence::Service,
-		resume: ResumeState::Ready(ReadyState::default()),
-	}));
-	fixture.run.recovery.retry =
-		spent.map(|count| aidash_domain::RetryState { count, at: wake_at });
-	Executor::new(&fixture.backend)
-		.advance(
-			&mut fixture.run,
-			fixture.backend.0.token,
-			&mut fixture.backend.clone(),
+		..
+	} = wait.as_ref()
+	else {
+		panic!("expected an Outage Wait");
+	};
+	assert_eq!(waiting_for, service);
+	let mut check_at = *wake_at;
+	if legacy {
+		// Previously the same wait stored its spent retries in recovery.retry.
+		let outage = waiting.recovery.outage.as_mut().unwrap();
+		outage.short_retries_exhausted = false;
+		waiting.recovery.retry = Some(aidash_domain::RetryState {
+			count: OUTAGE_RETRIES,
+			at: now,
+		});
+		backend.persist(&waiting, "fixture.saved", None).unwrap();
+	}
+	if service == "Decider" {
+		// A Node can fail the visibility check before the Decider wait wakes.
+		for _ in 0..OUTAGE_RETRIES {
+			crate::recovery::recover(
+				&backend,
+				token,
+				ExecutionFailure::NodeUnreachable {
+					node: "aidash://other/sibling".into(),
+					retry: true,
+				},
+				check_at,
+			)
+			.await
+			.unwrap();
+			let (event, saved) = last_write(&fixture);
+			assert_eq!(event, "execution.node_retrying");
+			check_at = saved.recovery.retry.unwrap().at;
+		}
+	}
+	fixture.run = last_write(&fixture).1;
+	Executor::new(&backend)
+		.advance(&mut fixture.run, token, &mut backend.clone())
+		.await
+		.unwrap();
+	let (event, resumed) = last_write(&fixture);
+	assert_eq!(event, "execution.outage_resumed");
+	assert_eq!(resumed.phase(), RunPhase::Thinking);
+	if legacy {
+		// With the original service still down, the old wait keeps its cadence.
+		crate::recovery::recover(
+			&backend,
+			token,
+			ExecutionFailure::ServiceOutage(service.into()),
+			check_at,
 		)
 		.await
 		.unwrap();
-	assert_eq!(fixture.run.phase(), RunPhase::Ready);
-	let writes = fixture.backend.0.writes.lock().unwrap();
-	let (event, saved) = writes.last().unwrap();
-	assert_eq!(event, "execution.outage_resumed");
-	assert_eq!(
-		saved.recovery.retry.as_ref().map(|retry| retry.count),
-		spent
-	);
+		let (event, waited) = last_write(&fixture);
+		assert_eq!(event, "execution.outage_waiting");
+		check_at += Duration::minutes(5);
+		assert!(matches!(&waited.state, RunState::Waiting(wait)
+			if wait.reason() == "outage" && wait.deadline() == Some(check_at)));
+		fixture.run = waited;
+		Executor::new(&backend)
+			.advance(&mut fixture.run, token, &mut backend.clone())
+			.await
+			.unwrap();
+	}
+
+	crate::recovery::recover(
+		&backend,
+		token,
+		ExecutionFailure::Inference {
+			transport: true,
+			status: None,
+			message: "connection reset".into(),
+		},
+		check_at,
+	)
+	.await
+	.unwrap();
+	let (event, retried) = last_write(&fixture);
+	assert_eq!(event, "execution.retrying");
+	assert_eq!(retried.phase(), RunPhase::Thinking);
+	let retry = retried.recovery.retry.unwrap();
+	assert_eq!(retry.count, 1);
+	assert_eq!(retry.at, check_at + Duration::seconds(2));
 }
+
 #[rstest]
 #[case(TaskStatus::Completed, RunPhase::Completed)]
 #[case(TaskStatus::Failed, RunPhase::Failed)]
@@ -6299,7 +6391,6 @@ async fn early_read_refusals_reach_the_next_model_request(
 	#[case] arguments: Value,
 ) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.projection = ProjectionVersion::Native;
 	state.fitting_denial = Some(name);
 	state.tools_by_alias.insert(
 		name.into(),

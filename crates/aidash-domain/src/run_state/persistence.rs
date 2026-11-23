@@ -33,7 +33,7 @@ impl Run {
 				| "execution.outage_resumed"
 				| "execution.failure_pending"
 		);
-		if !retrying {
+		if !retrying || event == "execution.outage_resumed" {
 			recovery.retry = None;
 		}
 		// Only a scheduled Decider retry carries its count to the next lease.

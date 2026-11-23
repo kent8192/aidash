@@ -2,7 +2,7 @@
 use aidash_application::{
 	Result, authorization::refusal_note, ports::ExecutionRecoveryStore, recovery::ExecutionFailure,
 };
-use aidash_domain::run_state::{OutageCadence, OutageTracking};
+use aidash_domain::run_state::{OutageCadence, OutageTracking, SEMANTIC_CONTEXT_OUTAGE};
 use aidash_domain::semantic::{Failure as SemanticFailure, OUTAGE_RETRIES, PENDING_REPLAY_SECONDS};
 use aidash_domain::{FailureTarget, RetryState, Run, RunControl, RunPhase, RunState, WaitingState};
 use chrono::{DateTime, Utc};
@@ -10,37 +10,52 @@ use uuid::Uuid;
 
 /// The service an Outage Wait names in the dashboard ("Outage Wait: <service>").
 const DECIDER: &str = "Decider";
-const SEMANTIC_CONTEXT: &str = "Semantic context";
 const PLAN_ALLOWANCE: &str = "ChatGPT plan usage limit";
 /// What a Run sleeps on while a Budget is at its Hard Limit (#1012).
 const BUDGET: &str = "Budget";
 
-fn track_outage(run: &mut Run, service: &str, now: DateTime<Utc>) -> DateTime<Utc> {
-	if run
-		.recovery
-		.outage
-		.as_ref()
-		.is_none_or(|outage| outage.service != service)
+/// Legacy service and semantic waits predate the exhaustion flag.
+pub(crate) fn restore_outage_wait(run: &mut Run, service: &str) {
+	if let RunState::Waiting(wait) = &run.state
+		&& let WaitingState::Outage {
+			service: waiting_for,
+			started_at,
+			cadence: OutageCadence::Service,
+			..
+		} = wait.as_ref()
+		&& waiting_for == service
+		&& service != DECIDER
+		&& !service.starts_with("Node ")
 	{
 		run.recovery.outage = Some(OutageTracking {
 			service: service.into(),
-			started_at: now,
+			started_at: *started_at,
+			short_retries_exhausted: true,
 		});
 	}
-	run.recovery
-		.outage
+}
+
+fn track_outage<'a>(run: &'a mut Run, service: &str, now: DateTime<Utc>) -> &'a mut OutageTracking {
+	restore_outage_wait(run, service);
+	let outage = &mut run.recovery.outage;
+	if outage
 		.as_ref()
-		.expect("outage just recorded")
-		.started_at
+		.is_none_or(|outage| outage.service != service)
+	{
+		*outage = Some(OutageTracking {
+			service: service.into(),
+			started_at: now,
+			short_retries_exhausted: false,
+		});
+	}
+	outage.as_mut().expect("outage just recorded")
 }
 
 /// Wait out `service` until its next check (ADR 0129). Returns `false` once the
 /// outage has reached its bound; the caller then pauses the Run.
 ///
-/// `spent` is the generic retry count to keep while waiting: the short retries
-/// of an outage counted by `recovery.retry` (semantic context, a service). The
-/// wake-up restores it, so the next failure waits again at once instead of
-/// retrying for another minute. A Decider or Node outage keeps its own count.
+/// `short_retries_exhausted` tracks the spent short retries of a semantic or
+/// service outage across wake-ups. A Decider or Node outage has its own count.
 ///
 /// A check at worker entry can fail while the Run still waits, as a wait wakes
 /// and before its step runs. The Run then keeps what it waits for: an Outage
@@ -52,17 +67,16 @@ async fn wait_outage(
 	token: Uuid,
 	service: &str,
 	cadence: OutageCadence,
-	spent: Option<u32>,
+	short_retries_exhausted: bool,
 	now: DateTime<Utc>,
 ) -> Result<bool> {
-	let started_at = track_outage(run, service, now);
+	let outage = track_outage(run, service, now);
+	let started_at = outage.started_at;
 	let Some(wake_at) = cadence.next_wake(started_at, now) else {
 		return Ok(false);
 	};
-	// In an Outage Wait the state's `wake_at` schedules the next check, so the
-	// kept count carries no later time of its own (`activation::due` takes the
-	// later of the two).
-	let spent = spent.map(|count| RetryState { count, at: now });
+	outage.short_retries_exhausted = short_retries_exhausted;
+	run.recovery.retry = None;
 	if let RunState::Waiting(wait) = &mut run.state {
 		if let WaitingState::Outage {
 			service: waiting_for,
@@ -76,11 +90,10 @@ async fn wait_outage(
 			*since = started_at;
 			*next = wake_at;
 			*every = cadence;
-			run.recovery.retry = spent;
 		} else {
 			// Activation wakes a wait no earlier than its retry (`activation::due`).
 			run.recovery.retry = Some(RetryState {
-				count: spent.map_or(0, |retry| retry.count),
+				count: 0,
 				at: wake_at,
 			});
 		}
@@ -92,7 +105,6 @@ async fn wait_outage(
 			resume,
 			cadence,
 		})?;
-		run.recovery.retry = spent;
 	}
 	store.save(run, token, "execution.outage_waiting").await?;
 	Ok(true)
@@ -143,9 +155,8 @@ pub async fn recover(
 		.map_or(0, |retry| retry.count)
 		+ 1;
 	if let ExecutionFailure::Semantic(reason) = failure {
-		if reason == SemanticFailure::Unavailable {
-			track_outage(&mut current, SEMANTIC_CONTEXT, now);
-		}
+		let outage_retries_exhausted = reason == SemanticFailure::Unavailable
+			&& track_outage(&mut current, SEMANTIC_CONTEXT_OUTAGE, now).short_retries_exhausted;
 		if reason == SemanticFailure::Stale && attempts <= OUTAGE_RETRIES {
 			// The Home refused a reused retrieval whose corpus changed (ADR
 			// 0020). Drop the cached Source observation so the retry retrieves
@@ -161,7 +172,7 @@ pub async fn recover(
 				.save(&current, token, "execution.semantic_retrying")
 				.await?;
 		} else if reason == SemanticFailure::Pending
-			|| (reason.transient() && attempts <= OUTAGE_RETRIES)
+			|| (reason.transient() && attempts <= OUTAGE_RETRIES && !outage_retries_exhausted)
 		{
 			let delay = if reason == SemanticFailure::Pending {
 				// Each replay repeats the whole semantic-context step, including
@@ -201,9 +212,9 @@ pub async fn recover(
 				store,
 				&mut current,
 				token,
-				SEMANTIC_CONTEXT,
+				SEMANTIC_CONTEXT_OUTAGE,
 				OutageCadence::Service,
-				Some(OUTAGE_RETRIES),
+				true,
 				now,
 			)
 			.await?
@@ -247,7 +258,7 @@ pub async fn recover(
 				token,
 				DECIDER,
 				OutageCadence::Service,
-				None,
+				false,
 				now,
 			)
 			.await?
@@ -280,7 +291,7 @@ pub async fn recover(
 			token,
 			&service,
 			OutageCadence::Service,
-			None,
+			false,
 			now,
 		)
 		.await?
@@ -319,9 +330,10 @@ pub async fn recover(
 	} else if let ExecutionFailure::ServiceOutage(ref service) = failure {
 		// A service that will come back by itself: retry after 2, 4, 8, 16
 		// and 32 s, then wait it out (ADR 0129).
-		track_outage(&mut current, service, now);
+		let outage_retries_exhausted =
+			track_outage(&mut current, service, now).short_retries_exhausted;
 		current.error = Some(failure.message());
-		if attempts <= OUTAGE_RETRIES {
+		if attempts <= OUTAGE_RETRIES && !outage_retries_exhausted {
 			current.recovery.retry = Some(RetryState {
 				count: attempts,
 				at: now + chrono::Duration::seconds(2_i64.pow(attempts)),
@@ -335,7 +347,7 @@ pub async fn recover(
 			token,
 			service,
 			OutageCadence::Service,
-			Some(OUTAGE_RETRIES),
+			true,
 			now,
 		)
 		.await?
@@ -362,7 +374,7 @@ pub async fn recover(
 				token,
 				BUDGET,
 				OutageCadence::Budget,
-				None,
+				false,
 				now,
 			)
 			.await?
@@ -381,7 +393,7 @@ pub async fn recover(
 			token,
 			PLAN_ALLOWANCE,
 			OutageCadence::PlanAllowance,
-			None,
+			false,
 			now,
 		)
 		.await?
