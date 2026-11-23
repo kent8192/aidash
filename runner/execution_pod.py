@@ -18,6 +18,7 @@ JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 # A session records no system changes (record_changes is off for kind `session`), so no tree scan adds to
 # that. The other 19 s are for the 5 s kubectl exec of each result read and for scheduling.
 PYTHON_STOP_SECONDS = 60
+RUN_SESSION_KINDS = frozenset(("python_session", "python_cell", "mcp_session"))
 
 
 def helper_command(*args):
@@ -1481,7 +1482,7 @@ print(json.dumps(r))'''
         with self.lock:
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
-                      'status', 'background', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
+                      'status', 'background', 'pod_uid', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
                       'error_code', 'message', 'session_replaced', 'output_fetched_at', 'left_running') if key in record}
             if record['status'] == 'running' and operation_id in self.live_output:
                 result.update(self.live_output[operation_id])
@@ -1547,6 +1548,8 @@ print(json.dumps(r))'''
         name = scratch_resource_name(scratch_id)
         if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
             raise ValueError('run_id must be a nonempty string without NUL')
+        if kind in RUN_SESSION_KINDS:
+            self._check_sessions_open(scratch_id, run_id)
         env = request.get('env', {})
         if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) or '\x00' in k or '\x00' in v for k, v in env.items()):
             raise ValueError('environment must contain strings without NUL')
@@ -1718,22 +1721,33 @@ print(json.dumps(r))'''
         return None
 
     def _execute_command(self, operation_id):
+        import secrets
         import time
         with self.lock:
             record = self._read_command(operation_id)
             proxy = self.process_proxies.pop(operation_id, None)
             if record['status'] != 'queued':
                 return
-            record = self._update_command(operation_id, status='running', running_at=time.time())
+            session = record.get('kind') in ('python_session', 'mcp_session')
+            authenticate = session or (not record['background'] and record.get('kind') in ('shell', 'python_cell'))
+            proof_key = secrets.token_hex(32) if authenticate else None
+            fields = {'result_proof_key': proof_key} if proof_key else {}
+            record = self._update_command(operation_id, status='running', running_at=time.time(), **fields)
         name, uid = record['pod'], record['pod_uid']
         mode = 'docker' if record['docker_enabled'] else 'normal'
         deadline = 'background' if record['background'] else str(record['timeout_seconds'])
         kind = 'session' if record.get('kind') == 'python_session' else 'command'
         limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
-        argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] or proxy else []) + [name, '-c', 'execution', '--'] + helper_command(
+        frame_token = secrets.token_hex(32) if record['docker_enabled'] else None
+        argv = self.backend.command + ['exec'] + (['-i'] if frame_token or proof_key or proxy else []) + [name, '-c', 'execution', '--'] + helper_command(
             'supervise', mode, kind, operation_id, record['run_id'], record['cwd'], deadline, uid, record['code'], str(limit))
+        supervisor_input = []
+        if proof_key:
+            argv.append('proof-stdin')
+            supervisor_input.append(proof_key)
         if proxy:
             argv.append('proxy-stdin')
+            supervisor_input.append(proxy)
 
         def publish(output):
             with self.lock:
@@ -1742,21 +1756,9 @@ print(json.dumps(r))'''
         try:
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
             result_deadline = None if transport_timeout is None else time.monotonic() + transport_timeout
-            nonce = None
-            if record['docker_enabled']:
-                import secrets
-                nonce = secrets.token_hex(32)
-                if proxy:
-                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
-                                              frame_token=nonce, input_data=(proxy + '\n').encode())
-                else:
-                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish, frame_token=nonce)
-            else:
-                if proxy:
-                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
-                                              input_data=(proxy + '\n').encode())
-                else:
-                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
+            transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
+                                      frame_token=frame_token,
+                                      input_data=''.join(line + '\n' for line in supervisor_input).encode() or None)
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
             if record['docker_enabled']:
@@ -1784,7 +1786,9 @@ print(json.dumps(r))'''
                                      **transport['output'])
                 self._stop_untracked_command(record)
             else:
-                self._finish_command(record, outcome, transport['output'], left_auth=nonce.encode('ascii') if nonce else None)
+                left_auth = proof_key or frame_token
+                self._finish_command(record, outcome, transport['output'],
+                                     left_auth=left_auth.encode('ascii') if left_auth else None)
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
@@ -1887,6 +1891,10 @@ print(json.dumps(r))'''
 
     def _finish_command(self, record, outcome, output, *, allow_late=False, left_auth=None):
         operation_id = record['operation_id']
+        proof_key = record.get('result_proof_key')
+        if (record.get('kind') in ('python_session', 'mcp_session') and proof_key
+                and not verify_adopted_result(outcome, proof_key.encode('ascii'))):
+            raise ValueError('unverified session result')
         if (record.get('kind') == 'python_cell' and
             (outcome['status'] in ('timed_out', 'stopped') or
              (outcome['status'] == 'completed' and outcome.get('exit_code') != 0))):
@@ -2137,13 +2145,19 @@ print(json.dumps(r))'''
         with self._space_lock(record['scratch_space_id']):
             return self._stop_command(operation_id)
 
-    def stop_run(self, scratch_space_id, run_id, kinds=None):
+    def stop_run(self, scratch_space_id, run_id, kinds=None, *, seal_sessions=False):
         import json
         import time
         from control import scratch_resource_name
         scratch_resource_name(scratch_space_id)
         if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
             raise ValueError('invalid run_id')
+        if kinds is None or seal_sessions:
+            # A start already on the wire may arrive after the stop. Fence it
+            # under the same Space lock as admission, including across restarts.
+            from control import save
+            with self._space_lock(scratch_space_id):
+                save(self._session_stop_path(scratch_space_id, run_id), {'stopped': True})
         stopped, resolved, first_seen = set(), set(), {}
         deadline = time.monotonic() + 60
         while True:
@@ -2161,6 +2175,14 @@ print(json.dumps(r))'''
                             or (kinds is not None and record.get('kind') not in kinds)):
                         continue
                     active.append(operation)
+                    if record.get('kind') in RUN_SESSION_KINDS and record.get('pod_uid'):
+                        pod = self._get('pod', record['pod'])
+                        uid = pod.get('metadata', {}).get('uid') if pod else None
+                        if uid and uid != record['pod_uid']:
+                            self._update_command(operation, status='interrupted', stop_pending=False,
+                                                 run_stop_confirmed=True)
+                            resolved.add(operation)
+                            continue
                     if record.get('status') == 'interrupted' and not record.get('docker_enabled'):
                         try:
                             first_seen.setdefault(operation, time.monotonic())
@@ -2224,6 +2246,50 @@ print(json.dumps(r))'''
         if type(created) is not bool:
             raise ValueError('Invalid interrupted process claim')
         return created or elapsed >= 10, False
+
+    def background_ended(self, scratch_space_id, run_id, operation_id, pod_uid=None):
+        """Prove the original Pod was replaced or its supervisor reaped the last descendant."""
+        import json
+        from control import scratch_resource_name
+
+        name = scratch_resource_name(scratch_space_id)
+        try:
+            record = self._read_command(operation_id)
+        except ExecutionPodError as error:
+            if error.code != 'command_not_found':
+                raise
+            record = None
+        if record is not None:
+            if record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id:
+                return {'ended': False}
+            original_uid = record.get('pod_uid')
+            if pod_uid and pod_uid != original_uid:
+                return {'ended': False}
+            pod_uid = original_uid
+        if not isinstance(pod_uid, str) or not pod_uid:
+            return {'ended': False}
+        pod = self._get('pod', name)
+        current_uid = pod.get('metadata', {}).get('uid') if pod else None
+        if not isinstance(current_uid, str) or not current_uid:
+            return {'ended': False}
+        if current_uid != pod_uid:
+            return {'ended': True}
+
+        token = record.get('result_proof_key') if record else None
+        if not token:
+            return {'ended': False}
+        left = operation_id + '.left'
+        evidence = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                     helper_command('result', left), check=False, timeout=5)
+        if evidence.returncode != 0:
+            return {'ended': False}
+        outcome = json.loads(evidence.stdout)
+        # Only the out-of-chroot supervisor knows the token. It emits a
+        # signed terminal result after waitpid/children report no descendants.
+        return {'ended': bool(isinstance(outcome, dict)
+                              and outcome.get('operation_id') == left and outcome.get('run_id') == run_id
+                              and outcome.get('status') in ('completed', 'stopped', 'timed_out')
+                              and verify_adopted_result(outcome, token.encode('ascii')))}
 
     def background_processes(self, scratch_space_id):
         import json
@@ -2703,6 +2769,16 @@ print(json.dumps(r))'''
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         return directory / (key + '.json')
 
+    def _session_stop_path(self, scratch_space_id, run_id):
+        return self._python_session_path(scratch_space_id, run_id).with_suffix('.stopped')
+
+    def _check_sessions_open(self, scratch_space_id, run_id):
+        if self._session_stop_path(scratch_space_id, run_id).exists():
+            raise ExecutionPodError('command_refused', "This Run's sessions have ended")
+
+    def stop_sessions(self, scratch_space_id, run_id):
+        return self.stop_run(scratch_space_id, run_id, RUN_SESSION_KINDS, seal_sessions=True)
+
     def start_python(self, scratch_space_id, run_id, proxy_credential=None):
         with self._space_lock(scratch_space_id):
             return self._start_python(scratch_space_id, run_id, proxy_credential)
@@ -2715,6 +2791,7 @@ print(json.dumps(r))'''
 
         if not self.admitted:
             raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
+        self._check_sessions_open(scratch_space_id, run_id)
         path = self._python_session_path(scratch_space_id, run_id)
         if path.exists():
             prior = json.loads(path.read_bytes())
@@ -2812,12 +2889,7 @@ print(json.dumps(r))'''
                                    client_digest=original_digest, session_replaced=session.get('session_replaced', False))
 
     def stop_python(self, scratch_space_id, run_id):
-        import json
-        path = self._python_session_path(scratch_space_id, run_id)
-        if not path.exists():
-            return {'stopped': True}
-        session = json.loads(path.read_bytes())
-        return self.stop_background(session['operation_id'])
+        return self.stop_run(scratch_space_id, run_id, {'python_session'})
 
 
 def execution_timeout(request):

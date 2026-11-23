@@ -44,6 +44,21 @@ impl Fixture {
 		self.store.pool.fixture_driver()
 	}
 
+	fn use_runner(&mut self, endpoint: &str) {
+		let mut profile = (*self.store.capabilities.0).clone();
+		profile.runner = Some(
+			serde_json::from_value(json!({
+				"endpoint": endpoint,
+				"token_env": "AIDASH_COMMAND_CLEANUP_TEST_TOKEN",
+				"image": format!("sandbox@sha256:{}", "a".repeat(64)),
+				"runtime_class": "fixture",
+				"namespace": "fixture"
+			}))
+			.unwrap(),
+		);
+		self.store.capabilities = crate::capabilities::Runtime::new(profile).unwrap();
+	}
+
 	async fn set_policy(&self, expected: i64, deny: Option<(&str, &str)>) {
 		Authorization {
 			pool: self.store.pool.clone(),
@@ -1096,6 +1111,169 @@ async fn a_run_whose_command_left_background_processes_is_still_rechecked(
 		targets.contains(&Target::RevokedRun(fixture.run)),
 		"{targets:?}"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn background_targets_retire_after_runner_proof_and_keep_the_background_id(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	use wiremock::{
+		Mock, MockServer, ResponseTemplate,
+		matchers::{body_json, method, path},
+	};
+
+	let mut fixture = fixture(database.await, 1).await;
+	let (operation, _) = running_targets(&fixture).await;
+	let (space, pod_uid) = (Uuid::new_v4(), Uuid::new_v4());
+	let left = format!("{operation}.left");
+	sqlx::query("UPDATE core_operations SET state='completed', input=$2, result=$3 WHERE id=$1")
+		.bind(operation)
+		.bind(json!({"runtime":"pod","scratch_space_id":space}))
+		.bind(json!({"left_running":left,"pod_uid":pod_uid}))
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let runner = MockServer::start().await;
+	fixture.use_runner(&runner.uri());
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::Operation(operation);
+	let evidence = || {
+		Mock::given(method("POST"))
+			.and(path("/v2/background/ended"))
+			.and(body_json(
+				json!({"scratch_space_id":space,"run_id":fixture.run,
+			"operation_id":operation,"pod_uid":pod_uid}),
+			))
+	};
+
+	{
+		let _unproven = evidence()
+			.respond_with(ResponseTemplate::new(200).set_body_json(json!({"ended":false})))
+			.expect(1)
+			.mount_as_scoped(&runner)
+			.await;
+		assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+		assert!(repository.targets().await.unwrap().contains(&target));
+	}
+	evidence()
+		.respond_with(ResponseTemplate::new(200).set_body_json(json!({"ended":true})))
+		.expect(1)
+		.mount(&runner)
+		.await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	assert!(!repository.targets().await.unwrap().contains(&target));
+	assert_eq!(
+		operation_state(&fixture, operation).await.1["left_running"],
+		left
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_finished_python_cell_leaves_its_session_in_read_recheck(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (operation, _) = running_targets(&fixture).await;
+	sqlx::query("UPDATE core_operations SET state='completed', kind='code_interpreter', input='{\"runtime\":\"pod\",\"scratch_space_id\":\"fixture\"}' WHERE id=$1")
+		.bind(operation)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::Operation(operation);
+	assert!(repository.targets().await.unwrap().contains(&target));
+
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+	assert!(repository.stop_refused(target).await.is_err());
+	let targets = repository.targets().await.unwrap();
+	assert!(!targets.contains(&target));
+	assert!(targets.contains(&Target::RevokedRun(fixture.run)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn stdio_sessions_stay_in_read_recheck_until_the_runner_acknowledges_the_stop(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	use wiremock::{
+		Mock, MockServer, ResponseTemplate,
+		matchers::{body_json, method, path},
+	};
+
+	let mut fixture = fixture(database.await, 1).await;
+	let runner = MockServer::start().await;
+	fixture.use_runner(&runner.uri());
+	let space = Uuid::new_v4().to_string();
+	let phase = |phase: &'static str| {
+		sqlx::query("UPDATE task_executions SET phase=$1 WHERE id=$2")
+			.bind(phase)
+			.bind(fixture.run)
+			.execute(fixture.driver())
+	};
+	phase("READY").await.unwrap();
+	let mut access = fixture.access().await;
+	access.subjects = vec!["reader".into(), "helper".into()];
+	crate::apps::execution::repositories::operations::pod_sessions::register_stdio(
+		&mut access,
+		fixture.run,
+		&space,
+	)
+	.await
+	.unwrap();
+	access.finish(Ok(())).await.unwrap();
+
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::StdioSession(fixture.run);
+	assert!(repository.targets().await.unwrap().contains(&target));
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+
+	phase("COMPLETED").await.unwrap();
+	let stop = || {
+		Mock::given(method("POST"))
+			.and(path("/v2/runs/stop_sessions"))
+			.and(body_json(
+				json!({"scratch_space_id": &space, "run_id": fixture.run}),
+			))
+	};
+	{
+		let _failure = stop()
+			.respond_with(ResponseTemplate::new(503).set_body_json(json!({"code":"stop_failed"})))
+			.expect(1)
+			.mount_as_scoped(&runner)
+			.await;
+		assert!(repository.check(target).await.is_err());
+	}
+	let restarted = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	assert!(restarted.targets().await.unwrap().contains(&target));
+	stop()
+		.respond_with(ResponseTemplate::new(200).set_body_json(json!({"stopped":[]})))
+		.expect(1)
+		.mount(&runner)
+		.await;
+	assert_eq!(restarted.check(target).await.unwrap(), Outcome::Allowed);
+	assert!(!restarted.targets().await.unwrap().contains(&target));
 }
 
 #[rstest]

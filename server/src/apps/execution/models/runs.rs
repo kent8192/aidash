@@ -90,6 +90,9 @@ END",
 		generated_stored = true
 	)]
 	pub pending_human_request_id: Option<uuid::Uuid>,
+	/// Authority and Scratch Space recorded before a stdio session may start.
+	#[field(null = true)]
+	pub stdio_session: Option<Json<Value>>,
 }
 
 impl Run {

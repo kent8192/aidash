@@ -112,13 +112,17 @@ impl StdioPluginHost for StdioHost {
 	async fn pod(&self) -> Result<Option<StdioPod>> {
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result = crate::apps::execution::repositories::operations::pods::tool_context(
-			&self.store,
-			&mut access,
-			&self.run.metadata(),
-		)
-		.await
-		.map_err(Into::into);
+		use crate::apps::execution::repositories::operations::{pod_sessions, pods};
+		let result = async {
+			let context =
+				pods::tool_context(&self.store, &mut access, &self.run.metadata()).await?;
+			if let Some(context) = &context {
+				pod_sessions::register_stdio(&mut access, self.run.id, context.scratch_space_id())
+					.await?;
+			}
+			Ok(context)
+		}
+		.await;
 		let context = access.finish(result).await?;
 		Ok(context.map(|context| StdioPod {
 			runtime: context.runtime,

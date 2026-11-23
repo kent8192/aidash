@@ -3567,7 +3567,6 @@ impl Store {
 				.await?;
 			}
 			self.close_plugin_sessions_soon(saved.id);
-			self.stop_python_soon(saved.id);
 		}
 		self.run_event(
 			tx,
@@ -3841,22 +3840,7 @@ impl Store {
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		self.close_plugin_sessions_soon(run.id);
-		self.stop_python_soon(run.id);
 		Ok(())
-	}
-
-	/// Stops an ended Run's Python session in its Execution Pod without making
-	/// the caller wait. A paused Run keeps its session for when it resumes.
-	fn stop_python_soon(&self, run: Uuid) {
-		let store = self.clone();
-		tokio::spawn(async move {
-			if let Err(error) =
-				crate::apps::execution::repositories::operations::pods::stop_python(&store, run)
-					.await
-			{
-				tracing::info!(%run, %error, "Python session not stopped at the Run's end");
-			}
-		});
 	}
 
 	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for

@@ -381,6 +381,7 @@ pub(crate) fn reply(status: &str) -> CommandResult {
 		error_code: None,
 		message: None,
 		python_result: None,
+		pod_uid: None,
 		left_running: None,
 		session_replaced: None,
 	}

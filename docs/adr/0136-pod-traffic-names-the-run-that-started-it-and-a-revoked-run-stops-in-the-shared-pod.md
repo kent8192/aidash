@@ -29,3 +29,9 @@ ADR 0137: the Run credential also admits requests to the Scratch Space's Externa
 ## Amendment (2026-11-17)
 
 A Run that a Remote Grant started runs its commands in the receiving Node's Delegated Run Scratch Space under the receiving Node's authority for that Run, and its credential names that Run as for a local one (ADR 0139). Removing a tool from either Federation tool list stops its commands as a withdrawal does.
+
+## Read Recheck targets (#1026, #1027)
+
+The Read Recheck keeps the Task execution of an adopted Background process in scope until Kubernetes confirms a different Pod UID or the supervisor authenticates that it reaped the last descendant. The Runner gives the supervisor a private key before launch. The signed result binds the kernel observation to the adopted operation and Task execution. Missing records and unverified results keep the target. Older commands can be retired when their original Pod UID is known and has changed.
+
+A Python cell's operation and the stdio MCP session registration keep their Task execution in scope between worker boundaries. The server saves the stdio registration before handing out the Pod context. When the Task execution reaches a terminal phase, the Read Recheck retries a Runner stop for its sessions until the Runner confirms it. The Runner records a fence before stopping the sessions so a delayed start cannot reopen them. A pause can keep the interpreter for later use and can close stdio sessions without fencing a later start. A refusal still records the durable Egress revocation before asking the Runner to stop the Task execution's work.
