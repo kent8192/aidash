@@ -190,6 +190,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_policy_revision_backfill"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -256,6 +257,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_policy_revision_backfill"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -741,6 +743,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -2486,6 +2489,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5161,6 +5165,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_policy_revision_backfill"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5741,6 +5746,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5840,6 +5846,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5947,6 +5954,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6833,6 +6841,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
 			("execution", "0152_stint_leases"),
@@ -6909,7 +6918,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 /// renaming `schedule.create` in place (#1009 review).
 #[rstest]
 #[tokio::test]
-async fn default_member_policy_from_before_scratch_spaces_gains_every_later_grant(
+async fn default_member_policy_upgrade_preserves_authorization_history(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange: the history without 0067 and everything that follows it, and a
@@ -6976,7 +6985,12 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 		"resources": {"ids": [], "kinds": ["*"]},
 		"condition": null
 	});
-	let document = json!({"tenant": tenant, "subjects": {}, "policies": [members]});
+	let document = json!({
+		"tenant": tenant,
+		"groups": {"members": {}},
+		"subjects": {"alice": {"kind": "user", "groups": ["members"]}},
+		"policies": [members]
+	});
 	for sql in [
 		Query::insert()
 			.into_table(Alias::new("tenants"))
@@ -6996,19 +7010,54 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 			.values_panic::<_, reinhardt::query::Value>([
 				tenant.into(),
 				1_i64.into(),
-				document.into(),
+				document.clone().into(),
 			])
 			.to_string(PostgresQueryBuilder),
 	] {
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	sqlx::query(
+		"INSERT INTO authorization_revisions (tenant, revision, document, actor) VALUES ($1, 1, $2, 'fixture')",
+	)
+	.bind(tenant)
+	.bind(document)
+	.execute(&pool)
+	.await
+	.unwrap();
+
 	// Act
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[("identity", "0114_policy_revision_backfill")])
+		.await;
+
+	let authorization = aidash_server::apps::identity::services::Authorization {
+		pool: pool.clone().into(),
+	};
+	let evaluate = async |tenant: &str| {
+		let input = serde_json::from_value(json!({
+			"subject": "alice",
+			"action": "registry.create",
+			"resource": {"tenant": tenant, "kind": "registry", "id": "fixture"}
+		}))
+		.unwrap();
+		authorization.evaluate(tenant, &input).await.unwrap()
+	};
+	let decision = evaluate(tenant).await;
+	assert!(decision.allowed);
+	assert_eq!(decision.revision, 6);
+	let revisions: Vec<i64> = sqlx::query_scalar(
+		"SELECT revision FROM authorization_revisions WHERE tenant = $1 ORDER BY revision",
+	)
+	.bind(tenant)
+	.fetch_all(&pool)
+	.await
+	.unwrap();
+	assert_eq!(revisions, [1, 2, 3, 4, 5, 6]);
 
 	// Assert: Scratch Spaces (0067), Duties (0080, renamed by 0098), Subnodes
 	// (0098) and the Thread actions (0111) are granted, and no old name is left.
-	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let document: serde_json::Value =
 		sqlx::query_scalar("SELECT document FROM authorization_bundles WHERE tenant = $1")
 			.bind(tenant)
@@ -7036,6 +7085,34 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 	for former in ["schedule.create", "workspace.create", "workspace.read"] {
 		assert!(!actions.contains(former), "{former}: {document}");
 	}
+	// A Tenant upgraded by the original migrations has a live document but
+	// no matching history row. Give it a gap whose old document is unknown.
+	let legacy_tenant = "member-policy-legacy-upgrade";
+	fixture.tenant_root(legacy_tenant).await;
+	let mut legacy_document = document;
+	legacy_document["tenant"] = json!(legacy_tenant);
+	sqlx::query(
+		"INSERT INTO authorization_bundles (tenant, revision, document) VALUES ($1, 6, $2)",
+	)
+	.bind(legacy_tenant)
+	.bind(&legacy_document)
+	.execute(&pool)
+	.await
+	.unwrap();
+
+	fixture.migrate().await;
+
+	let decision = evaluate(legacy_tenant).await;
+	assert!(decision.allowed);
+	assert_eq!(decision.revision, 6);
+	let repaired: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+		"SELECT revision, document FROM authorization_revisions WHERE tenant = $1 ORDER BY revision",
+	)
+	.bind(legacy_tenant)
+	.fetch_all(&pool)
+	.await
+	.unwrap();
+	assert_eq!(repaired, [(6, legacy_document)]);
 	pool.close().await;
 }
 
