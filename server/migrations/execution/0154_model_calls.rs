@@ -55,7 +55,7 @@ pub(super) fn migration() -> Migration {
 				deferrable: None,
 			},
 				Constraint::Check { name: "model_calls_owner".into(), expression: "(run_id IS NULL) = (stint_id IS NULL)".into() },
-				Constraint::Check { name: "model_calls_purpose".into(), expression: "purpose IN ('compaction_summary','memory_role','workbench_test','media_check','mcp_sampling')".into() },
+				Constraint::Check { name: "model_calls_purpose".into(), expression: "purpose IN ('compaction_summary','memory_role','workbench_test','mcp_sampling')".into() },
 				Constraint::Check { name: "model_calls_digest".into(), expression: "request_digest ~ '^sha256:[0-9a-f]{64}$'".into() },
 				Constraint::Check { name: "model_calls_outcome".into(), expression: "(outcome IS NULL) = (ended_at IS NULL) AND (outcome IS NULL OR outcome IN ('accepted','failed','refused')) AND (ended_at IS NULL OR ended_at >= started_at)".into() },
 			],

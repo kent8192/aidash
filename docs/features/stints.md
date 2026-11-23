@@ -30,7 +30,7 @@ Inference Attempt records its Stint, making cost per awake stretch visible.
 ## Model Calls
 
 A Model Call records a request for a compaction summary, a memory role, a
-Workbench test, a media admission check or an MCP sample
+Workbench test or an MCP sample
 ([ADR 0144](../adr/0144-native-is-the-only-projection-version-and-model-requests-outside-run-steps-are-model-calls.md)).
 The request uses Native model input. The record contains the model version, a
 SHA-256 digest of its canonical input, the outcome, reported usage and cost,
@@ -39,12 +39,13 @@ and the start and end times. Prompt and response contents are excluded from the 
 An awake execution's Stint owns its Model Calls. Other work belongs to its
 Tenant and Node. Workbench tests use the Tenant's default Node. Memory retries
 of the same request have separate Usage Records under the original Model
-Call. MCP sampling keeps its Run Budget attribution. A media admission check
-measures a proposed request locally and has no provider usage.
+Call. MCP sampling keeps its Run Budget attribution. Media admission checks
+validate proposed requests locally without invoking a provider.
 
 `GET /api/executions/{id}` returns each Stint with its `model_calls` array.
 `GET /api/tenants/{tenant}/administration` returns `model_call_usage` by
-purpose for callers who can manage the Tenant's Budgets.
+purpose for callers who can manage the Tenant's Budgets. The same totals
+appear in the Tenant's Budgets panel.
 
 ## What stays with the Task
 

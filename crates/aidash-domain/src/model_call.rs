@@ -14,7 +14,6 @@ pub enum Purpose {
 	CompactionSummary,
 	MemoryRole,
 	WorkbenchTest,
-	MediaCheck,
 	McpSampling,
 }
 
@@ -24,7 +23,6 @@ impl Purpose {
 			Self::CompactionSummary => "compaction_summary",
 			Self::MemoryRole => "memory_role",
 			Self::WorkbenchTest => "workbench_test",
-			Self::MediaCheck => "media_check",
 			Self::McpSampling => "mcp_sampling",
 		}
 	}

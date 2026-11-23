@@ -511,6 +511,40 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			.await;
 		assert_eq!(status, 200, "{path}: {saved}");
 	}
+	// A standalone Model Call has no Run through which to select its Usage Record.
+	let pool = d.federation.store.pool.fixture_driver();
+	let standalone_calls = [Uuid::new_v4(), Uuid::new_v4()];
+	for (node, call) in [
+		(&target, standalone_calls[0]),
+		(&sibling, standalone_calls[1]),
+	] {
+		sqlx::query(
+			"INSERT INTO model_calls
+			 (id, tenant, node, purpose, model_id, model_version, request_digest, started_at)
+			 VALUES ($1, $2, $3, 'workbench_test', 'fixture', '1', $4, now())",
+		)
+		.bind(call)
+		.bind(&tenant)
+		.bind(node)
+		.bind(format!("sha256:{}", "0".repeat(64)))
+		.execute(pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO inference_usage
+			 (attempt_id, tenant, lease_token, response_epoch, model_id, model_version,
+			  projection_version, harness_contract, estimator, estimator_version,
+			  estimated_tokens, estimate_confidence, purpose, outcome, model_call_id)
+			 VALUES ($1, $2, $1, 0, 'fixture', '1', 3, 5, 'bytes', 1, 32,
+			  'conservative', 'auxiliary', 'dispatched', $3)",
+		)
+		.bind(Uuid::new_v4())
+		.bind(&tenant)
+		.bind(call)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
 	let deletion = request_purge(&d, &tenant, &target).await;
 	let shared_audit = Uuid::new_v4();
 	sqlx::query("INSERT INTO dashboard_administration_history (id,occurred_at,action,tenant,subject,node,actor_kind) VALUES ($1,clock_timestamp(),'fixture.shared',$2,$3,NULL,'deployment_administrator')").bind(shared_audit).bind(&tenant).bind(&target).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -626,6 +660,18 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		1
 	);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM node_deletions WHERE id='{deletion}' AND purged_at IS NOT NULL AND purge_step IS NULL")).await,1);
+	for (call, expected) in [(standalone_calls[0], 0), (standalone_calls[1], 1)] {
+		for (table, key) in [("model_calls", "id"), ("inference_usage", "model_call_id")] {
+			assert_eq!(
+				d.count(&format!(
+					"SELECT count(*) FROM {table} WHERE {key}='{call}'"
+				))
+				.await,
+				expected,
+				"{table} for standalone Model Call {call}"
+			);
+		}
+	}
 	for (node, expected) in [(&target, 0), (&sibling, 1)] {
 		assert_eq!(
 			d.count(&format!(

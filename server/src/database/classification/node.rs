@@ -9,6 +9,7 @@ use crate::{Error, Result};
 pub enum Root {
 	Thread,
 	Run,
+	ModelCall,
 	Task,
 	Area,
 	Request,
@@ -132,6 +133,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"core_operations" => Link("area_id", Area),
 		"core_runs" | "egress_run_revocations" | "stints" => Link("run_id", Run),
 		"model_calls" => Node("node"),
+		"inference_usage" => Either("run_id", Run, "model_call_id", ModelCall),
 		"delegations"
 		| "memory_task_participants"
 		| "generation_remote_intents" => Link("task_id", Task),
@@ -160,7 +162,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "generation_usage"
 		| "human_requests"
 		| "inference_attempts"
-		| "inference_usage"
 		| "invocations"
 		| "run_inputs"
 		| "run_task_snapshots"

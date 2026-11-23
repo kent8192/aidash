@@ -543,9 +543,6 @@ impl HarnessManagement {
 		let principal = lease.principal();
 		let limit = f.run_message_limit(&run).await?;
 		let mut lease = lease.into_native().await?;
-		use crate::apps::execution::repositories::model_calls;
-		use aidash_domain::model_call::{Dispatch, Outcome, Purpose};
-		let mut refused = None;
 		let result = async {
 			let (existing, record) = crate::apps::execution::models::RunInput::admit_media(
 				lease.tx(),
@@ -621,38 +618,12 @@ impl HarnessManagement {
 				json!({"run_message":input.content}),
 				parts,
 			);
-			let dispatch = Dispatch::new(Purpose::MediaCheck, &request)?;
-			let owner = model_calls::Attribution::for_run(lease.tx(), id).await?;
-			let attempt = Uuid::new_v4();
-			let model = agent.model;
-			let checked = (|| -> Result<()> {
-				request.validate()?;
-				crate::generation::budget::Reservation::check_request(headroom, &request)?;
-				Ok(())
-			})();
-			if let Err(error) = checked {
-				refused = Some((attempt, owner, model, dispatch));
-				return Err(error);
-			}
-			model_calls::start(lease.tx(), attempt, &owner, &model, &dispatch).await?;
-			model_calls::finish(lease.tx(), attempt, Outcome::Accepted, None).await
+			request.validate()?;
+			crate::generation::budget::Reservation::check_request(headroom, &request)?;
+			Ok(())
 		}
 		.await;
-		let finished = lease.finish(result).await;
-		// Preserve the refusal while rolling back the input and attachment rows.
-		if let Some((attempt, owner, model, dispatch)) = refused {
-			f.store
-				.control_pool
-				.atomic(
-					&aidash_application::tenancy::TenancyScope::tenant(&owner.tenant)?,
-					async |tx| {
-						model_calls::start(tx, attempt, &owner, &model, &dispatch).await?;
-						model_calls::finish(tx, attempt, Outcome::Refused, None).await
-					},
-				)
-				.await?;
-		}
-		finished?;
+		lease.finish(result).await?;
 		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
 	}

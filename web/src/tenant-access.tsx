@@ -71,6 +71,9 @@ export function TenantAccess({
         key={`budgets-${tenant}`}
         tenant={tenant}
         subject={subject}
+        modelCallUsage={
+          overview.isError ? undefined : overview.data?.model_call_usage
+        }
       />
       <OrgChartPanel key={`org-chart-${tenant}`} tenant={tenant} />
       <ExecutionSettings

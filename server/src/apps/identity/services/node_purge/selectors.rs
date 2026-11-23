@@ -32,6 +32,7 @@ impl Owners<'_> {
 		let (parent, key) = match root {
 			Thread => ("threads", "id"),
 			Run => ("task_executions", "id"),
+			ModelCall => ("model_calls", "id"),
 			Task => ("tasks", "id"),
 			Area => ("core_areas", "id"),
 			Request => ("generation_requests", "id"),
