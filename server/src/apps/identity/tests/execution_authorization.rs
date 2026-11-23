@@ -7546,6 +7546,21 @@ async fn task_delegate_explains_a_policy_denial_for_the_runs_own_task(
 	let rig = SubnodeRig::new(&f, &fixture.application, &["delegate-target"], true).await;
 	let creator = rig.creator_run;
 	let task = rig.create_task(creator, "Review", &[]).await;
+	// Exercise the tool's refusal when the Task has a creation origin and its read
+	// is absent from the Run's journal. A recorded read would instead stop the
+	// Run at its own Read Recheck before it reached the tool.
+	assert_eq!(
+		sqlx::query(
+			"DELETE FROM authorization_run_reads WHERE run_id = $1 AND resource_kind = 'task' AND resource_id = $2"
+		)
+		.bind(creator)
+		.bind(task)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+		.rows_affected(),
+		1,
+	);
 	let mut policy = rig.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-own-task-read",
