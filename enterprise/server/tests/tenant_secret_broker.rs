@@ -910,6 +910,7 @@ impl aidash_application::egress::EgressScopes for GatewayScopes {
 		_: aidash_application::egress::Direction,
 		_: u64,
 		_: chrono::NaiveDate,
+		_: Uuid,
 	) -> Result<(), Error> {
 		unreachable!("a service request is metered by its own meter")
 	}
