@@ -2,7 +2,7 @@
 //! "disabling or removing the creating Agent deletes its Subnodes").
 //!
 //! After a Catalog Approval is withdrawn or disabled, or the Tenant's policy
-//! is saved, the change has committed: [`sweep`] then finds the active
+//! is saved, or generation retires an Agent, [`sweep`] finds the active
 //! Subnodes whose creating Agent version is definitely unusable on their Node
 //! ([`aidash_domain::subnodes::creator_removed`]) and ends them the way their
 //! creator's own end would, one creating Run per transaction. Each
@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 /// Ends what a committed change made unusable. It holds none of the change's
 /// locks. A failure is logged, not returned: the change itself stands, and the
-/// next withdrawal or policy save in the Tenant sweeps again.
+/// next withdrawal, policy save or retirement in the Tenant sweeps again.
 pub(crate) async fn sweep(store: &Store, tenant: &str) {
 	match end_removed_creators(store, tenant).await {
 		Ok(ended) if !ended.is_empty() => {

@@ -319,9 +319,9 @@ pub async fn control_for_creator(
 /// Deletes a creating Run's active Subnodes when its Agent version is
 /// definitely unusable on their Node (#1012: disabling or removing the
 /// creating Agent deletes its Subnodes). Called after a Catalog Approval is
-/// withdrawn or disabled, or a policy that may disable an Agent subject is
-/// saved; the scope re-reads both under lock, so a decision made from a stale
-/// read never ends a Subnode whose creator was approved again meanwhile.
+/// withdrawn or disabled, after a policy save, or after a generated Agent
+/// retires. The scope re-reads both under lock so it preserves the Subnodes of
+/// a creator whose approval and subject were re-enabled meanwhile.
 ///
 /// Every Subnode of one creating Run has that Run's Agent and Node, so the
 /// whole set ends together, through the same cascade a creator's own end

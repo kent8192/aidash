@@ -4,11 +4,12 @@
 use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use reinhardt::db::backends::{DatabaseConnection, QueryValue, TransactionExecutor};
 use reinhardt::db::orm::AtomicTransaction;
 use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
-use std::{marker::PhantomData, sync::Arc};
+use std::{future::Future, marker::PhantomData, sync::Arc};
 
 /// A pool's connection counts at one moment, for metrics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +124,7 @@ impl Pool {
 			0,
 			Some(Box::new(scope.clone())),
 			Default::default(),
+			Vec::new(),
 		))
 	}
 	/// Like [`Self::begin`], at the serializable isolation level.
@@ -140,6 +142,7 @@ impl Pool {
 			0,
 			Some(Box::new(scope.clone())),
 			Default::default(),
+			Vec::new(),
 		))
 	}
 	/// Run `work` in a transaction opened in `scope`, committing when it
@@ -206,6 +209,8 @@ impl Pool {
 	}
 }
 
+type CommitCheck = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send + Sync>;
+
 pub struct Transaction(
 	Option<Box<dyn TransactionExecutor>>,
 	Pool,
@@ -218,6 +223,7 @@ pub struct Transaction(
 	/// Whether the transaction holds the Deployment's distribution lock, which an
 	/// in-process peer that serves it then does not request again (#751).
 	distribution::Hold,
+	Vec<CommitCheck>,
 );
 // A savepoint rollback issued on the deref'd executor bypasses the lock epoch.
 impl std::ops::Deref for Transaction {
@@ -246,6 +252,7 @@ impl Transaction {
 			self.3,
 			self.4.clone(),
 			self.5.clone(),
+			std::mem::take(&mut self.6),
 		)
 	}
 	/// The tenancy scope the transaction was opened in, if it was opened with one.
@@ -258,6 +265,7 @@ impl Transaction {
 		assert!(self.2.is_empty());
 		self.2 = lent.2;
 		self.3 = lent.3;
+		self.6 = lent.6;
 	}
 	/// Changes whenever a savepoint rollback may have released locks held so far.
 	pub(crate) fn lock_epoch(&self) -> u64 {
@@ -309,14 +317,32 @@ impl Transaction {
 	pub(crate) fn pool(&self) -> &Pool {
 		&self.1
 	}
+	/// Run a check against committed state after this transaction releases its
+	/// locks. Checks re-read durable state, including after savepoint rollback.
+	pub(crate) fn check_after_commit<Fut>(
+		&mut self,
+		check: impl FnOnce() -> Fut + Send + Sync + 'static,
+	) where
+		Fut: Future<Output = ()> + Send + 'static,
+	{
+		self.6.push(Box::new(|| Box::pin(check())));
+	}
+
 	pub async fn commit(self) -> Result<()> {
 		self.prepare_memory_commit().await?;
-		match self.0 {
-			Some(tx) => Ok(tx.commit().await?),
-			None => Err(Error::Conflict(
+		if self.0.is_none() {
+			return Err(Error::Conflict(
 				"transaction is lent to an authority scope".into(),
-			)),
+			));
 		}
+		Ok(self.commit_and_check().await?)
+	}
+	async fn commit_and_check(self) -> reinhardt::db::backends::error::Result<()> {
+		self.0.expect("active transaction").commit().await?;
+		for check in self.6 {
+			check().await;
+		}
+		Ok(())
 	}
 	pub async fn rollback(self) -> Result<()> {
 		match self.0 {
@@ -359,14 +385,26 @@ impl Transaction {
 	}
 	pub async fn into_executor(self) -> Result<Box<dyn TransactionExecutor>> {
 		self.prepare_memory_commit().await?;
-		Ok(self.0.expect("transaction is lent to an authority scope"))
+		if self.6.is_empty() {
+			Ok(self.0.expect("transaction is lent to an authority scope"))
+		} else {
+			Ok(Box::new(self))
+		}
 	}
 }
 #[cfg(test)]
 impl Transaction {
 	/// A connectionless transaction shell for adapter state tests.
 	pub(crate) fn detached(pool: Pool) -> Self {
-		Self(None, pool, Default::default(), 0, None, Default::default())
+		Self(
+			None,
+			pool,
+			Default::default(),
+			0,
+			None,
+			Default::default(),
+			Vec::new(),
+		)
 	}
 }
 impl AsMut<dyn TransactionExecutor> for Transaction {
@@ -758,7 +796,7 @@ impl TransactionExecutor for Transaction {
 			.await
 	}
 	async fn commit(self: Box<Self>) -> reinhardt::db::backends::error::Result<()> {
-		self.0.expect("active transaction").commit().await
+		self.commit_and_check().await
 	}
 	async fn rollback(self: Box<Self>) -> reinhardt::db::backends::error::Result<()> {
 		self.0.expect("active transaction").rollback().await
