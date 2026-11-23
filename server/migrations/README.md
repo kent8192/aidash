@@ -1033,7 +1033,6 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `execution/0154_worker_stints` opens Stints at authorized worker entry. A lease acquired while a Run is waiting for its Working Area creates no Stint. The SQL replaces the trigger function that tracks lease holders and ends Stints, including a Stint already open when its Run has to queue. Reinhardt has no typed operation for a PostgreSQL function body. Reversal restores the phase-based trigger from `execution/0152_stint_leases`.
 
-
 `execution/0155_model_calls` (after `execution/0154_worker_stints`) adds
 prompt-free Model Calls and their links to Compaction Attempts, Inference
 Attempts and Usage Records (#1068, ADR 0144). A recorded call names a Tenant
