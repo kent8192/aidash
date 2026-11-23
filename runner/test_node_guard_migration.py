@@ -13,21 +13,26 @@ import node_guard
 
 class CellDeadlineTest(unittest.TestCase):
     def test_guard_persists_whether_it_stopped_a_live_cell_after_its_deadline(self):
-        for now, expected in ((50, False), (150, True)):
-            with self.subTest(now=now), tempfile.TemporaryDirectory() as directory:
+        for now, finished, expected in ((50, False, False), (150, False, True), (150, True, False)):
+            with self.subTest(now=now, finished=finished), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 area, pod, operation = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
                 record = {'area_id': area, 'pod_uid': pod, 'container_id': 'a' * 64,
                           'epoch': 1, 'image': 'pinned', 'action': 'cell', 'operation_id': operation,
                           'deadline': 100, 'sentry_pid': 42, 'sentry_start': '1'}
                 (root / (area + '.json')).write_text(json.dumps(record))
+                if finished:
+                    (root / 'cells').mkdir()
+                    (root / 'cells' / (operation + '.result')).write_text('{"status":"completed"}')
                 request = dict(record, action='terminate')
                 with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
+                     patch.object(node_guard, 'volume', return_value=root), \
                      patch.object(node_guard, 'validate', return_value=('a' * 64, pod, area, {'status': 'running', 'pid': 42})), \
                      patch.object(node_guard, 'process_identity', return_value=('1', 'S')), \
                      patch.object(node_guard, 'kill_sandbox'), patch.object(node_guard.time, 'time', return_value=now):
                     node_guard.handle(request)
                     status = node_guard.handle(dict(record, action='cell_status'))
+                self.assertEqual(status['status'], 'stopped')
                 self.assertEqual(status['deadline_expired'], expected)
 
 

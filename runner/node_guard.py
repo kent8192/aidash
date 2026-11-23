@@ -106,6 +106,11 @@ def volume(pod, name):
     return Path('/var/lib/kubelet/pods') / pod / 'volumes/kubernetes.io~empty-dir' / name
 
 
+def cell_result_path(pod, operation_id):
+    operation = str(uuid.UUID(operation_id))
+    return volume(pod, 'control-temp') / 'cells' / (operation + '.result')
+
+
 def open_file(root, path):
     parts = path.split('/')
     if len(path.encode()) > 1024 or not parts or any(p in ('', '.', '..') for p in parts) or '\\' in path or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in path):
@@ -603,9 +608,12 @@ def handle(request):
             else:
                 raise ValueError('physical writer stop unconfirmed')
             if bound and previous.get('action') == 'cell' and previous.get('deadline') is not None:
-                if state['status'] in ('running', 'paused') or stop_requested_at < previous['deadline']:
-                    stopped.update(cell_operation_id=previous.get('operation_id'),
-                                   cell_deadline_expired=state['status'] in ('running', 'paused') and stop_requested_at >= previous['deadline'])
+                was_live = state['status'] in ('running', 'paused')
+                after_deadline = stop_requested_at >= previous['deadline']
+                if was_live or not after_deadline:
+                    operation = previous['operation_id']
+                    stopped.update(cell_operation_id=operation, cell_deadline_expired=(
+                        was_live and after_deadline and not cell_result_path(pod, operation).exists()))
             stopped.update(frozen=False, terminated=True, deadline=None)
             save(path, stopped)
             handoff_cleanup(path, stopped)
@@ -649,8 +657,7 @@ def handle(request):
         if op == 'cell_status':
             if state['status'] == 'stopped':
                 return {'status': 'stopped', 'termination_confirmed': True}
-            operation = str(uuid.UUID(request['operation_id']))
-            target = volume(pod, 'control-temp') / 'cells' / (operation + '.result')
+            target = cell_result_path(pod, request['operation_id'])
             if not target.exists():
                 return {'status': 'running'}
             if target.stat().st_size > 24 << 20:
