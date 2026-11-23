@@ -17,6 +17,8 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ProducerScope: SourceAuthorityScope {
 	async fn producer_semantic_sources(&mut self, grant: Uuid) -> Result<()>;
+	/// Restore the viewer and hand back any discoverable silence from the completed check.
+	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()>;
 }
 #[async_trait]
 pub trait SourceReadScope: SourcePeerScope {

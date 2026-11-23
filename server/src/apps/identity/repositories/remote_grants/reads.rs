@@ -27,7 +27,7 @@ use reinhardt::query::{
 	Alias, ColumnRef::Asterisk, Expr, LockType, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 pub(crate) struct Scope<'a> {
@@ -49,8 +49,7 @@ struct Viewer {
 	cached_runs: BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: BTreeMap<Uuid, bool>,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
-	/// The reader's row, which a Node met under the producer's identity must
-	/// not name (#770).
+	/// The reader's row outcome before entering the producer's authority.
 	row_silence: Option<String>,
 	/// The walk's record of what it has visited and passed. It is the viewer's: a
 	/// Run it has visited has not been visited under the grant's chain.
@@ -62,6 +61,11 @@ pub(crate) struct Producer<'a> {
 }
 impl Drop for Producer<'_> {
 	fn drop(&mut self) {
+		self.restore_viewer();
+	}
+}
+impl<'a> Producer<'a> {
+	fn restore_viewer(&mut self) {
 		if let Some(viewer) = self.viewer.take() {
 			self.access.snapshot = viewer.snapshot;
 			self.access.identity = viewer.identity;
@@ -74,8 +78,7 @@ impl Drop for Producer<'_> {
 			self.access.read_lookups.restore_passes(viewer.read_passes);
 		}
 	}
-}
-impl<'a> Producer<'a> {
+
 	/// Read as the grant's root, under its chain, until the producer drops. What the
 	/// viewer's walk has visited and passed belongs to the viewer's chain, so the
 	/// producer starts with none of it, as it starts with none of the viewer's verdicts.
@@ -156,6 +159,25 @@ impl SourceAuthorityScope for Producer<'_> {
 }
 #[async_trait]
 impl ProducerScope for Producer<'_> {
+	async fn finish(mut self: Box<Self>, result: Result<()>) -> Result<()> {
+		let silence = self.access.take_row_silence();
+		self.restore_viewer();
+		// The access already remembers the peer. Attribute the row only after
+		// the viewer's own discovery decision, preserving the first silence.
+		if result.is_err()
+			&& self.access.row_silence.is_none()
+			&& let Some(node) = silence
+		{
+			let resource = self
+				.access
+				.resource("node", &node, json!({"remote_node":node}));
+			if self.access.decide(&resource, "federation.discover").await? {
+				self.access.set_row_silence(Some(node));
+			}
+		}
+		result
+	}
+
 	async fn producer_semantic_sources(&mut self, id: Uuid) -> Result<()> {
 		self.access
 			.remote_semantic_sources(id)
