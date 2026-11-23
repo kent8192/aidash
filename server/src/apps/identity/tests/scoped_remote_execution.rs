@@ -4737,6 +4737,163 @@ async fn the_home_answers_the_tool_ask_of_a_run_that_slept_past_its_grants_lifet
 	p.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn home_tool_asks_resume_only_the_matching_system_pause(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let path = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}/control",
+		p.admission
+	);
+	let resume = |call, key| {
+		common::peer_request(
+			&p.ba,
+			(&p.a, "acme"),
+			&receiver,
+			"",
+			&path,
+			json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": key}}),
+		)
+	};
+	let revision = p.run().await.control_revision;
+	for target in [
+		("stale-call", "task_delegate"),
+		(call.as_str(), "stale-tool"),
+	] {
+		let (status, body) = resume(target.0, target.1).await;
+		assert_eq!(status, 409, "{body}");
+		assert_eq!(p.run().await.control_revision, revision);
+	}
+	let (status, body) = resume(&call, "task_delegate").await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(p.run().await.control, aidash_domain::RunControl::Active);
+
+	p.pause_receiver_on_call().await;
+	let revision = p.run().await.control_revision;
+	let (status, body) = resume(&call, "task_delegate").await;
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(p.run().await.control_revision, revision);
+
+	let overwritten_call = p.pause_receiver_on_home_ask().await;
+	let (status, body) = common::peer_request(
+		&p.ba,
+		(&p.a, "acme"),
+		&receiver,
+		"",
+		&path,
+		json!({"grant_id": p.grant, "action": "pause"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let paused = p.run().await;
+	let (status, body) = resume(&overwritten_call, "task_delegate").await;
+	assert_eq!(status, 409, "{body}");
+	let after = p.run().await;
+	assert_eq!(after.control, aidash_domain::RunControl::Paused);
+	assert_eq!(after.control_source, aidash_domain::ControlSource::Tenant);
+	assert_eq!(after.control_revision, paused.control_revision);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_control_revalidates_the_grants_disabled_identity(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let browser = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let credential = Uuid::parse_str(&browser.credential).unwrap();
+	let db = p.a.store.pool.fixture_driver();
+	// Give the fixture grant the dashboard credential of the same Home subject.
+	sqlx::query("UPDATE authorization_remote_grants SET credential_id = $2 WHERE id = $1")
+		.bind(p.grant)
+		.bind(credential)
+		.execute(db)
+		.await
+		.unwrap();
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let path = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}/control",
+		p.admission
+	);
+	let resume = |input| common::peer_request(&p.ba, (&p.a, "acme"), &receiver, "", &path, input);
+	let call = p.pause_receiver_on_home_ask().await;
+	let input = json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": "task_delegate"}});
+	let (status, body) = resume(input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	p.pause_receiver_on_home_ask().await;
+	let paused = p.run().await;
+	let result = sqlx::query(
+		"UPDATE dashboard_identities SET disabled_at = now() WHERE id = \
+		 (SELECT identity_id FROM dashboard_mappings WHERE credential_id = $1)",
+	)
+	.bind(credential)
+	.execute(db)
+	.await
+	.unwrap();
+	assert_eq!(result.rows_affected(), 1);
+	for input in [input, json!({"grant_id": p.grant, "action": "resume"})] {
+		let (status, body) = resume(input).await;
+		assert_eq!(status, 403, "{body}");
+		let after = p.run().await;
+		assert_eq!(after.control, aidash_domain::RunControl::Paused);
+		assert_eq!(after.control_revision, paused.control_revision);
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_control_keeps_the_receivers_safety_stop(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let revision = p.run().await.control_revision;
+	let token = format!("Bearer {}", p.b.config.api_token);
+	let operation = Uuid::new_v4().to_string();
+	let stop = common::http_response(
+		&p.ba,
+		"POST",
+		&format!("/api/executions/{}/management", p.admission),
+		&[("authorization", &token), ("content-type", "application/json"), ("idempotency-key", &operation)],
+		&serde_json::to_vec(&json!({"tenant":"acme","action":"pause","expected_control_revision":revision,"reason":"stop the receiver"})).unwrap(),
+	)
+	.await;
+	assert_eq!(stop.status_code(), 200, "{:?}", stop.body());
+	let stopped = p.run().await;
+	assert_eq!(
+		stopped.control_source,
+		aidash_domain::ControlSource::DeploymentAdministrator
+	);
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let prefix = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}",
+		p.admission
+	);
+	let control = format!("{prefix}/control");
+	let declines = format!("{prefix}/declined-calls");
+	for (path, input) in [
+		(&control, json!({"grant_id": p.grant, "action": "resume"})),
+		(
+			&control,
+			json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": "task_delegate"}}),
+		),
+		(&control, json!({"grant_id": p.grant, "action": "pause"})),
+		(&declines, json!({"grant_id": p.grant, "call": call})),
+	] {
+		let (status, body) =
+			common::peer_request(&p.ba, (&p.a, "acme"), &receiver, "", path, input).await;
+		assert_eq!(status, 409, "{body}");
+		let after = p.run().await;
+		assert_eq!(after.control, aidash_domain::RunControl::Paused);
+		assert_eq!(after.control_source, stopped.control_source);
+		assert_eq!(after.control_revision, stopped.control_revision);
+	}
+	p.close().await;
+}
+
 /// The hourly renewal (ADR 0109 amendment of 2026-11-17) uses the Home's one
 /// liveness rule (#1013 review): a grant whose activation the Home never
 /// recorded is not renewed, though its Run is bound and its Task claimed. Once
