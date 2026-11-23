@@ -38,6 +38,7 @@ fn task() -> crate::Task {
 		created_by: "requester".into(),
 		dependencies: vec![],
 		parent_id: None,
+		started_by_duty: None,
 		revision: 7,
 		created_at: chrono::TimeZone::timestamp_opt(&Utc, 1, 0).unwrap(),
 	}

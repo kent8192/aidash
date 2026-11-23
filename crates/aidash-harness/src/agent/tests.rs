@@ -1866,6 +1866,7 @@ fn fixture() -> Fixture {
 			created_by: "human".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 0,
 			created_at: now,
 		}),

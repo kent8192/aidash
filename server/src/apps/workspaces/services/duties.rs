@@ -6,6 +6,7 @@ use crate::apps::workspaces::repositories::duties::{self as repository, Filter, 
 use crate::apps::workspaces::serializers::duties::{DetailView, DutyNotice, DutyView, NoticesView};
 use crate::{
 	Error, Result,
+	apps::execution::repositories::store::DutyTaskStart,
 	authorization::{
 		access::Access,
 		identity::{Actor, SubjectIdentity},
@@ -536,10 +537,11 @@ pub(crate) async fn start_with(
 			description,
 			read_pages: vec![],
 		},
-		// The Task records its Duty before its Run is claimed, so the claim
-		// pins the Duty's mission and procedure, and Budgets charge its
-		// spend, and its descendants', to the Duty.
-		Some(duty.id),
+		Some(if scheduled {
+			DutyTaskStart::Automatic(duty.id)
+		} else {
+			DutyTaskStart::Manual(duty.id)
+		}),
 	)
 	.await?;
 	task.ok_or_else(|| Error::Conflict("this tick already started".into()))

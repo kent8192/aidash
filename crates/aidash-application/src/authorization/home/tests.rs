@@ -92,6 +92,7 @@ fn task() -> Task {
 		created_by: "requester".into(),
 		dependencies: vec![Uuid::from_u128(90)],
 		parent_id: Some(Uuid::from_u128(91)),
+		started_by_duty: None,
 		revision: 7,
 		created_at: Utc.timestamp_opt(1, 0).unwrap(),
 	}
