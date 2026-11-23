@@ -21,7 +21,11 @@ use crate::apps::workspaces::models::{
 	ScratchSpace as SpaceRecord, ScratchSpaceMember as MemberRecord,
 	ScratchSpaceSettings as SettingsRecord,
 };
-use crate::{Error, Result, apps::identity::services::access::Access};
+use crate::{
+	Error, Result,
+	apps::{execution::repositories::egress, identity::services::access::Access},
+	store::Store,
+};
 
 /// Resolve an operator-named Space before opening its Tenant transaction.
 pub(crate) async fn tenant_by_id(pool: &crate::database::native::Pool, id: Uuid) -> Result<String> {
@@ -812,7 +816,7 @@ impl ScratchServices for NativeScratchServices<'_> {
 		// to certain subjects or Agents, covers it (#738). Services already on the
 		// Space are not passed here, so a later withdrawal never blocks a save.
 		let tenant = access.identity.tenant.clone();
-		let usable = crate::apps::execution::repositories::egress::usable_services(
+		let usable = egress::usable_services(
 			&mut access.tx,
 			&tenant,
 			node.as_str(),
@@ -1019,8 +1023,7 @@ async fn registered_service(access: &mut Access, id: &str) -> Result<bool> {
 		.is_empty())
 }
 
-/// Whether one External service on a Scratch Space is usable now, and the reason
-/// when it is not: `not_found`, `not_approved` or `approval_limited` (#738).
+/// Whether one External service on a Scratch Space is usable now.
 pub(crate) struct ServiceState {
 	pub id: String,
 	pub usable: bool,
@@ -1029,11 +1032,12 @@ pub(crate) struct ServiceState {
 
 /// The state of every External service on `space`, for its settings display.
 pub(crate) async fn service_states(
+	store: &Store,
 	access: &mut Access,
 	space: &ScratchSpace,
 ) -> Result<Vec<ServiceState>> {
 	let tenant = access.identity.tenant.clone();
-	let usable = crate::apps::execution::repositories::egress::usable_services(
+	let usable = egress::usable_services(
 		&mut access.tx,
 		&tenant,
 		space.node.as_str(),
@@ -1043,7 +1047,13 @@ pub(crate) async fn service_states(
 	let mut states = Vec::new();
 	for (id, result) in usable {
 		let reason = match result {
-			Ok(_) => None,
+			Ok(entry) => {
+				let exceeds_limits =
+					aidash_domain::egress::definition(&entry).is_ok_and(|definition| {
+						egress::check_service_limits(store, &definition).is_err()
+					});
+				exceeds_limits.then_some("limits_exceeded")
+			}
 			Err(reason) if reason == aidash_domain::egress::SERVICE_APPROVAL_LIMITED => {
 				Some("approval_limited")
 			}
@@ -1062,6 +1072,7 @@ pub(crate) async fn service_states(
 /// The External services of a Run's Scratch Space that are usable now, as its
 /// starting instructions list them. Empty when the Space is gone or not Active.
 pub(crate) async fn usable_lines(
+	store: &Store,
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	space: Uuid,
@@ -1072,7 +1083,7 @@ pub(crate) async fn usable_lines(
 	if space.state != aidash_domain::scratch::ScratchState::Active {
 		return Ok(Vec::new());
 	}
-	let usable = crate::apps::execution::repositories::egress::usable_services(
+	let usable = egress::usable_services(
 		tx,
 		tenant,
 		space.node.as_str(),
@@ -1085,6 +1096,9 @@ pub(crate) async fn usable_lines(
 		let Ok(definition) = aidash_domain::egress::definition(&entry) else {
 			continue;
 		};
+		if egress::check_service_limits(store, &definition).is_err() {
+			continue;
+		}
 		let description = entry
 			.description
 			.get("en")

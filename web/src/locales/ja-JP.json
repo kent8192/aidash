@@ -1121,6 +1121,7 @@
   "scratchServiceApprovalLimited": "特定のユーザーまたはエージェントにのみ承認されているため、スクラッチスペースでは使用できません",
   "scratchServiceNotFound": "登録されていません",
   "scratchServiceNotApproved": "このノードで全員を対象とするカタログ承認がありません",
+  "scratchServiceLimitsExceeded": "サービスの制限値がデプロイメントの上限を超えています",
   "scratchHostsWithinTenant": "ホストはテナントの許可リストに含まれている必要があります。",
   "scratchDockerUnavailable": "このテナントでは、デプロイメントの運用者が Docker を許可していません。",
   "scratchCreator": "作成者",

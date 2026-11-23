@@ -1276,6 +1276,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		};
 		let mut tx = store.pool.begin(scope).await?;
 		let lines = crate::apps::workspaces::repositories::scratch::usable_lines(
+			store,
 			&mut tx,
 			&tenant,
 			authority.guard.scratch_space_id,

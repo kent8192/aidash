@@ -39,6 +39,19 @@ const split = (value: string) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+function serviceReasonKey(reason: string | null | undefined) {
+  switch (reason) {
+    case "approval_limited":
+      return "scratchServiceApprovalLimited";
+    case "not_found":
+      return "scratchServiceNotFound";
+    case "limits_exceeded":
+      return "scratchServiceLimitsExceeded";
+    default:
+      return "scratchServiceNotApproved";
+  }
+}
+
 function Edit({
   space,
   limits,
@@ -157,16 +170,7 @@ function Edit({
           <Notice key={service.id}>
             {t("scratchServiceUnusable")
               .replace("{id}", service.id)
-              .replace(
-                "{reason}",
-                t(
-                  service.reason === "approval_limited"
-                    ? "scratchServiceApprovalLimited"
-                    : service.reason === "not_found"
-                      ? "scratchServiceNotFound"
-                      : "scratchServiceNotApproved",
-                ),
-              )}
+              .replace("{reason}", t(serviceReasonKey(service.reason)))}
           </Notice>
         ))}
       <Field label={t("scratchCpu")}>
