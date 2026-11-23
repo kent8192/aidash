@@ -260,9 +260,13 @@ impl ReadRecheckRepository for Repository<'_> {
 		match checked {
 			Ok(true) => Ok(Outcome::Allowed),
 			Ok(false) => Ok(Outcome::Unconfirmed),
-			Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
-				Ok(Outcome::Refused)
-			}
+			Err(
+				Error::Forbidden
+				| Error::Unauthorized
+				| Error::CredentialForbidden(_)
+				| Error::AccountSuspended { .. }
+				| Error::NotFound(_),
+			) => Ok(Outcome::Refused),
 			// A Node that does not answer refuses nothing (#906, ADR 0117).
 			Err(Error::NodeUnreachable { .. }) => Ok(Outcome::Unconfirmed),
 			Err(error) => Err(error.into()),

@@ -228,32 +228,29 @@ impl StatusRecovery for Recovery {
 		};
 		let policy = pool.dashboard_policy();
 		// A suspension requires a separate, explicit administrator authorization.
-		// Lock the Run and rebind its origin in the same transaction as resume.
+		// Recheck the owner before locking the paused Run, in the manual resume's lock order.
 		{
+			use crate::apps::execution::services::states::RunControl;
 			use reinhardt::db::orm::Model;
-			let suspended_epoch = Run::objects()
-				.filter(Run::field_id().eq(run))
-				.filter(
-					Run::field_control()
-						.eq(crate::apps::execution::services::states::RunControl::Paused),
-				)
-				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+			let suspended = || {
+				Run::objects()
+					.filter(Run::field_id().eq(run))
+					.filter(Run::field_control().eq(RunControl::Paused))
+					.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+			};
+			let paused_run = suspended()
 				.all_with_executor(access.tx.native_mut())
 				.await
-				.map_err(|error| {
-					crate::Error::from(reinhardt::core::exception::Error::from(error))
-				})?
-				.pop()
-				.and_then(|row| {
-					row.pending
-						.0
-						.get("recovery")
-						.and_then(|v| v.get("account_suspension_epoch"))
-						.and_then(|v| v.as_u64())
-				});
-			if let Some(epoch) = suspended_epoch {
-				// Only a Run the administrator's choice covers is rechecked, so a Run
-				// waiting on an unauthorized epoch costs no permission check per pass.
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?
+				.pop();
+			if let Some(paused_run) = paused_run {
+				let Some(epoch) =
+					paused_run.pending.0["recovery"]["account_suspension_epoch"].as_u64()
+				else {
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				};
+				let revision = paused_run.revision;
 				if !DashboardExecutionOrigin::suspension_resumable(
 					&mut **access.tx,
 					run,
@@ -264,51 +261,50 @@ impl StatusRecovery for Recovery {
 				{
 					return access.finish(Ok(false)).await.map_err(Into::into);
 				}
-				// The administrator's choice stands in for the owner's manual resume, so
-				// the owner's local permissions are rechecked as that resume would: a Run
-				// whose owner lost them stays paused (#876 decision 16, ADR 0132). This
-				// runs before the Run row lock, in the manual resume's lock order.
 				let (returned, allowed) =
 					super::execution::control::recheck_resume(&self.federation, access, run).await;
 				access = returned;
-				if let Err(error) = allowed {
-					use aidash_application::Error as Refusal;
-					if !matches!(
-						error,
-						Refusal::Forbidden
-							| Refusal::Unauthorized
-							| Refusal::AccountSuspended { .. }
-							| Refusal::ResumeBlocked(_)
-					) {
-						tracing::warn!(run_id = %run, %error, "automatic suspension resume could not recheck the owner");
+				let refusal = match allowed {
+					Ok(()) => None,
+					Err(error) => match access.named(error.into()) {
+						error @ (crate::Error::Forbidden
+						| crate::Error::Unauthorized
+						| crate::Error::CredentialForbidden(_)
+						| crate::Error::AccountSuspended { .. }
+						| crate::Error::ResumeBlocked(_)) => Some(error),
+						error => {
+							tracing::warn!(run_id = %run, %error, "automatic suspension resume could not recheck the owner");
+							return access.finish(Ok(false)).await.map_err(Into::into);
+						}
+					},
+				};
+				// A concurrent control can change the pause while the owner is being
+				// checked. Apply the decision only to the pause we just examined.
+				let row = suspended()
+					.filter(Run::field_revision().eq(revision))
+					.select_for_update()
+					.all_with_executor(access.tx.native_mut())
+					.await
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(crate::Error::from)?
+					.pop();
+				let Some(mut row) = row else {
+					access.discard_pending_decisions();
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				};
+				if let Some(refusal) = refusal {
+					let fingerprint = access.suspension_resume_refusal(epoch, revision, &refusal);
+					if !DashboardExecutionOrigin::record_suspension_resume_refusal(
+						&mut **access.tx,
+						run,
+						&fingerprint,
+					)
+					.await?
+					{
+						access.discard_pending_decisions();
 					}
 					return access.finish(Ok(false)).await.map_err(Into::into);
 				}
-			}
-			let row = Run::objects()
-				.filter(Run::field_id().eq(run))
-				.filter(
-					Run::field_control()
-						.eq(crate::apps::execution::services::states::RunControl::Paused),
-				)
-				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
-				.select_for_update()
-				.all_with_executor(access.tx.native_mut())
-				.await
-				.map_err(|error| {
-					crate::Error::from(reinhardt::core::exception::Error::from(error))
-				})?
-				.pop();
-			if let Some(mut row) = row {
-				let Some(epoch) = row
-					.pending
-					.0
-					.get("recovery")
-					.and_then(|v| v.get("account_suspension_epoch"))
-					.and_then(|v| v.as_u64())
-				else {
-					return access.finish(Ok(false)).await.map_err(Into::into);
-				};
 				if !DashboardExecutionOrigin::rebind_suspended(
 					&mut **access.tx,
 					run,
@@ -327,16 +323,15 @@ impl StatusRecovery for Recovery {
 				{
 					recovery.remove("account_suspension_epoch");
 				}
-				row.control = crate::apps::execution::services::states::RunControl::Active;
+				row.control = RunControl::Active;
 				row.error = None;
 				row.revision += 1;
 				row.updated_at = Utc::now();
 				Run::objects()
 					.save_with_executor(access.tx.native_mut(), &row)
 					.await
-					.map_err(|error| {
-						crate::Error::from(reinhardt::core::exception::Error::from(error))
-					})?;
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(crate::Error::from)?;
 				return access.finish(Ok(true)).await.map_err(Into::into);
 			}
 		}

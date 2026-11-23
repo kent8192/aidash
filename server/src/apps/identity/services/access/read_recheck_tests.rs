@@ -1121,6 +1121,188 @@ async fn a_live_preview_that_cannot_be_confirmed_stops_without_blaming_authority
 	);
 }
 
+struct SuspensionAuthority {
+	source: Uuid,
+	suspended: bool,
+}
+
+#[async_trait::async_trait]
+impl aidash_application::ports::accounts::Authority for SuspensionAuthority {
+	async fn validate_interactive(&self, _: Uuid, _: Uuid) -> aidash_application::Result<()> {
+		panic!("a Task execution uses its original credential")
+	}
+
+	async fn validate_origin(&self, source: Uuid) -> aidash_application::Result<()> {
+		assert_eq!(source, self.source);
+		if self.suspended {
+			return Err(aidash_application::Error::AccountSuspended { epoch: 1 });
+		}
+		Ok(())
+	}
+
+	async fn origin_binding(
+		&self,
+		source: Uuid,
+	) -> aidash_application::Result<aidash_domain::accounts::DurableOrigin> {
+		self.validate_origin(source).await?;
+		Ok(aidash_domain::accounts::DurableOrigin {
+			identity_id: source,
+			account_id: Some(source),
+			suspension_epoch: Some(1),
+			source_disable_epoch: Some(0),
+		})
+	}
+
+	async fn validate_bound_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> aidash_application::Result<()> {
+		self.validate_origin(origin.identity_id).await
+	}
+
+	async fn resume_suspended_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+		epoch: u64,
+	) -> aidash_application::Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		assert_eq!(epoch, 1);
+		self.origin_binding(origin.identity_id).await.map(Some)
+	}
+}
+
+async fn bind_common_account(fixture: &mut Fixture, suspended: bool) -> Uuid {
+	use aidash_application::ports::authorization::dashboard::{AccountPolicy, Issuer};
+	use std::sync::Arc;
+
+	let source = Uuid::new_v4();
+	let mapping = Uuid::new_v4();
+	let issuer = "https://upstream.example.test";
+	sqlx::query("INSERT INTO dashboard_identities (id,issuer,subject,last_valid_at) VALUES ($1,$2,'reader',clock_timestamp())")
+		.bind(source).bind(issuer).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO dashboard_mappings (id,identity_id,tenant,subject,credential_id) VALUES ($1,$2,'acme','reader',$3)")
+		.bind(mapping).bind(source).bind(fixture.identity.credential_id)
+		.execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO dashboard_execution_origins (run_id,tenant,identity_id,mapping_id,account_id,suspension_epoch,source_disable_epoch) VALUES ($1,'acme',$2,$3,$2,0,0)")
+		.bind(fixture.run).bind(source).bind(mapping).execute(fixture.driver()).await.unwrap();
+	fixture.store.pool = fixture
+		.store
+		.pool
+		.clone()
+		.with_dashboard_policy(Some(AccountPolicy {
+			authority: Some(Arc::new(SuspensionAuthority { source, suspended })),
+			issuers: Arc::new(Issuer(issuer.into())),
+			personal_tenants: false,
+			demo_data: false,
+		}));
+	source
+}
+
+#[rstest]
+#[tokio::test]
+async fn account_suspension_refuses_running_commands_and_previews(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let mut fixture = fixture(database.await, 1).await;
+	bind_common_account(&mut fixture, true).await;
+	let (operation, preview) = running_targets(&fixture).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	for target in [Target::Operation(operation), Target::LivePreview(preview)] {
+		assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::authorization::dashboard::Accounts;
+	let mut fixture = fixture(database.await, 1).await;
+	let source = bind_common_account(&mut fixture, false).await;
+	sqlx::query("UPDATE task_executions SET control='PAUSED', error='account_suspended', pending=jsonb_set(pending,'{recovery}','{\"account_suspension_epoch\":1}') WHERE id=$1")
+		.bind(fixture.run).execute(fixture.driver()).await.unwrap();
+	fixture.set_policy(1, Some(("reader", "run.control"))).await;
+	let config = crate::config::runtime::Config {
+		smtp: None,
+		scratch_policy: Default::default(),
+		deployment: fixture.store.deployment.clone(),
+		endpoint: String::new(),
+		database_url: fixture._database.url.clone(),
+		nats_url: String::new(),
+		api_token: String::new(),
+		web_dir: String::new(),
+		lease_seconds: 30,
+		tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+			aidash_domain::offering::Offering::SelfHosted,
+		),
+		credential_max_seconds: 90 * 24 * 60 * 60,
+		federation: false,
+		deployment_key: None,
+		demo_data: false,
+		oidc: None,
+		marketplace: crate::config::marketplace::MarketplaceSettings {
+			endpoint: None,
+			connections: Vec::new(),
+			poll_seconds: 60,
+		},
+		common_auth: None,
+		common_issuers: None,
+		sign_in: None,
+		tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+		preview: None,
+		dashboard_origin: String::new(),
+	};
+	let repository =
+		crate::apps::identity::repositories::dashboard::Repository(crate::federation::Federation {
+			sandbox: Default::default(),
+			registry: crate::registry::Registry::new(
+				fixture
+					._database
+					.connection
+					.clone()
+					.into_postgres()
+					.unwrap(),
+				&config.deployment,
+			)
+			.unwrap(),
+			store: fixture.store.clone(),
+			config,
+			client: reqwest::Client::new(),
+			notify: Default::default(),
+		});
+	let denials = "action='run.control' AND decision->>'allowed'='false'";
+	for pass in 0..2 {
+		if pass == 1 {
+			fixture.set_policy(2, Some(("reader", "run.control"))).await;
+		}
+		let mut recovery = repository.recovery().await.unwrap();
+		assert!(!recovery.resume_original(source, fixture.run).await.unwrap());
+		assert_eq!(fixture.rows(denials).await, pass + 1);
+		let decisions = fixture.rows("tenant='acme'").await;
+
+		let mut next_pass = repository.recovery().await.unwrap();
+		assert!(
+			next_pass
+				.waiting(source)
+				.await
+				.unwrap()
+				.contains(&fixture.run)
+		);
+		assert!(
+			!next_pass
+				.resume_original(source, fixture.run)
+				.await
+				.unwrap()
+		);
+		assert_eq!(fixture.rows("tenant='acme'").await, decisions);
+	}
+}
+
 #[rstest]
 #[tokio::test]
 async fn a_recheck_that_only_repeats_adds_no_rows_for_a_running_command(

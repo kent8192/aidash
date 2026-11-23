@@ -755,6 +755,7 @@ fn refusal_code(message: &str) -> bool {
 fn classify(error: &Error) -> Option<Miss> {
 	match error {
 		Error::Forbidden
+		| Error::AccountSuspended { .. }
 		| Error::NotFound(_)
 		| Error::Invalid(_)
 		| Error::Unprocessable(_)
@@ -773,6 +774,18 @@ fn classify(error: &Error) -> Option<Miss> {
 /// pass, which records nothing so the start can be tried again.
 pub(super) fn refused(error: &Error) -> bool {
 	classify(error).is_some()
+}
+
+/// A definite refusal of the Duty Requester's credential or access.
+pub(super) fn requester_refused(error: &Error) -> bool {
+	matches!(
+		error,
+		Error::Unauthorized
+			| Error::CredentialUnauthorized(_)
+			| Error::Forbidden
+			| Error::CredentialForbidden(_)
+			| Error::AccountSuspended { .. }
+	)
 }
 
 /// What a claimed tick did in its Requester's transaction.
@@ -813,12 +826,7 @@ async fn fire(
 		Ok(access) => access,
 		// The Requester left the Tenant or lost the credential it acts with.
 		// A refused credential says why since #876; any reason stops it.
-		Err(
-			Error::Unauthorized
-			| Error::CredentialUnauthorized(_)
-			| Error::Forbidden
-			| Error::CredentialForbidden(_),
-		) => {
+		Err(error) if requester_refused(&error) => {
 			return record_miss(
 				f,
 				tenant,
@@ -1345,6 +1353,7 @@ mod tests {
 	#[rstest]
 	#[case(Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into()), true)]
 	#[case(Error::Forbidden, true)]
+	#[case(Error::AccountSuspended { epoch: 1 }, true)]
 	#[case(Error::NotFound("agent".into()), true)]
 	#[case(Error::Refused("Subnode has ended".into()), true)]
 	#[case(Error::Conflict("authorization revision changed".into()), false)]

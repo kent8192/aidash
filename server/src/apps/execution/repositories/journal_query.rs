@@ -424,7 +424,7 @@ pub(crate) async fn execute(
 	let withdrawn = match recheck {
 		Ok(current) => (current.generation != snapshot.generation)
 			.then(|| Error::Conflict("JOURNAL_GENERATION_CHANGED".into())),
-		Err(Error::Forbidden) => Some(Error::Forbidden),
+		Err(error @ (Error::Forbidden | Error::AccountSuspended { .. })) => Some(error),
 		Err(error) => return Err(error),
 	};
 	if let Some(withdrawn) = withdrawn {

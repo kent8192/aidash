@@ -190,6 +190,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -256,6 +257,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -741,6 +743,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -1488,7 +1491,12 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 ) {
 	let fixture = fresh_database.await;
 	let name = "0113_budget_notice_delivery";
-	fixture.migrate_excluding(&[("identity", name)]).await;
+	fixture
+		.migrate_excluding(&[
+			("identity", name),
+			("identity", "0114_suspension_resume_refusal"),
+		])
+		.await;
 	fixture.tenant_root("notice-upgrade").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let id = Uuid::new_v4();
@@ -2486,6 +2494,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5161,6 +5170,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5741,6 +5751,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5840,6 +5851,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5947,6 +5959,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6833,6 +6846,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_suspension_resume_refusal"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
 			("execution", "0152_stint_leases"),
