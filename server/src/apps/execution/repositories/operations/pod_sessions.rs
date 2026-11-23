@@ -57,7 +57,7 @@ pub(crate) async fn register_stdio(access: &mut Access, run: Uuid, space: &str) 
 				Alias::new("stdio_session"),
 				serde_json::to_value(&evidence)?,
 			)
-			.and_where(Expr::col("id").eq(run))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("tenant").eq(evidence.tenant))
 			.and_where(Expr::col("phase").is_not_in(TERMINAL))
 			.to_string(PostgresQueryBuilder),
@@ -75,7 +75,7 @@ pub(super) async fn stdio(store: &Store, run: Uuid) -> Result<Option<StdioSessio
 		&Query::select()
 			.column(Alias::new("stdio_session"))
 			.from(Alias::new("task_executions"))
-			.and_where(Expr::col("id").eq(run))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("stdio_session").is_not_null())
 			.to_string(PostgresQueryBuilder),
 	)
@@ -147,7 +147,7 @@ pub(super) async fn stop_if_ended(
 			.column(Alias::new("id"))
 			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(run))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("phase").is_in(TERMINAL))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -171,7 +171,7 @@ pub(super) async fn stop_if_ended(
 				Expr::value(Option::<Value>::None),
 			)
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(run))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(
 				Expr::col("stdio_session")
 					.binary(
@@ -195,7 +195,7 @@ pub(super) async fn stop_if_ended(
 				),
 			)
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("run_id").eq(run))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("kind").eq(PYTHON))
 			.and_where(
 				Expr::col("input")

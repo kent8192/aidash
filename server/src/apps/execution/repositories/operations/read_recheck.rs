@@ -147,9 +147,9 @@ async fn retire_ended_background(
 					Expr::value(json!({"background_retired": true})),
 				),
 			)
-			.and_where(Expr::col("id").eq(snapshot.id))
+			.and_where(Expr::col("id").eq(Expr::value(snapshot.id)))
 			.and_where(Expr::col("tenant").eq(snapshot.tenant.clone()))
-			.and_where(Expr::col("result").eq(snapshot.result.clone()))
+			.and_where(Expr::col("result").eq(Expr::value(snapshot.result.clone())))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(
