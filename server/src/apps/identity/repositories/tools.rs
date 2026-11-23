@@ -215,8 +215,16 @@ impl AgentToolScope for Scope<'_> {
 		}
 		Ok(false)
 	}
-	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
-		self.access.task_read(task).await.map_err(Into::into)
+	async fn task_read(
+		&mut self,
+		task: Uuid,
+		delegating_run: Option<&RunMetadata>,
+	) -> Result<Task> {
+		match delegating_run {
+			Some(run) => self.access.delegation_task_read(task, run).await,
+			None => self.access.task_read(task).await,
+		}
+		.map_err(Into::into)
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)

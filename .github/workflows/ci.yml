@@ -129,7 +129,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - name: Check each Cargo workspace once with warnings denied
-        run: cargo clippy --locked --manifest-path '${{ matrix.directory }}/Cargo.toml' --workspace --all-targets ${{ matrix.features }} -- -D warnings
+        run: |
+          # Bound compiler concurrency where the server library and test targets overlap.
+          if [[ '${{ matrix.workspace }}' == backend ]]; then
+            export CARGO_BUILD_JOBS=2
+          fi
+          cargo clippy --locked --manifest-path '${{ matrix.directory }}/Cargo.toml' --workspace --all-targets ${{ matrix.features }} -- -D warnings
   collaboration-ui:
     name: Collaboration browser tests
     needs: scope

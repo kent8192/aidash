@@ -2496,10 +2496,13 @@ impl WorkerAuthority {
 			let not_visible = || {
 				Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task))
 			};
-			let record = lease.task_read(task).await.map_err(|error| match error {
-				Error::Forbidden => not_visible(),
-				error => error,
-			})?;
+			let record = lease
+				.delegation_task_read(task, &run.metadata())
+				.await
+				.map_err(|error| match error {
+					Error::Forbidden => not_visible(),
+					error => error,
+				})?;
 			if record.thread_id != run.thread_id {
 				return Err(not_visible());
 			}

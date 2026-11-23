@@ -3,9 +3,12 @@ use super::{access::Access, policy::Resource};
 use crate::apps::identity::models::DecisionOwner;
 use crate::{
 	Result,
-	domain::{Artifact, Event, Message, Task},
+	domain::{Artifact, Event, Message, RunMetadata, Task},
 };
-use aidash_application::authorization::visibility::provenance::ReadBlock;
+use aidash_application::authorization::{
+	visibility::provenance::ReadBlock,
+	worker_tasks::{OwnTaskRefusal, own_task_refused},
+};
 use uuid::Uuid;
 
 impl Access {
@@ -28,6 +31,118 @@ impl Access {
 		// A refusal reached while a Node did not answer is that Node's silence (#751),
 		// when this read's own walk met the Node and not an earlier call of the authority.
 		result.map_err(|error| self.named_since(mark, error))
+	}
+	/// Read a named delegation Task. Only a Task created in the Run's own Thread
+	/// can disclose why it was refused.
+	pub(crate) async fn delegation_task_read(
+		&mut self,
+		id: Uuid,
+		run: &RunMetadata,
+	) -> Result<Task> {
+		if self.task_source_run(id).await? == Some(run.id)
+			&& self.task_thread(id).await? == Some(run.thread_id)
+		{
+			return self
+				.own_task_read(id)
+				.await?
+				.map_err(|refusal| own_task_refused(id, &refusal).into());
+		}
+		self.task_read(id).await
+	}
+
+	/// [`Self::task_read`] for a Task the calling Run created, saying which check refused
+	/// (#1058). A refusal reached while a Node did not answer stays that Node's silence.
+	pub(crate) async fn own_task_read(
+		&mut self,
+		id: Uuid,
+	) -> Result<std::result::Result<Task, OwnTaskRefusal>> {
+		use aidash_application::authorization::visibility::resources::TaskRefusal;
+		let mark = self.call_mark();
+		// A block left by an earlier walk of this authority is not this read's.
+		self.read_block = None;
+		let result = aidash_application::authorization::visibility::resources::task_read_explained(
+			&mut crate::bootstrap::run_visibility_scope(self),
+			id,
+		)
+		.await
+		.map_err(crate::Error::from);
+		let block = self.read_block.take();
+		match result {
+			Ok(Ok(task)) => Ok(Ok(task)),
+			Ok(Err(refusal)) => {
+				if let silent @ crate::Error::NodeUnreachable { .. } =
+					self.named_since(mark, crate::Error::Forbidden)
+				{
+					return Err(silent);
+				}
+				Ok(Err(match (refusal, block) {
+					(TaskRefusal::Policy, _) => OwnTaskRefusal::Policy,
+					(TaskRefusal::Outputs, Some(block)) => {
+						if self.reader_recorded(&block).await? {
+							OwnTaskRefusal::Read(Some(block))
+						} else {
+							OwnTaskRefusal::OtherRunRead(Some(block))
+						}
+					}
+					(TaskRefusal::Outputs, None) => OwnTaskRefusal::OtherRunRead(None),
+				}))
+			}
+			Err(error) => Err(self.named_since(mark, error)),
+		}
+	}
+	/// Whether the reading Run recorded `block` itself. A block reached through
+	/// another Run's reads is not the reader's to have named by id (#1058).
+	async fn reader_recorded(&mut self, block: &ReadBlock) -> Result<bool> {
+		let Some(run) = self.read_run else {
+			return Ok(false);
+		};
+		Ok(match block {
+			ReadBlock::Source { kind, id } => {
+				crate::apps::identity::models::AuthorizationRunRead::for_run(self.tx.as_mut(), run)
+					.await?
+					.iter()
+					.any(|(_, read_kind, read_id)| read_kind == kind && read_id == id)
+			}
+			ReadBlock::Definition(definition) => {
+				crate::apps::identity::models::AuthorizationRunRegistryRead::for_run(
+					self.tx.as_mut(),
+					run,
+				)
+				.await?
+				.contains(definition)
+			}
+			ReadBlock::RemoteRead | ReadBlock::SemanticRead => false,
+		})
+	}
+	pub(crate) async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("thread_id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.tx)
+		.await
+	}
+
+	/// The Run that created `task`, if one did.
+	pub(crate) async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("source_run_id"))
+				.from(Alias::new("authorization_task_origins"))
+				.and_where(Expr::col("task_id").eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.tx)
+		.await
 	}
 	pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_visible(

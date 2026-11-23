@@ -7538,6 +7538,343 @@ async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A Task the Run created reaches the model with a specific read refusal.
+#[rstest::rstest]
+#[tokio::test]
+async fn task_delegate_explains_a_policy_denial_for_the_runs_own_task(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["delegate-target"], true).await;
+	let creator = rig.creator_run;
+	let task = rig.create_task(creator, "Review", &[]).await;
+	// Exercise the tool's refusal when the Task has a creation origin and its read
+	// is absent from the Run's journal. A recorded read would instead stop the
+	// Run at its own Read Recheck before it reached the tool.
+	assert_eq!(
+		sqlx::query(
+			"DELETE FROM authorization_run_reads WHERE run_id = $1 AND resource_kind = 'task' AND resource_id = $2"
+		)
+		.bind(creator)
+		.bind(task)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+		.rows_affected(),
+		1,
+	);
+	let mut policy = rig.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-own-task-read",
+		"effect":"deny",
+		"subjects":{"any":true},
+		"actions":["task.read"],
+		"resources":{"kinds":["task"],"ids":[task.to_string()]}
+	}));
+	let (status, body) = request(
+		&fixture.application,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f.store.run(&TEST_FIXTURE, creator).await.unwrap();
+	aidash_server::authorization::services::execution::Step::begin(&f, &run)
+		.await
+		.expect("the Run still has authority for its own work")
+		.commit()
+		.await
+		.unwrap();
+
+	let call = "delegate-own-task";
+	assert!(
+		rig.script(
+			creator,
+			"task_delegate",
+			json!({"task_id":task,"node_id":rig.node.to_string(),"agent":{"id":"delegate-target","version":"1.0.0"}}),
+			call,
+		)
+		.await
+	);
+	let run = f.store.run(&TEST_FIXTURE, creator).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig
+		.result_of(creator, call)
+		.await
+		.expect("rejected call result");
+	assert_eq!(
+		result["error"].as_str(),
+		Some(format!(
+			"task {task} was created by this Run, but the task.read policy refuses task {task}. Retrying will not change this"
+		).as_str()),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// #1058: Run A delegates to local Run B in its Thread; B reads A and fails with a journal
+/// operation pending; A reads B's messages and the Subnode leader's message. A's Read Recheck
+/// passes, so A delegates a new Task, the delegated Run reads it, and A and that Run read A's
+/// message. The walk used to stop at B's read of Run A: checking the leader's Working Area
+/// had moved A's inherited context to the Subnode's Thread, so A's own Thread was out of reach.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_can_delegate_its_new_task_after_reading_a_failed_delegate_and_a_subnode_leader(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use aidash_application::ports::journal_export::JournalSource;
+	use aidash_domain::{RunPhase, RunState, TaskStatus, TerminalState};
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::conversation(&f, &fixture.application, true).await;
+	let creator = rig.creator_run;
+	let first = rig.create_task(creator, "First review", &[]).await;
+	let reviewer = rig.delegate(creator, first, "delegate-target").await;
+	let creator_run = f.store.run(&TEST_FIXTURE, creator).await.unwrap();
+	let first_review = f.store.run(&TEST_FIXTURE, reviewer).await.unwrap();
+	assert_eq!(first_review.thread_id, creator_run.thread_id);
+
+	let (_, subnode_thread, subnode_task, leader) =
+		rig.subnode_with_tools(&SUBNODE_FILE_TOOLS).await;
+	rig.call(
+		creator,
+		"thread_read",
+		json!({"thread_id":subnode_thread,"kind":"task","id":subnode_task}),
+		"creator-reads-subnode-task",
+	)
+	.await;
+	let evidence = rig.create_task(leader, "Gather evidence", &[]).await;
+	let member = rig.delegate(leader, evidence, "subnode-second").await;
+	rig.call(
+		leader,
+		"thread_observe",
+		json!({"limit":50}),
+		"leader-reads-member",
+	)
+	.await;
+	let handoff = "Subnode leader findings";
+	rig.call(
+		leader,
+		"subnode_message",
+		json!({"content":handoff}),
+		"leader-message",
+	)
+	.await;
+	rig.call(
+		reviewer,
+		"thread_observe",
+		json!({"limit":50}),
+		"reviewer-reads-thread",
+	)
+	.await;
+
+	let journal = JournalSource::snapshot(&f.store, &TEST_FIXTURE, reviewer, creator, None)
+		.await
+		.unwrap();
+	assert!(!journal.lines.is_empty());
+	let driver = f.store.pool.fixture_driver();
+	let recorded_run_read = |reader: Uuid, source: Uuid| async move {
+		sqlx::query_scalar::<_, bool>(
+			&Query::select()
+				.expr(Expr::value(true))
+				.from(Alias::new("authorization_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(reader)))
+				.and_where(Expr::col("resource_kind").eq("run"))
+				.and_where(Expr::col("resource_id").eq(Expr::value(source)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(driver)
+		.await
+		.unwrap()
+		.unwrap_or(false)
+	};
+	assert!(
+		recorded_run_read(reviewer, creator).await,
+		"reviewer read creator"
+	);
+	assert!(
+		recorded_run_read(leader, member).await,
+		"leader read member"
+	);
+	let notes = ["Review started", "Review findings"];
+	for content in notes {
+		rig.call(
+			reviewer,
+			"thread_message",
+			json!({"content":content}),
+			content,
+		)
+		.await;
+	}
+
+	// Reproduce the durable state left by the Runner timeout (#1061).
+	let input = json!({"run_id":creator,"code":"journal()"});
+	rig.stage(reviewer, "journal_query", input.clone(), "pending-journal")
+		.await;
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 60).await.unwrap().unwrap();
+	assert_eq!(leased.id, reviewer);
+	let key = format!("{reviewer}:{}:0", rig.epoch.get());
+	let invocation = f
+		.store
+		.invocation_start(
+			&TEST_FIXTURE,
+			&leased,
+			worker,
+			&key,
+			"journal_query",
+			&input,
+			true,
+		)
+		.await
+		.unwrap();
+	assert_eq!(invocation.status, "STARTED");
+	let first_task = f.store.task(&TEST_FIXTURE, first).await.unwrap();
+	f.store
+		.transition(
+			&TEST_FIXTURE,
+			first,
+			first_task.revision,
+			first_task.owner.as_deref().unwrap(),
+			TaskStatus::Failed,
+		)
+		.await
+		.unwrap();
+	leased.state = RunState::Failed(TerminalState {});
+	leased.error = Some("JOURNAL_OPERATION_PENDING".into());
+	let failed = f
+		.store
+		.save_run(&TEST_FIXTURE, &leased, worker, "execution.failed")
+		.await
+		.unwrap();
+	assert_eq!(failed.phase(), RunPhase::Failed);
+	assert_eq!(failed.error.as_deref(), Some("JOURNAL_OPERATION_PENDING"));
+
+	for (producer, content) in [
+		(reviewer, notes[0]),
+		(reviewer, notes[1]),
+		(leader, handoff),
+	] {
+		let message: Uuid = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("messages"))
+				.and_where(Expr::col("thread_id").eq(Expr::value(creator_run.thread_id)))
+				.and_where(Expr::col("run_id").eq(Expr::value(producer)))
+				.and_where(Expr::col("content").eq(content))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		let read = rig
+			.call(
+				creator,
+				"thread_read",
+				json!({"kind":"message","id":message}),
+				content,
+			)
+			.await;
+		assert!(read.to_string().contains(content), "{read}");
+	}
+	rig.call(
+		creator,
+		"thread_observe",
+		json!({"limit":50}),
+		"creator-reads-reviewer",
+	)
+	.await;
+	assert!(
+		recorded_run_read(creator, reviewer).await,
+		"creator read reviewer"
+	);
+
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let aidash_server::authorization::identity::Actor::Subject(identity) =
+		authorization.authenticate(&rig.token).await.unwrap()
+	else {
+		panic!("the fixture must authenticate as a Subject");
+	};
+	let chain: Vec<String> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("subject_chain"))
+			.from(Alias::new("authorization_execution"))
+			.and_where(Expr::col("run_id").eq(Expr::value(creator)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	aidash_server::authorization::services::execution::operation_may_act(
+		&f.store, &identity, chain, creator,
+	)
+	.await
+	.expect("the Read Recheck passes over the same dependency chain");
+
+	let second = rig.create_task(creator, "Second review", &[]).await;
+	let next = rig.delegate(creator, second, "delegate-target").await;
+	assert_ne!(next, reviewer);
+	let read = rig
+		.call(
+			next,
+			"thread_read",
+			json!({"kind":"task","id":second}),
+			"read-delegated-task",
+		)
+		.await;
+	assert!(read.to_string().contains("Second review"), "{read}");
+
+	// Decision 4: the Run reads its own message. Decision 6: the delegated Run,
+	// whose chain extends the one whose Read Recheck passed, reads it too.
+	let own = "Architect notes";
+	rig.call(
+		creator,
+		"thread_message",
+		json!({"content":own}),
+		"own-message",
+	)
+	.await;
+	let message: Uuid = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("messages"))
+			.and_where(Expr::col("run_id").eq(Expr::value(creator)))
+			.and_where(Expr::col("content").eq(own))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	for (run, call) in [(creator, "creator-reads-own"), (next, "next-reads-creator")] {
+		let read = rig
+			.call(
+				run,
+				"thread_read",
+				json!({"kind":"message","id":message}),
+				call,
+			)
+			.await;
+		assert!(read.to_string().contains(own), "{call}: {read}");
+	}
+	cleanup(f, &url, &schema).await;
+}
+
 /// #754 decision 6 for a delegation to another Node: a task in another Thread reads "not found
 /// or is not visible", and the Run goes on. The check fails before any peer is called. (A task
 /// that does not exist at all is refused earlier, at the tool gate.)

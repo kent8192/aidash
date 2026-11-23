@@ -849,13 +849,18 @@ async fn protected_resource(
 		match kind {
 			"task" => {
 				let task = scope
-					.task_read(id.parse().map_err(|_| Error::Forbidden)?)
+					.task_read(
+						id.parse().map_err(|_| Error::Forbidden)?,
+						named_task.then_some(run),
+					)
 					.await;
 				// The model named this task. One it cannot read looks like one that
 				// does not exist, the same answer for both.
 				let task = if named_task {
 					task.map_err(|error| match error {
 						Error::Forbidden | Error::NotFound(_) => task_not_found(id),
+						// Named Task refusals are recoverable errors at the tool gate.
+						Error::Refused(message) => Error::Invalid(message),
 						error => error,
 					})?
 				} else {

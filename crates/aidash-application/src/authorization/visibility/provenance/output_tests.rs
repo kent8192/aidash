@@ -13,6 +13,7 @@ struct Scope {
 	fail: Option<&'static str>,
 	calls: Vec<String>,
 	scopes: Vec<(Uuid, String, Uuid)>,
+	reader: Option<Uuid>,
 }
 impl Scope {
 	fn touch(&mut self, name: &'static str) -> Result<()> {
@@ -38,6 +39,9 @@ impl crate::ports::authorization::visibility::RowOutcome for Scope {
 }
 #[async_trait]
 impl LocalOutputScope for Scope {
+	fn reading_run(&self) -> Option<Uuid> {
+		self.reader
+	}
 	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		self.touch("producers")?;
 		self.scopes.push((thread, kind.into(), id));
@@ -241,4 +245,38 @@ async fn a_silent_provenance_does_not_hide_a_separate_refusal(
 		.unwrap()
 	);
 	assert!(scope.row_silence.is_none());
+}
+
+/// #1058 decision 4: a Run sees its own outputs even when a walk of its Read
+/// dependencies would stop; the other producers are still walked.
+#[rstest]
+#[case::reader_refused(3, true)]
+#[case::other_refused(4, false)]
+#[tokio::test]
+async fn the_reading_run_is_not_walked_as_a_producer(#[case] denied: u128, #[case] visible: bool) {
+	let mut scope = Scope {
+		producers: vec![Uuid::from_u128(3), Uuid::from_u128(4)],
+		denied: Some(Uuid::from_u128(denied)),
+		reader: Some(Uuid::from_u128(3)),
+		..Scope::default()
+	};
+	assert_eq!(
+		local_output_visible(
+			&mut scope,
+			Uuid::from_u128(5),
+			"message",
+			Uuid::from_u128(6)
+		)
+		.await
+		.unwrap(),
+		visible
+	);
+	assert_eq!(
+		scope.calls,
+		vec![
+			"producers".to_owned(),
+			"producer".into(),
+			format!("producer:{}", Uuid::from_u128(4))
+		]
+	);
 }

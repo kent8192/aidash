@@ -20,7 +20,11 @@ pub enum ReadBlock {
 	Definition(EntityRef),
 	RemoteRead,
 	SemanticRead,
-	Source(String),
+	/// A recorded read of a source (`kind` and `id`) the reader may no longer see.
+	Source {
+		kind: String,
+		id: Uuid,
+	},
 }
 
 async fn registry_read_block(
@@ -127,7 +131,7 @@ async fn one_run_reads_block(
 	scope.prepare_sources(&sources).await?;
 	for (thread, kind, id) in sources {
 		if !source_visible(scope, thread, &kind, id, pending).await?
-			&& let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::Source(kind))
+			&& let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::Source { kind, id })
 		{
 			return Ok(Some(block));
 		}
@@ -373,7 +377,14 @@ pub async fn local_output_visible(
 	id: Uuid,
 ) -> Result<bool> {
 	let mut silent = None;
+	// A Run always sees its own outputs: its Read dependencies are the ones its
+	// own Read Recheck checks, so walking them here discloses nothing new and
+	// would only let the two checks disagree (#1058).
+	let reader = scope.reading_run();
 	for producer in scope.producers(thread, kind, id).await? {
+		if Some(producer) == reader {
+			continue;
+		}
 		if !scope.producer_reads_visible(producer).await? {
 			match scope.take_row_silence() {
 				Some(node) => {

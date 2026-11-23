@@ -578,6 +578,6 @@ fn read_block_reason(
 		ReadBlock::Definition(_) => RunReadsBlock::DefinitionNotReadable,
 		ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
 		ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
-		ReadBlock::Source(source) => RunReadsBlock::Source { source },
+		ReadBlock::Source { kind, .. } => RunReadsBlock::Source { source: kind },
 	}
 }

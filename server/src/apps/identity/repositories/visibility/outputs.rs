@@ -13,6 +13,9 @@ use reinhardt::query::{
 use uuid::Uuid;
 #[async_trait]
 impl LocalOutputScope for Reads<'_> {
+	fn reading_run(&self) -> Option<Uuid> {
+		self.access.read_run
+	}
 	async fn producer_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		Box::pin(self.access.run_reads_visible(run))
 			.await
@@ -123,6 +126,9 @@ impl OutputScope for Reads<'_> {
 }
 #[async_trait]
 impl LocalOutputScope for NativeReads<'_> {
+	fn reading_run(&self) -> Option<Uuid> {
+		self.access.read_run
+	}
 	async fn producers(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		let producers = match self.access.read_lookups.producers(thread, kind, id) {
 			Some(producers) => producers,

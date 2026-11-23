@@ -152,6 +152,17 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)
 	}
+	async fn task_source_run(&mut self, task: Uuid) -> Result<Option<Uuid>> {
+		self.access.task_source_run(task).await.map_err(Into::into)
+	}
+	async fn own_task_read(
+		&mut self,
+		task: Uuid,
+	) -> Result<
+		std::result::Result<Task, aidash_application::authorization::worker_tasks::OwnTaskRefusal>,
+	> {
+		self.access.own_task_read(task).await.map_err(Into::into)
+	}
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation> {
 		crate::apps::identity::services::execution::delegate_in(
 			self.federation,
@@ -163,29 +174,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		.map_err(Into::into)
 	}
 	async fn task_thread(&mut self, task: Uuid) -> Result<Option<Uuid>> {
-		let result: NativeResult<Option<Uuid>> = async {
-			Ok({
-				let query_bind_1 = task;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("thread_id"))
-						.from(Alias::new("tasks"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **self.access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
+		self.access.task_thread(task).await.map_err(Into::into)
 	}
 	async fn created_origin(&mut self, task_id: Uuid) -> Result<CreatedTaskOrigin> {
 		let result: NativeResult<CreatedTaskOrigin> = async {
