@@ -4748,9 +4748,15 @@ async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	let db = p.a.store.pool.fixture_driver();
 	sqlx::query(
-		"UPDATE authorization_remote_grants SET expires_at = now() + interval '1 hour' WHERE id = $1",
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(
+				Alias::new("expires_at"),
+				chrono::Utc::now() + chrono::Duration::hours(1),
+			)
+			.and_where(Expr::col("id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(p.grant)
 	.execute(db)
 	.await
 	.unwrap();
@@ -4784,15 +4790,25 @@ async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
 		.await;
 		assert_eq!(status, 200, "{activated}");
 		// Record the receiver's claim without stepping its Run into model work.
+		let binding = Query::select()
+			.expr(Expr::constant_true())
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
+			.and_where(Expr::col("activated_at").is_not_null())
+			.to_owned();
 		let claim = sqlx::query(
-			"UPDATE tasks SET owner = $2, status = 'CLAIMED' WHERE id = $1 AND EXISTS \
-			 (SELECT 1 FROM authorization_remote_execution WHERE task_id = $1 AND activated_at IS NOT NULL)",
-		)
-		.bind(task_id)
-		.bind(
-			task.owner
-				.as_deref()
-				.expect("the receiver owns the original Task"),
+			&Query::update()
+				.table(Alias::new("tasks"))
+				.value(
+					Alias::new("owner"),
+					task.owner
+						.as_deref()
+						.expect("the receiver owns the original Task"),
+				)
+				.value(Alias::new("status"), "CLAIMED")
+				.and_where(Expr::col("id").eq(Expr::value(task_id)))
+				.and_where(Expr::exists(binding))
+				.to_string(PostgresQueryBuilder),
 		)
 		.execute(db)
 		.await
@@ -4888,12 +4904,16 @@ async fn home_control_revalidates_the_grants_disabled_identity(#[future(awt)] sc
 	let credential = Uuid::parse_str(&browser.credential).unwrap();
 	let db = p.a.store.pool.fixture_driver();
 	// Give the fixture grant the dashboard credential of the same Home subject.
-	sqlx::query("UPDATE authorization_remote_grants SET credential_id = $2 WHERE id = $1")
-		.bind(p.grant)
-		.bind(credential)
-		.execute(db)
-		.await
-		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(Alias::new("credential_id"), credential)
+			.and_where(Expr::col("id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
 	let receiver = common::default_node(&p.b.store, "acme").await;
 	let path = format!(
 		"/federation/v0.1/scoped/execution/admissions/{}/control",
@@ -4906,11 +4926,18 @@ async fn home_control_revalidates_the_grants_disabled_identity(#[future(awt)] sc
 	assert_eq!(status, 200, "{body}");
 	p.pause_receiver_on_home_ask().await;
 	let paused = p.run().await;
+	let identity = Query::select()
+		.column(Alias::new("identity_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("credential_id").eq(Expr::value(credential)))
+		.to_owned();
 	let result = sqlx::query(
-		"UPDATE dashboard_identities SET disabled_at = now() WHERE id = \
-		 (SELECT identity_id FROM dashboard_mappings WHERE credential_id = $1)",
+		&Query::update()
+			.table(Alias::new("dashboard_identities"))
+			.value_expr(Alias::new("disabled_at"), Expr::current_timestamp())
+			.and_where(Expr::col("id").in_subquery(identity))
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(credential)
 	.execute(db)
 	.await
 	.unwrap();
