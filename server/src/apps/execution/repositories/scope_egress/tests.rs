@@ -229,6 +229,107 @@ async fn host_debit_replays_a_committed_reservation_after_its_answer_is_lost(
 }
 
 #[rstest::rstest]
+#[case::node(false)]
+#[case::tenant(true)]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn scope_purge_erases_a_daily_row_committed_while_purge_waits(
+	#[future] database: DatabaseFixture,
+	#[case] whole_tenant: bool,
+) {
+	use crate::apps::identity::services::{node_purge, tenant_purge};
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	let store = &federation.store;
+	let pool = store.pool.fixture_driver();
+	tenant_roots::tenant_scope(store, "acme").await;
+	let node = tenant_roots::second_node_in(pool, "acme").await;
+	let scope = ScopeId {
+		tenant: "acme".into(),
+		node: node.to_string(),
+		scratch_space: Uuid::new_v4(),
+	};
+	let day = Utc::now().date_naive();
+	sqlx::query("INSERT INTO egress_scope_state (scope_id, tenant, node) VALUES ($1, 'acme', $2)")
+		.bind(scope.scratch_space)
+		.bind(node.as_str())
+		.execute(pool)
+		.await
+		.unwrap();
+	if whole_tenant {
+		sqlx::query("INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_step, purge_failures) VALUES ($1, 'acme', now() - interval '31 days', 'deployment_administrator', now() - interval '1 day', 'rows', 0)")
+			.bind(Uuid::new_v4()).execute(pool).await.unwrap();
+	} else {
+		sqlx::query("INSERT INTO node_deletions (id, tenant, node, deleted_at, deleted_by_kind, purge_after, purge_step, purge_failures) VALUES ($1, 'acme', $2, now() - interval '31 days', 'deployment_administrator', now() - interval '1 day', 'rows', 0)")
+			.bind(Uuid::new_v4()).bind(node.as_str()).execute(pool).await.unwrap();
+	}
+
+	// Hold the same state lock as charge and write the day's first row. Keep
+	// the charge uncommitted until PostgreSQL reports purge waiting on it.
+	let mut charge = begin_timed(&store.pool, "acme").await.unwrap();
+	let _ = locked_state_now(&mut charge, &scope).await.unwrap();
+	let mut row = daily(&mut charge, &scope, day, "").await.unwrap();
+	row.received_bytes = 1;
+	ScopeDaily::objects()
+		.save_with_executor(&mut *charge, &row)
+		.await
+		.unwrap();
+	let (sql, values) = Query::select()
+		.expr_as(
+			reinhardt::query::Expr::cust("pg_backend_pid()"),
+			Alias::new("pid"),
+		)
+		.build(PostgresQueryBuilder);
+	let pid: i32 = charge
+		.fetch_one(&sql, convert_values(values))
+		.await
+		.unwrap()
+		.get("pid")
+		.unwrap();
+
+	let purge = async {
+		if whole_tenant {
+			let deletion = tenant_purge::claim(store).await.unwrap().pop().unwrap();
+			tenant_purge::purge_tenant(store, deletion).await.unwrap();
+		} else {
+			let deletion = node_purge::claim(store).await.unwrap().pop().unwrap();
+			node_purge::purge_node(store, deletion).await.unwrap();
+		}
+	};
+	let finish_charge = async {
+		tokio::time::timeout(std::time::Duration::from_secs(30), async {
+			while !sqlx::query_scalar::<_, bool>(
+				"SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+			)
+			.bind(pid)
+			.fetch_one(pool)
+			.await
+			.unwrap()
+			{
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		})
+		.await
+		.expect("purge must wait for the in-flight charge");
+		charge.commit().await.unwrap();
+	};
+	tokio::join!(purge, finish_charge);
+	for table in ["egress_scope_daily", "egress_scope_state"] {
+		let remaining: i64 =
+			sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE scope_id = $1"))
+				.bind(scope.scratch_space)
+				.fetch_one(pool)
+				.await
+				.unwrap();
+		assert_eq!(remaining, 0, "{table} survives purge");
+	}
+}
+
+#[rstest::rstest]
 #[tokio::test]
 #[timeout(std::time::Duration::from_secs(180))]
 async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
