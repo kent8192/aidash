@@ -103,9 +103,7 @@ impl ThreadStateScope for StateReads<'_> {
 		node: Option<&str>,
 	) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
 		super::projection::state_events(
-			&mut Reads {
-				access: self.access,
-			},
+			&mut crate::bootstrap::run_visibility_scope(self.access),
 			node,
 		)
 		.await

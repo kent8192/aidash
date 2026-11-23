@@ -27,12 +27,11 @@ pub async fn record(
 	};
 	let value = match kind {
 		"thread" if id == thread_id => json!(snapshot.thread.clone()),
-		"thread" => return Err(Error::Forbidden),
+		"thread" => return Err(scope.missing_record(kind, id).await?),
 		"task" => {
-			let task = scope
-				.task_record(thread_id, id)
-				.await?
-				.ok_or(Error::Forbidden)?;
+			let Some(task) = scope.task_record(thread_id, id).await? else {
+				return Err(scope.missing_record(kind, id).await?);
+			};
 			if !scope.task_visible(&task).await? {
 				return Err(Error::Forbidden);
 			}
@@ -40,10 +39,9 @@ pub async fn record(
 			json!(task)
 		}
 		"artifact" => {
-			let artifact = scope
-				.artifact_record(thread_id, id)
-				.await?
-				.ok_or(Error::Forbidden)?;
+			let Some(artifact) = scope.artifact_record(thread_id, id).await? else {
+				return Err(scope.missing_record(kind, id).await?);
+			};
 			if !scope.artifact_visible(&artifact).await? {
 				return Err(Error::Forbidden);
 			}
@@ -51,10 +49,9 @@ pub async fn record(
 			json!(artifact)
 		}
 		"message" => {
-			let message = scope
-				.message_record(thread_id, id)
-				.await?
-				.ok_or(Error::Forbidden)?;
+			let Some(message) = scope.message_record(thread_id, id).await? else {
+				return Err(scope.missing_record(kind, id).await?);
+			};
 			if !scope.message_visible(&message).await? {
 				return Err(Error::Forbidden);
 			}
@@ -71,10 +68,9 @@ pub async fn record(
 			value
 		}
 		"attachment" => {
-			let attachment = scope
-				.attachment_record(thread_id, id)
-				.await?
-				.ok_or(Error::Forbidden)?;
+			let Some(attachment) = scope.attachment_record(thread_id, id).await? else {
+				return Err(scope.missing_record(kind, id).await?);
+			};
 			let message = scope
 				.message_record(thread_id, attachment.message_id)
 				.await?
@@ -89,10 +85,9 @@ pub async fn record(
 			if !scope.decide(&resource, "thread.events").await? {
 				return Err(Error::Forbidden);
 			}
-			let event = scope
-				.event_record(thread_id, id)
-				.await?
-				.ok_or(Error::Forbidden)?;
+			let Some(event) = scope.event_record(thread_id, id).await? else {
+				return Err(scope.missing_record(kind, id).await?);
+			};
 			if !scope.event_visible(&event).await? {
 				return Err(Error::Forbidden);
 			}

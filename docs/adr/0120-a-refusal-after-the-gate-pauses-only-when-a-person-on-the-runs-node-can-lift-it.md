@@ -18,6 +18,19 @@ A paused refusal of a replay-safe tool ends with status `REFUSED`, and resuming 
 
 Checks record why they refused in a note scoped to the tool call, and the harness reads it when the call ends. `Forbidden` keeps its meaning for about 270 match arms that treat it as "skip" or "not visible".
 
+Issue #1057 applies this rule across the tool step, including fitted record
+reads, batch admission, approval checks, and media selection. A noted refusal
+names the call for an Authority Pause. A call that may already have run keeps
+its invocation status so the Run Control screen cannot offer an unsafe
+decline. Run-wide checks on previously read inputs still pause the Run when
+those inputs are withdrawn.
+
+When reading a Subnode created by this Run, supply its `thread_id` or use its
+Thread ID as `id` with `kind: "thread"`. A Subnode member receives a Rejected
+Call when it reads a record or copies an attachment from its creator's Thread.
+The result tells the member to ask the creator to put the material in the Task
+or the Subnode Workspace.
+
 ## Considered Options
 
 - **Pause on every refusal and name the tool.** Every pause would have a name, but resuming would still repeat a refusal nobody can lift. Rejected.
@@ -36,12 +49,12 @@ Checks record why they refused in a note scoped to the tool call, and the harnes
 
 ## Implementation
 
-- The note is a task-local cell in `aidash-application` (`authorization/refusal_note.rs`). The harness scopes one around every tool effect (`invoke`, and each `dispatch` of a Tool Batch) and reads it when the effect ends, and scopes another around a whole worker step, from the step gate through recovery, so `recover` can name a refusal raised outside a tool call (inference, compaction, worker entry, `human_read`) after the stage the Run was in. Outside a scope the note is a no-op, so HTTP paths are unchanged.
+- The note is a task-local cell in `aidash-application` (`authorization/refusal_note.rs`). The harness scopes one around each call check and effect and reads it when that operation ends, and scopes another around a whole worker step, from the step gate through recovery, so `recover` can name a refusal raised outside a tool call (inference, compaction, worker entry, `human_read`) after the stage the Run was in. Outside a scope the note is a no-op, so HTTP paths are unchanged.
 - `Access::require` sets a `Policy` note on denial and clears a `Policy` note on allow, so the last check wins. `decide` never does, because `task_visible` uses it. `subnodes::create` evaluates policy itself and sets the note there. Catalog admission sets a `Catalog` note at each of its refusals. A Tenant Deletion sets its note where `TenantDeleted` becomes `Forbidden`, which covers every source of that error at once.
 - The Agent being delegated to is the subject an execution admission appends to the chain. `Access` remembers it, and a denial names it only when the policy denies that subject.
 - `reference.read` for the delegated Agent's attachments uses `get_for_admission`, which keeps `Forbidden`. A real `task_delegate` reaches it through `references::pin`; the Reference API, the management endpoint that configures attachments and the session source check still use `get`, which answers 404.
 - A peer's 404 is `NotFound` in `federation::authority::classify`, but the server's `authority_request` folds it back to `Forbidden`, as it has always read, because most callers branch on that. Only the two callers whose result reaches the model keep it: `HomeRepository::request` and the Remote Run's `command()`. A Remote Grant Run's authority refresh therefore still pauses on a 404.
 - `invocations.status` gains `REFUSED` in two migrations: `0120` for the database CHECK and `0121` for the ORM state, because a migration is either database-only or state-only.
 - `Access::require` sets no note when the refusal comes from the Subnode read-only rule. No change of policy lifts that rule, so the call reaches the model as a Rejected Call (#755).
-- A step that is not a tool call, or a tool call whose refusal nothing named, is reported as `<stage>: <check>`. The stage is the tool being called when its name is a plain identifier, else the Run's phase (`model call`, `compaction`, `worker start`, `resume`); a refusal inside compaction, whether the pruning decision or the summary, is named `compaction`. A refusal with no note reads `<stage>: an authority check refused this step`.
+- A refusal outside the scope of a tool call is reported as `<stage>: <check>`. The stage is the tool being called when its name is a plain identifier, else the Run's phase (`model call`, `compaction`, `worker start`, `resume`); a refusal inside compaction, whether the pruning decision or the summary, is named `compaction`. A refusal with no note reads `<stage>: an authority check refused this step`.
 - A refusal or failed request after a cross-Node admission (`task_delegate` to another Node) is a Rejected Call that says the delegation may have partly happened, because pausing would resume into a second admission. That covers a denial or a 404 from the activation, an unreachable Node, and a refusal by this Node while it records the admission. An ask from the target Node still pauses, as ADR 0109 decided. A `Conflict` there still fails the Run, and a pending transaction or a database error keeps its own retry path.
