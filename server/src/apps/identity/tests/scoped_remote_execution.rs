@@ -5780,18 +5780,6 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	p.close().await;
 }
 
-async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication, agent: &Value) {
-	let (status, body) = request(
-		ba,
-		&common::tenant_token(&b.store, "acme").await,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":agent,"expected_revision":0,"enabled":true}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-}
-
 async fn prepare_generated_pair(
 	a: &Federation,
 	b: &Federation,
@@ -5986,9 +5974,6 @@ async fn prepare_generated_pair(
 	let (status, replayed) = request(aa, token, "POST", &route, input.clone()).await;
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed, prepared);
-	if !approval {
-		approve_foreign_generated(b, ba, &prepared["agent"]).await;
-	}
 	let count: i64 = {
 		let query_bind_1 = task;
 		sqlx::query_scalar(
@@ -6113,14 +6098,8 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		count, 0,
 		"approval publishes the definition but cannot activate a Run"
 	);
-	assert_ne!(
-		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
-			.await
-			.0,
-		200,
-		"the receiver registers a foreign generation unapproved"
-	);
-	approve_foreign_generated(&p.b, &p.ba, &pending["agent"]).await;
+	// The generation approval publishes everything the receiver needs to admit
+	// the exact version through the bound Remote Grant.
 	let (status, body) = request(&p.aa, &p.token, "POST", &grant_route, grant).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, activated) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
@@ -6128,6 +6107,28 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	let (status, replayed) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed["admission_id"], activated["admission_id"]);
+	let approval: (bool, String) = sqlx::query_as(
+		&Query::select()
+			.columns(["enabled", "actor"].map(Alias::new))
+			.from(Alias::new("authorization_catalog_history"))
+			.and_where(Expr::col("tenant").eq(Expr::value("acme")))
+			.and_where(Expr::col("node").eq(Expr::value(
+				aidash_domain::nodes::NodeName::derived("acme").as_str(),
+			)))
+			.and_where(
+				Expr::col("entry_id").eq(Expr::value(pending["agent"]["id"].as_str().unwrap())),
+			)
+			.and_where(
+				Expr::col("entry_version")
+					.eq(Expr::value(pending["agent"]["version"].as_str().unwrap())),
+			)
+			.and_where(Expr::col("revision").eq(Expr::value(1_i64)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(approval, (true, "alice".into()));
 	let rows: (i64, i64) = {
 		let query_bind_1 = node_of(&p.a);
 		let query_bind_2 = p.task;

@@ -516,7 +516,7 @@ Approving an agent version also makes the agent a subject of the Tenant's policy
 
 Approval alone does not grant a policy action; policy permission alone does not expose an unapproved entry. Discovery and execution see only approved versions satisfying `registry.read`. Scoped API and worker discovery search the local Node and source-authorized Nodes. Worker decisions intersect every subject in the originating execution chain.
 
-Approving a generation needs `generation.approve` and `catalog.approve`, and a Deployment Administrator cannot approve one. At publication the generated version is approved only while its approver still holds `catalog.approve`; otherwise, and on the receiving Node of a foreign generation, it is registered unapproved.
+Approving a generation needs `generation.approve` and `catalog.approve`, and a Deployment Administrator cannot approve one. Publication registers the generated version, creates its Agent subject and records its Catalog Approval on the Node that generated it. The transaction requires the approver to still hold `catalog.approve`. A foreign generation uses the receiving Node's Catalog Approval when admitting its bound Remote Grant.
 
 A subject can POST `{"revision":0,"agent":{"id":"research","version":"1.0.0"}}` to `/api/tasks/{id}/claim`, or delegate to the local Node through `/api/tasks/{id}/delegate`. The task must be OPEN with completed dependencies. Admission checks thread access, `agent.execute` and `task.execute`, then commits the task claim, run and execution grant together. Local delegation additionally requires `task.delegate` for the originating chain and records its delivery atomically.
 

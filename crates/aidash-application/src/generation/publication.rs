@@ -44,9 +44,6 @@ pub async fn publish(
 	scope.replace_snapshot(snapshot);
 	scope.save_authority(job).await?;
 	scope.register(&entry).await?;
-	if !job.is_local() {
-		return Ok(());
-	}
 	// An unapproved generated version could never run, so a lost
 	// `catalog.approve` refuses the activation instead of publishing it.
 	let Some(approver) = scope.approver(job).await? else {
