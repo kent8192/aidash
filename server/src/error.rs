@@ -465,29 +465,32 @@ impl Error {
 		}
 	}
 
-	/// The database could not be reached or did not answer: a lost or refused
-	/// connection, or a client deadline. Lock waits, deadlocks and serialization
-	/// failures are transient too, but they happen while the database is up, so
-	/// they do not start a post-outage hold on lease recoveries (#786).
+	/// Connection failures can start a hold on lease recoveries (ADR 0123).
+	/// A pool acquisition timeout alone can also occur on a healthy database.
 	pub(crate) fn is_database_unreachable(&self) -> bool {
 		fn connection_code(code: &str) -> bool {
-			code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03")
+			code.len() == 5 && (code.starts_with("08") || code.starts_with("57P0"))
+		}
+		fn connection_error(error: &sqlx::Error) -> bool {
+			match error {
+				sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::Protocol(_) => true,
+				sqlx::Error::Database(error) => {
+					error.code().is_some_and(|code| connection_code(&code))
+				}
+				_ => false,
+			}
 		}
 		match self {
-			Self::Database(
-				sqlx::Error::PoolTimedOut
-				| sqlx::Error::Io(_)
-				| sqlx::Error::Tls(_)
-				| sqlx::Error::Protocol(_),
-			) => true,
-			Self::Database(sqlx::Error::Database(error)) => {
-				error.code().is_some_and(|code| connection_code(&code))
-			}
-			Self::Framework(error) => error.database_error().is_some_and(|error| {
-				matches!(
-					error.kind(),
-					DatabaseErrorKind::Connection | DatabaseErrorKind::Timeout
-				) || error.code().is_some_and(connection_code)
+			Self::Database(error) => connection_error(error),
+			Self::Framework(framework) => framework.database_error().is_some_and(|error| {
+				error.code().is_some_and(connection_code)
+					|| std::error::Error::source(error)
+						.or_else(|| std::error::Error::source(framework))
+						.and_then(|source| source.downcast_ref::<sqlx::Error>())
+						.map_or_else(
+							|| error.kind() == DatabaseErrorKind::Connection,
+							connection_error,
+						)
 			}),
 			_ => false,
 		}
