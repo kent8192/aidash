@@ -83,10 +83,16 @@ impl Access {
 	}
 
 	pub(crate) async fn verify_dependencies(&mut self, pending: Vec<Reference>) -> Result<bool> {
-		let transport = crate::bootstrap::dependency_transport(self);
+		use aidash_application::ports::federation::dependencies::DependencyTransport;
+		let reach = crate::bootstrap::dependency_transport(self);
+		let cached = self.grant_dependency_checks.clone();
+		let transport: &dyn DependencyTransport = match &cached {
+			Some(checks) => checks,
+			None => &reach,
+		};
 		aidash_application::federation::dependencies::verify_all(
 			&mut crate::bootstrap::dependency_scope(self),
-			&transport,
+			transport,
 			pending,
 		)
 		.await

@@ -733,7 +733,7 @@ impl Executor<'_> {
 		let result = tokio::select! {
 			result = provider.infer(request, &progress) => result,
 			_ = self.environment.wait_for_inference_interruption(run.id, i64::MAX) => Err(Error::Invalid("MCP_SAMPLING_CANCELLED".into())),
-			error = async { loop { tokio::time::sleep(INFERENCE_RECHECK_INTERVAL).await; if let Err(error) = call.guard.recheck_inference().await { break error; } } } => Err(error),
+			error = wait_for_inference_refusal(call.guard) => Err(error),
 		};
 		let outcome = match &result {
 			Ok(response) => UsageOutcome::Completed(response.reported.clone()),

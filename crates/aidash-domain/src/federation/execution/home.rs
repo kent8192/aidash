@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
 	pub id: Uuid,
 	pub task_id: Uuid,

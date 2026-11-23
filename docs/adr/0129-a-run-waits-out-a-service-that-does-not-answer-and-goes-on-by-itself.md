@@ -19,6 +19,7 @@ Attempts made during an Outage Wait count against no call limit (such as `max_ca
 
 These enter an Outage Wait:
 
+- A receiver calling the Home for commands, a grant description or deliveries when the Home cannot be reached, times out or returns HTTP 502, 503 or 504 (#1056).
 - Every Decider Route failing (ADR 0066, formerly a `decider_unavailable` pause).
 - Required semantic context whose embedding service or vector store does not answer, and optional context whose sources chose to wait (ADR 0059).
 - An index that is not complete yet, where `Unavailable` used to spend retries (ADR 0020). Required-Home context waits for the complete index.

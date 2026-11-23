@@ -2539,12 +2539,7 @@ impl<'a> Executor<'a> {
 					let Some(guard) = guard else {
 						return std::future::pending().await;
 					};
-					loop {
-						tokio::time::sleep(INFERENCE_RECHECK_INTERVAL).await;
-						if let Err(error) = guard.recheck_inference().await {
-							return error;
-						}
-					}
+					wait_for_inference_refusal(guard).await
 				};
 				let inference = tokio::select! {
 					biased;
@@ -3686,6 +3681,11 @@ connection: None,
 				} else {
 					FrameworkResult::decode(&contract, &output, &call.arguments)?
 				};
+				if !home.local()
+					&& !matches!(framework, FrameworkResult::Approval(id) if Some(id) == run.state.tool()?.approval)
+				{
+					run.recovery.home_poll.observe(true);
+				}
 				// The operation's end wakes the Run, so the wait is not cut at the
 				// command's deadline: saving its files comes after the stop, and a
 				// poll between the two would otherwise return at once every time.
@@ -3824,9 +3824,11 @@ connection: None,
 					if !home.local() && h.response.is_none() {
 						// A remote scheduler polls Home; an unanswered continuation
 						// remains waiting and advances the next polling deadline.
+						run.recovery.home_poll.observe(false);
 						store.save_run(run, token, "execution.waiting").await?;
 						return Ok(());
 					}
+					run.recovery.home_poll.observe(true);
 					if h.response.is_none()
 						&& let WaitingState::Human { answer_by: Some(answer_by), .. } = &waiting
 					{
@@ -3910,6 +3912,9 @@ connection: None,
 						let ThreadEvents { events, dropped } = store.workspace_events(run, cursor).await?;
 						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
 						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
+						if !home.local() {
+							run.recovery.home_poll.observe(input || !events.is_empty() || remote_changed);
+						}
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
 							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 							run.state = RunState::Waiting(Box::new(WaitingState::TaskWait { wake_at, cursor, resume }));
@@ -3959,6 +3964,7 @@ connection: None,
 							if !unassigned_tasks.is_empty() { result["unassigned_tasks"] = json!(unassigned_tasks); }
 							state.wait_result = Some(result);
 						}
+						run.recovery.home_poll.observe(true);
 						resume.into_state()
 					}
 					WaitingState::Outage { resume, .. } => {
@@ -4009,6 +4015,12 @@ connection: None,
 							if let Some(guard) = guard { guard.tool(call, &original.contract()).await?; }
 							self.environment.poll_operation(run, poll_name, arguments).await?
 						});
+						RunState::ToolCall(resume)
+					}
+					WaitingState::Approval { approval: ApprovalRef::Capability { .. }, resume } => {
+						if !home.local() {
+							run.recovery.home_poll.observe(false);
+						}
 						RunState::ToolCall(resume)
 					}
 					WaitingState::Approval { resume, .. }
@@ -4232,7 +4244,15 @@ fn record_model_turn(
 }
 
 /// Authority is rechecked at most this often while the provider call runs.
-const INFERENCE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+async fn wait_for_inference_refusal(guard: &dyn ExecutionAuthority) -> Error {
+	let interval = std::time::Duration::from_secs(if guard.is_remote() { 10 } else { 1 });
+	loop {
+		tokio::time::sleep(interval).await;
+		if let Err(error) = guard.recheck_inference().await {
+			return error;
+		}
+	}
+}
 
 enum Inference {
 	Response(Box<aidash_domain::provider::ModelResponse>),

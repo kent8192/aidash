@@ -523,9 +523,35 @@ pub const MAX_WAIT_SECONDS: u64 = 30 * 86_400;
 /// The Lease Recovery limits a Tenant may set (#1009).
 pub const LEASE_RECOVERY_LIMITS: std::ops::RangeInclusive<u32> = 1..=20;
 
+/// Polling cadence of a Run waiting on its Home. Persisted with the wait so
+/// releasing the worker or restarting the receiver does not restart the cadence.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct HomePollBackoff(u8);
+
+impl HomePollBackoff {
+	pub fn delay(self) -> chrono::Duration {
+		chrono::Duration::seconds((2_i64 << self.0.min(4)).min(30))
+	}
+
+	pub fn observe(&mut self, changed: bool) {
+		self.0 = if changed {
+			0
+		} else {
+			self.0.saturating_add(1).min(4)
+		};
+	}
+
+	fn is_initial(&self) -> bool {
+		self.0 == 0
+	}
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	#[serde(default, skip_serializing_if = "HomePollBackoff::is_initial")]
+	pub home_poll: HomePollBackoff,
 	/// Start of the current external-service outage, retained across wake-ups.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub outage: Option<OutageTracking>,

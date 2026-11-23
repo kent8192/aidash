@@ -3124,6 +3124,10 @@ impl Guard {
 
 	pub async fn inference(&self) -> Result<()> {
 		self.refresh_remote().await?;
+		self.inference_after_resume().await
+	}
+
+	pub(crate) async fn inference_after_resume(&self) -> Result<()> {
 		let mut access = self.access.write().await;
 		self.authorize_inference_with(&mut access).await
 	}

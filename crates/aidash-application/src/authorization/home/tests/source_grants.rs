@@ -15,6 +15,7 @@ struct SourceRepository {
 	subjects: Vec<String>,
 	bundle: PolicyBundle,
 	current: Option<Grant>,
+	cache: Arc<use_case::GrantPeerCache>,
 	live: bool,
 	races: Arc<AtomicUsize>,
 	saved_unauthorized: bool,
@@ -41,6 +42,7 @@ impl SourceRepository {
 	fn new() -> Self {
 		let executor = aidash_domain::agent_subject(&receiver(), "agent", "1.0.0");
 		let mut current = grant(false);
+		current.node_id = receiver();
 		current.subject_chain.push(executor.clone());
 		Self {
 			repository: Repository::default(),
@@ -51,6 +53,7 @@ impl SourceRepository {
 			)
 			.unwrap(),
 			current: Some(current),
+			cache: Default::default(),
 			live: true,
 			races: Arc::new(AtomicUsize::new(0)),
 			saved_unauthorized: false,
@@ -76,6 +79,17 @@ impl SourceRepository {
 #[async_trait]
 impl GrantRepository for SourceRepository {
 	type Scope = SourceSession;
+	fn peer_cache(&self) -> Arc<use_case::GrantPeerCache> {
+		self.cache.clone()
+	}
+	async fn check_dependency(
+		&self,
+		_: &aidash_domain::federation::route::Route,
+		_: &aidash_domain::federation::dependencies::Input,
+		_: std::time::Duration,
+	) -> crate::ports::federation::dependencies::Check {
+		panic!("no dependency edges in this fixture")
+	}
 	fn source_node_id(&self) -> &str {
 		"aidash://home"
 	}
@@ -152,7 +166,15 @@ impl HomeScope for SourceSession {
 	}
 	async fn control_task(&mut self, _: Uuid) -> Result<Option<Task>> {
 		self.repository.call("task.control_projection");
-		Ok(Some(task()))
+		let mut task = self.task.clone();
+		if self
+			.races
+			.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+			.is_ok()
+		{
+			task.revision += 1;
+		}
+		Ok(Some(task))
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		Ok(self.resource("task", task.id, json!({})))
@@ -377,15 +399,11 @@ impl GrantScope for SourceSession {
 	}
 	async fn locked_task(&mut self, _: Uuid) -> Result<Task> {
 		self.repository.call("locked_task");
-		let mut task = self.task.clone();
-		if self
-			.races
-			.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-			.is_ok()
-		{
-			task.revision += 1;
-		}
-		Ok(task)
+		Ok(self.task.clone())
+	}
+	fn set_dependency_checks(&mut self, _: Option<use_case::DependencyChecks>) {}
+	async fn release_probe(self) -> Result<()> {
+		Ok(())
 	}
 	async fn grant_reads_visible(&mut self, _: Uuid) -> Result<bool> {
 		self.repository.call("grant_reads_visible");
@@ -578,13 +596,15 @@ async fn revoked_live_authority_is_not_retried_as_a_revision_race() {
 	assert_eq!(repository.repository.state.lock().unwrap().scopes, 0);
 }
 #[rstest]
+#[case::description(false)]
+#[case::commands(true)]
 #[tokio::test(start_paused = true)]
-async fn read_only_revision_race_is_retried_at_most_three_times() {
+async fn grant_revision_race_is_retried_at_most_three_times(#[case] command: bool) {
 	let repository = SourceRepository::new();
 	repository.races.store(3, Ordering::SeqCst);
 	let start = tokio::time::Instant::now();
 	assert!(matches!(
-		use_case::description(&repository, &receiver(), Uuid::from_u128(4)).await,
+		use_case::description_mode(&repository, &receiver(), Uuid::from_u128(4), command).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -598,34 +618,6 @@ async fn read_only_revision_race_is_retried_at_most_three_times() {
 	);
 	assert_eq!(start.elapsed(), std::time::Duration::from_millis(20));
 	assert_eq!(repository.repository.state.lock().unwrap().scopes, 0);
-}
-#[rstest]
-#[tokio::test]
-async fn command_lock_precedes_grant_and_task_row_locks_without_automatic_retry() {
-	let repository = SourceRepository::new();
-	repository.races.store(1, Ordering::SeqCst);
-	let mut race = false;
-	assert!(matches!(
-		use_case::description_mode(
-			&repository,
-			&receiver(),
-			Uuid::from_u128(4),
-			true,
-			&mut race
-		)
-		.await,
-		Err(Error::Forbidden)
-	));
-	assert!(race);
-	let calls = repository.repository.calls();
-	let journal = calls.iter().position(|c| c == "command_lock").unwrap();
-	let grant = calls.iter().position(|c| c == "current_grant").unwrap();
-	let task = calls.iter().position(|c| c == "locked_task").unwrap();
-	assert!(journal < grant && grant < task);
-	assert_eq!(
-		calls.iter().filter(|c| c.as_str() == "begin_saved").count(),
-		1
-	);
 }
 #[rstest]
 #[tokio::test]

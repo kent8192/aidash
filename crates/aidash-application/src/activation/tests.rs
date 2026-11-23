@@ -161,7 +161,7 @@ async fn a_thread_wait_on_a_remote_home_is_polled_without_waiting_for_the_ceilin
 		due(&mut scope, &row, now, repository.node_id())
 			.await
 			.unwrap(),
-		Some(now + chrono::Duration::seconds(15))
+		Some(now + chrono::Duration::seconds(2))
 	);
 }
 
@@ -187,7 +187,7 @@ async fn home_owned_human_waits_poll_without_querying_local_requests(
 		state: repository.0.clone(),
 		committed: false,
 	};
-	let polling = now + chrono::Duration::seconds(1);
+	let polling = now + chrono::Duration::seconds(2);
 	assert_eq!(
 		due(&mut scope, &row, now, repository.node_id())
 			.await
@@ -232,7 +232,7 @@ async fn home_owned_human_waits_poll_without_querying_local_requests(
 /// which re-ran the call in a loop; a pending local approval still waits until it expires and a
 /// decided one is due at once.
 #[rstest]
-#[case::awaiting_home("awaiting_home", Some(1))]
+#[case::awaiting_home("awaiting_home", Some(2))]
 #[case::pending_here("pending", Some(600))]
 #[case::approved("approved", Some(0))]
 #[case::denied("denied", Some(0))]
