@@ -423,7 +423,7 @@ async fn description_pass<R: GrantRepository>(
 		// Establish the evidence key before evaluating task provenance, which
 		// may itself traverse a receiver dependency.
 		let projected = scope
-			.control_task(current.task_id)
+			.control_task(current.task_id, false)
 			.await?
 			.ok_or(Error::Forbidden)?;
 		if projected.thread_id != current.thread_id {

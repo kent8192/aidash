@@ -41,6 +41,8 @@ struct State {
 	semantic: bool,
 	delay_status: bool,
 	delay_recheck: bool,
+	close_error: bool,
+	delay_close: bool,
 	created: Option<(NewTask, String, String)>,
 	cancelled: Option<(i64, String, Vec<String>)>,
 	/// The Home's remote semantic operation holds a scheduled retry.
@@ -198,11 +200,17 @@ impl HomeRepository for Repository {
 			state.max_rpcs = state.max_rpcs.max(state.rpcs);
 			state.calls.push(format!("rpc:{path}"));
 			state.requests.push((path.to_owned(), input.clone()));
-			state.delay_status
+			if state.delay_status {
+				std::time::Duration::from_secs(3)
+			} else if state.delay_close && input["grant_id"] == json!(Uuid::from_u128(5)) {
+				std::time::Duration::from_millis(1500)
+			} else {
+				std::time::Duration::ZERO
+			}
 		};
 		let _guard = RpcGuard(self.clone());
-		if path.ends_with("/status") && delay {
-			tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+		if path.ends_with("/status") && !delay.is_zero() {
+			tokio::time::sleep(delay).await;
 		}
 		let value = {
 			let mut state = self.state.lock().unwrap();
@@ -259,6 +267,17 @@ impl HomeScope for Scope {
 		Ok(self.repository.state.lock().unwrap().human_requests.clone())
 	}
 	async fn close_human_requests(&mut self, _: Uuid, _: Uuid) -> Result<()> {
+		self.repository.call("close_human_requests");
+		let (delay, fail) = {
+			let state = self.repository.state.lock().unwrap();
+			(state.delay_close, state.close_error)
+		};
+		if delay {
+			tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+		}
+		if fail {
+			return Err(Error::External("journal unavailable".into()));
+		}
 		Ok(())
 	}
 	async fn answer_human(
@@ -300,8 +319,12 @@ impl HomeScope for Scope {
 		}
 		Ok(read)
 	}
-	async fn control_task(&mut self, _: Uuid) -> Result<Option<Task>> {
-		self.repository.call("task.control_projection");
+	async fn control_task(&mut self, _: Uuid, lock: bool) -> Result<Option<Task>> {
+		self.repository.call(if lock {
+			"task.control_lock"
+		} else {
+			"task.control_projection"
+		});
 		Ok(Some(task()))
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
@@ -345,11 +368,11 @@ impl HomeScope for Scope {
 	async fn requester_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
 		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
 	}
-	async fn binding(&mut self, _: Uuid) -> Result<Option<HomeBinding>> {
+	async fn binding(&mut self, grant: Uuid) -> Result<Option<HomeBinding>> {
 		let changed = self.repository.state.lock().unwrap().binding_changed;
 		let unactivated = self.repository.state.lock().unwrap().unactivated;
 		Ok(Some(HomeBinding {
-			grant_id: Uuid::from_u128(4),
+			grant_id: grant,
 			admission_id: Uuid::from_u128(5),
 			task_id: task().id,
 			task_revision: 7,
@@ -533,8 +556,13 @@ async fn cancellation_fences_delivered_messages_and_task_revision_after_receiver
 	let calls = repository.calls();
 	let rpc = calls.iter().position(|c| c.ends_with("/control")).unwrap();
 	let revoke = calls.iter().position(|c| c == "revoke").unwrap();
+	let task_lock = calls.iter().position(|c| c == "task.control_lock").unwrap();
+	let close = calls
+		.iter()
+		.position(|c| c == "close_human_requests")
+		.unwrap();
 	let cancel = calls.iter().position(|c| c == "cancel_task").unwrap();
-	assert!(rpc < revoke && revoke < cancel);
+	assert!(rpc < revoke && revoke < task_lock && task_lock < close && close < cancel);
 	let state = repository.state.lock().unwrap();
 	assert_eq!(
 		state.cancelled,
@@ -909,6 +937,52 @@ async fn authority_recheck_uses_the_same_status_deadline() {
 	assert_eq!(statuses[0].semantic.reason, Some(Failure::Unavailable));
 	assert_eq!(repository.state.lock().unwrap().scopes, 0);
 }
+#[rstest]
+#[case::wrong_admission(true, false, false)]
+#[case::journal_error(false, true, false)]
+#[case::journal_timeout(false, false, true)]
+#[tokio::test(start_paused = true)]
+async fn ended_grant_cleanup_failure_is_isolated(
+	#[case] wrong_admission: bool,
+	#[case] close_error: bool,
+	#[case] delay_close: bool,
+) {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.grants = 2;
+		state.close_error = close_error;
+		state.delay_close = delay_close;
+		let mut ended = activation();
+		ended["grant_id"] = json!(Uuid::from_u128(5));
+		ended["phase"] = json!(RemoteExecutionPhase::Failed);
+		if wrong_admission {
+			ended["admission_id"] = json!(Uuid::from_u128(6));
+			ended["run_id"] = ended["admission_id"].clone();
+		}
+		state.replies = vec![activation(), ended];
+	}
+
+	let statuses = list(&repository, task().id).await.unwrap();
+
+	assert_eq!(statuses.len(), 2);
+	assert!(!statuses[0].unavailable);
+	assert_eq!(
+		statuses[0].execution.as_ref().unwrap().phase,
+		RemoteExecutionPhase::Ready,
+	);
+	assert!(statuses[1].unavailable);
+	assert!(statuses[1].execution.is_none());
+	if wrong_admission {
+		assert!(
+			!repository
+				.calls()
+				.iter()
+				.any(|call| call == "close_human_requests")
+		);
+	}
+}
+
 /// A cancelled or finished remote Run keeps its semantic cause visible but
 /// offers no recovery action, matching the local management view.
 #[rstest]
