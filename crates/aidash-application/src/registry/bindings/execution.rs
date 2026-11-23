@@ -2,7 +2,7 @@
 use crate::{
 	Error, Result,
 	ports::{bindings::*, execution::*, tools::PluginSessions},
-	tools::agent_plugin::pinned_tools,
+	tools::{agent_plugin::pinned_tools, validate_arguments},
 };
 use aidash_domain::{
 	Run,
@@ -136,6 +136,9 @@ impl ExecutionTool for BoundTool {
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()
 	}
+	fn validate_input(&self, input: &Value) -> Result<()> {
+		validate_bound_input(&self.binding, input)
+	}
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
 		let admitted = self.admit(run, input).await?;
 		self.dispatch(run, admitted, key).await
@@ -165,12 +168,30 @@ impl ExecutionTool for BoundTool {
 		super::recheck_provider(self.providers.as_ref(), &self.binding)?;
 		self.authority.refresh(run).await?;
 		self.authority.check(run, &self.binding).await?;
+		self.validate_input(&input)?;
 		self.binding.narrow.apply(&mut input)?;
 		Ok(input)
 	}
 	async fn dispatch(&self, run: &Run, admitted: Value, key: &str) -> Result<Value> {
 		self.inner.invoke(run, admitted, key).await
 	}
+}
+
+/// Validate calls to core providers against the exact declaration in the Run's Binding.
+pub fn validate_bound_input(binding: &ResolvedBinding, input: &Value) -> Result<()> {
+	if binding.definition.config["provider"]
+		.as_str()
+		.is_some_and(|provider| provider.starts_with("core."))
+	{
+		let identity = &binding.identity;
+		validate_arguments(&binding.definition.schema, input).map_err(|error| {
+			Error::Invalid(format!(
+				"Arguments do not match {}@{}. {error}",
+				identity.id, identity.version,
+			))
+		})?;
+	}
+	Ok(())
 }
 
 /// The model-visible specification of an aliased tool Binding over its

@@ -1955,7 +1955,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 						)));
 					}
 				}
-				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
+				tools.insert((*name).to_owned(), providers.coordination_tool(run, name)?);
 			}
 		}
 		if handed.is_some() || aidash_domain::context::journal_query::offloaded_any(&run.context) {

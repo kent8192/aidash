@@ -6252,6 +6252,7 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 struct RefusedEarlyRead {
 	tool: Arc<dyn ExecutionTool>,
 	noted: bool,
+	invalid_input: Option<&'static str>,
 }
 
 #[async_trait]
@@ -6266,6 +6267,11 @@ impl ExecutionTool for RefusedEarlyRead {
 
 	fn replay_safe(&self) -> bool {
 		self.tool.replay_safe()
+	}
+
+	fn validate_input(&self, _: &Value) -> Result<()> {
+		self.invalid_input
+			.map_or(Ok(()), |message| Err(Error::Invalid(message.into())))
 	}
 
 	async fn invoke(&self, _: &Run, _: Value, key: &str) -> Result<Value> {
@@ -6299,13 +6305,13 @@ async fn early_read_refusals_reach_the_next_model_request(
 	#[case] arguments: Value,
 ) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.projection = ProjectionVersion::Native;
 	state.fitting_denial = Some(name);
 	state.tools_by_alias.insert(
 		name.into(),
 		Arc::new(RefusedEarlyRead {
 			tool: Advertised::builtin(name),
 			noted: false,
+			invalid_input: None,
 		}),
 	);
 	respond(
@@ -6336,6 +6342,44 @@ async fn early_read_refusals_reach_the_next_model_request(
 }
 
 #[rstest]
+#[case::record("thread_read", json!({"kind":"message","id":Uuid::new_v4(),"extra":true}))]
+#[case::observation("thread_observe", json!({"extra":true}))]
+#[tokio::test]
+async fn fitted_reads_return_the_argument_error(
+	mut fixture: Fixture,
+	#[case] name: &'static str,
+	#[case] arguments: Value,
+) {
+	let message = "The argument extra is not declared.";
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.tools_by_alias
+		.insert(
+			name.into(),
+			Arc::new(RefusedEarlyRead {
+				tool: Advertised::builtin(name),
+				noted: false,
+				invalid_input: Some(message),
+			}),
+		);
+	respond(
+		&mut fixture.run,
+		vec![call("invalid-read", name, arguments)],
+	);
+	fixture.run.state.tool_mut().unwrap().request_window = 120_000;
+
+	advance_sources(&mut fixture).await.unwrap();
+
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "execution.tool_recorded");
+	assert_eq!(
+		original_tool_result(&fixture, &saved),
+		json!({"error":message})
+	);
+	assert!(fixture.backend.0.invocations.lock().unwrap().is_empty());
+}
+
+#[rstest]
 #[tokio::test]
 async fn an_early_read_with_a_refusal_note_names_the_stopped_call(mut fixture: Fixture) {
 	let name = "skill_read";
@@ -6347,6 +6391,7 @@ async fn an_early_read_with_a_refusal_note_names_the_stopped_call(mut fixture: F
 			Arc::new(RefusedEarlyRead {
 				tool: Advertised::builtin(name),
 				noted: true,
+				invalid_input: None,
 			}),
 		);
 	let stopped = call("refused-read", name, json!({"skill":"testing@1.0.0"}));
