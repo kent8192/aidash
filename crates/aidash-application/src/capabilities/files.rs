@@ -1112,28 +1112,16 @@ pub async fn snapshot_message_files(
 	scope.require_current(&area, run).await?;
 	scope.authorize(&area, "file.read").await?;
 	let entries = files(&area)?;
-	// A receiving Area's files go to its Home, another Tenant's Node: the rule of a share to
-	// that Home holds (ADR 0139), so neither its Reference files nor copies of them as made
-	// leave, and an Area holding private originals or received files sends none.
-	let leaving = area.is_remote_home();
-	if leaving {
-		super::sharing::require_unbarred(&area)?;
-	}
-	let kept = if leaving {
-		super::sharing::reference_digests(&entries)
-	} else {
-		BTreeSet::new()
-	};
+	// A Thread attachment makes the file downloadable by the recipient. Apply the
+	// sharing rules (ADR 0114) to both the Run's own Thread and a remote Home.
+	super::sharing::require_unbarred(&area)?;
+	let reference_digests = super::sharing::reference_digests(&entries);
 	let mut result = Vec::with_capacity(paths.len());
 	let mut total = 0_u64;
 	for path in paths {
 		let file = entries
 			.iter()
-			.find(|file| {
-				file.path == *path
-					&& !file.is_reference_file()
-					&& !kept.contains(file.digest.as_str())
-			})
+			.find(|file| file.path == *path && !reference_digests.contains(file.digest.as_str()))
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?
 			.clone();
 		total = total.saturating_add(file.size);
