@@ -5,6 +5,7 @@ use reinhardt::db::migrations::{FieldType, prelude::*};
 pub(super) fn migration() -> Migration {
 	Migration::new("0157_stdio_session_recheck", "execution")
 		.add_dependency("execution", "0156_model_call_state")
+		.database_only(true)
 		.add_operation(Operation::AddColumn {
 			table: "task_executions".into(),
 			column: ColumnDefinition::new("stdio_session", FieldType::Jsonb),
