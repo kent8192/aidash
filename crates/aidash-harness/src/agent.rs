@@ -390,12 +390,12 @@ impl<'a> Executor<'a> {
 		let mut dispatch = Vec::new();
 		// Admit every call before dispatching any, so checks that need the Run's
 		// authority scope exclusively never wait behind a sibling's execution.
-		for (offset, outcome) in outcomes.into_iter().enumerate() {
+		for (offset, outcome) in outcomes.iter().enumerate() {
 			let call = &calls[cursor + offset];
 			let denial = denied[offset].take();
 			match outcome.status.as_str() {
 				"COMPLETED" => {
-					let result = outcome.result.ok_or_else(|| {
+					let result = outcome.result.clone().ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?;
 					outputs[offset] =
@@ -421,14 +421,31 @@ impl<'a> Executor<'a> {
 						index: cursor + offset,
 						replay_safe: true,
 					};
-					let unexecuted = outcome.unexecuted;
 					let outcome =
 						refusal_note::scoped(tool.admit(run, call.arguments.clone())).await;
 					match Self::tool_step_result(run, key, delivered, outcome) {
 						Err(Error::AuthorityRefused(refusal)) => {
-							// A recovered STARTED row may already have dispatched.
-							if unexecuted && refusal.check != RefusalCheck::RunAuthority {
-								store.invocation_refused(run, token, key, &refusal).await?;
+							if refusal.check != RefusalCheck::RunAuthority {
+								// No sibling dispatched in this attempt. Keep that evidence only
+								// for rows that the journal also proves did not dispatch earlier.
+								let undispatched: Vec<&str> = keys
+									.iter()
+									.zip(&outcomes)
+									.filter_map(|(key, outcome)| {
+										outcome.unexecuted.then_some(key.as_str())
+									})
+									.collect();
+								if !undispatched.is_empty() {
+									store
+										.batch_admission_refused(
+											run,
+											token,
+											key,
+											&undispatched,
+											&refusal,
+										)
+										.await?;
+								}
 							}
 							return Err(Error::AuthorityRefused(refusal));
 						}
@@ -3533,15 +3550,16 @@ connection: None,
 					.await?
                 };
 				if invocation.status == "UNCERTAIN" {
+					// A reconciliation refusal must leave the effect unresolved.
 					if let Some(guard) = guard {
-						tool_step!(*call, guard.action("human.request", "run", run.id), Some(key.as_str()));
+						guard.action("human.request", "run", run.id).await?;
 					}
                     let reason = if invocation.uncertain_reason.as_deref() == Some("answer_lost") { "its answer was lost after the request was sent" } else { "the worker stopped" };
                     let prompt = format!("Tool {} may have completed before {reason}. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}", call.name);
                     if home.local() {
                         store.reconciliation_request(run, token, &key, &prompt).await?;
                     } else {
-                        let request = tool_step!(*call, home.human_request(run, "CONFIRMATION", &prompt, &format!("{key}:reconcile")), Some(key.as_str()));
+                        let request = home.human_request(run, "CONFIRMATION", &prompt, &format!("{key}:reconcile")).await?;
                         run.state = RunState::Waiting(Box::new(WaitingState::Reconciliation { request_id: request.id, key: key.clone(), resume: Box::new(run.state.tool()?.clone()) }));
                     }
 					store.save_run(run, token, "execution.waiting").await?;

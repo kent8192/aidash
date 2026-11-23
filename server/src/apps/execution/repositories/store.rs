@@ -4720,14 +4720,34 @@ impl Store {
 		key: &str,
 		refusal: &aidash_domain::tool::AuthorityRefusal,
 	) -> Result<()> {
+		self.invocations_refused(scope, run, worker, key, &[key], refusal)
+			.await
+	}
+	pub(crate) async fn invocations_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		refused_key: &str,
+		undispatched: &[&str],
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
 		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost while recording tool refusal".into(),
 			));
 		}
-		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
-		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		let refused = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		let sibling = json!({"error":{"kind":"batch_admission_paused"}});
+		for &key in undispatched {
+			let result = if key == refused_key {
+				&refused
+			} else {
+				&sibling
+			};
+			InvocationRecord::refuse(tx.as_mut(), run.id, key, result).await?;
+		}
 		tx.commit().await?;
 		Ok(())
 	}

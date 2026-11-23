@@ -640,13 +640,29 @@ impl ExecutionStore for Bench {
 		key: &str,
 		refusal: &aidash_domain::tool::AuthorityRefusal,
 	) -> Result<()> {
+		self.batch_admission_refused(_run, token, key, &[key], refusal)
+			.await
+	}
+	async fn batch_admission_refused(
+		&self,
+		_run: &Run,
+		token: Uuid,
+		refused_key: &str,
+		undispatched: &[&str],
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
 		assert_eq!(token, self.0.token);
 		let mut journal = self.0.journal.lock().unwrap();
-		let entry = journal.get_mut(key).unwrap();
-		if entry.status == "STARTED" {
-			entry.status = "REFUSED";
-			entry.result =
-				Some(json!({"error":{"kind":"authority_refused","message":refusal.to_string()}}));
+		for &key in undispatched {
+			let entry = journal.get_mut(key).unwrap();
+			if entry.status == "STARTED" {
+				entry.status = "REFUSED";
+				entry.result = Some(if key == refused_key {
+					json!({"error":{"kind":"authority_refused","message":refusal.to_string()}})
+				} else {
+					json!({"error":{"kind":"batch_admission_paused"}})
+				});
+			}
 		}
 		Ok(())
 	}
@@ -2167,8 +2183,18 @@ async fn a_noted_admission_refusal_stays_declinable_after_a_resume() {
 			"no calls could dispatch"
 		);
 	}
+	declined(&mut run, 0);
+	lab.admit_refusals.store(1, SeqCst);
+	let stopped = pause_of(advance(&bench, &mut run).await).call.unwrap();
+	assert_eq!(stopped.index, 1);
+	assert_eq!(bench.status(&stopped.key).0, "REFUSED");
+	assert!(lab.attempts.lock().unwrap().is_empty());
+
+	declined(&mut run, 1);
 	advance(&bench, &mut run).await.unwrap();
-	assert_eq!(adopted(&run), expected(&[(0, read("p0")), (1, read("p1"))]));
+	let denial = json!({"error": sentence()});
+	assert_eq!(adopted(&run), expected(&[(0, denial.clone()), (1, denial)]));
+	assert!(lab.attempts.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
