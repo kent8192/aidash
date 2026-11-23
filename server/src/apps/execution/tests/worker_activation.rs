@@ -163,7 +163,7 @@ async fn count(f: &Federation, predicate: &str) -> i64 {
 	.await
 	.unwrap()
 }
-async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
+async fn admit_task(f: &Federation, token: &str, task: Uuid) {
 	let response = f
 		.client
 		.clone()
@@ -176,6 +176,10 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 	let status = response.status();
 	let value: Value = response.json().await.unwrap();
 	assert!(status.is_success(), "admission: {status} {value}");
+}
+
+async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
+	admit_task(f, token, task).await;
 	// The measured notification workload must not include decoding every
 	// historical Run's immutable dependency closure to identify this admission.
 	sqlx::query_scalar(
@@ -192,6 +196,87 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap()
+}
+
+const ADMISSION_MAX: Duration = Duration::from_secs(3);
+const WAKE_MAX: Duration = Duration::from_millis(1500);
+
+#[derive(sqlx::FromRow)]
+struct ActivationSample {
+	run_id: Uuid,
+	id: Uuid,
+	generation: i64,
+	claim_source: Option<String>,
+	worker_pid: Option<i64>,
+}
+
+async fn observe_first_claim(
+	f: &Federation,
+	task: Uuid,
+	start: Instant,
+) -> (ActivationSample, Instant, Duration) {
+	let query = Query::select()
+		.columns([
+			(a("activation"), a("run_id")),
+			(a("activation"), a("id")),
+			(a("activation"), a("generation")),
+			(a("activation"), a("claim_source")),
+			(a("activation"), a("worker_pid")),
+		])
+		.from_as(a("run_activations"), a("activation"))
+		.join(
+			reinhardt::query::JoinType::InnerJoin,
+			a("task_executions"),
+			Expr::col((a("activation"), a("run_id"))).equals((a("task_executions"), a("id"))),
+		)
+		.and_where(Expr::col((a("task_executions"), a("task_id"))).eq(Expr::value(task)))
+		.order_by(
+			(a("activation"), a("claimed_at")),
+			reinhardt::query::Order::Asc,
+		)
+		.limit(1)
+		.to_string(PostgresQueryBuilder);
+	let mut last_invisible = start;
+	let mut wake_deadline = None;
+	loop {
+		let before_poll = Instant::now();
+		let row: Option<ActivationSample> = sqlx::query_as(&query)
+			.fetch_optional(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		let observed_at = Instant::now();
+		if let Some(row) = row {
+			// The obligation becomes visible at admission commit. Sending a poll
+			// that still saw no obligation precedes that commit, even if the
+			// first visible poll already sees a claim.
+			let wake = observed_at.duration_since(last_invisible);
+			if row.claim_source.is_some() {
+				return (row, observed_at, wake);
+			}
+			let deadline = wake_deadline.get_or_insert(observed_at + WAKE_MAX);
+			assert!(
+				observed_at < *deadline,
+				"no first lease within {WAKE_MAX:?} of observing admission for {}",
+				row.run_id
+			);
+		} else {
+			last_invisible = before_poll;
+			assert!(
+				start.elapsed() < ADMISSION_MAX,
+				"activation obligation did not become visible for task {task} within {ADMISSION_MAX:?}"
+			);
+		}
+		tokio::time::sleep(Duration::from_millis(25)).await;
+	}
+}
+
+fn sample_percentiles(samples: &[Value], field: &str) -> (f64, f64) {
+	let mut timings: Vec<f64> = samples
+		.iter()
+		.map(|sample| sample[field].as_f64().unwrap())
+		.collect();
+	timings.sort_by(f64::total_cmp);
+	(timings[94], timings[99])
 }
 /// Every obligation of the Run in generation order, for failure diagnostics.
 async fn activations(f: &Federation, id: Uuid) -> Value {
@@ -323,34 +408,27 @@ async fn separate_process_notifications_and_negative_control(
 			let task: Value = response.error_for_status().unwrap().json().await.unwrap();
 			let task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
 			let start = Instant::now();
-			let id = admit(&f, &token, task).await;
-			let first_claim: (Uuid, i64, String, i64) = loop {
-				let query = Query::select()
-					.columns([a("id"), a("generation"), a("claim_source"), a("worker_pid")])
-					.from(a("run_activations"))
-					.and_where(Expr::col(a("run_id")).eq(reinhardt::query::Expr::value(id)))
-					.and_where(Expr::col(a("claimed_at")).is_not_null())
-					.order_by(a("claimed_at"), reinhardt::query::Order::Asc)
-					.limit(1)
-					.to_string(PostgresQueryBuilder);
-				if let Some(row) = sqlx::query_as(&query)
-					.fetch_optional(f.store.pool.fixture_driver())
-					.await
-					.unwrap()
-				{
-					break row;
-				}
-				assert!(
-					start.elapsed() < Duration::from_secs(2),
-					"first lease exceeded 2s for {id}"
-				);
-				tokio::time::sleep(Duration::from_millis(5)).await;
-			};
-			let elapsed = start.elapsed().as_secs_f64() * 1000.;
-			assert_eq!(first_claim.2, "notification");
-			assert!([one.child.id() as i64, two.child.id() as i64].contains(&first_claim.3));
-			samples.push(json!({"window":window,"sample":index,"run_id":id,"activation_id":first_claim.0,"generation":first_claim.1,"worker_pid":first_claim.3,"upper_bound_ms":elapsed}));
-			complete(&f, id).await;
+			let (admission, (first_claim, observed_at, wake)) = tokio::join!(
+				async {
+					tokio::time::timeout(ADMISSION_MAX, admit_task(&f, &token, task))
+						.await
+						.unwrap_or_else(|_| {
+							panic!("admission exceeded {ADMISSION_MAX:?} for task {task}")
+						});
+					start.elapsed()
+				},
+				observe_first_claim(&f, task, start),
+			);
+			assert_eq!(first_claim.claim_source.as_deref(), Some("notification"));
+			let worker_pid = first_claim.worker_pid.unwrap();
+			assert!([one.child.id() as i64, two.child.id() as i64].contains(&worker_pid));
+			samples.push(json!({
+				"window":window,"sample":index,"run_id":first_claim.run_id,
+				"activation_id":first_claim.id,"generation":first_claim.generation,"worker_pid":worker_pid,
+				"upper_bound_ms":observed_at.duration_since(start).as_secs_f64() * 1000.,
+				"admission_ms":admission.as_secs_f64() * 1000.,"wake_upper_bound_ms":wake.as_secs_f64() * 1000.
+			}));
+			complete(&f, first_claim.run_id).await;
 			index += 1;
 		}
 		let elapsed = window_start.elapsed();
@@ -417,19 +495,23 @@ async fn separate_process_notifications_and_negative_control(
 	);
 	busy.stop();
 	available.stop();
-	let mut timings: Vec<f64> = samples
-		.iter()
-		.map(|v| v["upper_bound_ms"].as_f64().unwrap())
-		.collect();
-	timings.sort_by(f64::total_cmp);
-	let p95 = timings[94];
-	let max = timings[99];
-	// Each sample times the admission request as well as the wake-up, so the
-	// bound tracks admission cost under coverage on a shared runner. p95 reached
-	// 1,011–1,249 ms on hosted runners on 2026-11-17 (#1004). The notification
-	// path is proven above (every first claim is a notification within 2 s and
-	// the recovery count does not move); this bound only catches a slowdown.
-	assert!(p95 <= 1500. && max <= 2000., "p95={p95} max={max}");
+	let (p95, max) = sample_percentiles(&samples, "upper_bound_ms");
+	let (admission_p95, admission_max) = sample_percentiles(&samples, "admission_ms");
+	let (wake_p95, wake_max) = sample_percentiles(&samples, "wake_upper_bound_ms");
+	println!(
+		"activation latency (p95/max): admission {admission_p95:.1}/{admission_max:.1}ms, wake {wake_p95:.1}/{wake_max:.1}ms, combined {p95:.1}/{max:.1}ms"
+	);
+	// Allow headroom for instrumented admission on shared runners (#1045).
+	// The wake budget covers four 250ms scheduler ticks at p95 and stays
+	// below the five-second re-notification interval even for the slowest Run.
+	assert!(
+		admission_p95 <= 2000. && admission_max <= ADMISSION_MAX.as_secs_f64() * 1000.,
+		"HTTP admission p95={admission_p95:.1}ms max={admission_max:.1}ms"
+	);
+	assert!(
+		wake_p95 <= 1000. && wake_max <= WAKE_MAX.as_secs_f64() * 1000.,
+		"admission commit to first notification lease p95={wake_p95:.1}ms max={wake_max:.1}ms"
+	);
 	assert_eq!(
 		calls.load(Ordering::SeqCst),
 		107,
@@ -443,6 +525,9 @@ async fn separate_process_notifications_and_negative_control(
         "AT01":"passed","AT02":"passed with running worker consumption suppressed","AT04":{"suspended_pid":busy_pid,"executing_pid":available_pid,"batch":6},
         "server_pid":server.child.id(),"worker_pids":pids,"slots_per_worker":2,"sample_count":100,"p95_ms":p95,"max_ms":max,
         "measurement":"before HTTP admission to observed committed first lease; upper bound, monotonic time",
+        "admission_p95_ms":admission_p95,"admission_max_ms":admission_max,
+        "wake_upper_bound_p95_ms":wake_p95,"wake_upper_bound_max_ms":wake_max,
+        "wake_measurement":"last poll started before admission commit to observed committed first lease; upper bound, monotonic time",
         "recovery_delay_ms":60000,"measured_recovery_claims":0,"provider_calls":calls.load(Ordering::SeqCst),"samples":samples
     })).unwrap()).unwrap();
 	println!(
