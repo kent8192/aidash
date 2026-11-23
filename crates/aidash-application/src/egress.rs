@@ -236,13 +236,16 @@ pub trait EgressScopes: Send + Sync {
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
 	/// Reauthenticate the credential and return current policy.
 	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings>;
-	/// Atomically reserves bytes against the daily budget.
+	/// Atomically reserves bytes against the daily budget. Retry an unanswered
+	/// call with the same reservation ID, scope, direction, byte count and day.
+	/// Each new reservation attempt needs a fresh ID.
 	async fn debit(
 		&self,
 		scope: &ScopeSettings,
 		direction: Direction,
 		bytes: u64,
 		day: chrono::NaiveDate,
+		reservation: Uuid,
 	) -> Result<()>;
 	async fn refund(
 		&self,

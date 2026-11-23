@@ -167,6 +167,70 @@ fn admitted(outcome: ExternalAdmission) -> Admission {
 #[rstest::rstest]
 #[tokio::test]
 #[timeout(std::time::Duration::from_secs(180))]
+async fn host_debit_replays_a_committed_reservation_after_its_answer_is_lost(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let scope = ScopeSettings {
+		run_id: None,
+		id: ScopeId {
+			tenant: "acme".into(),
+			node: tenant_roots::fixture_node_name("acme").to_string(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget {
+			sent_bytes: 100,
+			received_bytes: 100,
+		},
+		anomaly: AnomalyRule::default(),
+		operator_allows_all: false,
+		tunnel_limits: Default::default(),
+	};
+	let authority = Arc::new(Authority(scope.clone()));
+	let durable = DurableScopes::new(federation.store.clone(), authority.clone());
+	durable.resolve("credential").await.unwrap();
+	let day = Utc::now().date_naive();
+	let reservation = Uuid::new_v4();
+	// Discard the committed call's answer and retry through a fresh store adapter.
+	durable
+		.debit(&scope, Direction::Received, 30, day, reservation)
+		.await
+		.unwrap();
+	let retry = DurableScopes::new(federation.store.clone(), authority);
+	retry
+		.debit(&scope, Direction::Received, 30, day, reservation)
+		.await
+		.unwrap();
+	assert_eq!(
+		received_bytes(&federation.store, &scope.id, day, "").await,
+		30
+	);
+	assert!(matches!(
+		retry
+			.debit(&scope, Direction::Received, 31, day, reservation)
+			.await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	retry
+		.debit(&scope, Direction::Received, 30, day, Uuid::new_v4())
+		.await
+		.unwrap();
+	assert_eq!(
+		received_bytes(&federation.store, &scope.id, day, "").await,
+		60
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
 async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	#[future] database: DatabaseFixture,
 ) {
@@ -276,8 +340,8 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	other.commit().await.unwrap();
 	let day = Utc::now().date_naive();
 	let (left, right) = tokio::join!(
-		durable.debit(&scope, Direction::Sent, 8, day),
-		durable.debit(&scope, Direction::Sent, 8, day)
+		durable.debit(&scope, Direction::Sent, 8, day, uuid::Uuid::new_v4()),
+		durable.debit(&scope, Direction::Sent, 8, day, uuid::Uuid::new_v4())
 	);
 	assert_ne!(
 		left.is_ok(),
@@ -286,7 +350,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	);
 	assert!(
 		durable
-			.debit(&scope, Direction::Sent, 3, day)
+			.debit(&scope, Direction::Sent, 3, day, uuid::Uuid::new_v4())
 			.await
 			.is_err()
 	);
@@ -295,7 +359,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		.await
 		.unwrap();
 	durable
-		.debit(&scope, Direction::Sent, 2, day)
+		.debit(&scope, Direction::Sent, 2, day, uuid::Uuid::new_v4())
 		.await
 		.unwrap();
 	let first = admitted(
@@ -460,7 +524,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	.unwrap();
 	assert_eq!(events, 1);
 	durable
-		.debit(&scope, Direction::Sent, 1, day)
+		.debit(&scope, Direction::Sent, 1, day, uuid::Uuid::new_v4())
 		.await
 		.unwrap();
 	for _ in 0..2 {
@@ -1004,7 +1068,7 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 	.await
 	.unwrap();
 	assert!(matches!(
-		durable.debit(&open, Direction::Received, 1, day).await,
+		durable.debit(&open, Direction::Received, 1, day, uuid::Uuid::new_v4()).await,
 		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
 	));
 

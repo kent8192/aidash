@@ -846,11 +846,7 @@ impl Batch {
 	}
 	/// Debits until the store decides. A store that does not answer is tried
 	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
-	///
-	/// A debit carries no key, so one whose commit landed but whose answer was
-	/// lost is debited again: the same `amount`, at most one batch, counts
-	/// twice and stays counted for the day. That errs toward the allowance,
-	/// never past it; keying each reservation would need a store change.
+	/// Every attempt uses the same reservation ID, including after a lost commit answer.
 	async fn debit(
 		&mut self,
 		amount: u64,
@@ -860,11 +856,12 @@ impl Batch {
 			metrics::histogram!("aidash_egress_debit_seconds"),
 			tokio::time::Instant::now(),
 		);
+		let reservation = uuid::Uuid::new_v4();
 		let mut pause = DEBIT_RETRY;
 		let result = loop {
 			match self
 				.scopes
-				.debit(&self.settings, self.direction, amount, day)
+				.debit(&self.settings, self.direction, amount, day, reservation)
 				.await
 			{
 				Err(error) if !debit_decided(&error) => {
@@ -2566,8 +2563,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			b: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.0.debit(s, d, b, day).await
+			self.0.debit(s, d, b, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -2631,8 +2629,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			n: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.0.debit(s, d, n, day).await
+			self.0.debit(s, d, n, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -2794,8 +2793,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			n: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.0.debit(s, d, n, day).await
+			self.0.debit(s, d, n, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -4018,6 +4018,7 @@ mod tests {
 		debit_fails: bool,
 		/// The number of debits still to fail before the store answers again.
 		debit_failures: std::sync::atomic::AtomicU32,
+		debit_reservations: Arc<std::sync::Mutex<Vec<uuid::Uuid>>>,
 		/// How long each debit takes before it is answered.
 		debit_delay: std::time::Duration,
 		refund_fails: bool,
@@ -4032,6 +4033,7 @@ mod tests {
 				resolve_fails: false,
 				debit_fails: false,
 				debit_failures: Default::default(),
+				debit_reservations: Default::default(),
 				debit_delay: std::time::Duration::ZERO,
 				refund_fails: false,
 				record_hangs: false,
@@ -4075,7 +4077,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			n: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
+			self.debit_reservations.lock().unwrap().push(reservation);
 			tokio::time::sleep(self.debit_delay).await;
 			let failing = self
 				.debit_failures
@@ -4088,7 +4092,7 @@ mod tests {
 					"pool timed out debiting".into(),
 				));
 			}
-			self.memory.debit(s, d, n, day).await
+			self.memory.debit(s, d, n, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -4793,6 +4797,7 @@ mod tests {
 		let settings = settings_allowing_any_host();
 		let scopes = FaultyScopes::new(&settings);
 		scopes.debit_failures.store(4, Ordering::SeqCst);
+		let reservations = scopes.debit_reservations.clone();
 		let (received, result) = hello_through(settings, scopes, Default::default()).await;
 		assert_eq!(&received, b"hello");
 		assert!(
@@ -4802,6 +4807,8 @@ mod tests {
 			"{result:?}"
 		);
 		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
+		let reservations = reservations.lock().unwrap();
+		assert_eq!(reservations.as_slice(), &[reservations[0]; 5]);
 	}
 
 	/// Sends `hello` through the only tunnel its Scratch Space may hold while

@@ -92,6 +92,26 @@ pub struct ScopeDaily {
 	pub received_bytes: i64,
 }
 
+/// A committed Host reservation, written in the same transaction as the debit.
+#[model(app_label = "execution", table_name = "egress_scope_host_debits")]
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ScopeHostDebit {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
+	pub node: String,
+	#[field]
+	pub scope_id: Uuid,
+	#[field(field_type = "text")]
+	pub day: String,
+	#[field]
+	pub sent: bool,
+	#[field]
+	pub bytes: i64,
+}
+
 /// Metadata only: request paths and payloads are deliberately absent.
 #[model(app_label = "execution", table_name = "egress_scope_connections")]
 #[derive(Serialize, Deserialize)]
