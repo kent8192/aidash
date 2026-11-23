@@ -161,6 +161,8 @@ pub enum Error {
 	BudgetExhausted { stop: bool, message: String },
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("external identity disabled")]
+	IdentityDisabled,
 	/// An authenticated authority identified the suspension epoch stopping a Run.
 	#[error("account suspended")]
 	AccountSuspended { epoch: u64 },

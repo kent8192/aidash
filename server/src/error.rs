@@ -538,6 +538,9 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Refused(code) => Self::Refused(code),
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
+			ApplicationError::IdentityDisabled => {
+				Self::CredentialForbidden(CredentialReason::IdentityDisabled)
+			}
 			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			ApplicationError::ResumeBlocked(block) => Self::ResumeBlocked(block),
 			ApplicationError::RunHidden(block) => Self::RunHidden(block),
