@@ -6299,7 +6299,6 @@ async fn early_read_refusals_reach_the_next_model_request(
 	#[case] arguments: Value,
 ) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.projection = ProjectionVersion::Native;
 	state.fitting_denial = Some(name);
 	state.tools_by_alias.insert(
 		name.into(),
