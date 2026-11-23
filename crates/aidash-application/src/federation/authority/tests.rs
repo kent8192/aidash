@@ -269,7 +269,7 @@ async fn typed_authority_reply_rejects_duplicate_fields() {
 
 #[rstest]
 #[tokio::test]
-async fn personal_call_keeps_the_result_and_waits_when_the_home_is_unreachable() {
+async fn personal_call_preserves_known_nondelivery_and_typed_results() {
 	struct CallWire {
 		delivered: bool,
 	}
@@ -325,7 +325,7 @@ async fn personal_call_keeps_the_result_and_waits_when_the_home_is_unreachable()
 		unavailable
 			.request::<Value>("aidash://peer", path, &body)
 			.await,
-		Err(Error::NodeUnreachable { node, after_effect: true }) if node == "aidash://peer"
+		Err(Error::ToolNotDelivered { message, retry_after: None }) if message == "peer unavailable"
 	));
 }
 

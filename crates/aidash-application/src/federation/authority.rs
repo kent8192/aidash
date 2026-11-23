@@ -79,7 +79,10 @@ impl Client {
 				return Error::Forbidden;
 			}
 			tracing::warn!(%node, %path, %error, "authority request failed");
-			if home {
+			// A proven non-delivery keeps the invocation eligible for a safe retry.
+			if connection_call && matches!(error, Error::ToolNotDelivered { .. }) {
+				error
+			} else if home {
 				home_unreachable(node)
 			} else {
 				Error::External("remote execution authority unavailable".into())
