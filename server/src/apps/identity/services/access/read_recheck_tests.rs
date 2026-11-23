@@ -1103,22 +1103,84 @@ async fn a_run_whose_command_left_background_processes_is_still_rechecked(
 async fn a_live_preview_that_cannot_be_confirmed_stops_without_blaming_authority(
 	#[future] database: DatabaseFixture,
 ) {
+	use crate::apps::execution::capabilities::models::CoreLivePreviews;
 	use aidash_application::ports::capabilities::read_recheck::ReadRecheckRepository;
+	use chrono::{DateTime, Utc};
+	use reinhardt::db::orm::Model;
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+
 	// Arrange
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
+	// Hold the gateway's activity update open until the Read Recheck tries to
+	// stop this row. A plain read sees the old timestamp while this lock is held.
+	let mut gateway = fixture.driver().begin().await.unwrap();
+	let pid: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("pg_backend_pid()"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *gateway)
+	.await
+	.unwrap();
+	let activity = Query::update()
+		.table(Alias::new("core_live_previews"))
+		.value_expr(
+			Alias::new("last_request_at"),
+			Expr::cust("last_request_at + INTERVAL '60 seconds'"),
+		)
+		.and_where(Expr::col("id").eq(Expr::value(preview)))
+		.returning([Alias::new("last_request_at")])
+		.to_string(PostgresQueryBuilder);
+	let last_request_at: DateTime<Utc> = sqlx::query_scalar(&activity)
+		.fetch_one(&mut *gateway)
+		.await
+		.unwrap();
 
 	// Act
-	repository.stop_unconfirmed(preview).await.unwrap();
+	let stop = repository.stop_unconfirmed(preview);
+	tokio::pin!(stop);
+	let blocked = Query::select()
+		.expr(Expr::cust("COUNT(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(Expr::cust(format!("{pid} = ANY(pg_blocking_pids(pid))")))
+		.to_string(PostgresQueryBuilder);
+	tokio::select! {
+		result = &mut stop => panic!("stop completed while the gateway held the row: {result:?}"),
+		result = tokio::time::timeout(Duration::from_secs(10), async {
+			loop {
+				let waiting: i64 = sqlx::query_scalar(&blocked)
+					.fetch_one(fixture.driver())
+					.await
+					.unwrap();
+				if waiting > 0 {
+					break;
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+		}) => result.expect("the Read Recheck must wait for the gateway"),
+	}
+	gateway.commit().await.unwrap();
+	stop.await.unwrap();
 
 	// Assert
 	assert_eq!(
 		preview_stop(&fixture, preview).await,
 		("stopped".to_owned(), Some("node_unreachable".to_owned()))
 	);
+	let mut tx = fixture._database.begin_fixture().await;
+	let saved = CoreLivePreviews::objects()
+		.filter(CoreLivePreviews::field_id().eq(preview))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	tx.commit().await.unwrap();
+	assert_eq!(saved.last_request_at, last_request_at);
 }
 
 #[rstest]
