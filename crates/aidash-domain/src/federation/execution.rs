@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Receiver-approved, content-free reasons that may cross a Federation boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Refusal {
 	CatalogApproval,
@@ -22,6 +22,91 @@ pub enum Refusal {
 	InstallationInactive,
 	ExecutorMismatch,
 	DefinitionChanged,
+	ReceiverRefused(ReceiverRefusal),
+}
+
+/// Only public builtin contract names may appear in a refusal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PublicTool(String);
+
+impl PublicTool {
+	pub fn new(operation: &str) -> Option<Self> {
+		crate::tool::builtin_reach(operation).map(|_| Self(operation.to_owned()))
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
+}
+
+impl TryFrom<String> for PublicTool {
+	type Error = &'static str;
+
+	fn try_from(operation: String) -> Result<Self, Self::Error> {
+		crate::tool::builtin_reach(&operation)
+			.map(|_| Self(operation))
+			.ok_or("unknown public tool")
+	}
+}
+
+impl From<PublicTool> for String {
+	fn from(tool: PublicTool) -> Self {
+		tool.0
+	}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolListSide {
+	Home,
+	Receiver,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReceiverRefusal {
+	ToolNeverRemote {
+		#[serde(skip_serializing_if = "Option::is_none")]
+		tool: Option<PublicTool>,
+	},
+	RequiredToolNotListed {
+		tool: PublicTool,
+		side: ToolListSide,
+	},
+	BindingInvalid,
+	Unclassified,
+}
+
+impl ReceiverRefusal {
+	pub fn code(&self) -> &'static str {
+		match self {
+			Self::ToolNeverRemote { .. } => "tool_never_remote",
+			Self::RequiredToolNotListed { .. } => "required_tool_not_listed",
+			Self::BindingInvalid => "binding_invalid",
+			Self::Unclassified => "unclassified",
+		}
+	}
+}
+
+impl Refusal {
+	/// Legacy refusals use a bare code. Structured refusals carry only their public fields.
+	pub fn header(&self) -> String {
+		match self {
+			Self::ReceiverRefused(reason) => serde_json::to_string(reason),
+			_ => serde_json::to_value(self)
+				.map(|value| value.as_str().unwrap_or_default().to_owned()),
+		}
+		.expect("execution refusal serializes")
+	}
+
+	pub fn from_header(value: &str) -> Option<Self> {
+		if value.starts_with('{') {
+			serde_json::from_str(value).ok().map(Self::ReceiverRefused)
+		} else {
+			serde_json::from_value(serde_json::Value::String(value.to_owned())).ok()
+		}
+	}
 }
 
 impl std::fmt::Display for Refusal {
@@ -44,6 +129,30 @@ impl std::fmt::Display for Refusal {
 			}
 			Self::DefinitionChanged => {
 				"a dependency of the agent changed on the target Node since it was inspected"
+			}
+			Self::ReceiverRefused(ReceiverRefusal::ToolNeverRemote { tool }) => {
+				let tool = tool.as_ref().map_or("a tool", PublicTool::as_str);
+				return write!(
+					f,
+					"the receiving Node cannot run {tool}, which this Agent uses, remotely"
+				);
+			}
+			Self::ReceiverRefused(ReceiverRefusal::RequiredToolNotListed { tool, side }) => {
+				let list = match side {
+					ToolListSide::Home => "the Home's Federation Tool Request",
+					ToolListSide::Receiver => "the receiving Node's Federation Tool Allowance",
+				};
+				return write!(
+					f,
+					"{}, which this Agent needs, is not in {list}",
+					tool.as_str()
+				);
+			}
+			Self::ReceiverRefused(ReceiverRefusal::BindingInvalid) => {
+				"the receiving Node did not accept this Agent's configuration"
+			}
+			Self::ReceiverRefused(ReceiverRefusal::Unclassified) => {
+				"the receiving Node refused without a reason"
 			}
 		})
 	}

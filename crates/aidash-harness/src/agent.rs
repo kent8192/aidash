@@ -1427,7 +1427,7 @@ impl<'a> Executor<'a> {
 				.save_run(
 					run,
 					token,
-					if target == FailureTarget::Failed {
+					if target.task_status() == aidash_domain::TaskStatus::Failed {
 						"execution.failed"
 					} else {
 						"execution.cancelled"

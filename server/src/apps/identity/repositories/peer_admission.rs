@@ -12,9 +12,12 @@ use aidash_application::{
 };
 use aidash_domain::{
 	Run,
-	federation::execution::{
-		Description,
-		admission::{InspectInput, Record as State, RemoteExecutionControl},
+	federation::{
+		execution::{
+			Description,
+			admission::{InspectInput, Record as State, RemoteExecutionControl, ToolAskTarget},
+		},
+		tool_lists::{AskSide, ToolList},
 	},
 	generation::remote::Ancestor,
 	identity::execution::ExecutionPrincipal,
@@ -230,6 +233,24 @@ where
 		self.access.subjects.push(subject)
 	}
 	async fn invalid_executor(&mut self, resource: &Resource) -> Result<()> {
+		self.record_binding_refusal(resource, "invalid_executor_subject")
+			.await
+	}
+	async fn federation_tool_lists(&mut self, home: &str) -> Result<Option<(ToolList, ToolList)>> {
+		let home = aidash_domain::nodes::NodeAddress::parse(home)?;
+		let tenant = self.access.identity.tenant.clone();
+		Ok(
+			crate::apps::identity::repositories::node_registrations::get(
+				self.access.tx.as_mut(),
+				&tenant,
+				self.receiver.as_str(),
+				&home,
+			)
+			.await?
+			.map(|registration| (registration.tool_allowance, registration.tool_block)),
+		)
+	}
+	async fn record_binding_refusal(&mut self, resource: &Resource, code: &str) -> Result<()> {
 		let records = self
 			.access
 			.subjects
@@ -240,7 +261,7 @@ where
 					.evaluation(subject, resource, "federation.execute");
 				let mut decision = self.access.snapshot.bundle.evaluate(&input);
 				decision.allowed = false;
-				decision.reason = "invalid_executor_subject".into();
+				decision.reason = code.into();
 				decision.revision = self.access.snapshot.revision;
 				(input, decision)
 			})
@@ -1197,11 +1218,19 @@ impl PeerAdmissionRepository for Repository<'_> {
 		Ok(activation)
 	}
 
-	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection> {
+	async fn control(
+		&self,
+		id: Uuid,
+		action: &RemoteExecutionControl,
+		tool_ask: Option<&ToolAskTarget>,
+	) -> Result<RunInspection> {
 		let store = &self.runtime.store;
 		let scope = store.run_tenancy(id).await?;
 		let mut tx = store.pool.begin(&scope).await?;
 		crate::transactions::gate::read_in(&mut tx).await?;
+		if let Some(ask) = tool_ask {
+			require_home_ask(&mut *tx, id, &ask.call, &ask.key).await?;
+		}
 		let run = store.control_in(&mut tx, id, action.action()).await?;
 		tx.commit().await?;
 		Ok(run)
@@ -1211,11 +1240,15 @@ impl PeerAdmissionRepository for Repository<'_> {
 		id: Uuid,
 		call: &str,
 		rest_of_run: bool,
+		tool_ask_key: Option<&str>,
 	) -> Result<(RunInspection, aidash_domain::run_state::PausedCall)> {
 		let store = &self.runtime.store;
 		let scope = store.run_tenancy(id).await?;
 		let mut tx = store.pool.begin(&scope).await?;
 		crate::transactions::gate::read_in(&mut tx).await?;
+		if let Some(key) = tool_ask_key {
+			require_home_ask(&mut *tx, id, call, key).await?;
+		}
 		// The receiver's event says the Home declined it, and never names the Home's person.
 		let declined = store
 			.decline_call_in(&mut tx, id, call, "home", rest_of_run)
@@ -1256,6 +1289,20 @@ impl PeerAdmissionRepository for Repository<'_> {
 		self.runtime.notify.notify_waiters()
 	}
 }
+async fn require_home_ask(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	call: &str,
+	key: &str,
+) -> Result<()> {
+	if !super::tool_asks::lock_ask(tx, run, call, key, AskSide::Home).await? {
+		return Err(aidash_application::Error::Conflict(
+			"the remote Run does not wait for that answer".into(),
+		));
+	}
+	Ok(())
+}
+
 #[async_trait]
 impl AdmissionMessages for crate::federation::Home {
 	async fn reserve(&self, key: &str, content: &str) -> Result<bool> {

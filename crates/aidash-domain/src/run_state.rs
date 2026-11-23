@@ -237,18 +237,26 @@ impl ResumeState {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FailureTarget {
 	Failed,
+	QueueLimit,
 	Cancelled,
 }
 impl FailureTarget {
+	pub fn reason(self) -> Option<&'static str> {
+		match self {
+			Self::QueueLimit => Some(crate::capabilities::sessions::QUEUE_LIMIT),
+			Self::Failed | Self::Cancelled => None,
+		}
+	}
+
 	pub fn task_status(self) -> super::TaskStatus {
 		match self {
-			Self::Failed => super::TaskStatus::Failed,
+			Self::Failed | Self::QueueLimit => super::TaskStatus::Failed,
 			Self::Cancelled => super::TaskStatus::Cancelled,
 		}
 	}
 	pub fn into_state(self) -> RunState {
 		match self {
-			Self::Failed => RunState::Failed(TerminalState {}),
+			Self::Failed | Self::QueueLimit => RunState::Failed(TerminalState {}),
 			Self::Cancelled => RunState::Cancelled(TerminalState {}),
 		}
 	}

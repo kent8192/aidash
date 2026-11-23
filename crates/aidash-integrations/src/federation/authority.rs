@@ -16,7 +16,7 @@ impl Transport for HttpTransport {
 			.headers()
 			.get("x-aidash-execution-refusal")
 			.and_then(|value| value.to_str().ok())
-			.and_then(|value| serde_json::from_value(json!(value)).ok());
+			.and_then(aidash_domain::federation::execution::Refusal::from_header);
 		let semantic_headers = ["x-aidash-semantic-cause", "x-aidash-semantic-reason"];
 		let semantic_reason = semantic_headers
 			.iter()

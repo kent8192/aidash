@@ -72,7 +72,7 @@ async fn fetch_inspection<R: GrantRepository>(
 			home,
 			node,
 			"/scoped/execution/inspect",
-			&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements}),
+			&serde_json::to_value(input)?,
 			identity,
 		)
 		.await?;
@@ -91,13 +91,20 @@ fn inspection_unavailable(error: &Error) -> bool {
 		|| matches!(error, Error::NodeUnreachable { .. })
 }
 
-async fn inspect<R: GrantRepository>(
+async fn inspect_new_grant<R: GrantRepository>(
 	repository: &R,
 	scope: &mut R::Scope,
 	node: &str,
-	input: InspectInput,
+	mut input: InspectInput,
 ) -> Result<Inspection> {
 	inspection_route(scope, node).await?;
+	input.tool_request = Some(
+		scope
+			.registered_tool_request(node)
+			.await?
+			.map(|request| request.tools)
+			.unwrap_or_default(),
+	);
 	match fetch_inspection(
 		repository,
 		&scope.home_address(),
@@ -119,6 +126,7 @@ async fn inspect<R: GrantRepository>(
 }
 fn inspection_input(task: Uuid, agent: &EntityRef, requirements: Search) -> InspectInput {
 	InspectInput {
+		tool_request: None,
 		task_id: Some(task),
 		agent: agent.clone(),
 		requirements,
@@ -165,7 +173,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 		scope.require(&resource, "task.execute").await?;
 		let requirements: Search = serde_json::from_value(task.requirements.clone())?;
 		let request = inspection_input(task.id, &input.agent, requirements);
-		let inspection = inspect(repository, &mut scope, &input.node_id, request).await?;
+		let inspection = inspect_new_grant(repository, &mut scope, &input.node_id, request).await?;
 		scope.append_subject(executor);
 		crate::generation::foreign::check_preparation(&task, inspection.generation.as_ref())?;
 		super::authorize(&mut scope, &task, &input.node_id, &inspection).await?;
@@ -202,7 +210,7 @@ pub async fn prepare<R: GrantRepository>(
   scope.require(&resource,"task.execute").await?;
   let requirements:Search=serde_json::from_value(task.requirements.clone())?;
   let request=inspection_input(task.id,&input.agent,requirements);
-  let inspection=inspect(repository,&mut scope,&input.node_id,request).await?;
+  let inspection=inspect_new_grant(repository,&mut scope,&input.node_id,request).await?;
   scope.append_subject(executor);
   crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
   let semantic=serde_json::to_value(scope.semantic_binding(&task,&input.node_id,&inspection,&input.semantic).await?)?;

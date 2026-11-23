@@ -470,6 +470,116 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_local_worker_that_finds_a_predecessor_releases_its_lease(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+		QueryStatementBuilder as _,
+	};
+
+	let c = Box::pin(capability_fixture).await;
+	let first = admit(&c).await;
+	let (status, queued) = request(
+		&c.app, &c.token, "POST",
+		&format!("/api/threads/{}/agents/research/executions", first.thread_id),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Second run","description":"Wait for the head"}),
+	).await;
+	assert_eq!(status, 200, "{queued}");
+	let second =
+		c.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.id != first.id)
+			.unwrap();
+	assert_eq!(second.thread_id, first.thread_id);
+	assert_eq!(
+		c.f.store
+			.lease_run(Uuid::new_v4(), 180)
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		first.id
+	);
+	let pool = c.f.store.pool.fixture_driver();
+	// Let the worker claim the second Run with a view in which the predecessor
+	// is absent from the queue. Its Area read must see the committed head.
+	let set_asleep = |asleep| {
+		Query::update()
+			.table(Alias::new("core_runs"))
+			.value(Alias::new("asleep"), asleep)
+			.and_where(Expr::col("run_id").eq(Expr::value(first.id)))
+			.to_string(PostgresQueryBuilder)
+	};
+	sqlx::query(&set_asleep(true)).execute(pool).await.unwrap();
+	let area = Query::select()
+		.column(Alias::new("area_id"))
+		.from(Alias::new("core_runs"))
+		.and_where(Expr::col("run_id").eq(Expr::value(first.id)))
+		.to_owned();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("core_areas"))
+		.and_where(Expr::col("id").in_subquery(area))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	let mut change = pool.begin().await.unwrap();
+	sqlx::query(&lock).execute(&mut *change).await.unwrap();
+	sqlx::query(&set_asleep(false))
+		.execute(&mut *change)
+		.await
+		.unwrap();
+	let pid = Query::select()
+		.expr(Expr::cust("pg_backend_pid()"))
+		.to_string(PostgresQueryBuilder);
+	let blocker: i32 = sqlx::query_scalar(&pid)
+		.fetch_one(&mut *change)
+		.await
+		.unwrap();
+	let worker = aidash_server::harness::Harness {
+		federation: c.f.clone(),
+	};
+	let step = tokio::spawn(async move { worker.worker_once().await.unwrap() });
+	wait_for_blocked_connection(pool, blocker).await;
+	assert!(
+		c.f.store
+			.run(&TEST_FIXTURE, second.id)
+			.await
+			.unwrap()
+			.lease_owner
+			.is_some()
+	);
+	change.commit().await.unwrap();
+	assert!(step.await.unwrap());
+
+	let waiting = c.f.store.run(&TEST_FIXTURE, second.id).await.unwrap();
+	assert_eq!(waiting.phase().as_str(), "READY");
+	assert_eq!(waiting.error.as_deref(), Some("execution.queued"));
+	assert!(waiting.lease_owner.is_none());
+	assert!(waiting.recovery.retry.is_none());
+	let stints = Query::select()
+		.expr(Expr::cust("COUNT(*)"))
+		.from(Alias::new("stints"))
+		.and_where(Expr::col("run_id").eq(Expr::value(second.id)))
+		.to_string(PostgresQueryBuilder);
+	let stints: i64 = sqlx::query_scalar(&stints).fetch_one(pool).await.unwrap();
+	assert_eq!(stints, 0);
+	assert!(
+		!c.f.store
+			.task(&TEST_FIXTURE, second.task_id)
+			.await
+			.unwrap()
+			.status
+			.is_terminal()
+	);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture: CoreFixture) {
 	let c = Box::pin(capability_fixture).await;
 	let thread =
