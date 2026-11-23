@@ -1,4 +1,5 @@
 //! File adapters retain verified handles, pending-object guards and native publication statements.
+use super::capability_objects::SealedObject;
 use crate::apps::execution::capabilities::{
 	serializers::contracts::{
 		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
@@ -15,7 +16,9 @@ use crate::{
 };
 use aidash_application::{
 	Error, Result,
-	ports::capabilities::files::{Action, FileScopePort, Limits, VerifiedFile},
+	ports::capabilities::files::{
+		Action, FileScopePort, Limits, ScratchPublisher, ScratchStager, ScratchUpload, VerifiedFile,
+	},
 };
 use aidash_domain::capabilities::files::{Materialize, MaterializeSource};
 use aidash_domain::{
@@ -40,8 +43,81 @@ pub(crate) struct Scope<'a> {
 	pub(crate) run: Option<&'a Run>,
 	pub(crate) pending: Option<PendingObject>,
 }
+/// Holds upload ownership until publication commits. This transaction holds
+/// only object advisory locks, independent of the Run authority and Area.
+pub(crate) struct ScratchStaging<'a> {
+	store: &'a Store,
+	tenant: &'a str,
+	uploads: Option<crate::database::native::Transaction>,
+}
+
+impl<'a> ScratchStaging<'a> {
+	pub(crate) fn new(store: &'a Store, tenant: &'a str) -> Self {
+		Self {
+			store,
+			tenant,
+			uploads: None,
+		}
+	}
+}
+
+#[async_trait]
+impl ScratchStager for ScratchStaging<'_> {
+	type Upload = PendingObject;
+
+	async fn stage(&mut self, area: Uuid, size: u64) -> Result<Self::Upload> {
+		use aidash_application::tenancy::TenancyScope;
+		if self.uploads.is_none() {
+			self.uploads = Some(
+				self.store
+					.pool
+					.begin(&TenancyScope::tenant(self.tenant)?)
+					.await?,
+			);
+		}
+		Ok(self
+			.store
+			.capabilities
+			.begin_object_for(
+				self.uploads.as_mut().expect("scratch upload batch open"),
+				self.tenant,
+				Some(area),
+				"working",
+				size,
+				false,
+			)
+			.await?)
+	}
+}
+
+#[async_trait]
+impl ScratchUpload for PendingObject {
+	type Sealed = SealedObject;
+
+	async fn write_block(&mut self, bytes: &[u8]) -> Result<()> {
+		PendingObject::write_block(self, bytes)
+			.await
+			.map_err(Into::into)
+	}
+
+	async fn seal(self, digest: &str) -> Result<Self::Sealed> {
+		PendingObject::seal(self, Some(digest))
+			.await
+			.map_err(Into::into)
+	}
+}
+
+#[async_trait]
+impl ScratchPublisher for Scope<'_> {
+	type Upload = SealedObject;
+
+	async fn publish_scratch_upload(&mut self, upload: Self::Upload) -> Result<(Uuid, String)> {
+		upload.publish(self.access).await.map_err(Into::into)
+	}
+}
+
 struct Reader {
-	inner: tokio::io::BufReader<aidash_application::ports::blob_store::BlobReader>,
+	inner: Option<tokio::io::BufReader<aidash_application::ports::blob_store::BlobReader>>,
 	store: std::sync::Arc<dyn aidash_application::ports::blob_store::BlobStore>,
 	tenant: String,
 	digest: aidash_domain::capabilities::Digest,
@@ -177,6 +253,12 @@ impl VerifiedFile for Reader {
 		}
 		let end = offset.saturating_add(limit).min(self.size);
 		if end == offset {
+			if self.size == 0
+				&& self.inner.is_none()
+				&& !self.store.exists(&self.tenant, self.digest).await?
+			{
+				return Err(Error::NotFound("file unavailable".into()));
+			}
 			return Ok(Vec::new());
 		}
 		let mut reader = self
@@ -195,14 +277,26 @@ impl VerifiedFile for Reader {
 		Ok(bytes)
 	}
 	async fn fill_buf(&mut self) -> Result<&[u8]> {
+		if self.inner.is_none() {
+			let reader = self
+				.store
+				.get(&self.tenant, self.digest, None)
+				.await?
+				.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+			self.inner = Some(tokio::io::BufReader::new(reader));
+		}
 		self.inner
+			.as_mut()
+			.expect("reader initialized")
 			.fill_buf()
 			.await
 			.map_err(NativeError::from)
 			.map_err(Into::into)
 	}
 	fn consume(&mut self, count: usize) {
-		self.inner.consume(count);
+		if let Some(reader) = self.inner.as_mut() {
+			reader.consume(count);
+		}
 	}
 }
 #[async_trait]
@@ -618,10 +712,25 @@ impl FileScopePort for Scope<'_> {
 			.parse()
 			.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
 		Ok(Box::new(Reader {
-			inner: tokio::io::BufReader::new(file),
+			inner: Some(tokio::io::BufReader::new(file)),
 			store,
 			tenant: self.access.identity.tenant.clone(),
 			digest,
+			size: row.size,
+		}))
+	}
+	async fn open_ranges(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>> {
+		let row: FileEntry = file.clone().into();
+		let runtime = &self.store.ok_or_else(missing)?.capabilities;
+		runtime.validate_object(self.access, &row).await?;
+		Ok(Box::new(Reader {
+			inner: None,
+			store: runtime.blob_store().await?,
+			tenant: self.access.identity.tenant.clone(),
+			digest: row
+				.digest
+				.parse()
+				.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?,
 			size: row.size,
 		}))
 	}

@@ -3432,16 +3432,25 @@ connection: None,
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					// An Authority Change (such as creating a Node) takes the Tenant's
-					// policy exclusively; this Run's own shared lease would make it wait
-					// on itself, so the Run releases its locks while the call runs.
-					let releases_authority = contract.behavior.authority_change && guard.is_some();
-					if releases_authority && let Some(guard) = guard {
-						guard.suspend().await?;
-						visibility.suspend().await?;
+					// Authority Changes enter without the Run's policy locks. A Scratch
+					// Space file call keeps them through Binding admission and releases
+					// them at the tool's Runner boundary.
+					let runner_file = pod_file_call(run, &contract.identity, &call.arguments);
+					if let Some(guard) = guard {
+						if contract.behavior.authority_change {
+							guard.suspend().await?;
+						}
+						if contract.behavior.authority_change || runner_file {
+							visibility.suspend().await?;
+						}
 					}
 					let (invoked, note) = refusal_note::scoped(tool.invoke(run, call.arguments.clone(), &key)).await;
-					if releases_authority && let Some(guard) = guard {
+					if (contract.behavior.authority_change || runner_file) && let Some(guard) = guard {
+						// The file tool reacquired authority to settle. Release it before
+						// the visibility gate so a waiting Authority Change can proceed.
+						if runner_file {
+							guard.suspend().await?;
+						}
 						let resumed = visibility.resume().await;
 						guard.resume().await?;
 						resumed?;
@@ -4364,6 +4373,32 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 			Error::RemoteSemantic(Failure::ContextBudget)
 		}
 		error => error,
+	}
+}
+
+fn pod_file_call(run: &Run, identity: &ToolIdentity, input: &Value) -> bool {
+	use aidash_domain::tool::{concurrency, providers::core_provider};
+	let uses_runner =
+		|operation| operation == "attachment_copy" || concurrency::pod_file_call(operation, input);
+	match identity {
+		ToolIdentity::Builtin(name) => name.strip_prefix("builtin:").is_some_and(uses_runner),
+		ToolIdentity::Descriptor(identity) => run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.and_then(|snapshot| {
+				snapshot
+					.bindings
+					.iter()
+					.find(|binding| binding.identity == *identity)
+			})
+			.is_some_and(|binding| {
+				let config = &binding.definition.config;
+				let operation = config["operation"].as_str().unwrap_or_default();
+				core_provider(operation).is_some_and(|provider| config["provider"] == provider)
+					&& uses_runner(operation)
+			}),
+		ToolIdentity::Registry(_) | ToolIdentity::AgentPlugin(_) => false,
 	}
 }
 

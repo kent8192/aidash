@@ -29,3 +29,7 @@ ADR 0137: the Run credential also admits requests to the Scratch Space's Externa
 ## Amendment (2026-11-17)
 
 A Run that a Remote Grant started runs its commands in the receiving Node's Delegated Run Scratch Space under the receiving Node's authority for that Run, and its credential names that Run as for a local one (ADR 0139). Removing a tool from either Federation tool list stops its commands as a withdrawal does.
+
+## Amendment (2026-11-23, #1028)
+
+Scratch Space file reads, searches, patches, saves, copies and attachment imports admit the Call in a short authority transaction. They release the worker's authority and visibility locks before waiting on the Runner. A save stages verified blobs under upload reservations and keeps only object ownership locks until publication commits. A fresh authority transaction checks the current Run, tool admission and Scratch Space before releasing a result or publishing a Working Area manifest. Publication also checks that the Working Area revision still matches the one used to plan the save. A patch or copy already dispatched to the Runner can leave effects in the Scratch Space if authority changes during the Call.

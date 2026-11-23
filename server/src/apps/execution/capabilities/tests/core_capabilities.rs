@@ -330,6 +330,7 @@ fn core_runtime(
 	#[default("aidash://execution-test")] node: &str,
 	core_storage: Arc<tempfile::TempDir>,
 	#[default(false)] runner: bool,
+	#[default(None)] stub_runner: Option<EndpointFuture>,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
 	let node = aidash_domain::nodes::DeploymentId::parse(node).unwrap();
@@ -351,6 +352,15 @@ fn core_runtime(
 				..Profile::default()
 			}
 		};
+		if let Some(endpoint) = stub_runner {
+			profile.runner = Some(
+				serde_json::from_value(json!({
+					"endpoint":endpoint.await,"token_env":"AIDASH_COMMAND_CLEANUP_TEST_TOKEN",
+					"image":"stub","runtime_class":"stub","namespace":"stub",
+				}))
+				.unwrap(),
+			);
+		}
 		profile.storage = core_storage.path().to_owned();
 		f.store.capabilities = Runtime::new(profile).unwrap();
 		owner
@@ -363,9 +373,10 @@ fn capability_fixture(
 	#[default("aidash://execution-test")] _node: &str,
 	#[default(async { "http://localhost:19999".into() }.boxed().shared())] endpoint: EndpointFuture,
 	#[default(false)] _runner: bool,
+	#[default(false)] _stub_runner: bool,
 	#[from(core_storage)] storage: Arc<tempfile::TempDir>,
 	#[from(core_runtime)]
-	#[with(_node,storage.clone(),_runner)]
+	#[with(_node,storage.clone(),_runner,_stub_runner.then(|| endpoint.clone()))]
 	_runtime: common::RuntimeFuture,
 	#[from(common::native_application)]
 	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|router|router),_runtime.clone())]
@@ -1908,6 +1919,9 @@ mod retained_version_tests;
 
 #[path = "core_capabilities/previews.rs"]
 mod preview_tests;
+
+#[path = "core_capabilities/scratch_save.rs"]
+mod scratch_save;
 
 #[path = "core_capabilities/live_previews.rs"]
 mod live_preview_tests;

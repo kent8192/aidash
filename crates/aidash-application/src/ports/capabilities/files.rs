@@ -44,6 +44,26 @@ pub trait VerifiedFile: Send {
 	async fn fill_buf(&mut self) -> Result<&[u8]>;
 	fn consume(&mut self, count: usize);
 }
+/// An upload staged without a Run authority transaction.
+#[async_trait]
+pub trait ScratchUpload: Send {
+	type Sealed: Send;
+	async fn write_block(&mut self, bytes: &[u8]) -> Result<()>;
+	async fn seal(self, digest: &str) -> Result<Self::Sealed>;
+}
+
+#[async_trait]
+pub trait ScratchStager: Send {
+	type Upload: ScratchUpload;
+	async fn stage(&mut self, area: Uuid, size: u64) -> Result<Self::Upload>;
+}
+
+#[async_trait]
+pub trait ScratchPublisher: FileScopePort {
+	type Upload: Send;
+	async fn publish_scratch_upload(&mut self, upload: Self::Upload) -> Result<(Uuid, String)>;
+}
+
 #[async_trait]
 pub trait FileScopePort: Send {
 	fn local_node(&self) -> &str;
@@ -95,6 +115,10 @@ pub trait FileScopePort: Send {
 	) -> Result<Value>;
 	async fn output(&mut self, area: &Area, id: Uuid) -> Result<Option<(String, i64, String)>>;
 	async fn open(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>>;
+	/// Authorize an immutable object before a detached range transfer.
+	async fn open_ranges(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>> {
+		self.open(file).await
+	}
 	/// Of these Reference records, the ids that can no longer be used because the
 	/// file was revoked, expired or removed (ADR 0114). One query however many ids.
 	async fn unusable_references(&mut self, ids: &[Uuid]) -> Result<BTreeSet<Uuid>>;
