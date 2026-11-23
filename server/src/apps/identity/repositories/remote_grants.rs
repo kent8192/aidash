@@ -124,6 +124,16 @@ fn held_by_receiver(chain: SimpleExpr, owner: SimpleExpr) -> SimpleExpr {
 	))
 }
 
+/// The receiver owns the Task while it works, including during a pause.
+fn holds_task(grant: &Alias, task: &Alias) -> SimpleExpr {
+	let column = |table: &Alias, name: &str| Expr::col((table.clone(), Alias::new(name)));
+	held_by_receiver(
+		column(grant, "subject_chain").into(),
+		column(task, "owner").into(),
+	)
+	.and(column(task, "status").is_not_in(home::ending_statuses().map(|status| status.as_str())))
+}
+
 /// A queued Run still has the original OPEN Task. Checking the grant's
 /// original revision prevents a reopened Task from keeping an old grant live.
 fn holds_or_awaits_task(grant: &Alias, binding: &Alias, task: &Alias) -> SimpleExpr {
@@ -133,21 +143,24 @@ fn holds_or_awaits_task(grant: &Alias, binding: &Alias, task: &Alias) -> SimpleE
 		.and(column(task, "owner").is_null())
 		.and(column(task, "revision").equals((grant.clone(), Alias::new("task_revision"))))
 		.and(column(task, "revision").equals((binding.clone(), Alias::new("task_revision"))));
-	held_by_receiver(
-		column(grant, "subject_chain").into(),
-		column(task, "owner").into(),
-	)
-	.and(column(task, "status").is_not_in(home::ending_statuses().map(|status| status.as_str())))
-	.or(pending_claim)
+	holds_task(grant, task).or(pending_claim)
 }
 
-/// The Run a grant row of `authorization_remote_grants` started is bound at the Home, has
-/// started and has not ended. The binding recorded the receiver's activation, and
-/// the receiver either still awaits its original Task or holds it (as [`live_condition`] requires). The
-/// binding pins the Task revision the Run works on; a Task that has moved on to another revision
-/// no longer has a live remote Run. The renewal of ADR 0109 (amended 2026-11-17) and the Home's
-/// tool asks read it, so neither keeps a grant that [`live_condition`] would let expire.
-pub(crate) fn run_live() -> SimpleExpr {
+/// Queued Runs renew their grants while awaiting the first claim.
+pub(crate) fn run_live_or_queued() -> SimpleExpr {
+	activated_run(holds_or_awaits_task)
+}
+
+/// Only a Run that has claimed its Task can have a pending Tool Ask.
+/// Queued Runs would consume slots in the bounded list without producing asks.
+pub(crate) fn run_holds_task() -> SimpleExpr {
+	activated_run(|grant, _, task| {
+		holds_task(grant, task).and(Expr::col((task.clone(), Alias::new("status"))).ne("OPEN"))
+	})
+}
+
+/// An activated Run whose Task is still at the revision recorded by its binding.
+fn activated_run(task_condition: impl FnOnce(&Alias, &Alias, &Alias) -> SimpleExpr) -> SimpleExpr {
 	let (binding, task) = (Alias::new("b"), Alias::new("t"));
 	let column = |table: &Alias, name: &str| Expr::col((table.clone(), Alias::new(name)));
 	let grants = Alias::new("authorization_remote_grants");
@@ -170,7 +183,7 @@ pub(crate) fn run_live() -> SimpleExpr {
 			)
 			.and_where(column(&binding, "grant_id").equals((grants.clone(), Alias::new("id"))))
 			.and_where(column(&binding, "activated_at").is_not_null())
-			.and_where(holds_or_awaits_task(&grants, &binding, &task))
+			.and_where(task_condition(&grants, &binding, &task))
 			.to_owned(),
 	)
 	.into()

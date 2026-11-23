@@ -1,6 +1,6 @@
 //! The calls of remote Runs that wait for an answer about a Federation tool list (ADR 0139), and
 //! the tools one side allowed for one Run only. Every statement runs in the Tenant's scope.
-use super::remote_grants::{live_condition, run_live};
+use super::remote_grants::{live_condition, run_holds_task};
 use crate::Result;
 use aidash_domain::federation::tool_lists::{ToolAsk, ToolList, ToolPattern, receiver_may_answer};
 use aidash_domain::nodes::NodeAddress;
@@ -264,7 +264,7 @@ fn home_grants_query(
 		.and_where(Expr::col(Alias::new("node")).eq(node))
 		.and_where(Expr::col(Alias::new("node_id")).eq(receiver.to_string()))
 		.and_where(live_condition("authorization_remote_grants"))
-		.and_where(run_live())
+		.and_where(run_holds_task())
 		.order_by(Alias::new("expires_at"), Order::Asc)
 		.order_by(Alias::new("id"), Order::Asc)
 		.limit(LIMIT);
@@ -393,9 +393,8 @@ mod tests {
 	}
 
 	/// `tenant = ? AND node = ? AND node_id = ?`, the Home's one liveness rule
-	/// (`live_condition`) instead of the lifetime alone, and a Run that lives:
-	/// activated, with a nonterminal Task held by the receiver or still OPEN,
-	/// unowned and at the revision of the queued activation. Ordered by expiry.
+	/// (`live_condition`) instead of the lifetime alone. An activated Run
+	/// must already hold its Task to be in the bounded Tool Ask page.
 	#[test]
 	fn home_grants_are_built_without_raw_sql_and_only_of_live_runs() {
 		let sql = home_grants_query("acme", "default", &source(), Some(Uuid::nil()))
@@ -424,12 +423,10 @@ mod tests {
 			AND \"t\".\"revision\" = \"b\".\"task_revision\" \
 			WHERE \"b\".\"grant_id\" = \"authorization_remote_grants\".\"id\" \
 			AND \"b\".\"activated_at\" IS NOT NULL \
-			AND (array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
+			AND array_length(\"authorization_remote_grants\".\"subject_chain\", 1) \
 			= ANY(array_positions(\"authorization_remote_grants\".\"subject_chain\", \"t\".\"owner\")) \
 			AND \"t\".\"status\" NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED') \
-			OR \"t\".\"status\" = 'OPEN' AND \"t\".\"owner\" IS NULL \
-			AND \"t\".\"revision\" = \"authorization_remote_grants\".\"task_revision\" \
-			AND \"t\".\"revision\" = \"b\".\"task_revision\")) \
+			AND \"t\".\"status\" <> 'OPEN') \
 			AND \"id\" = '00000000-0000-0000-0000-000000000000' \
 			ORDER BY \"expires_at\" ASC, \"id\" ASC LIMIT 100"
 		);
