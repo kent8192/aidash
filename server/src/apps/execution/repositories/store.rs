@@ -76,6 +76,10 @@ pub struct Store {
 	/// Restoration claims survive external retirement without consuming the
 	/// control connections retirement itself needs. Shared across Store clones.
 	pub restoration_pool: Pool,
+	/// Scratch saves keep upload ownership until publication returns the worker's
+	/// data connections. Blob accounting can borrow the extra staging connection.
+	pub(crate) scratch_upload_pool: Pool,
+	pub(crate) scratch_upload_slots: std::sync::Arc<tokio::sync::Semaphore>,
 	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub semantic_client: reqwest::Client,
 	/// Model and embedding clients: `semantic_client` for Provider Catalog
@@ -506,6 +510,13 @@ impl Store {
 			.min_connections(0)
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_lazy_with(pool.connect_options().as_ref().clone());
+		let scratch_upload_pool = pool
+			.options()
+			.clone()
+			.max_connections(MAX_WORKER_SLOTS as u32 + 1)
+			.min_connections(0)
+			.idle_timeout(std::time::Duration::from_secs(10))
+			.connect_lazy_with(pool.connect_options().as_ref().clone());
 		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::from_env(
@@ -530,6 +541,10 @@ impl Store {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
 			restoration_pool: restoration_pool.into(),
+			scratch_upload_pool: scratch_upload_pool.into(),
+			scratch_upload_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
+				MAX_WORKER_SLOTS,
+			)),
 			deployment,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
@@ -678,6 +693,8 @@ impl Store {
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
 			restoration_pool: self.restoration_pool.clone(),
+			scratch_upload_pool: self.scratch_upload_pool.clone(),
+			scratch_upload_slots: self.scratch_upload_slots.clone(),
 			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
@@ -739,6 +756,8 @@ impl Store {
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			restoration_pool: self.restoration_pool.clone(),
+			scratch_upload_pool: self.scratch_upload_pool.clone(),
+			scratch_upload_slots: self.scratch_upload_slots.clone(),
 			control_pool: control_pool
 				.with_memory_recovery(self.control_pool.memory_recovery())
 				.with_dashboard_policy(self.control_pool.dashboard_policy()),

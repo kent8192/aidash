@@ -48,7 +48,10 @@ pub(crate) struct Scope<'a> {
 pub(crate) struct ScratchStaging<'a> {
 	store: &'a Store,
 	tenant: &'a str,
-	uploads: Option<crate::database::native::Transaction>,
+	uploads: Option<(
+		crate::database::native::Transaction,
+		tokio::sync::SemaphorePermit<'a>,
+	)>,
 }
 
 impl<'a> ScratchStaging<'a> {
@@ -68,18 +71,24 @@ impl ScratchStager for ScratchStaging<'_> {
 	async fn stage(&mut self, area: Uuid, size: u64) -> Result<Self::Upload> {
 		use aidash_application::tenancy::TenancyScope;
 		if self.uploads.is_none() {
-			self.uploads = Some(
-				self.store
-					.pool
-					.begin(&TenancyScope::tenant(self.tenant)?)
-					.await?,
-			);
+			let slot = self
+				.store
+				.scratch_upload_slots
+				.acquire()
+				.await
+				.map_err(|error| Error::External(error.to_string()))?;
+			let tx = self
+				.store
+				.scratch_upload_pool
+				.begin(&TenancyScope::tenant(self.tenant)?)
+				.await?;
+			self.uploads = Some((tx, slot));
 		}
 		Ok(self
 			.store
 			.capabilities
 			.begin_object_for(
-				self.uploads.as_mut().expect("scratch upload batch open"),
+				&mut self.uploads.as_mut().expect("scratch upload batch open").0,
 				self.tenant,
 				Some(area),
 				"working",
