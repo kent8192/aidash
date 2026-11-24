@@ -825,6 +825,41 @@ def test_background_end_on_same_pod_requires_authenticated_supervisor_evidence(t
     assert controller.background_ended('s', 'r', operation, 'same') == {'ended': True}
 
 
+def test_background_retirement_survives_parent_journal_expiry(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    from execution_pod import JOURNAL_RETENTION_SECONDS
+    from sandbox_v2 import sign_result
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    left = operation + '.left'
+    token = '1' * 64
+    backend = SimpleNamespace(root=tmp_path, kube=Mock())
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    record = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r',
+              'pod': 'pod', 'pod_uid': 'same', 'status': 'running', 'background': False,
+              'result_proof_key': token}
+    controller._command_path(operation).write_text(json.dumps(record))
+    controller.queues['s'] = SimpleNamespace(submit=Mock(return_value=Future()))
+    with monkeypatch.context() as clock:
+        clock.setattr('time.time', lambda: 1)
+        controller._finish_command(record, {'status': 'completed', 'left_running': left},
+                                   {'stdout': '', 'stderr': '', 'truncated': False})
+
+    restarted = ExecutionPodController(backend, {}, admitted=True)
+    restarted._get = Mock(return_value={'metadata': {'uid': 'same'}})
+    restarted.prune_space('s', now=JOURNAL_RETENTION_SECONDS + 2)
+    assert not restarted._command_path(operation).exists()
+
+    result = {'operation_id': left, 'run_id': 'r', 'status': 'completed'}
+    reply = SimpleNamespace(returncode=0, stdout=json.dumps(result).encode())
+    backend.kube.return_value = reply
+    assert restarted.background_ended('s', 'r', operation, 'same') == {'ended': False}
+    result['auth'] = sign_result(result, token.encode('ascii'))
+    reply.stdout = json.dumps(result).encode()
+    assert restarted.background_ended('s', 'r', operation, 'same') == {'ended': True}
+
+
 @pytest.mark.parametrize('status', ['running', 'interrupted'])
 def test_recovered_signed_session_result_survives_missing_output(tmp_path, monkeypatch, status):
     import time

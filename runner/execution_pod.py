@@ -1696,11 +1696,13 @@ print(json.dumps(r))'''
                                              helper_command('result', operation_id), check=False)
                 if observed.returncode == 0:
                     outcome = json.loads(observed.stdout)
-                    if record.get('kind') == 'left' and record.get('docker_enabled'):
-                        with self.lock:
-                            key = self.left_result_keys.get(operation_id)
-                        if not verify_adopted_result(outcome, key):
-                            raise ValueError('unverified adopted result')
+                    if record.get('kind') == 'left':
+                        proof_key = record.get('result_proof_key')
+                        if proof_key or record.get('docker_enabled'):
+                            with self.lock:
+                                key = proof_key.encode('ascii') if proof_key else self.left_result_keys.get(operation_id)
+                            if not verify_adopted_result(outcome, key):
+                                raise ValueError('unverified adopted result')
                     return outcome
                 pod = self._get('pod', name)
                 if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
@@ -1954,7 +1956,7 @@ print(json.dumps(r))'''
                 if path.exists():
                     return
                 adopted = {key: record[key] for key in ('scratch_space_id', 'run_id', 'pod', 'pod_uid',
-                           'docker_enabled', 'cwd') if key in record}
+                           'docker_enabled', 'cwd', 'result_proof_key') if key in record}
                 adopted.update(operation_id=operation_id, status='running', background=True,
                                kind='left', accepted_at=time.time(), running_at=time.time())
                 save(path, adopted)
@@ -2271,19 +2273,25 @@ print(json.dumps(r))'''
         from control import scratch_resource_name
 
         name = scratch_resource_name(scratch_space_id)
-        try:
-            record = self._read_command(operation_id)
-        except ExecutionPodError as error:
-            if error.code != 'command_not_found':
-                raise
-            record = None
-        if record is not None:
+        left = operation_id + '.left'
+        token = None
+        # The adopted process can outlive the parent journal's retention window.
+        for candidate in (operation_id, left):
+            try:
+                record = self._read_command(candidate)
+            except ExecutionPodError as error:
+                if error.code != 'command_not_found':
+                    raise
+                continue
             if record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id:
                 return {'ended': False}
             original_uid = record.get('pod_uid')
             if pod_uid and pod_uid != original_uid:
                 return {'ended': False}
             pod_uid = original_uid
+            token = record.get('result_proof_key')
+            if token:
+                break
         if not isinstance(pod_uid, str) or not pod_uid:
             return {'ended': False}
         # Only confirmed termination writes this trusted, Space-scoped record.
@@ -2301,10 +2309,8 @@ print(json.dumps(r))'''
         if current_uid != pod_uid:
             return {'ended': True}
 
-        token = record.get('result_proof_key') if record else None
         if not token:
             return {'ended': False}
-        left = operation_id + '.left'
         evidence = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                      helper_command('result', left), check=False, timeout=5)
         if evidence.returncode != 0:
