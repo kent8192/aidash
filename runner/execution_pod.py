@@ -1468,12 +1468,7 @@ print(json.dumps(r))'''
                             outcome = json.loads(observed.stdout)
                             if (outcome.get('operation_id') == operation_id and outcome.get('run_id') == record['run_id']
                                     and outcome.get('status') in ('completed', 'timed_out', 'stopped')):
-                                try:
-                                    output = self._saved_output(record, outcome, tolerate_missing=True)
-                                except Exception:
-                                    output = self._partial_output(record)
-                                    outcome = dict(outcome, output_incomplete=True)
-                                self._finish_command(record, outcome, output, allow_late=True)
+                                self._finish_command(record, outcome, allow_late=True)
                                 adopted = True
                     if not adopted and retry_stop and record.get('stop_pending'):
                         self._stop_untracked_command(record)
@@ -1754,6 +1749,7 @@ print(json.dumps(r))'''
                 self.live_output[operation_id] = output
 
         try:
+            recover_output = False
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
             result_deadline = None if transport_timeout is None else time.monotonic() + transport_timeout
             transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
@@ -1771,13 +1767,8 @@ print(json.dumps(r))'''
                 outcome = self._await_normal_result(record, result_deadline)
                 if self._read_command(operation_id)['status'] == 'interrupted':
                     return
-                if transport['exit_code'] != 0 or (isinstance(outcome, dict) and outcome.get('forward_incomplete')):
-                    transport['output']['truncated'] = True
-                    if isinstance(outcome, dict):
-                        try:
-                            transport['output'] = self._saved_output(record, outcome)
-                        except Exception:
-                            pass
+                recover_output = transport['exit_code'] != 0 or (
+                    isinstance(outcome, dict) and outcome.get('forward_incomplete'))
             if (transport['transport_timed_out'] or not isinstance(outcome, dict)
                     or outcome.get('operation_id') != operation_id or outcome.get('run_id') != record['run_id']
                     or outcome.get('status') not in ('completed', 'timed_out', 'stopped')):
@@ -1788,6 +1779,7 @@ print(json.dumps(r))'''
             else:
                 left_auth = proof_key or frame_token
                 self._finish_command(record, outcome, transport['output'],
+                                     recover_output=recover_output,
                                      left_auth=left_auth.encode('ascii') if left_auth else None)
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
@@ -1852,6 +1844,7 @@ print(json.dumps(r))'''
         # The supervisor already reported a file it could not fully save: one read is worth trying,
         # but waiting for it to improve is not.
         unusable = bool(outcome.get('output_incomplete'))
+        incomplete = unusable
         # The budget bounds how long a failing read is retried. Every chunk that was read restarts it,
         # because a large output takes many reads and must not run out of time while they succeed.
         deadline = time.monotonic() + OUTPUT_RETRY_SECONDS
@@ -1877,7 +1870,7 @@ print(json.dumps(r))'''
                         break
                     time.sleep(min(.5, remaining))
             if failed:
-                outcome['output_incomplete'] = True
+                incomplete = True
                 try:
                     prior = base64.b64decode(fallback[stream], validate=True)
                 except ValueError:
@@ -1886,15 +1879,30 @@ print(json.dumps(r))'''
                     data_so_far = bytearray(prior)
             output.add(stream, data_so_far)
         public = output.public()
-        public['truncated'] |= outcome.get('output_incomplete', False) or outcome.get('output_truncated', False)
+        public['truncated'] |= incomplete or outcome.get('output_truncated', False)
+        if incomplete:
+            public['output_incomplete'] = True
         return public
 
-    def _finish_command(self, record, outcome, output, *, allow_late=False, left_auth=None):
+    def _finish_command(self, record, outcome, output=None, *, allow_late=False, left_auth=None,
+                        recover_output=False):
         operation_id = record['operation_id']
         proof_key = record.get('result_proof_key')
         if (record.get('kind') in ('python_session', 'mcp_session') and proof_key
                 and not verify_adopted_result(outcome, proof_key.encode('ascii'))):
             raise ValueError('unverified session result')
+        if output is None:
+            try:
+                output = self._saved_output(record, outcome, tolerate_missing=True)
+            except Exception:
+                output = dict(self._partial_output(record), output_incomplete=True)
+        elif recover_output:
+            output['truncated'] = True
+            try:
+                output = self._saved_output(record, outcome)
+            except Exception:
+                pass
+        incomplete = output.pop('output_incomplete', False) or outcome.get('output_incomplete')
         if (record.get('kind') == 'python_cell' and
             (outcome['status'] in ('timed_out', 'stopped') or
              (outcome['status'] == 'completed' and outcome.get('exit_code') != 0))):
@@ -1909,7 +1917,7 @@ print(json.dumps(r))'''
                 raise ValueError('invalid adopted operation ID')
             self._adopt_left(record, left, left_auth)
         fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message', 'left_running') if key in outcome}
-        if output.get('truncated') and not fields.get('message') and outcome.get('output_incomplete'):
+        if output.get('truncated') and not fields.get('message') and incomplete:
             fields['message'] = 'Output was lost to a Runner restart or a full disk'
         if allow_late:
             fields['outcome'] = 'known'
@@ -1991,12 +1999,7 @@ print(json.dumps(r))'''
             if (isinstance(outcome, dict) and outcome.get('operation_id') == operation_id
                     and outcome.get('run_id') == record['run_id']
                     and outcome.get('status') in ('completed', 'timed_out', 'stopped')):
-                try:
-                    output = self._saved_output(record, outcome, tolerate_missing=True)
-                except Exception:
-                    output = self._partial_output(record)
-                    outcome = dict(outcome, output_incomplete=True)
-                self._finish_command(record, outcome, output)
+                self._finish_command(record, outcome)
             else:
                 with self.lock:
                     output = dict(self.live_output.get(operation_id, {'stdout': '', 'stderr': ''}))

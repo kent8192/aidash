@@ -784,3 +784,39 @@ def test_background_end_on_same_pod_requires_authenticated_supervisor_evidence(t
     outcome['auth'] = sign_result(outcome, token.encode('ascii'))
     observed.stdout = json.dumps(outcome).encode()
     assert controller.background_ended('s', 'r', operation, 'same') == {'ended': True}
+
+
+@pytest.mark.parametrize('status', ['running', 'interrupted'])
+def test_recovered_signed_session_result_survives_missing_output(tmp_path, monkeypatch, status):
+    import time
+    from types import SimpleNamespace
+    from sandbox_v2 import sign_result
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    token = '1' * 64
+    outcome = {'operation_id': operation, 'run_id': 'r', 'status': 'stopped', 'output_incomplete': False}
+    outcome['auth'] = sign_result(outcome, token.encode('ascii'))
+
+    def kube(args, **kwargs):
+        helper = args[args.index('/.aidash-helpers/sandbox_v2.py') + 1]
+        if helper == 'claim':
+            return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+        if helper == 'result':
+            return SimpleNamespace(returncode=0, stdout=json.dumps(outcome).encode())
+        raise FileNotFoundError('saved output missing')
+
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'same'}})
+    controller._command_path(operation).write_text(json.dumps({
+        'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+        'pod_uid': 'same', 'kind': 'python_session', 'status': status, 'background': True,
+        'terminal_at': time.time(), 'result_proof_key': token, 'stdout': 'cGFydA==',
+    }))
+    monkeypatch.setattr('execution_pod.OUTPUT_RETRY_SECONDS', 0)
+    if status == 'running':
+        controller._resume_command(operation)
+    result = controller.command_result(operation)
+    assert result['status'] == 'stopped'
+    assert result['stdout'] == 'cGFydA=='
+    assert result['truncated'] is True
+    assert 'output was lost' in result['message'].lower()
