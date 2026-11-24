@@ -206,6 +206,48 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
         return cleanup.points.pending + cleanup.collections.pending;
       })
       .toBe(0);
+    await page
+      .getByRole("button", { name: "Configure index", exact: true })
+      .click();
+    await page.getByLabel("Model version", { exact: true }).fill("v3");
+    const configureRequests: Record<string, unknown>[] = [];
+    await page.route(`**${root}/index`, async (route) => {
+      const request = route.request();
+      if (request.method() === "POST") {
+        const body = request.postDataJSON() as Record<string, unknown>;
+        configureRequests.push(body);
+        if (body.acknowledge_memory_embeddings !== true) {
+          await route.fulfill({
+            status: 409,
+            json: {
+              error:
+                "this recomputes the embeddings of 2 memory facts in this Thread; resend with acknowledge_memory_embeddings to continue",
+            },
+          });
+          return;
+        }
+      }
+      await route.continue({ headers: { ...request.headers(), ...headers } });
+    });
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain(
+        "recomputes the embeddings of 2 memory facts",
+      );
+      await dialog.dismiss();
+    });
+    await saveIndex.click();
+    await expect(saveIndex).toBeEnabled();
+    expect(configureRequests).toHaveLength(1);
+    page.once("dialog", async (dialog) => {
+      await dialog.accept();
+    });
+    await saveIndex.click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(configureRequests).toEqual([
+      configureRequests[0],
+      configureRequests[0],
+      { ...configureRequests[0], acknowledge_memory_embeddings: true },
+    ]);
     await selectDashboardLanguage(page, "ja-JP");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
