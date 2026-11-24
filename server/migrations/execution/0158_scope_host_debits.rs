@@ -23,6 +23,15 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "egress_scope_host_debits_tenant_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "egress_scope_host_debits_scope_fkey".into(),
 					columns: vec!["tenant".into(), "node".into(), "scope_id".into()],
 					referenced_table: "egress_scope_state".into(),
