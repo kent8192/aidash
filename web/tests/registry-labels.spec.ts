@@ -60,7 +60,7 @@ const registry = [
   entry(7, "model", "Research model", "調査モデル"),
 ];
 
-test("Source details use the supplied revoke permissions and revision without probing files", async ({
+test("Open Source details offer revoke when Registry versions become forbidden", async ({
   page,
 }) => {
   await page.clock.install();
@@ -91,17 +91,33 @@ test("Source details use the supplied revoke permissions and revision without pr
       json: { ...fixture(), access: tenantSubject, registry: [source] },
     }),
   );
+  let mayReadCollection = true;
   let mayRevoke = false;
-  await routeRegistryVersions(page, () => [
-    registryVersion(source, {
-      reference_revocations: [
-        mayRevoke
-          ? { ...allowed, may_revoke: true, revision: 7 }
-          : { ...allowed, may_revoke: false },
-        { ...denied, may_revoke: false },
-      ],
-    }),
-  ]);
+  const hints = () => [
+    mayRevoke
+      ? { ...allowed, may_revoke: true, revision: 7 }
+      : { ...allowed, may_revoke: false },
+    { ...denied, may_revoke: false },
+  ];
+  await page.route(
+    (url) => url.pathname === "/api/registry/versions",
+    (route) =>
+      mayReadCollection
+        ? route.fulfill({
+            json: {
+              versions: [
+                registryVersion(source, { reference_revocations: hints() }),
+              ],
+              next_offset: null,
+            },
+          })
+        : route.fulfill({ status: 403, json: {} }),
+  );
+  const hintsPath = `/api/registry/${source.id}/${source.version}/reference-revocations`;
+  await page.route(
+    (url) => url.pathname === hintsPath,
+    (route) => route.fulfill({ json: hints() }),
+  );
   const probes: string[] = [];
   await page.route("**/api/references/*/revocation", (route) => {
     probes.push(route.request().url());
@@ -118,6 +134,9 @@ test("Source details use the supplied revoke permissions and revision without pr
   await page.goto("/settings?view=registry");
   await page.getByRole("button", { name: /Project references/ }).click();
   const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "Project references", exact: true }),
+  ).toBeVisible();
   const allowedRow = dialog
     .getByRole("listitem")
     .filter({ hasText: "allowed.md" });
@@ -127,18 +146,23 @@ test("Source details use the supplied revoke permissions and revision without pr
   await expect(deniedRow).toContainText("Cannot revoke");
   await expect(allowedRow).toContainText("Cannot revoke");
   expect(probes).toEqual([]);
+  mayReadCollection = false;
   mayRevoke = true;
+  const collectionDenied = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/registry/versions",
+  );
   await page.clock.fastForward(2000);
   await page.evaluate(() =>
     window.dispatchEvent(new Event("visibilitychange")),
   );
+  expect((await collectionDenied).status()).toBe(403);
   await expect(
     dialog.getByRole("button", { name: "Revoke", exact: true }),
   ).toHaveCount(1);
   await allowedRow.getByRole("button", { name: "Revoke", exact: true }).click();
   const submitted = page.waitForRequest(revokePath);
   const refreshed = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/registry/versions",
+    (response) => new URL(response.url()).pathname === hintsPath,
   );
   await allowedRow.getByRole("button", { name: "Confirm revoke" }).click();
   expect((await submitted).postDataJSON()).toEqual({ expected_revision: 7 });

@@ -30,7 +30,12 @@ function BoundReference({
       setError(String(e));
     } finally {
       // The revision may have moved, or the file may be gone: ask again.
-      await client.invalidateQueries({ queryKey: ["registry-versions"] });
+      await Promise.all([
+        client.invalidateQueries({
+          queryKey: ["source-reference-revocations"],
+        }),
+        client.invalidateQueries({ queryKey: ["registry-versions"] }),
+      ]);
       setBusy(false);
     }
   };

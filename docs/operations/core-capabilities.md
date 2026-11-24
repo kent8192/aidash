@@ -452,9 +452,12 @@ gives such a subject the revision and state to revoke with, never the content.
 For a Source version with bound Reference files, `GET /api/registry/versions`
 includes a `reference_revocations` list with each file's `may_revoke` flag and,
 when true, its current revision.
-Source details use that response to offer Revoke. The advisory flag comes from
-an unaudited policy check. The revoke request checks the current policy and
-the expected revision.
+For a Source visible on the selected Node, Source details read the same hints
+from `GET /api/registry/{id}/{version}/reference-revocations?node={node}`. This
+read uses the Source's Catalog Approval and the caller's `registry.read` on the
+Source. The Registry versions list requires its collection permission.
+The advisory flag comes from an unaudited policy check. The revoke request
+checks the current policy and the expected revision.
 Revoking one file refuses new Runs of every version that
 binds it, and the error names its path. A Run that already holds the set stops
 reading a revoked file too: `file_read` and the copy refuse it, `file_search`

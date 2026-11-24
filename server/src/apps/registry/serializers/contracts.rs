@@ -80,6 +80,12 @@ pub struct ReferenceRevocationHint {
 	pub revision: Option<i64>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReferenceRevocationsQuery {
+	/// The Node on which the Source is approved.
+	pub node: aidash_domain::nodes::NodeName,
+}
+
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct AgentSubject {
 	pub id: String,

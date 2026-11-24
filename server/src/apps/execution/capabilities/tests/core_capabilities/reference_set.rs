@@ -474,6 +474,16 @@ async fn source_versions_offer_reference_revocation_without_auditing_the_hint(
 	let source_id = "source-revocation-hints";
 	let (status, source) = register_source(&c, &c.token, source_id, &added["references"]).await;
 	assert_eq!(status, 200, "{source}");
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, approval) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":{"id":source_id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approval}");
 	only_alice_uses_references(&mut c, false);
 	c.policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"bob-reads-registry","effect":"allow","subjects":{"ids":["bob"]},
@@ -490,8 +500,8 @@ async fn source_versions_offer_reference_revocation_without_auditing_the_hint(
 	assert_eq!(status, 200, "{policy}");
 	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
 	let bob = bob["token"].as_str().unwrap();
-	let node = aidash_domain::nodes::NodeName::derived("acme");
 	let versions = format!("/api/registry/versions?node={node}");
+	let hints = format!("/api/registry/{source_id}/1.0.0/reference-revocations?node={node}");
 	let decisions = Query::select()
 		.expr(Func::count(Expr::col("sequence").into()))
 		.from(Alias::new("authorization_decisions"))
@@ -537,7 +547,33 @@ async fn source_versions_offer_reference_revocation_without_auditing_the_hint(
 			.find(|row| row["entry"]["id"] == source_id)
 			.unwrap();
 		assert_eq!(source["reference_revocations"], expected);
+		let (status, scoped) = request(&c.app, token, "GET", &hints, Value::Null).await;
+		assert_eq!(status, 200, "{scoped}");
+		assert_eq!(scoped, expected);
 	}
+	let policies = c.policy["policies"].as_array_mut().unwrap();
+	policies.retain(|policy| policy["id"] != "bob-reads-registry");
+	policies.extend([
+		json!({"id":"bob-reads-source","effect":"allow","subjects":{"ids":["bob"]},"actions":["registry.read"],"resources":{"kinds":["source"],"ids":[source_id]}}),
+		json!({"id":"bob-revokes-reference","effect":"allow","subjects":{"ids":["bob"]},"actions":["reference.delete"],"resources":{"kinds":["reference"],"ids":[id]}}),
+	]);
+	let (status, policy) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":3,"bundle":c.policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	let (status, page) = request(&c.app, bob, "GET", &versions, Value::Null).await;
+	assert_eq!(status, 403, "{page}");
+	let (status, scoped) = request(&c.app, bob, "GET", &hints, Value::Null).await;
+	assert_eq!(status, 200, "{scoped}");
+	assert_eq!(
+		scoped,
+		json!([{ "reference_id": id, "path": "plan.md", "may_revoke": true, "revision": reference["revision"] }])
+	);
 	assert_eq!(audit_count().await, before + 1);
 	c.close().await;
 }
