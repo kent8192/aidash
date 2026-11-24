@@ -109,9 +109,11 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 			"migrations/registry/sql/forward/0074_remove_research_providers.sql",
 			"migrations/workspaces/sql/backward/0033_duty_halts.sql",
 			"migrations/workspaces/sql/backward/0049_workspace_goal.sql",
+			"migrations/workspaces/sql/backward/0067_task_duty_start.sql",
 			"migrations/workspaces/sql/forward/0021_conversation_scratch_space.sql",
 			"migrations/workspaces/sql/forward/0024_workspace_scratch_space.sql",
 			"migrations/workspaces/sql/forward/0033_duty_halts.sql",
+			"migrations/workspaces/sql/forward/0067_task_duty_start.sql",
 		]
 	);
 	for path in migration_openers {
