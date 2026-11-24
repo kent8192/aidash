@@ -298,7 +298,7 @@ async fn execution_pod_routes_exchange_their_v2_wire_contracts() {
 			"/v2/background/log" => { assert_eq!(body, json!({"operation_id":"op","stream":"stderr","offset":null,"limit":4})); json!({"data":"AP8=","next_offset":2,"eof":true,"size":2}) },
 			"/v2/files/read" => { assert_eq!(body, json!({"scratch_space_id":"s","path":"a","offset":1,"limit":4})); json!({"data":"/w==","size":2,"next_offset":2,"eof":true}) },
 			"/v2/files/search" => { assert_eq!(body, json!({"scratch_space_id":"s","pattern":"needle","path":null,"glob":null,"regex":false,"max_results":5})); json!({"matches":[{"path":"a","line":2,"text":"needle"}],"truncated":false}) },
-			"/v2/files/patch" => { assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","patch":"patch"})); json!({"changed":["a"]}) },
+			"/v2/files/patch" => { assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","patch":"patch","claim_id":uuid::Uuid::nil(),"apply":true})); json!({"changed":["a"]}) },
 			"/v2/files/manifest" => { assert_eq!(body, json!({"scratch_space_id":"s","root":".","ignore_files":[".gitignore"],"exclude":[],"include":[],"max_files":4})); json!({"files":[{"path":"a","size":2,"sha256":"digest"}],"skipped_symlinks":["b"],"truncated":false}) },
 			"/v2/previews/start" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","code":"serve","port":8080,"proxy_credential":"secret"})); json!({"operation_id":"op","address":"10.0.0.1:8080"}) },
 			// A stop answers as soon as it signals; the end shows in the result.
@@ -341,7 +341,7 @@ async fn execution_pod_routes_exchange_their_v2_wire_contracts() {
 		2
 	);
 	let patch: FilePatchRequest =
-		serde_json::from_value(json!({"scratch_space_id":"s","run_id":"r","patch":"patch"}))
+		serde_json::from_value(json!({"scratch_space_id":"s","run_id":"r","patch":"patch","claim_id":uuid::Uuid::nil(),"apply":true}))
 			.unwrap();
 	assert_eq!(client.file_patch(&patch).await.unwrap().changed, vec!["a"]);
 	let manifest: FileManifestRequest = serde_json::from_value(json!({"scratch_space_id":"s","root":".","ignore_files":[".gitignore"],"exclude":[],"include":[],"max_files":4})).unwrap();

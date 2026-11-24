@@ -760,6 +760,34 @@ impl FileScopePort for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn complete_patch(
+		&mut self,
+		key: Uuid,
+		digest: &str,
+		claim: Uuid,
+		result: &Value,
+	) -> Result<()> {
+		let access = &mut *self.access;
+		let updated = crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("core_requests"))
+				.value(Alias::new("result"), result.clone().into_value())
+				.and_where(Expr::col("tenant").eq(Expr::value(&access.identity.tenant)))
+				.and_where(Expr::col("principal").eq(Expr::value(&access.identity.subject)))
+				.and_where(Expr::col("key").eq(Expr::value(key)))
+				.and_where(Expr::col("digest").eq(Expr::value(digest)))
+				.and_where(Expr::col("result").eq(serde_json::json!(claim).into_value()))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await
+		.map_err(NativeError::from)?
+		.rows_affected();
+		if updated != 1 {
+			return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into()));
+		}
+		Ok(())
+	}
 	async fn begin_pending(&mut self, area: Uuid, size: u64) -> Result<()> {
 		self.pending = Some(
 			self.store

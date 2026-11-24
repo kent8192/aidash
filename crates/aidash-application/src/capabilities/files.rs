@@ -325,6 +325,8 @@ enum PodFile {
 		patch: String,
 		key: Uuid,
 		digest: String,
+		claim: Uuid,
+		apply: bool,
 	},
 	Save(pod_save::Save),
 	Copy(pod_save::Copy),
@@ -367,6 +369,7 @@ enum PodFileResult<U> {
 		value: Value,
 		key: Uuid,
 		digest: String,
+		claim: Uuid,
 	},
 	Save(Box<pod_save::Downloaded<U>>),
 	Copy(pod_save::Copy, Value),
@@ -403,11 +406,26 @@ async fn prepare_pod_file(
 				.to_owned();
 			let digest =
 				aidash_domain::registry::rules::digest(&json!(["scratch_patch", run.id, patch]));
-			if let Some(cached) = scope.cached(key, &digest).await? {
-				return Ok(Prepared::Replay(cached));
-			}
 			require_scratch_write(scope, run, area).await?;
-			PodFile::Patch { patch, key, digest }
+			let (claim, apply) = match scope.cached(key, &digest).await? {
+				Some(value) if value.is_string() => (serde_json::from_value(value)?, false),
+				Some(value) => return Ok(Prepared::Replay(value)),
+				None => {
+					aidash_domain::capabilities::patch::parse(&patch)?;
+					// Under the request's advisory lock, reserve the principal's key.
+					// A string UUID is the pending claim; the completed result is an object.
+					let claim = Uuid::new_v4();
+					scope.cache(key, &digest, &json!(claim)).await?;
+					(claim, true)
+				}
+			};
+			PodFile::Patch {
+				patch,
+				key,
+				digest,
+				claim,
+				apply,
+			}
 		}
 		"file_save" => {
 			match pod_save::Save::prepare(scope, run, area, parse(input.clone())?).await? {
@@ -462,10 +480,17 @@ impl DeferredPodFile {
 				.await
 				.map_err(|_| Error::Invalid("SEARCH_TIME_LIMIT".into()))??,
 			),
-			PodFile::Patch { patch, key, digest } => PodFileResult::Patch {
-				value: pod_files::patch(pod, &run.id.to_string(), patch).await?,
+			PodFile::Patch {
+				patch,
 				key,
 				digest,
+				claim,
+				apply,
+			} => PodFileResult::Patch {
+				value: pod_files::patch(pod, &run.id.to_string(), patch, claim, apply).await?,
+				key,
+				digest,
+				claim,
 			},
 			PodFile::Save(save) => {
 				PodFileResult::Save(Box::new(save.download(stage, &access.area, pod).await?))
@@ -500,13 +525,20 @@ impl<U: Send> CompletedPodFile<U> {
 				scope.authorize(&area, "file.read").await?;
 				value
 			}
-			PodFileResult::Patch { value, key, digest } => {
+			PodFileResult::Patch {
+				value,
+				key,
+				digest,
+				claim,
+			} => {
 				require_scratch_write(scope, run, &area).await?;
-				if let Some(previous) = scope.cached(key, &digest).await? {
-					previous
-				} else {
-					scope.cache(key, &digest, &value).await?;
-					value
+				match scope.cached(key, &digest).await? {
+					Some(previous) if previous == json!(claim) => {
+						scope.complete_patch(key, &digest, claim, &value).await?;
+						value
+					}
+					Some(previous) if previous.is_object() => previous,
+					_ => return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into())),
 				}
 			}
 			PodFileResult::Save(save) => {

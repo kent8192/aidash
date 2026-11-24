@@ -131,6 +131,18 @@ pub trait FileScopePort: Send {
 	async fn unusable_references(&mut self, ids: &[Uuid]) -> Result<BTreeSet<Uuid>>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
+	/// Replace a pending Scratch patch claim while holding the request lock.
+	async fn complete_patch(
+		&mut self,
+		_key: Uuid,
+		_digest: &str,
+		_claim: Uuid,
+		_result: &Value,
+	) -> Result<()> {
+		Err(crate::Error::External(
+			"Scratch patch settlement unavailable".into(),
+		))
+	}
 	async fn begin_pending(&mut self, area: Uuid, size: u64) -> Result<()>;
 	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>>;
 	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()>;

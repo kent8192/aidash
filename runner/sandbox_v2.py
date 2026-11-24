@@ -844,7 +844,7 @@ if __name__ == '__main__':
         if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
             raise ValueError('Execution Pod identity changed')
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from files_v2 import FileService, InvalidPath, run_bounded
+        from files_v2 import FileService, InvalidPath, PatchReceiptUnavailable, run_bounded
         try:
             request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
             service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
@@ -852,6 +852,8 @@ if __name__ == '__main__':
             if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
                 raise ValueError('invalid file operation')
             result = {'result': run_bounded(service, operation, request)}
+        except PatchReceiptUnavailable as error:
+            result = {'error': {'code': 'patch_receipt_unavailable', 'message': str(error)}}
         except InvalidPath as error:
             result = {'error': {'code': 'invalid_path', 'message': str(error)}}
         except (ValueError, KeyError, TypeError, OSError) as error:

@@ -283,3 +283,103 @@ async fn scratch_save_releases_authority_while_streaming(
 	}
 	c.close().await;
 }
+
+#[rstest::fixture]
+fn patch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter> {
+	let StreamingSave { entered, release } = streaming_save;
+	let receipt = std::sync::Mutex::new(None);
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.post("/v2/files/patch", move |request: reinhardt::Request| {
+				let input = request.json::<Value>().unwrap();
+				let apply = input["apply"].as_bool().expect("Runner patch mode");
+				let claim: Uuid = serde_json::from_value(input["claim_id"].clone()).unwrap();
+				let mut saved = receipt.lock().unwrap();
+				if apply {
+					assert!(saved.replace(claim).is_none(), "patch was dispatched twice");
+				} else {
+					assert_eq!(*saved, Some(claim));
+				}
+				let (entered, release) = (entered.clone(), release.clone());
+				async move {
+					if apply {
+						entered.notify_one();
+						release.notified().await;
+						// The helper applied the patch and retained its receipt, but
+						// the original exec lost its response.
+						Ok(reinhardt::Response::new(reinhardt::StatusCode::CONFLICT)
+							.with_json(&json!({"code":"file_helper_failed","message":"lost reply"}))
+							.unwrap())
+					} else {
+						Ok(reinhardt::Response::ok()
+							.with_json(&json!({"changed":["notes.txt"]}))
+							.unwrap())
+					}
+				}
+			})
+			.into_server_router(),
+	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn scratch_patch_claim_survives_runner_reply_loss(
+	streaming_save: StreamingSave,
+	#[from(patch_runner)]
+	#[with(streaming_save.clone())]
+	_runner: Arc<reinhardt::ServerRouter>,
+	#[from(upstream_fixtures::provider_transport)]
+	#[with(_runner.clone())]
+	_transport: upstream_fixtures::UpstreamFuture,
+	#[from(provider_endpoint)]
+	#[with(_transport.clone())]
+	_endpoint: EndpointFuture,
+	#[from(capability_fixture)]
+	#[with("aidash://execution-test",_endpoint.clone(),FixtureRunner::Stub(_endpoint.clone()))]
+	core: CoreFuture,
+) {
+	if std::env::var_os("AIDASH_SCRATCH_SAVE_TEST_CHILD").is_none() {
+		with_runner_profile().await;
+		return;
+	}
+	let c = core.await;
+	let run = admit(&c).await;
+	let path = format!("/api/executions/{}/patch", run.id);
+	let input = json!({
+		"idempotency_key":Uuid::new_v4(), "expected_revision":1, "preconditions":{},
+		"patch":"*** Begin Patch\n*** Add File: notes.txt\n+once\n*** End Patch",
+	});
+	{
+		let first = request(&c.app, &c.token, "POST", &path, input.clone());
+		tokio::pin!(first);
+		tokio::select! {
+			result = &mut first => panic!("patch ended before dispatch: {result:?}"),
+			result = tokio::time::timeout(Duration::from_secs(15), streaming_save.entered.notified()) => {
+				result.expect("patch did not reach the Runner");
+			}
+		}
+		let mut different = input.clone();
+		different["patch"] =
+			json!("*** Begin Patch\n*** Add File: notes.txt\n+different\n*** End Patch");
+		let (status, conflict) = tokio::time::timeout(
+			Duration::from_secs(10),
+			request(&c.app, &c.token, "POST", &path, different),
+		)
+		.await
+		.unwrap();
+		assert_eq!(status, 409, "{conflict}");
+		assert_eq!(conflict["error"]["code"], "IDEMPOTENCY_CONFLICT");
+
+		streaming_save.release.notify_one();
+		let (status, lost) = first.as_mut().await;
+		assert_eq!(status, 409, "{lost}");
+		assert_eq!(lost["error"]["code"], "FILE_HELPER_FAILED");
+	}
+	let (status, recovered) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
+	assert_eq!(status, 200, "{recovered}");
+	assert_eq!(recovered["changed"], json!(["notes.txt"]));
+	let (status, replayed) = request(&c.app, &c.token, "POST", &path, input).await;
+	assert_eq!(status, 200, "{replayed}");
+	assert_eq!(replayed["changed"], recovered["changed"]);
+	c.close().await;
+}
