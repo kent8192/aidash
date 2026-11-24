@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// texts about Friday land on one axis, anything else on another.
 #[derive(Clone)]
 struct BuiltinSemanticState {
-	fail_queries: Arc<AtomicBool>,
+	fail_embeddings: Arc<AtomicBool>,
 	embedding_calls: Arc<AtomicUsize>,
 }
 #[fixture]
 fn builtin_semantic_state() -> BuiltinSemanticState {
 	BuiltinSemanticState {
-		fail_queries: Arc::new(AtomicBool::new(false)),
+		fail_embeddings: Arc::new(AtomicBool::new(false)),
 		embedding_calls: Arc::new(AtomicUsize::new(0)),
 	}
 }
@@ -20,7 +20,7 @@ fn builtin_semantic_state() -> BuiltinSemanticState {
 fn builtin_semantic_router(
 	#[from(builtin_semantic_state)] state: BuiltinSemanticState,
 ) -> std::sync::Arc<Router> {
-	let fail = state.fail_queries;
+	let fail = state.fail_embeddings;
 	let calls = state.embedding_calls;
 	std::sync::Arc::new(
 		reinhardt::test::stub::StubRouter::new()
@@ -34,7 +34,7 @@ fn builtin_semantic_router(
 					async move {
 						calls.fetch_add(1, Ordering::SeqCst);
 						let text = input["input"].to_string();
-						if fail.load(Ordering::SeqCst) && text.contains('?') {
+						if fail.load(Ordering::SeqCst) {
 							return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE);
 						}
 						let vector = if text.contains("Friday") || text.contains("金曜") {
@@ -312,12 +312,17 @@ async fn builtin_memory_uses_thread_index_embedding(
 	assert_eq!(units[0].id, friday, "the closest fact ranks first");
 
 	// An embedding outage leaves keyword search instead of failing the recall.
-	fixture.state.fail_queries.store(true, Ordering::SeqCst);
-	let Recall::Ready { units } = recall(&store, &bank, "Releases?").await else {
+	fixture.state.fail_embeddings.store(true, Ordering::SeqCst);
+	let before = fixture.state.embedding_calls.load(Ordering::SeqCst);
+	let Recall::Ready { units } = recall(&store, &bank, "Releases").await else {
 		panic!("the Friday fact must be found by keyword during the outage");
 	};
 	assert_eq!(units[0].id, friday);
-	fixture.state.fail_queries.store(false, Ordering::SeqCst);
+	assert_eq!(
+		fixture.state.embedding_calls.load(Ordering::SeqCst),
+		before + 1
+	);
+	fixture.state.fail_embeddings.store(false, Ordering::SeqCst);
 
 	// The optional embedding must fall back before any I/O at ledger capacity.
 	let config = aidash_domain::registry::bindings::memory_defaults::definitions()
@@ -343,7 +348,7 @@ async fn builtin_memory_uses_thread_index_embedding(
 	.await
 	.unwrap();
 	let before = fixture.state.embedding_calls.load(Ordering::SeqCst);
-	let Recall::Ready { units } = recall(&store, &bank, "Releases?").await else {
+	let Recall::Ready { units } = recall(&store, &bank, "Releases").await else {
 		panic!("the Friday fact must be found by keyword at ledger capacity");
 	};
 	assert_eq!(units[0].id, friday);
