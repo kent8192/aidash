@@ -28,6 +28,9 @@ impl AdmissionScope for Scope<'_> {
 	fn node_id(&self) -> &str {
 		self.runtime.config.deployment.as_str()
 	}
+	fn seed(&self, manifest: &Manifest) -> Result<String> {
+		crate::apps::federation::transactions::services::seed(&self.runtime.config, manifest)
+	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}

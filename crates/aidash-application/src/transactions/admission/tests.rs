@@ -41,6 +41,8 @@ fn origin() -> Origin {
 }
 
 const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+/// What the scope derives for any manifest.
+const DERIVED: &str = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1";
 
 fn status(manifest: &Manifest) -> Status {
 	sealed(manifest, SEED)
@@ -103,6 +105,9 @@ impl Adapter {
 impl AdmissionScope for Adapter {
 	fn node_id(&self) -> &str {
 		"aidash://home/airy-hawk-2lu4as22"
+	}
+	fn seed(&self, _: &Manifest) -> Result<String> {
+		Ok(DERIVED.into())
 	}
 	fn now(&self) -> DateTime<Utc> {
 		"2030-01-01T00:00:00Z".parse().unwrap()
@@ -276,19 +281,13 @@ async fn admission_seals_with_the_callers_seed(manifest: Manifest) {
 
 #[rstest]
 #[tokio::test]
-async fn admission_without_a_seed_seals_with_a_fresh_one(manifest: Manifest) {
+async fn admission_without_a_seed_seals_with_the_scopes_seed(manifest: Manifest) {
 	let adapter = Adapter::new();
 	submit(&adapter, &manifest, None).await.unwrap();
 	let mut again = Adapter::new();
 	submit_in(&mut again, None, &manifest, None).await.unwrap();
-	let first = adapter.0.lock().unwrap().seeds.clone();
-	let second = again.0.lock().unwrap().seeds.clone();
-	assert_eq!((first.len(), second.len()), (1, 1));
-	for seed in first.iter().chain(&second) {
-		assert_eq!(seed.len(), 64);
-		assert!(seed.bytes().all(|byte| byte.is_ascii_hexdigit()));
-	}
-	assert_ne!(first, second);
+	assert_eq!(adapter.0.lock().unwrap().seeds, [DERIVED]);
+	assert_eq!(again.0.lock().unwrap().seeds, [DERIVED]);
 }
 
 #[rstest]

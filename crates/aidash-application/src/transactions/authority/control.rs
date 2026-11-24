@@ -106,9 +106,9 @@ pub async fn submit(
 		return Err(Error::Forbidden);
 	}
 	let origin = Origin::from(identity);
-	// A new transaction is sealed with this seed. Source checks read no
-	// digest, so an exact-ID retry checks with it too and keeps its own.
-	let seed = super::super::new_seed();
+	// The same manifest always gets the same seed, so a resubmission after a
+	// crash seals it as the preflights already sent did.
+	let seed = repository.seed(manifest)?;
 	let mut scope = repository.source(&origin).await?;
 	if let Err(error) = source_checks(
 		scope.authority(),

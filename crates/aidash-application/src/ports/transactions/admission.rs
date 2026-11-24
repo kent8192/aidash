@@ -11,6 +11,9 @@ use uuid::Uuid;
 #[async_trait]
 pub trait AdmissionScope: Send {
 	fn node_id(&self) -> &str;
+	/// The seed that seals `manifest` (ADR 0146): the same for the same
+	/// manifest.
+	fn seed(&self, manifest: &Manifest) -> Result<String>;
 	fn now(&self) -> DateTime<Utc>;
 	async fn status(&mut self, id: Uuid) -> Result<Status>;
 	async fn match_origin(&mut self, id: Uuid, origin: Option<&Origin>) -> Result<()>;

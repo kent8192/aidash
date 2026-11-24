@@ -48,6 +48,8 @@ fn manifest() -> Manifest {
 }
 
 const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+/// What the repository derives for any manifest.
+const DERIVED: &str = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1";
 const PEER: &str = "aidash://peer/airy-hawk-2lu4as22";
 
 fn status(manifest: &Manifest) -> Status {
@@ -481,6 +483,9 @@ impl AuthorityRepository for Repository {
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		manifest.validate::<Error>()
+	}
+	fn seed(&self, _: &Manifest) -> Result<String> {
+		Ok(DERIVED.into())
 	}
 	async fn origin(&self, _: Uuid) -> Result<Option<Origin>> {
 		Ok(self.state.lock().unwrap().origin.clone())
@@ -1290,8 +1295,7 @@ async fn submission_binds_and_preflights_under_the_stored_seed(
 		.unwrap();
 	assert_eq!(result, status(&manifest));
 	let state = repository.state.lock().unwrap();
-	assert_eq!(state.seeds.len(), 1);
-	assert_ne!(state.seeds[0], SEED);
+	assert_eq!(state.seeds, [DERIVED]);
 	let digest = manifest.sealed_digest(SEED).unwrap();
 	assert_eq!(state.binding.as_ref().unwrap().request.digest, digest);
 	let [(node, preflight)] = state.preflights.as_slice() else {

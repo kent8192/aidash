@@ -1326,6 +1326,7 @@ pub(super) async fn run_visible(
 			tier_limits: Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
+			transaction_seed_key: [7; 32],
 			scratch_policy: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 		},

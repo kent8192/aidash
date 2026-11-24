@@ -40,6 +40,20 @@ pub struct Config {
 	/// The dashboard origin a ticket's `frame-ancestors` names when the request
 	/// carries none.
 	pub dashboard_origin: String,
+	/// The key, derived from `core.secret_key`, from which a coordinator
+	/// derives each atomic transaction's seed (ADR 0146). Deriving rather than
+	/// drawing the seed lets a resubmission after a crash seal the manifest as
+	/// the preflights it already sent did.
+	pub transaction_seed_key: [u8; 32],
+}
+
+/// The transaction seed key for `secret_key`.
+pub fn transaction_seed_key(secret_key: &str) -> Result<[u8; 32]> {
+	use hmac::{Hmac, Mac};
+	let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret_key.as_bytes())
+		.map_err(|_| Error::Invalid("invalid core.secret_key".into()))?;
+	mac.update(b"aidash/transaction-seed-key/1");
+	Ok(mac.finalize().into_bytes().into())
 }
 
 #[derive(Clone, Default)]
@@ -195,6 +209,7 @@ impl Config {
 				.transpose()?,
 			preview,
 			dashboard_origin,
+			transaction_seed_key: transaction_seed_key(&settings.core.secret_key)?,
 		})
 	}
 	/// What `/.well-known/aidash` publishes: this Deployment and its public key,

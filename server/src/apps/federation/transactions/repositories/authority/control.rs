@@ -79,6 +79,9 @@ impl AuthorityRepository for Repository {
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		aidash_application::transactions::validate(manifest)
 	}
+	fn seed(&self, manifest: &Manifest) -> Result<String> {
+		crate::apps::federation::transactions::services::seed(&self.runtime.config, manifest)
+	}
 	async fn origin(&self, id: Uuid) -> Result<Option<Origin>> {
 		persistence::binding::<dto::Origin>(&self.runtime, "atomic_subjects", id)
 			.await

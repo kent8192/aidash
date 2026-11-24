@@ -27,8 +27,8 @@ pub async fn submit(
 	Ok(stored)
 }
 
-/// Admit `manifest`. A new one is sealed with `seed`, or with a fresh seed
-/// when the caller sent no preflight under one.
+/// Admit `manifest`. A new one is sealed with `seed`, the one the caller's
+/// preflights used, or else with the scope's seed for it.
 pub async fn submit_in(
 	scope: &mut dyn AdmissionScope,
 	seed: Option<&str>,
@@ -81,12 +81,12 @@ pub async fn submit_in(
 			return Err(Error::Forbidden);
 		}
 	}
-	let fresh;
+	let derived;
 	let seed = match seed {
 		Some(seed) => seed,
 		None => {
-			fresh = super::new_seed();
-			&fresh
+			derived = scope.seed(manifest)?;
+			&derived
 		}
 	};
 	let stored = scope.admit(manifest, seed).await?;
