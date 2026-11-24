@@ -32,6 +32,7 @@ A Run that a Remote Grant started recalls and writes memory through its Home (AD
 ## Amendment (2026-11-23)
 
 Task-start recall ranks facts that match any literal keyword from the Task title and description.
+Unicode word segmentation also supplies keywords for prose without spaces, such as Japanese.
 The Thread owns the bank by default under ADR 0140. Tenant-wide sharing also considers the
 same Agent's facts in other authorized Threads. The initial recall payload fits up to eight facts
 in 1024 UTF-8 bytes of JSON, including their Unit IDs, revisions and provenance. Each inference

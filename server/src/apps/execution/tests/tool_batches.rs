@@ -1407,15 +1407,17 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					let source = b.delegate(b.task).await;
 					let retained = [
 						"The staging deploy key is held in the vault.",
-						"The staging deploy key is managed by Platform.",
+						"本番デプロイは金曜に禁止。",
 					];
-					let oversized = format!("The staging deploy key audit recorded {}", "鍵".repeat(400));
-					let units = learn(&b, &source, &[gone, retained[0], retained[1], &oversized]).await;
+					let oversized =
+						format!("The staging deploy key audit recorded {}", "鍵".repeat(400));
+					let units =
+						learn(&b, &source, &[gone, retained[0], retained[1], &oversized]).await;
 					let (status, task) = common::post(
 						&b.app,
 						&b.token,
 						&format!("/api/threads/{}/tasks", source.thread_id),
-						json!({"title":"Staging deploy key","description":"Check what we know about rotating it before Friday."}),
+						json!({"title":"Staging deploy key","description":"本番デプロイの手順を確認してください。"}),
 					)
 					.await;
 					assert_eq!(status, 200, "{task}");
@@ -1444,9 +1446,16 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					assert!(worker.worker_once().await.unwrap());
 					let state = b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap();
 					let recalled = start_recall_units(&state);
-					assert_eq!(recalled.len(), 3, "start recall must hold all three short facts");
+					assert_eq!(
+						recalled.len(),
+						3,
+						"start recall must hold all three short facts"
+					);
 					assert!(units[..3].iter().all(|unit| recalled.contains(unit)));
-					assert!(!recalled.contains(&units[3]), "the oversized fact must be skipped");
+					assert!(
+						!recalled.contains(&units[3]),
+						"the oversized fact must be skipped"
+					);
 					let request = b.requests.lock().unwrap()[before].clone();
 					let context = common::captured_context(&request);
 					let recall = &context["snapshot"]["memory_recall"];
@@ -1481,7 +1490,10 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 						let request = request.to_string();
 						assert!(!request.contains(gone), "the gone fact leaves the context");
 						for fact in retained {
-							assert!(request.contains(fact), "a retained fact must reach the model");
+							assert!(
+								request.contains(fact),
+								"a retained fact must reach the model"
+							);
 						}
 					}
 					b.close().await;

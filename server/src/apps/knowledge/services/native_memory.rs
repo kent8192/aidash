@@ -7,6 +7,7 @@ use crate::{
 };
 use aidash_application::memory::start_recall_content;
 use aidash_domain::{memory::*, registry::EntityRef};
+use icu_segmenter::WordSegmenter;
 use reinhardt::{
 	injectable,
 	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
@@ -727,7 +728,16 @@ const SHARED_RECALL_MAX_RESULTS: usize = 8;
 
 fn start_recall_keywords(text: &str) -> Vec<&str> {
 	let mut seen = HashSet::new();
-	text.split(|ch: char| !ch.is_alphanumeric())
+	let segmenter = WordSegmenter::new_dictionary(Default::default());
+	let mut start = 0;
+	segmenter
+		.segment_str(text)
+		.map(|end| {
+			let word = &text[start..end];
+			start = end;
+			word
+		})
+		.flat_map(|word| word.split(|ch: char| !ch.is_alphanumeric()))
 		.filter(|term| {
 			term.chars().take(START_RECALL_MIN_TERM_CHARS).count() == START_RECALL_MIN_TERM_CHARS
 		})
