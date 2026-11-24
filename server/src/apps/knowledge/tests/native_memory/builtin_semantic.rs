@@ -1,24 +1,27 @@
 //! Built-in Memory searches by meaning only with its Thread index's embedding (#1123).
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The fact and the query share no word, so only the embedding can join them:
 /// texts about Friday land on one axis, anything else on another.
 #[derive(Clone)]
 struct BuiltinSemanticState {
 	fail_queries: Arc<AtomicBool>,
+	embedding_calls: Arc<AtomicUsize>,
 }
 #[fixture]
 fn builtin_semantic_state() -> BuiltinSemanticState {
 	BuiltinSemanticState {
 		fail_queries: Arc::new(AtomicBool::new(false)),
+		embedding_calls: Arc::new(AtomicUsize::new(0)),
 	}
 }
 #[fixture]
 fn builtin_semantic_router(
 	#[from(builtin_semantic_state)] state: BuiltinSemanticState,
 ) -> std::sync::Arc<Router> {
-	let fail = state.fail_queries.clone();
+	let fail = state.fail_queries;
+	let calls = state.embedding_calls;
 	std::sync::Arc::new(
 		reinhardt::test::stub::StubRouter::new()
 			.route(
@@ -27,7 +30,9 @@ fn builtin_semantic_router(
 				reply(move |request: reinhardt::Request| {
 					let input = request.json::<serde_json::Value>().unwrap();
 					let fail = fail.clone();
+					let calls = calls.clone();
 					async move {
+						calls.fetch_add(1, Ordering::SeqCst);
 						let text = input["input"].to_string();
 						if fail.load(Ordering::SeqCst) && text.contains('?') {
 							return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE);
@@ -105,10 +110,10 @@ async fn projection_state(store: &Store, id: Uuid) -> Option<String> {
 	.unwrap()
 }
 
-async fn recall(store: &Store, bank: &Bank, text: &str) -> Recall {
+async fn recall_with(store: &Store, bank: &Bank, provider: &str, text: &str) -> Recall {
 	let operation = memory::Operation {
 		operation_id: Uuid::now_v7(),
-		provider: reference("aidash.memory"),
+		provider: reference(provider),
 		bank: bank.clone(),
 		action: memory::Action::Recall {
 			query: RecallQuery {
@@ -126,6 +131,10 @@ async fn recall(store: &Store, bank: &Bank, text: &str) -> Recall {
 		memory::Outcome::Recall(recall) => recall,
 		other => panic!("unexpected memory outcome: {other:?}"),
 	}
+}
+
+async fn recall(store: &Store, bank: &Bank, text: &str) -> Recall {
+	recall_with(store, bank, "aidash.memory", text).await
 }
 
 #[rstest]
@@ -228,6 +237,36 @@ async fn builtin_memory_uses_thread_index_embedding(
 	.await
 	.unwrap();
 	assert!(projection_state(&store, friday).await.is_some());
+	let budget = Uuid::now_v7();
+	let db = store.pool.fixture_driver();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 1, 'stop', '{}', 1, now(), 'alice', now())")
+		.bind(budget)
+		.execute(db)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO budget_spend (tenant, day, node, root_subject, duty_id, spent_nanocredits, unpriced_calls) VALUES ('acme', date_trunc('day', now(), 'UTC'), 'elsewhere', '', '00000000-0000-0000-0000-000000000000', 1, 0)")
+		.execute(db)
+		.await
+		.unwrap();
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 0);
+	assert_eq!(
+		projection_state(&store, friday).await.as_deref(),
+		Some("ERROR")
+	);
+	sqlx::query("UPDATE budgets SET hard_limit_nanocredits = 1000000000 WHERE id = $1")
+		.bind(budget)
+		.execute(db)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE semantic_entries SET next_attempt = now() WHERE id IN ($1, $2)")
+		.bind(friday)
+		.bind(plants)
+		.execute(db)
+		.await
+		.unwrap();
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
 		loop {
 			aidash_server::semantic::worker::sweep(&store)
@@ -259,6 +298,14 @@ async fn builtin_memory_uses_thread_index_embedding(
 	})
 	.await
 	.expect("built-in facts must be embedded once the index is enabled");
+	let unpriced: i64 = sqlx::query_scalar(
+		"SELECT unpriced_calls FROM budget_spend WHERE tenant = 'acme' AND node = $1 AND root_subject = '' AND duty_id = '00000000-0000-0000-0000-000000000000'",
+	)
+	.bind(aidash_domain::nodes::NodeName::derived("acme").to_string())
+	.fetch_one(db)
+	.await
+	.unwrap();
+	assert_eq!(unpriced, 2);
 	let Recall::Ready { units } = recall(&store, &bank, question).await else {
 		panic!("the Friday fact must be found by meaning");
 	};
@@ -266,11 +313,45 @@ async fn builtin_memory_uses_thread_index_embedding(
 
 	// An embedding outage leaves keyword search instead of failing the recall.
 	fixture.state.fail_queries.store(true, Ordering::SeqCst);
-	assert_eq!(
-		recall(&store, &bank, "金曜はデプロイ禁止?").await,
-		Recall::Empty
-	);
+	let Recall::Ready { units } = recall(&store, &bank, "Releases?").await else {
+		panic!("the Friday fact must be found by keyword during the outage");
+	};
+	assert_eq!(units[0].id, friday);
 	fixture.state.fail_queries.store(false, Ordering::SeqCst);
+
+	// The optional embedding must fall back before any I/O at ledger capacity.
+	let config = aidash_domain::registry::bindings::memory_defaults::definitions()
+		.unwrap()
+		.into_iter()
+		.find(aidash_domain::registry::bindings::memory_defaults::is_builtin_memory)
+		.unwrap()
+		.config;
+	let cap = config["policy"]["retention"]["max_model_operations"]
+		.as_i64()
+		.unwrap();
+	sqlx::query(
+		"INSERT INTO memory_model_operations (id, bank_id, provider_id, provider_version, digest, calls, tokens, cost_micros, created_at, tenant)
+		 SELECT gen_random_uuid(), b.id, 'aidash.memory', '1.0.0', 'capacity fixture', 0, 0, 0, now(), b.tenant
+		 FROM memory_banks b CROSS JOIN generate_series(1, $2::bigint)
+		 WHERE b.thread_id = $1 AND b.participant_id IS NULL
+		 LIMIT $2 - (SELECT count(*) FROM memory_model_operations m JOIN memory_banks b ON m.bank_id = b.id
+		 WHERE b.thread_id = $1 AND b.participant_id IS NULL)",
+	)
+	.bind(thread)
+	.bind(cap)
+	.execute(db)
+	.await
+	.unwrap();
+	let before = fixture.state.embedding_calls.load(Ordering::SeqCst);
+	let Recall::Ready { units } = recall(&store, &bank, "Releases?").await else {
+		panic!("the Friday fact must be found by keyword at ledger capacity");
+	};
+	assert_eq!(units[0].id, friday);
+	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), before);
+	sqlx::query("DELETE FROM memory_model_operations WHERE digest = 'capacity fixture'")
+		.execute(db)
+		.await
+		.unwrap();
 
 	// The recorder's explicit provider pins the index; moving its empty bank to
 	// an Agent version without a memory Binding leaves only Built-in Memory.
@@ -302,6 +383,31 @@ async fn builtin_memory_uses_thread_index_embedding(
 	.await
 	.unwrap();
 	let actor = administrator(&store).await;
+	let pending = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			provider: reference("aidash.memory"),
+			..mutation(
+				&bank,
+				Change::Add {
+					id: pending,
+					content: Content {
+						evidence: vec![proof.clone()],
+						..content("The conference room needs a projector.")
+					},
+				},
+			)
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		projection_state(&store, pending).await.as_deref(),
+		Some("PENDING")
+	);
+	// The warning counts the two vectors, excluding the pending projection.
 	// Disabling the index deletes the facts' embeddings, so it must be confirmed.
 	let refused = aidash_server::semantic::service::configure(
 		&store,
@@ -358,4 +464,42 @@ async fn builtin_memory_uses_thread_index_embedding(
 		projection_state(&store, friday).await.as_deref(),
 		Some("DELETED")
 	);
+
+	let mut keyword = config;
+	keyword["policy"]["thread_index_embedding"] = json!(false);
+	keyword["policy"]["reranker"] = json!(reference("r"));
+	keyword["policy"]["tokenizer"] = json!(reference("t"));
+	// Registered policies pin their own model roles.
+	for role in ["extraction", "derivation", "reflection"] {
+		keyword["policy"][role] = json!(reference("m"));
+	}
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", "keyword-only", keyword),
+		)
+		.await
+		.unwrap();
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("keyword-only"),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 1,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		projection_state(&store, plants).await.as_deref(),
+		Some("DELETED")
+	);
+	let Recall::Ready { units } = recall_with(&store, &bank, "keyword-only", "plants").await else {
+		panic!("the keyword policy must keep the plants fact");
+	};
+	assert_eq!(units[0].id, plants);
 }
