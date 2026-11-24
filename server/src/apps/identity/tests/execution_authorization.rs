@@ -7467,6 +7467,46 @@ impl SubnodeRig {
 	}
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_create_reports_a_missing_member_without_pausing_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let call_id = "create-with-missing-member";
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0",
+				"members":["subnode-leader@1.0.0", "subnode-leader@2.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			call_id,
+		)
+		.await
+	);
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig.result_of(rig.creator_run, call_id).await.unwrap();
+	assert!(
+		result["error"].as_str().is_some_and(|error| {
+			error.contains("registry entry subnode-leader@2.0.0 was not found")
+		}),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 /// #754 decision 6 for a local delegation: the Subnode's task is in another Thread, so the
 /// creator hears "not found or is not visible" and its Run goes on. A delegation of the creator's
 /// own task after `subnode_task` is no longer refused (#755, see `subnode_read_boundary`).

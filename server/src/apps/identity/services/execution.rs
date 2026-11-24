@@ -2046,7 +2046,8 @@ impl WorkerAuthority {
 		let creator_authority = binding_authority(&usable, &config)?;
 		let mut members = std::collections::BTreeMap::new();
 		for agent in &input.members {
-			let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
+			let entry =
+				catalog::tool_entry(&mut lease, agent, "agent.execute", "subnode_create").await?;
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
 				&mut lease,
