@@ -780,8 +780,7 @@ impl FileScopePort for Scope<'_> {
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(NativeError::from)?
+		.await?
 		.rows_affected();
 		if updated != 1 {
 			return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into()));
