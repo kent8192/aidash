@@ -718,3 +718,219 @@ async fn concurrent_bootstrap_reuses_one_tenant_and_reservations(
 	assert_eq!(d.count(&format!("SELECT count(*) FROM demo_reservations WHERE tenant = '{}' AND email = 'race@example.com' AND source = 'host_access'", a.tenant)).await, 1);
 	d.finish().await;
 }
+
+impl Deployment {
+	/// Changes subject `name` of `tenant`'s policy, as a Tenant Administrator
+	/// replacing the policy would.
+	async fn change_subject(
+		&self,
+		tenant: &str,
+		name: &str,
+		change: impl FnOnce(&mut aidash_domain::policy::Subject),
+	) {
+		let authorization = aidash_server::authorization::Authorization {
+			pool: self.federation.store.pool.clone(),
+		};
+		let mut snapshot = authorization.snapshot(tenant).await.unwrap();
+		change(snapshot.bundle.subjects.get_mut(name).unwrap());
+		authorization
+			.replace(
+				tenant,
+				snapshot.revision,
+				snapshot.bundle,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+
+	async fn subject(&self, tenant: &str, name: &str) -> Option<aidash_domain::policy::Subject> {
+		aidash_server::authorization::Authorization {
+			pool: self.federation.store.pool.clone(),
+		}
+		.snapshot(tenant)
+		.await
+		.unwrap()
+		.bundle
+		.subjects
+		.get(name)
+		.cloned()
+	}
+}
+
+/// #966: an unusable `owner` is never restored. The address gets a
+/// `host-administrator` subject, and the other identities still mapped to
+/// `owner` stay without authority.
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_recovers_a_tenant_whose_owner_is_disabled(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let first = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"first@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	let tenant = first.tenant;
+	assert_eq!(first.subject, "owner");
+	let earlier = d.sign_in_as("first-owner", Some("first@example.com")).await;
+	assert_eq!(d.mappings(earlier, &tenant).await, 1);
+	d.change_subject(&tenant, "owner", |owner| owner.enabled = false)
+		.await;
+
+	let second = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"second@example.com",
+		&tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(second.subject, "host-administrator");
+	assert_eq!(second.tenant_administrator, "reserved");
+	assert_eq!(second.deployment_administrator, "reserved");
+	assert!(!d.subject(&tenant, "owner").await.unwrap().enabled);
+	// The earlier identity's Mapping to `owner` is left as it was.
+	assert_eq!(d.mappings(earlier, &tenant).await, 1);
+
+	let again = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"second@example.com",
+		&tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(again.subject, "host-administrator");
+	assert_eq!(again.tenant_administrator, "already reserved");
+	assert!(d.subject(&tenant, "host-administrator-2").await.is_none());
+
+	let identity = d
+		.sign_in_as("second-admin", Some("second@example.com"))
+		.await;
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_mappings WHERE identity_id = '{identity}' AND tenant = '{tenant}' AND subject = 'host-administrator' AND enabled")).await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
+	assert!(!d.subject(&tenant, "owner").await.unwrap().enabled);
+	d.finish().await;
+}
+
+/// #966: an address whose subject became unusable moves to the next free
+/// `host-administrator` subject; its old Mapping is left alone.
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_moves_a_mapped_address_off_an_unusable_subject(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let identity = d.sign_in_as("moving", Some("moving@example.com")).await;
+	let first = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"moving@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	let tenant = first.tenant;
+	d.change_subject(&tenant, "owner", |owner| {
+		owner.groups.remove("administrators");
+	})
+	.await;
+	let moved = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"moving@example.com",
+		&tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(moved.subject, "host-administrator");
+	assert_eq!(moved.tenant_administrator, "mapped");
+	assert_eq!(d.mappings(identity, &tenant).await, 2);
+	assert_eq!(
+		d.spent_by(&tenant, "moving@example.com").await,
+		Some(identity)
+	);
+
+	d.change_subject(&tenant, "host-administrator", |subject| {
+		subject.enabled = false;
+	})
+	.await;
+	let next = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"moving@example.com",
+		&tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(next.subject, "host-administrator-2");
+	assert_eq!(next.tenant_administrator, "mapped");
+	assert!(
+		!d.subject(&tenant, "host-administrator")
+			.await
+			.unwrap()
+			.enabled
+	);
+	assert_eq!(d.mappings(identity, &tenant).await, 3);
+	d.finish().await;
+}
+
+/// #966: Deployment Administrator is Deployment-wide, so Bootstrap grants it
+/// even when the Tenant cannot be recovered, and still reports the Tenant.
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_grants_deployment_administrator_when_the_tenant_is_deleted(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let tenant = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"keeper@example.com",
+		"default",
+	)
+	.await
+	.unwrap()
+	.tenant;
+	sqlx::query(
+		"INSERT INTO tenant_deletions \
+		 (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES ($1, $2, now(), 'deployment_administrator', now() + interval '1 day', 0)",
+	)
+	.bind(Uuid::new_v4())
+	.bind(&tenant)
+	.execute(pool.fixture_driver())
+	.await
+	.unwrap();
+	let identity = d.sign_in_as("rescuer", Some("rescuer@example.com")).await;
+
+	let error = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"rescuer@example.com",
+		&tenant,
+	)
+	.await
+	.unwrap_err()
+	.to_string();
+
+	assert!(error.contains("Tenant is deleted"), "{error}");
+	assert!(
+		error.contains("Deployment Administrator: granted"),
+		"{error}"
+	);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
+	assert_eq!(d.mappings(identity, &tenant).await, 0);
+	d.finish().await;
+}

@@ -530,3 +530,67 @@ fn declining_a_paused_call_is_the_administrators_unless_the_tenant_names_it() {
 	assert!(!MEMBER_ACTIONS.contains(&"run.decline_call"));
 	assert!(!crate::policy::EXPLICIT_ACTIONS.contains(&"run.decline_call"));
 }
+
+/// #966: Bootstrap keeps a usable reserved subject, falls back to `owner`,
+/// and never restores an unusable `owner`.
+#[rstest]
+#[case::fresh_tenant_adds_owner(None, None, BootstrapSubject::New(OWNER.into()))]
+#[case::usable_owner_is_kept(Some(true), None, BootstrapSubject::Existing(OWNER.into()))]
+#[case::disabled_owner_gets_a_new_subject(
+	Some(false),
+	None,
+	BootstrapSubject::New(HOST_ADMINISTRATOR.into())
+)]
+#[case::disabled_owner_keeps_the_reserved_subject(
+	Some(false),
+	Some(HOST_ADMINISTRATOR),
+	BootstrapSubject::Existing(HOST_ADMINISTRATOR.into())
+)]
+#[case::reserved_owner_that_is_disabled_moves(
+	Some(false),
+	Some(OWNER),
+	BootstrapSubject::New(HOST_ADMINISTRATOR.into())
+)]
+fn bootstrap_chooses_a_usable_administrator_subject(
+	#[case] owner_enabled: Option<bool>,
+	#[case] reserved: Option<&str>,
+	#[case] expected: BootstrapSubject,
+) {
+	let mut bundle = initial_policy("t", false).unwrap();
+	bundle.subjects.remove(OWNER);
+	if let Some(enabled) = owner_enabled {
+		administration::add_user_subject(
+			&mut bundle,
+			OWNER,
+			&BTreeSet::from([ADMINISTRATORS.to_owned()]),
+		)
+		.unwrap();
+		bundle.subjects.get_mut(OWNER).unwrap().enabled = enabled;
+	}
+	if reserved == Some(HOST_ADMINISTRATOR) {
+		administration::add_user_subject(
+			&mut bundle,
+			HOST_ADMINISTRATOR,
+			&BTreeSet::from([ADMINISTRATORS.to_owned()]),
+		)
+		.unwrap();
+	}
+	assert_eq!(bootstrap_subject(&bundle, reserved), expected);
+}
+
+#[rstest]
+#[case::not_an_administrator(|s: &mut Subject| { s.groups.remove(ADMINISTRATORS); })]
+#[case::disabled(|s: &mut Subject| s.enabled = false)]
+#[case::agent(|s: &mut Subject| s.kind = SubjectKind::Agent)]
+fn an_unusable_subject_is_skipped_for_the_next_free_name(#[case] spoil: fn(&mut Subject)) {
+	let mut bundle = initial_policy("t", true).unwrap();
+	let admins = BTreeSet::from([ADMINISTRATORS.to_owned()]);
+	administration::add_user_subject(&mut bundle, HOST_ADMINISTRATOR, &admins).unwrap();
+	spoil(bundle.subjects.get_mut(OWNER).unwrap());
+	spoil(bundle.subjects.get_mut(HOST_ADMINISTRATOR).unwrap());
+	assert!(!usable_administrator(&bundle, OWNER));
+	assert_eq!(
+		bootstrap_subject(&bundle, Some(HOST_ADMINISTRATOR)),
+		BootstrapSubject::New(format!("{HOST_ADMINISTRATOR}-2"))
+	);
+}

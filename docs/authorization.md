@@ -170,6 +170,15 @@ verified address, applying both immediately to an existing identity or on its
 first sign-in. New Tenant and default Node records identify their creator as
 `host_access`. These host-side grants add no HTTP authority to the command.
 
+When `owner` is unusable (disabled, outside `administrators`, or not a user
+subject), the command does not restore it, because restoring it would also
+revive every other Mapping, Subject Credential and Duty that `owner` holds.
+It adds a user subject in `administrators` instead, `host-administrator` or the
+first free `host-administrator-<n>`, and reserves the address for it. A rerun
+keeps that subject while it stays usable. The Deployment Administrator grant is
+made even when the Tenant cannot be recovered, for example because it is
+deleted; the command then reports the Tenant's refusal and exits non-zero (#966).
+
 Every Tenant starts with one default Node, labelled `Default`, which
 `tenants::create` writes with the root record for every creator, Personal Tenants
 included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`,

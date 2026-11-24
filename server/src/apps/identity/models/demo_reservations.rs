@@ -107,7 +107,8 @@ impl DemoReservation {
 	}
 
 	/// The Reservation of `email` and `source` in `tenant`, or a new unspent
-	/// one for `subject`. A Reservation never changes its subject.
+	/// one for `subject`. Only Bootstrap moves a Reservation to another
+	/// subject, its own Host Access one when that subject became unusable (#966).
 	pub(crate) async fn hold(
 		tx: &mut AtomicTransaction,
 		tenant: &str,

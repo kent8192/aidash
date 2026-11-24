@@ -451,6 +451,63 @@ pub fn has_unconditional_administrator<'a>(
 	})
 }
 
+/// The base name of the subject Bootstrap makes an address the Tenant
+/// Administrator through when [`OWNER`] is unusable (#966).
+pub const HOST_ADMINISTRATOR: &str = "host-administrator";
+
+/// Whether `subject` is an enabled user subject in [`ADMINISTRATORS`], the
+/// subject Bootstrap may map an address to.
+pub fn usable_administrator(bundle: &PolicyBundle, subject: &str) -> bool {
+	bundle.subjects.get(subject).is_some_and(|entry| {
+		entry.kind == SubjectKind::User && entry.enabled && entry.groups.contains(ADMINISTRATORS)
+	})
+}
+
+/// The subject Bootstrap reserves an address for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootstrapSubject {
+	/// An existing usable administrator subject.
+	Existing(String),
+	/// A user subject in [`ADMINISTRATORS`] that Bootstrap adds first.
+	New(String),
+}
+
+impl BootstrapSubject {
+	pub fn name(&self) -> &str {
+		match self {
+			Self::Existing(name) | Self::New(name) => name,
+		}
+	}
+}
+
+/// Chooses the subject Bootstrap reserves an address for (#966). `reserved`
+/// is the subject the address's earlier Bootstrap reserved in this Tenant.
+///
+/// That subject is kept while it is usable, so running Bootstrap again adds
+/// nothing. Otherwise [`OWNER`] is used when usable, or added when absent. An
+/// unusable [`OWNER`] is never restored: someone disabled it or removed its
+/// administration, and restoring it would also restore every other Mapping,
+/// credential and Duty it holds. The address gets a new subject instead,
+/// [`HOST_ADMINISTRATOR`] or the first free `host-administrator-<n>`, n ≥ 2.
+pub fn bootstrap_subject(bundle: &PolicyBundle, reserved: Option<&str>) -> BootstrapSubject {
+	if let Some(reserved) = reserved
+		&& usable_administrator(bundle, reserved)
+	{
+		return BootstrapSubject::Existing(reserved.to_owned());
+	}
+	if !bundle.subjects.contains_key(OWNER) {
+		return BootstrapSubject::New(OWNER.to_owned());
+	}
+	if usable_administrator(bundle, OWNER) {
+		return BootstrapSubject::Existing(OWNER.to_owned());
+	}
+	let name = std::iter::once(HOST_ADMINISTRATOR.to_owned())
+		.chain((2..).map(|n| format!("{HOST_ADMINISTRATOR}-{n}")))
+		.find(|name| !bundle.subjects.contains_key(name))
+		.expect("a policy holds finitely many subjects");
+	BootstrapSubject::New(name)
+}
+
 /// Invitation lifetimes: 7 days unless the issuer chooses a shorter one.
 pub mod invitation {
 	use super::*;
