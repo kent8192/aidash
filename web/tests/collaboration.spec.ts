@@ -3845,3 +3845,60 @@ test("a remote decline holder sees only the paused call and cannot send a senten
   await expect.poll(() => declines).toEqual([{ call: call.call }]);
   expect(errors).toEqual([]);
 });
+
+test("a successor can edit the Duty immediately when takeover succeeds and resume is refused", async ({
+  page,
+}) => {
+  const { deleteThread } = await setup(page, {
+    locale: "en-US",
+    subject: true,
+  });
+  for (const thread of fixture().threads) deleteThread(thread.id);
+  const waiting = {
+    id: "weekly-review",
+    title: "Weekly review",
+    agent: { id: "reporter", version: "1.0.0" },
+    trigger: null,
+    next_scheduled_at: null,
+    status: "stopped",
+    halt: "requester_left",
+    requester: "alice",
+    thread_deleted: true,
+    may_take_over: true,
+  };
+  const taken = {
+    ...waiting,
+    status: "paused",
+    halt: "paused",
+    requester: "bob",
+    mine: true,
+    may_take_over: false,
+    may_edit: true,
+    may_resume: true,
+  };
+  let duty = waiting;
+  const refusal = "Ask the Scratch Space creator to add you as a member.";
+  await page.route("**/api/duties?scope=mine", (route) =>
+    route.fulfill({ json: [duty] }),
+  );
+  await page.route("**/api/duties/weekly-review/take-over", (route) => {
+    duty = taken;
+    return route.fulfill({ json: taken });
+  });
+  await page.route("**/api/duties/weekly-review/resume", (route) =>
+    route.fulfill({ status: 400, json: { error: { message: refusal } } }),
+  );
+
+  await page.goto("/collaboration");
+  const duties = page.getByRole("region", { name: "Duties", exact: true });
+  const takeover = duties.getByRole("button", { name: "Take over and resume" });
+  await takeover.click();
+  await expect(duties.getByRole("alert")).toContainText(refusal);
+  await expect(
+    duties.getByRole("button", { name: "Edit", exact: true }),
+  ).toBeEnabled();
+  await expect(takeover).toHaveCount(0);
+  await expect(
+    duties.getByRole("button", { name: "Resume", exact: true }),
+  ).toBeEnabled();
+});

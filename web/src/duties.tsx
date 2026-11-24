@@ -226,10 +226,15 @@ export function DutiesPanel({
     setBusy(true);
     setError("");
     try {
-      await run();
-      await client.invalidateQueries({ queryKey: ["duties"] });
-      await client.invalidateQueries({ queryKey: ["duty"] });
-      await client.invalidateQueries({ queryKey: ["duty-notices"] });
+      // Takeover can commit before resume refuses. Refresh the committed
+      // state even when the action ends with an error.
+      await run().finally(() =>
+        Promise.all([
+          client.invalidateQueries({ queryKey: ["duties"] }),
+          client.invalidateQueries({ queryKey: ["duty"] }),
+          client.invalidateQueries({ queryKey: ["duty-notices"] }),
+        ]),
+      );
     } catch (reason) {
       setError(String(reason));
     } finally {
