@@ -764,6 +764,45 @@ def test_terminal_session_stop_fences_late_starts_and_retries_failed_stops(tmp_p
     assert controller._read_command(background)['status'] == 'running'
 
 
+def test_space_purge_removes_its_session_fences_after_restart(tmp_path):
+    from types import SimpleNamespace
+
+    backend = SimpleNamespace(root=tmp_path)
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller.stop_sessions('s', 'r')
+    controller.stop_sessions('other', 'r')
+
+    restarted = ExecutionPodController(backend, {}, admitted=True)
+    restarted._get = Mock(return_value=None)
+    restarted._stop = Mock()
+    restarted._delete = Mock()
+    restarted.delete('s')
+    assert not restarted._session_stop_path('s', 'r').exists()
+    assert restarted._session_stop_path('other', 'r').exists()
+
+
+def test_idle_maintenance_expires_only_old_session_fences(tmp_path):
+    import os
+    import time
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError
+
+    backend = SimpleNamespace(root=tmp_path)
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller.stop_sessions('s', 'old')
+    controller.stop_sessions('s', 'recent')
+    now = time.time()
+    old = now - 2 * 86400
+    expired = controller._session_stop_path('s', 'old')
+    os.utime(expired, (old, old))
+
+    restarted = ExecutionPodController(backend, {}, admitted=True)
+    restarted.stop_idle(now=now + 15 * 60)
+    assert not expired.exists()
+    with pytest.raises(ExecutionPodError, match='sessions have ended'):
+        restarted.start_python('s', 'recent')
+
+
 def test_background_end_on_same_pod_requires_authenticated_supervisor_evidence(tmp_path):
     from types import SimpleNamespace
     from sandbox_v2 import sign_result

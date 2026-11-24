@@ -9,6 +9,9 @@ OUTPUT_RETRY_SECONDS = 60
 # margin. RunnerHttp's v2 command calls time out after 30s and its execution_pod
 # adapter does not retry requests itself (crates/aidash-integrations/src/runner).
 JOURNAL_RETENTION_SECONDS = max(LATE_RESULT_SECONDS, STOP_RETRY_SECONDS) + STOP_RETRY_SECONDS
+# RunnerHttp allows up to 15 minutes for a session start. Keep a full day
+# after a stop for requests already dispatched, including across restarts.
+SESSION_FENCE_RETENTION_SECONDS = 24 * 60 * 60
 REFUSAL_RETENTION_SECONDS = 7 * 86400
 JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
@@ -534,7 +537,10 @@ class ExecutionPodController:
             for directory in ('execution-v2', 'execution-v2-python'):
                 index = {}
                 root = self.backend.root / directory
-                for path in root.glob('*.json') if root.exists() else ():
+                suffixes = ('.json', '.stopped') if directory == 'execution-v2-python' else ('.json',)
+                for path in root.iterdir() if root.exists() else ():
+                    if path.suffix not in suffixes:
+                        continue
                     try:
                         record = json.loads(path.read_bytes())
                         space = record['scratch_space_id']
@@ -612,6 +618,11 @@ class ExecutionPodController:
                     path.unlink()
                     self.journal_index.get(scratch_space_id, set()).discard(path.name)
                     self.journal_metadata.pop(path.name, None)
+            for path in self._space_journal_paths(scratch_space_id, sessions=True):
+                if path.suffix == '.stopped' and path.stat().st_mtime <= current - SESSION_FENCE_RETENTION_SECONDS:
+                    path.unlink()
+                    with self.lock:
+                        self.session_index[scratch_space_id].discard(path.name)
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -2160,7 +2171,11 @@ print(json.dumps(r))'''
             # under the same Space lock as admission, including across restarts.
             from control import save
             with self._space_lock(scratch_space_id):
-                save(self._session_stop_path(scratch_space_id, run_id), {'stopped': True})
+                self._ensure_journal_index()
+                path = self._session_stop_path(scratch_space_id, run_id)
+                save(path, {'scratch_space_id': scratch_space_id})
+                with self.lock:
+                    self.session_index.setdefault(scratch_space_id, set()).add(path.name)
         stopped, resolved, first_seen = set(), set(), {}
         deadline = time.monotonic() + 60
         while True:
@@ -2710,7 +2725,7 @@ print(json.dumps(r))'''
         current = time.time() if now is None else now
         self._ensure_journal_index()
         with self.lock:
-            spaces_with_records = tuple(self.journal_index)
+            spaces_with_records = self.journal_index.keys() | self.session_index.keys()
         for scratch_id in spaces_with_records:
             try:
                 self.prune_space(scratch_id, now=current)
