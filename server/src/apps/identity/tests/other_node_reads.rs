@@ -1016,8 +1016,10 @@ async fn establish_delegated_read(world: &World, created: usize) -> Task {
 }
 
 /// Count failed requests to the sibling while the one-connection pool keeps
-/// it silent. The reader and the in-process peer run on this test's thread.
+/// it silent. Driving the native router keeps server-side events in the
+/// request's scoped subscriber.
 async fn read_with_peer_attempts(world: &World, path: &str) -> ((u16, Value), usize) {
+	use futures_util::StreamExt as _;
 	use tracing::instrument::WithSubscriber as _;
 
 	struct PeerLog(Arc<Mutex<Vec<u8>>>);
@@ -1040,7 +1042,27 @@ async fn read_with_peer_attempts(world: &World, path: &str) -> ((u16, Value), us
 		.with_ansi(false)
 		.with_writer(move || PeerLog(writer.clone()))
 		.finish();
-	let response = world.get(path).with_subscriber(subscriber).await;
+	let request = http::Request::get(path)
+		.header("authorization", format!("Bearer {}", world.token))
+		.body(bytes::Bytes::new())
+		.unwrap();
+	let response = async {
+		let mut response = world.app.clone().native_oneshot(request).await.unwrap();
+		let status = response.status.as_u16();
+		// The native router can return finite JSON in its response stream.
+		let body = if let Some(mut stream) = response.take_stream_body() {
+			let mut body = bytes::BytesMut::new();
+			while let Some(chunk) = stream.next().await {
+				body.extend_from_slice(&chunk.unwrap());
+			}
+			body.freeze()
+		} else {
+			response.body
+		};
+		(status, serde_json::from_slice(&body).unwrap())
+	}
+	.with_subscriber(subscriber)
+	.await;
 	let log = log.lock().unwrap();
 	let node = format!("node={}", world.sibling);
 	let attempts = String::from_utf8_lossy(&log)
