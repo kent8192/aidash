@@ -62,6 +62,24 @@ impl Fixture {
 		Access::begin(&self.store, &self.identity).await.unwrap()
 	}
 
+	fn producer_grant(&self) -> aidash_domain::federation::execution::home::Grant {
+		aidash_domain::federation::execution::home::Grant {
+			id: Uuid::new_v4(),
+			task_id: self.task,
+			task_revision: 1,
+			thread_id: self.thread,
+			node_id: "aidash://peer".into(),
+			tenant: "acme".into(),
+			credential_id: self.identity.credential_id,
+			root_subject: "reader".into(),
+			subject_chain: vec!["reader".into()],
+			inspection: json!({}),
+			expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+			revoked: false,
+			semantic: json!({}),
+		}
+	}
+
 	/// A Read Recheck under the Run's two-subject chain, as the 30 second loop runs it.
 	async fn recheck(&self) -> Result<()> {
 		let mut access = self.access().await;
@@ -1498,6 +1516,71 @@ async fn disclosure_passes(
 	producer.access.message_visible(&row).await.unwrap()
 }
 
+#[rstest]
+#[case::discoverable(None, true)]
+#[case::undiscoverable(Some(("viewer", "federation.discover")), false)]
+#[tokio::test]
+async fn a_grant_producers_silence_counts_only_for_a_viewer_who_can_discover_the_node(
+	#[future] database: DatabaseFixture,
+	#[case] deny: Option<(&str, &str)>,
+	#[case] counted: bool,
+) {
+	use aidash_application::ports::authorization::source::reads::ProducerScope as _;
+	use aidash_domain::unconfirmed::{Kind, Tally, Unconfirmed};
+
+	let fixture = fixture(database.await, 1).await;
+	fixture.set_policy(1, deny).await;
+	let viewer = Authorization {
+		pool: fixture.store.pool.clone(),
+	}
+	.issue_credential("acme", "viewer", 3600, "fixture")
+	.await
+	.unwrap();
+	let identity = SubjectIdentity {
+		http_session: None,
+		credential_id: viewer.credential.id,
+		tenant: "acme".into(),
+		subject: "viewer".into(),
+	};
+	let mut access = Access::begin(&fixture.store, &identity).await.unwrap();
+	let node = "aidash://peer/silent";
+	let grant = fixture.producer_grant();
+	access.begin_row();
+	let producer = crate::apps::identity::repositories::remote_grants::reads::Producer::lend(
+		&mut access,
+		&grant,
+	)
+	.await
+	.unwrap();
+	// Simulate the dependency walk's terminal outcome under the producer.
+	producer.access.mark_peer_unavailable(node);
+	assert!(matches!(
+		Box::new(producer)
+			.finish(Err(aidash_application::Error::Forbidden))
+			.await,
+		Err(aidash_application::Error::Forbidden)
+	));
+
+	let mut tally = Tally::new();
+	assert!(!tally.settle(
+		access.take_row_silence(),
+		Kind::Message,
+		fixture.thread,
+		false
+	));
+	let expected = Unconfirmed {
+		node: node.into(),
+		kind: Kind::Message,
+		thread_id: fixture.thread,
+		count: 1,
+	};
+	assert_eq!(
+		tally.into_entries(),
+		counted.then_some(expected).into_iter().collect::<Vec<_>>()
+	);
+	access.finish(Ok(())).await.unwrap();
+}
+
 /// Run X read a Task nobody else read, and produced the Message the viewer's Run
 /// read as well as the one a Remote Grant discloses. The viewer's walk and the
 /// grant's producer both reach X, one under the viewer's chain and one under the
@@ -1562,21 +1645,7 @@ async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_
 	)
 	.await
 	.unwrap();
-	let grant = aidash_domain::federation::execution::home::Grant {
-		id: Uuid::new_v4(),
-		task_id: fixture.task,
-		task_revision: 1,
-		thread_id: fixture.thread,
-		node_id: "aidash://peer".into(),
-		tenant: "acme".into(),
-		credential_id: fixture.identity.credential_id,
-		root_subject: "reader".into(),
-		subject_chain: vec!["reader".into()],
-		inspection: json!({}),
-		expires_at: chrono::Utc::now() + chrono::Duration::days(1),
-		revoked: false,
-		semantic: json!({}),
-	};
+	let grant = fixture.producer_grant();
 	let mut access = fixture.access().await;
 	access.subjects = vec![viewer.to_owned()];
 	// The viewer's walk is under way when it reaches the grant's output, as in

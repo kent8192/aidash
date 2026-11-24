@@ -128,6 +128,10 @@ impl SourceAuthorityScope for Producer<'_> {
 }
 #[async_trait]
 impl ProducerScope for Producer<'_> {
+	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
+		result
+	}
+
 	async fn producer_semantic_sources(&mut self, _: Uuid) -> Result<()> {
 		if self.base.reject_unknown
 			&& self
