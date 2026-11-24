@@ -332,7 +332,20 @@ impl SemanticConfigurationSession for Configuration {
 					Expr::col(("memory_units", "bank_id"))
 						.equals(("memory_bank_settings", "bank_id")),
 				)
+				.inner_join(
+					Alias::new("semantic_indexes"),
+					Expr::col(("e", "thread_id")).equals(("semantic_indexes", "thread_id")),
+				)
+				.inner_join(
+					Alias::new("semantic_points"),
+					Expr::col(("e", "point_id")).equals(("semantic_points", "id")),
+				)
 				.and_where(Expr::col(("e", "thread_id")).eq(Expr::value(thread)))
+				.and_where(
+					Expr::col(("e", "index_revision")).equals(("semantic_indexes", "revision")),
+				)
+				.and_where(Expr::col(("semantic_points", "retired")).eq(false))
+				.and_where(Expr::col(("semantic_points", "content_digest")).is_not_null())
 				.and_where(Expr::col(("e", "deleted")).eq(false))
 				.and_where(
 					Expr::col(("memory_bank_settings", "provider_id"))
