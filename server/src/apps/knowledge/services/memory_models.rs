@@ -56,6 +56,7 @@ pub(crate) struct Reservation {
 }
 enum Prepared<T> {
 	AtCapacity,
+	SkipOnReplay,
 	Cached(Produced<T>),
 	Reserved(Reservation),
 }
@@ -540,6 +541,7 @@ impl Models {
 		// Capture all source lineage before provider I/O, including shared
 		// derivation origins. Reports count this attempt once, not once per Run.
 		let source_run_ids = serde_json::to_value(&self.inference.lock().await.runs)?;
+		let next_required = self.ordinal.load(Ordering::SeqCst) as i32;
 		let ordinal = match step {
 			ModelStep::Required => {
 				let ordinal = self.ordinal.fetch_add(1, Ordering::SeqCst);
@@ -548,9 +550,9 @@ impl Models {
 				}
 				ordinal as i32
 			}
-			// Index readiness can change across retries. Keep this single optional
-			// call outside the ordinals used by the required reflection steps.
-			ModelStep::ThreadIndexEmbedding => i32::MAX,
+			// Each reflection step can ask for another recall. Give that search
+			// the negative ordinal paired with the next required model call.
+			ModelStep::ThreadIndexEmbedding => -1 - next_required,
 		};
 		let digest =
 			aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(request)?);
@@ -663,12 +665,31 @@ impl Models {
 				.column(reinhardt::query::ColumnRef::Asterisk)
 				.from(Alias::new("memory_model_attempts"))
 				.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
-				.and_where(Expr::col("ordinal").eq(ordinal as i32))
+				.and_where(Expr::col("ordinal").eq(ordinal))
 				.order_by(Alias::new("created_at"), Order::Desc)
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_all(&mut *tx)
 		.await?;
+		if matches!(step, ModelStep::ThreadIndexEmbedding) && exists && attempts.is_empty() {
+			let required_started = native::query(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("memory_model_attempts"))
+					.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
+					.and_where(Expr::col("ordinal").eq(next_required))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut *tx)
+			.await?
+			.is_some();
+			if required_started {
+				// The next model call already took its input from keyword recall.
+				// A newly ready index must not change that request on replay.
+				return Ok(Prepared::SkipOnReplay);
+			}
+		}
 		if let Some(last) = attempts.first() {
 			if last.try_get::<String>("digest")? != digest {
 				return Err(Error::Conflict(
@@ -968,6 +989,7 @@ impl Models {
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
 			Prepared::AtCapacity => return Err(model_operation_capacity()),
+			Prepared::SkipOnReplay => unreachable!("required calls always check their own replay"),
 		};
 		self.admit_reserved(&reservation).await?;
 		let origin = self
@@ -1187,6 +1209,7 @@ impl Models {
 				));
 			}
 			Prepared::AtCapacity => return Err(model_operation_capacity()),
+			Prepared::SkipOnReplay => return Err(Error::SemanticUnavailable),
 		};
 		self.admit_reserved(&reservation).await?;
 		let local = if self.remote.is_none()
