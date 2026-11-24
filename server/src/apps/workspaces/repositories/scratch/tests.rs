@@ -37,14 +37,14 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	let mut writer = database.begin_in(&tenant_a).await;
 	load(&mut *writer, "scratch-a", space.id).await.unwrap();
 	let mut reader = database.begin_in(&tenant_a).await;
-	let read = tokio::time::timeout(
+	let inspected = tokio::time::timeout(
 		std::time::Duration::from_secs(5),
-		load_with_lock(&mut *reader, "scratch-a", space.id, false),
+		read(&mut *reader, "scratch-a", space.id),
 	)
 	.await
 	.expect("listing must not wait for a row lock")
 	.unwrap();
-	assert!(read.is_some());
+	assert!(inspected.is_some());
 	reader.rollback().await.unwrap();
 	writer.rollback().await.unwrap();
 	// A foreign-key check holds KEY SHARE. A stale touch must not wait for it,
@@ -85,7 +85,7 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	)
 	.await
 	.unwrap();
-	let touched = load_with_lock(&mut *runner, "scratch-a", space.id, false)
+	let touched = read(&mut *runner, "scratch-a", space.id)
 		.await
 		.unwrap()
 		.unwrap();
