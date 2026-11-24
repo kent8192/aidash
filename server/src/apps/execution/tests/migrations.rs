@@ -7105,6 +7105,21 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 	.await
 	.unwrap();
 
+	// Exercise the backfill's search path independently of the migration ledger.
+	let mut tx = pool.begin().await.unwrap();
+	sqlx::query("SET LOCAL search_path = pg_catalog")
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	let result = sqlx::raw_sql(include_str!(
+		"../../../../migrations/identity/sql/forward/0114_policy_revision_backfill.sql"
+	))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	assert_eq!(result.rows_affected(), 1);
+	tx.rollback().await.unwrap();
+
 	fixture.migrate().await;
 
 	let decision = evaluate(legacy_tenant).await;
