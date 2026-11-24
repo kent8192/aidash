@@ -54,10 +54,21 @@ pub(crate) struct Reservation {
 	tokens: usize,
 	cost: u64,
 }
-pub(crate) enum Prepared<T> {
+enum Prepared<T> {
+	AtCapacity,
 	Cached(Produced<T>),
 	Reserved(Reservation),
 }
+#[derive(Clone, Copy)]
+enum ModelStep {
+	Required,
+	ThreadIndexEmbedding,
+}
+
+fn model_operation_capacity() -> Error {
+	Error::Conflict("memory model operation record capacity reached".into())
+}
+
 /// A Run reads another Thread's bank only through Built-in Memory, inside
 /// its own Tenant, while the Tenant shares memory per Agent (#852 decision 6).
 /// Which Units it may see is filtered afterwards by `sharing::agent_unit`.
@@ -420,6 +431,12 @@ impl Models {
 		let Err(refused) = self.admit_budget().await else {
 			return Ok(());
 		};
+		self.release_reserved(reservation).await?;
+		Err(refused)
+	}
+
+	/// Release the reservation for a call rejected before provider dispatch.
+	async fn release_reserved(&self, reservation: &Reservation) -> Result<()> {
 		let mut tx = self
 			.store
 			.control_pool
@@ -473,7 +490,7 @@ impl Models {
 			.await?;
 		}
 		tx.commit().await?;
-		Err(refused)
+		Ok(())
 	}
 
 	/// Adds a finished call to the Budget ledger: the cost its provider
@@ -503,8 +520,9 @@ impl Models {
 			.ok_or(Error::Forbidden)
 	}
 	/// Reserving the maximum before I/O keeps crashes and incomplete usage charged.
-	pub async fn prepare<T: DeserializeOwned>(
+	async fn prepare<T: DeserializeOwned>(
 		&self,
+		step: ModelStep,
 		request: &Value,
 		tokens: usize,
 		cost: u64,
@@ -522,10 +540,18 @@ impl Models {
 		// Capture all source lineage before provider I/O, including shared
 		// derivation origins. Reports count this attempt once, not once per Run.
 		let source_run_ids = serde_json::to_value(&self.inference.lock().await.runs)?;
-		let ordinal = self.ordinal.fetch_add(1, Ordering::SeqCst);
-		if ordinal >= self.policy.bounds.max_model_calls {
-			return Err(Error::Invalid("memory call limit exhausted".into()));
-		}
+		let ordinal = match step {
+			ModelStep::Required => {
+				let ordinal = self.ordinal.fetch_add(1, Ordering::SeqCst);
+				if ordinal >= self.policy.bounds.max_model_calls {
+					return Err(Error::Invalid("memory call limit exhausted".into()));
+				}
+				ordinal as i32
+			}
+			// Index readiness can change across retries. Keep this single optional
+			// call outside the ordinals used by the required reflection steps.
+			ModelStep::ThreadIndexEmbedding => i32::MAX,
+		};
 		let digest =
 			aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(request)?);
 		let mut tx = self
@@ -569,9 +595,7 @@ impl Models {
 			.scalar_one(&mut *tx)
 			.await?;
 			if count >= self.policy.retention.max_model_operations as i64 {
-				return Err(Error::Conflict(
-					"memory model operation record capacity reached".into(),
-				));
+				return Ok(Prepared::AtCapacity);
 			}
 		}
 		native::query(
@@ -761,7 +785,7 @@ impl Models {
 						.expr(Expr::value(source_run_ids))
 						.expr(Expr::value(tokens as i64))
 						.expr(Expr::value(cost as i64))
-						.expr(Expr::value(ordinal as i32))
+						.expr(Expr::value(ordinal))
 						.expr(Expr::value(self.cycle))
 						.expr(Expr::value(digest))
 						.expr(Expr::value("pending"))
@@ -933,6 +957,7 @@ impl Models {
 			.remove("input_format");
 		let reservation = match self
 			.prepare::<T>(
+				ModelStep::Required,
 				&json!({"role":reference,"request":identity}),
 				input + output,
 				charge,
@@ -942,6 +967,7 @@ impl Models {
 		{
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
+			Prepared::AtCapacity => return Err(model_operation_capacity()),
 		};
 		self.admit_reserved(&reservation).await?;
 		let origin = self
@@ -1143,18 +1169,36 @@ impl Models {
 		let tokens = text.len();
 		let charge = self.policy.prices.embedding.charge(tokens as u64, 0)?;
 		self.require_origins(None).await?;
+		let optional = reference.is_none();
+		let step = if optional {
+			ModelStep::ThreadIndexEmbedding
+		} else {
+			ModelStep::Required
+		};
 		let reservation = match self
-			.prepare::<Vec<f32>>(&request, tokens, charge, allowance)
+			.prepare::<Vec<f32>>(step, &request, tokens, charge, allowance)
 			.await?
 		{
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
+			Prepared::AtCapacity if optional => {
+				return Err(Error::RemoteSemantic(
+					crate::semantic::remote::Failure::DurableMemoryBudget,
+				));
+			}
+			Prepared::AtCapacity => return Err(model_operation_capacity()),
 		};
 		self.admit_reserved(&reservation).await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
-			self.reserve_embedding(config, text, origin).await?
+			match self.reserve_embedding(config, text, origin, optional).await {
+				Err(Error::SemanticUnavailable) if optional => {
+					self.release_reserved(&reservation).await?;
+					return Err(Error::SemanticUnavailable);
+				}
+				result => result?,
+			}
 		} else {
 			None
 		};
