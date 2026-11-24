@@ -2733,14 +2733,15 @@ print(json.dumps(r))'''
                                             'The previous Python session outcome is unknown; it cannot be restarted yet')
                 record = self._read_command(prior['operation_id'])
             if record['status'] in ('queued', 'running') and same_pod:
-                if not record.get('interpreter_stopping'):
+                stopping = record.get('interpreter_stopping')
+                # The Pod can record an interpreter exit before the Runner's journal catches up.
+                check_outcome = stopping or (expected_session_id is not None and record['status'] == 'running')
+                outcome = self._interpreter_outcome(prior['operation_id']) if check_outcome else None
+                if outcome not in ('completed', 'timed_out', 'stopped'):
+                    if stopping:
+                        raise ExecutionPodError('session_interrupted',
+                                                'The previous Python session is being stopped; it cannot be restarted yet')
                     return prior
-                # A cell is waiting for this session's interpreter to stop. Only the Pod's own result shows
-                # that it is gone, because the journal can lag behind it; until then two interpreters must
-                # not run in one Run, and the dying one must not receive a cell.
-                if self._interpreter_outcome(prior['operation_id']) not in ('completed', 'timed_out', 'stopped'):
-                    raise ExecutionPodError('session_interrupted',
-                                            'The previous Python session is being stopped; it cannot be restarted yet')
             replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
         else:
             replaced = False

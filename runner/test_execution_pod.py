@@ -3170,6 +3170,7 @@ class PythonSessionMappingTest(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
+        from types import SimpleNamespace
         from unittest.mock import Mock
         from execution_pod import ExecutionPodController, ExecutionPodError
 
@@ -3178,16 +3179,25 @@ class PythonSessionMappingTest(unittest.TestCase):
                    'scratch_space_id': 's', 'run_id': 'r', 'code': 'print(counter)',
                    'expected_session_id': expected}
         new_session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f3'
-        for session, status, uid, accepted in ((expected, 'running', 'old', True),
-                                               (expected, 'running', 'new', False),
-                                               (expected, 'timed_out', 'old', False),
-                                               (new_session, 'running', 'old', False)):
-            with self.subTest(session=session, status=status, uid=uid), tempfile.TemporaryDirectory() as directory:
-                controller = ExecutionPodController(Mock(root=Path(directory)), {'output_bytes': 8388608}, admitted=True)
+        for session, status, uid, result_status, accepted in (
+                (expected, 'running', 'old', None, True),
+                (expected, 'running', 'old', 'timed_out', False),
+                (expected, 'running', 'new', None, False),
+                (expected, 'timed_out', 'old', None, False),
+                (new_session, 'running', 'old', None, False)):
+            with self.subTest(session=session, status=status, uid=uid, result_status=result_status), \
+                    tempfile.TemporaryDirectory() as directory:
+                result = (SimpleNamespace(returncode=1, stdout=b'') if result_status is None else
+                          SimpleNamespace(returncode=0, stdout=json.dumps({
+                              'operation_id': session, 'run_id': 'r', 'status': result_status}).encode()))
+                backend = Mock(root=Path(directory))
+                backend.kube.return_value = result
+                controller = ExecutionPodController(backend, {'output_bytes': 8388608}, admitted=True)
                 controller._python_session_path('s', 'r').write_text(json.dumps({
                     'operation_id': session, 'scratch_space_id': 's', 'socket_path': '/run/session.sock'}))
                 controller._command_path(session).write_text(json.dumps({
-                    'operation_id': session, 'scratch_space_id': 's', 'status': status, 'pod_uid': 'old'}))
+                    'operation_id': session, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+                    'status': status, 'pod_uid': 'old'}))
                 controller._get = Mock(return_value={'metadata': {'uid': uid}})
                 controller.submit_command = Mock(return_value={'status': 'queued'})
 
