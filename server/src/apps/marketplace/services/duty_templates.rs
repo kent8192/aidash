@@ -11,7 +11,7 @@ use crate::apps::marketplace::serializers::duty_templates::{
 use crate::apps::workspaces::{
 	repositories::{duties as duty_repository, duty_events},
 	serializers::duties::DutyView,
-	services::duties::Adapter,
+	services::duties::{self as duty_service, Adapter},
 };
 use crate::{
 	Error, Result,
@@ -68,15 +68,16 @@ async fn own_duty(
 }
 
 /// The view of a Duty for the person acting.
-async fn view(store: &crate::store::Store, access: &mut Access, duty: Duty) -> Result<DutyView> {
+async fn view(f: &Federation, access: &mut Access, duty: Duty) -> Result<DutyView> {
 	let mut scope = Adapter {
 		access: &mut *access,
-		store,
+		store: &f.store,
+		scratch_policy: &f.config.scratch_policy,
 		now: Utc::now(),
 	};
 	let administers = scope.administers().await?;
 	let viewer = scope.subject().to_owned();
-	Ok(DutyView::new(duty, &viewer, administers))
+	duty_service::view(&mut scope, duty, &viewer, administers).await
 }
 
 /// The template one of the person's own Duties would publish as: its work,

@@ -489,14 +489,27 @@ async fn views(
 		.collect())
 }
 
+pub(crate) async fn view(
+	scope: &mut Adapter<'_>,
+	duty: Duty,
+	viewer: &str,
+	administers: bool,
+) -> Result<DutyView> {
+	let tenant = tenant(scope.access);
+	let deleted =
+		repository::deleted_threads(&mut *scope.access.tx, &tenant, &[duty.thread_id]).await?;
+	Ok(DutyView::new(duty, viewer, administers).with_deleted(&deleted))
+}
+
 async fn one(
 	scope: &mut Adapter<'_>,
 	duty: Duty,
 	viewer: &str,
 	administers: bool,
 ) -> Result<Value> {
-	let mut shown = views(scope, vec![duty], viewer, administers).await?;
-	Ok(serde_json::to_value(shown.pop())?)
+	Ok(serde_json::to_value(
+		view(scope, duty, viewer, administers).await?,
+	)?)
 }
 
 /// Runs one person's operation in one transaction.
