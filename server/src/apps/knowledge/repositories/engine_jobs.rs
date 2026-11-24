@@ -686,6 +686,7 @@ async fn execute(
 			lease: &mut lease,
 			models: &models,
 			delivered: &mut Vec::new(),
+			start_keyword_scores: None,
 		};
 		match input {
 			Input::OffloadedRange {

@@ -1351,44 +1351,53 @@ pub(crate) async fn keyword(
 	query: KeywordQuery<'_>,
 	allowed: &[Uuid],
 	limit: usize,
-) -> Result<Vec<Uuid>> {
+) -> Result<Vec<(Uuid, i32)>> {
 	if allowed.is_empty() {
 		return Ok(Vec::new());
 	}
 	let bank_id = bank_id(lease, bank, false).await?.ok_or(Error::Forbidden)?;
-	let (expression, score) = match query {
+	let (expression, matched_terms, score) = match query {
 		KeywordQuery::Text(text) => (
 			SimpleExpr::CustomWithExpr(
 				"? &@~ ?".into(),
 				vec![Expr::col("text").into(), Expr::value(text).into()],
 			),
-			Expr::cust("pgroonga_score(tableoid, ctid)").into(),
+			Expr::value(0),
+			Expr::cust("pgroonga_score(tableoid, ctid)"),
 		),
 		KeywordQuery::Any(terms) => {
 			if terms.is_empty() {
 				return Ok(Vec::new());
 			}
-			let terms = Expr::value(Value::Array(
+			let keywords = Expr::value(Value::Array(
 				ArrayType::String,
 				Some(Box::new(terms.iter().copied().map(Value::from).collect())),
 			));
-			let args = vec![Expr::col("text").into(), terms.into()];
+			// Each distinct term contributes once even when its text repeats.
+			let matched_terms = terms.iter().fold(Expr::value(0), |score, term| {
+				let matched = SimpleExpr::CustomWithExpr(
+					"? &@ ?".into(),
+					vec![Expr::col("text").into(), Expr::value(*term).into()],
+				);
+				score
+					.add(Expr::case().when(matched, 1).else_result(0))
+					.into()
+			});
 			(
 				// PGroonga interprets each array element as a literal keyword.
-				SimpleExpr::CustomWithExpr("? &@| ?::text[]".into(), args.clone()),
-				// Count matching positions even when PostgreSQL scans a small bank
-				// without the PGroonga index. Each position is one row of the array.
 				SimpleExpr::CustomWithExpr(
-					"coalesce(array_length(pgroonga_match_positions_byte(?, ?::text[]), 1), 0)"
-						.into(),
-					args,
+					"? &@| ?::text[]".into(),
+					vec![Expr::col("text").into(), keywords.into()],
 				),
+				matched_terms,
+				Expr::col("matched_terms"),
 			)
 		}
 	};
-	native::query_scalar(
+	let rows = native::query(
 		&Query::select()
 			.column(Alias::new("id"))
+			.expr_as(matched_terms, Alias::new("matched_terms"))
 			.from(Alias::new("memory_units"))
 			.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
 			.and_where(Expr::col("id").is_in(allowed.iter().copied().map(Expr::value)))
@@ -1400,8 +1409,11 @@ pub(crate) async fn keyword(
 			.limit(limit as u64)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&mut **lease.tx())
-	.await
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	rows.into_iter()
+		.map(|row| Ok((row.try_get("id")?, row.try_get("matched_terms")?)))
+		.collect()
 }
 
 /// Negative identities and audit receipts have an explicit finite bank capacity.

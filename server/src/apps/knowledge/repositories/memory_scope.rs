@@ -13,6 +13,7 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub(crate) struct Scope<'a, 'scope> {
@@ -20,6 +21,7 @@ pub(crate) struct Scope<'a, 'scope> {
 	pub lease: &'a mut Lease<'scope>,
 	pub models: &'a Models,
 	pub delivered: &'a mut Vec<Unit>,
+	pub start_keyword_scores: Option<&'a mut HashMap<Uuid, i32>>,
 }
 
 fn automatic_changes(
@@ -509,9 +511,11 @@ impl MemoryScope for Scope<'_, '_> {
 		allowed: &[Uuid],
 		limit: usize,
 	) -> aidash_application::Result<Vec<Uuid>> {
-		repository::keyword(self.lease, bank, query, allowed, limit)
-			.await
-			.map_err(Into::into)
+		let hits = repository::keyword(self.lease, bank, query, allowed, limit).await?;
+		if let Some(scores) = self.start_keyword_scores.as_deref_mut() {
+			scores.extend(hits.iter().copied());
+		}
+		Ok(hits.into_iter().map(|(id, _)| id).collect())
 	}
 	async fn deliver(
 		&mut self,

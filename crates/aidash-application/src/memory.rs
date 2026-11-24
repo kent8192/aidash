@@ -495,7 +495,8 @@ impl Engine<'_> {
 		)
 		.await
 	}
-	/// Recall by literal keywords and pack the data shown to the model.
+	/// Return authorized Task-start candidates that fit individually. The caller
+	/// ranks and packs the combined results from all eligible banks.
 	pub async fn recall_at_task_start(
 		&self,
 		scope: &mut dyn MemoryScope,
@@ -695,21 +696,29 @@ impl Engine<'_> {
 			_ => scores,
 		};
 		let mut selected = Vec::new();
-		for (id, _) in scores.into_iter().take(self.policy.bounds.max_results) {
-			let mut proposed = selected.clone();
-			proposed.push(by_id[&id].clone());
-			let size = if matches!(mode, RecallMode::TaskStart { .. }) {
-				serde_json::to_vec(&start_recall_content(&proposed))?.len()
-			} else {
+		if matches!(mode, RecallMode::TaskStart { .. }) {
+			for (id, _) in scores {
+				let unit = &by_id[&id];
+				let size =
+					serde_json::to_vec(&start_recall_content(std::slice::from_ref(unit)))?.len();
+				if size <= query.max_tokens {
+					selected.push(unit.clone());
+				}
+			}
+		} else {
+			for (id, _) in scores.into_iter().take(self.policy.bounds.max_results) {
+				let mut proposed = selected.clone();
+				proposed.push(by_id[&id].clone());
 				let envelope = serde_json::to_string(&Recall::Ready {
 					units: proposed.clone(),
 				})?;
-				self.models
+				let size = self
+					.models
 					.tokens(&self.policy.tokenizer, &envelope)
-					.await?
-			};
-			if size <= query.max_tokens {
-				selected = proposed;
+					.await?;
+				if size <= query.max_tokens {
+					selected = proposed;
+				}
 			}
 		}
 		if selected.is_empty() {

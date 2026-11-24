@@ -1290,10 +1290,20 @@ async fn task_in_new_thread(b: &Batching, title: &str, description: &str) -> Uui
 	let (status, thread) =
 		common::post(&b.app, &b.token, "/api/threads", json!({"title":"Memory"})).await;
 	assert_eq!(status, 200, "{thread}");
+	task_in_thread(
+		b,
+		serde_json::from_value(thread["id"].clone()).unwrap(),
+		title,
+		description,
+	)
+	.await
+}
+
+async fn task_in_thread(b: &Batching, thread: Uuid, title: &str, description: &str) -> Uuid {
 	let (status, task) = common::post(
 		&b.app,
 		&b.token,
-		&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":title,"description":description}),
 	)
 	.await;
@@ -1409,20 +1419,27 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 						"The staging deploy key is held in the vault.",
 						"本番デプロイは金曜に禁止。",
 					];
-					let oversized =
-						format!("The staging deploy key audit recorded {}", "鍵".repeat(400));
-					let units =
-						learn(&b, &source, &[gone, retained[0], retained[1], &oversized]).await;
-					let (status, task) = common::post(
-						&b.app,
-						&b.token,
-						&format!("/api/threads/{}/tasks", source.thread_id),
-						json!({"title":"Staging deploy key","description":"本番デプロイの手順を確認してください。"}),
-					)
-					.await;
-					assert_eq!(status, 200, "{task}");
+					let oversized: Vec<_> = (1..=8)
+						.map(|audit| {
+							format!(
+								"Staging deploy key audit recorded {audit}: {}",
+								"鍵".repeat(310)
+							)
+						})
+						.collect();
+					let mut facts = vec![gone, retained[0], retained[1]];
+					facts.extend(oversized.iter().map(String::as_str));
+					let units = learn(&b, &source, &facts).await;
 					let reader = b
-						.delegate(serde_json::from_value(task["id"].clone()).unwrap())
+						.delegate(
+							task_in_thread(
+								&b,
+								source.thread_id,
+								"Staging deploy key audit recorded",
+								"本番デプロイの手順を確認してください。",
+							)
+							.await,
+						)
 						.await;
 					let before = b.requests.lock().unwrap().len();
 					b.script(&[(
@@ -1453,8 +1470,8 @@ async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 					);
 					assert!(units[..3].iter().all(|unit| recalled.contains(unit)));
 					assert!(
-						!recalled.contains(&units[3]),
-						"the oversized fact must be skipped"
+						units[3..].iter().all(|unit| !recalled.contains(unit)),
+						"the eight higher-ranked oversized facts must be skipped"
 					);
 					let request = b.requests.lock().unwrap()[before].clone();
 					let context = common::captured_context(&request);
@@ -1532,16 +1549,27 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_thread(
 					let fact = "The staging deploy key rotates every quarter.";
 					let weaker = "Deploy jobs use rolling restarts.";
 					let unrelated = "Mercury orbits Sol.";
+					let printer = format!(
+						"The printer uses the toner in the cabinet under the desk by the window. The manual is in the drawer. {}",
+						"Toner inventory updated. ".repeat(28)
+					);
 					let source = b.delegate(b.task).await;
-					let units = learn(&b, &source, &[weaker, fact, unrelated]).await;
-					let title = "Review Friday's change";
-					let description = "Check who can rotate the staging deploy key before Friday.";
+					let units = learn(&b, &source, &[weaker, fact, unrelated, &printer]).await;
+					let title = "Rotate the staging deploy key";
+					let description = "Check who can handle this before Friday.";
 
-					// Act: one Run under the default scope, one after widening it.
+					// Act: seed a weak local match and confirm it fits by itself.
 					let local = b
 						.delegate(task_in_new_thread(&b, title, description).await)
 						.await;
-					complete(&b.f, local.id).await;
+					let local_units = learn(&b, &local, &[&printer]).await;
+					let local_only = b
+						.delegate(task_in_thread(&b, local.thread_id, title, description).await)
+						.await;
+					complete(&b.f, local_only.id).await;
+					let local_only = b.f.store.run(&TEST_FIXTURE, local_only.id).await.unwrap();
+					assert_eq!(start_recall_units(&local_only), local_units);
+
 					sqlx::query(
 						"INSERT INTO memory_tenant_scope (tenant, scope, revision, updated_at) \
 						 VALUES ('acme', 'tenant_agent', 1, now())",
@@ -1551,7 +1579,7 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_thread(
 					.unwrap();
 					let seen = b.requests.lock().unwrap().len();
 					let widened = b
-						.delegate(task_in_new_thread(&b, title, description).await)
+						.delegate(task_in_thread(&b, local.thread_id, title, description).await)
 						.await;
 					complete(&b.f, widened.id).await;
 
@@ -1566,7 +1594,7 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_thread(
 					assert_eq!(
 						start_recall_units(&widened),
 						vec![units[1], units[0]],
-						"the strongest match comes first and unrelated facts are omitted"
+						"distinct matches outrank repeated boilerplate in both banks"
 					);
 					let requests = b.requests.lock().unwrap()[seen..].to_vec();
 					assert!(

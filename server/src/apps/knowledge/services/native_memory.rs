@@ -14,7 +14,7 @@ use reinhardt::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -298,16 +298,21 @@ pub(crate) async fn operate_staged(
 	run: Option<Uuid>,
 	delivered: &mut Vec<Unit>,
 ) -> Result<Outcome> {
-	operate_staged_with_start_keywords(store, lease, input, run, delivered, None).await
+	operate_staged_in(store, lease, input, run, delivered, None).await
 }
 
-async fn operate_staged_with_start_keywords(
+struct TaskStartSearch<'a> {
+	keywords: &'a [&'a str],
+	scores: &'a mut HashMap<Uuid, i32>,
+}
+
+async fn operate_staged_in(
 	store: &Store,
 	lease: &mut Lease<'_>,
 	input: Operation,
 	run: Option<Uuid>,
 	delivered: &mut Vec<Unit>,
-	start_keywords: Option<&[&str]>,
+	start_search: Option<TaskStartSearch<'_>>,
 ) -> Result<Outcome> {
 	use super::super::repositories::{candidates, memory_scope::Scope, publications};
 	use aidash_application::ports::memory::MemoryScope;
@@ -530,11 +535,16 @@ async fn operate_staged_with_start_keywords(
 		policy: &policy,
 		models: &models,
 	};
+	let (start_keywords, start_keyword_scores) = match start_search {
+		Some(search) => (Some(search.keywords), Some(search.scores)),
+		None => (None, None),
+	};
 	let mut authority = Scope {
 		store,
 		lease,
 		models: &models,
 		delivered,
+		start_keyword_scores,
 	};
 	match &input.action {
 		Action::RecallIncludingDormant { query } => Ok(Outcome::Recall(
@@ -778,6 +788,15 @@ async fn run_shared_recall(
 	let scope = super::super::repositories::sharing::get(&mut **lease.tx(), &binding.bank.tenant)
 		.await?
 		.0;
+	let start_result_limit = if start_keywords.is_some() {
+		policy(lease, &binding.bank.tenant, &binding.provider)
+			.await?
+			.bounds
+			.max_results
+			.min(SHARED_RECALL_MAX_RESULTS)
+	} else {
+		0
+	};
 	let mut banks = vec![binding.bank.clone()];
 	if scope == SharingScope::TenantAgent {
 		let rows = native::query(
@@ -825,9 +844,11 @@ async fn run_shared_recall(
 		}
 	}
 	let mut selected = Vec::new();
+	let mut start_candidates = Vec::new();
 	for bank in banks {
 		let foreign = bank.thread != run.thread_id;
 		let mut delivered = Vec::new();
+		let mut scores = HashMap::new();
 		let operation = Operation {
 			operation_id: request_id(
 				run.id,
@@ -842,13 +863,16 @@ async fn run_shared_recall(
 				query: query.clone(),
 			},
 		};
-		let outcome = match operate_staged_with_start_keywords(
+		let outcome = match operate_staged_in(
 			store,
 			lease,
 			operation,
 			Some(run.id),
 			&mut delivered,
-			start_keywords,
+			start_keywords.map(|keywords| TaskStartSearch {
+				keywords,
+				scores: &mut scores,
+			}),
 		)
 		.await
 		{
@@ -857,23 +881,39 @@ async fn run_shared_recall(
 			Err(error) => return Err(error),
 		};
 		if let Outcome::Recall(Recall::Ready { units }) = outcome {
+			if start_keywords.is_some() {
+				start_candidates.extend(
+					units
+						.into_iter()
+						.map(|unit| (scores.get(&unit.id).copied().unwrap_or_default(), unit)),
+				);
+				continue;
+			}
 			for unit in units {
 				if selected.len() >= SHARED_RECALL_MAX_RESULTS {
 					break;
 				}
 				selected.push(unit);
-				let size = if start_keywords.is_some() {
-					serde_json::to_vec(&start_recall_content(&selected))?.len()
-				} else {
-					serde_json::to_vec(&Outcome::Recall(Recall::Ready {
-						units: selected.clone(),
-					}))?
-					.len()
-				};
+				let size = serde_json::to_vec(&Outcome::Recall(Recall::Ready {
+					units: selected.clone(),
+				}))?
+				.len();
 				if size > query.max_tokens {
 					selected.pop();
 				}
 			}
+		}
+	}
+	// Distinct keyword counts are comparable across banks. Stable sorting
+	// preserves the existing bank and rerank order when counts tie.
+	start_candidates.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+	for (_, unit) in start_candidates {
+		if selected.len() >= start_result_limit {
+			break;
+		}
+		selected.push(unit);
+		if serde_json::to_vec(&start_recall_content(&selected))?.len() > query.max_tokens {
+			selected.pop();
 		}
 	}
 	if !selected.is_empty() {
