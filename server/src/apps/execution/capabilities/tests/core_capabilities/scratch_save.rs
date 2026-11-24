@@ -123,12 +123,14 @@ async fn with_runner_profile() {
 enum Change {
 	Policy,
 	Membership,
+	EntranceFlag,
 	None,
 }
 
 #[rstest::rstest]
 #[case::revoked_policy(Change::Policy)]
 #[case::revoked_membership(Change::Membership)]
+#[case::existing_work(Change::EntranceFlag)]
 #[case::unchanged(Change::None)]
 #[tokio::test]
 async fn scratch_save_releases_authority_while_streaming(
@@ -244,11 +246,58 @@ async fn scratch_save_releases_authority_while_streaming(
 		let (status, body) = removed.expect("membership change waited on the blocked Runner");
 		assert_eq!(status, 200, "{body}");
 	}
+	let flag = if matches!(change, Change::EntranceFlag) {
+		let mut flag = c.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+		aidash_server::database::authority_change::raise(&mut *flag, "acme")
+			.await
+			.unwrap();
+		Some(flag)
+	} else {
+		None
+	};
 	streaming_save.release.notify_one();
-	let current = tokio::time::timeout(Duration::from_secs(45), worker)
+	let current = if let Some(flag) = flag {
+		// Observe publication while the entrance is blocked. The next task
+		// step may wait at that entrance, even after the save has settled.
+		let published = async {
+			loop {
+				let revision: i64 =
+					sqlx::query_scalar("SELECT revision FROM core_areas WHERE thread_id = $1")
+						.bind(run.thread_id)
+						.fetch_one(c.f.store.pool.fixture_driver())
+						.await
+						.unwrap();
+				if revision == 2 {
+					break;
+				}
+				tokio::time::sleep(Duration::from_millis(30)).await;
+			}
+		};
+		let mut completed = None;
+		tokio::time::timeout(Duration::from_secs(10), async {
+			tokio::pin!(published);
+			tokio::select! {
+				() = &mut published => {},
+				current = &mut worker => {
+					completed = Some(current);
+					published.await;
+				}
+			}
+		})
 		.await
-		.expect("worker did not settle the tool");
-	let revoke = !matches!(change, Change::None);
+		.expect("file settlement waited at the new-work entrance");
+		flag.rollback().await.unwrap();
+		completed
+	} else {
+		None
+	};
+	let current = match current {
+		Some(current) => current,
+		None => tokio::time::timeout(Duration::from_secs(45), worker)
+			.await
+			.expect("worker did not settle the tool"),
+	};
+	let revoke = matches!(change, Change::Policy | Change::Membership);
 	if !matches!(change, Change::Membership) {
 		assert!(
 			current.context.events().any(|event| matches!(
