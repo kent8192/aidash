@@ -2,8 +2,8 @@
 use crate::apps::knowledge::services::core::{Entry, Index};
 use crate::{Error, Result};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
+	Alias, ColumnRef, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _, SimpleExpr,
 };
 
 use uuid::Uuid;
@@ -104,27 +104,30 @@ pub(crate) async fn history(
 	Ok(())
 }
 
+pub(crate) async fn retire_points(
+	tx: &mut crate::database::native::Transaction,
+	entry: Uuid,
+) -> Result<()> {
+	crate::database::native::query(
+		&Query::update()
+			.table(Alias::new("semantic_points"))
+			.value_expr(Alias::new("retired"), Expr::value(true))
+			.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(Expr::col("entry_id").eq(Expr::value(entry)))
+			.and_where(Expr::col("retired").eq(false))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	Ok(())
+}
+
 pub(crate) async fn schedule_point(
 	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 	collection: &str,
 ) -> Result<()> {
-	{
-		let query_bind_1 = entry.id;
-		crate::database::native::query(
-			&Query::update()
-				.table(Alias::new("semantic_points"))
-				.value_expr(Alias::new("retired"), Expr::cust("TRUE"))
-				.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(entry_id = ? AND NOT retired)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?
-	};
+	retire_points(tx, entry.id).await?;
 	if !entry.deleted {
 		{
 			let query_bind_1 = entry.point_id;
