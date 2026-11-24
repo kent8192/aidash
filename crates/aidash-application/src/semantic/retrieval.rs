@@ -212,7 +212,10 @@ async fn prepare_reads(
 	for entry in rows {
 		scope.begin_row();
 		let source: Source = serde_json::from_value(entry.source.clone())?;
-		if source.is_image() && (entry.state != "READY" || entry.index_revision != index.revision) {
+		let optional = source.is_image()
+			|| (matches!(source, Source::Unit { .. })
+				&& entry.metadata["thread_index_embedding"].as_bool() == Some(true));
+		if optional && (entry.state != "READY" || entry.index_revision != index.revision) {
 			continue;
 		}
 		if agent_controls.is_some_and(|agent| match &source {
@@ -268,9 +271,7 @@ async fn prepare_reads(
 			|| entry.index_revision != index.revision
 			|| digest != content.digest()
 		{
-			let optional_unit = matches!(source, Source::Unit { .. })
-				&& entry.metadata["thread_index_embedding"].as_bool() == Some(true);
-			if !optional_unit && !matches!(content, Candidate::Image { .. }) {
+			if !optional {
 				incomplete = true;
 			}
 			continue;

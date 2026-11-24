@@ -725,6 +725,7 @@ async fn a_withdrawn_builtin_projection_does_not_block_other_thread_search_resul
 	let (_, mut scope, vector) = fixture();
 	let mut projection = entry();
 	projection.id = Uuid::from_u128(8);
+	projection.point_id = Uuid::from_u128(9);
 	projection.source = json!({"kind": "unit", "id": projection.id});
 	projection.metadata["thread_index_embedding"] = json!(true);
 	projection.state = "REVOKED".into();
