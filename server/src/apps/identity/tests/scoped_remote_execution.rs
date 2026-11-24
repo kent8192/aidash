@@ -6166,6 +6166,65 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn foreign_generation_policy_can_publish_for_a_requester_without_catalog_approval(
+	#[with(false, false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-catalog-approval", "effect":"deny", "subjects":{"ids":["alice"]},
+		"actions":["catalog.approve"], "resources":{"kinds":["registry"]}
+	}));
+	common::replace_policy(&p.b.store, "acme", policy).await;
+
+	let (task, _, prepared) = prepare_generated_pair(
+		&p.a,
+		&p.b,
+		&p.aa,
+		&p.ba,
+		&p.token,
+		p.task,
+		(false, false, false),
+	)
+	.await;
+	let grant = Uuid::new_v4();
+	let route = format!("/api/tasks/{task}/remote-grants");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&route,
+		json!({"id":grant,"node_id":node_of(&p.b),"agent":prepared["agent"],"ttl_seconds":300,"semantic":{"mode":"disabled"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("{route}/{grant}/activate"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let history: (bool, String) = sqlx::query_as(
+		"SELECT enabled, actor FROM authorization_catalog_history \
+		 WHERE tenant = 'acme' AND node = $1 AND entry_id = $2 AND entry_version = $3 AND revision = 1",
+	)
+	.bind(aidash_domain::nodes::NodeName::derived("acme").as_str())
+	.bind(prepared["agent"]["id"].as_str().unwrap())
+	.bind(prepared["agent"]["version"].as_str().unwrap())
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(history, (true, "generation-service".into()));
+	p.close().await;
+}
+
+#[rstest::rstest]
 #[case("deny", "DENIED")]
 #[case("cancel", "STOPPED")]
 #[case("expire", "EXPIRED")]
