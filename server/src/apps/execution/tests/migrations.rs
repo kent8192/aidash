@@ -7027,7 +7027,7 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 		"INSERT INTO authorization_revisions (tenant, revision, document, actor) VALUES ($1, 1, $2, 'fixture')",
 	)
 	.bind(tenant)
-	.bind(document)
+	.bind(&document)
 	.execute(&pool)
 	.await
 	.unwrap();
@@ -7052,14 +7052,62 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 	let decision = evaluate(tenant).await;
 	assert!(decision.allowed);
 	assert_eq!(decision.revision, 6);
-	let revisions: Vec<i64> = sqlx::query_scalar(
-		"SELECT revision FROM authorization_revisions WHERE tenant = $1 ORDER BY revision",
+	let revisions: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+		"SELECT revision, document FROM authorization_revisions WHERE tenant = $1 ORDER BY revision",
 	)
 	.bind(tenant)
 	.fetch_all(&pool)
 	.await
 	.unwrap();
-	assert_eq!(revisions, [1, 2, 3, 4, 5, 6]);
+	assert_eq!(
+		revisions
+			.iter()
+			.map(|(revision, _)| *revision)
+			.collect::<Vec<_>>(),
+		[1, 2, 3, 4, 5, 6]
+	);
+	let mut expected_actions = document["policies"][0]["actions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|action| action.as_str().unwrap())
+		.collect::<BTreeSet<_>>();
+	let changes: [(&[&str], &[&str]); 6] = [
+		(&[], &[]),
+		(&[], &["scratch.create"]),
+		(&[], &["schedule.create"]),
+		(&["schedule.create"], &["duty.create"]),
+		(&[], &["subnode.create"]),
+		(
+			&[
+				"workspace.create",
+				"workspace.events",
+				"workspace.read",
+				"workspace.share",
+				"workspace.update",
+			],
+			&[
+				"thread.create",
+				"thread.events",
+				"thread.read",
+				"thread.share",
+				"thread.update",
+			],
+		),
+	];
+	for ((revision, snapshot), (removed, added)) in revisions.iter().zip(changes) {
+		for action in removed {
+			expected_actions.remove(action);
+		}
+		expected_actions.extend(added.iter().copied());
+		let stored_actions = snapshot["policies"][0]["actions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|action| action.as_str().unwrap())
+			.collect::<BTreeSet<_>>();
+		assert_eq!(stored_actions, expected_actions, "revision {revision}");
+	}
 
 	// Assert: Scratch Spaces (0067), Duties (0080, renamed by 0098), Subnodes
 	// (0098) and the Thread actions (0111) are granted, and no old name is left.
