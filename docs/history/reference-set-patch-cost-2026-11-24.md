@@ -100,7 +100,11 @@ Before tests  1:52  up  5:11, 1 user, load averages: 7.56 8.27 8.21
 After tests   1:52  up  5:11, 1 user, load averages: 5.66 7.69 8.00
 ```
 
-## Decision
+## Proposed decision
+
+Status: proposed, pending the owner's acceptance on
+[#940](https://github.com/kent8192/aidash/issues/940). Until then the budget
+exception is not accepted.
 
 Accept the measured cost for the current Working Area path. In both runs the
 largest repeatable increase among measured stages was publication, where the
