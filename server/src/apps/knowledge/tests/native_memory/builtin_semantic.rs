@@ -8,12 +8,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 struct BuiltinSemanticState {
 	fail_embeddings: Arc<AtomicBool>,
 	embedding_calls: Arc<AtomicUsize>,
+	reflection_calls: Arc<AtomicUsize>,
 }
 #[fixture]
 fn builtin_semantic_state() -> BuiltinSemanticState {
 	BuiltinSemanticState {
 		fail_embeddings: Arc::new(AtomicBool::new(false)),
 		embedding_calls: Arc::new(AtomicUsize::new(0)),
+		reflection_calls: Arc::new(AtomicUsize::new(0)),
 	}
 }
 #[fixture]
@@ -22,6 +24,7 @@ fn builtin_semantic_router(
 ) -> std::sync::Arc<Router> {
 	let fail = state.fail_embeddings;
 	let calls = state.embedding_calls;
+	let reflections = state.reflection_calls;
 	std::sync::Arc::new(
 		reinhardt::test::stub::StubRouter::new()
 			.route(
@@ -44,6 +47,32 @@ fn builtin_semantic_router(
 						};
 						reinhardt::Response::ok()
 							.with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":vector}],"usage":{"prompt_tokens":1,"total_tokens":1}}))
+							.unwrap()
+					}
+				}),
+			)
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let request = request.json::<serde_json::Value>().unwrap();
+					let reflections = reflections.clone();
+					async move {
+						let call = reflections.fetch_add(1, Ordering::SeqCst);
+						if call == 0 {
+							return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE);
+						}
+						let context: serde_json::Value = serde_json::from_str(
+							request["messages"][1]["content"].as_str().unwrap(),
+						).unwrap();
+						let unit = &context["context"][0];
+						let step = if call % 2 == 1 {
+							json!({"step":"recall","query":{"text":"water","time":null,"kinds":[],"max_tokens":8192}})
+						} else {
+							json!({"step":"answer","reflection":{"text":"The office plants need water.","evidence":[{"kind":"unit","bank":unit["bank"],"id":unit["id"],"revision":unit["revision"]}]}})
+						};
+						reinhardt::Response::ok()
+							.with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":step.to_string()}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}))
 							.unwrap()
 					}
 				}),
@@ -325,12 +354,7 @@ async fn builtin_memory_uses_thread_index_embedding(
 	fixture.state.fail_embeddings.store(false, Ordering::SeqCst);
 
 	// The optional embedding must fall back before any I/O at ledger capacity.
-	let config = aidash_domain::registry::bindings::memory_defaults::definitions()
-		.unwrap()
-		.into_iter()
-		.find(aidash_domain::registry::bindings::memory_defaults::is_builtin_memory)
-		.unwrap()
-		.config;
+	let config = builtin_config();
 	let cap = config["policy"]["retention"]["max_model_operations"]
 		.as_i64()
 		.unwrap();
@@ -470,14 +494,8 @@ async fn builtin_memory_uses_thread_index_embedding(
 		Some("DELETED")
 	);
 
-	let mut keyword = config;
+	let mut keyword = person_config(config);
 	keyword["policy"]["thread_index_embedding"] = json!(false);
-	keyword["policy"]["reranker"] = json!(reference("r"));
-	keyword["policy"]["tokenizer"] = json!(reference("t"));
-	// Registered policies pin their own model roles.
-	for role in ["extraction", "derivation", "reflection"] {
-		keyword["policy"][role] = json!(reference("m"));
-	}
 	registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -507,4 +525,137 @@ async fn builtin_memory_uses_thread_index_embedding(
 		panic!("the keyword policy must keep the plants fact");
 	};
 	assert_eq!(units[0].id, plants);
+}
+
+fn builtin_config() -> serde_json::Value {
+	use aidash_domain::registry::bindings::memory_defaults;
+	memory_defaults::definitions()
+		.unwrap()
+		.into_iter()
+		.find(memory_defaults::is_builtin_memory)
+		.unwrap()
+		.config
+}
+
+fn person_config(mut config: serde_json::Value) -> serde_json::Value {
+	// A human-operated bank uses explicit model roles.
+	for role in ["extraction", "derivation", "reflection"] {
+		config["policy"][role] = json!(reference("m"));
+	}
+	config["policy"]["reranker"] = json!(reference("r"));
+	config["policy"]["tokenizer"] = json!(reference("t"));
+	config["policy"]["maintain_observations"] = json!(false);
+	config
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[future(awt)]
+	#[from(builtin_semantic_provider)]
+	fixture: BuiltinSemanticProvider,
+) {
+	let endpoint = format!("{}/v1", fixture.server.url);
+	let (store, registry, thread) = setup_endpoint(&database.await, bounds, &endpoint).await;
+	let actor = administrator(&store).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		thread,
+		participant: None,
+	};
+	let provider = reference("optional-embedding");
+	let mut config = person_config(builtin_config());
+	config["policy"]["bounds"]["max_model_tokens"] = json!(65536);
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", &provider.id, config),
+		)
+		.await
+		.unwrap();
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			provider: provider.clone(),
+			..mutation(
+				&bank,
+				Change::Add {
+					id,
+					content: content("The office plants need water."),
+				},
+			)
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		projection_state(&store, id).await.as_deref(),
+		Some("PENDING")
+	);
+	let mut operation = memory::Operation {
+		operation_id: Uuid::now_v7(),
+		provider,
+		bank,
+		action: memory::Action::Reflect {
+			query: RecallQuery {
+				text: "plants".into(),
+				time: None,
+				kinds: vec![],
+				max_tokens: 8192,
+			},
+		},
+	};
+	assert!(
+		memory::operate(&store, &actor, operation.clone())
+			.await
+			.is_err()
+	);
+	assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 1);
+	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 0);
+
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	assert_eq!(projection_state(&store, id).await.as_deref(), Some("READY"));
+	sqlx::query("UPDATE memory_model_attempts SET created_at = now() - interval '1 minute' WHERE operation_id = $1")
+		.bind(operation.operation_id)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+
+	// The initial model call replays against its original keyword context.
+	// Its follow-up recall is new work and can embed under a separate identity.
+	let outcome = memory::operate(&store, &actor, operation.clone())
+		.await
+		.unwrap();
+	assert!(matches!(outcome, memory::Outcome::Reflection(_)));
+	assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 3);
+	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 2);
+
+	// A new reflection with an already-ready index embeds both recall queries.
+	operation.operation_id = Uuid::now_v7();
+	let outcome = memory::operate(&store, &actor, operation).await.unwrap();
+	assert!(matches!(outcome, memory::Outcome::Reflection(_)));
+	assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 5);
+	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 4);
 }
