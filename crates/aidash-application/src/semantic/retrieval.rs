@@ -268,7 +268,9 @@ async fn prepare_reads(
 			|| entry.index_revision != index.revision
 			|| digest != content.digest()
 		{
-			if !matches!(content, Candidate::Image { .. }) {
+			let optional_unit = matches!(source, Source::Unit { .. })
+				&& entry.metadata["thread_index_embedding"].as_bool() == Some(true);
+			if !optional_unit && !matches!(content, Candidate::Image { .. }) {
 				incomplete = true;
 			}
 			continue;

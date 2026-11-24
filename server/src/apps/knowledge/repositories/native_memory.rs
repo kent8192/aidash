@@ -982,7 +982,12 @@ pub(crate) async fn project(
 		key: format!("memory-unit:{}", unit.id),
 		source: serde_json::to_value(Source::Unit { id: unit.id })?,
 		agent: unit.bank.participant.map(|id| format!("participant:{id}")),
-		metadata: serde_json::json!({"unit_revision":unit.revision,"bank":unit.bank,"provider":provider}),
+		metadata: serde_json::json!({
+			"unit_revision": unit.revision,
+			"bank": unit.bank,
+			"provider": provider,
+			"thread_index_embedding": optional,
+		}),
 		revision,
 		point_id: Uuid::now_v7(),
 		index_revision: index.revision,
