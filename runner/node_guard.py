@@ -111,6 +111,22 @@ def cell_result_path(pod, operation_id):
     return volume(pod, 'control-temp') / 'cells' / (operation + '.result')
 
 
+def read_cell_result(pod, operation_id):
+    with cell_result_path(pod, operation_id).open('rb') as file:
+        data = file.read((24 << 20) + 1)
+    if len(data) > 24 << 20:
+        raise ValueError('result budget')
+    return json.loads(data)
+
+
+def cell_finished(pod, operation_id):
+    try:
+        result = read_cell_result(pod, operation_id)
+    except (OSError, ValueError):
+        return False
+    return isinstance(result, dict) and result.get('status') in ('completed', 'failed')
+
+
 def open_file(root, path):
     parts = path.split('/')
     if len(path.encode()) > 1024 or not parts or any(p in ('', '.', '..') for p in parts) or '\\' in path or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in path):
@@ -613,7 +629,7 @@ def handle(request):
                 if was_live or not after_deadline:
                     operation = previous['operation_id']
                     stopped.update(cell_operation_id=operation, cell_deadline_expired=(
-                        was_live and after_deadline and not cell_result_path(pod, operation).exists()))
+                        was_live and after_deadline and not cell_finished(pod, operation)))
             stopped.update(frozen=False, terminated=True, deadline=None)
             save(path, stopped)
             handoff_cleanup(path, stopped)
@@ -657,12 +673,10 @@ def handle(request):
         if op == 'cell_status':
             if state['status'] == 'stopped':
                 return {'status': 'stopped', 'termination_confirmed': True}
-            target = cell_result_path(pod, request['operation_id'])
-            if not target.exists():
+            try:
+                return read_cell_result(pod, request['operation_id'])
+            except FileNotFoundError:
                 return {'status': 'running'}
-            if target.stat().st_size > 24 << 20:
-                raise ValueError('result budget')
-            return json.loads(target.read_bytes())
         if op not in ('export', 'read', 'logs') or state['status'] not in ('paused', 'stopped'):
             raise ValueError('verified frozen writer required')
         if op == 'logs':

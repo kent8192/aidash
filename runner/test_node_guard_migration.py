@@ -13,17 +13,19 @@ import node_guard
 
 class CellDeadlineTest(unittest.TestCase):
     def test_guard_persists_whether_it_stopped_a_live_cell_after_its_deadline(self):
-        for now, finished, expected in ((50, False, False), (150, False, True), (150, True, False)):
-            with self.subTest(now=now, finished=finished), tempfile.TemporaryDirectory() as directory:
+        for now, marker, expected in ((50, None, False), (150, None, True),
+                                      (150, 'submitting', True), (150, 'running', True),
+                                      (150, 'completed', False), (150, 'failed', False)):
+            with self.subTest(now=now, marker=marker), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 area, pod, operation = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
                 record = {'area_id': area, 'pod_uid': pod, 'container_id': 'a' * 64,
                           'epoch': 1, 'image': 'pinned', 'action': 'cell', 'operation_id': operation,
                           'deadline': 100, 'sentry_pid': 42, 'sentry_start': '1'}
                 (root / (area + '.json')).write_text(json.dumps(record))
-                if finished:
+                if marker is not None:
                     (root / 'cells').mkdir()
-                    (root / 'cells' / (operation + '.result')).write_text('{"status":"completed"}')
+                    (root / 'cells' / (operation + '.result')).write_text(json.dumps({'status': marker}))
                 request = dict(record, action='terminate')
                 with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
                      patch.object(node_guard, 'volume', return_value=root), \
