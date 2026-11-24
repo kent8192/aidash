@@ -558,7 +558,8 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 	fixture: BuiltinSemanticProvider,
 ) {
 	let endpoint = format!("{}/v1", fixture.server.url);
-	let (store, registry, thread) = setup_endpoint(&database.await, bounds, &endpoint).await;
+	let database = database.await;
+	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let actor = administrator(&store).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
