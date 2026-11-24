@@ -423,6 +423,13 @@ impl FileScopePort for Scope<'_> {
 		let store = self.store.ok_or_else(missing)?;
 		super::operations::pods::tool_context(store, self.access, run).await
 	}
+	async fn recheck_pod(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<Option<aidash_application::ports::capabilities::pod_operations::PodContext>> {
+		let store = self.store.ok_or_else(missing)?;
+		super::operations::pods::settle_file_context(store, self.access, run).await
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()> {
 		aidash_application::capabilities::sessions::authorize(
 			&mut crate::bootstrap::session_scope(None, self.access),

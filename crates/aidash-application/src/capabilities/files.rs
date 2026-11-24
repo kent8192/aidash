@@ -342,7 +342,7 @@ impl PodFileAccess {
 			return Err(Error::Forbidden);
 		}
 		let area = scope.for_run(run).await?;
-		let pod = scope.pod(run).await?.ok_or(Error::Forbidden)?;
+		let pod = scope.recheck_pod(run).await?.ok_or(Error::Forbidden)?;
 		if pod.settings != self.pod.settings
 			|| pod.credential != self.pod.credential
 			|| area.id != self.area.id

@@ -119,12 +119,20 @@ async fn with_runner_profile() {
 	);
 }
 
+#[derive(Clone, Copy)]
+enum Change {
+	Policy,
+	Membership,
+	None,
+}
+
 #[rstest::rstest]
-#[case::revoked(true)]
-#[case::unchanged(false)]
+#[case::revoked_policy(Change::Policy)]
+#[case::revoked_membership(Change::Membership)]
+#[case::unchanged(Change::None)]
 #[tokio::test]
 async fn scratch_save_releases_authority_while_streaming(
-	#[case] revoke: bool,
+	#[case] change: Change,
 	streaming_save: StreamingSave,
 	#[from(scratch_runner)]
 	#[with(streaming_save.clone())]
@@ -145,6 +153,34 @@ async fn scratch_save_releases_authority_while_streaming(
 	}
 	let c = core.await;
 	let run = admit(&c).await;
+	let membership = if matches!(change, Change::Membership) {
+		let pool = c.f.store.pool.fixture_driver();
+		let (space, starter): (Uuid, String) =
+			sqlx::query_as("SELECT scratch_space_id, created_by FROM threads WHERE id = $1")
+				.bind(run.thread_id)
+				.fetch_one(pool)
+				.await
+				.unwrap();
+		assert_ne!(starter, "bob");
+		// Make the Thread starter a member of the existing dedicated Space.
+		sqlx::query("UPDATE scratch_spaces SET creator = 'bob' WHERE id = $1")
+			.bind(space)
+			.execute(pool)
+			.await
+			.unwrap();
+		sqlx::query(
+			"INSERT INTO scratch_space_members (tenant, space_id, subject) VALUES ('acme', $1, $2)",
+		)
+		.bind(space)
+		.bind(&starter)
+		.execute(pool)
+		.await
+		.unwrap();
+		let owner = common::issued_credential(&c.f.store, "acme", "bob").await;
+		Some((space, starter, owner))
+	} else {
+		None
+	};
 	let harness = aidash_server::harness::Harness {
 		federation: c.f.clone(),
 	};
@@ -171,7 +207,7 @@ async fn scratch_save_releases_authority_while_streaming(
 		}
 	}
 
-	if revoke {
+	if matches!(change, Change::Policy) {
 		let mut policy = c.policy.clone();
 		policy["policies"].as_array_mut().unwrap().push(json!({
 			"id":"withdraw-file-write","effect":"deny","subjects":{"any":true},
@@ -192,19 +228,38 @@ async fn scratch_save_releases_authority_while_streaming(
 		let (status, body) = changed.expect("Authority Change waited on the blocked Runner");
 		assert_eq!(status, 200, "Authority Change while streaming: {body}");
 	}
+	if let Some((space, starter, owner)) = membership {
+		let path = format!("/api/scratch-spaces/{space}/members/remove");
+		let remove = request(
+			&c.app,
+			owner["token"].as_str().unwrap(),
+			"POST",
+			&path,
+			json!({"subject":starter}),
+		);
+		let removed = tokio::select! {
+			current = &mut worker => panic!("Run ended before Runner release: {:?} {:?}", current.error, current.state),
+			result = tokio::time::timeout(Duration::from_secs(12), remove) => result,
+		};
+		let (status, body) = removed.expect("membership change waited on the blocked Runner");
+		assert_eq!(status, 200, "{body}");
+	}
 	streaming_save.release.notify_one();
 	let current = tokio::time::timeout(Duration::from_secs(45), worker)
 		.await
 		.expect("worker did not settle the tool");
-	assert!(
-		current.context.events().any(|event| matches!(
-			event, aidash_server::context::ContextEvent::Tool { call, result }
-				if call.name == "file_save" && result["status"] == if revoke { "blocked" } else { "completed" }
-		)),
-		"{:?} {:?}",
-		current.error,
-		current.state
-	);
+	let revoke = !matches!(change, Change::None);
+	if !matches!(change, Change::Membership) {
+		assert!(
+			current.context.events().any(|event| matches!(
+				event, aidash_server::context::ContextEvent::Tool { call, result }
+					if call.name == "file_save" && result["status"] == if revoke { "blocked" } else { "completed" }
+			)),
+			"{:?} {:?}",
+			current.error,
+			current.state
+		);
+	}
 
 	let (status, area) = request(
 		&c.app,

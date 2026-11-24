@@ -103,6 +103,13 @@ pub trait FileScopePort: Send {
 	) -> Result<Option<super::pod_operations::PodContext>> {
 		Ok(None)
 	}
+	/// Recheck Scratch Space access and retain it through detached file settlement.
+	async fn recheck_pod(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<Option<super::pod_operations::PodContext>> {
+		self.pod(run).await
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn require_current(&mut self, area: &Area, run: &RunMetadata) -> Result<()>;
