@@ -292,6 +292,63 @@ def test_preview_waits_for_port_and_returns_pod_address(tmp_path):
     assert command['proxy_credential'] == 'run-token'
 
 
+def test_stop_fences_a_preview_waiting_for_command_admission(tmp_path):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError, REFUSAL_RETENTION_SECONDS
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    request = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r',
+               'code': 'serve', 'port': 8080}
+    pod = {'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running', 'podIP': '10.2.3.4'},
+           'spec': {'containers': [{'name': 'execution', 'securityContext': {}}]}}
+    entered, resume = Event(), Event()
+
+    def wait_for_pod(*_):
+        entered.set()
+        assert resume.wait(5)
+        return pod
+
+    backend = SimpleNamespace(root=tmp_path)
+    controller = ExecutionPodController(backend, {'preview_port': 8080}, admitted=True)
+    lookups = iter((lambda: pod, wait_for_pod))
+    controller._get = lambda *_: next(lookups)()
+    controller._port_answers = Mock(return_value=False)
+    controller._old_helper_image = Mock(return_value=False)
+    controller._admitted_uid = Mock(return_value='uid')
+    submit = Mock(side_effect=AssertionError('the stopped preview reached the command queue'))
+    controller.queues['s'] = SimpleNamespace(submit=submit)
+
+    after_retention = time.time() + REFUSAL_RETENTION_SECONDS + 60
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        started = executor.submit(controller.start_preview, request)
+        try:
+            assert entered.wait(5)
+            stopped = controller.stop_preview(operation)
+            controller.stop_idle(now=after_retention)
+        finally:
+            resume.set()
+        assert stopped == {'operation_id': operation, 'status': 'cancelled', 'outcome': 'not_started'}
+        with pytest.raises(ExecutionPodError) as error:
+            started.result(timeout=5)
+        assert error.value.code == 'command_refused'
+    submit.assert_not_called()
+
+    restarted = ExecutionPodController(backend, {'preview_port': 8080}, admitted=True)
+    restarted._get = Mock(return_value=pod)
+    restarted._port_answers = Mock(return_value=False)
+    with pytest.raises(ExecutionPodError) as error:
+        restarted.start_preview(request)
+    assert error.value.code == 'command_refused'
+    assert restarted.stop_preview(operation) == stopped
+    restarted.stop_idle(now=after_retention)
+    with pytest.raises(ExecutionPodError) as error:
+        restarted.command_result(operation)
+    assert error.value.code == 'command_not_found'
+
+
 def test_mcp_routes_start_call_and_stop_a_run_owned_session(tmp_path):
     from types import SimpleNamespace
     operation = '00000000-0000-4000-8000-000000000001'
@@ -678,11 +735,14 @@ def test_the_preview_stop_route_stops_only_live_previews(tmp_path):
     from types import SimpleNamespace
     from execution_pod import ExecutionPodError
     controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
-    kinds = {'preview': 'preview', 'shell': 'shell'}
+    preview = '00000000-0000-4000-8000-000000000001'
+    shell = '00000000-0000-4000-8000-000000000002'
+    kinds = {preview: 'preview', shell: 'shell'}
     controller._read_command = lambda operation: {'operation_id': operation, 'kind': kinds[operation],
-                                                  'background': True}
-    controller.stop_background = Mock(return_value={'operation_id': 'preview', 'status': 'stopping'})
-    assert controller.stop_preview('preview')['status'] == 'stopping'
-    with pytest.raises(ExecutionPodError):
-        controller.stop_preview('shell')
-    controller.stop_background.assert_called_once_with('preview')
+                                                  'background': True, 'status': 'running'}
+    controller.stop_background = Mock(return_value={'operation_id': preview, 'status': 'stopping'})
+    assert controller.stop_preview(preview)['status'] == 'stopping'
+    with pytest.raises(ExecutionPodError) as error:
+        controller.stop_preview(shell)
+    assert error.value.code == 'command_conflict'
+    controller.stop_background.assert_called_once_with(preview)
