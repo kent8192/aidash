@@ -84,13 +84,13 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	disabled.enabled = false;
 	assert!(
 		matches!(service::configure(&store, &administrator(&store).await, thread, aidash_server::semantic::ConfigureIndex {
-		expected_revision: before.revision, spec: disabled }).await,
+		expected_revision: before.revision, acknowledge_memory_embeddings: false, spec: disabled }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("remain enabled"))
 	);
 	let mut spec = before.configuration().unwrap();
 	spec.embedding.model = "incompatible-model".into();
 	assert!(
-		matches!(service::configure(&store, &administrator(&store).await, thread, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
+		matches!(service::configure(&store, &administrator(&store).await, thread, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, acknowledge_memory_embeddings: false, spec }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("pinned memory bank"))
 	);
 	let unchanged = service::get_index(&store, &administrator(&store).await, thread)
@@ -107,6 +107,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: before.revision,
+			acknowledge_memory_embeddings: false,
 			spec,
 		},
 	)

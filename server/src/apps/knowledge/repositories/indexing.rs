@@ -624,6 +624,27 @@ impl SemanticIndexingSession for Session {
 			let policy =
 				crate::semantic::native_memory::policy(&mut self.lease, &bank.tenant, &provider)
 					.await?;
+			if policy.thread_index_embedding {
+				// Built-in Memory has no embedding role of its own: its Units
+				// are embedded like the Thread's other sources, with the
+				// index's embedding and ledger (#1123).
+				let origin = super::unit_origins::load(&mut self.lease, entry)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				if Some(origin.revision) != row.metadata["unit_revision"].as_i64() {
+					return Err(Error::Forbidden.into());
+				}
+				return service::embed(
+					&self.store,
+					&mut self.lease,
+					thread,
+					config,
+					text,
+					crate::generation::embedding::Origin::Index(entry),
+				)
+				.await
+				.map_err(Into::into);
+			}
 			let role = policy
 				.embedding
 				.as_ref()

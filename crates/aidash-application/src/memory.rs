@@ -469,6 +469,53 @@ impl Engine<'_> {
 		)
 		.await
 	}
+	/// The Thread index arm is optional: an embedding outage, missing balance
+	/// or a not yet embedded Unit leaves keyword, time and link search (#1123).
+	async fn thread_semantic(
+		&self,
+		scope: &mut dyn MemoryScope,
+		bank: &Bank,
+		text: &str,
+		allowed: &BTreeSet<Uuid>,
+		limit: usize,
+		budget: &mut Budget,
+	) -> Result<Vec<Uuid>> {
+		let ids: Vec<_> = allowed.iter().copied().collect();
+		let allowance = match budget.allowance() {
+			Ok(allowance) => allowance,
+			Err(error) => {
+				tracing::warn!(thread = %bank.thread, %error, "memory search by meaning skipped");
+				return Ok(Vec::new());
+			}
+		};
+		match scope
+			.thread_semantic(bank, text, &ids, limit, allowance)
+			.await
+		{
+			Ok(Some(output)) => {
+				budget.charge(output.usage)?;
+				if output.output.len() > limit
+					|| output.output.iter().any(|id| !allowed.contains(id))
+				{
+					return Err(Error::Invalid(
+						"memory search by meaning escaped its authorized candidates".into(),
+					));
+				}
+				Ok(output.output)
+			}
+			Ok(None) => Ok(Vec::new()),
+			Err(
+				error @ (Error::SemanticUnavailable
+				| Error::RemoteSemantic(_)
+				| Error::External(_)
+				| Error::BudgetExhausted { .. }),
+			) => {
+				tracing::warn!(thread = %bank.thread, %error, "memory search by meaning skipped");
+				Ok(Vec::new())
+			}
+			Err(error) => Err(error),
+		}
+	}
 	pub async fn recall_including_dormant(
 		&self,
 		scope: &mut dyn MemoryScope,
@@ -548,6 +595,9 @@ impl Engine<'_> {
 				.await?;
 			budget.charge(output.usage)?;
 			output.output
+		} else if self.policy.thread_index_embedding {
+			self.thread_semantic(scope, bank, &query.text, &allowed, limit, budget)
+				.await?
 		} else {
 			Vec::new()
 		};

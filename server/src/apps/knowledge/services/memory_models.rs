@@ -1102,16 +1102,49 @@ impl Models {
 	) -> Result<Produced<Vec<f32>>> {
 		let config: EmbeddingConfig =
 			serde_json::from_value(self.role(reference, "embedding")?.config.clone())?;
+		self.embed_with(
+			&config,
+			Some(reference),
+			json!({"embedding":reference,"text":text}),
+			text,
+			allowance,
+		)
+		.await
+	}
+	/// Embed with the bank's Thread index embedding, which has no Registry
+	/// role (#1123). A remote Home cannot serve it, so remote callers fall
+	/// back to keyword search.
+	pub async fn embed_thread_index(
+		&self,
+		config: &EmbeddingConfig,
+		text: &str,
+		allowance: Allowance,
+	) -> Result<Produced<Vec<f32>>> {
+		if self.remote.is_some() {
+			return Err(Error::SemanticUnavailable);
+		}
+		self.embed_with(
+			config,
+			None,
+			json!({"thread_index_embedding":config,"text":text}),
+			text,
+			allowance,
+		)
+		.await
+	}
+	async fn embed_with(
+		&self,
+		config: &EmbeddingConfig,
+		reference: Option<&EntityRef>,
+		request: serde_json::Value,
+		text: &str,
+		allowance: Allowance,
+	) -> Result<Produced<Vec<f32>>> {
 		let tokens = text.len();
 		let charge = self.policy.prices.embedding.charge(tokens as u64, 0)?;
 		self.require_origins(None).await?;
 		let reservation = match self
-			.prepare::<Vec<f32>>(
-				&json!({"embedding":reference,"text":text}),
-				tokens,
-				charge,
-				allowance,
-			)
+			.prepare::<Vec<f32>>(&request, tokens, charge, allowance)
 			.await?
 		{
 			Prepared::Cached(output) => return Ok(output),
@@ -1121,11 +1154,12 @@ impl Models {
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
-			self.reserve_embedding(&config, text, origin).await?
+			self.reserve_embedding(config, text, origin).await?
 		} else {
 			None
 		};
 		let remote = if let Some(origin) = &self.remote {
+			let reference = reference.ok_or(Error::SemanticUnavailable)?;
 			Some(
 				super::remote_memory_models::reserve(
 					self,
@@ -1151,7 +1185,7 @@ impl Models {
 					MaintenancePurpose::MemoryRetrieval
 				}),
 			)
-			.embed(&config, aidash_domain::semantic::EmbeddingInput::Text(text)),
+			.embed(config, aidash_domain::semantic::EmbeddingInput::Text(text)),
 		)
 		.await
 		// A provider deadline or transport failure is the outage a Run retries

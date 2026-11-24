@@ -852,6 +852,10 @@ pub(crate) async fn project(
 			.await?
 			.map(|settings| settings.provider),
 	};
+	// Built-in Memory embeds with its Thread index only while that index is
+	// enabled, and a Unit the index cannot take stays keyword-only instead of
+	// failing the memory write (#1123).
+	let mut optional = false;
 	if let Some(provider) = &policy_provider {
 		// Fencing can update a dependent bank whose provider the initiating
 		// subject cannot read. This internal projection decision needs only the
@@ -869,9 +873,10 @@ pub(crate) async fn project(
 			));
 		}
 		let config: ProviderConfig = serde_json::from_value(entry.config)?;
-		if config.policy.embedding.is_none() {
+		if config.policy.embedding.is_none() && !config.policy.thread_index_embedding {
 			return Ok(());
 		}
+		optional = config.policy.thread_index_embedding;
 	}
 	let Some(index) = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
@@ -883,6 +888,9 @@ pub(crate) async fn project(
 		return Ok(());
 	};
 	let spec = index.configuration()?;
+	if optional && !spec.enabled {
+		return Ok(());
+	}
 	let prior: Option<core::Entry> = native::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -914,11 +922,23 @@ pub(crate) async fn project(
 		.scalar_one(&mut **lease.tx())
 		.await?;
 		if count >= spec.max_sources as i64 {
+			if optional {
+				return Ok(());
+			}
 			return Err(Error::Conflict("Thread search source limit reached".into()));
 		}
 	}
-	if unit.visible() {
-		aidash_domain::semantic::indexing::validate_text(&unit.content.text, spec.max_input_bytes)?;
+	if unit.visible()
+		&& let Err(error) = aidash_domain::semantic::indexing::validate_text(
+			&unit.content.text,
+			spec.max_input_bytes,
+		) {
+		// A stale prior projection no longer matches the Unit's revision,
+		// so search by meaning skips it until the text fits again.
+		if optional {
+			return Ok(());
+		}
+		return Err(error.into());
 	}
 	let revision = prior.as_ref().map_or(Ok(1), |old| {
 		old.revision
@@ -1019,6 +1039,63 @@ pub(crate) async fn project(
 		"native unit revision projected",
 	)
 	.await?;
+	Ok(())
+}
+/// Built-in Units admitted before their Thread index existed or was enabled
+/// enter it now, under the authority of the person configuring it (#1123).
+/// Units the index cannot take stay keyword-only, as in [`project`].
+pub(crate) async fn backfill_builtin(lease: &mut Lease<'_>, thread: Uuid) -> Result<()> {
+	use aidash_domain::registry::bindings::memory_defaults;
+	let actor = lease.saved()?["subject"]
+		.as_str()
+		.ok_or(Error::Forbidden)?
+		.to_owned();
+	let ids: Vec<Uuid> = native::query_scalar(
+		&Query::select()
+			.column(("u", "id"))
+			.from_as(Alias::new("memory_units"), Alias::new("u"))
+			.inner_join(
+				Alias::new("memory_banks"),
+				Expr::col(("u", "bank_id")).equals(("memory_banks", "id")),
+			)
+			.inner_join(
+				Alias::new("memory_bank_settings"),
+				Expr::col(("u", "bank_id")).equals(("memory_bank_settings", "bank_id")),
+			)
+			.and_where(Expr::col(("memory_banks", "thread_id")).eq(Expr::value(thread)))
+			.and_where(
+				Expr::col(("memory_bank_settings", "provider_id")).eq(memory_defaults::MEMORY_ID),
+			)
+			.and_where(
+				Expr::col(("memory_bank_settings", "provider_version"))
+					.eq(memory_defaults::VERSION),
+			)
+			.and_where(Expr::col(("u", "deleted")).eq(false))
+			.and_where(
+				Expr::col(("u", "id")).not_in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("semantic_entries"))
+						.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+						.to_owned(),
+				),
+			)
+			.order_by(("u", "id"), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut **lease.tx())
+	.await?;
+	let provider = aidash_domain::registry::EntityRef {
+		id: memory_defaults::MEMORY_ID.into(),
+		version: memory_defaults::VERSION.into(),
+	};
+	for id in ids {
+		if let Some(unit) = units::load(lease, id, false).await?
+			&& unit.visible()
+		{
+			project(lease, &unit, &actor, Some(&provider)).await?;
+		}
+	}
 	Ok(())
 }
 pub(crate) async fn bump_bank(lease: &mut Lease<'_>, id: Uuid) -> Result<()> {

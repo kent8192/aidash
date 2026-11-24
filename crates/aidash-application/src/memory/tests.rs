@@ -71,6 +71,7 @@ fn policy() -> Policy {
 		learn_from_runs: true,
 		maintain_observations: false,
 		refresh_mental_models: false,
+		thread_index_embedding: false,
 	}
 }
 fn unit() -> Unit {

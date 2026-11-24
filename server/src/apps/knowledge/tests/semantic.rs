@@ -1086,6 +1086,7 @@ async fn configure(
 		&format!("/api/threads/{thread}/semantic/index"),
 		serde_json::to_value(ConfigureIndex {
 			expected_revision: revision,
+			acknowledge_memory_embeddings: false,
 			spec: spec.clone(),
 		})
 		.unwrap(),
@@ -1820,6 +1821,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			&format!("/api/threads/{}/semantic/index", other.id),
 			serde_json::to_value(ConfigureIndex {
 				expected_revision: 0,
+				acknowledge_memory_embeddings: false,
 				spec: spec(&endpoint),
 			})
 			.unwrap()
@@ -2115,6 +2117,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	reconfigured.max_results = 1;
 	let reconfigure = serde_json::to_value(ConfigureIndex {
 		expected_revision: 1,
+		acknowledge_memory_embeddings: false,
 		spec: reconfigured,
 	})
 	.unwrap();
