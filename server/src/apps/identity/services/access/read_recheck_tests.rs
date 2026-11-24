@@ -45,13 +45,17 @@ impl Fixture {
 	}
 
 	async fn set_policy(&self, expected: i64, deny: Option<(&str, &str)>) {
+		self.replace_policy(expected, policy(deny)).await;
+	}
+
+	async fn replace_policy(&self, expected: i64, bundle: Value) {
 		Authorization {
 			pool: self.store.pool.clone(),
 		}
 		.replace(
 			"acme",
 			expected,
-			serde_json::from_value(policy(deny)).unwrap(),
+			serde_json::from_value(bundle).unwrap(),
 			"deployment_administrator",
 		)
 		.await
@@ -1276,13 +1280,10 @@ async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
 			notify: Default::default(),
 		});
 	let denials = "action='run.control' AND decision->>'allowed'='false'";
-	for pass in 0..2 {
-		if pass == 1 {
-			fixture.set_policy(2, Some(("reader", "run.control"))).await;
-		}
+	let check = async |expected_denials| {
 		let mut recovery = repository.recovery().await.unwrap();
 		assert!(!recovery.resume_original(source, fixture.run).await.unwrap());
-		assert_eq!(fixture.rows(denials).await, pass + 1);
+		assert_eq!(fixture.rows(denials).await, expected_denials);
 		let decisions = fixture.rows("tenant='acme'").await;
 
 		let mut next_pass = repository.recovery().await.unwrap();
@@ -1300,7 +1301,27 @@ async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
 				.unwrap()
 		);
 		assert_eq!(fixture.rows("tenant='acme'").await, decisions);
-	}
+	};
+	check(1).await;
+
+	let mut bundle = policy(Some(("reader", "run.control")));
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"unrelated", "effect":"deny", "subjects":{"ids":["viewer"]},
+		"actions":["run.control"], "resources":{"kinds":["*"]}
+	}));
+	fixture.replace_policy(2, bundle.clone()).await;
+	check(1).await;
+
+	sqlx::query("UPDATE task_executions SET revision=revision+1 WHERE id=$1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	check(1).await;
+
+	bundle["policies"][1]["id"] = json!("new-revocation");
+	fixture.replace_policy(3, bundle).await;
+	check(2).await;
 }
 
 #[rstest]

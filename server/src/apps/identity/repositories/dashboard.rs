@@ -293,7 +293,7 @@ impl StatusRecovery for Recovery {
 					return access.finish(Ok(false)).await.map_err(Into::into);
 				};
 				if let Some(refusal) = refusal {
-					let fingerprint = access.suspension_resume_refusal(epoch, revision, &refusal);
+					let fingerprint = access.suspension_resume_refusal(epoch, &refusal);
 					if !DashboardExecutionOrigin::record_suspension_resume_refusal(
 						&mut **access.tx,
 						run,

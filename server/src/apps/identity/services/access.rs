@@ -1577,34 +1577,39 @@ impl Access {
 
 	/// Compare the refusals of a paused Run across automatic resume attempts.
 	/// Canonicalize their order because the order of independent reads can vary.
-	pub(crate) fn suspension_resume_refusal(
-		&self,
-		epoch: u64,
-		run_revision: i64,
-		refusal: &Error,
-	) -> String {
+	pub(crate) fn suspension_resume_refusal(&self, epoch: u64, refusal: &Error) -> String {
+		let deny_rules: std::collections::BTreeSet<_> = self
+			.snapshot
+			.bundle
+			.policies
+			.iter()
+			.filter(|policy| policy.effect == aidash_domain::policy::Effect::Deny)
+			.map(|policy| &policy.id)
+			.collect();
 		let mut decisions: Vec<_> = self
 			.pending_decisions
 			.iter()
 			.filter(|row| !row.decision.allowed)
 			.map(|row| {
+				let matched_denies: Vec<_> = row
+					.decision
+					.matched_policies
+					.iter()
+					.filter(|id| deny_rules.contains(id))
+					.collect();
 				crate::registry::digest(&json!([
 					row.input.subject,
 					row.input.action,
 					row.input.resource.kind,
 					row.input.resource.id,
-					row.decision,
+					row.decision.reason,
+					matched_denies,
 				]))
 			})
 			.collect();
 		decisions.sort_unstable();
-		crate::registry::digest(&json!([
-			epoch,
-			run_revision,
-			self.snapshot.revision,
-			refusal.to_string(),
-			decisions,
-		]))
+		decisions.dedup();
+		crate::registry::digest(&json!([epoch, format!("{refusal:?}"), decisions]))
 	}
 
 	pub(crate) fn discard_pending_decisions(&mut self) {
