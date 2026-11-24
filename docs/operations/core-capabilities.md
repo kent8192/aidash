@@ -89,6 +89,11 @@ reports `SESSION_RESET`; a subsequent call starts with a fresh kernel. The
 kernel also ends when the Run ends or its idle session expires. Each completed
 Journal read records its range for the offload loop guard.
 
+Before returning a cell's output, the server checks access to the exported
+Journal again. If access was withdrawn or the Journal generation changed, the server
+records the discard and invalidates the kernel before acknowledging the
+output. A later call resets the kernel even if access has since been restored.
+
 ## Execution Pods (runner/2)
 
 The v2 runtime is opt-in and exposes a separate `aidash-runner/2` control
