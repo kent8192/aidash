@@ -171,8 +171,9 @@ async fn scratch_save_releases_authority_while_streaming(
 			.await
 			.unwrap();
 		sqlx::query(
-			"INSERT INTO scratch_space_members (tenant, space_id, subject) VALUES ('acme', $1, $2)",
+			"INSERT INTO scratch_space_members (id, tenant, space_id, subject) VALUES ($1, 'acme', $2, $3)",
 		)
+		.bind(Uuid::new_v4())
 		.bind(space)
 		.bind(&starter)
 		.execute(pool)
