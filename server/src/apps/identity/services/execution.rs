@@ -1473,7 +1473,7 @@ impl WorkerAuthority {
 		let policy_revision = outer.snapshot.revision;
 		outer.suspend().await?;
 		let result = wait.await;
-		crate::database::authority_change::enter(&store.pool, &identity.tenant).await;
+		// Settlement rechecks already-admitted work (ADR 0121).
 		let visibility = crate::transactions::gate::ReadLease::begin(store)
 			.await
 			.map_err(after_effect)?;
