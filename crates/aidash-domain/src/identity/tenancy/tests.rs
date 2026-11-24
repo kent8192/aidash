@@ -575,7 +575,10 @@ fn bootstrap_chooses_a_usable_administrator_subject(
 		)
 		.unwrap();
 	}
-	assert_eq!(bootstrap_subject(&bundle, reserved), expected);
+	assert_eq!(
+		bootstrap_subject(&bundle, reserved, &BTreeSet::new()),
+		expected
+	);
 }
 
 #[rstest]
@@ -590,7 +593,7 @@ fn an_unusable_subject_is_skipped_for_the_next_free_name(#[case] spoil: fn(&mut 
 	spoil(bundle.subjects.get_mut(HOST_ADMINISTRATOR).unwrap());
 	assert!(!usable_administrator(&bundle, OWNER));
 	assert_eq!(
-		bootstrap_subject(&bundle, Some(HOST_ADMINISTRATOR)),
+		bootstrap_subject(&bundle, Some(HOST_ADMINISTRATOR), &BTreeSet::new()),
 		BootstrapSubject::New(format!("{HOST_ADMINISTRATOR}-2"))
 	);
 }

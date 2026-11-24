@@ -484,18 +484,21 @@ impl BootstrapSubject {
 /// is the subject the address's earlier Bootstrap reserved in this Tenant.
 ///
 /// That subject is kept while it is usable, so running Bootstrap again adds
-/// nothing. Otherwise [`OWNER`] is used when usable, or added when absent. An
-/// unusable [`OWNER`] is never restored: someone disabled it or removed its
-/// administration, and restoring it would also restore every other Mapping,
-/// credential and Duty it holds. The address gets a new subject instead,
-/// [`HOST_ADMINISTRATOR`] or the first free `host-administrator-<n>`, n ≥ 2.
-pub fn bootstrap_subject(bundle: &PolicyBundle, reserved: Option<&str>) -> BootstrapSubject {
+/// nothing. Otherwise [`OWNER`] is used when usable, or added when it has never
+/// been used. A new subject skips both current names and `used_names` from
+/// earlier policy revisions, so any dormant Mappings, Subject Credentials or
+/// Duties cannot regain authority through Bootstrap.
+pub fn bootstrap_subject(
+	bundle: &PolicyBundle,
+	reserved: Option<&str>,
+	used_names: &BTreeSet<String>,
+) -> BootstrapSubject {
 	if let Some(reserved) = reserved
 		&& usable_administrator(bundle, reserved)
 	{
 		return BootstrapSubject::Existing(reserved.to_owned());
 	}
-	if !bundle.subjects.contains_key(OWNER) {
+	if !bundle.subjects.contains_key(OWNER) && !used_names.contains(OWNER) {
 		return BootstrapSubject::New(OWNER.to_owned());
 	}
 	if usable_administrator(bundle, OWNER) {
@@ -503,7 +506,7 @@ pub fn bootstrap_subject(bundle: &PolicyBundle, reserved: Option<&str>) -> Boots
 	}
 	let name = std::iter::once(HOST_ADMINISTRATOR.to_owned())
 		.chain((2..).map(|n| format!("{HOST_ADMINISTRATOR}-{n}")))
-		.find(|name| !bundle.subjects.contains_key(name))
+		.find(|name| !bundle.subjects.contains_key(name) && !used_names.contains(name))
 		.expect("a policy holds finitely many subjects");
 	BootstrapSubject::New(name)
 }

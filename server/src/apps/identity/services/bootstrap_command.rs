@@ -1,7 +1,7 @@
 //! Host Access bootstrap of a Tenant and its administrators.
 use crate::apps::identity::models::{
-	AuthorizationBundle, BootstrapDeploymentAdministratorReservation, DashboardMapping,
-	DemoReservation, Tenant, demo_reservations,
+	AuthorizationBundle, AuthorizationRevision, BootstrapDeploymentAdministratorReservation,
+	DashboardMapping, DemoReservation, Tenant, demo_reservations,
 };
 use crate::apps::identity::repositories::tenants::{self, Creator};
 use crate::config::Config;
@@ -9,7 +9,7 @@ use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::ports::authorization::dashboard::AccountPolicy;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use aidash_domain::identity::tenancy::{self, ADMINISTRATORS, BootstrapSubject};
+use aidash_domain::identity::tenancy::{self, BootstrapSubject};
 use aidash_domain::identity::tenant_administration;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
@@ -17,7 +17,6 @@ use reinhardt::db::orm::{Model, query::FieldAssignment};
 use reinhardt::query::{
 	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
-use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// The issuer, source and actor name of everything Host Access does here.
@@ -199,16 +198,14 @@ async fn recover_tenant(
 				.all_with_db(tx)
 				.await?
 				.pop();
+			let used_names = AuthorizationRevision::subject_names(tx, &tenant).await?;
 			let chosen = tenancy::bootstrap_subject(
 				&snapshot.bundle,
 				earlier.as_ref().map(|r| r.subject.as_str()),
+				&used_names,
 			);
 			if let BootstrapSubject::New(name) = &chosen {
-				tenant_administration::add_user_subject(
-					&mut snapshot.bundle,
-					name,
-					&BTreeSet::from([ADMINISTRATORS.to_owned()]),
-				)?;
+				tenant_administration::add_bootstrap_administrator(&mut snapshot.bundle, name)?;
 				AuthorizationBundle::replace(
 					tx,
 					&tenant,

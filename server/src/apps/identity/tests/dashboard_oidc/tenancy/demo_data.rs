@@ -720,19 +720,16 @@ async fn concurrent_bootstrap_reuses_one_tenant_and_reservations(
 }
 
 impl Deployment {
-	/// Changes subject `name` of `tenant`'s policy, as a Tenant Administrator
-	/// replacing the policy would.
-	async fn change_subject(
+	async fn change_policy(
 		&self,
 		tenant: &str,
-		name: &str,
-		change: impl FnOnce(&mut aidash_domain::policy::Subject),
+		change: impl FnOnce(&mut aidash_domain::policy::PolicyBundle),
 	) {
 		let authorization = aidash_server::authorization::Authorization {
 			pool: self.federation.store.pool.clone(),
 		};
 		let mut snapshot = authorization.snapshot(tenant).await.unwrap();
-		change(snapshot.bundle.subjects.get_mut(name).unwrap());
+		change(&mut snapshot.bundle);
 		authorization
 			.replace(
 				tenant,
@@ -742,6 +739,20 @@ impl Deployment {
 			)
 			.await
 			.unwrap();
+	}
+
+	/// Changes subject `name` of `tenant`'s policy, as a Tenant Administrator
+	/// replacing the policy would.
+	async fn change_subject(
+		&self,
+		tenant: &str,
+		name: &str,
+		change: impl FnOnce(&mut aidash_domain::policy::Subject),
+	) {
+		self.change_policy(tenant, |bundle| {
+			change(bundle.subjects.get_mut(name).unwrap())
+		})
+		.await;
 	}
 
 	async fn subject(&self, tenant: &str, name: &str) -> Option<aidash_domain::policy::Subject> {
@@ -765,6 +776,7 @@ impl Deployment {
 #[tokio::test]
 async fn bootstrap_recovers_a_tenant_whose_owner_is_disabled(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[values(true, false)] assignable: bool,
 ) {
 	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
 	let pool = &d.federation.store.pool;
@@ -781,8 +793,11 @@ async fn bootstrap_recovers_a_tenant_whose_owner_is_disabled(
 	assert_eq!(first.subject, "owner");
 	let earlier = d.sign_in_as("first-owner", Some("first@example.com")).await;
 	assert_eq!(d.mappings(earlier, &tenant).await, 1);
-	d.change_subject(&tenant, "owner", |owner| owner.enabled = false)
-		.await;
+	d.change_policy(&tenant, |bundle| {
+		bundle.subjects.get_mut("owner").unwrap().enabled = false;
+		bundle.groups.get_mut("administrators").unwrap().assignable = assignable;
+	})
+	.await;
 
 	let second = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
 		pool,
@@ -817,6 +832,38 @@ async fn bootstrap_recovers_a_tenant_whose_owner_is_disabled(
 	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_mappings WHERE identity_id = '{identity}' AND tenant = '{tenant}' AND subject = 'host-administrator' AND enabled")).await, 1);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
 	assert!(!d.subject(&tenant, "owner").await.unwrap().enabled);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_keeps_a_removed_administrator_subject_dormant(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::services::bootstrap_command::bootstrap;
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let former = d.sign_in_as("former", Some("former@example.com")).await;
+	let tenant = d.demo_tenant("Existing", "owner").await;
+	d.change_subject(&tenant, "owner", |owner| owner.enabled = false)
+		.await;
+	let first = bootstrap(pool, config, "former@example.com", &tenant)
+		.await
+		.unwrap();
+	assert_eq!(first.subject, "host-administrator");
+	assert_eq!(d.mappings(former, &tenant).await, 1);
+	d.change_policy(&tenant, |bundle| {
+		bundle.subjects.remove(&first.subject);
+	})
+	.await;
+
+	let second = bootstrap(pool, config, "replacement@example.com", &tenant)
+		.await
+		.unwrap();
+	assert_eq!(second.subject, "host-administrator-2");
+	assert!(d.subject(&tenant, &first.subject).await.is_none());
+	assert_eq!(d.mappings(former, &tenant).await, 1);
 	d.finish().await;
 }
 

@@ -174,8 +174,9 @@ When `owner` is unusable (disabled, outside `administrators`, or not a user
 subject), the command does not restore it, because restoring it would also
 revive every other Mapping, Subject Credential and Duty that `owner` holds.
 It adds a user subject in `administrators` instead, `host-administrator` or the
-first free `host-administrator-<n>`, and reserves the address for it. A rerun
-keeps that subject while it stays usable. The Deployment Administrator grant is
+first free `host-administrator-<n>`, and reserves the address for it. New
+subjects skip names recorded in earlier policy revisions. A rerun keeps its
+reserved subject while it stays usable. The Deployment Administrator grant is
 made even when the Tenant cannot be recovered, for example because it is
 deleted; the command then reports the Tenant's refusal and exits non-zero (#966).
 
