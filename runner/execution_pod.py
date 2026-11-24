@@ -2248,7 +2248,7 @@ print(json.dumps(r))'''
         return created or elapsed >= 10, False
 
     def background_ended(self, scratch_space_id, run_id, operation_id, pod_uid=None):
-        """Prove the original Pod was replaced or its supervisor reaped the last descendant."""
+        """Prove the original Pod terminated or its supervisor reaped the last descendant."""
         import json
         from control import scratch_resource_name
 
@@ -2268,6 +2268,14 @@ print(json.dumps(r))'''
             pod_uid = original_uid
         if not isinstance(pod_uid, str) or not pod_uid:
             return {'ended': False}
+        # Only confirmed termination writes this trusted, Space-scoped record.
+        path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+        try:
+            state = json.loads(path.read_bytes())
+        except FileNotFoundError:
+            state = {}
+        if pod_uid in state.get('terminated_pods', []):
+            return {'ended': True}
         pod = self._get('pod', name)
         current_uid = pod.get('metadata', {}).get('uid') if pod else None
         if not isinstance(current_uid, str) or not current_uid:

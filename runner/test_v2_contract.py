@@ -693,18 +693,25 @@ def test_the_preview_stop_route_stops_only_live_previews(tmp_path):
     controller.stop_background.assert_called_once_with('preview')
 
 
-@pytest.mark.parametrize(('record_uid', 'current_uid', 'ended'), [
-    ('original', 'replacement', True),
-    ('original', 'original', False),
-    ('original', None, False),
-    (None, 'replacement', False),
+@pytest.mark.parametrize(('record_uid', 'current_uid', 'terminated_uid', 'ended'), [
+    ('original', 'replacement', None, True),
+    ('original', 'original', None, False),
+    ('original', None, None, False),
+    ('original', None, 'other', False),
+    ('original', None, 'original', True),
+    (None, 'replacement', None, False),
 ])
-def test_background_end_requires_pod_replacement(tmp_path, record_uid, current_uid, ended):
+def test_background_end_requires_pod_identity_evidence(tmp_path, record_uid, current_uid, terminated_uid, ended):
     from types import SimpleNamespace
     from control import scratch_resource_name
 
     operation = '00000000-0000-4000-8000-000000000001'
     controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    name = scratch_resource_name('s')
+    if terminated_uid:
+        directory = tmp_path / 'execution-v2-spaces'
+        directory.mkdir()
+        (directory / (name + '.json')).write_text(json.dumps({'terminated_pods': [terminated_uid]}))
     if record_uid:
         controller._command_path(operation).write_text(json.dumps({
             'operation_id': operation, 'run_id': 'r', 'scratch_space_id': 's',
@@ -712,8 +719,6 @@ def test_background_end_requires_pod_replacement(tmp_path, record_uid, current_u
         }))
     controller._get = Mock(return_value={'metadata': {'uid': current_uid}} if current_uid else None)
     assert controller.background_ended('s', 'r', operation) == {'ended': ended}
-    if record_uid:
-        controller._get.assert_called_once_with('pod', scratch_resource_name('s'))
 
 
 def test_python_stop_waits_for_run_session_termination(tmp_path):
