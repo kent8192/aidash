@@ -135,6 +135,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		let mut scope = Adapter {
 			access: &mut access,
 			store: &f.store,
+			scratch_policy: &f.config.scratch_policy,
 			now,
 		};
 		match op {
@@ -330,6 +331,7 @@ pub(crate) async fn receive_from_node(
 			let mut scope = Adapter {
 				access: &mut access,
 				store: &f.store,
+				scratch_policy: &f.config.scratch_policy,
 				now: Utc::now(),
 			};
 			match app::detail(&mut scope, trigger.duty_id).await {

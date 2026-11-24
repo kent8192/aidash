@@ -486,10 +486,10 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		"trigger": {"kind": "cron", "expression": "0 9 * * 1-5", "time_zone": "Asia/Tokyo"},
 	});
 	// Act
-	let created = agent_tool(&c.f.store, &run, "call-1", "duty_create", input.clone())
+	let created = agent_tool(&c.f, &run, "call-1", "duty_create", input.clone())
 		.await
 		.unwrap();
-	let listed = agent_tool(&c.f.store, &run, "call-2", "duty_list", json!({}))
+	let listed = agent_tool(&c.f, &run, "call-2", "duty_list", json!({}))
 		.await
 		.unwrap();
 	// Assert: it acts as the person at the root of the Run's chain.
@@ -524,7 +524,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 	.unwrap();
 	let foreign = register(&c, elsewhere, definition("Elsewhere", 86_400)).await;
 	let reach = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-3",
 		"duty_delete",
@@ -549,7 +549,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 			.unwrap();
 	let mut again = input;
 	again["title"] = json!("Set up by a Duty");
-	let created = agent_tool(&c.f.store, &scheduled, "call-4", "duty_create", again).await;
+	let created = agent_tool(&c.f, &scheduled, "call-4", "duty_create", again).await;
 	assert!(
 		created
 			.as_ref()
@@ -557,7 +557,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		"{created:?}"
 	);
 	assert!(
-		agent_tool(&c.f.store, &scheduled, "call-5", "duty_list", json!({}))
+		agent_tool(&c.f, &scheduled, "call-5", "duty_list", json!({}))
 			.await
 			.is_ok()
 	);
@@ -764,13 +764,13 @@ async fn a_retried_duty_tool_call_returns_the_duty_it_registered(
 		"trigger": {"kind": "interval", "every_seconds": 3600},
 	});
 	// Act: the same tool call arrives twice, as after a lost answer.
-	let first = agent_tool(&c.f.store, &run, "call-a", "duty_create", input.clone())
+	let first = agent_tool(&c.f, &run, "call-a", "duty_create", input.clone())
 		.await
 		.unwrap();
-	let again = agent_tool(&c.f.store, &run, "call-a", "duty_create", input.clone())
+	let again = agent_tool(&c.f, &run, "call-a", "duty_create", input.clone())
 		.await
 		.unwrap();
-	let other = agent_tool(&c.f.store, &run, "call-b", "duty_create", input)
+	let other = agent_tool(&c.f, &run, "call-b", "duty_create", input)
 		.await
 		.unwrap();
 	// Assert
@@ -2097,6 +2097,87 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 	c.close().await;
 }
 
+/// A deleted Thread can only be replaced in an admissible Scratch Space.
+#[rstest::rstest]
+#[case::image_approval_withdrawn(false, "execution policy")]
+#[case::concurrent_deletion(true, "can no longer be used")]
+#[tokio::test]
+async fn recovery_refuses_an_unusable_scratch_space(
+	#[future] capability_fixture: CoreFixture,
+	#[case] deleting: bool,
+	#[case] reason: &str,
+) {
+	let c = capability_fixture.await;
+	let duty = register(&c, thread(&c).await, definition("Weekly review", 604_800)).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let driver = c.f.store.pool.fixture_driver();
+	let space: Uuid = sqlx::query_scalar(
+		"UPDATE threads SET deleted_at = now() WHERE id = $1 RETURNING scratch_space_id",
+	)
+	.bind(own)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	sqlx::query("UPDATE duties SET halt = 'paused', halted_at = now() WHERE id = $1")
+		.bind(id)
+		.execute(driver)
+		.await
+		.unwrap();
+
+	let path = format!("/api/duties/{id}/resume");
+	let resume = request(&c.app, &c.token, "POST", &path, Value::Null);
+	let (status, refused) = if deleting {
+		// Hold the tombstone uncommitted so an unlocked read sees an active
+		// Space. Updating its state takes the same row lock as deletion.
+		let mut deletion = driver.begin().await.unwrap();
+		sqlx::query("UPDATE scratch_spaces SET state = 'cleared' WHERE id = $1")
+			.bind(space)
+			.execute(&mut *deletion)
+			.await
+			.unwrap();
+		let blocker = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *deletion)
+			.await
+			.unwrap();
+		tokio::pin!(resume);
+		tokio::select! {
+			result = &mut resume => panic!("resume completed before deletion committed: {result:?}"),
+			_ = super::lifecycle_tests::wait_for_blocked_connection(driver, blocker) => {}
+		}
+		deletion.commit().await.unwrap();
+		resume.await
+	} else {
+		// The Space retains a pinned image that is absent from the operator's
+		// current allowlist, just as it would after an approval is withdrawn.
+		let image = format!("registry.example.invalid/retired@sha256:{}", "a".repeat(64));
+		sqlx::query(
+			"UPDATE scratch_space_settings \
+			 SET settings = jsonb_set(settings, '{execution_image}', to_jsonb($2::text)) \
+			 WHERE space_id = $1",
+		)
+		.bind(space)
+		.bind(image)
+		.execute(driver)
+		.await
+		.unwrap();
+		resume.await
+	};
+	assert_eq!(status, 400, "{refused}");
+	assert!(refused.to_string().contains(reason), "{refused}");
+	assert_eq!(halt(&c, id).await.as_deref(), Some("paused"));
+	assert_eq!(duty_thread(&c, id).await, own);
+	let live_threads: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM threads WHERE scratch_space_id = $1 AND deleted_at IS NULL",
+	)
+	.bind(space)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	assert_eq!(live_threads, 1, "only the origin Thread remains live");
+	c.close().await;
+}
+
 /// Taking a Duty over grants no right to the Scratch Space its deleted
 /// Thread was in: a successor who cannot use it is refused a new Thread
 /// there and keeps the Duty paused (#991, ADR 0145).
@@ -2238,7 +2319,7 @@ async fn stopping_a_flow_cancels_the_tasks_of_a_deleted_duty(
 	let c = capability_fixture.await;
 	let creator = admit(&c).await;
 	let duty = agent_tool(
-		&c.f.store,
+		&c.f,
 		&creator,
 		"create-scheduled-duty",
 		"duty_create",
@@ -2339,7 +2420,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
 	let created = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-1",
 		"duty_create",
@@ -2369,7 +2450,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 	};
 	// Act / Assert: the Agent may pause it but not delete it.
 	let refused = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-2",
 		"duty_delete",
@@ -2384,7 +2465,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 		"{refused}"
 	);
 	let paused = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-3",
 		"duty_delete",
@@ -2412,7 +2493,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 		.unwrap();
 	assert!(
 		agent_tool(
-			&c.f.store,
+			&c.f,
 			&run,
 			"call-4",
 			"duty_delete",
@@ -2452,7 +2533,7 @@ async fn a_hard_limit_on_a_duty_stops_the_duty_its_agent_set_up(
 			.find(|candidate| candidate.task_id == report.started[0])
 			.unwrap();
 	let created = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-1",
 		"duty_create",

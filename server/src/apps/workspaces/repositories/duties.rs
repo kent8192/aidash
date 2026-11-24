@@ -498,58 +498,6 @@ pub(crate) async fn take_over_thread(
 	Ok(())
 }
 
-/// Whether a person may open a Thread in a Scratch Space of the Tenant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScratchUse {
-	/// It is active and the person created it or is one of its members.
-	Usable,
-	/// It is gone or no longer active.
-	Gone,
-	/// It is active, but the person neither created it nor is a member.
-	NotMember,
-}
-
-pub(crate) async fn scratch_use(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	scratch_space: Uuid,
-	person: &str,
-) -> Result<ScratchUse> {
-	let creator: Option<String> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("creator"))
-			.from(Alias::new("scratch_spaces"))
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(Expr::value(scratch_space)))
-			.and_where(Expr::col("state").eq("active"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await?;
-	let Some(creator) = creator else {
-		return Ok(ScratchUse::Gone);
-	};
-	if creator == person {
-		return Ok(ScratchUse::Usable);
-	}
-	let member: Option<Uuid> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("space_id"))
-			.from(Alias::new("scratch_space_members"))
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("space_id").eq(Expr::value(scratch_space)))
-			.and_where(Expr::col("subject").eq(person.to_owned()))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await?;
-	Ok(if member.is_some() {
-		ScratchUse::Usable
-	} else {
-		ScratchUse::NotMember
-	})
-}
-
 /// The Threads among `threads` that were deleted.
 pub(crate) async fn deleted_threads(
 	tx: &mut dyn TransactionExecutor,

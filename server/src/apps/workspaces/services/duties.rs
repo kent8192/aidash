@@ -2,7 +2,10 @@
 //! authorized operations for people and Agents, the pass every replica runs
 //! for Duties whose time trigger is due, and the notices the bell shows.
 use super::access::Lease;
-use crate::apps::workspaces::repositories::duties::{self as repository, Filter, Stop};
+use crate::apps::workspaces::repositories::{
+	duties::{self as repository, Filter, Stop},
+	scratch::{self, NativeScratchServices, ScratchAdapter},
+};
 use crate::apps::workspaces::serializers::duties::{DetailView, DutyNotice, DutyView, NoticesView};
 use crate::{
 	Error, Result,
@@ -13,12 +16,16 @@ use crate::{
 	federation::Federation,
 	store::Store,
 };
-use aidash_application::duties::{self as app, DutyScope, Listing, Origin};
+use aidash_application::{
+	Error as AppError,
+	duties::{self as app, DutyScope, Listing, Origin},
+};
 use aidash_domain::{
 	approval_rules::{ApprovalMode, MODE_RESOURCE},
 	duties::{self, Claim, Definition, Duty, Halt, Patch, Tick, TickStatus},
 	policy::SubjectKind,
 	registry::{EntityRef, Search},
+	scratch::ScratchState,
 	tenancy::TenantName,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -29,6 +36,7 @@ use uuid::Uuid;
 pub(crate) struct Adapter<'a> {
 	pub access: &'a mut Access,
 	pub store: &'a Store,
+	pub scratch_policy: &'a crate::config::ScratchOperatorPolicy,
 	pub now: DateTime<Utc>,
 }
 
@@ -291,41 +299,49 @@ impl DutyScope for Adapter<'_> {
 		let place = self.thread_place(deleted).await?;
 		let tenant = tenant(self.access);
 		let person = self.subject().to_owned();
-		// The person opens a Thread there as anyone opening one would: they
-		// must use the Node and the Scratch Space and may create a Thread.
-		// Taking a Duty over grants none of these.
-		match repository::scratch_use(
-			&mut *self.access.tx,
-			&tenant,
-			place.scratch_space_id,
-			&person,
-		)
-		.await?
-		{
-			repository::ScratchUse::Usable => {}
-			repository::ScratchUse::Gone => {
-				return Err(aidash_application::Error::Invalid(
-					"the Scratch Space of the Duty's deleted Thread can no longer be used, so no \
-					 new Thread can open for it; delete the Duty instead"
-						.into(),
-				));
-			}
-			repository::ScratchUse::NotMember => {
-				return Err(aidash_application::Error::Invalid(
-					"the Duty's new Thread opens in the Scratch Space of its deleted Thread, which \
-					 you cannot use; ask its creator to add you as a member"
-						.into(),
-				));
-			}
-		}
 		let node = aidash_domain::nodes::NodeName::parse(&place.node)?;
-		let resource = self.access.node_resource(&node).await?;
-		self.access
-			.require(
-				&resource,
-				aidash_domain::identity::tenant_administration::NODE_USE,
-			)
-			.await?;
+		let mut services = NativeScratchServices {
+			policy: self.scratch_policy,
+		};
+		let mut scope = ScratchAdapter {
+			access: self.access,
+			services: &mut services,
+			person_override: None,
+		};
+		// The selection holds the Scratch Space lock through the Thread and
+		// Duty writes in this same transaction.
+		let selection = aidash_application::scratch::select_for_thread(
+			&mut scope,
+			&node,
+			&definition.title,
+			Some(place.scratch_space_id),
+			self.now,
+		)
+		.await;
+		if let Err(error) = selection {
+			if !matches!(error, AppError::Forbidden | AppError::NotFound(_)) {
+				return Err(error);
+			}
+			// Explain why the original Space cannot be selected. The selection
+			// already locked it if it exists.
+			let reason =
+				match scratch::read(&mut *self.access.tx, &tenant, place.scratch_space_id).await? {
+					None => "the Scratch Space of the Duty's deleted Thread no longer exists",
+					Some(space) if space.state != ScratchState::Active => {
+						"the Scratch Space of the Duty's deleted Thread can no longer be used"
+					}
+					Some(space) if !space.may_use(&person) => {
+						"the Duty's new Thread opens in the Scratch Space of its deleted Thread, which \
+					 you cannot use; ask its creator to add you as a member"
+					}
+					Some(_) if matches!(error, AppError::Forbidden) => {
+						"the Scratch Space of the Duty's deleted Thread cannot be used with the current \
+					 Node access or execution policy"
+					}
+					Some(_) => return Err(error),
+				};
+			return Err(AppError::Invalid(reason.into()));
+		}
 		let note = format!(
 			"The Duty's previous Thread was deleted at {}.",
 			deleted_at.format("%Y-%m-%d %H:%M UTC")
@@ -497,6 +513,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		let mut scope = Adapter {
 			access: &mut access,
 			store: &f.store,
+			scratch_policy: &f.config.scratch_policy,
 			now,
 		};
 		let mine = scope.subject().to_owned();
@@ -1311,7 +1328,7 @@ pub(crate) async fn stop_for_tenant(
 /// up Duties too (#1012). Its approval was already decided by that person's
 /// Approval Mode and Approval Rules before the call ran.
 pub async fn agent_tool(
-	store: &Store,
+	f: &Federation,
 	run: &aidash_domain::Run,
 	key: &str,
 	operation: &str,
@@ -1319,6 +1336,7 @@ pub async fn agent_tool(
 ) -> Result<Value> {
 	use aidash_application::duties::tool;
 	use aidash_application::ports::authorization::ExecutionGrantRepository;
+	let store = &f.store;
 	let federated = !run.is_local(store.deployment.as_str());
 	let grant = if federated {
 		None
@@ -1350,6 +1368,7 @@ pub async fn agent_tool(
 		let mut scope = Adapter {
 			access: &mut access,
 			store,
+			scratch_policy: &f.config.scratch_policy,
 			now: Utc::now(),
 		};
 		let summary = |duty: &Duty| {
