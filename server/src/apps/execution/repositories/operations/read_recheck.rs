@@ -20,12 +20,14 @@ use aidash_application::{
 use aidash_domain::preview::live::StopReason;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures_util::{StreamExt as _, stream};
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
 	Alias, BinOper, Expr, ExprTrait as _, IntoValue, OnConflict, Order, PostgresQueryBuilder,
 	Query, QueryStatementBuilder as _, types::PgBinOper,
 };
 use serde_json::json;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 async fn check_run(
@@ -63,50 +65,82 @@ async fn check_operation(repository: &Repository<'_>, id: Uuid) -> NativeResult<
 		tenant: snapshot.tenant.clone(),
 		subject: snapshot.principal.clone(),
 	};
-	let checked = check_run(
+	check_run(
 		repository.store,
 		snapshot.run_id,
 		&identity,
 		serde_json::from_value(snapshot.subjects.clone())?,
 		&snapshot.kind,
 	)
-	.await;
-	if !refused(&checked)
-		&& snapshot.kind == aidash_application::capabilities::pod::PYTHON
-		&& snapshot.input["runtime"] == "pod"
-		&& snapshot.result["sessions_stopped"] != true
-		&& let Some(space) = snapshot.input["scratch_space_id"].as_str()
-	{
-		pod_sessions::stop_if_ended(repository.store, &snapshot.tenant, snapshot.run_id, space)
-			.await?;
-	}
-	checked?;
-	retire_ended_background(repository.store, &snapshot).await
-}
-
-fn refused(result: &NativeResult<()>) -> bool {
-	matches!(
-		result,
-		Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_))
-	)
+	.await
 }
 
 async fn check_stdio(store: &Store, run: Uuid) -> NativeResult<()> {
 	let Some(session) = pod_sessions::stdio(store, run).await? else {
 		return Ok(());
 	};
-	let checked = check_run(
+	check_run(
 		store,
 		run,
 		&session.identity(),
 		session.subjects,
 		"mcp_stdio",
 	)
-	.await;
-	if !refused(&checked) {
-		pod_sessions::stop_if_ended(store, &session.tenant, run, &session.space).await?;
+	.await
+}
+
+impl Repository<'_> {
+	/// Durable targets stay eligible for maintenance until the Runner confirms
+	/// the outcome. Runner timeouts must not delay the authorization pass.
+	pub(crate) async fn maintain_read_recheck_targets(&self) -> Result<()> {
+		const CONCURRENT_CALLS: usize = 4;
+		let background = background_runs(self.store).await?;
+		let probes =
+			stream::iter(background).for_each_concurrent(CONCURRENT_CALLS, |id| async move {
+				let result: Result<()> = async {
+					let snapshot = self.snapshot(id).await?;
+					retire_ended_background(self.store, &snapshot).await?;
+					Ok(())
+				}
+				.await;
+				if let Err(error) = result {
+					tracing::warn!(%id, %error, "Background retirement pending");
+				}
+			});
+		let cleanup = async {
+			let mut sessions = BTreeSet::new();
+			for id in pod_sessions::python_targets(self.store).await? {
+				match self.snapshot(id).await {
+					Ok(snapshot) => {
+						if let Some(space) = snapshot.input["scratch_space_id"].as_str() {
+							sessions.insert((snapshot.tenant, snapshot.run_id, space.to_owned()));
+						}
+					}
+					Err(error) => tracing::warn!(%id, %error, "Python session lookup pending"),
+				}
+			}
+			for run in pod_sessions::stdio_targets(self.store).await? {
+				match pod_sessions::stdio(self.store, run).await {
+					Ok(Some(session)) => {
+						sessions.insert((session.tenant, run, session.space));
+					}
+					Ok(None) => {}
+					Err(error) => tracing::warn!(%run, %error, "Stdio session lookup pending"),
+				}
+			}
+			stream::iter(sessions)
+				.for_each_concurrent(CONCURRENT_CALLS, |(tenant, run, space)| async move {
+					if let Err(error) =
+						pod_sessions::stop_if_ended(self.store, &tenant, run, &space).await
+					{
+						tracing::warn!(%run, %error, "terminal session cleanup pending");
+					}
+				})
+				.await;
+			Ok(())
+		};
+		tokio::join!(probes, cleanup).1
 	}
-	checked
 }
 
 async fn retire_ended_background(
@@ -341,7 +375,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 #[async_trait]
 impl ReadRecheckRepository for Repository<'_> {
 	async fn targets(&self) -> Result<Vec<Target>> {
-		let operations: std::collections::BTreeSet<_> = running_commands(self.store)
+		let operations: BTreeSet<_> = running_commands(self.store)
 			.await?
 			.into_iter()
 			.chain(background_runs(self.store).await?)

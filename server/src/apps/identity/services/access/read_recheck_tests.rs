@@ -1159,6 +1159,8 @@ async fn background_targets_retire_after_runner_proof_and_keep_the_background_id
 			.mount_as_scoped(&runner)
 			.await;
 		assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+		assert!(runner.received_requests().await.unwrap().is_empty());
+		repository.maintain_read_recheck_targets().await.unwrap();
 		assert!(repository.targets().await.unwrap().contains(&target));
 	}
 	evidence()
@@ -1166,7 +1168,7 @@ async fn background_targets_retire_after_runner_proof_and_keep_the_background_id
 		.expect(1)
 		.mount(&runner)
 		.await;
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	repository.maintain_read_recheck_targets().await.unwrap();
 	assert!(!repository.targets().await.unwrap().contains(&target));
 	assert_eq!(
 		operation_state(&fixture, operation).await.1["left_running"],
@@ -1261,7 +1263,9 @@ async fn stdio_sessions_stay_in_read_recheck_until_the_runner_acknowledges_the_s
 			.expect(1)
 			.mount_as_scoped(&runner)
 			.await;
-		assert!(repository.check(target).await.is_err());
+		assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+		assert!(runner.received_requests().await.unwrap().is_empty());
+		repository.maintain_read_recheck_targets().await.unwrap();
 	}
 	let restarted = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
@@ -1272,7 +1276,7 @@ async fn stdio_sessions_stay_in_read_recheck_until_the_runner_acknowledges_the_s
 		.expect(1)
 		.mount(&runner)
 		.await;
-	assert_eq!(restarted.check(target).await.unwrap(), Outcome::Allowed);
+	restarted.maintain_read_recheck_targets().await.unwrap();
 	assert!(!restarted.targets().await.unwrap().contains(&target));
 }
 
