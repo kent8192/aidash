@@ -627,11 +627,21 @@ impl SemanticIndexingSession for Session {
 			if policy.thread_index_embedding {
 				// Built-in Memory has no embedding role of its own: its Units
 				// are embedded like the Thread's other sources, with the
-				// index's embedding and ledger (#1123).
+				// index's embedding and ledger, under the projecting subject's
+				// saved authority (#1123). Only a Unit still visible at the
+				// projected revision is sent; a withdrawn or revoked one was
+				// already marked by its projection.
 				let origin = super::unit_origins::load(&mut self.lease, entry)
 					.await?
 					.ok_or(Error::Forbidden)?;
-				if Some(origin.revision) != row.metadata["unit_revision"].as_i64() {
+				let current = super::units::load(&mut self.lease, entry, false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				if Some(origin.revision) != row.metadata["unit_revision"].as_i64()
+					|| Some(current.revision) != row.metadata["unit_revision"].as_i64()
+					|| current.bank != bank
+					|| !current.visible()
+				{
 					return Err(Error::Forbidden.into());
 				}
 				return service::embed(

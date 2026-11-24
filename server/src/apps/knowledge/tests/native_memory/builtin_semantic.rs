@@ -236,7 +236,19 @@ async fn builtin_memory_uses_thread_index_embedding(
 			let mut ready = true;
 			for id in [friday, plants] {
 				let state = projection_state(&store, id).await;
-				assert_ne!(state.as_deref(), Some("ERROR"), "built-in indexing failed");
+				if state.as_deref() == Some("ERROR") {
+					let error: Option<String> = aidash_server::database::native::query_scalar(
+						&Query::select()
+							.column(Alias::new("last_error"))
+							.from(Alias::new("semantic_entries"))
+							.and_where(Expr::col("id").eq(Expr::value(id)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
+					.await
+					.unwrap();
+					panic!("built-in indexing failed: {error:?}");
+				}
 				ready &= state.as_deref() == Some("READY");
 			}
 			if ready {
@@ -311,4 +323,39 @@ async fn builtin_memory_uses_thread_index_embedding(
 	.await
 	.unwrap();
 	assert_eq!(recall(&store, &bank, question).await, Recall::Empty);
+
+	// A deletion while the index is disabled still reaches its projection, so
+	// enabling the index again cannot bring the fact back.
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			provider: reference("aidash.memory"),
+			..mutation(
+				&bank,
+				Change::Delete {
+					id: friday,
+					expected_revision: 1,
+				},
+			)
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		projection_state(&store, friday).await.as_deref(),
+		Some("DELETED")
+	);
+	aidash_server::semantic::service::configure(
+		&store,
+		&actor,
+		thread,
+		index_change(&endpoint, 3, true, false),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		projection_state(&store, friday).await.as_deref(),
+		Some("DELETED")
+	);
 }

@@ -888,9 +888,6 @@ pub(crate) async fn project(
 		return Ok(());
 	};
 	let spec = index.configuration()?;
-	if optional && !spec.enabled {
-		return Ok(());
-	}
 	let prior: Option<core::Entry> = native::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -901,6 +898,11 @@ pub(crate) async fn project(
 	)
 	.fetch_optional(&mut **lease.tx())
 	.await?;
+	// A deletion or revocation always reaches an existing projection; only a
+	// new or changed visible Unit waits for an enabled index.
+	if optional && !spec.enabled && (prior.is_none() || unit.visible()) {
+		return Ok(());
+	}
 	if let Some(prior) = &prior {
 		if prior.thread_id != unit.bank.thread
 			|| serde_json::from_value::<Source>(prior.source.clone())?
@@ -928,17 +930,21 @@ pub(crate) async fn project(
 			return Err(Error::Conflict("Thread search source limit reached".into()));
 		}
 	}
+	// A built-in Unit the index cannot take is withdrawn from it rather than
+	// left at an older revision; it stays reachable by keyword.
+	let mut withdrawn = false;
 	if unit.visible()
 		&& let Err(error) = aidash_domain::semantic::indexing::validate_text(
 			&unit.content.text,
 			spec.max_input_bytes,
 		) {
-		// A stale prior projection no longer matches the Unit's revision,
-		// so search by meaning skips it until the text fits again.
-		if optional {
+		if !optional {
+			return Err(error.into());
+		}
+		if prior.is_none() {
 			return Ok(());
 		}
-		return Err(error.into());
+		withdrawn = true;
 	}
 	let revision = prior.as_ref().map_or(Ok(1), |old| {
 		old.revision
@@ -948,7 +954,7 @@ pub(crate) async fn project(
 	})?;
 	let state = if unit.deleted {
 		"DELETED"
-	} else if !unit.visible() {
+	} else if !unit.visible() || withdrawn {
 		"REVOKED"
 	} else {
 		"PENDING"
@@ -1041,8 +1047,8 @@ pub(crate) async fn project(
 	.await?;
 	Ok(())
 }
-/// Built-in Units admitted before their Thread index existed or was enabled
-/// enter it now, under the authority of the person configuring it (#1123).
+/// Built-in Units admitted or changed while their Thread index was missing or
+/// disabled enter it now, under the authority of the person configuring it (#1123).
 /// Units the index cannot take stay keyword-only, as in [`project`].
 pub(crate) async fn backfill_builtin(lease: &mut Lease<'_>, thread: Uuid) -> Result<()> {
 	use aidash_domain::registry::bindings::memory_defaults;
@@ -1071,15 +1077,6 @@ pub(crate) async fn backfill_builtin(lease: &mut Lease<'_>, thread: Uuid) -> Res
 					.eq(memory_defaults::VERSION),
 			)
 			.and_where(Expr::col(("u", "deleted")).eq(false))
-			.and_where(
-				Expr::col(("u", "id")).not_in_subquery(
-					Query::select()
-						.column(Alias::new("id"))
-						.from(Alias::new("semantic_entries"))
-						.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
-						.to_owned(),
-				),
-			)
 			.order_by(("u", "id"), Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -1090,11 +1087,30 @@ pub(crate) async fn backfill_builtin(lease: &mut Lease<'_>, thread: Uuid) -> Res
 		version: memory_defaults::VERSION.into(),
 	};
 	for id in ids {
-		if let Some(unit) = units::load(lease, id, false).await?
-			&& unit.visible()
-		{
-			project(lease, &unit, &actor, Some(&provider)).await?;
+		let Some(unit) = units::load(lease, id, false).await? else {
+			continue;
+		};
+		if !unit.visible() {
+			continue;
 		}
+		// Re-project a Unit with no live projection, or one left at an older
+		// revision while the index was disabled or could not take it.
+		let current: Option<serde_json::Value> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("metadata"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("deleted").eq(false))
+				.and_where(Expr::col("state").ne("REVOKED"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **lease.tx())
+		.await?;
+		if current.is_some_and(|metadata| metadata["unit_revision"].as_i64() == Some(unit.revision))
+		{
+			continue;
+		}
+		project(lease, &unit, &actor, Some(&provider)).await?;
 	}
 	Ok(())
 }
