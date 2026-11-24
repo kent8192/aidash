@@ -1222,6 +1222,95 @@ async fn account_suspension_refuses_running_commands_and_previews(
 
 #[rstest]
 #[tokio::test]
+async fn memory_maintenance_skips_a_completed_run_whose_identity_was_disabled(
+	#[future] database: DatabaseFixture,
+) {
+	let mut fixture = fixture(database.await, 1).await;
+	sqlx::query("UPDATE task_executions SET home_node=$2 || '/' || node WHERE id=$1")
+		.bind(fixture.run)
+		.bind(DEPLOYMENT)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let source = bind_common_account(&mut fixture, false).await;
+	sqlx::query("UPDATE dashboard_identities SET disabled_at=clock_timestamp() WHERE id=$1")
+		.bind(source)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	for (id, kind, config) in [
+		(
+			"model",
+			"model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"fixture",
+			"agent",
+			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}),
+		),
+	] {
+		sqlx::query(
+			"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,'1.0.0',$2,$3)",
+		)
+		.bind(id)
+		.bind(kind)
+		.bind(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config}))
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	}
+	let participant = Uuid::new_v4();
+	sqlx::query("INSERT INTO memory_participants (id,home,tenant,thread_id,principal,agent_id,agent_version,revision,deleted) VALUES ($1,$2,'acme',$3,'reader','fixture','1.0.0',1,false)")
+		.bind(participant).bind(DEPLOYMENT).bind(fixture.thread)
+		.execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO memory_run_bindings (run_id,tenant,participant_id,provider_id,provider_version,participant_revision) VALUES ($1,'acme',$2,'fixture-memory','1.0.0',1)")
+		.bind(fixture.run).bind(participant).execute(fixture.driver()).await.unwrap();
+	let run = fixture
+		.store
+		.run(&TenancyScope::tenant("acme").unwrap(), fixture.run)
+		.await
+		.unwrap();
+	let agent =
+		aidash_domain::entities::agent_subject(&run.home_node, &run.agent_id, &run.agent_version);
+	sqlx::query(
+		"UPDATE authorization_execution SET subject_chain=ARRAY['reader',$2] WHERE run_id=$1",
+	)
+	.bind(run.id)
+	.bind(agent)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	assert!(matches!(
+		crate::authorization::execution::access_for_run(&fixture.store, &run.metadata(), true)
+			.await,
+		Err(Error::CredentialForbidden(
+			crate::error::CredentialReason::IdentityDisabled
+		))
+	));
+
+	crate::semantic::worker::sweep(&fixture.store)
+		.await
+		.unwrap();
+
+	let discovered: Uuid =
+		sqlx::query_scalar("SELECT cursor_id FROM memory_learning_discovery WHERE deployment=$1")
+			.bind(DEPLOYMENT)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert_eq!(discovered, fixture.run);
+	let scheduled: bool =
+		sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM memory_engine_jobs WHERE id=$1)")
+			.bind(fixture.run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert!(!scheduled);
+}
+
+#[rstest]
+#[tokio::test]
 async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
 	#[future] database: DatabaseFixture,
 ) {
