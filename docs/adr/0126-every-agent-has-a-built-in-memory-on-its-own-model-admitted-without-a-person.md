@@ -28,3 +28,19 @@ Each fact names its Run and Context Journal range. A later Run reads details bac
 ## Amendment (2026-11-17)
 
 A Run that a Remote Grant started recalls and writes memory through its Home (ADR 0139). Recall reads the Home Workspace's published bank and the Agent's participant bank there, as the Run's starting context already did, and writes go only to the participant bank, so nothing the Run learns stays on the receiving Node and it never writes the Home's shared memory directly.
+
+## Amendment (2026-11-25): a person's deletion marks what was learned from it (#928)
+
+When a person deletes a fact, the facts learned from Task executions that recalled it are marked, not withdrawn. The mark spreads to facts learned from Task executions that recalled a marked fact. Recall returns a marked fact with the deleted fact's text and asks the model to rely on it only if it does not depend on that fact. Marked facts rank below unmarked ones. A new revision with new evidence clears the mark. Running Task executions that read the deleted or a newly marked fact are not stopped: they receive a platform notice before their next inference. The memory's own evictions, corrections and reconciliations still change nothing downstream.
+
+A live comparison chose this over withdrawing the facts. DeepSeek V4.1 Flash, with the learned facts recorded by hand and the Agent told to consult memory, gave these results:
+
+- **Nothing re-checkable.** Withdrawing every affected fact removed every poisoned answer (8 of 10 to 0) but also every true fact the same Task executions had learned (9 of 10 to 0). A mark without the deleted text did no better: the model distrusted all marked facts (0 of 8 kept). A mark quoting the deleted fact removed the poisoned answers (11 of 12 to 0) and kept the unrelated facts (11 of 12 kept, against 11 of 12 with no cascade).
+- **Source re-checkable.** No arm gave poisoned answers.
+
+### Considered Options
+
+- **No cascade.** Poisoned facts keep answering when nothing can be re-checked.
+- **Withdraw facts one hop away.** Poisoned facts two hops away survived (4 of 5 invoice answers poisoned), and the true facts of the first hop were lost.
+- **Withdraw transitively.** Removes the poison, but also every unrelated fact the same Task executions learned.
+- **Stop Task executions that read the deleted fact.** Built-in Memory failures are tool errors, not stops (above). A notice lets the execution re-check its own work.
