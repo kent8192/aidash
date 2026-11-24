@@ -1,4 +1,5 @@
 //! Host Access bootstrap of a Tenant and its administrators.
+use crate::apps::identity::models::bootstrap_reservations::{GrantTarget, lock_email};
 use crate::apps::identity::models::{
 	AuthorizationBundle, AuthorizationRevision, BootstrapDeploymentAdministratorReservation,
 	DashboardMapping, DemoReservation, Tenant, demo_reservations,
@@ -54,18 +55,18 @@ pub async fn bootstrap(
 			"email must contain one @ with text on both sides".into(),
 		));
 	}
-	let selector = aidash_domain::identity::tenancy::label(selector)?;
+	let selector = selector.trim();
 	let policy = config.dashboard_policy();
-	let recovered = recover_tenant(pool, config, policy.as_ref(), &email, &selector).await;
-	let identity = match &recovered {
-		Ok(tenant) => tenant.identity,
-		Err(_) => sole_eligible_holder(pool, &email).await?,
+	let recovered = recover_tenant(pool, config, policy.as_ref(), &email, selector).await;
+	let target = match &recovered {
+		Ok(tenant) => GrantTarget::TenantHolder(tenant.identity),
+		Err(_) => GrantTarget::FindHolder,
 	};
 	let deployment_administrator = BootstrapDeploymentAdministratorReservation::grant_or_hold(
 		pool,
 		policy.as_ref(),
 		&email,
-		identity,
+		target,
 	)
 	.await?;
 	match recovered {
@@ -76,7 +77,7 @@ pub async fn bootstrap(
 			subject: tenant.subject,
 			deployment_administrator,
 		}),
-		Err(error) => Err(not_recovered(error, &selector, deployment_administrator)),
+		Err(error) => Err(not_recovered(error, selector, deployment_administrator)),
 	}
 }
 
@@ -105,31 +106,6 @@ fn not_recovered(error: Error, selector: &str, deployment_administrator: &str) -
 	}
 }
 
-/// The identity the Deployment Administrator grant goes to when the Tenant
-/// could not be recovered: the only enabled identity holding `email`, unless
-/// another identity already spent one of the address's Host Access
-/// reservations, as [`BootstrapDeploymentAdministratorReservation::consume`]
-/// also refuses to split the two roles.
-async fn sole_eligible_holder(pool: &Pool, email: &str) -> Result<Option<Uuid>> {
-	pool.atomic(
-		&TenancyScope::Deployment(DeploymentScopeReason::Bootstrap),
-		async |tx| {
-			let [(id, true)] = demo_reservations::holders(tx, email).await?[..] else {
-				return Ok(None);
-			};
-			let split = DemoReservation::objects()
-				.filter(DemoReservation::field_email().eq(email.to_owned()))
-				.filter(DemoReservation::field_source().eq(HOST_ACCESS.to_owned()))
-				.all_with_db(tx)
-				.await?
-				.iter()
-				.any(|reservation| reservation.spent_by.is_some_and(|by| by != id));
-			Ok((!split).then_some(id))
-		},
-	)
-	.await
-}
-
 /// Names or creates the Tenant, then reserves `email` as its Tenant
 /// Administrator and maps the identity holding it when there is one.
 async fn recover_tenant(
@@ -139,6 +115,7 @@ async fn recover_tenant(
 	email: &str,
 	selector: &str,
 ) -> Result<Recovered> {
+	let selector = tenancy::label(selector)?;
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::Bootstrap);
 	let (tenant, created) = pool
 		.atomic(&scope, async |tx| {
@@ -175,7 +152,7 @@ async fn recover_tenant(
 			let tenant = tenants::create(
 				tx,
 				config.deployment.as_str(),
-				selector,
+				&selector,
 				false,
 				Creator::HostAccess,
 			)
@@ -185,6 +162,7 @@ async fn recover_tenant(
 		.await?;
 	let (identity, administrator, subject) = pool
 		.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+			lock_email(tx, email).await?;
 			if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &tenant)
 				.await?
 			{

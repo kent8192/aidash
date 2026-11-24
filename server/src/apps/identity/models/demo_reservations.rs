@@ -3,6 +3,7 @@
 //! Reservation is spent under the same locks and checks as a registration
 //! approval, without the Registration Request.
 
+use super::bootstrap_reservations::lock_email;
 use super::dashboard_administration::{database_time, issue_mapping, lock_policy};
 use super::{
 	AdministrationActor, AdministrationEvent, DashboardIdentity, DashboardMapping, DemoReservation,
@@ -143,15 +144,17 @@ impl DemoReservation {
 	/// Spends Reservation `id` of `tenant` on `identity`, in the Tenant's
 	/// scope.
 	pub(crate) async fn fulfil(
+		&self,
 		db: &Pool,
 		policy: Option<&AccountPolicy>,
-		tenant: &str,
-		id: Uuid,
 		identity: Uuid,
 	) -> Result<Fulfilment> {
-		let scope = TenancyScope::tenant(tenant)?;
+		let scope = TenancyScope::tenant(&self.tenant)?;
 		db.atomic(&scope, async |tx| {
-			Self::fulfil_in(tx, policy, tenant, id, identity).await
+			if self.source == "host_access" {
+				lock_email(tx, &self.email).await?;
+			}
+			Self::fulfil_in(tx, policy, &self.tenant, self.id, identity).await
 		})
 		.await
 	}
@@ -162,7 +165,8 @@ impl DemoReservation {
 	/// holder, then the credential and the Mapping. The caller is in
 	/// `tenant`'s scope. A Reservation that cannot be spent is skipped, not
 	/// failed, so a defect in Demo data never keeps a person from signing in;
-	/// only a failure of the database is an error.
+	/// only a failure of the database is an error. Host Access callers must
+	/// already hold the reservation address lock.
 	pub(crate) async fn fulfil_in(
 		tx: &mut AtomicTransaction,
 		policy: Option<&AccountPolicy>,

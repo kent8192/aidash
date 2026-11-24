@@ -981,3 +981,110 @@ async fn bootstrap_grants_deployment_administrator_when_the_tenant_is_deleted(
 	assert_eq!(d.mappings(identity, &tenant).await, 0);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_grants_deployment_administrator_with_an_invalid_tenant_selector(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::services::bootstrap_command::bootstrap;
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let identity = d.sign_in_as("rescuer", Some("rescuer@example.com")).await;
+	let error = bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"rescuer@example.com",
+		"   ",
+	)
+	.await
+	.unwrap_err()
+	.to_string();
+	assert!(error.contains("label needs 1 to 64 characters"), "{error}");
+	assert!(
+		error.contains("Deployment Administrator: granted"),
+		"{error}"
+	);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_fallback_waits_for_a_concurrent_host_access_reservation_spend(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::services::bootstrap_command::bootstrap;
+	const EMAIL: &str = "race@example.com";
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let tenant = bootstrap(pool, config, EMAIL, "initial")
+		.await
+		.unwrap()
+		.tenant;
+	let first = d.sign_in_as("first", None).await;
+	let second = d.sign_in_as("second", None).await;
+	d.demo_tenant("Ambiguous", "admin").await;
+	d.demo_tenant("Ambiguous", "admin").await;
+	let fixture = pool.fixture_driver();
+	// Only the first identity is visible as an address holder when fallback starts.
+	sqlx::query("UPDATE dashboard_identities SET verified_email = $1 WHERE id = $2")
+		.bind(EMAIL)
+		.bind(first)
+		.execute(fixture)
+		.await
+		.unwrap();
+	let mut spending = fixture.begin().await.unwrap();
+	let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *spending)
+		.await
+		.unwrap();
+	sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 892895))")
+		.bind(EMAIL)
+		.execute(&mut *spending)
+		.await
+		.unwrap();
+	// Commit the competing spend while fallback is waiting to grant, after
+	// an unlocked read would already have picked the first identity.
+	sqlx::query(
+		"UPDATE demo_reservations SET spent_at = now(), spent_by = $1 WHERE tenant = $2 AND email = $3",
+	)
+	.bind(second)
+	.bind(&tenant)
+	.bind(EMAIL)
+	.execute(&mut *spending)
+	.await
+	.unwrap();
+
+	let call = bootstrap(pool, config, EMAIL, "Ambiguous");
+	let release_after_wait = async {
+		tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			loop {
+				let waiting: bool = sqlx::query_scalar(
+					"SELECT EXISTS (SELECT FROM pg_locks WHERE NOT granted AND $1 = ANY(pg_blocking_pids(pid)))",
+				)
+				.bind(pid)
+				.fetch_one(fixture)
+				.await
+				.unwrap();
+				if waiting {
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		})
+		.await
+		.unwrap();
+		spending.commit().await.unwrap();
+	};
+	let (result, ()) = tokio::join!(call, release_after_wait);
+	let error = result.unwrap_err().to_string();
+	assert!(error.contains("multiple Tenants"), "{error}");
+	assert!(
+		error.contains("Deployment Administrator: already reserved"),
+		"{error}"
+	);
+	assert_eq!(d.spent_by(&tenant, EMAIL).await, Some(second));
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{first}' AND enabled")).await, 0);
+	d.finish().await;
+}
