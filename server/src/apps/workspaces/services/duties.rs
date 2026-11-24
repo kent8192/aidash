@@ -75,6 +75,7 @@ impl Adapter<'_> {
 	/// request is in a Thread a person opens, followed by `note`.
 	async fn open_in(
 		&mut self,
+		id: Uuid,
 		place: &ThreadPlace,
 		definition: &Definition,
 		note: Option<&str>,
@@ -87,7 +88,7 @@ impl Adapter<'_> {
 			.create_thread_in(
 				&mut self.access.tx,
 				crate::apps::execution::repositories::store::ThreadInsert {
-					id: Uuid::new_v4(),
+					id,
 					tenant: &tenant,
 					node: &node,
 					title: definition.title.trim(),
@@ -269,7 +270,9 @@ impl DutyScope for Adapter<'_> {
 		// The Requester opens the Duty's own Thread in the Node and
 		// Scratch Space it was registered from (#1008, ADR 0140).
 		let place = self.thread_place(from).await?;
-		Ok(self.open_in(&place, definition, None).await?)
+		Ok(self
+			.open_in(Uuid::new_v4(), &place, definition, None)
+			.await?)
 	}
 	async fn thread_deleted_at(
 		&mut self,
@@ -287,20 +290,52 @@ impl DutyScope for Adapter<'_> {
 		// Scratch Space unseen (#991, ADR 0145).
 		let place = self.thread_place(deleted).await?;
 		let tenant = tenant(self.access);
-		if !repository::scratch_space_active(&mut *self.access.tx, &tenant, place.scratch_space_id)
-			.await?
+		let person = self.subject().to_owned();
+		// The person opens a Thread there as anyone opening one would: they
+		// must use the Node and the Scratch Space and may create a Thread.
+		// Taking a Duty over grants none of these.
+		match repository::scratch_use(
+			&mut *self.access.tx,
+			&tenant,
+			place.scratch_space_id,
+			&person,
+		)
+		.await?
 		{
-			return Err(aidash_application::Error::Invalid(
-				"the Scratch Space of the Duty's deleted Thread can no longer be used, so no new \
-				 Thread can open for it; delete the Duty instead"
-					.into(),
-			));
+			repository::ScratchUse::Usable => {}
+			repository::ScratchUse::Gone => {
+				return Err(aidash_application::Error::Invalid(
+					"the Scratch Space of the Duty's deleted Thread can no longer be used, so no \
+					 new Thread can open for it; delete the Duty instead"
+						.into(),
+				));
+			}
+			repository::ScratchUse::NotMember => {
+				return Err(aidash_application::Error::Invalid(
+					"the Duty's new Thread opens in the Scratch Space of its deleted Thread, which \
+					 you cannot use; ask its creator to add you as a member"
+						.into(),
+				));
+			}
 		}
+		let node = aidash_domain::nodes::NodeName::parse(&place.node)?;
+		let resource = self.access.node_resource(&node).await?;
+		self.access
+			.require(
+				&resource,
+				aidash_domain::identity::tenant_administration::NODE_USE,
+			)
+			.await?;
 		let note = format!(
 			"The Duty's previous Thread was deleted at {}.",
 			deleted_at.format("%Y-%m-%d %H:%M UTC")
 		);
-		Ok(self.open_in(&place, definition, Some(&note)).await?)
+		let id = Uuid::new_v4();
+		let resource =
+			self.access
+				.resource("thread", id, json!({"owner": person, "thread_id": id}));
+		self.access.require(&resource, "thread.create").await?;
+		Ok(self.open_in(id, &place, definition, Some(&note)).await?)
 	}
 	async fn insert(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);

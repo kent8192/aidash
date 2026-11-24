@@ -73,9 +73,11 @@ pub trait DutyScope: Send {
 	/// Opens a new own Thread for a Duty whose Thread was deleted at
 	/// `deleted_at`, in that Thread's Node and Scratch Space, created by the
 	/// Requester, with the Duty's title and its mission as the first message
-	/// plus a line saying when the previous Thread was deleted. Refuses when
-	/// that Scratch Space can no longer be used; it never moves the Duty to
-	/// another one (ADR 0145).
+	/// plus a line saying when the previous Thread was deleted. The person
+	/// must be allowed to open a Thread there as anyone would: use the Node
+	/// and the Scratch Space and create a Thread; taking a Duty over grants
+	/// none of these. Refuses when that Scratch Space can no longer be used;
+	/// it never moves the Duty to another one (ADR 0145).
 	async fn reopen_thread(
 		&mut self,
 		deleted: Uuid,

@@ -2097,6 +2097,52 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 	c.close().await;
 }
 
+/// Taking a Duty over grants no right to the Scratch Space its deleted
+/// Thread was in: a successor who cannot use it is refused a new Thread
+/// there and keeps the Duty paused (#991, ADR 0145).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_successor_outside_the_scratch_space_gets_no_new_thread_there(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: alice's Duty lost its Thread and its Requester; bob is named.
+	let c = capability_fixture.await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, thread(&c).await, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query("UPDATE threads SET deleted_at = now() WHERE id = $1")
+		.bind(own)
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query(
+		"UPDATE duties SET halt = 'requester_left', halted_at = now(), successor = 'bob' WHERE id = $1",
+	)
+	.bind(id)
+	.execute(driver)
+	.await
+	.unwrap();
+	let bob = common::BrowserMapping::new(&c.f, "acme", "bob").await;
+	// Act
+	let (status, taken) = bob
+		.send("POST", &format!("/api/duties/{id}/take-over"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{taken}");
+	assert_eq!(taken["thread_deleted"], true, "{taken}");
+	let (status, refused) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	// Assert
+	assert_ne!(status, 200, "{refused}");
+	assert!(refused.to_string().contains("you cannot use"), "{refused}");
+	assert_eq!(halt(&c, id).await.as_deref(), Some("paused"));
+	assert_eq!(duty_thread(&c, id).await, own);
+	c.close().await;
+}
+
 /// A booking delayed at insertion must go with its Requester's takeover.
 #[rstest::rstest]
 #[tokio::test]
