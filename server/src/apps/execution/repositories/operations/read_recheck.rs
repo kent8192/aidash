@@ -20,7 +20,6 @@ use aidash_application::{
 use aidash_domain::preview::live::StopReason;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt as _, stream};
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
 	Alias, BinOper, Expr, ExprTrait as _, IntoValue, OnConflict, Order, PostgresQueryBuilder,
@@ -28,6 +27,7 @@ use reinhardt::query::{
 };
 use serde_json::json;
 use std::collections::BTreeSet;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 async fn check_run(
@@ -95,18 +95,28 @@ impl Repository<'_> {
 	pub(crate) async fn maintain_read_recheck_targets(&self) -> Result<()> {
 		const CONCURRENT_CALLS: usize = 4;
 		let background = background_runs(self.store).await?;
-		let probes =
-			stream::iter(background).for_each_concurrent(CONCURRENT_CALLS, |id| async move {
-				let result: Result<()> = async {
-					let snapshot = self.snapshot(id).await?;
-					retire_ended_background(self.store, &snapshot).await?;
-					Ok(())
+		let probes = async {
+			let mut jobs = JoinSet::new();
+			for id in background {
+				let store = self.store.clone();
+				jobs.spawn(async move {
+					let result: Result<()> = async {
+						let snapshot = Repository { store: &store }.snapshot(id).await?;
+						retire_ended_background(&store, &snapshot).await?;
+						Ok(())
+					}
+					.await;
+					if let Err(error) = result {
+						tracing::warn!(%id, %error, "Background retirement pending");
+					}
+				});
+				if jobs.len() == CONCURRENT_CALLS {
+					join_maintenance_job(&mut jobs).await?;
 				}
-				.await;
-				if let Err(error) = result {
-					tracing::warn!(%id, %error, "Background retirement pending");
-				}
-			});
+			}
+			while join_maintenance_job(&mut jobs).await? {}
+			Ok(())
+		};
 		let cleanup = async {
 			let mut sessions = BTreeSet::new();
 			for id in pod_sessions::python_targets(self.store).await? {
@@ -128,19 +138,34 @@ impl Repository<'_> {
 					Err(error) => tracing::warn!(%run, %error, "Stdio session lookup pending"),
 				}
 			}
-			stream::iter(sessions)
-				.for_each_concurrent(CONCURRENT_CALLS, |(tenant, run, space)| async move {
+			let mut jobs = JoinSet::new();
+			for (tenant, run, space) in sessions {
+				let store = self.store.clone();
+				jobs.spawn(async move {
 					if let Err(error) =
-						pod_sessions::stop_if_ended(self.store, &tenant, run, &space).await
+						pod_sessions::stop_if_ended(&store, &tenant, run, &space).await
 					{
 						tracing::warn!(%run, %error, "terminal session cleanup pending");
 					}
-				})
-				.await;
+				});
+				if jobs.len() == CONCURRENT_CALLS {
+					join_maintenance_job(&mut jobs).await?;
+				}
+			}
+			while join_maintenance_job(&mut jobs).await? {}
 			Ok(())
 		};
-		tokio::join!(probes, cleanup).1
+		let (probed, cleaned) = tokio::join!(probes, cleanup);
+		probed.and(cleaned)
 	}
+}
+
+async fn join_maintenance_job(jobs: &mut JoinSet<()>) -> Result<bool> {
+	jobs.join_next()
+		.await
+		.transpose()
+		.map(|job| job.is_some())
+		.map_err(|error| aidash_application::Error::External(error.to_string()))
 }
 
 async fn retire_ended_background(
