@@ -1491,7 +1491,12 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 ) {
 	let fixture = fresh_database.await;
 	let name = "0113_budget_notice_delivery";
-	fixture.migrate_excluding(&[("identity", name)]).await;
+	// Keep the dependent backfill out of both histories so 0113 can be
+	// applied and reversed independently.
+	let backfill = ("identity", "0114_policy_revision_backfill");
+	fixture
+		.migrate_excluding(&[("identity", name), backfill])
+		.await;
 	fixture.tenant_root("notice-upgrade").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let id = Uuid::new_v4();
@@ -1554,7 +1559,7 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 		sqlx::query_scalar(&notices).fetch_all(&pool).await.unwrap()
 	};
 
-	fixture.migrate().await;
+	fixture.migrate_excluding(&[backfill]).await;
 	assert_eq!(read_notices().await, vec![Some(sent_at)]);
 	let pending = Query::insert()
 		.into_table(Alias::new("budget_notices"))
