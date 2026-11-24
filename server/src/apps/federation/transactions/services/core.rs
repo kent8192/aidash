@@ -14,5 +14,5 @@ pub fn validate(manifest: &Manifest) -> crate::Result<()> {
 }
 
 pub use crate::apps::federation::transactions::serializers::contracts::{
-	Isolation, LocalStatus, Manifest, Mutation, Participant, Status, Vote,
+	Decision, Isolation, LocalStatus, Manifest, Mutation, Participant, Share, Status, Vote,
 };

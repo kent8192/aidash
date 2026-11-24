@@ -26,7 +26,8 @@ pub trait ControlScope: Send {
 
 #[async_trait]
 pub trait SubmissionScope: Send {
-	async fn submit(&mut self, manifest: &Manifest, origin: &Origin) -> Result<Status>;
+	/// Store a new manifest sealed with `seed`; an existing one keeps its own.
+	async fn submit(&mut self, manifest: &Manifest, seed: &str, origin: &Origin) -> Result<Status>;
 	async fn bind(&mut self, id: Uuid, binding: &Binding) -> Result<()>;
 	/// Arbitrate the immutable decision and its audit under this transaction's row lock.
 	async fn transition(

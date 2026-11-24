@@ -81,8 +81,8 @@ impl AdmissionScope for Scope<'_> {
 			.await
 			.is_ok_and(|route| route.atomic_transactions))
 	}
-	async fn admit(&mut self, manifest: &Manifest) -> Result<Status> {
-		coordinator_records::admit_in(self.tx, manifest)
+	async fn admit(&mut self, manifest: &Manifest, seed: &str) -> Result<Status> {
+		coordinator_records::admit_in(self.tx, manifest, seed)
 			.await
 			.map(Into::into)
 			.map_err(Into::into)

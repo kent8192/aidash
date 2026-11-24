@@ -151,8 +151,9 @@ async fn manage_runworker_recovers_durable_work_and_exposes_only_probes(
 		serde_json::from_value(manifest.clone()).unwrap();
 	let transaction = AtomicCoordinator::build()
 		.id(id)
-		.digest(typed.digest().unwrap())
+		.digest(typed.sealed_digest(&"5e".repeat(32)).unwrap())
 		.manifest(manifest.into())
+		.seed("5e".repeat(32))
 		.decision(None)
 		.visible(false)
 		.complete(false)

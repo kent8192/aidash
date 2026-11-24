@@ -193,6 +193,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("federation", "0031_transaction_parts"),
+	("federation", "0032_transaction_parts_state"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
 ];
@@ -259,6 +261,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("federation", "0031_transaction_parts"),
+	("federation", "0032_transaction_parts_state"),
 ];
 
 /// Reversing the whole graph grows with the history; the bound only catches a
@@ -356,7 +360,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.map(|m| m.name.clone())
 			.collect::<Vec<_>>()
 	};
-	assert_eq!(head("federation"), ["0030_threads"]);
+	assert_eq!(head("federation"), ["0032_transaction_parts_state"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
 	assert_eq!(head("execution"), ["0156_model_call_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
@@ -372,7 +376,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		136
+		137
 	);
 	let tables = migrations
 		.iter()
@@ -414,6 +418,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 							(migration.app_label.as_str(), migration.name.as_str()),
 							("registry", "0054_remove_agent_cluster")
 								| ("execution", "0089_remove_agent_cluster")
+								// Discarded journals cannot be restored (#1107).
+								| ("federation", "0031_transaction_parts")
 						),
 					"{}.{}",
 					migration.app_label,
@@ -744,6 +750,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -1230,7 +1238,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		136
+		137
 	);
 }
 
@@ -2489,6 +2497,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
 		])
@@ -5164,6 +5174,8 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("federation", "0031_transaction_parts"),
+	("federation", "0032_transaction_parts_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
 	("execution", "0152_stint_leases"),
@@ -5744,6 +5756,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
 			("workspaces", "0062_task_duty_script"),
@@ -5843,6 +5857,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
 			("workspaces", "0062_task_duty_script"),
@@ -5950,6 +5966,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
 			("workspaces", "0062_task_duty_script"),

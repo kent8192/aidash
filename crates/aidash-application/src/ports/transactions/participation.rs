@@ -1,8 +1,8 @@
 //! Participant scopes own the exact transaction through validation and settlement.
 use crate::Result;
 use aidash_domain::transactions::{
-	Manifest,
 	coordination::{LocalStatus, ParticipantPhase},
+	share::Share,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -15,15 +15,14 @@ pub trait ParticipantScope: Send {
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>>;
 	async fn reserve_gate(&mut self, id: Uuid) -> Result<()>;
 	async fn release_gate(&mut self, committed: bool) -> Result<()>;
-	async fn insert(&mut self, manifest: &Manifest, phase: ParticipantPhase)
-	-> Result<LocalStatus>;
+	async fn insert(&mut self, share: &Share, phase: ParticipantPhase) -> Result<LocalStatus>;
 	async fn transition(&mut self, id: Uuid, phase: ParticipantPhase) -> Result<LocalStatus>;
 	async fn reservation_history(&mut self, id: Uuid) -> Result<()>;
 	/// Use the same mutation implementation under a rollback-only savepoint.
 	/// Session mutation context is established before the savepoint and retained.
-	async fn validate_mutations(&mut self, manifest: &Manifest) -> Result<()>;
+	async fn validate_mutations(&mut self, share: &Share) -> Result<()>;
 	/// Apply mutations and their events in this transaction under its visibility gate.
-	async fn apply_mutations(&mut self, manifest: &Manifest) -> Result<()>;
+	async fn apply_mutations(&mut self, share: &Share) -> Result<()>;
 	/// Success commits. Failure preserves authority auditing or drops the standalone
 	/// transaction for RAII rollback; error identity must survive the boundary.
 	async fn finish(self: Box<Self>, result: Result<LocalStatus>) -> Result<LocalStatus>;
@@ -49,7 +48,7 @@ pub trait ParticipantRepository: Send + Sync {
 	async fn admission(
 		&self,
 		caller: &str,
-		manifest: &Manifest,
+		share: &Share,
 	) -> Result<Option<Box<dyn ParticipantScope>>>;
 	async fn pending(&self) -> Result<Box<dyn PendingParticipants>>;
 	async fn fault(&self, id: Uuid, point: &str) -> Result<()>;

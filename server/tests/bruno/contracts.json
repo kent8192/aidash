@@ -26940,39 +26940,6 @@
             "enum": ["serializable"],
             "type": "string"
           },
-          "TransactionManifest": {
-            "additionalProperties": false,
-            "properties": {
-              "coordinator": {
-                "type": "string"
-              },
-              "deadline": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "isolation": {
-                "$ref": "#/components/schemas/TransactionIsolation"
-              },
-              "participants": {
-                "items": {
-                  "$ref": "#/components/schemas/TransactionParticipant"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "id",
-              "coordinator",
-              "isolation",
-              "deadline",
-              "participants"
-            ],
-            "type": "object"
-          },
           "TransactionMutation": {
             "oneOf": [
               {
@@ -27050,22 +27017,6 @@
               }
             ]
           },
-          "TransactionParticipant": {
-            "additionalProperties": false,
-            "properties": {
-              "mutations": {
-                "items": {
-                  "$ref": "#/components/schemas/TransactionMutation"
-                },
-                "type": "array"
-              },
-              "node_id": {
-                "type": "string"
-              }
-            },
-            "required": ["node_id", "mutations"],
-            "type": "object"
-          },
           "TransactionParticipantStatus": {
             "properties": {
               "coordinator": {
@@ -27079,7 +27030,8 @@
                 "type": "string"
               },
               "manifest": {
-                "$ref": "#/components/schemas/TransactionManifest"
+                "$ref": "#/components/schemas/TransactionShare",
+                "description": "The participant's own share (ADR 0146)."
               },
               "phase": {
                 "type": "string"
@@ -27096,6 +27048,88 @@
               "manifest",
               "phase",
               "updated_at"
+            ],
+            "type": "object"
+          },
+          "TransactionPart": {
+            "additionalProperties": false,
+            "description": "One participant's mutations with the random value that seals them.",
+            "properties": {
+              "mutations": {
+                "items": {
+                  "$ref": "#/components/schemas/TransactionMutation"
+                },
+                "type": "array"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "nonce": {
+                "description": "32 random bytes in lowercase hex, known to the coordinator and this\nparticipant only.",
+                "type": "string"
+              }
+            },
+            "required": ["node_id", "nonce", "mutations"],
+            "type": "object"
+          },
+          "TransactionSeal": {
+            "additionalProperties": false,
+            "description": "What every participant learns about one part.",
+            "properties": {
+              "claims": {
+                "description": "Sorted [`claim`] hashes of the part's Task completions and Run\nfinalizations.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "hash": {
+                "description": "SHA-256 of the part's JSON encoding.",
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              }
+            },
+            "required": ["node_id", "hash", "claims"],
+            "type": "object"
+          },
+          "TransactionShare": {
+            "additionalProperties": false,
+            "description": "One participant's view of a transaction.",
+            "properties": {
+              "coordinator": {
+                "type": "string"
+              },
+              "deadline": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "isolation": {
+                "$ref": "#/components/schemas/TransactionIsolation"
+              },
+              "part": {
+                "$ref": "#/components/schemas/TransactionPart"
+              },
+              "seals": {
+                "description": "Every participant's seal, in participant order.",
+                "items": {
+                  "$ref": "#/components/schemas/TransactionSeal"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "coordinator",
+              "isolation",
+              "deadline",
+              "seals",
+              "part"
             ],
             "type": "object"
           }

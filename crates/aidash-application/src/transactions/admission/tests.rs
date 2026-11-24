@@ -40,11 +40,18 @@ fn origin() -> Origin {
 	}
 }
 
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+
 fn status(manifest: &Manifest) -> Status {
+	sealed(manifest, SEED)
+}
+
+fn sealed(manifest: &Manifest, seed: &str) -> Status {
 	Status {
 		id: manifest.id,
-		digest: manifest.digest().unwrap(),
+		digest: manifest.sealed_digest(seed).unwrap(),
 		manifest: json!(manifest),
+		seed: seed.into(),
 		decision: None,
 		visible: false,
 		complete: false,
@@ -61,6 +68,8 @@ struct State {
 	failure: Option<String>,
 	/// The Tenant that holds the coordinator's Node, if it is a Node here.
 	coordinator_tenant: Option<String>,
+	/// The seed each admission sealed its manifest with.
+	seeds: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -74,6 +83,7 @@ impl Adapter {
 			trusted: true,
 			failure: None,
 			coordinator_tenant: Some("tenant".into()),
+			seeds: vec![],
 		})))
 	}
 	fn event(&self, event: &str) -> Result<()> {
@@ -120,9 +130,10 @@ impl AdmissionScope for Adapter {
 		self.event("trusted")?;
 		Ok(self.0.lock().unwrap().trusted)
 	}
-	async fn admit(&mut self, manifest: &Manifest) -> Result<Status> {
+	async fn admit(&mut self, manifest: &Manifest, seed: &str) -> Result<Status> {
 		self.event("admit")?;
-		Ok(status(manifest))
+		self.0.lock().unwrap().seeds.push(seed.into());
+		Ok(sealed(manifest, seed))
 	}
 	async fn bind_origin(&mut self, _id: Uuid, origin: &Origin) -> Result<()> {
 		self.event("bind_origin")?;
@@ -184,7 +195,7 @@ async fn new_admission_preserves_deadline_second_precision_and_bounds(
 ) {
 	let mut adapter = Adapter::new();
 	manifest.deadline = adapter.now() + Duration::milliseconds(milliseconds);
-	let result = submit_in(&mut adapter, &manifest, None).await;
+	let result = submit_in(&mut adapter, Some(SEED), &manifest, None).await;
 	if accepted {
 		assert_eq!(result.unwrap(), status(&manifest));
 	} else {
@@ -211,7 +222,7 @@ async fn immutable_replay_checks_origin_before_manifest_and_skips_expired_deadli
 		state.trusted = false;
 	}
 	assert_eq!(
-		submit_in(&mut adapter, &manifest, Some(&origin))
+		submit_in(&mut adapter, None, &manifest, Some(&origin))
 			.await
 			.unwrap(),
 		stored
@@ -220,25 +231,64 @@ async fn immutable_replay_checks_origin_before_manifest_and_skips_expired_deadli
 }
 
 #[rstest]
-#[case::digest("digest")]
-#[case::manifest("manifest")]
 #[tokio::test]
-async fn immutable_replay_cannot_change_digest_or_manifest(
-	manifest: Manifest,
-	#[case] changed: &str,
-) {
+async fn immutable_replay_cannot_change_the_manifest(manifest: Manifest) {
 	let mut adapter = Adapter::new();
 	let mut stored = status(&manifest);
-	if changed == "digest" {
-		stored.digest = "different".into();
-	} else {
-		stored.manifest["deadline"] = json!("2031-01-01T00:00:00Z");
-	}
+	stored.manifest["deadline"] = json!("2031-01-01T00:00:00Z");
 	adapter.0.lock().unwrap().status = Some(stored);
 	assert!(
-		matches!(submit_in(&mut adapter, &manifest, None).await, Err(Error::Conflict(message)) if message == "transaction ID already has another immutable manifest")
+		matches!(submit_in(&mut adapter, None, &manifest, None).await, Err(Error::Conflict(message)) if message == "transaction ID already has another immutable manifest")
 	);
 	assert_eq!(adapter.log(), ["status", "match_origin"]);
+}
+
+/// The digest depends on the coordinator's seed, so a retry under another
+/// seed is the same transaction when its manifest is.
+#[rstest]
+#[tokio::test]
+async fn exact_replay_keeps_the_stored_seed_and_digest(manifest: Manifest) {
+	let mut adapter = Adapter::new();
+	let stored = status(&manifest);
+	adapter.0.lock().unwrap().status = Some(stored.clone());
+	let other = "a".repeat(64);
+	assert_ne!(stored.digest, manifest.sealed_digest(&other).unwrap());
+	assert_eq!(
+		submit_in(&mut adapter, Some(&other), &manifest, None)
+			.await
+			.unwrap(),
+		stored
+	);
+	assert_eq!(adapter.log(), ["status", "match_origin"]);
+	assert!(adapter.0.lock().unwrap().seeds.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn admission_seals_with_the_callers_seed(manifest: Manifest) {
+	let mut adapter = Adapter::new();
+	let stored = submit_in(&mut adapter, Some(SEED), &manifest, None)
+		.await
+		.unwrap();
+	assert_eq!(adapter.0.lock().unwrap().seeds, [SEED]);
+	assert_eq!(stored.digest, manifest.sealed_digest(SEED).unwrap());
+}
+
+#[rstest]
+#[tokio::test]
+async fn admission_without_a_seed_seals_with_a_fresh_one(manifest: Manifest) {
+	let adapter = Adapter::new();
+	submit(&adapter, &manifest, None).await.unwrap();
+	let mut again = Adapter::new();
+	submit_in(&mut again, None, &manifest, None).await.unwrap();
+	let first = adapter.0.lock().unwrap().seeds.clone();
+	let second = again.0.lock().unwrap().seeds.clone();
+	assert_eq!((first.len(), second.len()), (1, 1));
+	for seed in first.iter().chain(&second) {
+		assert_eq!(seed.len(), 64);
+		assert!(seed.bytes().all(|byte| byte.is_ascii_hexdigit()));
+	}
+	assert_ne!(first, second);
 }
 
 #[rstest]
@@ -247,7 +297,7 @@ async fn replay_never_rebinds_another_origin(manifest: Manifest, origin: Origin)
 	let mut adapter = Adapter::new();
 	adapter.0.lock().unwrap().status = Some(status(&manifest));
 	assert!(matches!(
-		submit_in(&mut adapter, &manifest, Some(&origin)).await,
+		submit_in(&mut adapter, None, &manifest, Some(&origin)).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(adapter.log(), ["status", "match_origin"]);
@@ -259,7 +309,7 @@ async fn replay_never_rebinds_another_origin(manifest: Manifest, origin: Origin)
 async fn trust_precedes_admission(manifest: Manifest) {
 	let mut adapter = Adapter::new();
 	adapter.0.lock().unwrap().trusted = false;
-	let result = submit_in(&mut adapter, &manifest, None).await;
+	let result = submit_in(&mut adapter, None, &manifest, None).await;
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(adapter.log(), ["status", "trusted"]);
 }
@@ -268,7 +318,7 @@ async fn trust_precedes_admission(manifest: Manifest) {
 #[tokio::test]
 async fn new_origin_is_bound_inside_the_same_admission_scope(manifest: Manifest, origin: Origin) {
 	let mut adapter = Adapter::new();
-	submit_in(&mut adapter, &manifest, Some(&origin))
+	submit_in(&mut adapter, None, &manifest, Some(&origin))
 		.await
 		.unwrap();
 	assert_eq!(
@@ -290,7 +340,7 @@ async fn invalid_submission_never_reads_storage(mut manifest: Manifest, #[case] 
 		manifest.coordinator = "aidash://peer/airy-hawk-2lu4as22".into();
 	}
 	assert!(matches!(
-		submit_in(&mut adapter, &manifest, None).await,
+		submit_in(&mut adapter, None, &manifest, None).await,
 		Err(Error::Invalid(_)) | Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
 	assert_eq!(adapter.log(), Vec::<String>::new());
@@ -341,7 +391,7 @@ async fn a_coordinator_of_another_tenant_is_refused_whatever_the_participants_ar
 ) {
 	let mut adapter = Adapter::new();
 	adapter.0.lock().unwrap().coordinator_tenant = Some("other".into());
-	let result = submit_in(&mut adapter, &manifest, Some(&origin)).await;
+	let result = submit_in(&mut adapter, None, &manifest, Some(&origin)).await;
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 	assert!(!adapter.log().contains(&"admit".to_owned()));
 }
@@ -355,7 +405,7 @@ async fn a_coordinator_that_is_no_node_of_this_deployment_is_refused(
 	let mut adapter = Adapter::new();
 	adapter.0.lock().unwrap().coordinator_tenant = None;
 	for origin in [None, Some(&origin)] {
-		let result = submit_in(&mut adapter, &manifest, origin).await;
+		let result = submit_in(&mut adapter, None, &manifest, origin).await;
 		assert!(
 			matches!(result, Err(Error::Invalid(message)) if message == "submit to the named coordinator")
 		);

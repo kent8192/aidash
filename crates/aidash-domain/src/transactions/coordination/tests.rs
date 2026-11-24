@@ -1,5 +1,5 @@
 use super::*;
-use crate::transactions::{Isolation, Participant};
+use crate::transactions::{Isolation, Manifest, Participant};
 use rstest::{fixture, rstest};
 
 #[fixture]
@@ -16,11 +16,18 @@ fn manifest() -> Manifest {
 	}
 }
 
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+
+fn share(manifest: &Manifest) -> Share {
+	manifest.share(SEED, "aidash://home").unwrap()
+}
+
 fn state(manifest: &Manifest, decision: Option<&str>, visible: bool) -> Status {
 	Status {
 		id: manifest.id,
-		digest: manifest.digest().unwrap(),
+		digest: manifest.sealed_digest(SEED).unwrap(),
 		manifest: json!(manifest),
+		seed: SEED.into(),
 		decision: decision.map(str::to_owned),
 		visible,
 		complete: false,
@@ -83,14 +90,14 @@ fn acknowledgements_require_the_exact_protocol_phase(
 		id: manifest.id,
 		coordinator: manifest.coordinator.clone(),
 		digest: state.digest.clone(),
-		manifest: state.manifest.clone(),
+		manifest: json!(share(&manifest)),
 		phase: expected.into(),
 		updated_at: state.created_at,
 	};
-	validate_acknowledgement(&manifest, &state, operation, &response).unwrap();
+	validate_acknowledgement(&share(&manifest), &state, operation, &response).unwrap();
 	response.phase = "PENDING".into();
 	assert!(matches!(
-		validate_acknowledgement(&manifest, &state, operation, &response),
+		validate_acknowledgement(&share(&manifest), &state, operation, &response),
 		Err(Error::Conflict(message)) if message == "participant returned an unexpected phase"
 	));
 }
@@ -109,7 +116,7 @@ fn acknowledgements_are_bound_to_all_immutable_manifest_facts(
 		id: manifest.id,
 		coordinator: manifest.coordinator.clone(),
 		digest: state.digest.clone(),
-		manifest: state.manifest.clone(),
+		manifest: json!(share(&manifest)),
 		phase: "RESERVED".into(),
 		updated_at: state.created_at,
 	};
@@ -117,11 +124,11 @@ fn acknowledgements_are_bound_to_all_immutable_manifest_facts(
 		"id" => response.id = Uuid::from_u128(2),
 		"coordinator" => response.coordinator = "aidash://other".into(),
 		"digest" => response.digest = "other".into(),
-		"manifest" => response.manifest["participants"] = json!([]),
+		"manifest" => response.manifest["part"]["nonce"] = json!("0".repeat(64)),
 		_ => unreachable!(),
 	}
 	assert!(matches!(
-		validate_acknowledgement(&manifest, &state, ParticipantOperation::Reserve, &response),
+		validate_acknowledgement(&share(&manifest), &state, ParticipantOperation::Reserve, &response),
 		Err(Error::Conflict(message)) if message == "participant acknowledged another manifest"
 	));
 }
@@ -140,24 +147,25 @@ fn decision_proofs_preserve_monotonic_visibility(
 	#[case] visible: bool,
 	#[case] expected: bool,
 ) {
-	let proof = state(&manifest, decision, visible);
-	assert_eq!(decision_matches(&manifest, &proof.digest, &proof), expected);
+	let proof = state(&manifest, decision, visible).decision();
+	assert_eq!(
+		decision_matches(&share(&manifest), &proof.digest, &proof),
+		expected
+	);
 }
 
 #[rstest]
 #[case::id("id")]
 #[case::digest("digest")]
-#[case::manifest("manifest")]
 fn decision_proofs_cannot_substitute_another_manifest(manifest: Manifest, #[case] changed: &str) {
-	let mut proof = state(&manifest, Some("COMMIT"), true);
+	let mut proof = state(&manifest, Some("COMMIT"), true).decision();
 	let digest = proof.digest.clone();
 	match changed {
 		"id" => proof.id = Uuid::from_u128(2),
 		"digest" => proof.digest = "other".into(),
-		"manifest" => proof.manifest["deadline"] = json!("2031-01-01T00:00:00Z"),
 		_ => unreachable!(),
 	}
-	assert!(!decision_matches(&manifest, &digest, &proof));
+	assert!(!decision_matches(&share(&manifest), &digest, &proof));
 }
 
 #[rstest]
@@ -204,7 +212,7 @@ fn participant_phase_preserves_abort_and_commit_preconditions(
 		id: manifest.id,
 		coordinator: manifest.coordinator.clone(),
 		digest: state.digest,
-		manifest: state.manifest,
+		manifest: json!(share(&manifest)),
 		phase: phase.into(),
 		updated_at: state.created_at,
 	};
@@ -213,8 +221,8 @@ fn participant_phase_preserves_abort_and_commit_preconditions(
 		(can_abort, can_commit)
 	);
 	assert!(participant_matches(
-		&manifest,
-		&manifest.digest().unwrap(),
+		&share(&manifest),
+		&share(&manifest).digest().unwrap(),
 		&existing
 	));
 }

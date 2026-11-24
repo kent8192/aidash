@@ -223,10 +223,11 @@ impl ControlScope for Control {
 
 #[async_trait]
 impl SubmissionScope for Submission {
-	async fn submit(&mut self, manifest: &Manifest, origin: &Origin) -> Result<Status> {
+	async fn submit(&mut self, manifest: &Manifest, seed: &str, origin: &Origin) -> Result<Status> {
 		coordinator::submit_in(
 			&self.runtime,
 			manifest,
+			Some(seed),
 			Some(&dto::Origin::from(origin.clone())),
 			self.access.tx.as_mut(),
 		)

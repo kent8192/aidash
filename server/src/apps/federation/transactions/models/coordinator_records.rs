@@ -66,6 +66,7 @@ fn contract(state: AtomicCoordinator) -> Status {
 		id: state.id,
 		digest: state.digest,
 		manifest: state.manifest.0,
+		seed: state.seed,
 		decision: state.decision.map(|decision| match decision {
 			AtomicCoordinatorDecision::Commit => "COMMIT".to_owned(),
 			AtomicCoordinatorDecision::Abort => "ABORT".to_owned(),
@@ -103,6 +104,7 @@ pub(crate) async fn votes<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Vec<Vo
 pub(crate) async fn admit_in(
 	tx: &mut dyn TransactionExecutor,
 	manifest: &Manifest,
+	seed: &str,
 ) -> Result<Status> {
 	let (sql, values) = Query::select()
 		.expr(advisory_lock(
@@ -119,7 +121,8 @@ pub(crate) async fn admit_in(
 		.map_err(FrameworkError::from)?
 		.pop()
 	{
-		if existing.digest != manifest.digest()? || existing.manifest.0 != json!(manifest) {
+		// The digest depends on the seed, so the manifest alone decides.
+		if existing.manifest.0 != json!(manifest) {
 			return Err(Error::Conflict(
 				"transaction ID already has another immutable manifest".into(),
 			));
@@ -128,8 +131,9 @@ pub(crate) async fn admit_in(
 	}
 	let state = AtomicCoordinator::build()
 		.id(manifest.id)
-		.digest(manifest.digest()?)
+		.digest(manifest.sealed_digest(seed)?)
 		.manifest(json!(manifest).into())
+		.seed(seed)
 		.decision(None)
 		.visible(false)
 		.complete(false)

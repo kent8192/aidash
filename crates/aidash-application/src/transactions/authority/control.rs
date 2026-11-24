@@ -1,5 +1,5 @@
 //! Durable transaction authority is checked by every HTTP, peer and recovery caller.
-use super::{checks, request, source_checks};
+use super::{checks, request, sealed_request, source_checks};
 use crate::{
 	Error, Result,
 	ports::transactions::{
@@ -12,6 +12,7 @@ use aidash_domain::{
 	transactions::{
 		CoordinatorDecision, CoordinatorTransition, Manifest,
 		authority::{Binding, Origin, Preflight, Status},
+		share::Share,
 	},
 };
 use futures_util::{TryStreamExt, stream};
@@ -45,9 +46,9 @@ async fn finish_submission<T>(scope: Box<dyn SubmissionScope>, result: Result<T>
 }
 
 /// Whether `node` needs the remote preflight: every Node but the
-/// coordinator's own and those of the submitting Tenant, whatever
-/// Deployment they run on. Another Tenant's Node on this Deployment is as
-/// remote as one on another Deployment.
+/// coordinator's own and those of the submitting Tenant. `Manifest::validate`
+/// admits no other Node of the coordinator's Deployment, so every such Node
+/// is on another Deployment.
 async fn remote_node(
 	repository: &dyn AuthorityRepository,
 	tenant: &str,
@@ -105,12 +106,18 @@ pub async fn submit(
 		return Err(Error::Forbidden);
 	}
 	let origin = Origin::from(identity);
-	for node in &manifest.participants {
-		request(manifest, &origin, &node.node_id)?;
-	}
+	// A new transaction is sealed with this seed. Source checks read no
+	// digest, so an exact-ID retry checks with it too and keeps its own.
+	let seed = super::super::new_seed();
 	let mut scope = repository.source(&origin).await?;
-	if let Err(error) =
-		source_checks(scope.authority(), manifest, &origin, "transaction.submit").await
+	if let Err(error) = source_checks(
+		scope.authority(),
+		manifest,
+		&seed,
+		&origin,
+		"transaction.submit",
+	)
+	.await
 	{
 		return finish(scope, Err(error)).await;
 	}
@@ -118,7 +125,7 @@ pub async fn submit(
 		Ok(existing) => {
 			let result = async {
 				scope.match_origin(manifest.id, &origin).await?;
-				if existing.digest != manifest.digest()? {
+				if existing.manifest != json!(manifest) {
 					return Err(Error::Conflict("transaction manifest is immutable".into()));
 				}
 				Ok(existing)
@@ -135,9 +142,11 @@ pub async fn submit(
 	let result = async {
 		// Admission remains uncommitted under the original authority locks until
 		// every remote preflight succeeds, including its current policy decision.
-		let stored = scope.submit(manifest, &origin).await?;
+		let stored = scope.submit(manifest, &seed, &origin).await?;
+		// A concurrent submission of the same manifest may have sealed it first.
+		let seed = stored.seed.clone();
 		let binding = Binding {
-			request: request(manifest, &origin, &manifest.coordinator)?,
+			request: sealed_request(manifest, &seed, &origin, &manifest.coordinator)?,
 			local: origin.clone(),
 			subjects,
 		};
@@ -158,8 +167,9 @@ pub async fn submit(
 		stream::iter(remote.into_iter().map(Ok::<_, Error>))
 			.try_for_each_concurrent(8, |node| {
 				let origin = &origin;
+				let seed = &seed;
 				async move {
-					let input = request(manifest, origin, &node.node_id)?;
+					let input = sealed_request(manifest, seed, origin, &node.node_id)?;
 					repository.remote_preflight(&node.node_id, &input).await
 				}
 			})
@@ -179,28 +189,30 @@ pub async fn submit(
 }
 
 /// A source attempt survives process loss; only a durable outcome clears it.
-pub async fn issue(
-	repository: &dyn AuthorityRepository,
-	manifest: &Manifest,
-	node: &str,
-) -> Result<()> {
-	let Some(origin) = repository.origin(manifest.id).await? else {
+pub async fn issue(repository: &dyn AuthorityRepository, state: &Status, node: &str) -> Result<()> {
+	let Some(origin) = repository.origin(state.id).await? else {
 		return Ok(());
 	};
+	let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
 	let mut scope = repository.source(&origin).await?;
 	let result = async {
-		source_checks(scope.authority(), manifest, &origin, "transaction.submit").await?;
+		source_checks(
+			scope.authority(),
+			&manifest,
+			&state.seed,
+			&origin,
+			"transaction.submit",
+		)
+		.await?;
 		if node != manifest.coordinator {
 			scope.trusted(node).await?;
 		}
-		scope.insert_attempt(manifest.id, node).await
+		scope.insert_attempt(state.id, node).await
 	}
 	.await;
-	repository
-		.fault(manifest.id, "authority.issue.before")
-		.await?;
+	repository.fault(state.id, "authority.issue.before").await?;
 	finish(scope, result).await?;
-	repository.fault(manifest.id, "authority.issue.after").await
+	repository.fault(state.id, "authority.issue.after").await
 }
 
 pub async fn ticket(
@@ -216,9 +228,16 @@ pub async fn ticket(
 		if state.decision.is_some() || !scope.pending_attempt(id, node).await? {
 			return Err(Error::Forbidden);
 		}
-		let manifest: Manifest = serde_json::from_value(state.manifest)?;
-		source_checks(scope.authority(), &manifest, &origin, "transaction.submit").await?;
-		request(&manifest, &origin, node)
+		let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
+		source_checks(
+			scope.authority(),
+			&manifest,
+			&state.seed,
+			&origin,
+			"transaction.submit",
+		)
+		.await?;
+		sealed_request(&manifest, &state.seed, &origin, node)
 	}
 	.await;
 	let proof = finish(scope, result).await?;
@@ -230,18 +249,19 @@ pub async fn ticket(
 pub async fn prepare_admission(
 	repository: &dyn AuthorityRepository,
 	caller: &str,
-	manifest: &Manifest,
+	share: &Share,
 ) -> Result<Option<Binding>> {
-	let Some(bound) = repository.binding(manifest.id).await? else {
-		if repository.origin(manifest.id).await?.is_some() {
+	let Some(bound) = repository.binding(share.id).await? else {
+		if repository.origin(share.id).await?.is_some() {
 			return Err(Error::Forbidden);
 		}
 		return Ok(None);
 	};
 	// The binding is for the Node this repository serves: the one a request was
 	// admitted for, or the coordinator itself for its own work.
-	let node = repository.receiver().unwrap_or(&manifest.coordinator);
-	if bound.request != request(manifest, &bound.request.origin, node)?
+	let node = repository.receiver().unwrap_or(&share.coordinator);
+	if share.part.node_id != node
+		|| bound.request != request(share, &bound.request.origin)?
 		|| caller != bound.request.coordinator
 	{
 		return Err(Error::Forbidden);
@@ -297,7 +317,14 @@ pub async fn manage(
 	let mut scope = repository.source(&Origin::from(identity)).await?;
 	scope.audit(action != "transaction.read");
 	let result = async {
-		source_checks(scope.authority(), &manifest, &origin, "transaction.read").await?;
+		source_checks(
+			scope.authority(),
+			&manifest,
+			&state.seed,
+			&origin,
+			"transaction.read",
+		)
+		.await?;
 		if action != "transaction.read" {
 			let authority = scope.authority();
 			let resource = authority.resource(
@@ -319,7 +346,7 @@ pub async fn manage(
 			)
 			.await?
 			{
-				let input = request(&manifest, &origin, &node.node_id)?;
+				let input = sealed_request(&manifest, &state.seed, &origin, &node.node_id)?;
 				repository.remote_access(&node.node_id, &input).await?;
 			}
 		}

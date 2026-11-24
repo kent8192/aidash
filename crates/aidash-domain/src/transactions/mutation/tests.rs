@@ -1,5 +1,6 @@
 use super::*;
 use crate::ArtifactInput;
+use crate::transactions::Mutation;
 use rstest::{fixture, rstest};
 use serde_json::json;
 
@@ -74,37 +75,38 @@ fn execution_finalization_requires_a_quiescent_matching_tool_call(
 	);
 }
 
+/// A share whose only participants are a home Node and a worker Node, sealed
+/// over `worker`'s mutations; the share is the home Node's.
+fn share(worker: Vec<Mutation>, home: Vec<Mutation>) -> crate::transactions::share::Share {
+	let manifest = crate::transactions::Manifest {
+		id: Uuid::from_u128(9),
+		coordinator: "aidash://home".into(),
+		isolation: crate::transactions::Isolation::Serializable,
+		deadline: "2030-01-01T00:00:00Z".parse().unwrap(),
+		participants: vec![
+			crate::transactions::Participant {
+				node_id: "aidash://home".into(),
+				mutations: home,
+			},
+			crate::transactions::Participant {
+				node_id: "aidash://worker".into(),
+				mutations: worker,
+			},
+		],
+	};
+	manifest.share(&"0".repeat(64), "aidash://home").unwrap()
+}
+
 #[rstest]
 fn paired_completion_is_bound_to_the_same_task_and_participant() {
 	let task = Uuid::from_u128(1);
 	let other = Uuid::from_u128(2);
-	let mut participant = Participant {
-		node_id: "aidash://worker".into(),
-		mutations: vec![Mutation::FinishRun {
-			run_id: Uuid::from_u128(3),
-			task_id: other,
-			expected_revision: 0,
-		}],
-	};
-	assert_eq!(
-		validate_delegated_completion(&participant, task),
-		Err(Error::Invalid(
-			"delegated completion requires its participant's execution finalization".into()
-		))
-	);
-	participant.mutations.push(Mutation::FinishRun {
-		run_id: Uuid::from_u128(4),
-		task_id: task,
+	let finish = |run: u128, task_id: Uuid| Mutation::FinishRun {
+		run_id: Uuid::from_u128(run),
+		task_id,
 		expected_revision: 0,
-	});
-	assert_eq!(validate_delegated_completion(&participant, task), Ok(()));
-	assert_eq!(
-		validate_home_completion(&participant, task),
-		Err(Error::Invalid(
-			"execution finalization requires the home task's atomic completion".into()
-		))
-	);
-	participant.mutations.push(Mutation::CompleteTask {
+	};
+	let complete = Mutation::CompleteTask {
 		task_id: task,
 		expected_revision: 0,
 		artifact: ArtifactInput {
@@ -112,6 +114,39 @@ fn paired_completion_is_bound_to_the_same_task_and_participant() {
 			name: "Answer".into(),
 			content: json!("Done"),
 		},
-	});
-	assert_eq!(validate_home_completion(&participant, task), Ok(()));
+	};
+	// The home Node sees the worker's claims, never its mutations.
+	let only_other = share(vec![finish(3, other)], vec![]);
+	assert_eq!(
+		validate_delegated_completion(&only_other, "aidash://worker", task),
+		Err(Error::Invalid(
+			"delegated completion requires its participant's execution finalization".into()
+		))
+	);
+	let paired = share(vec![finish(3, other), finish(4, task)], vec![]);
+	assert_eq!(
+		validate_delegated_completion(&paired, "aidash://worker", task),
+		Ok(())
+	);
+	// A finalization on the home Node is no claim of the worker's.
+	assert_eq!(
+		validate_delegated_completion(
+			&share(vec![], vec![finish(4, task)]),
+			"aidash://worker",
+			task
+		),
+		Err(Error::Invalid(
+			"delegated completion requires its participant's execution finalization".into()
+		))
+	);
+	assert_eq!(
+		validate_home_completion(&paired, "aidash://home", task),
+		Err(Error::Invalid(
+			"execution finalization requires the home task's atomic completion".into()
+		))
+	);
+	assert_eq!(
+		validate_home_completion(&share(vec![], vec![complete]), "aidash://home", task),
+		Ok(())
+	);
 }

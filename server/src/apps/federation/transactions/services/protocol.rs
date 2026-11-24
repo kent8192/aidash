@@ -1,5 +1,5 @@
 use crate::apps::federation::transactions::{
-	LocalStatus, Manifest, Status, authority, participant,
+	Decision, LocalStatus, Manifest, Share, Status, authority, participant,
 };
 use crate::authorization::identity::Actor;
 use crate::{Error, Result, federation::Federation};
@@ -129,20 +129,20 @@ impl Transactions {
 	) -> Result<authority::Preflight> {
 		authority::ticket(&self.runtime, &admitted, id).await
 	}
-	pub async fn reserve(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
+	pub async fn reserve(&self, admitted: Admitted, manifest: Share) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
 		require_atomic(&f, &admitted).await?;
 		participant::reserve(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
-	pub async fn prepare(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
+	pub async fn prepare(&self, admitted: Admitted, manifest: Share) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
 		participant::prepare(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
-	pub async fn finish(&self, admitted: Admitted, manifest: Manifest) -> Result<LocalStatus> {
+	pub async fn finish(&self, admitted: Admitted, manifest: Share) -> Result<LocalStatus> {
 		let f = self.runtime.clone();
 		participant::finish(&f, Some(&admitted), &admitted.sender.to_string(), &manifest).await
 	}
-	pub async fn decision(&self, admitted: Admitted, id: Uuid) -> Result<Status> {
+	pub async fn decision(&self, admitted: Admitted, id: Uuid) -> Result<Decision> {
 		let sender = admitted.sender.to_string();
 		let caller = Some(sender.as_str());
 		application::decision(

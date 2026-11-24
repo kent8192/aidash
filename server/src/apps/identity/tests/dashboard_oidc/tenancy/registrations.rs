@@ -1430,7 +1430,12 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 	);
 	sqlx::query("UPDATE atomic_participants SET digest=$2 WHERE id=$1")
 		.bind(manifest.id)
-		.bind(manifest.digest().unwrap())
+		.bind(
+			coordinator::status(remote, manifest.id)
+				.await
+				.unwrap()
+				.digest,
+		)
 		.execute(d.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();

@@ -30,7 +30,8 @@ pub trait AdmissionScope: Send {
 	) -> Result<bool>;
 	/// Admission is serialized by transaction ID and checks the immutable manifest
 	/// again under its lock, then inserts participant votes and history atomically.
-	async fn admit(&mut self, manifest: &Manifest) -> Result<Status>;
+	/// A new manifest is sealed with `seed`; an existing one keeps its own.
+	async fn admit(&mut self, manifest: &Manifest, seed: &str) -> Result<Status>;
 	async fn bind_origin(&mut self, id: Uuid, origin: &Origin) -> Result<()>;
 }
 
