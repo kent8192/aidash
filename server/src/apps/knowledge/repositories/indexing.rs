@@ -644,7 +644,19 @@ impl SemanticIndexingSession for Session {
 				{
 					return Err(Error::Forbidden.into());
 				}
-				return service::embed(
+				use crate::apps::identity::repositories::budgets;
+				let scope = TenancyScope::tenant(&bank.tenant)?;
+				let charge = self
+					.store
+					.control_pool
+					.atomic(&scope, async |tx| {
+						let charge = budgets::thread_charge(tx, &bank.tenant, thread).await?;
+						let (gate, _) = budgets::gate_for(tx, &charge, chrono::Utc::now()).await?;
+						budgets::admit(gate)?;
+						Ok(charge)
+					})
+					.await?;
+				let vector = service::embed(
 					&self.store,
 					&mut self.lease,
 					thread,
@@ -652,8 +664,15 @@ impl SemanticIndexingSession for Session {
 					text,
 					crate::generation::embedding::Origin::Index(entry),
 				)
-				.await
-				.map_err(Into::into);
+				.await?;
+				// Commit the unpriced call independently of vector publication.
+				self.store
+					.control_pool
+					.atomic(&scope, async |tx| {
+						budgets::record_charge(tx, &charge, None, chrono::Utc::now()).await
+					})
+					.await?;
+				return Ok(vector);
 			}
 			let role = policy
 				.embedding
