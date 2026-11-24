@@ -43814,7 +43814,99 @@
     "method": "GET",
     "name": "tenant-node-registration-tool-asks",
     "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks",
-    "query_parameters": [],
+    "query_parameters": ["cursor"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "AskSide": {
+            "description": "Which side's people answer an ask: the Home's, who edit the Request, or the receiving\nNode's, who edit the Allowance and the Block.",
+            "enum": ["home", "receiver"],
+            "type": "string"
+          },
+          "ToolAskRecord": {
+            "description": "One call that waits for an answer from the people of one side of a registration.",
+            "properties": {
+              "call": {
+                "description": "The paused call. An answer names it with `key`, so it never lands on a later call.",
+                "type": "string"
+              },
+              "grant_id": {
+                "description": "The Home's Remote Grant.",
+                "format": "uuid",
+                "type": "string"
+              },
+              "id": {
+                "description": "The path id of the answer: the admission of a receiver ask, the grant of a Home ask.",
+                "format": "uuid",
+                "type": "string"
+              },
+              "key": {
+                "description": "The key the lists match, which an answer adds as an exact entry by default.",
+                "type": "string"
+              },
+              "paused_since": {
+                "description": "When the Run stopped; absent on the Home, which learns the pause from the receiver.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "run_id": {
+                "description": "The remote Run.",
+                "format": "uuid",
+                "type": "string"
+              },
+              "side": {
+                "$ref": "#/components/schemas/AskSide",
+                "description": "Whose people answer: `receiver` for a remote Run this Node hosts for the registered Home,\n`home` for a Remote Grant this Node issued to the registered receiving Node."
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "task_title": {
+                "type": ["string", "null"]
+              },
+              "tool": {
+                "description": "The tool the Agent called.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "side",
+              "id",
+              "run_id",
+              "grant_id",
+              "task_id",
+              "task_title",
+              "tool",
+              "key",
+              "call",
+              "paused_since"
+            ],
+            "type": "object"
+          },
+          "ToolAsks": {
+            "description": "The calls waiting for an answer about one registration, receiver asks first.",
+            "properties": {
+              "asks": {
+                "items": {
+                  "$ref": "#/components/schemas/ToolAskRecord"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Resume scanning Home Grants, even if this page found no Home asks.",
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["asks"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ToolAsks"
+        }
+      }
+    },
     "source": "server/src/apps/identity/views/node_registrations.rs",
     "uuid_parameters": []
   },

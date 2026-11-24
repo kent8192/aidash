@@ -20,6 +20,7 @@ use aidash_domain::federation::tool_lists::{
 };
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{NodeAddress, NodeName};
+use chrono::{DateTime, Utc};
 use futures_util::{StreamExt as _, future, stream};
 use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
@@ -27,10 +28,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// The most Home asks a registration lists.
-const HOME_ASKS: usize = 25;
-/// The most status requests in flight while looking for Home asks.
-const STATUS_CONCURRENCY: usize = 25;
+/// The most status requests one page can start. They run in parallel.
+const HOME_GRANT_PAGE: usize = 25;
 /// How long the receiving Node may take to say whether a Run waits, before the Home skips it.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -87,6 +86,15 @@ fn parse_address(source_node: &str) -> Result<NodeAddress> {
 			Error::Invalid("a Node address is aidash://<deployment>/<node name>".into())
 		})?;
 	Ok(NodeAddress::parse(&source_node)?)
+}
+
+fn parse_cursor(cursor: &str) -> Result<(DateTime<Utc>, Uuid)> {
+	let invalid = || Error::Invalid("invalid tool asks cursor".into());
+	let (expires_at, id) = cursor.split_once(',').ok_or_else(invalid)?;
+	Ok((
+		expires_at.parse().map_err(|_| invalid())?,
+		id.parse().map_err(|_| invalid())?,
+	))
 }
 
 /// Record the answer as the tenant administration audit event of a list change (decision 29).
@@ -165,11 +173,13 @@ impl NodeRegistrations {
 		tenant: String,
 		node: String,
 		source_node: String,
+		cursor: Option<String>,
 	) -> Result<ToolAsks> {
 		let node = NodeName::parse(&node)?;
 		let source = parse_address(&source_node)?;
+		let after = cursor.as_deref().map(parse_cursor).transpose()?;
 		let f = self.runtime.clone();
-		let (hosted, issued) = self
+		let (hosted, (issued, next)) = self
 			.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				f.store
@@ -179,8 +189,15 @@ impl NodeRegistrations {
 							.await?;
 						let hosted =
 							asks::receiver_asks(tx, &tenant, node.as_str(), &source).await?;
-						let issued =
-							asks::home_grants(tx, &tenant, node.as_str(), &source, None).await?;
+						let issued = asks::home_grant_page(
+							tx,
+							&tenant,
+							node.as_str(),
+							&source,
+							after,
+							HOME_GRANT_PAGE,
+						)
+						.await?;
 						Ok((hosted, issued))
 					})
 					.await
@@ -201,8 +218,8 @@ impl NodeRegistrations {
 				paused_since: Some(ask.paused_since),
 			})
 			.collect();
-		// Only the receiving Node knows whether a Run waits. Cap the confirmed asks
-		// and keep status requests bounded, preserving the grants' expiry order.
+		// Only the receiving Node knows whether a Run waits. Check one page of
+		// candidates in parallel while keeping their expiry order in the response.
 		let waiting = stream::iter(issued)
 			.map(|grant| {
 				let (tenant, node, source) = (&tenant, &node, &source);
@@ -225,13 +242,15 @@ impl NodeRegistrations {
 					})
 				}
 			})
-			.buffered(STATUS_CONCURRENCY)
+			.buffered(HOME_GRANT_PAGE)
 			.filter_map(future::ready)
-			.take(HOME_ASKS)
 			.collect::<Vec<_>>()
 			.await;
 		records.extend(waiting);
-		Ok(ToolAsks { asks: records })
+		Ok(ToolAsks {
+			asks: records,
+			next_cursor: next.map(|(expires_at, id)| format!("{},{id}", expires_at.to_rfc3339())),
+		})
 	}
 
 	/// The paused remote Run of `grant`, if the receiving Node answers in time and the Run still
@@ -296,10 +315,7 @@ impl NodeRegistrations {
 							return Ok(Found::Receiver(id));
 						}
 						if let Some(grant) =
-							asks::home_grants(tx, &tenant, node.as_str(), &source, Some(id))
-								.await?
-								.into_iter()
-								.next()
+							asks::home_grant(tx, &tenant, node.as_str(), &source, id).await?
 						{
 							return Ok(Found::Home(grant));
 						}
@@ -523,9 +539,9 @@ impl NodeRegistrations {
 					.atomic(&administrator.scope()?, async |tx| {
 						// Decided again here: the status request ran outside any transaction.
 						require_manage(administrator, tx, registration).await?;
-						if asks::home_grants(tx, tenant, node.as_str(), receiver, Some(grant.id))
+						if asks::home_grant(tx, tenant, node.as_str(), receiver, grant.id)
 							.await?
-							.is_empty()
+							.is_none()
 						{
 							return Err(not_waiting());
 						}

@@ -299,6 +299,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			contracts.path(document, views::nodes::purge, &["String", "String"])?;
 			{
 				use super::node_registrations as r;
+				use super::tool_asks::{ToolAskPage, ToolAsks};
 				contracts.response::<_, Vec<r::RegistrationRecord>>(
 					document,
 					views::node_registrations::list,
@@ -351,6 +352,19 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 					views::node_registrations::set_tool_lists,
 					&["String", "String", "String"],
 				)?;
+				contracts.response::<_, ToolAsks>(
+					document,
+					views::node_registrations::tool_asks,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::tool_asks,
+					&["String", "String", "String"],
+				)?;
+				contracts
+					.query::<_, ToolAskPage>(document, views::node_registrations::tool_asks)?;
 			}
 		}
 		contracts.response::<_, t::CreatedTenant>(

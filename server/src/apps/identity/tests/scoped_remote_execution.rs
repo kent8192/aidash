@@ -4747,19 +4747,7 @@ async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
 	let call = p.pause_receiver_on_home_ask().await;
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	let db = p.a.store.pool.fixture_driver();
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("authorization_remote_grants"))
-			.value(
-				Alias::new("expires_at"),
-				chrono::Utc::now() + chrono::Duration::hours(1),
-			)
-			.and_where(Expr::col("id").eq(Expr::value(p.grant)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(db)
-	.await
-	.unwrap();
+	let mut grants = vec![p.grant];
 	let receiver = node_of(&p.b);
 	for index in 0..25 {
 		let (status, created) = request(
@@ -4772,7 +4760,9 @@ async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
 		.await;
 		assert_eq!(status, 200, "{created}");
 		let task_id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
-		let grant = Uuid::new_v4();
+		// Sort these before the waiting Run's v4 grant when their expiry ties.
+		let grant = Uuid::from_u128(index + 1);
+		grants.push(grant);
 		let path = format!("/api/tasks/{task_id}/remote-grants");
 		let (status, prepared) = request(
 			&p.aa, &p.token, "POST", &path,
@@ -4815,12 +4805,35 @@ async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
 		.unwrap();
 		assert_eq!(claim.rows_affected(), 1, "{activated}");
 	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(
+				Alias::new("expires_at"),
+				chrono::Utc::now() + chrono::Duration::hours(1),
+			)
+			.and_where(Expr::col("id").is_in(grants.into_iter().map(Expr::value)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
 	let node = common::default_node(&p.a.store, "acme").await.node;
 	let receiver = receiver.replace(':', "%3A").replace('/', "%2F");
 	let asks = format!("/api/tenants/acme/nodes/{node}/registrations/{receiver}/tool-asks");
 	let administrator = common::BrowserMapping::new(&p.a, "acme", "alice").await;
 	let (status, listed) = administrator.send("GET", &asks, Value::Null).await;
 	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed["asks"], json!([]), "{listed}");
+	let cursor = listed["next_cursor"]
+		.as_str()
+		.expect("another candidate page");
+	let cursor = percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC);
+	let (status, listed) = administrator
+		.send("GET", &format!("{asks}?cursor={cursor}"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed.get("next_cursor"), None, "{listed}");
 	let home: Vec<_> = listed["asks"]
 		.as_array()
 		.unwrap()
@@ -4831,6 +4844,10 @@ async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
 	assert_eq!(home[0]["id"], json!(p.grant), "{listed}");
 	assert_eq!(home[0]["call"], json!(call), "{listed}");
 	assert_eq!(home[0]["task_title"], json!(task.title), "{listed}");
+	let (status, invalid) = administrator
+		.send("GET", &format!("{asks}?cursor=invalid"), Value::Null)
+		.await;
+	assert_eq!(status, 400, "{invalid}");
 	p.close().await;
 }
 
