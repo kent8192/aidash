@@ -1047,6 +1047,12 @@ Run relation and Model Call ID in the Usage Record model state. Rollback
 requires background Usage Records to be cleared before restoring the
 required Run relation.
 
+`execution/0157_generation_subnode_cleanup` adds the database-only
+`generation_requests.subnode_cleanup_at` and a partial index for pending work.
+Retirement sets the timestamp in its transaction. The generation worker clears
+it after checking the retired version's Subnodes or reschedules it if cleanup
+fails.
+
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 
 `execution/0094_subnodes`, `0095_subnodes_row_level_security`, and

@@ -13,6 +13,9 @@ use reinhardt::query::{
 use serde_json::{Value, json};
 
 use uuid::Uuid;
+
+pub(super) mod retirement_cleanup;
+
 pub(crate) struct NativeLifecycle<'a> {
 	pub runtime: &'a Federation,
 	pub transaction: &'a mut crate::database::native::Transaction,
@@ -337,11 +340,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 		// A prepared or active version may have only its subject retired,
 		// including foreign versions previously published without Catalog Approval.
 		if revision.is_some() || job.prepared || job.status == "ACTIVE" {
-			let store = self.runtime.store.clone();
-			let tenant = job.tenant.clone();
-			tx.check_after_commit(move || async move {
-				crate::apps::identity::services::creator_removal::sweep(&store, &tenant).await;
-			});
+			retirement_cleanup::enqueue(tx, job.id).await?;
 		}
 		Ok(revision)
 	}

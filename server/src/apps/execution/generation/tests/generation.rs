@@ -755,7 +755,42 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 			.as_str(),
 		"COMPLETED"
 	);
-	// Once no chain uses it, it retires as before.
+	// Interrupt reconciliation after retirement commits while the creating Run
+	// is still locked. A subsequent pass must find and finish the cleanup.
+	let pool = f.store.pool.fixture_driver();
+	let mut locked_run = pool.begin().await.unwrap();
+	sqlx::query("SELECT id FROM task_executions WHERE id = $1 FOR NO KEY UPDATE")
+		.bind(original)
+		.execute(&mut *locked_run)
+		.await
+		.unwrap();
+	let runtime = f.clone();
+	let sweep =
+		tokio::spawn(
+			async move { aidash_server::generation::provision::reconcile(&runtime).await },
+		);
+	let request_id: uuid::Uuid =
+		serde_json::from_value(generated["generation"]["id"].clone()).unwrap();
+	let committed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let status: String =
+				sqlx::query_scalar("SELECT status FROM generation_requests WHERE id = $1")
+					.bind(request_id)
+					.fetch_one(pool)
+					.await
+					.unwrap();
+			if status == "COMPLETED" {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await;
+	sweep.abort();
+	assert!(sweep.await.unwrap_err().is_cancelled());
+	locked_run.rollback().await.unwrap();
+	committed.expect("retirement must commit before cleanup acquires the creator lock");
+	assert_eq!(subnode_state().await.unwrap(), ("active".into(), None));
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
