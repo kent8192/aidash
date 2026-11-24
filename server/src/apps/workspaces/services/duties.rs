@@ -36,6 +36,87 @@ fn tenant(access: &Access) -> String {
 	access.identity.tenant.clone()
 }
 
+/// Where a Thread is, deleted or not: a deleted Thread keeps its row.
+struct ThreadPlace {
+	node: String,
+	scratch_space_id: Uuid,
+	deleted_at: Option<DateTime<Utc>>,
+}
+
+impl Adapter<'_> {
+	async fn thread_place(&mut self, thread: Uuid) -> Result<ThreadPlace> {
+		use reinhardt::query::QueryStatementBuilder as _;
+		use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query};
+		let tenant = tenant(self.access);
+		let (node, scratch_space_id, deleted_at): (String, Uuid, Option<DateTime<Utc>>) =
+			crate::database::native::query_as(
+				&Query::select()
+					.column(Alias::new("node"))
+					.column(Alias::new("scratch_space_id"))
+					.column(Alias::new("deleted_at"))
+					.from(Alias::new("threads"))
+					.and_where(Expr::col("tenant").eq(tenant))
+					.and_where(Expr::col("id").eq(Expr::value(thread)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["node", "scratch_space_id", "deleted_at"])
+			.fetch_optional(&mut **self.access.tx)
+			.await?
+			.ok_or_else(|| Error::NotFound("thread".into()))?;
+		Ok(ThreadPlace {
+			node,
+			scratch_space_id,
+			deleted_at,
+		})
+	}
+
+	/// Opens a Duty's own Thread at `place`, created by the Requester, with
+	/// the Duty's title and its mission as the first message, as a person's
+	/// request is in a Thread a person opens, followed by `note`.
+	async fn open_in(
+		&mut self,
+		place: &ThreadPlace,
+		definition: &Definition,
+		note: Option<&str>,
+	) -> Result<Uuid> {
+		let tenant = tenant(self.access);
+		let node = aidash_domain::nodes::NodeName::parse(&place.node)?;
+		let requester = self.subject().to_owned();
+		let thread = self
+			.store
+			.create_thread_in(
+				&mut self.access.tx,
+				crate::apps::execution::repositories::store::ThreadInsert {
+					id: Uuid::new_v4(),
+					tenant: &tenant,
+					node: &node,
+					title: definition.title.trim(),
+					scratch_space_id: place.scratch_space_id,
+					created_by: &requester,
+				},
+			)
+			.await?;
+		self.store
+			.record_thread_tenant_in(&mut self.access.tx, thread.id, &tenant, &requester)
+			.await?;
+		let mut first = format!("{}\n\n{}", definition.title.trim(), definition.mission);
+		if let Some(note) = note {
+			first.push_str("\n\n");
+			first.push_str(note);
+		}
+		crate::apps::workspaces::models::Message::append_in(
+			&mut *self.access.tx,
+			thread.id,
+			&requester,
+			&first,
+			&format!("duty-mission:{}", thread.id),
+			None,
+		)
+		.await?;
+		Ok(thread.id)
+	}
+}
+
 #[async_trait::async_trait]
 impl DutyScope for Adapter<'_> {
 	fn subject(&self) -> &str {
@@ -185,55 +266,41 @@ impl DutyScope for Adapter<'_> {
 		from: Uuid,
 		definition: &Definition,
 	) -> aidash_application::Result<Uuid> {
-		use reinhardt::query::QueryStatementBuilder as _;
-		use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query};
-		let tenant = tenant(self.access);
-		let (node, scratch_space_id): (String, Uuid) = crate::database::native::query_as(
-			&Query::select()
-				.column(Alias::new("node"))
-				.column(Alias::new("scratch_space_id"))
-				.from(Alias::new("threads"))
-				.and_where(Expr::col("tenant").eq(tenant.clone()))
-				.and_where(Expr::col("id").eq(Expr::value(from)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.columns(&["node", "scratch_space_id"])
-		.fetch_optional(&mut **self.access.tx)
-		.await?
-		.ok_or_else(|| Error::NotFound("thread".into()))?;
-		let node = aidash_domain::nodes::NodeName::parse(&node)?;
 		// The Requester opens the Duty's own Thread in the Node and
 		// Scratch Space it was registered from (#1008, ADR 0140).
-		let requester = self.subject().to_owned();
-		let thread = self
-			.store
-			.create_thread_in(
-				&mut self.access.tx,
-				crate::apps::execution::repositories::store::ThreadInsert {
-					id: Uuid::new_v4(),
-					tenant: &tenant,
-					node: &node,
-					title: definition.title.trim(),
-					scratch_space_id,
-					created_by: &requester,
-				},
-			)
-			.await?;
-		self.store
-			.record_thread_tenant_in(&mut self.access.tx, thread.id, &tenant, &requester)
-			.await?;
-		// Its mission is the first message, as the person's request is in a
-		// Thread a person opens.
-		crate::apps::workspaces::models::Message::append_in(
-			&mut *self.access.tx,
-			thread.id,
-			&requester,
-			&format!("{}\n\n{}", definition.title.trim(), definition.mission),
-			&format!("duty-mission:{}", thread.id),
-			None,
-		)
-		.await?;
-		Ok(thread.id)
+		let place = self.thread_place(from).await?;
+		Ok(self.open_in(&place, definition, None).await?)
+	}
+	async fn thread_deleted_at(
+		&mut self,
+		thread: Uuid,
+	) -> aidash_application::Result<Option<DateTime<Utc>>> {
+		Ok(self.thread_place(thread).await?.deleted_at)
+	}
+	async fn reopen_thread(
+		&mut self,
+		deleted: Uuid,
+		deleted_at: DateTime<Utc>,
+		definition: &Definition,
+	) -> aidash_application::Result<Uuid> {
+		// Only where the deleted Thread was: a Duty never moves to another
+		// Scratch Space unseen (#991, ADR 0145).
+		let place = self.thread_place(deleted).await?;
+		let tenant = tenant(self.access);
+		if !repository::scratch_space_active(&mut *self.access.tx, &tenant, place.scratch_space_id)
+			.await?
+		{
+			return Err(aidash_application::Error::Invalid(
+				"the Scratch Space of the Duty's deleted Thread can no longer be used, so no new \
+				 Thread can open for it; delete the Duty instead"
+					.into(),
+			));
+		}
+		let note = format!(
+			"The Duty's previous Thread was deleted at {}.",
+			deleted_at.format("%Y-%m-%d %H:%M UTC")
+		);
+		Ok(self.open_in(&place, definition, Some(&note)).await?)
 	}
 	async fn insert(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
@@ -284,8 +351,15 @@ impl DutyScope for Adapter<'_> {
 	async fn hand_over(&mut self, duty: &Duty, successor: &str) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
 		// Only a Thread the Duty opened is its own to hand over; a Thread it
-		// was registered in stays its owner's.
-		if duty.origin_thread_id.is_some() {
+		// was registered in stays its owner's. A deleted one is replaced on
+		// the successor's first edit or resume instead (ADR 0145).
+		if duty.origin_thread_id.is_some()
+			&& self
+				.thread_place(duty.thread_id)
+				.await?
+				.deleted_at
+				.is_none()
+		{
 			repository::take_over_thread(&mut *self.access.tx, &tenant, duty.thread_id, successor)
 				.await?;
 			self.access.tx.forget_thread_owner(duty.thread_id);
@@ -342,8 +416,36 @@ pub(crate) enum Operation {
 	Resume(Uuid),
 	Delete(Uuid),
 	Successor(Uuid, String),
+	TakeOver(Uuid),
 	RunNow(Uuid),
 	Notices,
+}
+
+/// Duties as the viewer sees them, each saying whether its own Thread was
+/// deleted (ADR 0145).
+async fn views(
+	scope: &mut Adapter<'_>,
+	duties: Vec<Duty>,
+	viewer: &str,
+	administers: bool,
+) -> Result<Vec<DutyView>> {
+	let tenant = tenant(scope.access);
+	let threads: Vec<Uuid> = duties.iter().map(|duty| duty.thread_id).collect();
+	let deleted = repository::deleted_threads(&mut *scope.access.tx, &tenant, &threads).await?;
+	Ok(duties
+		.into_iter()
+		.map(|duty| DutyView::new(duty, viewer, administers).with_deleted(&deleted))
+		.collect())
+}
+
+async fn one(
+	scope: &mut Adapter<'_>,
+	duty: Duty,
+	viewer: &str,
+	administers: bool,
+) -> Result<Value> {
+	let mut shown = views(scope, vec![duty], viewer, administers).await?;
+	Ok(serde_json::to_value(shown.pop())?)
 }
 
 /// Runs one person's operation in one transaction.
@@ -364,21 +466,24 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		};
 		let mine = scope.subject().to_owned();
 		let administers = scope.administers().await?;
-		let view = |duty: Duty| DutyView::new(duty, &mine, administers);
 		Ok(match op {
-			Operation::Create(thread, definition) => serde_json::to_value(view(
-				app::register(&mut scope, thread, definition, Origin::Person).await?,
-			))?,
-			Operation::List(listing) => serde_json::to_value(
-				app::list(&mut scope, listing)
-					.await?
-					.into_iter()
-					.map(view)
-					.collect::<Vec<_>>(),
-			)?,
+			Operation::Create(thread, definition) => {
+				let duty = app::register(&mut scope, thread, definition, Origin::Person).await?;
+				one(&mut scope, duty, &mine, administers).await?
+			}
+			Operation::List(listing) => {
+				let duties = app::list(&mut scope, listing).await?;
+				serde_json::to_value(views(&mut scope, duties, &mine, administers).await?)?
+			}
 			Operation::Read(id) => {
 				let detail = app::detail(&mut scope, id).await?;
 				let tenant = tenant(scope.access);
+				let deleted = repository::deleted_threads(
+					&mut *scope.access.tx,
+					&tenant,
+					&[detail.duty.thread_id],
+				)
+				.await?;
 				let versions = crate::apps::workspaces::repositories::duty_scripts::versions(
 					&mut *scope.access.tx,
 					&tenant,
@@ -399,21 +504,33 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					}
 					None => None,
 				};
-				serde_json::to_value(DetailView::new(detail, &mine, versions, template_update))?
+				let mut shown = DetailView::new(detail, &mine, versions, template_update);
+				shown.duty = shown.duty.with_deleted(&deleted);
+				serde_json::to_value(shown)?
 			}
 			Operation::Update(id, patch) => {
-				serde_json::to_value(view(app::update(&mut scope, id, patch).await?))?
+				let duty = app::update(&mut scope, id, patch).await?;
+				one(&mut scope, duty, &mine, administers).await?
 			}
-			Operation::Pause(id) => serde_json::to_value(view(app::pause(&mut scope, id).await?))?,
+			Operation::Pause(id) => {
+				let duty = app::pause(&mut scope, id).await?;
+				one(&mut scope, duty, &mine, administers).await?
+			}
 			Operation::Resume(id) => {
-				serde_json::to_value(view(app::resume(&mut scope, id).await?))?
+				let duty = app::resume(&mut scope, id).await?;
+				one(&mut scope, duty, &mine, administers).await?
 			}
 			Operation::Delete(id) => {
 				app::delete(&mut scope, id).await?;
 				json!({"deleted": id})
 			}
 			Operation::Successor(id, successor) => {
-				serde_json::to_value(view(app::name_successor(&mut scope, id, &successor).await?))?
+				let duty = app::name_successor(&mut scope, id, &successor).await?;
+				one(&mut scope, duty, &mine, administers).await?
+			}
+			Operation::TakeOver(id) => {
+				let duty = app::take_over(&mut scope, id).await?;
+				one(&mut scope, duty, &mine, administers).await?
 			}
 			Operation::Notices => serde_json::to_value(notices(&mut scope).await?)?,
 			Operation::RunNow(_) => unreachable!("handled above"),

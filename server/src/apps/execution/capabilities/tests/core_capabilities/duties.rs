@@ -286,6 +286,60 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	)
 	.await;
 	assert_eq!(status, 200, "{snapshot}");
+	// The Duty says its Thread is gone, and resuming it opens a new one in
+	// the same Scratch Space (#991, ADR 0145).
+	let (status, shown) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/duties/{id}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{shown}");
+	assert_eq!(shown["duty"]["thread_deleted"], true, "{shown}");
+	let (status, resumed) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/duties/{id}/resume"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{resumed}");
+	assert_eq!(resumed["halt"], Value::Null);
+	assert_eq!(resumed["thread_deleted"], false);
+	let new: Uuid = serde_json::from_value(resumed["thread_id"].clone()).unwrap();
+	assert_ne!(new, own);
+	let driver = c.f.store.pool.fixture_driver();
+	let spaces: Vec<Uuid> =
+		sqlx::query_scalar("SELECT scratch_space_id FROM threads WHERE id = ANY($1) ORDER BY id")
+			.bind(vec![own, new])
+			.fetch_all(driver)
+			.await
+			.unwrap();
+	assert_eq!(spaces.len(), 2);
+	assert_eq!(spaces[0], spaces[1]);
+	let (status, opened) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/threads/{new}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{opened}");
+	let first: String = sqlx::query_scalar(
+		"SELECT content FROM messages WHERE thread_id = $1 ORDER BY created_at LIMIT 1",
+	)
+	.bind(new)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	assert!(
+		first.contains("The Duty's previous Thread was deleted at"),
+		"{first}"
+	);
 	c.close().await;
 }
 
@@ -1933,7 +1987,8 @@ fn owners_only(c: &CoreFixture) -> Value {
 /// policy that limits Threads to their owner lets them resume it, read it and
 /// delete it, and the departed Requester no longer reaches it. The bookings
 /// the departed Requester's Runs made go, so the next event starts a Task for
-/// the successor (#1011).
+/// the successor (#1011). Taking over leaves it paused; resuming is a second
+/// call (#991, ADR 0145).
 #[rstest::rstest]
 #[tokio::test]
 async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
@@ -1969,13 +2024,25 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 		.send("GET", &format!("/api/threads/{own}"), Value::Null)
 		.await;
 	assert_ne!(status, 200, "bob does not own the Duty's Thread yet");
+	let (status, refused) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	assert_ne!(status, 200, "resuming never takes a Duty over: {refused}");
 	// Act
+	let (status, taken) = bob
+		.send("POST", &format!("/api/duties/{id}/take-over"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{taken}");
+	assert_eq!(taken["requester"], "bob");
+	assert_eq!(taken["halt"], "paused");
+	assert_eq!(taken["may_resume"], true);
 	let (status, resumed) = bob
 		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
 		.await;
 	// Assert: bob holds the Duty and its Thread; alice's booking went.
 	assert_eq!(status, 200, "{resumed}");
 	assert_eq!(resumed["requester"], "bob");
+	assert_eq!(resumed["halt"], Value::Null);
 	let owner: String =
 		sqlx::query_scalar("SELECT owner_subject FROM authorization_threads WHERE thread_id = $1")
 			.bind(own)
@@ -2083,8 +2150,8 @@ async fn a_successor_discards_a_booking_already_in_flight(
 			pid = super::lifecycle_tests::wait_for_blocked_connection(driver, blocker_pid) => pid,
 			result = &mut booking => panic!("booking completed before its trigger was unlocked: {result:?}"),
 		};
-		let resume_path = format!("/api/duties/{id}/resume");
-		let resume = bob.send("POST", &resume_path, Value::Null);
+		let take_over_path = format!("/api/duties/{id}/take-over");
+		let resume = bob.send("POST", &take_over_path, Value::Null);
 		tokio::pin!(resume);
 		let early = tokio::select! {
 			result = &mut resume => Some(result),
@@ -2099,6 +2166,10 @@ async fn a_successor_discards_a_booking_already_in_flight(
 	};
 	assert_eq!(status, 200, "{resumed}");
 	assert_eq!(resumed["requester"], "bob");
+	let (status, resumed) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{resumed}");
 
 	let (status, receipt) = send_event(
 		&c,

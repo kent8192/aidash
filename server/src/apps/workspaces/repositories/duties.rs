@@ -498,6 +498,49 @@ pub(crate) async fn take_over_thread(
 	Ok(())
 }
 
+/// Whether a Scratch Space of the Tenant exists and can be used.
+pub(crate) async fn scratch_space_active(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	scratch_space: Uuid,
+) -> Result<bool> {
+	let found: Option<Uuid> = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("scratch_spaces"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(scratch_space)))
+			.and_where(Expr::col("state").eq("active"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut *tx)
+	.await?;
+	Ok(found.is_some())
+}
+
+/// The Threads among `threads` that were deleted.
+pub(crate) async fn deleted_threads(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	threads: &[Uuid],
+) -> Result<std::collections::HashSet<Uuid>> {
+	if threads.is_empty() {
+		return Ok(Default::default());
+	}
+	let deleted: Vec<Uuid> = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").is_in(threads.iter().copied().map(Expr::value)))
+			.and_where(Expr::col("deleted_at").is_not_null())
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut *tx)
+	.await?;
+	Ok(deleted.into_iter().collect())
+}
+
 /// Which Duties a list reads.
 pub(crate) enum Filter<'a> {
 	Thread(Uuid),

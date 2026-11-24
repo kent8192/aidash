@@ -111,9 +111,8 @@ impl Trigger {
 	}
 }
 
-/// Why a Duty does not run. Only its Requester resumes it, except that a
-/// named successor resumes one whose Requester left and so becomes its
-/// Requester (ADR 0134).
+/// Why a Duty does not run. Only its Requester resumes it; a named
+/// successor first takes over one whose Requester left (ADR 0145).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Halt {
@@ -375,6 +374,14 @@ impl Duty {
 		}
 	}
 
+	/// Makes the named successor its Requester, as their own action. It stays
+	/// stopped, as paused, until they resume it (ADR 0145).
+	pub fn take_over(&mut self, successor: &str, now: DateTime<Utc>) {
+		self.requester = successor.to_owned();
+		self.created_by_run_id = None;
+		self.stop(Halt::Paused, now);
+	}
+
 	/// Clears a stop, on resume.
 	pub fn clear_halt(&mut self) {
 		self.halt = None;
@@ -604,6 +611,9 @@ pub enum Change {
 	Resume,
 	/// Name who may take over a Duty whose Requester left.
 	NameSuccessor,
+	/// Become the Requester of a Duty whose Requester left, as its named
+	/// successor (ADR 0145).
+	TakeOver,
 }
 
 /// The state of a Duty a change is judged on.
@@ -614,25 +624,24 @@ pub struct Standing<'a> {
 	pub successor: Option<&'a str>,
 }
 
-/// What a permitted resume does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Resumption {
-	/// The Requester resumes their own Duty.
-	Requester,
-	/// The named successor takes the Duty over and becomes its Requester.
-	Successor,
-}
-
 /// Whether `actor` may make `change` to a Duty. Nobody can make a
 /// Duty run in another person's name: only its Requester resumes or
-/// edits it, and a successor resumes it only as their own (ADR 0134).
+/// edits it, and a successor takes it over first, as their own action
+/// (ADR 0134, ADR 0145).
 pub fn permit(actor: Actor<'_>, standing: Standing<'_>, change: Change) -> Result<()> {
 	let own = actor.subject == standing.requester;
+	let waiting = standing.halt == Some(Halt::RequesterLeft);
 	let allowed = match change {
-		Change::Edit => own && standing.halt != Some(Halt::RequesterLeft),
+		Change::Edit => own && !waiting,
 		Change::Pause | Change::Delete => own || actor.administers,
-		Change::NameSuccessor => actor.administers && standing.halt == Some(Halt::RequesterLeft),
-		Change::Resume => return resumption(actor, standing).map(|_| ()),
+		Change::NameSuccessor => actor.administers && waiting,
+		Change::TakeOver => waiting && standing.successor == Some(actor.subject),
+		Change::Resume => {
+			if standing.halt.is_none() {
+				return Err(Error::Conflict("the Duty is already running".into()));
+			}
+			own && !waiting
+		}
 	};
 	if allowed {
 		Ok(())
@@ -652,20 +661,12 @@ fn refusal(change: Change) -> &'static str {
 		Change::NameSuccessor => {
 			"a successor is named by a holder of duty.administer, for a Duty whose Requester left"
 		}
-		Change::Resume => "only the Duty's Requester, or the successor named for it, can resume it",
-	}
-}
-
-/// How `actor` may resume a Duty, if at all.
-pub fn resumption(actor: Actor<'_>, standing: Standing<'_>) -> Result<Resumption> {
-	match standing.halt {
-		None => Err(Error::Conflict("the Duty is already running".into())),
-		Some(Halt::RequesterLeft) if standing.successor == Some(actor.subject) => {
-			Ok(Resumption::Successor)
+		Change::Resume => {
+			"only the Duty's Requester can resume it; a successor takes it over first"
 		}
-		Some(Halt::RequesterLeft) => Err(Error::Invalid(refusal(Change::Resume).into())),
-		Some(_) if actor.subject == standing.requester => Ok(Resumption::Requester),
-		Some(_) => Err(Error::Invalid(refusal(Change::Resume).into())),
+		Change::TakeOver => {
+			"only the successor named for a Duty whose Requester left can take it over"
+		}
 	}
 }
 
