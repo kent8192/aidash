@@ -268,6 +268,14 @@ impl CoreFixture {
 type CoreFuture = Shared<BoxFuture<'static, CoreFixture>>;
 type EndpointFuture = Shared<BoxFuture<'static, String>>;
 
+#[derive(Clone)]
+enum FixtureRunner {
+	Disabled,
+	#[cfg(feature = "capability-runtime-tests")]
+	Profile,
+	Stub(EndpointFuture),
+}
+
 struct WorkerControl {
 	stop: tokio::sync::watch::Sender<bool>,
 	receiver: tokio::sync::watch::Receiver<bool>,
@@ -329,8 +337,7 @@ fn core_storage(
 fn core_runtime(
 	#[default("aidash://execution-test")] node: &str,
 	core_storage: Arc<tempfile::TempDir>,
-	#[default(false)] runner: bool,
-	#[default(None)] stub_runner: Option<EndpointFuture>,
+	#[default(FixtureRunner::Disabled)] runner: FixtureRunner,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
 	let node = aidash_domain::nodes::DeploymentId::parse(node).unwrap();
@@ -342,17 +349,17 @@ fn core_runtime(
 		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node)
 			.unwrap()
 			.with_keyless_origins(f.store.keyless.clone());
-		let mut profile = if runner {
-			(*Runtime::from_env().unwrap().0).clone()
-		} else {
-			Profile {
+		let mut profile = match runner {
+			#[cfg(feature = "capability-runtime-tests")]
+			FixtureRunner::Profile => (*Runtime::from_env().unwrap().0).clone(),
+			FixtureRunner::Disabled | FixtureRunner::Stub(_) => Profile {
 				admission: true,
 				outbound_origins: vec!["https://example.com".into()],
 				storage: core_storage.path().to_owned(),
 				..Profile::default()
-			}
+			},
 		};
-		if let Some(endpoint) = stub_runner {
+		if let FixtureRunner::Stub(endpoint) = runner {
 			profile.runner = Some(
 				serde_json::from_value(json!({
 					"endpoint":endpoint.await,"token_env":"AIDASH_COMMAND_CLEANUP_TEST_TOKEN",
@@ -372,11 +379,10 @@ fn core_runtime(
 fn capability_fixture(
 	#[default("aidash://execution-test")] _node: &str,
 	#[default(async { "http://localhost:19999".into() }.boxed().shared())] endpoint: EndpointFuture,
-	#[default(false)] _runner: bool,
-	#[default(false)] _stub_runner: bool,
+	#[default(FixtureRunner::Disabled)] _runner: FixtureRunner,
 	#[from(core_storage)] storage: Arc<tempfile::TempDir>,
 	#[from(core_runtime)]
-	#[with(_node,storage.clone(),_runner,_stub_runner.then(|| endpoint.clone()))]
+	#[with(_node,storage.clone(),_runner.clone())]
 	_runtime: common::RuntimeFuture,
 	#[from(common::native_application)]
 	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|router|router),_runtime.clone())]
@@ -525,7 +531,7 @@ async fn shell_never_falls_back_to_the_host(#[future] capability_fixture: CoreFi
 #[rstest::fixture]
 async fn runtime_fixture(
 	#[from(capability_fixture)]
-	#[with("aidash://execution-test", async { "http://localhost:19999".into() }.boxed().shared(), true)]
+	#[with("aidash://execution-test", async { "http://localhost:19999".into() }.boxed().shared(), FixtureRunner::Profile)]
 	core: CoreFuture,
 ) -> CoreFixture {
 	let c = core.await;

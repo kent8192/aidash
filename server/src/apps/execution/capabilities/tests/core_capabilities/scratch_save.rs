@@ -136,7 +136,7 @@ async fn scratch_save_releases_authority_while_streaming(
 	#[with(_transport.clone())]
 	_endpoint: EndpointFuture,
 	#[from(capability_fixture)]
-	#[with("aidash://execution-test",_endpoint.clone(),false,true)]
+	#[with("aidash://execution-test",_endpoint.clone(),FixtureRunner::Stub(_endpoint.clone()))]
 	core: CoreFuture,
 ) {
 	if std::env::var_os("AIDASH_SCRATCH_SAVE_TEST_CHILD").is_none() {
