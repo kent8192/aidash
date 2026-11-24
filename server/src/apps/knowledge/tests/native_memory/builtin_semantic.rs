@@ -139,10 +139,10 @@ async fn projection_state(store: &Store, id: Uuid) -> Option<String> {
 	.unwrap()
 }
 
-async fn recall_with(store: &Store, bank: &Bank, provider: &str, text: &str) -> Recall {
+async fn recall(store: &Store, bank: &Bank, text: &str) -> Recall {
 	let operation = memory::Operation {
 		operation_id: Uuid::now_v7(),
-		provider: reference(provider),
+		provider: reference("aidash.memory"),
 		bank: bank.clone(),
 		action: memory::Action::Recall {
 			query: RecallQuery {
@@ -160,10 +160,6 @@ async fn recall_with(store: &Store, bank: &Bank, provider: &str, text: &str) -> 
 		memory::Outcome::Recall(recall) => recall,
 		other => panic!("unexpected memory outcome: {other:?}"),
 	}
-}
-
-async fn recall(store: &Store, bank: &Bank, text: &str) -> Recall {
-	recall_with(store, bank, "aidash.memory", text).await
 }
 
 #[rstest]
@@ -382,6 +378,31 @@ async fn builtin_memory_uses_thread_index_embedding(
 		.await
 		.unwrap();
 
+	let pending = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			provider: reference("aidash.memory"),
+			..mutation(
+				&bank,
+				Change::Add {
+					id: pending,
+					content: Content {
+						evidence: vec![proof.clone()],
+						..content("The conference room needs a projector.")
+					},
+				},
+			)
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		projection_state(&store, pending).await.as_deref(),
+		Some("PENDING")
+	);
+
 	// The recorder's explicit provider pins the index; moving its empty bank to
 	// an Agent version without a memory Binding leaves only Built-in Memory.
 	let mut built_in = entry(
@@ -412,30 +433,7 @@ async fn builtin_memory_uses_thread_index_embedding(
 	.await
 	.unwrap();
 	let actor = administrator(&store).await;
-	let pending = Uuid::now_v7();
-	memory::mutate(
-		&store,
-		&actor,
-		Mutation {
-			provider: reference("aidash.memory"),
-			..mutation(
-				&bank,
-				Change::Add {
-					id: pending,
-					content: Content {
-						evidence: vec![proof.clone()],
-						..content("The conference room needs a projector.")
-					},
-				},
-			)
-		},
-	)
-	.await
-	.unwrap();
-	assert_eq!(
-		projection_state(&store, pending).await.as_deref(),
-		Some("PENDING")
-	);
+
 	// The warning counts the two vectors, excluding the pending projection.
 	// Disabling the index deletes the facts' embeddings, so it must be confirmed.
 	let refused = aidash_server::semantic::service::configure(
@@ -503,6 +501,7 @@ async fn builtin_memory_uses_thread_index_embedding(
 		)
 		.await
 		.unwrap();
+	let actor = administrator(&store).await;
 	memory::operate(
 		&store,
 		&actor,
@@ -521,10 +520,13 @@ async fn builtin_memory_uses_thread_index_embedding(
 		projection_state(&store, plants).await.as_deref(),
 		Some("DELETED")
 	);
-	let Recall::Ready { units } = recall_with(&store, &bank, "keyword-only", "plants").await else {
-		panic!("the keyword policy must keep the plants fact");
-	};
-	assert_eq!(units[0].id, plants);
+	let stored: (bool, String) =
+		sqlx::query_as("SELECT deleted, text FROM memory_units WHERE id = $1")
+			.bind(plants)
+			.fetch_one(db)
+			.await
+			.unwrap();
+	assert_eq!(stored, (false, "The office plants need water.".into()));
 }
 
 fn builtin_config() -> serde_json::Value {
@@ -560,7 +562,6 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 	let endpoint = format!("{}/v1", fixture.server.url);
 	let database = database.await;
 	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
-	let actor = administrator(&store).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
@@ -578,6 +579,7 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 		)
 		.await
 		.unwrap();
+	let actor = administrator(&store).await;
 	memory::operate(
 		&store,
 		&actor,
