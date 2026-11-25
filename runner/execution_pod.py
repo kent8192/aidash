@@ -2991,8 +2991,8 @@ print(json.dumps(r))'''
 def execution_timeout(request):
     """Validate the public command deadline in seconds."""
     timeout = request.get('timeout_seconds', 600)
-    if type(timeout) is not int or not 1 <= timeout <= 3600:
-        raise ValueError('timeout_seconds must be an integer between 1 and 3600')
+    if type(timeout) is not int or not 1 <= timeout <= 86400:
+        raise ValueError('timeout_seconds must be an integer between 1 and 86400')
     return timeout
 
 

@@ -773,8 +773,9 @@ class ExecutionRequestTest(unittest.TestCase):
     def test_default_and_maximum_timeouts_are_enforced(self):
         from execution_pod import execution_timeout
         self.assertEqual(execution_timeout({}), 600)
-        self.assertEqual(execution_timeout({'timeout_seconds': 3600}), 3600)
-        for value in (0, 3601, True, '10'):
+        for seconds in (1, 7000, 86400):
+            self.assertEqual(execution_timeout({'timeout_seconds': seconds}), seconds)
+        for value in (0, 86401, True, '10'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 execution_timeout({'timeout_seconds': value})
 

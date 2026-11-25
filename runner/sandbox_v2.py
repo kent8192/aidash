@@ -456,7 +456,7 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
         raise ValueError('run_id must be a nonempty string')
     if not isinstance(code, str) or len(code.encode('utf-8')) > 131072:
         raise ValueError('command exceeds the code limit')
-    if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 3600):
+    if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 86400):
         raise ValueError('invalid command timeout')
     pod_uid = os.environ.get('AIDASH_POD_UID')
     if not pod_uid or pod_uid != expected_pod_uid:
