@@ -208,17 +208,16 @@ impl Scope<'_, '_> {
 			point_to_unit.insert(point, *id);
 		}
 		let embedded = self.models.embed(model, text, allowance).await?;
-		let ids = self
-			.query_points(
-				bank,
-				&index,
-				&spec,
-				&points,
-				&point_to_unit,
-				&embedded.output,
-				limit,
-			)
-			.await?;
+		let ids = Box::pin(self.query_points(
+			bank,
+			&index,
+			&spec,
+			&points,
+			&point_to_unit,
+			&embedded.output,
+			limit,
+		))
+		.await?;
 		Ok(Produced {
 			output: ids,
 			usage: embedded.usage,
@@ -266,17 +265,16 @@ impl Scope<'_, '_> {
 			.models
 			.embed_thread_index(&spec.embedding, text, allowance)
 			.await?;
-		let ids = self
-			.query_points(
-				bank,
-				&index,
-				&spec,
-				&points,
-				&point_to_unit,
-				&embedded.output,
-				limit,
-			)
-			.await?;
+		let ids = Box::pin(self.query_points(
+			bank,
+			&index,
+			&spec,
+			&points,
+			&point_to_unit,
+			&embedded.output,
+			limit,
+		))
+		.await?;
 		Ok(Some(Produced {
 			output: ids,
 			usage: embedded.usage,

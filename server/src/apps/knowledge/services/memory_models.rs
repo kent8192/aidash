@@ -1157,13 +1157,14 @@ impl Models {
 	) -> Result<Produced<Vec<f32>>> {
 		let config: EmbeddingConfig =
 			serde_json::from_value(self.role(reference, "embedding")?.config.clone())?;
-		self.embed_with(
+		// Boxed so each caller's future stays small on deep recall stacks.
+		Box::pin(self.embed_with(
 			&config,
 			Some(reference),
 			json!({"embedding":reference,"text":text}),
 			text,
 			allowance,
-		)
+		))
 		.await
 	}
 	/// Embed with the bank's Thread index embedding, which has no Registry
@@ -1178,13 +1179,14 @@ impl Models {
 		if self.remote.is_some() {
 			return Err(Error::SemanticUnavailable);
 		}
-		self.embed_with(
+		// Boxed so each caller's future stays small on deep recall stacks.
+		Box::pin(self.embed_with(
 			config,
 			None,
 			json!({"thread_index_embedding":config,"text":text}),
 			text,
 			allowance,
-		)
+		))
 		.await
 	}
 	async fn embed_with(
