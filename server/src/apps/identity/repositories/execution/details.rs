@@ -273,6 +273,40 @@ impl RunDetailsScope for Scope<'_> {
 			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
 			.collect::<std::result::Result<_, _>>()?)
 	}
+	async fn egress_waits(
+		&mut self,
+		run: &RunMetadata,
+		offset: u64,
+	) -> Result<Vec<aidash_application::ports::authorization::run_details::EgressWait>> {
+		use crate::apps::execution::capabilities::models::egress::ScopeConnection;
+		use aidash_application::ports::authorization::run_details::EgressWait;
+		if self.federation.store.capabilities.0.egress.is_none() {
+			return Ok(vec![]);
+		}
+		let access = self.access.get();
+		let records = ScopeConnection::objects()
+			.filter(ScopeConnection::field_tenant().eq(access.identity.tenant.clone()))
+			.filter(ScopeConnection::field_node().eq(run.node.to_string()))
+			.filter(ScopeConnection::field_run_id().eq(Some(run.id)))
+			.filter(ScopeConnection::field_wait_ms().gt(Some(0)))
+			.order_by(&["created_at", "id"])
+			.offset(offset as usize)
+			.limit(100)
+			.all_with_executor(&mut **access.tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		Ok(records
+			.into_iter()
+			.filter_map(|row| {
+				Some(EgressWait {
+					id: row.id,
+					host: row.host,
+					wait_ms: u64::try_from(row.wait_ms?).ok()?,
+				})
+			})
+			.collect())
+	}
 	async fn stints(&mut self, id: Uuid) -> Result<Vec<aidash_domain::model_call::Stint>> {
 		let access = self.access.get();
 		crate::apps::execution::repositories::model_calls::stints(

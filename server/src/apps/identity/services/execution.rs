@@ -3565,6 +3565,7 @@ pub async fn details_page(
 	Ok(RunDetails {
 		provider_tool_activity: details.provider_tool_activity,
 		egress_requests: details.egress_requests,
+		egress_waits: details.egress_waits,
 		stints: details.stints,
 		run: details.run,
 		declinable_call: details.declinable_call,
