@@ -254,6 +254,14 @@ kubectl -n "$NS" delete job md-activity
 If any of these fail while the exempt Pods work, the policy is the suspect: delete
 `<release>-aidash-metadata-egress` and retry to confirm, then widen it.
 
+## Egress gateway
+
+Set `execution.egress.enabled` and reserve a Service IP in
+`execution.egress.clusterIP`. The chart runs the gateway as a Deployment with
+its own memory limit, autoscaler and database pool. Read
+[Operating the Egress gateway](../../../docs/operations/egress.md) for upgrade
+instructions and Egress IP group settings.
+
 ## Previews
 
 Previews (ADR 0068) are off until `preview.enabled` is true. Set `preview.domain`
