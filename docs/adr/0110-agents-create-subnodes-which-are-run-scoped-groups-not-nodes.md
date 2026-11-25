@@ -21,6 +21,8 @@ An agent the Tenant's policy permits may create a **Subnode** inside its own Nod
 
 ## Consequences
 
+The Home refuses Remote Grant preparation for Subnode Tasks before contacting the target Node. For a member's `task_delegate` call, including the leader's, this refusal tells the model to select a member of its Subnode. The Home records a denied `federation.execute` decision with reason `subnode_delegation` for the target Node.
+
 - ADR 0028's "Agents cannot create Nodes (Subnodes)" now reads "Agents cannot create Nodes". The Subnode it deferred is the one defined here.
 
 ## Amendment (2026-11-06)
