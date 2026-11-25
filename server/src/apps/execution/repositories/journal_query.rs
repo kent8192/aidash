@@ -6,6 +6,7 @@ use aidash_application::{
 		journal_query::{JournalSessions, Session},
 		runner::RunnerTransport,
 	},
+	tenancy::{DeploymentScopeReason, TenancyScope},
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -13,6 +14,11 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use super::core_records::{self, Record};
+
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
+const DISCARD_PENDING: &str = "discard_pending";
+const DISCARDED: &str = "discarded";
 
 fn record_id(run: Uuid) -> Uuid {
 	let digest = Sha256::digest([b"aidash.journal.session/1:".as_slice(), run.as_bytes()].concat());
@@ -159,6 +165,14 @@ impl JournalSessions for Scope<'_> {
 		}))
 	}
 	async fn stop(&mut self, session: Uuid) -> Result<bool> {
+		match self.record.state.as_str() {
+			DISCARD_PENDING => {
+				finish_discard(self.transport, &mut self.record).await?;
+				return Ok(true);
+			}
+			DISCARDED => return Ok(true),
+			_ => {}
+		}
 		let mut cancelled = None;
 		if self.record.data["pending"] == true {
 			let operation = self.record.data["operation_id"]
@@ -222,6 +236,8 @@ impl JournalSessions for Scope<'_> {
 		self.record.data["session_id"] = json!(session.id);
 		self.record.data["fingerprint"] = json!(session.fingerprint);
 		self.record.data["runner_instance"] = Value::Null;
+		self.record.data["key"] = Value::Null;
+		self.record.data["digest"] = Value::Null;
 		self.record.data["operation_id"] = Value::Null;
 		self.record.data["file_id"] = Value::Null;
 		self.record.data["pending"] = json!(false);
@@ -251,7 +267,7 @@ fn text_limit(output_bytes: u64) -> Result<usize> {
 pub(crate) async fn execute(
 	store: &Store,
 	run: &aidash_domain::Run,
-	tenancy: &aidash_application::tenancy::TenancyScope,
+	tenancy: &TenancyScope,
 	code: &str,
 	target_run: Option<Uuid>,
 	range: Option<(u64, u64)>,
@@ -315,6 +331,7 @@ pub(crate) async fn execute(
 	if scope.record.data["key"] != key
 		&& scope.record.data["pending"] != true
 		&& scope.record.data["fresh"] != true
+		&& scope.record.state == "ready"
 		&& let Some(session) = scope.record.data["session_id"].as_str()
 		&& !scope.record.data["operation_id"].is_null()
 	{
@@ -424,23 +441,11 @@ pub(crate) async fn execute(
 	let withdrawn = match recheck {
 		Ok(current) => (current.generation != snapshot.generation)
 			.then(|| Error::Conflict("JOURNAL_GENERATION_CHANGED".into())),
-		Err(Error::Forbidden) => Some(Error::Forbidden),
+		Err(error @ (Error::Forbidden | Error::AccountSuspended { .. })) => Some(error),
 		Err(error) => return Err(error),
 	};
 	if let Some(withdrawn) = withdrawn {
-		let stopped = transport
-			.request(
-				"POST",
-				&format!("/v1/sessions/{session}/stop"),
-				Some(&json!({"instance":health["instance"]})),
-			)
-			.await?;
-		if stopped["termination_confirmed"] != true {
-			return Err(Error::Conflict("JOURNAL_TERMINATION_UNCONFIRMED".into()));
-		}
-		// This result is deliberately discarded, so it may be acknowledged
-		// without waiting for an invocation result to be saved.
-		acknowledge_runner(&transport, &operation.to_string(), json!({"digest":digest})).await?;
+		discard_completed(store, &transport, run.id, operation).await?;
 		return Err(withdrawn);
 	}
 	let mut access =
@@ -449,7 +454,7 @@ pub(crate) async fn execute(
 			.ok_or(Error::Forbidden)?;
 	lock_active(&mut access, run.id).await?;
 	let mut scope = Scope::open(&mut access, &transport, run.id).await?;
-	if scope.record.data["operation_id"] != json!(operation) {
+	if scope.record.state != "ready" || scope.record.data["operation_id"] != json!(operation) {
 		return Err(Error::Conflict("JOURNAL_OPERATION_CHANGED".into()));
 	}
 	scope.record.data["pending"] = json!(false);
@@ -459,6 +464,77 @@ pub(crate) async fn execute(
 	drop(scope);
 	access.finish(Ok(())).await?;
 	Ok(output)
+}
+
+async fn lock_record(
+	tx: &mut crate::database::native::Transaction,
+	id: Uuid,
+) -> Result<Option<Record>> {
+	use reinhardt::query::{
+		Expr, ExprTrait as _, LockType, PostgresQueryBuilder, QueryStatementBuilder as _,
+	};
+	crate::database::native::query_as(
+		&super::sessions::select("core_records")
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("kind").eq("journal_session"))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **tx)
+	.await
+	.map_err(Into::into)
+}
+
+async fn discard_completed(
+	store: &Store,
+	transport: &dyn RunnerTransport,
+	run: Uuid,
+	operation: Uuid,
+) -> Result<()> {
+	// The original Subject may already be suspended. Only the pending
+	// operation whose completed output was refused may be invalidated here.
+	let id = record_id(run);
+	let mut tx = store.pool.begin(&MAINTENANCE).await?;
+	let Some(mut record) = lock_record(&mut tx, id).await? else {
+		return Ok(());
+	};
+	if record.data["run"] != json!(run)
+		|| record.data["operation_id"] != json!(operation)
+		|| record.data["pending"] != true
+	{
+		return Ok(());
+	}
+	record.state = DISCARD_PENDING.into();
+	record.data["fingerprint"] = json!("output_withdrawn");
+	record.data["pending"] = json!(false);
+	core_records::update_committed(&mut tx, &mut record).await?;
+	tx.commit().await?;
+	// A process cut during stop or acknowledgement leaves a recoverable marker.
+	recover_receipt(store, transport, id).await
+}
+
+async fn finish_discard(transport: &dyn RunnerTransport, record: &mut Record) -> Result<()> {
+	let session = record.data["session_id"].as_str().ok_or(Error::Forbidden)?;
+	let instance = record.data["runner_instance"]
+		.as_str()
+		.ok_or(Error::Forbidden)?;
+	let operation = record.data["operation_id"]
+		.as_str()
+		.ok_or(Error::Forbidden)?;
+	let digest = record.data["digest"].as_str().ok_or(Error::Forbidden)?;
+	let stopped = transport
+		.request(
+			"POST",
+			&format!("/v1/sessions/{session}/stop"),
+			Some(&json!({"instance":instance})),
+		)
+		.await?;
+	if stopped["termination_confirmed"] != true {
+		return Err(Error::Conflict("JOURNAL_TERMINATION_UNCONFIRMED".into()));
+	}
+	acknowledge_runner(transport, operation, json!({"digest":digest})).await?;
+	record.state = DISCARDED.into();
+	Ok(())
 }
 
 async fn reset_failed(
@@ -499,13 +575,10 @@ pub(crate) async fn acknowledge(store: &Store, run: &aidash_domain::Run) -> Resu
 
 /// Reclaim terminal Runs without relying on their former Subject's authority.
 pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
-	use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
 		QueryStatementBuilder as _,
 	};
-	const MAINTENANCE: TenancyScope =
-		TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 	let rows: Vec<Record> = crate::database::native::query_as(
 		&super::sessions::select("core_records")
 			.and_where(Expr::col("kind").eq("journal_session"))
@@ -538,8 +611,8 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 				.as_deref()
 				.is_some_and(|value| !matches!(value, "COMPLETED" | "FAILED" | "CANCELLED"))
 			{
-				if snapshot.data["receipt_pending"] == true {
-					acknowledge_maintenance(store, &transport, &snapshot).await?;
+				if snapshot.state == DISCARD_PENDING || snapshot.data["receipt_pending"] == true {
+					recover_receipt(store, &transport, snapshot.id).await?;
 				}
 				return Ok(());
 			}
@@ -560,18 +633,12 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 			{
 				return Ok(());
 			}
-			let current: Option<Record> = crate::database::native::query_as(
-				&super::sessions::select("core_records")
-					.and_where(Expr::col("id").eq(Expr::value(snapshot.id)))
-					.and_where(Expr::col("kind").eq("journal_session"))
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut *tx)
-			.await?;
-			let Some(record) = current else {
+			let Some(mut record) = lock_record(&mut tx, snapshot.id).await? else {
 				return Ok(());
 			};
+			if record.state == DISCARD_PENDING {
+				finish_discard(&transport, &mut record).await?;
+			}
 			let operation = record.data["operation_id"].as_str();
 			let digest = record.data["digest"].as_str();
 			let mut receipt = None;
@@ -595,7 +662,9 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 				}
 				receipt = Some(observed);
 			}
-			if let Some(session) = record.data["session_id"].as_str() {
+			if record.state != DISCARDED
+				&& let Some(session) = record.data["session_id"].as_str()
+			{
 				let expected = record.data["runner_instance"]
 					.as_str()
 					.map(|instance| json!({"instance":instance}));
@@ -610,7 +679,9 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 					return Err(Error::Conflict("JOURNAL_TERMINATION_UNCONFIRMED".into()));
 				}
 			}
-			if let (Some(operation), Some(digest)) = (operation, digest) {
+			if record.state != DISCARDED
+				&& let (Some(operation), Some(digest)) = (operation, digest)
+			{
 				let mut proof = json!({"digest":digest});
 				if let Some(output_digest) = receipt
 					.as_ref()
@@ -639,31 +710,20 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 	Ok(())
 }
 
-async fn acknowledge_maintenance(
-	store: &Store,
-	transport: &dyn RunnerTransport,
-	snapshot: &Record,
-) -> Result<()> {
-	use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+async fn recover_receipt(store: &Store, transport: &dyn RunnerTransport, id: Uuid) -> Result<()> {
 	use reinhardt::query::{
-		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
-		QueryStatementBuilder as _,
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	};
-	const MAINTENANCE: TenancyScope =
-		TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 	let mut tx = store.pool.begin(&MAINTENANCE).await?;
-	let current: Option<Record> = crate::database::native::query_as(
-		&super::sessions::select("core_records")
-			.and_where(Expr::col("id").eq(Expr::value(snapshot.id)))
-			.and_where(Expr::col("kind").eq("journal_session"))
-			.lock(LockType::Update)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_optional(&mut *tx)
-	.await?;
-	let Some(mut record) = current else {
+	let Some(mut record) = lock_record(&mut tx, id).await? else {
 		return Ok(());
 	};
+	if record.state == DISCARD_PENDING {
+		finish_discard(transport, &mut record).await?;
+		core_records::update_committed(&mut tx, &mut record).await?;
+		tx.commit().await?;
+		return Ok(());
+	}
 	if record.data["receipt_pending"] != true || record.data["pending"] == true {
 		return Ok(());
 	}

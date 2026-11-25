@@ -188,6 +188,15 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client.validate_origin(source).await,
 		Err(Error::AccountSuspended { epoch: 1 })
 	));
+	response.lock().unwrap().reason = "identity_disabled".into();
+	assert!(matches!(
+		client.validate_origin(source).await,
+		Err(Error::IdentityDisabled)
+	));
+	assert!(matches!(
+		client.validate_origin(Uuid::new_v4()).await,
+		Err(Error::Forbidden)
+	));
 	{
 		let mut response = response.lock().unwrap();
 		response.active = true;

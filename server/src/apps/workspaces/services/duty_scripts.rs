@@ -6,7 +6,7 @@
 //! end: a Router's action for its event, a Watcher's events delivered like a
 //! webhook's.
 use super::access::Lease;
-use super::duties::start_with;
+use super::duties::{requester_refused, start_with};
 use crate::apps::workspaces::repositories::{
 	duties as duty_repository, duty_events as event_repository, duty_scripts as repository,
 };
@@ -165,12 +165,7 @@ async fn watch(f: &Federation, tenant: &str, id: Uuid, now: DateTime<Utc>) -> Re
 	};
 	let access = match Access::begin(&f.store, &requester(tenant, &duty)).await {
 		Ok(access) => access,
-		Err(
-			Error::Unauthorized
-			| Error::CredentialUnauthorized(_)
-			| Error::Forbidden
-			| Error::CredentialForbidden(_),
-		) => {
+		Err(error) if requester_refused(&error) => {
 			// The Requester left or lost access: the Duty stops, as a tick would.
 			stop_for_requester(f, tenant, id, now).await?;
 			return Ok(None);
@@ -343,12 +338,7 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 	};
 	let access = match Access::begin(&f.store, &requester(tenant, &duty)).await {
 		Ok(access) => access,
-		Err(
-			Error::Unauthorized
-			| Error::CredentialUnauthorized(_)
-			| Error::Forbidden
-			| Error::CredentialForbidden(_),
-		) => {
+		Err(error) if requester_refused(&error) => {
 			// Nothing can act for a Requester who lost access: the outcome is
 			// recorded as failed and nothing else happens.
 			return settle_failed(f, script, &duty, now, "the Requester lost access").await;
