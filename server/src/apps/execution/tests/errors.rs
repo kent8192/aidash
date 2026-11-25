@@ -376,21 +376,35 @@ fn only_an_unreachable_database_holds_lease_recoveries(
 
 #[test]
 fn sqlx_pool_acquire_timeout_retries_without_holding_lease_recoveries() {
-	let error = Error::Database(sqlx::Error::PoolTimedOut);
-	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
-	outage.note(&error, 30);
-	assert!(error.is_transient_database());
-	assert!(!outage.holds_recoveries(30));
+	let wrapped = DatabaseError::new(DatabaseErrorKind::Timeout, "pool timed out")
+		.with_source(sqlx::Error::PoolTimedOut);
+	for error in [
+		Error::Database(sqlx::Error::PoolTimedOut),
+		Error::Framework(wrapped.into()),
+	] {
+		let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+		outage.note(&error, 30);
+		assert!(error.is_transient_database(), "{error:?}");
+		assert!(!outage.holds_recoveries(30), "{error:?}");
+	}
 }
 
 #[rstest]
-#[case::io(sqlx::Error::Io(std::io::ErrorKind::ConnectionReset.into()))]
-#[case::tls(sqlx::Error::Tls(std::io::Error::other("TLS handshake failed").into()))]
-#[case::protocol(sqlx::Error::Protocol("invalid frame".into()))]
-fn sqlx_transport_errors_hold_lease_recoveries(#[case] error: sqlx::Error) {
-	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
-	outage.note(&Error::Database(error), 30);
-	assert!(outage.holds_recoveries(30));
+#[case::io(|| sqlx::Error::Io(std::io::ErrorKind::ConnectionReset.into()))]
+#[case::tls(|| sqlx::Error::Tls(std::io::Error::other("TLS handshake failed").into()))]
+#[case::protocol(|| sqlx::Error::Protocol("invalid frame".into()))]
+fn sqlx_transport_errors_hold_lease_recoveries(#[case] transport_error: fn() -> sqlx::Error) {
+	let source = transport_error();
+	let wrapped =
+		DatabaseError::new(DatabaseErrorKind::Connection, source.to_string()).with_source(source);
+	for error in [
+		Error::Database(transport_error()),
+		Error::Framework(wrapped.into()),
+	] {
+		let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+		outage.note(&error, 30);
+		assert!(outage.holds_recoveries(30), "{error:?}");
+	}
 }
 
 #[test]
