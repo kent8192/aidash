@@ -944,7 +944,9 @@ function RunPanel({
         </Panel>
       )}
       {query.data?.pages.some((page) => page.egress_waits?.length) && (
-        <Panel title={locale === "ja" ? "外部接続の待ち時間" : "Egress waits"}>
+        <Panel
+          title={locale === "ja-JP" ? "外部接続の待ち時間" : "Egress waits"}
+        >
           <ul className="space-y-1 text-sm">
             {query.data.pages
               .flatMap((page) => page.egress_waits ?? [])
