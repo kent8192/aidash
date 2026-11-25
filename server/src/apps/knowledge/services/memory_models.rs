@@ -534,9 +534,12 @@ impl Models {
 			|| cost > allowance.cost_micros
 			|| allowance.calls == 0
 		{
-			return Err(Error::Invalid(
-				"memory request exceeds its model allowance".into(),
-			));
+			return Err(match step {
+				ModelStep::ThreadIndexEmbedding => Error::SemanticUnavailable,
+				ModelStep::Required => {
+					Error::Invalid("memory request exceeds its model allowance".into())
+				}
+			});
 		}
 		// Capture all source lineage before provider I/O, including shared
 		// derivation origins. Reports count this attempt once, not once per Run.
@@ -671,7 +674,13 @@ impl Models {
 		)
 		.fetch_all(&mut *tx)
 		.await?;
-		if matches!(step, ModelStep::ThreadIndexEmbedding) && exists && attempts.is_empty() {
+		let last = attempts.first();
+		let last_state = last
+			.map(|attempt| attempt.try_get::<String>("state"))
+			.transpose()?;
+		if matches!(step, ModelStep::ThreadIndexEmbedding)
+			&& exists && !matches!(last_state.as_deref(), Some("complete" | "purged"))
+		{
 			let required_started = native::query(
 				&Query::select()
 					.column(Alias::new("id"))
@@ -686,17 +695,17 @@ impl Models {
 			.is_some();
 			if required_started {
 				// The next model call already took its input from keyword recall.
-				// A newly ready index must not change that request on replay.
+				// A newly ready index or recovered provider must not change it on replay.
 				return Ok(Prepared::SkipOnReplay);
 			}
 		}
-		if let Some(last) = attempts.first() {
+		if let Some(last) = last {
 			if last.try_get::<String>("digest")? != digest {
 				return Err(Error::Conflict(
 					"memory model request changed during replay".into(),
 				));
 			}
-			if last.try_get::<String>("state")? == "purged"
+			if last_state.as_deref() == Some("purged")
 				|| op.try_get::<chrono::DateTime<Utc>>("created_at")?
 					+ Duration::days(i64::from(self.policy.retention.model_result_days))
 					<= Utc::now()
@@ -705,7 +714,7 @@ impl Models {
 					"memory model result expired or was purged; use a new operation".into(),
 				));
 			}
-			if last.try_get::<String>("state")? == "complete" {
+			if last_state.as_deref() == Some("complete") {
 				let output: Value = last.try_get("output")?;
 				tx.commit().await?;
 				return Ok(Prepared::Cached(serde_json::from_value(output)?));

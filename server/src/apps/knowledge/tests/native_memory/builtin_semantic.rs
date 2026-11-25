@@ -9,6 +9,7 @@ struct BuiltinSemanticState {
 	fail_embeddings: Arc<AtomicBool>,
 	embedding_calls: Arc<AtomicUsize>,
 	reflection_calls: Arc<AtomicUsize>,
+	replay_reflection: Arc<AtomicBool>,
 }
 #[fixture]
 fn builtin_semantic_state() -> BuiltinSemanticState {
@@ -16,6 +17,7 @@ fn builtin_semantic_state() -> BuiltinSemanticState {
 		fail_embeddings: Arc::new(AtomicBool::new(false)),
 		embedding_calls: Arc::new(AtomicUsize::new(0)),
 		reflection_calls: Arc::new(AtomicUsize::new(0)),
+		replay_reflection: Arc::new(AtomicBool::new(false)),
 	}
 }
 #[fixture]
@@ -25,6 +27,7 @@ fn builtin_semantic_router(
 	let fail = state.fail_embeddings;
 	let calls = state.embedding_calls;
 	let reflections = state.reflection_calls;
+	let replay_reflection = state.replay_reflection;
 	std::sync::Arc::new(
 		reinhardt::test::stub::StubRouter::new()
 			.route(
@@ -57,16 +60,17 @@ fn builtin_semantic_router(
 				reply(move |request: reinhardt::Request| {
 					let request = request.json::<serde_json::Value>().unwrap();
 					let reflections = reflections.clone();
+					let replay = replay_reflection.load(Ordering::SeqCst);
 					async move {
 						let call = reflections.fetch_add(1, Ordering::SeqCst);
-						if call == 0 {
+						if replay && call == 0 {
 							return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE);
 						}
 						let context: serde_json::Value = serde_json::from_str(
 							request["messages"][1]["content"].as_str().unwrap(),
 						).unwrap();
 						let unit = &context["context"][0];
-						let step = if call % 2 == 1 {
+						let step = if replay && call % 2 == 1 {
 							json!({"step":"recall","query":{"text":"water","time":null,"kinds":[],"max_tokens":8192}})
 						} else {
 							json!({"step":"answer","reflection":{"text":"The office plants need water.","evidence":[{"kind":"unit","bank":unit["bank"],"id":unit["id"],"revision":unit["revision"]}]}})
@@ -550,18 +554,17 @@ fn person_config(mut config: serde_json::Value) -> serde_json::Value {
 	config
 }
 
-#[rstest]
-#[tokio::test]
-async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
-	#[future] database: DatabaseFixture,
-	bounds: Bounds,
-	#[future(awt)]
-	#[from(builtin_semantic_provider)]
-	fixture: BuiltinSemanticProvider,
+async fn bank_with_thread_embedding(
+	store: &Store,
+	registry: &aidash_server::registry::Registry,
+	thread: Uuid,
+	config: serde_json::Value,
+) -> (
+	Bank,
+	EntityRef,
+	Uuid,
+	aidash_server::authorization::identity::Actor,
 ) {
-	let endpoint = format!("{}/v1", fixture.server.url);
-	let database = database.await;
-	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
@@ -570,8 +573,6 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 		participant: None,
 	};
 	let provider = reference("optional-embedding");
-	let mut config = person_config(builtin_config());
-	config["policy"]["bounds"]["max_model_tokens"] = json!(65536);
 	registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -579,9 +580,9 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 		)
 		.await
 		.unwrap();
-	let actor = administrator(&store).await;
+	let actor = administrator(store).await;
 	memory::operate(
-		&store,
+		store,
 		&actor,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
@@ -596,7 +597,7 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 	.unwrap();
 	let id = Uuid::now_v7();
 	memory::mutate(
-		&store,
+		store,
 		&actor,
 		Mutation {
 			provider: provider.clone(),
@@ -612,9 +613,44 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 	.await
 	.unwrap();
 	assert_eq!(
-		projection_state(&store, id).await.as_deref(),
+		projection_state(store, id).await.as_deref(),
 		Some("PENDING")
 	);
+	(bank, provider, id, actor)
+}
+
+#[rstest]
+#[case::pending_projection(false)]
+#[case::failed_embedding(true)]
+#[tokio::test]
+async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] fail_embedding: bool,
+	#[future(awt)]
+	#[from(builtin_semantic_provider)]
+	fixture: BuiltinSemanticProvider,
+) {
+	let endpoint = format!("{}/v1", fixture.server.url);
+	let database = database.await;
+	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
+	let mut config = person_config(builtin_config());
+	// A failed dispatched embedding still counts toward the durable budget.
+	config["policy"]["bounds"]["max_model_calls"] = json!(4 + usize::from(fail_embedding));
+	config["policy"]["bounds"]["max_model_tokens"] = json!(65536);
+	let (bank, provider, id, actor) =
+		bank_with_thread_embedding(&store, &registry, thread, config).await;
+	fixture
+		.state
+		.replay_reflection
+		.store(true, Ordering::SeqCst);
+	if fail_embedding {
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+		assert_eq!(projection_state(&store, id).await.as_deref(), Some("READY"));
+		fixture.state.fail_embeddings.store(true, Ordering::SeqCst);
+	}
 	let mut operation = memory::Operation {
 		operation_id: Uuid::now_v7(),
 		provider,
@@ -634,12 +670,17 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 			.is_err()
 	);
 	assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 1);
-	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 0);
-
-	aidash_server::semantic::worker::sweep(&store)
-		.await
-		.unwrap();
-	assert_eq!(projection_state(&store, id).await.as_deref(), Some("READY"));
+	if fail_embedding {
+		assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 2);
+		fixture.state.fail_embeddings.store(false, Ordering::SeqCst);
+	} else {
+		assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 0);
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+		assert_eq!(projection_state(&store, id).await.as_deref(), Some("READY"));
+	}
+	let calls_before_retry = fixture.state.embedding_calls.load(Ordering::SeqCst);
 	sqlx::query("UPDATE memory_model_attempts SET created_at = now() - interval '1 minute' WHERE operation_id = $1")
 		.bind(operation.operation_id)
 		.execute(store.pool.fixture_driver())
@@ -653,12 +694,95 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 		.unwrap();
 	assert!(matches!(outcome, memory::Outcome::Reflection(_)));
 	assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 3);
-	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 2);
+	assert_eq!(
+		fixture.state.embedding_calls.load(Ordering::SeqCst),
+		calls_before_retry + 1,
+		"the retry must embed only the follow-up query"
+	);
 
 	// A new reflection with an already-ready index embeds both recall queries.
 	operation.operation_id = Uuid::now_v7();
 	let outcome = memory::operate(&store, &actor, operation).await.unwrap();
 	assert!(matches!(outcome, memory::Outcome::Reflection(_)));
 	assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 5);
-	assert_eq!(fixture.state.embedding_calls.load(Ordering::SeqCst), 4);
+	assert_eq!(
+		fixture.state.embedding_calls.load(Ordering::SeqCst),
+		calls_before_retry + 3
+	);
+}
+
+#[rstest]
+#[case::pending_projection(false, 65536, 0)]
+#[case::token_allowance(true, 5, 0)]
+#[case::cost_allowance(true, 65536, 1_000_000_000_000)]
+#[tokio::test]
+async fn builtin_memory_skips_optional_embedding_without_spending_a_call(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] index_ready: bool,
+	#[case] max_model_tokens: usize,
+	#[case] embedding_price: u64,
+	#[future(awt)]
+	#[from(builtin_semantic_provider)]
+	fixture: BuiltinSemanticProvider,
+) {
+	let endpoint = format!("{}/v1", fixture.server.url);
+	let database = database.await;
+	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
+	let mut config = person_config(builtin_config());
+	config["policy"]["bounds"]["max_model_calls"] = json!(1);
+	config["policy"]["bounds"]["max_model_tokens"] = json!(max_model_tokens);
+	config["policy"]["prices"]["embedding"]["input_per_million"] = json!(embedding_price);
+	let (bank, provider, id, actor) =
+		bank_with_thread_embedding(&store, &registry, thread, config).await;
+	if index_ready {
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+		assert_eq!(projection_state(&store, id).await.as_deref(), Some("READY"));
+	}
+	let index_calls = usize::from(index_ready);
+	assert_eq!(
+		fixture.state.embedding_calls.load(Ordering::SeqCst),
+		index_calls
+	);
+
+	let query = RecallQuery {
+		text: "plants".into(),
+		time: None,
+		kinds: vec![],
+		max_tokens: 8192,
+	};
+	let outcome = memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider,
+			bank,
+			action: if index_ready {
+				memory::Action::Recall { query }
+			} else {
+				memory::Action::Reflect { query }
+			},
+		},
+	)
+	.await
+	.unwrap();
+	match outcome {
+		memory::Outcome::Recall(Recall::Ready { units }) if index_ready => {
+			assert_eq!(units[0].id, id)
+		}
+		memory::Outcome::Reflection(reflection) if !index_ready => {
+			assert!(
+				matches!(reflection.evidence.as_slice(), [Evidence::Unit { id: cited, revision: 1, .. }] if *cited == id)
+			);
+			assert_eq!(fixture.state.reflection_calls.load(Ordering::SeqCst), 1);
+		}
+		other => panic!("expected recall or reflection on the stored fact, got {other:?}"),
+	}
+	assert_eq!(
+		fixture.state.embedding_calls.load(Ordering::SeqCst),
+		index_calls
+	);
 }

@@ -258,13 +258,7 @@ impl Scope<'_, '_> {
 			}
 		}
 		if points.is_empty() {
-			return Ok(Some(Produced {
-				output: Vec::new(),
-				usage: Usage {
-					tokens: 0,
-					cost_micros: 0,
-				},
-			}));
+			return Ok(None);
 		}
 		let embedded = self
 			.models
