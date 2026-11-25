@@ -106,6 +106,12 @@ disk; if the disk is full, the output is marked incomplete. Docker-mode commands
 become interrupted with an unknown outcome; they can still be stopped. A Runner update waits for
 foreground commands, then replaces Pods and stops their background processes.
 
+Scratch Space patches reserve their idempotency key before dispatch. The Pod
+helper records the result on the Scratch Space PVC. When the server retries a
+pending request, it looks up the original result and rechecks current authority
+before returning it. If the result is missing, the server reports
+`PATCH_RECEIPT_UNAVAILABLE` and leaves the file contents as found.
+
 A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
 contains user files; the copied system tree lives separately on the same PVC.

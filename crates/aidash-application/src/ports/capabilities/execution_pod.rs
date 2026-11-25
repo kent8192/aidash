@@ -273,6 +273,9 @@ pub struct FileSearchResult {
 pub struct FilePatchRequest {
 	pub scratch_space_id: String,
 	pub run_id: String,
+	pub claim_id: uuid::Uuid,
+	/// Only the original admission can apply the patch. Retries reconcile its receipt.
+	pub apply: bool,
 	pub patch: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -3,14 +3,38 @@ import base64
 import errno
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import stat
+import tempfile
+import uuid
 from pathlib import Path
 
 
 class InvalidPath(ValueError):
     pass
+
+
+class PatchReceiptUnavailable(ValueError):
+    pass
+
+
+def save_patch_receipt(path, record):
+    fd, name = tempfile.mkstemp(prefix='.patch-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as file:
+            json.dump(record, file)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def parts(path, allow_root=False):
@@ -372,10 +396,38 @@ class FileService:
 
     def patch(self, request):
         import fcntl
-        import uuid
-        text = request['patch']
+
+        text, run = request['patch'], request['run_id']
         if not isinstance(text, str) or len(text.encode()) > 1048576:
             raise ValueError('invalid patch size')
+        if not isinstance(run, str) or not run or len(run) > 256 or type(request['apply']) is not bool:
+            raise ValueError('invalid patch request')
+        claim = uuid.UUID(request['claim_id'])
+        digest = hashlib.sha256(json.dumps([run, text]).encode()).hexdigest()
+        self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        receipt = self.state / f'patch-{claim}.json'
+        lock = os.open(self.state / 'patch.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if receipt.exists():
+                previous = json.loads(receipt.read_bytes())
+                if previous['digest'] != digest:
+                    raise ValueError('patch claim conflict')
+                if previous['result'] is None:
+                    raise PatchReceiptUnavailable('patch receipt unavailable; effect is uncertain')
+                return previous['result']
+            if not request['apply']:
+                raise PatchReceiptUnavailable('patch receipt unavailable; effect is uncertain')
+            # A helper interrupted after claiming a patch may have started editing
+            # files. Keep that evidence and refuse to run the same claim again.
+            save_patch_receipt(receipt, {'digest': digest, 'result': None})
+            result = self._apply_patch(text)
+            save_patch_receipt(receipt, {'digest': digest, 'result': result})
+            return result
+        finally:
+            os.close(lock)
+
+    def _apply_patch(self, text):
         # Split on newlines only: splitlines() would also split on form feeds
         # and other separators that can appear inside a line.
         lines = [line[:-1] if line.endswith('\r') else line for line in text.split('\n')]
@@ -438,11 +490,8 @@ class FileService:
             edits.append((path, mode, change))
         if not edits:
             raise ValueError('empty patch')
-        self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock = os.open(self.state / 'patch.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         opened, prepared, applied = [], [], []
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX)
             for path, mode, change in edits:
                 components = parts(path)
                 parent = open_dir(self.root, components[:-1], create=mode == 0)
@@ -513,6 +562,8 @@ class FileService:
                         os.rename(backup, name, src_dir_fd=parent, dst_dir_fd=parent)
                     raise
                 applied.append((parent, name, backup, mode))
+            for parent in opened:
+                os.fsync(parent)
             for parent, _name, backup, mode in applied:
                 if mode != 0:
                     try:
@@ -538,7 +589,6 @@ class FileService:
                     pass
             for parent in opened:
                 os.close(parent)
-            os.close(lock)
 
 
 # Read-only operations end well before the Runner's 45 s transport limit, which

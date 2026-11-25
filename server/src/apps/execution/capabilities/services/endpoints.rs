@@ -159,27 +159,41 @@ async fn dispatch(
 	name: &str,
 	input: Value,
 ) -> Result<Envelope> {
+	use super::service::Invocation;
+	use crate::apps::execution::repositories::{files::ScratchStaging, subnodes};
+
+	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+	let key = Uuid::new_v4().to_string();
+	let writes = !matches!(
+		name,
+		"file_read" | "file_search" | "skill_list" | "skill_load" | "skill_read"
+	);
+	let result = async {
+		if writes {
+			subnodes::require_writable(access.tx.native_mut(), run.thread_id).await?;
+		}
+		service::invoke(&f.store, &mut access, &run, name, input, &key).await
+	}
+	.await;
+	let tenant = access.identity.tenant.clone();
+	let policy_revision = access.snapshot.revision;
+	let request = match access.finish(result).await? {
+		Invocation::Complete(output) => return Ok(*output),
+		Invocation::Pod(request) => request,
+	};
+	let mut stage = ScratchStaging::new(&f.store, &tenant);
+	let ran = request.execute(&run.metadata(), &mut stage).await;
 	let (mut access, run) = run_access(&f, actor, id).await?;
 	let result = async {
-		if !matches!(
-			name,
-			"file_read" | "file_search" | "skill_list" | "skill_load" | "skill_read"
-		) {
-			crate::apps::execution::repositories::subnodes::require_writable(
-				access.tx.native_mut(),
-				run.thread_id,
-			)
-			.await?;
+		if access.snapshot.revision != policy_revision {
+			return Err(Error::Forbidden);
 		}
-		service::invoke(
-			&f.store,
-			&mut access,
-			&run,
-			name,
-			input,
-			&Uuid::new_v4().to_string(),
-		)
-		.await
+		if writes {
+			subnodes::require_writable(access.tx.native_mut(), run.thread_id).await?;
+		}
+		let mut scope = crate::bootstrap::file_scope(Some(&f.store), &mut access, Some(&run));
+		let output = ran?.settle(&mut scope, &run.metadata(), name, &key).await?;
+		service::envelope(output)
 	}
 	.await;
 	access.finish(result).await
