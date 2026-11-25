@@ -3233,6 +3233,10 @@ connection: None,
 				}
 				let mut prepared_result = None;
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
+					if matches!(fitting, ResultFitting::ThreadRecord | ResultFitting::Observation) {
+						// These fitters read directly from Home.
+						tool_step!(call, async { tool.validate_input(&call.arguments) });
+					}
 					let (range, saved) = tool_step!(call, async {
 						tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor)
 					});
