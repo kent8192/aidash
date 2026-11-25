@@ -220,6 +220,7 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 		scratch_space_id: "space-a".into(),
 		run_id: "run-a".into(),
 		code: "sleep 10".into(),
+		expected_session_id: None,
 		cwd: None,
 		timeout_seconds: None,
 		background: true,

@@ -3167,6 +3167,51 @@ class PythonSessionMappingTest(unittest.TestCase):
             self.assertEqual(result['status'], 'queued')
             self.assertTrue(controller.submit_command.call_args.kwargs['session_replaced'])
 
+    def test_expected_session_is_required_before_queueing_a_cell(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+
+        expected = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        request = {'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f2',
+                   'scratch_space_id': 's', 'run_id': 'r', 'code': 'print(counter)',
+                   'expected_session_id': expected}
+        new_session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f3'
+        for session, status, uid, result_status, accepted in (
+                (expected, 'running', 'old', None, True),
+                (expected, 'running', 'old', 'timed_out', False),
+                (expected, 'running', 'new', None, False),
+                (expected, 'timed_out', 'old', None, False),
+                (new_session, 'running', 'old', None, False)):
+            with self.subTest(session=session, status=status, uid=uid, result_status=result_status), \
+                    tempfile.TemporaryDirectory() as directory:
+                result = (SimpleNamespace(returncode=1, stdout=b'') if result_status is None else
+                          SimpleNamespace(returncode=0, stdout=json.dumps({
+                              'operation_id': session, 'run_id': 'r', 'status': result_status}).encode()))
+                backend = Mock(root=Path(directory))
+                backend.kube.return_value = result
+                controller = ExecutionPodController(backend, {'output_bytes': 8388608}, admitted=True)
+                controller._python_session_path('s', 'r').write_text(json.dumps({
+                    'operation_id': session, 'scratch_space_id': 's', 'socket_path': '/run/session.sock'}))
+                controller._command_path(session).write_text(json.dumps({
+                    'operation_id': session, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+                    'status': status, 'pod_uid': 'old'}))
+                controller._get = Mock(return_value={'metadata': {'uid': uid}})
+                controller.submit_command = Mock(return_value={'status': 'queued'})
+
+                if accepted:
+                    self.assertEqual(controller.python_cell(request)['status'], 'queued')
+                    self.assertEqual(controller.submit_command.call_count, 1)
+                    self.assertEqual(controller.submit_command.call_args.kwargs['session_operation_id'], expected)
+                else:
+                    with self.assertRaises(ExecutionPodError) as error:
+                        controller.python_cell(request)
+                    self.assertEqual(error.exception.code, 'session_reset')
+                    controller.submit_command.assert_not_called()
+
     def test_replacement_notice_is_returned_once_not_persisted(self):
         import json
         import tempfile
@@ -3194,14 +3239,18 @@ class PythonSessionMappingTest(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import Mock
         from execution_pod import ExecutionPodController
-        request = {'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f1',
-                   'scratch_space_id': 's', 'run_id': 'r', 'code': '1'}
+        session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        request = {'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f2',
+                   'scratch_space_id': 's', 'run_id': 'r', 'code': '1', 'expected_session_id': session}
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             controller._command_path(request['operation_id']).write_text(json.dumps({'operation_id': request['operation_id'],
-                'client_digest': digest, 'status': 'running', 'session_replaced': True}))
-            self.assertTrue(controller.python_cell(request)['session_replaced'])
+                'client_digest': digest, 'status': 'running', 'session_replaced': True,
+                'kind': 'python_cell', 'session_operation_id': session}))
+            result = controller.python_cell(request)
+            self.assertTrue(result['session_replaced'])
+            self.assertEqual(result['session_id'], session)
 
     def test_stopped_session_on_replaced_pod_is_not_reported_as_lost(self):
         import json

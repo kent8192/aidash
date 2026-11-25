@@ -94,6 +94,7 @@ impl ExecutionPodRuntime for Pod {
 			message: None,
 			python_result: None,
 			pod_uid: None,
+			session_id: None,
 			left_running: None,
 			session_replaced: None,
 		})
