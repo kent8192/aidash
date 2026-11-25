@@ -387,6 +387,9 @@ impl WaitingState {
 		}
 	}
 }
+/// Dashboard service name for semantic context Outage Waits.
+pub const SEMANTIC_CONTEXT_OUTAGE: &str = "Semantic context";
+
 /// How long an Outage Wait lasts before it becomes a pause only a person can
 /// lift (ADR 0129).
 pub const OUTAGE_BOUND: chrono::Duration = chrono::Duration::hours(24);
@@ -630,6 +633,9 @@ pub struct RecoveryState {
 pub struct OutageTracking {
 	pub service: String,
 	pub started_at: DateTime<Utc>,
+	/// A semantic or service outage has entered its long retry cadence.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub short_retries_exhausted: bool,
 }
 /// The call an Authority Pause stopped, recorded only when it certainly did not run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -703,6 +709,12 @@ impl RecoveryState {
 		self.standing_declines.clear();
 		self
 	}
+	pub fn semantic_outage_retries_exhausted(&self) -> bool {
+		self.outage.as_ref().is_some_and(|outage| {
+			outage.service == SEMANTIC_CONTEXT_OUTAGE && outage.short_retries_exhausted
+		})
+	}
+
 	/// Whether this attempt may degrade an unavailable thread slot: it is
 	/// the last one of the bounded outage retry, or an earlier step of the Run
 	/// already degraded and no retrieval has succeeded since (ADR 0059).
@@ -714,10 +726,11 @@ impl RecoveryState {
 			|| (matches!(
 				self.semantic_reason,
 				Some(crate::semantic::Failure::Unavailable | crate::semantic::Failure::Pending)
-			) && self
-				.retry
-				.as_ref()
-				.is_some_and(|retry| retry.count >= crate::semantic::OUTAGE_RETRIES))
+			) && (self.semantic_outage_retries_exhausted()
+				|| self
+					.retry
+					.as_ref()
+					.is_some_and(|retry| retry.count >= crate::semantic::OUTAGE_RETRIES)))
 	}
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

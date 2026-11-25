@@ -52,7 +52,8 @@ impl From<RunInspection> for RunManagement {
 				r.semantic_reason.map(|cause| {
 					aidash_domain::semantic::recovery::Recovery::new(
 						cause,
-						r.retry.is_some() && run.control == RunControl::Active,
+						(r.retry.is_some() || r.semantic_outage_retries_exhausted())
+							&& run.control == RunControl::Active,
 					)
 				})
 			}),
