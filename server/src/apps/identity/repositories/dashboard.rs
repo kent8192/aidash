@@ -43,14 +43,9 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 			{
 				continue;
 			}
-			let outcome = DemoReservation::fulfil(
-				&self.0,
-				policy.as_ref(),
-				&reservation.tenant,
-				reservation.id,
-				identity,
-			)
-			.await?;
+			let outcome = reservation
+				.fulfil(&self.0, policy.as_ref(), identity)
+				.await?;
 			if let Fulfilment::Skipped(reason) = outcome {
 				tracing::debug!(%identity, tenant = %reservation.tenant, ?reason, "Demo Reservation not spent");
 			}
