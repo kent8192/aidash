@@ -29,6 +29,7 @@ fn task(id: usize, visible: bool) -> Task {
 		created_by: if visible { "visible" } else { "hidden" }.into(),
 		dependencies: vec![],
 		parent_id: None,
+		started_by_duty: None,
 		revision: 1,
 		created_at: Utc::now(),
 	}

@@ -40,6 +40,7 @@ fn scope() -> Scope {
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 8,
 			created_at: chrono::Utc::now(),
 		},
@@ -786,6 +787,7 @@ impl HandOnScope for HandingScope {
 			created_by: self.chain[1].clone(),
 			dependencies: vec![],
 			parent_id: Some(Uuid::from_u128(2)),
+			started_by_duty: None,
 			revision: 1,
 			created_at: chrono::Utc::now(),
 		})

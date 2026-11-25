@@ -523,14 +523,12 @@ export function dutyNoticeEntries(
   };
 }
 
-/** Whether a Task entry's notice stays out of the toast: a scheduled Run's
- *  completion is shown in the bell only; its failure still toasts. */
+/** A Duty-started Task's completion stays in the bell. Its failure still toasts. */
 export function quietCompletion(
   kind: NoticeEntry["kind"],
-  task: string,
-  scheduled: ReadonlySet<string>,
+  startedByDuty: unknown,
 ): boolean {
-  return kind === "completed" && scheduled.has(task);
+  return kind === "completed" && typeof startedByDuty === "string";
 }
 
 /** Which actions a Duty's row offers the viewer. The server decides

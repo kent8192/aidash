@@ -49,6 +49,11 @@ pub(crate) struct ThreadInsert<'a> {
 	pub created_by: &'a str,
 }
 
+pub(crate) enum DutyTaskStart {
+	Automatic(Uuid),
+	Manual(Uuid),
+}
+
 #[derive(Clone)]
 pub struct Store {
 	pub provider_key_material_reader:
@@ -1142,6 +1147,19 @@ impl Store {
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
+		self.create_task_with_duty_in(tx, thread, input, creator, key, None)
+			.await
+	}
+
+	pub(crate) async fn create_task_with_duty_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		thread: Uuid,
+		input: &NewTask,
+		creator: &str,
+		key: Option<&str>,
+		duty: Option<DutyTaskStart>,
+	) -> Result<Task> {
 		nonempty(&input.title, "task title")?;
 		nonempty(&input.description, "task description")?;
 		if !input.requirements.is_object() {
@@ -1244,6 +1262,12 @@ impl Store {
 				));
 			}
 		}
+		// Both associations must be in place before emitting task.created.
+		let (duty_id, started_by_duty) = match duty {
+			Some(DutyTaskStart::Automatic(duty)) => (Some(duty), Some(duty)),
+			Some(DutyTaskStart::Manual(duty)) => (Some(duty), None),
+			None => (None, None),
+		};
 		let task: Option<Task> = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = thread;
@@ -1267,6 +1291,8 @@ impl Store {
 						reinhardt::query::Alias::new("dependencies"),
 						reinhardt::query::Alias::new("parent_id"),
 						reinhardt::query::Alias::new("creation_key"),
+						reinhardt::query::Alias::new("duty_id"),
+						reinhardt::query::Alias::new("started_by_duty"),
 						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
@@ -1307,6 +1333,8 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
+							.expr(Expr::value(duty_id))
+							.expr(Expr::value(started_by_duty))
 							.expr(crate::database::scope::tenant_of(
 								"threads",
 								"id",
@@ -1357,6 +1385,7 @@ impl Store {
 					|| t.requirements != input.requirements
 					|| t.dependencies != input.dependencies
 					|| t.parent_id != input.parent_id
+					|| t.started_by_duty != started_by_duty
 					|| t.created_by != creator
 				{
 					return Err(Error::Conflict(

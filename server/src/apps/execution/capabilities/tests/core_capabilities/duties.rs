@@ -130,6 +130,56 @@ async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 	.await;
 	assert_eq!(status, 200, "{detail}");
 	assert_eq!(detail["ticks"].as_array().unwrap().len(), 2);
+	// The dashboard can learn about completion from State before polling notices.
+	let owner = task.owner.as_deref().unwrap();
+	c.f.store
+		.transition(
+			&TEST_FIXTURE,
+			task.id,
+			task.revision,
+			owner,
+			aidash_server::domain::TaskStatus::Running,
+		)
+		.await
+		.unwrap();
+	c.f.store
+		.complete(
+			&TEST_FIXTURE,
+			task.id,
+			owner,
+			"duty-completion",
+			&aidash_server::domain::ArtifactInput {
+				kind: "text".into(),
+				name: "Digest".into(),
+				content: json!("No changes"),
+			},
+		)
+		.await
+		.unwrap();
+	let (status, state) = request(&c.app, &c.token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200, "{state}");
+	let tasks = state["tasks"].as_array().unwrap();
+	let task_in_state = tasks
+		.iter()
+		.find(|row| row["id"] == json!(task.id))
+		.unwrap();
+	assert_eq!(task_in_state["status"], "COMPLETED");
+	assert_eq!(task_in_state["started_by_duty"], json!(id));
+	let ordinary = tasks.iter().find(|row| row["id"] == json!(c.task)).unwrap();
+	assert!(ordinary["started_by_duty"].is_null());
+	let events = state["events"].as_array().unwrap();
+	for kind in ["task.created", "task.updated", "task.completed"] {
+		let payload = events
+			.iter()
+			.filter(|event| event["kind"] == kind)
+			.map(|event| {
+				let data = &event["data"];
+				data.get("task").unwrap_or(data)
+			})
+			.find(|row| row["id"] == json!(task.id))
+			.unwrap_or_else(|| panic!("{kind} for Task {}", task.id));
+		assert_eq!(payload["started_by_duty"], json!(id), "{kind}");
+	}
 	let (status, notices) =
 		request(&c.app, &c.token, "GET", "/api/duties/notices", Value::Null).await;
 	assert_eq!(status, 200, "{notices}");
@@ -1660,6 +1710,14 @@ async fn a_duty_task_works_under_its_procedure_however_it_starts(
 	let event_task: Uuid =
 		serde_json::from_value(events_of(&c, id).await[0]["task_id"].clone()).unwrap();
 	assert_eq!(
+		c.f.store
+			.task(&TEST_FIXTURE, event_task)
+			.await
+			.unwrap()
+			.started_by_duty,
+		Some(id),
+	);
+	assert_eq!(
 		pinned_brief(&c, event_task).await.as_deref(),
 		Some(expected.as_str())
 	);
@@ -1675,6 +1733,14 @@ async fn a_duty_task_works_under_its_procedure_however_it_starts(
 	.await;
 	assert_eq!(status, 200, "{started}");
 	let manual: Uuid = serde_json::from_value(started["task_id"].clone()).unwrap();
+	assert_eq!(
+		c.f.store
+			.task(&TEST_FIXTURE, manual)
+			.await
+			.unwrap()
+			.started_by_duty,
+		None,
+	);
 	assert_eq!(
 		pinned_brief(&c, manual).await.as_deref(),
 		Some(expected.as_str())
