@@ -20,8 +20,8 @@ use aidash_domain::semantic::{
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait as _, LockType, OnConflict, Order, PostgresQueryBuilder,
-	Query, QueryStatementBuilder as _, SimpleExpr,
+	Alias, ColumnRef, Expr, ExprTrait as _, Func, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -306,6 +306,59 @@ impl SemanticConfigurationSession for Configuration {
 		super::attachment_images::backfill(lease, thread, max_images)
 			.await
 			.map_err(Into::into)
+	}
+	async fn backfill_memory(&mut self, thread: Uuid) -> Result<()> {
+		let lease = self
+			.lease
+			.as_mut()
+			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
+		super::native_memory::backfill_builtin(lease, thread)
+			.await
+			.map_err(Into::into)
+	}
+	async fn memory_embeddings(&mut self, thread: Uuid) -> Result<i64> {
+		use aidash_domain::registry::bindings::memory_defaults;
+		// Explicit providers pin their embedding and are refused by `replace`.
+		Ok(crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Func::count(Expr::col(("e", "id")).into()))
+				.from_as(Alias::new("semantic_entries"), Alias::new("e"))
+				.inner_join(
+					Alias::new("memory_units"),
+					Expr::col(("e", "id")).equals(("memory_units", "id")),
+				)
+				.inner_join(
+					Alias::new("memory_bank_settings"),
+					Expr::col(("memory_units", "bank_id"))
+						.equals(("memory_bank_settings", "bank_id")),
+				)
+				.inner_join(
+					Alias::new("semantic_indexes"),
+					Expr::col(("e", "thread_id")).equals(("semantic_indexes", "thread_id")),
+				)
+				.inner_join(
+					Alias::new("semantic_points"),
+					Expr::col(("e", "point_id")).equals(("semantic_points", "id")),
+				)
+				.and_where(Expr::col(("e", "thread_id")).eq(Expr::value(thread)))
+				.and_where(
+					Expr::col(("e", "index_revision")).equals(("semantic_indexes", "revision")),
+				)
+				.and_where(Expr::col(("semantic_points", "retired")).eq(false))
+				.and_where(Expr::col(("semantic_points", "content_digest")).is_not_null())
+				.and_where(Expr::col(("e", "deleted")).eq(false))
+				.and_where(
+					Expr::col(("memory_bank_settings", "provider_id"))
+						.eq(memory_defaults::MEMORY_ID),
+				)
+				.and_where(
+					Expr::col(("memory_bank_settings", "provider_version"))
+						.eq(memory_defaults::VERSION),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(self.tx()?)
+		.await?)
 	}
 	async fn history(&mut self, thread: Uuid, revision: i64) -> Result<()> {
 		SemanticHistory::append(

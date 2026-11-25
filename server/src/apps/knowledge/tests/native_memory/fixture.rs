@@ -320,6 +320,7 @@ async fn setup_endpoint_policy_with_window(
 					learn_from_runs: flags.0,
 					maintain_observations: flags.1,
 					refresh_mental_models: flags.2,
+					thread_index_embedding: false,
 				},
 			})
 			.unwrap(),
@@ -362,6 +363,7 @@ async fn setup_endpoint_policy_with_window(
 		thread.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec: aidash_server::semantic::IndexSpec {
 				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
 				vector: aidash_domain::semantic::VectorConfig { provider: "postgres".into(), endpoint: "local".into(), credential_env: None },

@@ -209,6 +209,7 @@ impl Models {
 		config: &EmbeddingConfig,
 		text: &str,
 		origin: crate::generation::embedding::Origin,
+		optional: bool,
 	) -> Result<Option<crate::generation::embedding::Reservation>> {
 		let mut authorities = self.inference.lock().await;
 		authorities.require_leases()?;
@@ -225,6 +226,7 @@ impl Models {
 			config,
 			text,
 			origin,
+			optional,
 		)
 		.await
 	}

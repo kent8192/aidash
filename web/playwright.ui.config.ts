@@ -22,6 +22,7 @@ export default defineConfig({
     "agent-skills.spec.ts",
     "entity-configuration.spec.ts",
     "native-memory.spec.ts",
+    "semantic-confirmation.spec.ts",
     "registry-labels.spec.ts",
     "duplicate-labels.spec.ts",
     "openrouter.spec.ts",

@@ -195,6 +195,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		other.id,
 		crate::semantic::ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec: serde_json::from_value(index.spec).unwrap(),
 		},
 	)

@@ -853,6 +853,10 @@ pub(crate) async fn project(
 			.await?
 			.map(|settings| settings.provider),
 	};
+	// Built-in Memory embeds with its Thread index only while that index is
+	// enabled, and a Unit the index cannot take stays keyword-only instead of
+	// failing the memory write (#1123).
+	let mut optional = false;
 	if let Some(provider) = &policy_provider {
 		// Fencing can update a dependent bank whose provider the initiating
 		// subject cannot read. This internal projection decision needs only the
@@ -870,9 +874,10 @@ pub(crate) async fn project(
 			));
 		}
 		let config: ProviderConfig = serde_json::from_value(entry.config)?;
-		if config.policy.embedding.is_none() {
+		if config.policy.embedding.is_none() && !config.policy.thread_index_embedding {
 			return Ok(());
 		}
+		optional = config.policy.thread_index_embedding;
 	}
 	let Some(index) = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
@@ -894,6 +899,11 @@ pub(crate) async fn project(
 	)
 	.fetch_optional(&mut **lease.tx())
 	.await?;
+	// A deletion or revocation always reaches an existing projection; only a
+	// new or changed visible Unit waits for an enabled index.
+	if optional && !spec.enabled && (prior.is_none() || unit.visible()) {
+		return Ok(());
+	}
 	if let Some(prior) = &prior {
 		if prior.thread_id != unit.bank.thread
 			|| serde_json::from_value::<Source>(prior.source.clone())?
@@ -915,11 +925,27 @@ pub(crate) async fn project(
 		.scalar_one(&mut **lease.tx())
 		.await?;
 		if count >= spec.max_sources as i64 {
+			if optional {
+				return Ok(());
+			}
 			return Err(Error::Conflict("Thread search source limit reached".into()));
 		}
 	}
-	if unit.visible() {
-		aidash_domain::semantic::indexing::validate_text(&unit.content.text, spec.max_input_bytes)?;
+	// A built-in Unit the index cannot take is withdrawn from it rather than
+	// left at an older revision; it stays reachable by keyword.
+	let mut withdrawn = false;
+	if unit.visible()
+		&& let Err(error) = aidash_domain::semantic::indexing::validate_text(
+			&unit.content.text,
+			spec.max_input_bytes,
+		) {
+		if !optional {
+			return Err(error.into());
+		}
+		if prior.is_none() {
+			return Ok(());
+		}
+		withdrawn = true;
 	}
 	let revision = prior.as_ref().map_or(Ok(1), |old| {
 		old.revision
@@ -929,7 +955,7 @@ pub(crate) async fn project(
 	})?;
 	let state = if unit.deleted {
 		"DELETED"
-	} else if !unit.visible() {
+	} else if !unit.visible() || withdrawn {
 		"REVOKED"
 	} else {
 		"PENDING"
@@ -957,7 +983,12 @@ pub(crate) async fn project(
 		key: format!("memory-unit:{}", unit.id),
 		source: serde_json::to_value(Source::Unit { id: unit.id })?,
 		agent: unit.bank.participant.map(|id| format!("participant:{id}")),
-		metadata: serde_json::json!({"unit_revision":unit.revision,"bank":unit.bank,"provider":provider}),
+		metadata: serde_json::json!({
+			"unit_revision": unit.revision,
+			"bank": unit.bank,
+			"provider": provider,
+			"thread_index_embedding": optional,
+		}),
 		revision,
 		point_id: Uuid::now_v7(),
 		index_revision: index.revision,
@@ -1020,6 +1051,73 @@ pub(crate) async fn project(
 		"native unit revision projected",
 	)
 	.await?;
+	Ok(())
+}
+/// Built-in Units admitted or changed while their Thread index was missing or
+/// disabled enter it now, under the authority of the person configuring it (#1123).
+/// Units the index cannot take stay keyword-only, as in [`project`].
+pub(crate) async fn backfill_builtin(lease: &mut Lease<'_>, thread: Uuid) -> Result<()> {
+	use aidash_domain::registry::bindings::memory_defaults;
+	let actor = lease.saved()?["subject"]
+		.as_str()
+		.ok_or(Error::Forbidden)?
+		.to_owned();
+	let ids: Vec<Uuid> = native::query_scalar(
+		&Query::select()
+			.column(("u", "id"))
+			.from_as(Alias::new("memory_units"), Alias::new("u"))
+			.inner_join(
+				Alias::new("memory_banks"),
+				Expr::col(("u", "bank_id")).equals(("memory_banks", "id")),
+			)
+			.inner_join(
+				Alias::new("memory_bank_settings"),
+				Expr::col(("u", "bank_id")).equals(("memory_bank_settings", "bank_id")),
+			)
+			.and_where(Expr::col(("memory_banks", "thread_id")).eq(Expr::value(thread)))
+			.and_where(
+				Expr::col(("memory_bank_settings", "provider_id")).eq(memory_defaults::MEMORY_ID),
+			)
+			.and_where(
+				Expr::col(("memory_bank_settings", "provider_version"))
+					.eq(memory_defaults::VERSION),
+			)
+			.and_where(Expr::col(("u", "deleted")).eq(false))
+			.order_by(("u", "id"), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut **lease.tx())
+	.await?;
+	let provider = aidash_domain::registry::EntityRef {
+		id: memory_defaults::MEMORY_ID.into(),
+		version: memory_defaults::VERSION.into(),
+	};
+	for id in ids {
+		let Some(unit) = units::load(lease, id, false).await? else {
+			continue;
+		};
+		if !unit.visible() {
+			continue;
+		}
+		// Re-project a Unit with no live projection, or one left at an older
+		// revision while the index was disabled or could not take it.
+		let current: Option<serde_json::Value> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("metadata"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("deleted").eq(false))
+				.and_where(Expr::col("state").ne("REVOKED"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **lease.tx())
+		.await?;
+		if current.is_some_and(|metadata| metadata["unit_revision"].as_i64() == Some(unit.revision))
+		{
+			continue;
+		}
+		project(lease, &unit, &actor, Some(&provider)).await?;
+	}
 	Ok(())
 }
 pub(crate) async fn bump_bank(lease: &mut Lease<'_>, id: Uuid) -> Result<()> {
