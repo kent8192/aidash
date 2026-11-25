@@ -258,17 +258,25 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 	Ok(declared)
 }
 
+/// All current and historical declarations that a Binding can pin.
+pub fn pinned_declarations(
+	validation: &DefinitionValidation,
+	node: &str,
+) -> Result<impl Iterator<Item = Entry>> {
+	Ok(declarations(validation, node)?
+		.into_iter()
+		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_file_entries(validation, node)?))
+}
+
 /// Resolve a pinned system definition, including versions no longer listed.
 pub fn pinned_declaration(
 	validation: &DefinitionValidation,
 	node: &str,
 	reference: &aidash_domain::registry::EntityRef,
 ) -> Result<Option<Entry>> {
-	Ok(declarations(validation, node)?
-		.into_iter()
-		.chain(legacy_workspace_entries(validation, node)?)
-		.chain(legacy_journal_entries(validation, node)?)
-		.chain(legacy_file_entries(validation, node)?)
+	Ok(pinned_declarations(validation, node)?
 		.find(|entry| entry.id == reference.id && entry.version == reference.version))
 }
 

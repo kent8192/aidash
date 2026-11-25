@@ -1000,6 +1000,38 @@ pub fn registry_validation_for(
 				.unwrap_or_default(),
 		)
 }
+/// Expected system declarations come from the built-in Tool specifications
+/// and the Deployment ID. Compare persisted definitions against these bytes
+/// on each read, reusing the generated declarations across transactions.
+pub(crate) fn pinned_system_declaration(
+	node: &str,
+	reference: &aidash_domain::registry::EntityRef,
+) -> Result<Option<aidash_domain::registry::Entry>> {
+	use aidash_domain::registry::Entry;
+	type Declarations = (String, Vec<Entry>);
+	static DECLARATIONS: std::sync::Mutex<Option<Declarations>> = std::sync::Mutex::new(None);
+
+	let mut cache = DECLARATIONS.lock().expect("system declaration cache lock");
+	if cache
+		.as_ref()
+		.is_none_or(|(cached_node, _)| cached_node != node)
+	{
+		let validation = aidash_application::registry::DefinitionValidation::new(Arc::new(
+			NativeCoreToolCatalog,
+		));
+		let entries =
+			aidash_application::registry::system::pinned_declarations(&validation, node)?.collect();
+		*cache = Some((node.to_owned(), entries));
+	}
+	let (_, entries) = cache
+		.as_ref()
+		.expect("system declarations for this Deployment");
+	Ok(entries
+		.iter()
+		.find(|entry| entry.id == reference.id && entry.version == reference.version)
+		.cloned())
+}
+
 struct NativeCoreToolCatalog;
 impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCatalog {
 	fn provider_available(
