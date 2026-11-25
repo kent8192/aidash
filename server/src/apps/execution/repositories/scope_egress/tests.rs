@@ -554,6 +554,58 @@ async fn concurrent_first_admissions_of_a_day_write_no_counter_and_all_pass(
 
 const KEY: &str = "scope-test-key";
 
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn initialization_cache_is_bounded_and_evicted_scopes_keep_their_budget(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let space = insert_space(&federation, "acme", Default::default()).await;
+	let authority = Arc::new(ScratchAuthority::with_key(
+		federation.store.clone(),
+		federation.config.scratch_policy.clone(),
+		KEY,
+	));
+	let credential = authority.credential("acme", space, Uuid::new_v4()).unwrap();
+	let durable = DurableScopes::new(federation.store.clone(), authority);
+	let scope = durable.resolve(&credential).await.unwrap();
+	let day = Utc::now().date_naive();
+	durable
+		.debit(&scope, Direction::Received, 5, day)
+		.await
+		.unwrap();
+
+	for _ in 0..INITIALIZED_KEPT {
+		let other = ScopeId {
+			scratch_space: Uuid::new_v4(),
+			..scope.id.clone()
+		};
+		durable.initialize(&other).await.unwrap();
+	}
+	{
+		let initialized = durable.initialized.lock().unwrap();
+		assert!(initialized.len() <= INITIALIZED_KEPT);
+		assert!(!initialized.contains(&scope.id));
+	}
+
+	let reopened = durable.resolve(&credential).await.unwrap();
+	durable
+		.debit(&reopened, Direction::Received, 7, day)
+		.await
+		.unwrap();
+	assert_eq!(
+		received_bytes(&federation.store, &scope.id, day, "").await,
+		12
+	);
+}
+
 async fn insert_space(
 	federation: &crate::federation::Federation,
 	tenant: &str,
