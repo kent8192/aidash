@@ -27,6 +27,7 @@ fn scope() -> Scope {
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 8,
 			created_at: chrono::Utc::now(),
 		},

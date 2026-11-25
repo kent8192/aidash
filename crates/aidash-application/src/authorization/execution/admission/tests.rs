@@ -32,7 +32,22 @@ struct Scope {
 impl Scope {
 	fn new() -> Self {
 		let subject = qualified_agent(&node(), "agent", "1.0.0");
-		Self{task:Some(Task{id:Uuid::from_u128(1),thread_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
+		let task = Task {
+			id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(2),
+			title: "task".into(),
+			description: String::new(),
+			status: TaskStatus::Open,
+			requirements: json!({}),
+			owner: None,
+			created_by: "root".into(),
+			dependencies: vec![],
+			parent_id: None,
+			started_by_duty: None,
+			revision: 7,
+			created_at: chrono::Utc::now(),
+		};
+		Self{task:Some(task),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());

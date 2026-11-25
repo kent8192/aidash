@@ -13,6 +13,7 @@ fn task() -> Task {
 		created_by: "parent".into(),
 		dependencies: vec![],
 		parent_id: None,
+		started_by_duty: None,
 		revision: 1,
 		created_at: chrono::Utc::now(),
 	}

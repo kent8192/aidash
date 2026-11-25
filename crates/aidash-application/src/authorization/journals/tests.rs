@@ -26,6 +26,7 @@ fn snapshot() -> ThreadSnapshot {
 			created_by: "saved".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 1,
 			created_at: Utc::now(),
 		}],

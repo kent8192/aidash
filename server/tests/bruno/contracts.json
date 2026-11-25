@@ -1439,6 +1439,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -12283,6 +12288,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -12501,6 +12511,11 @@
               },
               "title": {
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -12807,6 +12822,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -13090,6 +13110,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -13210,6 +13235,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -31407,7 +31437,7 @@
             "type": "object"
           },
           "FailureTarget": {
-            "enum": ["FAILED", "CANCELLED"],
+            "enum": ["FAILED", "QUEUE_LIMIT", "CANCELLED"],
             "type": "string"
           },
           "HomeApproval": {
@@ -31974,6 +32004,9 @@
                 "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
+              },
+              "home_poll": {
+                "$ref": "#/components/schemas/HomePollBackoff"
               }
             },
             "required": ["retry"],
@@ -32447,6 +32480,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -33431,6 +33469,13 @@
               "created_at"
             ],
             "type": "object"
+          },
+          "HomePollBackoff": {
+            "description": "Polling cadence of a Run waiting on its Home. Persisted with the wait so\nreleasing the worker or restarting the receiver does not restart the cadence.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "schema": {
@@ -33695,6 +33740,11 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "started_by_duty": {
+                "description": "The Duty that started this Task automatically, if any.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -35327,7 +35377,7 @@
             "type": "object"
           },
           "FailureTarget": {
-            "enum": ["FAILED", "CANCELLED"],
+            "enum": ["FAILED", "QUEUE_LIMIT", "CANCELLED"],
             "type": "string"
           },
           "Finding": {
@@ -36347,6 +36397,9 @@
                 "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
+              },
+              "home_poll": {
+                "$ref": "#/components/schemas/HomePollBackoff"
               }
             },
             "required": ["retry"],
@@ -38451,6 +38504,13 @@
               "model_calls"
             ],
             "type": "object"
+          },
+          "HomePollBackoff": {
+            "description": "Polling cadence of a Run waiting on its Home. Persisted with the wait so\nreleasing the worker or restarting the receiver does not restart the cadence.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "schema": {
@@ -50917,7 +50977,7 @@
             "type": "object"
           },
           "FailureTarget": {
-            "enum": ["FAILED", "CANCELLED"],
+            "enum": ["FAILED", "QUEUE_LIMIT", "CANCELLED"],
             "type": "string"
           },
           "HomeApproval": {
@@ -51278,6 +51338,9 @@
                 "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
+              },
+              "home_poll": {
+                "$ref": "#/components/schemas/HomePollBackoff"
               }
             },
             "required": ["retry"],
@@ -52518,6 +52581,13 @@
             },
             "required": ["key", "lacking"],
             "type": "object"
+          },
+          "HomePollBackoff": {
+            "description": "Polling cadence of a Run waiting on its Home. Persisted with the wait so\nreleasing the worker or restarting the receiver does not restart the cadence.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "schema": {
@@ -55368,7 +55438,7 @@
             "type": "object"
           },
           "FailureTarget": {
-            "enum": ["FAILED", "CANCELLED"],
+            "enum": ["FAILED", "QUEUE_LIMIT", "CANCELLED"],
             "type": "string"
           },
           "HomeApproval": {
@@ -55729,6 +55799,9 @@
                 "description": "Last thread event delivered to this Run; `workspace_event_cursor`\nbefore #1008.",
                 "format": "int64",
                 "type": ["integer", "null"]
+              },
+              "home_poll": {
+                "$ref": "#/components/schemas/HomePollBackoff"
               }
             },
             "required": ["retry"],
@@ -56969,6 +57042,13 @@
             },
             "required": ["key", "lacking"],
             "type": "object"
+          },
+          "HomePollBackoff": {
+            "description": "Polling cadence of a Run waiting on its Home. Persisted with the wait so\nreleasing the worker or restarting the receiver does not restart the cadence.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "schema": {

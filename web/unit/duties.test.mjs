@@ -192,10 +192,10 @@ test("a notices answer without a stopped list yields no entries instead of throw
 });
 
 test("only a scheduled Task's completion is quiet", () => {
-  const scheduled = new Set(["t1"]);
-  assert.equal(quietCompletion("completed", "t1", scheduled), true);
-  assert.equal(quietCompletion("failed", "t1", scheduled), false);
-  assert.equal(quietCompletion("completed", "t2", scheduled), false);
+  assert.equal(quietCompletion("completed", "duty-id"), true);
+  assert.equal(quietCompletion("failed", "duty-id"), false);
+  assert.equal(quietCompletion("completed", null), false);
+  assert.equal(quietCompletion("completed", undefined), false);
 });
 
 function row(overrides) {
