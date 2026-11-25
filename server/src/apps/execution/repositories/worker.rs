@@ -48,7 +48,7 @@ impl WorkerLeases for Leases {
 			.renew_lease(&claimed(), run, token, seconds)
 			.await
 			.map_err(|error| {
-				self.store.recovery_cursors.outage.note(&error);
+				self.store.recovery_cursors.outage.note(&error, seconds);
 				error.into()
 			})
 	}

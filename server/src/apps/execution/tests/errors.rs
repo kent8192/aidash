@@ -342,13 +342,15 @@ async fn a_real_pool_timeout_is_a_temporary_database_error() {
 	);
 }
 
-/// Only a database that cannot be reached starts the post-outage hold on lease
-/// recoveries; a lock wait, deadlock or statement timeout means it is up (#786).
+/// Only a connection failure starts a hold on lease recoveries (ADR 0123).
 #[rstest]
 #[case::connection_lost(DatabaseErrorKind::Query, Some("08006"), true)]
 #[case::shutting_down(DatabaseErrorKind::Query, Some("57P01"), true)]
-#[case::client_deadline(DatabaseErrorKind::Timeout, None, true)]
+#[case::cannot_connect_now(DatabaseErrorKind::Query, Some("57P03"), true)]
+#[case::idle_session_lost(DatabaseErrorKind::Query, Some("57P05"), true)]
+#[case::pool_acquire_timeout(DatabaseErrorKind::Timeout, None, false)]
 #[case::refused(DatabaseErrorKind::Connection, None, true)]
+#[case::connection_limit(DatabaseErrorKind::Query, Some("53300"), false)]
 #[case::deadlock(DatabaseErrorKind::Query, Some("40P01"), false)]
 #[case::lock_wait(DatabaseErrorKind::Query, Some("55P03"), false)]
 #[case::statement_timeout(DatabaseErrorKind::Query, Some("57014"), false)]
@@ -365,9 +367,73 @@ fn only_an_unreachable_database_holds_lease_recoveries(
 	let error = Error::Framework(error.into());
 	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
 	// Act
-	outage.note(&error);
+	outage.note(&error, 30);
 	// Assert
 	assert_eq!(error.is_database_unreachable(), unreachable);
 	assert_eq!(outage.holds_recoveries(30), unreachable);
 	assert!(!outage.holds_recoveries(0));
+}
+
+#[test]
+fn sqlx_pool_acquire_timeout_retries_without_holding_lease_recoveries() {
+	let wrapped = DatabaseError::new(DatabaseErrorKind::Timeout, "pool timed out")
+		.with_source(sqlx::Error::PoolTimedOut);
+	for error in [
+		Error::Database(sqlx::Error::PoolTimedOut),
+		Error::Framework(wrapped.into()),
+	] {
+		let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+		outage.note(&error, 30);
+		assert!(error.is_transient_database(), "{error:?}");
+		assert!(!outage.holds_recoveries(30), "{error:?}");
+	}
+}
+
+#[rstest]
+#[case::io(|| sqlx::Error::Io(std::io::ErrorKind::ConnectionReset.into()))]
+#[case::tls(|| sqlx::Error::Tls(std::io::Error::other("TLS handshake failed").into()))]
+#[case::protocol(|| sqlx::Error::Protocol("invalid frame".into()))]
+fn sqlx_transport_errors_hold_lease_recoveries(#[case] transport_error: fn() -> sqlx::Error) {
+	let source = transport_error();
+	let wrapped =
+		DatabaseError::new(DatabaseErrorKind::Connection, source.to_string()).with_source(source);
+	for error in [
+		Error::Database(transport_error()),
+		Error::Framework(wrapped.into()),
+	] {
+		let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+		outage.note(&error, 30);
+		assert!(outage.holds_recoveries(30), "{error:?}");
+	}
+}
+
+#[test]
+fn a_closed_pool_wrapped_as_a_framework_connection_error_does_not_hold_lease_recoveries() {
+	let error = DatabaseError::new(DatabaseErrorKind::Connection, "pool closed")
+		.with_source(sqlx::Error::PoolClosed);
+	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+	outage.note(&Error::Framework(error.into()), 30);
+	assert!(!outage.holds_recoveries(30));
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeated_connection_failures_cannot_keep_holding_lease_recoveries() {
+	use std::time::Duration;
+	use tokio::time::advance;
+
+	let error = Error::Framework(DatabaseError::new(DatabaseErrorKind::Connection, "lost").into());
+	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+	outage.note(&error, 30);
+	advance(Duration::from_secs(29)).await;
+	outage.note(&error, 30);
+	assert!(outage.holds_recoveries(30));
+
+	advance(Duration::from_secs(1)).await;
+	assert!(!outage.holds_recoveries(30));
+	outage.note(&error, 30);
+	assert!(!outage.holds_recoveries(30));
+
+	advance(Duration::from_secs(30)).await;
+	outage.note(&error, 30);
+	assert!(outage.holds_recoveries(30));
 }
