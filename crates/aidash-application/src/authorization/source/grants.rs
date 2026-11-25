@@ -13,7 +13,7 @@ use crate::{
 use aidash_domain::{
 	TaskStatus,
 	federation::execution::{
-		Description, Inspection, PrepareInput, Prepared,
+		Description, Inspection, PrepareInput, Prepared, Refusal,
 		admission::InspectInput,
 		home::{Grant, PreparationAuthority},
 	},
@@ -132,6 +132,21 @@ fn inspection_input(task: Uuid, agent: &EntityRef, requirements: Search) -> Insp
 		requirements,
 	}
 }
+async fn require_remote_delegation<S: GrantScope>(
+	scope: &mut S,
+	thread: Uuid,
+	node: &str,
+) -> Result<()> {
+	if scope.is_subnode_thread(thread).await? {
+		let resource = scope.source_resource("node", node, json!({"remote_node":node}));
+		scope
+			.record_refusal(&resource, "subnode_delegation")
+			.await?;
+		return Err(Error::RemoteExecutionRefused(Refusal::SubnodeDelegation));
+	}
+	Ok(())
+}
+
 /// Inspect under the same task, subject chain and peer authority as preparation,
 /// without creating a grant or disclosing Home memory.
 pub async fn agent_inspection<R: GrantRepository>(
@@ -145,7 +160,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 	let result = async {
 		scope.inherit_task_origin(task_id).await?;
 		let task = scope.task_read(task_id).await?;
-		scope.require_non_subnode_thread(task.thread_id).await?;
+		require_remote_delegation(&mut scope, task.thread_id, &input.node_id).await?;
 		if task.status != TaskStatus::Open {
 			return Err(Error::Conflict("task is already assigned".into()));
 		}
@@ -199,7 +214,7 @@ pub async fn prepare<R: GrantRepository>(
 	let result=async {
   scope.inherit_task_origin(task_id).await?;
   let task=scope.task_read(task_id).await?;
-  scope.require_non_subnode_thread(task.thread_id).await?;
+  require_remote_delegation(&mut scope, task.thread_id, &input.node_id).await?;
   if task.status!=TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
   let executor=aidash_domain::agent_subject(&input.node_id,&input.agent.id,&input.agent.version);
   if scope.source_bundle().subjects.get(&executor).is_some_and(|subject|subject.kind!=SubjectKind::Agent) {let resource=scope.source_resource("node",&input.node_id,json!({"remote_node":input.node_id}));scope.record_refusal(&resource,"invalid_executor_subject").await?;return Err(Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::InvalidExecutor));}

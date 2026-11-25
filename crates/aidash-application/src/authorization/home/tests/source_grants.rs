@@ -378,12 +378,8 @@ impl GrantScope for SourceSession {
 		self.repository.call("inherit_origin");
 		Ok(())
 	}
-	async fn require_non_subnode_thread(&mut self, _: Uuid) -> Result<()> {
-		if self.subnode_thread {
-			Err(Error::Forbidden)
-		} else {
-			Ok(())
-		}
+	async fn is_subnode_thread(&mut self, _: Uuid) -> Result<bool> {
+		Ok(self.subnode_thread)
 	}
 	async fn command_lock(&mut self, _: Uuid) -> Result<()> {
 		self.repository.call("command_lock");
@@ -498,7 +494,9 @@ async fn subnode_tasks_cannot_prepare_a_remote_grant() {
 	repository.subnode_thread = true;
 	assert!(matches!(
 		use_case::prepare(&repository, task().id, input()).await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::SubnodeDelegation
+		))
 	));
 	assert!(!repository.repository.calls().contains(&"source_rpc".into()));
 }
