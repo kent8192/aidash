@@ -7336,9 +7336,10 @@ impl SubnodeRig {
 				.unwrap()
 				.remove("binding_normalization");
 			if name == "subnode-creator" {
+				// Journal handover tests use the 1.1.0 subnode_task declaration.
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
-					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.1.0"},"alias":"subnode_task","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.delete_subnode","version":"1.0.0"},"alias":"delete_subnode","narrow":{}}),
 				]);
 			} else {
