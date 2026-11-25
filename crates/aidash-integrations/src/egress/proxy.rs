@@ -679,6 +679,9 @@ struct Batch {
 	direction: Direction,
 	day: chrono::NaiveDate,
 	remaining: u64,
+	cumulative: u64,
+	unused: u64,
+	reported: u64,
 	failure: FailureReport,
 	/// Why the store last did not answer a debit, for a connection that ends
 	/// waiting on it.
@@ -713,6 +716,9 @@ impl Batch {
 			direction,
 			day: chrono::Utc::now().date_naive(),
 			remaining: 0,
+			cumulative: 0,
+			unused: 0,
+			reported: 0,
 			failure,
 			unanswered: None,
 		}
@@ -720,6 +726,8 @@ impl Batch {
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
 		let day = chrono::Utc::now().date_naive();
 		if day != self.day {
+			self.report_forwarded().await?;
+			self.unused = self.unused.saturating_add(self.remaining);
 			if self.remaining != 0 {
 				// Reported like the refund that ends a tunnel, which this one is.
 				// The day's unused bytes stay counted; the connection goes on.
@@ -735,6 +743,7 @@ impl Batch {
 		}
 		let bytes = bytes as u64;
 		if self.remaining < bytes {
+			self.report_forwarded().await?;
 			let need = bytes - self.remaining;
 			let amount = BATCH.max(need);
 			match self.debit(amount, day).await {
@@ -752,7 +761,7 @@ impl Batch {
 	}
 	/// Debits until the store decides. A store that does not answer is tried
 	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
-	/// Every attempt uses the same reservation ID, including after a lost commit answer.
+	/// Every retry uses the same cumulative target, including after a lost commit answer.
 	async fn debit(
 		&mut self,
 		amount: u64,
@@ -762,12 +771,21 @@ impl Batch {
 			metrics::histogram!("aidash_egress_debit_seconds"),
 			tokio::time::Instant::now(),
 		);
-		let reservation = uuid::Uuid::new_v4();
+		let target = self
+			.cumulative
+			.checked_add(amount)
+			.ok_or(aidash_application::Error::Forbidden)?;
 		let mut pause = DEBIT_RETRY;
 		let result = loop {
 			match self
 				.scopes
-				.debit(&self.settings, self.direction, amount, day, reservation)
+				.debit(
+					&self.settings,
+					self.direction,
+					target,
+					day,
+					self.failure.connection,
+				)
 				.await
 			{
 				Err(error) if !debit_decided(&error) => {
@@ -781,8 +799,46 @@ impl Batch {
 			}
 		};
 		self.unanswered = None;
+		if result.is_ok() {
+			self.cumulative = target;
+		}
 		result
 	}
+	async fn report_forwarded(&mut self) -> io::Result<()> {
+		let actual = self
+			.cumulative
+			.saturating_sub(self.unused)
+			.saturating_sub(self.remaining);
+		if actual == self.reported {
+			return Ok(());
+		}
+		let mut delay = DEBIT_RETRY;
+		loop {
+			match self
+				.scopes
+				.report_forwarded(
+					&self.settings,
+					self.failure.connection,
+					self.direction,
+					actual,
+					self.day,
+				)
+				.await
+			{
+				Ok(()) => break,
+				Err(error) if debit_decided(&error) => return Err(debit_failed(error)),
+				Err(error) => {
+					self.unanswered = Some(error.to_string());
+					tokio::time::sleep(delay).await;
+					delay = (delay * 2).min(DEBIT_RETRY_MAX);
+				}
+			}
+		}
+		self.unanswered = None;
+		self.reported = actual;
+		Ok(())
+	}
+
 	/// Returns unused bytes of `day`, waiting at most [`REFUND_WAIT`].
 	async fn refund(&self, bytes: u64, day: chrono::NaiveDate) -> io::Result<()> {
 		let started = tokio::time::Instant::now();
@@ -1099,6 +1155,11 @@ where
 	// store's loss only: it is counted and reported, and the connection ends
 	// the way its transfer did (#909).
 	let settling = std::time::Instant::now();
+	// The terminal audit retries any tail that this bounded attempt could not post.
+	let _ = tokio::join!(
+		tokio::time::timeout(REFUND_WAIT, sent_batch.report_forwarded()),
+		tokio::time::timeout(REFUND_WAIT, received_batch.report_forwarded()),
+	);
 	let sent_settle = sent_batch.settle().await;
 	let received_settle = received_batch.settle().await;
 	settle_ms.store(
@@ -3813,7 +3874,7 @@ mod tests {
 		debit_fails: bool,
 		/// The number of debits still to fail before the store answers again.
 		debit_failures: std::sync::atomic::AtomicU32,
-		debit_reservations: Arc<std::sync::Mutex<Vec<uuid::Uuid>>>,
+		debit_targets: Arc<std::sync::Mutex<Vec<(uuid::Uuid, u64)>>>,
 		/// How long each debit takes before it is answered.
 		debit_delay: std::time::Duration,
 		refund_fails: bool,
@@ -3828,7 +3889,7 @@ mod tests {
 				resolve_fails: false,
 				debit_fails: false,
 				debit_failures: Default::default(),
-				debit_reservations: Default::default(),
+				debit_targets: Default::default(),
 				debit_delay: std::time::Duration::ZERO,
 				refund_fails: false,
 				record_hangs: false,
@@ -3874,7 +3935,7 @@ mod tests {
 			day: chrono::NaiveDate,
 			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.debit_reservations.lock().unwrap().push(reservation);
+			self.debit_targets.lock().unwrap().push((reservation, n));
 			tokio::time::sleep(self.debit_delay).await;
 			let failing = self
 				.debit_failures
@@ -4634,7 +4695,7 @@ mod tests {
 		let settings = settings_allowing_any_host();
 		let scopes = FaultyScopes::new(&settings);
 		scopes.debit_failures.store(4, Ordering::SeqCst);
-		let reservations = scopes.debit_reservations.clone();
+		let targets = scopes.debit_targets.clone();
 		let (received, result) = hello_through(settings, scopes, Default::default()).await;
 		assert_eq!(&received, b"hello");
 		assert!(
@@ -4644,8 +4705,8 @@ mod tests {
 			"{result:?}"
 		);
 		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
-		let reservations = reservations.lock().unwrap();
-		assert_eq!(reservations.as_slice(), &[reservations[0]; 5]);
+		let targets = targets.lock().unwrap();
+		assert_eq!(targets.as_slice(), &[targets[0]; 5]);
 	}
 
 	/// Sends `hello` through the only tunnel its Scratch Space may hold while

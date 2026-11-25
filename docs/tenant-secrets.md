@@ -299,18 +299,27 @@ built-in `fetch`, which corepack uses, ignores them otherwise.
 For CONNECT, the gateway tunnels TLS without inspecting it. For plain HTTP it
 forwards absolute-form requests. It checks the scope's host allowlist and rejects
 non-public resolved addresses even when all hosts are enabled. All-host access
-also requires the operator's Offering setting. The default traffic allowance is
-100 GiB sent and 100 GiB received per scope per UTC day, with no request-count
-limit. External service traffic is accounted in batches after forwarding; each
-active stream can exceed a limit by up to one batch plus one chunk. Once a
-scope or service budget is exhausted, new admissions are refused until the next
-UTC day. Hosts longer than 253 bytes are rejected. Nothing stops a scope for
+also requires the operator's Offering setting. New Scratch Spaces have no daily traffic allowance. Operators cap the
+optional sent and received allowances through Deployment settings. Each
+configured allowance counts separately per Space and UTC day. Host connections
+reserve against the allowance in batches and return unused bytes. External
+service traffic is accounted in batches after forwarding, so an active stream
+can exceed its limit by up to one batch plus one chunk. New admissions under a
+spent daily allowance or service share wait for the next UTC day. Hosts longer than 253 bytes are rejected. Nothing stops a scope for
 the number of its connections (#845, amending ADR 0111): under a host list every
 other host is refused one connection at a time, so stopping would add nothing.
 When a scope that may reach any host reaches more than 100 distinct hosts in a
 minute, the pattern of a scan, the gateway logs a warning, counts it in
 `aidash_egress_many_hosts_total` and records a `many_hosts` operator event, once
 a minute at most. No consumer delivers these events yet.
+
+The gateway prices actual sent and received bytes at the Deployment rates and
+posts the cost to the Budget of the Run named by the credential. A Hard Limit
+pauses that Run and records `execution.budget_exhausted` for a person to review.
+The existing Soft Limit service queues mail for its recipients. Per-Run hourly
+sent bytes and similar-size Host connections are available for two weeks of
+observation. These observations only emit metrics and logs. See
+[retained usage facts](operations/usage-facts.md#egress-gateway-traffic).
 
 During a file descriptor shortage, a new Host connection or External service
 request waits if its Tenant already holds more than the replica's average number

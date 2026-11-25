@@ -283,13 +283,16 @@ impl EgressGateway {
 		}
 		Ok(Self {
 			listener: tokio::net::TcpListener::bind(egress.listen).await?,
-			scopes: Arc::new(DurableScopes::new(
-				store.clone(),
-				Arc::new(ScratchAuthority::new(
+			scopes: Arc::new(
+				DurableScopes::new(
 					store.clone(),
-					config.scratch_policy.clone(),
-				)),
-			)),
+					Arc::new(ScratchAuthority::new(
+						store.clone(),
+						config.scratch_policy.clone(),
+					)),
+				)
+				.with_prices(config.egress_prices),
+			),
 			settings: aidash_integrations::egress::GatewaySettings {
 				memory_limit_bytes: egress.memory_limit_bytes,
 				group,

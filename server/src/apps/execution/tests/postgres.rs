@@ -1040,6 +1040,7 @@ fn federation(
 			config: Config {
 				smtp: None,
 				scratch_policy: Default::default(),
+				egress_prices: Default::default(),
 				credential_max_seconds: 90 * 24 * 60 * 60,
 				deployment: store.deployment.clone(),
 				endpoint: "http://127.0.0.1:18080".into(),
@@ -2576,6 +2577,7 @@ fn authenticated_runtime(
 		runtime.federation.config = Config {
 			smtp: None,
 			scratch_policy: Default::default(),
+			egress_prices: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:18080".into(),

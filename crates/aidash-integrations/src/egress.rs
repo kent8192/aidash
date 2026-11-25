@@ -173,11 +173,16 @@ async fn charge_settling(
 	label: &Label,
 	direction: Direction,
 	bytes: u64,
+	cumulative: u64,
 	settling: &mut Settling,
 ) -> Settled {
 	let bytes = bytes.min(usize::MAX as u64) as usize;
 	loop {
-		let cause = match tokio::time::timeout(SETTLE_ATTEMPT, meter.charge(direction, bytes)).await
+		let cause = match tokio::time::timeout(
+			SETTLE_ATTEMPT,
+			meter.charge_cumulative(direction, bytes, cumulative),
+		)
+		.await
 		{
 			Ok(Ok(())) => return Settled::Charged,
 			Ok(Err(error)) => {
@@ -359,6 +364,8 @@ struct Debits {
 	/// failed and must not wait on the store a second time.
 	failed_sent: AtomicU64,
 	failed_received: AtomicU64,
+	/// Every request body byte handed on so far, debited or not.
+	total_sent: AtomicU64,
 	/// Every response body byte handed on so far, debited or not.
 	handed: AtomicU64,
 	/// The upload's refusal. Reqwest reports a failed request body only as a
@@ -378,6 +385,7 @@ impl Debits {
 			received: AtomicU64::new(0),
 			failed_sent: AtomicU64::new(0),
 			failed_received: AtomicU64::new(0),
+			total_sent: AtomicU64::new(0),
 			handed: AtomicU64::new(0),
 			refused: OnceLock::new(),
 			interrupted: OnceLock::new(),
@@ -414,9 +422,19 @@ impl Debits {
 	fn count(&self, direction: Direction, bytes: usize) {
 		self.pending(direction)
 			.fetch_add(bytes as u64, Ordering::Relaxed);
-		if matches!(direction, Direction::Received) {
-			self.handed.fetch_add(bytes as u64, Ordering::Relaxed);
+		match direction {
+			Direction::Sent => &self.total_sent,
+			Direction::Received => &self.handed,
 		}
+		.fetch_add(bytes as u64, Ordering::Relaxed);
+	}
+
+	fn cumulative(&self, direction: Direction) -> u64 {
+		match direction {
+			Direction::Sent => &self.total_sent,
+			Direction::Received => &self.handed,
+		}
+		.load(Ordering::Relaxed)
 	}
 
 	/// Debits the pending bytes once a whole batch has accumulated.
@@ -441,7 +459,13 @@ impl Debits {
 			return Ok(());
 		}
 		let amount = usize::try_from(bytes).map_err(|_| Refusal::LIMIT)?;
-		match tokio::time::timeout_at(deadline, self.meter.charge(direction, amount)).await {
+		match tokio::time::timeout_at(
+			deadline,
+			self.meter
+				.charge_cumulative(direction, amount, self.cumulative(direction)),
+		)
+		.await
+		{
 			Ok(Ok(())) => Ok(()),
 			Ok(Err(error)) => {
 				let refusal = Refusal::of(&error);
@@ -468,6 +492,8 @@ impl Debits {
 impl Drop for Debits {
 	fn drop(&mut self) {
 		let sent = *self.sent.get_mut() + *self.failed_sent.get_mut();
+		let sent_target = *self.total_sent.get_mut();
+		let received_target = *self.handed.get_mut();
 		let received = *self.received.get_mut() + *self.failed_received.get_mut();
 		if sent == 0 && received == 0 {
 			return;
@@ -479,9 +505,13 @@ impl Drop for Debits {
 		let label = self.label.clone();
 		runtime.spawn(async move {
 			let mut settling = Settling::new();
-			for (direction, bytes) in [(Direction::Sent, sent), (Direction::Received, received)] {
+			for (direction, bytes, cumulative) in [
+				(Direction::Sent, sent, sent_target),
+				(Direction::Received, received, received_target),
+			] {
 				if bytes > 0 {
-					charge_settling(&*meter, &label, direction, bytes, &mut settling).await;
+					charge_settling(&*meter, &label, direction, bytes, cumulative, &mut settling)
+						.await;
 				}
 			}
 		});
@@ -647,6 +677,7 @@ impl Completion {
 						&debits.label,
 						direction,
 						bytes,
+						debits.cumulative(direction),
 						&mut settling,
 					)
 					.await

@@ -193,6 +193,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
 	("execution", "0164_background_time_limit"),
+	("execution", "0165_scope_connection_debits"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -268,6 +269,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
 	("execution", "0164_background_time_limit"),
+	("execution", "0165_scope_connection_debits"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -305,6 +307,7 @@ async fn reverse_task_executions(
 		"0162_scope_host_debits",
 		"0163_scope_host_debit_state",
 		"0164_background_time_limit",
+		"0165_scope_connection_debits",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -382,7 +385,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0164_background_time_limit"]);
+	assert_eq!(head("execution"), ["0165_scope_connection_debits"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -662,14 +665,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0165_policy_probe")
+		.get_migration("execution", "0166_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0164_background_time_limit".to_owned()
+			"0165_scope_connection_debits".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -771,6 +774,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -2531,6 +2535,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5231,6 +5236,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
 	("execution", "0164_background_time_limit"),
+	("execution", "0165_scope_connection_debits"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5803,6 +5809,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5911,6 +5918,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6027,6 +6035,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6322,7 +6331,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 		foreign.is_err(),
 		"a different Tenant cannot refer to the scope"
 	);
-	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 443, 1, 2, 3, 'completed', now())")
+	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at, charged_sent, charged_received) VALUES ($1, 'acme', $2, $3, 'example.com', 443, 1, 2, 3, 'completed', now(), 4, 5)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
 	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 0, 0, 0, 0, 'invalid_proxy_target', now())")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
@@ -6339,8 +6348,12 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	let empty = sqlx::query("INSERT INTO egress_scope_refusals (id, tenant, node, scope_id, minute, host, reason, count) VALUES ($1, 'acme', $2, $3, now(), '', 'egress_host_forbidden', 0)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await;
 	assert!(empty.is_err(), "a tally counts at least one connection");
-	sqlx::query("INSERT INTO egress_scope_host_debits (id, tenant, node, scope_id, day, sent, bytes) VALUES ($1, 'acme', $2, $3, CURRENT_DATE::text, false, 2)")
-		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	let receipts: Option<String> =
+		sqlx::query_scalar("SELECT to_regclass('egress_scope_host_debits')::text")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(receipts, None);
 	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
 		.bind(&node)
 		.execute(&pool)
@@ -6349,7 +6362,6 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	for table in [
 		"egress_scope_state",
 		"egress_scope_daily",
-		"egress_scope_host_debits",
 		"egress_scope_connections",
 		"egress_scope_events",
 		"egress_scope_refusals",
@@ -6566,6 +6578,7 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6691,6 +6704,7 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6950,6 +6964,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7346,6 +7361,7 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
 			("execution", "0164_background_time_limit"),
+			("execution", "0165_scope_connection_debits"),
 		])
 		.await;
 	let tenant = "call-owner";

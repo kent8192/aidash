@@ -629,7 +629,9 @@ async fn existing_default_settings_follow_reduced_resource_ceilings() {
 		person: "alice".into(),
 		..Default::default()
 	};
-	let space = space(now);
+	let mut space = space(now);
+	space.settings.daily_sent_bytes = Some(100 * 1024 * 1024 * 1024);
+	space.settings.daily_received_bytes = Some(100 * 1024 * 1024 * 1024);
 	create(&mut scope, &space).await.unwrap();
 	let ceilings = ScratchCeilings {
 		capacity_bytes: 50 * 1024 * 1024 * 1024,
@@ -661,8 +663,8 @@ async fn existing_default_settings_follow_reduced_resource_ceilings() {
 			ceilings.capacity_bytes,
 			ceilings.cpu_millis,
 			ceilings.memory_bytes,
-			ceilings.daily_sent_bytes,
-			ceilings.daily_received_bytes
+			Some(ceilings.daily_sent_bytes),
+			Some(ceilings.daily_received_bytes)
 		)
 	);
 	assert_eq!(scope.spaces[&space.id].settings, space.settings);

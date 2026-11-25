@@ -13,6 +13,7 @@ struct State {
 	checks: u32,
 	usage: HashMap<NaiveDate, (u64, u64)>,
 	records: Vec<ConnectionRecord>,
+	charged: HashMap<(uuid::Uuid, bool), u64>,
 }
 
 /// A single configured credential and scope; updates are atomic within a process.
@@ -33,6 +34,7 @@ impl MemoryScopes {
 				checks: 0,
 				usage: HashMap::new(),
 				records: Vec::new(),
+				charged: HashMap::new(),
 			}),
 		}
 	}
@@ -118,12 +120,18 @@ impl EgressScopes for MemoryScopes {
 		&self,
 		scope: &ScopeSettings,
 		direction: Direction,
-		bytes: u64,
+		cumulative: u64,
 		day: NaiveDate,
-		_reservation: uuid::Uuid,
+		connection: uuid::Uuid,
 	) -> Result<()> {
 		self.check(&scope.id)?;
 		let mut s = self.state.lock().unwrap();
+		let key = (connection, matches!(direction, Direction::Sent));
+		let charged = s.charged.get(&key).copied().unwrap_or_default();
+		let bytes = cumulative.saturating_sub(charged);
+		if bytes == 0 {
+			return Ok(());
+		}
 		let entry = s.usage.entry(day).or_default();
 		let (counter, limit) = match direction {
 			Direction::Sent => (&mut entry.0, self.settings.budget.sent_bytes),
@@ -134,6 +142,7 @@ impl EgressScopes for MemoryScopes {
 			.filter(|next| *next <= limit)
 			.ok_or_else(|| Error::Refused("egress_budget_exhausted".into()))?;
 		*counter = next;
+		s.charged.insert(key, cumulative);
 		Ok(())
 	}
 	async fn refund(

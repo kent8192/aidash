@@ -1586,6 +1586,7 @@ async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
 	let config = crate::config::runtime::Config {
 		smtp: None,
 		scratch_policy: Default::default(),
+		egress_prices: Default::default(),
 		deployment: fixture.store.deployment.clone(),
 		endpoint: String::new(),
 		database_url: fixture._database.url.clone(),
