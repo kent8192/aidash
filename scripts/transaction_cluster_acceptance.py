@@ -685,6 +685,10 @@ class Cluster:
             if submission is not None and submission.done():
                 failure = submission.exception()
                 record["submission"] = repr(failure) if failure else submission.result()
+            # Keep each server's recent log: a refusal's reason is only there.
+            for node in range(count):
+                log = self.kube("logs", f"deployment/tx-{node}-server", "--tail=400", check=False)
+                (self.directory / f"{transaction}-tx-{node}-server.log").write_text(log.stdout + log.stderr)
             raise
         finally:
             record["observations"] = trace
