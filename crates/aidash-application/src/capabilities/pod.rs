@@ -155,6 +155,9 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 	if status != "queued" && !object.contains_key("started_at") {
 		object.insert("started_at".into(), json!(now));
 	}
+	if let Some(uid) = &reply.pod_uid {
+		object.insert("pod_uid".into(), json!(uid));
+	}
 	if let Some(left) = &reply.left_running {
 		object.insert("left_running".into(), json!(left));
 	}

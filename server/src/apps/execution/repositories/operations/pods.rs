@@ -119,37 +119,6 @@ pub(crate) async fn tool_context(
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
-/// Stop the ended Run's Python session in its Execution Pod: each session
-/// holds one of the Space's session slots until it stops, and nothing else
-/// stops it. Nothing happens for a Run that ran no Python cell.
-pub(crate) async fn stop_python(store: &Store, run: Uuid) -> NativeResult<()> {
-	if store.capabilities.0.runner.is_none() {
-		return Ok(());
-	}
-	let space: Option<String> = crate::database::native::query_scalar(
-		&Query::select()
-			.expr(Expr::cust("input->>'scratch_space_id'"))
-			.from(Alias::new("core_operations"))
-			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
-			.and_where(
-				Expr::col(Alias::new("kind")).eq(aidash_application::capabilities::pod::PYTHON),
-			)
-			.and_where(Expr::cust(POD_ROWS))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(store.pool.in_scope(&MAINTENANCE))
-	.await?;
-	let Some(space) = space else {
-		return Ok(());
-	};
-	let runner = crate::bootstrap::operation_runner(store)?;
-	runner
-		.python_stop(&space, &run.to_string())
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))
-}
-
 /// The Scratch Space whose Execution Pod a Run's tools use.
 pub(crate) async fn run_space(
 	store: &Store,

@@ -38,7 +38,7 @@ def test_credential_is_sent_on_stdin_not_command_arguments_or_journal(tmp_path):
     controller = ExecutionPodController(backend, {}, admitted=True)
     record = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
               'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'timeout_seconds': 5,
-              'cwd': '.', 'code': 'true', 'status': 'queued', 'proxy_credential_given': True}
+              'cwd': '.', 'code': 'true', 'status': 'queued', 'kind': 'shell', 'proxy_credential_given': True}
     controller._command_path(operation).write_text(json.dumps(record))
     controller.process_proxies[operation] = 'http://aidash:secret@proxy:8080'
     controller._await_normal_result = Mock(return_value={
@@ -51,6 +51,11 @@ def test_credential_is_sent_on_stdin_not_command_arguments_or_journal(tmp_path):
     assert 'secret' not in repr(execute.call_args.args[0])
     assert 'secret' not in controller._command_path(operation).read_text()
     assert not controller.process_proxies
+
+    proof_key = controller._read_command(operation)['result_proof_key']
+    assert proof_key.encode() in execute.call_args.kwargs['input_data']
+    assert proof_key not in execute.call_args.args[0]
+    assert proof_key not in json.dumps(controller.command_result(operation))
 
 
 def test_stop_run_stops_only_active_processes_of_that_run():
@@ -686,3 +691,206 @@ def test_the_preview_stop_route_stops_only_live_previews(tmp_path):
     with pytest.raises(ExecutionPodError):
         controller.stop_preview('shell')
     controller.stop_background.assert_called_once_with('preview')
+
+
+@pytest.mark.parametrize(('record_uid', 'current_uid', 'terminated_uid', 'ended'), [
+    ('original', 'replacement', None, True),
+    ('original', 'original', None, False),
+    ('original', None, None, False),
+    ('original', None, 'other', False),
+    ('original', None, 'original', True),
+    (None, 'replacement', None, False),
+])
+def test_background_end_requires_pod_identity_evidence(tmp_path, record_uid, current_uid, terminated_uid, ended):
+    from types import SimpleNamespace
+    from control import scratch_resource_name
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    name = scratch_resource_name('s')
+    if terminated_uid:
+        directory = tmp_path / 'execution-v2-spaces'
+        directory.mkdir()
+        (directory / (name + '.json')).write_text(json.dumps({'terminated_pods': [terminated_uid]}))
+    if record_uid:
+        controller._command_path(operation).write_text(json.dumps({
+            'operation_id': operation, 'run_id': 'r', 'scratch_space_id': 's',
+            'pod_uid': record_uid, 'status': 'completed', 'left_running': operation + '.left',
+        }))
+    controller._get = Mock(return_value={'metadata': {'uid': current_uid}} if current_uid else None)
+    assert controller.background_ended('s', 'r', operation) == {'ended': ended}
+
+
+def test_python_stop_waits_for_run_session_termination(tmp_path):
+    from types import SimpleNamespace
+
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    operation = '00000000-0000-4000-8000-000000000001'
+    controller._command_path(operation).write_text(json.dumps({
+        'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'kind': 'python_session',
+        'status': 'running', 'background': True,
+    }))
+    controller._stop_command = Mock(side_effect=lambda op: controller._update_command(op, status='stopped'))
+    assert controller.stop_python('s', 'r') == {'stopped': [operation]}
+    assert controller._read_command(operation)['status'] == 'stopped'
+
+
+def test_terminal_session_stop_fences_late_starts_and_retries_failed_stops(tmp_path):
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError
+
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    session, background = (f'00000000-0000-4000-8000-00000000000{n}' for n in range(1, 3))
+    for operation, kind in ((session, 'mcp_session'), (background, 'left')):
+        controller._command_path(operation).write_text(json.dumps({
+            'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r',
+            'kind': kind, 'status': 'running', 'background': True,
+        }))
+    controller._stop_command = Mock(side_effect=RuntimeError('unavailable'))
+    with pytest.raises(ExecutionPodError, match='unavailable'):
+        controller.stop_sessions('s', 'r')
+
+    # A delayed start cannot reopen a session after the fence is written,
+    # including when the retry goes to a restarted controller.
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    with pytest.raises(ExecutionPodError, match='sessions have ended'):
+        controller.start_python('s', 'r')
+    with pytest.raises(ExecutionPodError, match='sessions have ended'):
+        controller.submit_command({'operation_id': session, 'scratch_space_id': 's',
+                                   'run_id': 'r', 'code': 'server'}, kind='mcp_session')
+    controller._stop_command = Mock(side_effect=lambda op: controller._update_command(op, status='stopped'))
+    assert controller.stop_sessions('s', 'r') == {'stopped': [session]}
+    assert controller.stop_sessions('s', 'r') == {'stopped': []}
+    assert controller._read_command(background)['status'] == 'running'
+
+
+def test_space_purge_removes_its_session_fences_after_restart(tmp_path):
+    from types import SimpleNamespace
+
+    backend = SimpleNamespace(root=tmp_path)
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller.stop_sessions('s', 'r')
+    controller.stop_sessions('other', 'r')
+
+    restarted = ExecutionPodController(backend, {}, admitted=True)
+    restarted._get = Mock(return_value=None)
+    restarted._stop = Mock()
+    restarted._delete = Mock()
+    restarted.delete('s')
+    assert not restarted._session_stop_path('s', 'r').exists()
+    assert restarted._session_stop_path('other', 'r').exists()
+
+
+def test_idle_maintenance_expires_only_old_session_fences(tmp_path):
+    import os
+    import time
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError
+
+    backend = SimpleNamespace(root=tmp_path)
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller.stop_sessions('s', 'old')
+    controller.stop_sessions('s', 'recent')
+    now = time.time()
+    old = now - 2 * 86400
+    expired = controller._session_stop_path('s', 'old')
+    os.utime(expired, (old, old))
+
+    restarted = ExecutionPodController(backend, {}, admitted=True)
+    restarted.stop_idle(now=now + 15 * 60)
+    assert not expired.exists()
+    with pytest.raises(ExecutionPodError, match='sessions have ended'):
+        restarted.start_python('s', 'recent')
+
+
+def test_background_end_on_same_pod_requires_authenticated_supervisor_evidence(tmp_path):
+    from types import SimpleNamespace
+    from sandbox_v2 import sign_result
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    token = '1' * 64
+    outcome = {'operation_id': operation + '.left', 'run_id': 'r', 'status': 'completed'}
+    observed = SimpleNamespace(returncode=0, stdout=json.dumps(outcome).encode())
+    backend = SimpleNamespace(root=tmp_path, kube=Mock(return_value=observed))
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller._command_path(operation).write_text(json.dumps({
+        'operation_id': operation, 'run_id': 'r', 'scratch_space_id': 's',
+        'pod_uid': 'same', 'status': 'completed', 'result_proof_key': token,
+    }))
+    controller._get = Mock(return_value={'metadata': {'uid': 'same'}})
+    assert controller.background_ended('s', 'r', operation, 'same') == {'ended': False}
+
+    outcome['auth'] = sign_result(outcome, token.encode('ascii'))
+    observed.stdout = json.dumps(outcome).encode()
+    assert controller.background_ended('s', 'r', operation, 'same') == {'ended': True}
+
+
+def test_background_retirement_survives_parent_journal_expiry(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    from execution_pod import JOURNAL_RETENTION_SECONDS
+    from sandbox_v2 import sign_result
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    left = operation + '.left'
+    token = '1' * 64
+    backend = SimpleNamespace(root=tmp_path, kube=Mock())
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    record = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r',
+              'pod': 'pod', 'pod_uid': 'same', 'status': 'running', 'background': False,
+              'result_proof_key': token}
+    controller._command_path(operation).write_text(json.dumps(record))
+    controller.queues['s'] = SimpleNamespace(submit=Mock(return_value=Future()))
+    with monkeypatch.context() as clock:
+        clock.setattr('time.time', lambda: 1)
+        controller._finish_command(record, {'status': 'completed', 'left_running': left},
+                                   {'stdout': '', 'stderr': '', 'truncated': False})
+
+    restarted = ExecutionPodController(backend, {}, admitted=True)
+    restarted._get = Mock(return_value={'metadata': {'uid': 'same'}})
+    restarted.prune_space('s', now=JOURNAL_RETENTION_SECONDS + 2)
+    assert not restarted._command_path(operation).exists()
+
+    result = {'operation_id': left, 'run_id': 'r', 'status': 'completed'}
+    reply = SimpleNamespace(returncode=0, stdout=json.dumps(result).encode())
+    backend.kube.return_value = reply
+    assert restarted.background_ended('s', 'r', operation, 'same') == {'ended': False}
+    result['auth'] = sign_result(result, token.encode('ascii'))
+    reply.stdout = json.dumps(result).encode()
+    assert restarted.background_ended('s', 'r', operation, 'same') == {'ended': True}
+
+
+@pytest.mark.parametrize('status', ['running', 'interrupted'])
+def test_recovered_signed_session_result_survives_missing_output(tmp_path, monkeypatch, status):
+    import time
+    from types import SimpleNamespace
+    from sandbox_v2 import sign_result
+
+    operation = '00000000-0000-4000-8000-000000000001'
+    token = '1' * 64
+    outcome = {'operation_id': operation, 'run_id': 'r', 'status': 'stopped', 'output_incomplete': False}
+    outcome['auth'] = sign_result(outcome, token.encode('ascii'))
+
+    def kube(args, **kwargs):
+        helper = args[args.index('/.aidash-helpers/sandbox_v2.py') + 1]
+        if helper == 'claim':
+            return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+        if helper == 'result':
+            return SimpleNamespace(returncode=0, stdout=json.dumps(outcome).encode())
+        raise FileNotFoundError('saved output missing')
+
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'same'}})
+    controller._command_path(operation).write_text(json.dumps({
+        'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+        'pod_uid': 'same', 'kind': 'python_session', 'status': status, 'background': True,
+        'terminal_at': time.time(), 'result_proof_key': token, 'stdout': 'cGFydA==',
+    }))
+    monkeypatch.setattr('execution_pod.OUTPUT_RETRY_SECONDS', 0)
+    if status == 'running':
+        controller._resume_command(operation)
+    result = controller.command_result(operation)
+    assert result['status'] == 'stopped'
+    assert result['stdout'] == 'cGFydA=='
+    assert result['truncated'] is True
+    assert 'output was lost' in result['message'].lower()

@@ -8,6 +8,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
 	Operation(Uuid),
+	/// A Run with a potentially live stdio MCP session.
+	StdioSession(Uuid),
 	LivePreview(Uuid),
 	/// A durable revocation whose Pod stop has not yet been confirmed.
 	RevokedRun(Uuid),
