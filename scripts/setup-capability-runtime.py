@@ -54,7 +54,9 @@ def main():
     parser.add_argument("--observe-allocations", action="store_true",
                         help="Capture allowlisted provider evidence before the controller observes it")
     parser.add_argument('--execution-pods', action='store_true', help='Enable protocol 2 admission')
-    parser.add_argument('--helper-image', help='Digest-pinned trusted Execution Pod helper image')
+    parser.add_argument('--helper-image', help='Digest-pinned Execution Pod base image built with --target pod-base')
+    parser.add_argument('--base-apply-immediately', action='store_true',
+                        help='Apply Execution Pod base changes immediately')
     parser.add_argument('--storage-class', help='Quota-enforcing CSI storage class with Delete reclaim policy')
     parser.add_argument('--proxy-endpoint', help='Internal Egress gateway IP origin')
     parser.add_argument('--proxy-namespace', help='Egress gateway namespace')
@@ -226,6 +228,7 @@ WantedBy=multi-user.target
     write_private(directory / "profile.json", json.dumps(profile, indent=2) + "\n")
     if args.execution_pods:
         execution_pods = {'enabled': True, 'helper_image': args.helper_image, 'storage_class': args.storage_class,
+                          'base_apply_immediately': args.base_apply_immediately,
                           'proxy_endpoint': args.proxy_endpoint, 'proxy_namespace': args.proxy_namespace,
                           'proxy_selector': selector, 'docker_runtime_class': 'aidash-gvisor-docker',
                           'allow_docker': args.allow_docker, 'metadata_server_absent': args.metadata_server_absent}

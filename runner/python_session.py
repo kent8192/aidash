@@ -125,7 +125,7 @@ class _DescriptorCapture:
 def send_cell(path, code, timeout, output_bytes, *, cwd='.'):
     if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
         raise ValueError('Python code exceeds the limit')
-    if type(timeout) is not int or not 1 <= timeout <= 3600:
+    if type(timeout) is not int or not 1 <= timeout <= 86400:
         raise ValueError('invalid Python timeout')
     if type(output_bytes) is not int or not 1 <= output_bytes <= 8388608:
         raise ValueError('invalid Python output limit')

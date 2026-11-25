@@ -344,6 +344,7 @@ data:
     {{- $proxyNamespace := required "execution.pods.proxy.namespace is required" $e.pods.proxy.namespace -}}
     {{- $proxySelector := required "execution.pods.proxy.podSelector is required" $e.pods.proxy.podSelector -}}
     {{- $pods := dict "enabled" true "helper_image" $helper "allow_docker" $e.pods.allowDocker
+          "base_apply_immediately" $e.pods.baseApplyImmediately
           "docker_runtime_class" $dockerRuntime "admission_capacity_bytes" (int64 $e.pods.admissionCapacityBytes)
           "metadata_server_absent" $e.pods.metadataServerAbsent
           "max_cpu" (int $e.pods.maxCpu) "max_memory_bytes" (int64 $e.pods.maxMemoryBytes)

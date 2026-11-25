@@ -185,7 +185,9 @@ execution:
     name: ""
   pods:
     enabled: false
+    # Digest-pinned image built with --target pod-base.
     helperImage: ""
+    baseApplyImmediately: false
     storageClassName: ""
     admissionCapacityBytes: 5368709120
     metadataServerAbsent: false
@@ -264,6 +266,7 @@ execution:
     temporary_bytes: 268435456
     output_bytes: 8388608
     maximum_seconds: 600
+    background_maximum_seconds: 14400
     idle_seconds: 1800
 
 # Previews (ADR 0068). Without a domain, Live previews are unavailable; local
