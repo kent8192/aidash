@@ -402,7 +402,11 @@ async fn submit(
 	// A withdrawal or cancel may have moved the row since it was read; such a
 	// row is never sent.
 	let current = repository.load(operation.id).await?;
-	if current.state != operation.state || current.result["dispatch_pending"] != true {
+	if current.state != operation.state
+		|| current.result["dispatch_pending"] != true
+		|| current.run_finished
+		|| current.run_cancelled
+	{
 		return Ok(());
 	}
 	let reply = if operation.kind == PYTHON {

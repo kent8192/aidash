@@ -252,7 +252,7 @@ async fn execution_pod_v2_transports_process_credentials_and_file_bytes() {
 			Json(json!({"size":2}))
 		}))
 		.route("/v2/runs/stop", post(|Json(body): Json<Value>| async move {
-			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r"}));
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","reason":"run_authority_revoked"}));
 			Json(json!({"stopped":["p","left"]}))
 		}));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
