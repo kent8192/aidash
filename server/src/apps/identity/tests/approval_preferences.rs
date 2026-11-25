@@ -3,7 +3,7 @@
 //! session writes them; Tenant Administrators with `approval.read` read them.
 //! How a Run uses them is tested in `execution_authorization`.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_domain::identity::tenancy::{MEMBERS, initial_policy};
 use aidash_domain::policy::{Subject, SubjectKind};

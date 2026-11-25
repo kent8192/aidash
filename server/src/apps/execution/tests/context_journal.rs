@@ -1,6 +1,6 @@
 //! The Context Journal is authoritative; `runs.context` is its lossy projection.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 
 use aidash_application::ports::execution::ExecutionStore;

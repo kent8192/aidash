@@ -1,5 +1,5 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "../../../execution/tests/support/legacy.rs"]
+#[path = "../../../execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{federation::Federation, store::Store};
@@ -20,8 +20,10 @@ async fn peer(
 	common::peer_request(app, (from, "acme"), &receiver, "alice", path, input).await
 }
 #[rstest::rstest]
+#[case::active(false)]
+#[case::retired(true)]
 #[tokio::test]
-async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect(
+async fn receiver_admission_checks_pins_and_revalidates_after_reconnect(
 	#[future(awt)]
 	#[from(common::native_peer)]
 	first: common::PeerFixture,
@@ -29,6 +31,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	#[from(common::native_peer)]
 	#[with("aidash://admission-host")]
 	second: common::PeerFixture,
+	#[case] retire: bool,
 ) {
 	let (a, au, aschema) = first.runtime.parts();
 	let (b, bu, bschema) = second.runtime.parts();
@@ -67,6 +70,50 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let (status, prepared) = common::post(&aa, &at, &path, input.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
 	let admit = "/federation/v0.1/scoped/execution/admissions";
+	if retire {
+		use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query};
+
+		let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let mut agent = b.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+		agent.config["projection_version"] = json!("ordered");
+		let changed = sqlx::query(
+			&Query::update()
+				.table(Alias::new("registry"))
+				.value(Alias::new("metadata"), serde_json::to_value(agent).unwrap())
+				.and_where(Expr::col("tenant").eq("acme"))
+				.and_where(Expr::col("id").eq("research"))
+				.and_where(Expr::col("version").eq("1.0.0"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(changed.rows_affected(), 1);
+
+		let (status, refused) = peer(&ba, (&a, &b), admit, json!({"grant_id":grant})).await;
+		assert_eq!(status, 409, "{refused}");
+		assert_eq!(refused["code"], "projection_retired");
+		assert!(
+			refused["error"]
+				.as_str()
+				.unwrap()
+				.contains("PROJECTION_RETIRED")
+		);
+		let count: i64 = sqlx::query_scalar(
+			"SELECT COUNT(*) FROM authorization_remote_admissions WHERE grant_id = $1",
+		)
+		.bind(grant)
+		.fetch_one(b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(count, 0);
+		assert!(b.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
+		drop(aa);
+		drop(ba);
+		cleanup(a, &au, &aschema).await;
+		cleanup(b, &bu, &bschema).await;
+		return;
+	}
 	let (first, second) = tokio::join!(
 		peer(&ba, (&a, &b), admit, json!({"grant_id":grant})),
 		peer(&ba, (&a, &b), admit, json!({"grant_id":grant}))

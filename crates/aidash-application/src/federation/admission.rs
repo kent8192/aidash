@@ -2,7 +2,7 @@
 use crate::{Error, Result};
 use aidash_domain::{
 	federation::execution::Inspection,
-	registry::{EntityRef, Search, rules::digest},
+	registry::{AgentConfig, EntityRef, Search, execution_contract, rules::digest},
 };
 use std::collections::BTreeMap;
 
@@ -31,7 +31,6 @@ pub fn validate_inspection(
 			"invalid receiver execution inspection".into(),
 		));
 	}
-	validation.validate_in(&inspection.agent, true)?;
 	let snapshot = &inspection.binding_snapshot;
 	snapshot.validate()?;
 	if !snapshot.remote
@@ -42,6 +41,10 @@ pub fn validate_inspection(
 			"receiver Binding placement mismatch".into(),
 		));
 	}
+	let pinned = AgentConfig::from_snapshot(snapshot)?;
+	execution_contract(pinned.projection_version, pinned.harness_contract)
+		.map_err(Error::ProjectionRetired)?;
+	validation.validate_in(&inspection.agent, true)?;
 	let mut expected = BTreeMap::new();
 	for pinned in &snapshot.definitions {
 		if pinned.identity.registry_deployment != deployment {

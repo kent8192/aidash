@@ -4,7 +4,7 @@ use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use upstream_fixtures::{reply, upstream};
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 
 use aidash_server::{

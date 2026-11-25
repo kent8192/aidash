@@ -205,7 +205,6 @@ async fn selected_messages_are_all_authorized_before_ordered_attachment_bytes(
 		id(10),
 		&[(7, id(1), 128000), (9, id(2), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -245,7 +244,6 @@ async fn later_message_denial_prevents_reading_any_attachment_bytes(
 			id(10),
 			&[(7, id(1), 128000), (9, id(2), 128000)],
 			&model,
-			Default::default()
 		)
 		.await,
 		Err(Error::Forbidden)
@@ -278,7 +276,6 @@ async fn messages_without_media_still_advance_the_last_complete_sequence(
 		id(10),
 		&[(3, id(1), 128000), (8, id(2), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -309,16 +306,10 @@ async fn an_individual_message_over_the_limit_is_rejected_before_media_validatio
 		)]
 	};
 	scope.rows.insert(id(1), records);
-	let error = load(
-		&mut scope,
-		id(10),
-		&[(1, id(1), 128000)],
-		&model,
-		Default::default(),
-	)
-	.await
-	.err()
-	.unwrap();
+	let error = load(&mut scope, id(10), &[(1, id(1), 128000)], &model)
+		.await
+		.err()
+		.unwrap();
 	assert!(
 		matches!(error,Error::Invalid(ref message) if message=="run media input exceeds count or byte limit")
 	);
@@ -348,7 +339,6 @@ async fn total_limits_defer_the_whole_next_message_without_examining_its_integri
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -382,7 +372,6 @@ async fn immutable_attachment_integrity_is_required_even_after_a_complete_messag
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.err()
@@ -416,16 +405,10 @@ async fn media_type_and_signature_rejection_keep_the_domain_error(
 	if !unsupported {
 		scope.rows.get_mut(&id(1)).unwrap()[0].media_type = "image/png".into();
 	}
-	let error = load(
-		&mut scope,
-		id(10),
-		&[(1, id(1), 128000)],
-		&model,
-		Default::default(),
-	)
-	.await
-	.err()
-	.unwrap();
+	let error = load(&mut scope, id(10), &[(1, id(1), 128000)], &model)
+		.await
+		.err()
+		.unwrap();
 	assert!(matches!(
 		error,
 		Error::Domain(aidash_domain::Error::Invalid(_))
@@ -437,16 +420,10 @@ async fn first_message_budget_failure_returns_the_existing_context_error(
 	mut scope: Scope,
 	model: ModelConfig,
 ) {
-	let error = load(
-		&mut scope,
-		id(10),
-		&[(1, id(1), 0)],
-		&model,
-		Default::default(),
-	)
-	.await
-	.err()
-	.unwrap();
+	let error = load(&mut scope, id(10), &[(1, id(1), 0)], &model)
+		.await
+		.err()
+		.unwrap();
 	assert!(
 		matches!(error,Error::Domain(aidash_domain::Error::Invalid(ref message)) if message.starts_with("model request exceeds context window:"))
 	);
@@ -465,7 +442,6 @@ async fn later_budget_failure_truncates_every_part_from_the_deferred_message(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 0)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -493,16 +469,10 @@ async fn first_message_requires_a_current_approved_route(
 	} else {
 		model.media_routes.clear();
 	}
-	let error = load(
-		&mut scope,
-		id(10),
-		&[(1, id(1), 128000)],
-		&model,
-		Default::default(),
-	)
-	.await
-	.err()
-	.unwrap();
+	let error = load(&mut scope, id(10), &[(1, id(1), 128000)], &model)
+		.await
+		.err()
+		.unwrap();
 	assert!(matches!(error,Error::MediaRouteUnavailable { ref model, .. } if model=="saved-model"));
 }
 #[rstest]
@@ -519,7 +489,6 @@ async fn separate_format_routes_cannot_authorize_one_combined_media_batch(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -541,7 +510,6 @@ async fn even_deferred_messages_keep_the_original_authorization_preflight(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000), (3, id(3), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.unwrap();
@@ -570,7 +538,6 @@ async fn attachment_read_faults_retain_their_identity_without_partial_output(
 		id(10),
 		&[(1, id(1), 128000), (2, id(2), 128000)],
 		&model,
-		Default::default(),
 	)
 	.await
 	.err()
@@ -1050,7 +1017,6 @@ async fn escaped_attachment_labels_keep_the_selected_batch_within_dispatch_headr
 		id(10),
 		&[(1, id(1), headroom), (2, id(2), headroom)],
 		&model,
-		ProjectionVersion::Native,
 	)
 	.await
 	.unwrap();
@@ -1086,15 +1052,9 @@ async fn chooses_a_common_route_and_only_renders_when_needed(
 	mut model: ModelConfig,
 ) {
 	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into()])];
-	let batch = load(
-		&mut scope,
-		id(10),
-		&[(7, id(1), 128000)],
-		&model,
-		Default::default(),
-	)
-	.await
-	.unwrap();
+	let batch = load(&mut scope, id(10), &[(7, id(1), 128000)], &model)
+		.await
+		.unwrap();
 	assert_eq!(parts(&batch.parts)[3]["audio"], "wav");
 	assert_eq!(
 		scope
@@ -1106,15 +1066,9 @@ async fn chooses_a_common_route_and_only_renders_when_needed(
 	);
 	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into(), "mp3".into()])];
 	scope.calls.clear();
-	let batch = load(
-		&mut scope,
-		id(10),
-		&[(7, id(1), 128000)],
-		&model,
-		Default::default(),
-	)
-	.await
-	.unwrap();
+	let batch = load(&mut scope, id(10), &[(7, id(1), 128000)], &model)
+		.await
+		.unwrap();
 	assert_eq!(parts(&batch.parts)[3]["audio"], "mp3");
 	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
 }
@@ -1127,14 +1081,7 @@ async fn does_not_combine_individually_supported_formats_from_different_routes(
 ) {
 	model.media_routes = vec![routes(vec!["image/png".into()]), routes(vec!["wav".into()])];
 	assert!(matches!(
-		load(
-			&mut scope,
-			id(10),
-			&[(7, id(1), 128000)],
-			&model,
-			Default::default()
-		)
-		.await,
+		load(&mut scope, id(10), &[(7, id(1), 128000)], &model,).await,
 		Err(Error::MediaRouteUnavailable { .. })
 	));
 	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
@@ -1148,14 +1095,7 @@ async fn rendition_bytes_count_toward_the_inference_limit(
 ) {
 	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into()])];
 	scope.wav_size = Some(8 * 1024 * 1024 + 1);
-	let result = load(
-		&mut scope,
-		id(10),
-		&[(7, id(1), 128000)],
-		&model,
-		Default::default(),
-	)
-	.await;
+	let result = load(&mut scope, id(10), &[(7, id(1), 128000)], &model).await;
 	assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("byte limit")));
 }
 

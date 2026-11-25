@@ -22,7 +22,7 @@ use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, Ordering::SeqCst},
 };
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 #[path = "support/mcp.rs"]
 mod mcp;
@@ -1286,6 +1286,17 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	);
 	assert_eq!(results(&after).len(), 1);
 	assert_eq!(world.mcp.sessions_issued(), 0);
+
+	// A real Native worker stores the current structured contract in the
+	// database for the Run step and both of its samples.
+	let versions: Vec<(i32, i32)> = sqlx::query_as(
+		"SELECT projection_version, harness_contract FROM inference_usage WHERE run_id = $1",
+	)
+	.bind(world.run.id)
+	.fetch_all(world.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(versions, [(3, 5); 3]);
 
 	let provenance: Vec<(uuid::Uuid, Option<uuid::Uuid>, Option<uuid::Uuid>, String)> =
 		sqlx::query_as(

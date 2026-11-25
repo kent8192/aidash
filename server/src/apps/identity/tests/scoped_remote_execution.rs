@@ -4,7 +4,7 @@ use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::ServerRouter as Router;
 use upstream_fixtures::reply;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "scoped_remote_execution/connections.rs"]
 mod connections;

@@ -476,7 +476,7 @@ impl Store {
 			agent.projection_version,
 			agent.harness_contract,
 		)
-		.map_err(Error::Invalid)?;
+		.map_err(Error::ProjectionRetired)?;
 		if self.cache_salt.is_none() {
 			return Err(Error::Invalid(
 				"this node has no Cache Salt Key for Native Runs".into(),

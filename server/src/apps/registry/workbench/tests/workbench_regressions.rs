@@ -4,7 +4,7 @@ use aidash_server::authorization::identity::Actor;
 use aidash_server::registry::Registry;
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::{Request, Response, ServerRouter};
-#[path = "../../../execution/tests/support/legacy.rs"]
+#[path = "../../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "../../../execution/tests/support/mcp.rs"]
 mod mcp;

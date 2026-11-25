@@ -4,7 +4,7 @@ use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use http::Method;
 use upstream_fixtures::{async_upstream, reply};
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "execution_authorization/issue_781_measure.rs"]
 mod issue_781_measure;

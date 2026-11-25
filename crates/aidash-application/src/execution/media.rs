@@ -9,7 +9,6 @@ use crate::{
 };
 use aidash_domain::{
 	model::ModelConfig,
-	projection::ProjectionVersion,
 	provider::{ContentPart, InputFormat, ModelContext, ModelRequest},
 };
 use serde_json::Value;
@@ -126,7 +125,6 @@ pub fn admission_request(
 /// Budget Native media with the same wire framing as a Run request.
 pub(super) fn run_media_budget_request(
 	model: &ModelConfig,
-	_projection: ProjectionVersion,
 	content_parts: Vec<ContentPart>,
 ) -> ModelRequest {
 	let input_format = InputFormat::for_model(model);
@@ -146,25 +144,23 @@ pub async fn authorized<S: AuthorizedMediaScope + ?Sized>(
 	thread: Uuid,
 	messages: &[(i64, Uuid, usize)],
 	model: &ModelConfig,
-	projection: ProjectionVersion,
 ) -> Result<HumanMediaBatch> {
 	for (_, message, _) in messages {
 		scope.authorize_message(thread, *message).await?;
 	}
-	load(scope, thread, messages, model, projection).await
+	load(scope, thread, messages, model).await
 }
 pub async fn load<S: MediaAttachments + ?Sized>(
 	scope: &mut S,
 	thread: Uuid,
 	messages: &[(i64, Uuid, usize)],
 	model: &ModelConfig,
-	projection: ProjectionVersion,
 ) -> Result<HumanMediaBatch> {
 	let mut parts = Vec::new();
 	let mut accepted: Vec<(i64, crate::ports::execution::media::MediaAttachment)> = Vec::new();
 	let mut through_seq = None;
 	let mut has_more = false;
-	let request = run_media_budget_request(model, projection, Vec::new());
+	let request = run_media_budget_request(model, Vec::new());
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(thread, *id).await?;
 		let message_bytes = attachments

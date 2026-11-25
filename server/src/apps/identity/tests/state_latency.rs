@@ -17,7 +17,7 @@ use std::{
 	time::{Duration, Instant},
 };
 use uuid::Uuid;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "../../execution/tests/support/statements.rs"]
 mod statements;
