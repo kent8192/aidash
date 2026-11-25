@@ -9,6 +9,7 @@ use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::ScopeId;
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
+use indexmap::IndexSet;
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
@@ -25,6 +26,8 @@ use crate::{Error, Result, store::Store};
 mod authority;
 pub use authority::ScratchAuthority;
 
+const INITIALIZED_KEPT: usize = 4096;
+
 /// Durable counters composed with live Scratch Space authority.
 #[derive(Clone)]
 pub struct DurableScopes {
@@ -33,7 +36,7 @@ pub struct DurableScopes {
 	/// Scopes whose state row this process has made sure of, so that a new
 	/// connection writes nothing before it holds a Host connection limit (#845).
 	/// A row that is gone again (Node purged) fails the scope's next charge.
-	initialized: Arc<std::sync::Mutex<std::collections::HashSet<ScopeId>>>,
+	initialized: Arc<std::sync::Mutex<IndexSet<ScopeId>>>,
 }
 impl DurableScopes {
 	pub fn new(store: Store, authority: Arc<dyn ScopeAuthority>) -> Self {
@@ -73,7 +76,13 @@ impl DurableScopes {
 		tx.execute(&sql, convert_values(values)).await?;
 		let _ = locked_state_now(&mut tx, id).await?;
 		tx.commit().await?;
-		self.initialized.lock().unwrap().insert(id.clone());
+		let mut initialized = self.initialized.lock().unwrap();
+		initialized.insert(id.clone());
+		if initialized.len() > INITIALIZED_KEPT {
+			// Evict the oldest half in one pass. Reinitializing an evicted scope
+			// reuses its existing state row and leaves its counters intact.
+			drop(initialized.drain(..INITIALIZED_KEPT / 2));
+		}
 		Ok(())
 	}
 	async fn charge(

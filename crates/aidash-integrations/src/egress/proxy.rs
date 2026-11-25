@@ -266,8 +266,8 @@ struct Reach {
 	told: bool,
 }
 
-/// Counts a connection that is dropped while it waits for a limit: its client
-/// went away, and the future serving it with it.
+/// Counts a connection dropped while waiting for a limit unless the gateway
+/// itself is stopping.
 struct PendingTally {
 	manager: Arc<TunnelManager>,
 	scope: aidash_domain::egress::ScopeId,
@@ -276,7 +276,7 @@ struct PendingTally {
 }
 impl Drop for PendingTally {
 	fn drop(&mut self) {
-		if self.armed {
+		if self.armed && !is_stopping(&self.manager.stopping) {
 			self.manager.tally(&self.scope, &self.host, CLIENT_CLOSED);
 		}
 	}
@@ -1846,6 +1846,7 @@ async fn forward_http(
 	let sent = audit.sent.clone();
 	let received = audit.received.clone();
 	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
+	let (client_error_tx, client_error) = tokio::sync::oneshot::channel();
 	let stopping = manager.stopping.clone();
 	// Idle reclamation is for CONNECT tunnels kept open between requests
 	// (#845 decision 27). This connection carries one request with
@@ -1879,15 +1880,23 @@ async fn forward_http(
 			let _ = result_tx.send(outcome);
 			// A stall must not hold the Scratch Space's limit while the record retries.
 			drop(permit);
+			audit.error = client_error.await.ok();
 			audit.finish().await;
 		});
 	}
+	// Sending a proxy error or dropping the sender lets the transfer task
+	// finalize the record. It publishes its outcome before waiting for this,
+	// since that outcome may determine the client's response.
+	let fail = |status, code| {
+		let _ = client_error_tx.send(code);
+		super::failure(status, code)
+	};
 	let (mut sender, connection) =
 		match hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(client)).await {
 			Ok(pair) => pair,
 			Err(error) => {
 				report.upstream("handshake", super::causes(&error));
-				return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
+				return fail(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 			}
 		};
 	tokio::spawn(async move {
@@ -1896,7 +1905,7 @@ async fn forward_http(
 	let (mut parts, body) = request.into_parts();
 	let target = match url[url::Position::BeforePath..].parse() {
 		Ok(target) => target,
-		Err(_) => return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target"),
+		Err(_) => return fail(StatusCode::BAD_REQUEST, INVALID_TARGET),
 	};
 	parts.uri = target;
 	let connection_headers = parts
@@ -1924,7 +1933,7 @@ async fn forward_http(
 	}
 	let host = &url[url::Position::BeforeHost..url::Position::AfterPort];
 	let Ok(host) = header::HeaderValue::from_str(host) else {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return fail(StatusCode::BAD_REQUEST, INVALID_TARGET);
 	};
 	parts.headers.insert(header::HOST, host);
 	parts.headers.insert(
@@ -1940,11 +1949,11 @@ async fn forward_http(
 			// The transfer may finish after writing the response into the duplex
 			// buffer but before Hyper has parsed its headers.
 			Ok("completed") => { transfer_completed = true; pending_response.await },
-			Ok("egress_budget_exhausted") => return super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
+			Ok("egress_budget_exhausted") => return fail(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
 			ended => {
 				let code = ended.unwrap_or("the transfer stopped");
 				report.upstream("request", format!("ended before a response: {code}"));
-				return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
+				return fail(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
 			}
 		},
 	};
@@ -1952,7 +1961,7 @@ async fn forward_http(
 		Ok(response) => response,
 		Err(error) => {
 			report.upstream("request", super::causes(&error));
-			return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
+			return fail(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
 		}
 	};
 	let (mut parts, body) = response.into_parts();
@@ -4307,6 +4316,29 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn only_waiters_dropped_before_shutdown_are_counted_as_client_closed() {
+		let (stop, manager) = manager();
+		let settings = test_settings();
+		let scopes = MemoryScopes::new(CREDENTIAL.into(), settings.clone());
+		let waiting = || super::PendingTally {
+			manager: manager.clone(),
+			scope: settings.id.clone(),
+			host: HOST.into(),
+			armed: true,
+		};
+		let client_closed = waiting();
+		let shutdown_aborted = waiting();
+		drop(client_closed);
+		stop.send(true).unwrap();
+		drop(shutdown_aborted);
+		manager.flush_tallies(&scopes).await;
+		let tallies = scopes.refusals();
+		assert_eq!(tallies.len(), 1);
+		assert_eq!(tallies[0].reason, "egress_client_closed");
+		assert_eq!(tallies[0].count, 1);
+	}
+
+	#[tokio::test]
 	async fn an_upstream_closing_without_a_response_leaves_the_cause_of_the_request() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
@@ -4323,6 +4355,9 @@ mod tests {
 		assert!(response.contains("egress_upstream_failed"), "{response}");
 		upstream_task.await.unwrap();
 		manager.drain().await;
+		let records = scopes.records();
+		assert_eq!(records.len(), 1);
+		assert_eq!(records[0].error.as_deref(), Some("egress_upstream_failed"));
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "WARN", "request").len(), 1, "{logs}");
 		assert!(logs.contains("closed"), "{logs}");
