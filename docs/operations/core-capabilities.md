@@ -130,10 +130,14 @@ with one command is attributed to its Run; overlapping commands produce an
 metadata-only change, and a sudden Pod loss can lose the latest interval.
 
 The Runner queues foreground commands beyond eight simultaneous commands per
-Pod; background processes have a separate pool of 16. The
-default deadline is ten minutes and the maximum is 60 minutes. Foreground
-commands waiting for a Run may be cancelled; background processes expose their
-starting Run and bounded logs. Commands interrupted by a lost Pod or node have
+Pod. The default foreground deadline is ten minutes and the maximum is 60
+minutes. Foreground commands waiting for a Run may be cancelled. Background
+starts release their exec stream once the supervisor starts the command. One
+Runner watcher per Pod polls all its Background processes together every five
+seconds and exits when none remain. Background processes expose their starting
+Run and bounded logs saved in the Pod. Running output previews refresh on each
+poll. A preview or stdio MCP start that hits the Pod's process limit reports
+`pod_process_limit` and includes the effective `v2_processes` value. Commands interrupted by a lost Pod or node have
 an unknown outcome and are never replayed during the retry window. Terminal
 command records are retained for 24 hours and 15 minutes after completion; unsettled
 commands and stops awaiting confirmation are retained. Each Space is limited to

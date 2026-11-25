@@ -913,6 +913,23 @@ async fn a_start_dropped_at_its_time_limit_is_fenced_and_stopped_before_the_data
 }
 
 #[tokio::test]
+async fn execution_pod_process_limit_reaches_the_stdio_finding_cause() {
+	let (pod, _, _, bound) = setup();
+	*pod.start_outcome.lock().unwrap() = Some(Some(ExecutionPodError::Remote {
+		code: "pod_process_limit".into(),
+		message: "The Execution Pod process limit (v2_processes = 128) was reached.".into(),
+	}));
+	pod.refusals.lock().unwrap().push_back(CommandRefusal {
+		refused: false,
+		status: Some("cancelled".into()),
+	});
+
+	let result = bound.list(run(), &server(), &node()).await;
+
+	assert!(matches!(result, Err(Error::Invalid(cause)) if cause == "pod_process_limit"));
+}
+
+#[tokio::test]
 async fn a_start_whose_answer_was_lost_blocks_the_next_start_until_it_is_accounted_for() {
 	// Arrange: the start fails after the Runner may have launched the process, and the
 	// Runner cannot be asked about it yet.

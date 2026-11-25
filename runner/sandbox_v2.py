@@ -1,5 +1,6 @@
 """Execution Pod process privilege reduction, called in a child before exec."""
 import ctypes
+import errno
 import os
 
 # Linux capability numbers; Docker requires these, normal commands must never
@@ -214,8 +215,16 @@ def sign_result(result, key):
     return hmac.new(key, data, hashlib.sha256).hexdigest()
 
 
+def process_limit_refusal():
+    limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
+    return {'status': 'completed', 'exit_code': 1, 'error_code': 'pod_process_limit',
+            'message': f'The Execution Pod process limit (v2_processes = {limit}) was reached. '
+                       'Stop a Background process and retry.', 'process_limit': limit,
+            'output_incomplete': True}
+
+
 def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None, operation_id=None, output_limit=8388608,
-                   on_left=None):
+                   on_left=None, on_started=None):
     """Run one command in a dedicated supervisor and reap escaped descendants.
 
     This must be called in a single-purpose process: becoming a subreaper also
@@ -227,7 +236,11 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
     import time
 
     if stop_requested is not None and stop_requested.is_set():
-        return {'status': 'stopped'}
+        result = {'status': 'stopped'}
+        if on_started is not None:
+            # There are no saved output files when stop wins before launch.
+            result['output_incomplete'] = True
+        return result
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         code = ctypes.get_errno()
@@ -251,9 +264,37 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                 streams[name] = os.fdopen(fd, 'wb', buffering=0)
         except OSError:
             output_state['incomplete'] = True
-    process = subprocess.Popen(argv, start_new_session=True,
-                               stdout=subprocess.PIPE if output_directory is not None else None,
-                               stderr=subprocess.PIPE if output_directory is not None else None)
+    # The trusted chroot helper keeps this pipe open until the guest exec.
+    # Its close-on-exec end distinguishes an exec EAGAIN from guest output.
+    read_fd, write_fd = os.pipe() if on_started is not None else (None, None)
+    launch_error = b''
+    try:
+        try:
+            process = subprocess.Popen(argv if write_fd is None else [*argv, str(write_fd)],
+                                       start_new_session=True,
+                                       stdout=subprocess.PIPE if output_directory is not None else None,
+                                       stderr=subprocess.PIPE if output_directory is not None else None,
+                                       pass_fds=() if write_fd is None else (write_fd,))
+        finally:
+            if write_fd is not None:
+                os.close(write_fd)
+        if read_fd is not None:
+            launch_error = os.read(read_fd, 1)
+    except OSError as error:
+        for stream in streams.values():
+            stream.close()
+        if on_started is not None and error.errno == errno.EAGAIN:
+            return process_limit_refusal()
+        raise
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+    if launch_error == b'E':
+        process.wait()
+        for stream in (*streams.values(), process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        return process_limit_refusal()
     def drain(name, source, target):
         forwarding = True
         save = streams.get(name)
@@ -318,12 +359,27 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                 except OSError:
                     output_state['incomplete'] = True
             source.close()
+    reader_limit = False
     if output_directory is not None:
         for name, source, target in (('stdout', process.stdout, 1), ('stderr', process.stderr, 2)):
             reader = threading.Thread(target=drain, args=(name, source, target), daemon=True)
-            reader.start()
-            readers.append(reader)
+            try:
+                reader.start()
+            except RuntimeError:
+                if on_started is None:
+                    raise
+                source.close()
+                if name in streams:
+                    streams[name].close()
+                reader_limit = True
+                stop_requested.set()
+            else:
+                readers.append(reader)
+    if on_started is not None and not (launch_error or reader_limit):
+        on_started()
     def finish(result):
+        if reader_limit and result['status'] != 'termination_unconfirmed':
+            result = process_limit_refusal()
         if readers:
             deadline = time.monotonic() + FORWARD_GRACE_SECONDS
             for reader in readers:
@@ -341,7 +397,7 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                     reader_stop.set()
                     for reader in readers:
                         reader.join(.5)
-            result['output_incomplete'] = output_state['incomplete'] or unfinished
+            result['output_incomplete'] = result.get('output_incomplete', False) or output_state['incomplete'] or unfinished
             result['output_truncated'] = output_state['truncated']
             result['forward_incomplete'] = output_state['forward_incomplete'] or unfinished
         return result
@@ -441,7 +497,7 @@ def disk_tolerant_track(action, reserve, on_full=None):
 
 
 def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, *, expected_pod_uid,
-                      record_changes=True, output_limit=8388608, notify_left=None, left_auth=None):
+                      record_changes=True, output_limit=8388608, notify_left=None, left_auth=None, notify_started=None):
     """Execute once, persist its outcome, and record its observed system changes."""
     import json
     from pathlib import Path
@@ -519,6 +575,8 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     interval_errors = []
     disk_full = threading.Event()
     tracking_started = False
+    tracker = None
+    tracker_limit = False
     if record_changes:
         tracking_started = disk_tolerant_track(
             lambda: change_interval(root, '/scratch-system', operation_id, run_id),
@@ -537,24 +595,35 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
                     return
         if tracking_started:
             tracker = threading.Thread(target=track, daemon=True)
-            tracker.start()
-    argv = helper_command('chroot', 'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code)
+            try:
+                tracker.start()
+            except RuntimeError:
+                if notify_started is None:
+                    raise
+                tracker = None
+                tracker_limit = True
+    argv = helper_command('chroot-start' if notify_started else 'chroot', 'docker' if docker_enabled else 'normal',
+                          root, cwd, '/bin/sh', '-c', code)
     try:
-        result = run_supervised(argv, timeout, stop_requested=stopping,
-                                output_directory=OUTPUT_DIRECTORY,
-                                operation_id=operation_id, output_limit=output_limit,
-                                on_left=adopt if notify_left else None)
+        if tracker_limit:
+            result = process_limit_refusal()
+        else:
+            result = run_supervised(argv, timeout, stop_requested=stopping,
+                                    output_directory=OUTPUT_DIRECTORY,
+                                    operation_id=operation_id, output_limit=output_limit,
+                                    on_left=adopt if notify_left else None, on_started=notify_started)
     finally:
         if tracking_started:
             interval_stop.set()
-            tracker.join()
+            if tracker is not None:
+                tracker.join()
             if not disk_tolerant_track(
                     lambda: change_interval(root, '/scratch-system', operation_id, run_id, finished=True),
                     '/scratch-system/.space-reserve', disk_full):
                 disk_full.set()
     if interval_errors:
         raise RuntimeError('change tracking failed: ' + str(interval_errors[0]))
-    if disk_full.is_set():
+    if disk_full.is_set() and 'error_code' not in result:
         result.update(error_code='disk_full', message='System change tracking was incomplete because the Scratch Space is full')
     result.update(operation_id=left_id if adopted else operation_id, run_id=run_id)
     if left_auth:
@@ -606,6 +675,53 @@ def supervise_foreground(*args, **kwargs):
         os._exit(0)
 
 
+def supervise_background(*args, **kwargs):
+    """Release the exec as soon as its detached supervisor starts the guest."""
+    import json
+    read_fd, write_fd = os.pipe()
+    try:
+        child = os.fork()
+    except OSError as error:
+        os.close(read_fd)
+        os.close(write_fd)
+        if error.errno == errno.EAGAIN:
+            return {'process_limit': process_limit_refusal()['process_limit']}
+        raise
+    if child:
+        os.close(write_fd)
+        with os.fdopen(read_fd, 'rb') as stream:
+            reply = json.loads(stream.readline())
+        if not reply.get('started'):
+            os.waitpid(child, 0)
+        return reply
+    os.close(read_fd)
+
+    def notify(reply):
+        nonlocal write_fd
+        try:
+            os.write(write_fd, json.dumps(reply).encode() + b'\n')
+        except BrokenPipeError:
+            # The Runner can recover from the files if the exec was lost.
+            pass
+        finally:
+            os.close(write_fd)
+            write_fd = None
+
+    try:
+        os.setsid()
+        with open('/dev/null', 'rb+') as null:
+            for target in (0, 1, 2):
+                os.dup2(null.fileno(), target)
+        result = supervise_command(*args, **kwargs, notify_started=lambda: notify({'started': True}))
+        if write_fd is not None:
+            notify({'process_limit': result['process_limit']} if 'process_limit' in result else {'started': False})
+    except BaseException:
+        if write_fd is not None:
+            notify({'started': False})
+    finally:
+        os._exit(0)
+
+
 def process_start_time(pid):
     with open(f'/proc/{pid}/stat', encoding='ascii') as file:
         # comm is parenthesized and may itself contain spaces or parentheses.
@@ -635,10 +751,10 @@ def stop_operation(operation_id):
         os.close(fd)
 
 
-def log_chunk(path, offset, limit):
+def log_chunk(path, offset, limit, *, max_limit=262144):
     import base64
     import fcntl
-    if (offset is not None and (type(offset) is not int or offset < 0)) or type(limit) is not int or not 1 <= limit <= 262144:
+    if (offset is not None and (type(offset) is not int or offset < 0)) or type(limit) is not int or not 1 <= limit <= max_limit:
         raise ValueError('invalid log offset or limit')
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -677,7 +793,8 @@ def claim_operation(operation_id, directory='/scratch-system/operations'):
     return True
 
 
-def operation_output(operation_id, stream, offset, limit, directory='/scratch-system/operation-output'):
+def operation_output(operation_id, stream, offset, limit, directory='/scratch-system/operation-output',
+                     *, max_limit=262144):
     from pathlib import Path
     validate_operation_id(operation_id)
     if stream not in ('stdout', 'stderr'):
@@ -685,7 +802,7 @@ def operation_output(operation_id, stream, offset, limit, directory='/scratch-sy
     path = Path(directory) / (operation_id + '.' + stream)
     if not path.exists():
         raise FileNotFoundError('operation output unavailable')
-    return log_chunk(path, offset, limit)
+    return log_chunk(path, offset, limit, max_limit=max_limit)
 
 
 def forget_operation(operation_id, directory='/scratch-system/operations', output_directory='/scratch-system/operation-output'):
@@ -724,6 +841,39 @@ def read_result(operation_id):
     if len(data) > 65536:
         raise ValueError('command result exceeds the limit')
     return json.loads(data)
+
+
+def read_background_results(operations, expected_pod_uid, output_limit):
+    if os.environ.get('AIDASH_POD_UID') != expected_pod_uid:
+        raise ValueError('Execution Pod identity changed')
+    results = {}
+    for operation, request in operations.items():
+        try:
+            claimed = request['claim'] and claim_operation(operation, OPERATION_DIRECTORY)
+            try:
+                outcome = read_result(operation)
+            except (FileNotFoundError, ValueError):
+                outcome = None
+            running = operation_running(operation)
+            # A supervisor can exit between the result read and the marker read.
+            if not running and outcome is None and not claimed:
+                try:
+                    outcome = read_result(operation)
+                except (FileNotFoundError, ValueError):
+                    pass
+            output = {}
+            for stream, offset in request['offsets'].items():
+                try:
+                    remaining = max(1, output_limit - offset)
+                    output[stream] = operation_output(operation, stream, offset, remaining, OUTPUT_DIRECTORY,
+                                                      max_limit=max(1, output_limit))['data']
+                except (OSError, ValueError):
+                    pass
+            results[operation] = {'claimed': claimed, 'result': outcome, 'running': running, 'output': output}
+        except (OSError, ValueError, KeyError, TypeError):
+            # A single unreadable operation must not prevent polling its peers.
+            continue
+    return results
 
 
 OPERATION_DIRECTORY = '/scratch-system/operations'
@@ -874,7 +1024,8 @@ if __name__ == '__main__':
         print(json.dumps({'available': probe.returncode == 0}))
         raise SystemExit(0)
     if (len(sys.argv) in (11, 12, 13) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
-            and sys.argv[3] in ('command', 'session')):
+            and sys.argv[3] in ('command', 'session', 'background')):
+        detached = sys.argv[3] == 'background'
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
         token = None
         options = sys.argv[11:]
@@ -893,7 +1044,7 @@ if __name__ == '__main__':
                 if not re.fullmatch(b'[0-9a-f]{64}', key):
                     raise ValueError('invalid result nonce')
                 return key
-            token = read_key() if docker else None
+            token = read_key() if docker and not detached else None
             left_auth = read_key() if proof else token
         else:
             left_auth = None
@@ -907,6 +1058,15 @@ if __name__ == '__main__':
             null = os.open('/dev/null', os.O_RDONLY)
             os.dup2(null, 0)
             os.close(null)
+        if detached:
+            import json
+            if seconds is not None or (docker and not proof):
+                raise ValueError('invalid Background supervisor input')
+            reply = supervise_background(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
+                                         docker, expected_pod_uid=sys.argv[8], output_limit=int(sys.argv[10]),
+                                         left_auth=left_auth)
+            print(json.dumps(reply))
+            raise SystemExit(0)
         supervise = supervise_foreground if seconds is not None and sys.argv[3] == 'command' else supervise_command
         outcome = supervise(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
@@ -917,6 +1077,11 @@ if __name__ == '__main__':
             frame = b'\x1eaidash-result:' + token + b':' + json.dumps(outcome, separators=(',', ':')).encode() + b'\n'
             os.write(2, frame)
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
+    if len(sys.argv) == 4 and sys.argv[1] == 'results':
+        import json
+        print(json.dumps(read_background_results(json.load(sys.stdin), sys.argv[2], int(sys.argv[3])),
+                         separators=(',', ':')))
+        raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'claim':
         import json
         print(json.dumps({'created': claim_operation(sys.argv[2])}))
@@ -950,6 +1115,19 @@ if __name__ == '__main__':
                                      sys.argv[5] if len(sys.argv) == 6 else None)
         print(json.dumps(result, separators=(',', ':')))
         raise SystemExit(0)
+    if len(sys.argv) >= 7 and sys.argv[1] == 'chroot-start':
+        fd = int(sys.argv[-1])
+        os.set_inheritable(fd, False)
+        try:
+            chroot_command(sys.argv[3], sys.argv[4], sys.argv[5:-1], sys.argv[2] == 'docker')
+        except OSError as error:
+            os.write(fd, b'E' if error.errno == errno.EAGAIN else b'F')
+            if error.errno == errno.EAGAIN:
+                raise SystemExit(1) from None
+            raise
+        except Exception:
+            os.write(fd, b'F')
+            raise
     if len(sys.argv) >= 6 and sys.argv[1] == 'chroot' and sys.argv[2] in ('docker', 'normal'):
         chroot_command(sys.argv[3], sys.argv[4], sys.argv[5:], sys.argv[2] == 'docker')
     if len(sys.argv) < 3 or sys.argv[1] not in ('docker', 'normal'):

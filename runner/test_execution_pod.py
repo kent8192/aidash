@@ -52,25 +52,225 @@ class CommandQueueTest(unittest.TestCase):
             release.set()
             queue.close()
 
-    def test_cancelling_run_preserves_queued_background_work(self):
-        import threading
-        from execution_pod import CommandQueue
+class BackgroundWatcherTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
 
-        release = threading.Event()
-        queue = CommandQueue()
-        try:
-            running = [queue.submit('run-a', i, lambda value: (release.wait(3), value)[1])
-                       for i in range(8)]
-            background = queue.submit('run-b', 'background', lambda value: value, background=True)
-            queue.cancel_waiting('run-b')
-            self.assertFalse(background.cancelled())
-            release.set()
-            self.assertEqual(background.result(timeout=3), 'background')
-            for future in running:
-                future.result(timeout=3)
-        finally:
-            release.set()
-            queue.close()
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.root = Path(directory)
+        self.operations = self.root / 'operations'
+        self.output = self.root / 'output'
+        self.operations.mkdir()
+        self.output.mkdir()
+        self.enterContext(patch.dict('os.environ', {'AIDASH_POD_UID': 'uid', 'AIDASH_PROCESS_LIMIT': '128'}))
+        self.enterContext(patch('sandbox_v2.OPERATION_DIRECTORY', str(self.operations)))
+        self.enterContext(patch('sandbox_v2.OUTPUT_DIRECTORY', str(self.output)))
+        self.enterContext(patch('execution_pod.BACKGROUND_POLL_SECONDS', .05, create=True))
+        self.uid = 'uid'
+        self.docker = False
+        self.polls, self.starts, self.stops = [], {}, []
+        self.refuse = False
+        self.controller = ExecutionPodController(self, {'preview_port': 8080, 'proxy_endpoint': 'http://proxy:8000'},
+                                                 admitted=True)
+        self.controller.touch_space('s')
+        self.controller._set_admitted_uid('s', self.uid)
+        self.addCleanup(self.drain_watchers)
+
+    def drain_watchers(self):
+        self.uid = 'gone'
+        if hasattr(self.controller, 'background_watches'):
+            self.wait_for(lambda: not self.controller.background_watches)
+        for queue in self.controller.queues.values():
+            queue.close(wait=False)
+
+    def kube(self, args, data=None, **kwargs):
+        import errno
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import sandbox_v2
+
+        if args[0] == 'get':
+            caps = ['NET_ADMIN', 'NET_RAW'] if self.docker else []
+            response = {'metadata': {'uid': self.uid}, 'status': {'phase': 'Running', 'podIP': '10.0.0.1'},
+                        'spec': {'containers': [{'name': 'execution',
+                                  'securityContext': {'capabilities': {'add': caps}}}]}}
+        else:
+            action, *operands = args[args.index('/.aidash-helpers/sandbox_v2.py') + 1:]
+            if action == 'supervise':
+                operation = operands[2]
+                self.starts[operation] = (args, data)
+                if self.refuse:
+                    with patch('sandbox_v2.os.fork', side_effect=BlockingIOError(errno.EAGAIN, 'fork')):
+                        response = sandbox_v2.supervise_background()
+                else:
+                    self.running(operation)
+                    response = {'started': True}
+            elif action == 'results':
+                request = json.loads(data)
+                self.polls.append((args, request))
+                response = sandbox_v2.read_background_results(request, operands[0], int(operands[1]))
+            elif action == 'stop':
+                self.stops.append(operands[0])
+                self.finish(operands[0], status='stopped')
+                response = {}
+            elif action == 'port-check':
+                response = {'ready': False}
+            elif action == 'claim':
+                response = {'created': sandbox_v2.claim_operation(operands[0], self.operations)}
+            elif action == 'result':
+                try:
+                    response = sandbox_v2.read_result(operands[0])
+                except FileNotFoundError:
+                    return SimpleNamespace(returncode=1, stdout=b'')
+            elif action == 'running':
+                response = {'running': sandbox_v2.operation_running(operands[0])}
+            elif action == 'output':
+                operation, stream, offset, limit = operands
+                response = sandbox_v2.operation_output(operation, stream, int(offset), int(limit), self.output)
+            else:
+                raise AssertionError(args)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(response).encode())
+
+    def running(self, operation):
+        import json
+        import os
+        from sandbox_v2 import claim_operation
+
+        claim_operation(operation, self.operations)
+        # A fixture supervisor with a live PID and a matching Pod identity.
+        (self.operations / (operation + '.running')).write_text(
+            json.dumps({'pid': os.getpid(), 'start_time': 42, 'pod_uid': 'uid'}))
+        for stream in ('stdout', 'stderr'):
+            (self.output / (operation + '.' + stream)).touch()
+
+    def finish(self, operation, *, status='completed', key=None, exit_code=0):
+        import json
+        from sandbox_v2 import sign_result
+        result = {'operation_id': operation, 'run_id': 'r', 'status': status, 'exit_code': exit_code}
+        if key is not None:
+            result['auth'] = sign_result(result, key)
+        temporary = self.operations / (operation + '.new')
+        temporary.write_text(json.dumps(result))
+        temporary.replace(self.operations / (operation + '.json'))
+        (self.operations / (operation + '.running')).unlink(missing_ok=True)
+
+    def wait_for(self, predicate):
+        import time
+        deadline = time.monotonic() + 2
+        while not predicate():
+            if time.monotonic() >= deadline:
+                self.fail('Background state did not change before the deadline')
+            time.sleep(.01)
+
+    def request(self, **fields):
+        import uuid
+        return dict({'operation_id': str(uuid.uuid4()), 'scratch_space_id': 's', 'run_id': 'r',
+                     'background': True, 'code': 'serve'}, **fields)
+
+    def test_concurrent_starts_share_one_poll_and_watcher_restarts_after_idle(self):
+        import base64
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+
+        self.enterContext(patch('sandbox_v2.process_start_time', return_value=42))
+        requests = [self.request(proxy_credential='run-secret') for _ in range(20)]
+        with ThreadPoolExecutor(max_workers=len(requests)) as callers:
+            results = list(callers.map(self.controller.submit_command, requests))
+        operations = {request['operation_id'] for request in requests}
+        self.assertEqual(set(self.starts), operations)
+        self.assertTrue(all(item['status'] == 'running' for item in results))
+        self.wait_for(lambda: any(set(request) == operations for _, request in self.polls))
+        # Even while all 20 are still alive, one remote call observes every one.
+        for args, data in self.starts.values():
+            self.assertIn('-i', args)
+            self.assertNotIn('run-secret', ' '.join(args))
+            self.assertEqual(data, b'http://aidash:run-secret@proxy:8000\n')
+
+        operation = requests[0]['operation_id']
+        (self.output / (operation + '.stdout')).write_bytes(b'first')
+        self.wait_for(lambda: self.controller.command_result(operation).get('stdout') == 'Zmlyc3Q=')
+        self.controller.cancel_run('s', 'r')
+        self.assertEqual(self.stops, [])
+        with (self.output / (operation + '.stdout')).open('ab') as log:
+            log.write(b'-last')
+        for item in operations:
+            self.finish(item)
+        self.wait_for(lambda: not self.controller.background_watches)
+        finished = self.controller.command_result(operation)
+        self.assertEqual(finished['status'], 'completed')
+        self.assertEqual(base64.b64decode(finished['stdout']), b'first-last')
+        count = len(self.polls)
+        next_op = self.request()
+        self.controller.submit_command(next_op)
+        self.wait_for(lambda: len(self.polls) > count)
+        self.finish(next_op['operation_id'])
+        self.wait_for(lambda: not self.controller.background_watches)
+
+    def test_stops_an_adopted_process_while_sixteen_others_are_running(self):
+        from unittest.mock import patch
+
+        self.enterContext(patch('sandbox_v2.process_start_time', return_value=42))
+        for _ in range(17):
+            operation = self.request()['operation_id'] + '.left'
+            self.running(operation)
+            self.controller._adopt_left(
+                {'scratch_space_id': 's', 'run_id': 'r', 'pod': scratch_resource_name('s'), 'pod_uid': 'uid',
+                 'docker_enabled': False}, operation)
+        self.assertEqual(self.controller.stop_background(operation)['status'], 'stopping')
+        self.assertEqual(self.stops, [operation])
+        self.wait_for(lambda: self.controller.command_result(operation)['status'] == 'stopped')
+        self.assertFalse((self.operations / (operation + '.running')).exists())
+
+    def test_replacement_interrupts_all_watched_operations(self):
+        from unittest.mock import patch
+
+        self.enterContext(patch('sandbox_v2.process_start_time', return_value=42))
+        operation = self.request()
+        self.controller.submit_command(operation)
+        self.wait_for(lambda: bool(self.polls))
+        self.uid = 'replacement'
+        self.wait_for(lambda: not self.controller.background_watches)
+        result = self.controller.command_result(operation['operation_id'])
+        self.assertEqual((result['status'], result['outcome']), ('interrupted', 'unknown'))
+
+    def test_docker_background_result_requires_the_operation_key(self):
+        from unittest.mock import patch
+
+        self.enterContext(patch('sandbox_v2.process_start_time', return_value=42))
+        self.docker = True
+        first, second = self.request(), self.request()
+        for request in (first, second):
+            self.controller.submit_command(request)
+        first, second = first['operation_id'], second['operation_id']
+        first_key, second_key = (self.starts[item][1].strip() for item in (first, second))
+        self.assertNotEqual(first_key, second_key)
+        self.assertNotIn(first_key, self.controller._command_path(first).read_bytes())
+        self.finish(first, key=second_key, exit_code=99)
+        self.finish(second, key=second_key, exit_code=23)
+        self.wait_for(lambda: self.controller.command_result(second)['status'] == 'completed')
+        self.assertEqual(self.controller.command_result(first)['status'], 'running')
+        self.assertEqual(self.controller.command_result(second)['exit_code'], 23)
+        self.finish(first, key=first_key, exit_code=7)
+        self.wait_for(lambda: self.controller.command_result(first).get('exit_code') == 7)
+
+    def test_process_limit_is_reported_by_preview_and_mcp_start(self):
+        from execution_pod import ExecutionPodError
+
+        self.refuse = True
+        for start, request in (
+            (self.controller.start_preview, self.request(port=8080)),
+            (self.controller.start_mcp, self.request(install='', command=['mcp'], env={}, plugin_data='/scratch')),
+        ):
+            with self.subTest(start=start.__name__), self.assertRaises(ExecutionPodError) as refused:
+                start(request)
+            self.assertEqual(refused.exception.code, 'pod_process_limit')
+            self.assertIn('v2_processes = 128', str(refused.exception))
+        self.assertEqual(self.stops, [])
+        self.assertFalse(self.controller.background_watches)
 
 
 class SystemTreeTest(unittest.TestCase):
@@ -790,6 +990,61 @@ class ExecutionRequestTest(unittest.TestCase):
 
 
 class SupervisorTest(unittest.TestCase):
+    def test_detached_supervisor_closes_the_exec_stream_and_saves_the_result(self):
+        import json
+        import os
+        from pathlib import Path
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from unittest.mock import patch
+        import sandbox_v2
+
+        if sys.platform != 'linux':
+            self.skipTest('requires Linux subreaper and pidfds')
+        operation = '00000000-0000-4000-8000-000000000001'
+        # Keep the real launcher, saved-output drain and stop protocol. Replace
+        # only the guest chroot so the test can run without mounting an image.
+        script = """
+import json, sys
+from unittest.mock import patch
+import sandbox_v2
+sandbox_v2.OPERATION_DIRECTORY, sandbox_v2.OUTPUT_DIRECTORY, operation = sys.argv[1:]
+def guest(*args):
+    return [sys.executable, '-c',
+            'import os, sys; os.set_inheritable(int(sys.argv[-1]), False); '
+            'os.execv("/bin/sh", ["sh", "-c", sys.argv[1]])', args[-1]]
+with patch('execution_pod.helper_command', side_effect=guest):
+    print(json.dumps(sandbox_v2.supervise_background(
+        operation, 'run', '.', 'echo ready; exec sleep 30', None, True,
+        expected_pod_uid='pod', record_changes=False, left_auth=b'secret')))
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            state, output = Path(directory) / 'operations', Path(directory) / 'output'
+            response = subprocess.run([sys.executable, '-c', script, str(state), str(output), operation],
+                                      env=dict(os.environ, AIDASH_POD_UID='pod'), capture_output=True,
+                                      check=True, timeout=5)
+            self.assertEqual(json.loads(response.stdout), {'started': True})
+            self.assertFalse((state / (operation + '.json')).exists())
+            with patch.object(sandbox_v2, 'OPERATION_DIRECTORY', str(state)), \
+                 patch.dict(os.environ, {'AIDASH_POD_UID': 'pod'}):
+                log = output / (operation + '.stdout')
+                deadline = time.monotonic() + 4
+                while not log.read_bytes() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                try:
+                    self.assertEqual(log.read_bytes(), b'ready\n')
+                finally:
+                    sandbox_v2.stop_operation(operation)
+                deadline = time.monotonic() + 5
+                while not (state / (operation + '.json')).exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                result = sandbox_v2.read_result(operation)
+            self.assertEqual(result['status'], 'stopped')
+            from execution_pod import verify_adopted_result
+            self.assertTrue(verify_adopted_result(result, b'secret'))
+
     def test_supervisor_saves_and_forwards_both_streams(self):
         import os
         import sys
@@ -3947,19 +4202,6 @@ class DockerAdmissionTest(unittest.TestCase):
             verify_user_probe(dict(report, raw_socket=False), docker=True, processes=128)
 
 class ReviewRegressionTest(unittest.TestCase):
-    def test_background_does_not_consume_foreground_slots(self):
-        import threading
-        from execution_pod import CommandQueue
-        queue, release = CommandQueue(), threading.Event()
-        try:
-            jobs = [queue.submit('r', i, lambda _: release.wait(5), background=True) for i in range(8)]
-            self.assertEqual(queue.submit('r', 'foreground', lambda value: value).result(timeout=1), 'foreground')
-        finally:
-            release.set()
-            for job in jobs:
-                job.result(timeout=5)
-            queue.close()
-
     def test_concurrent_intervals_are_ambiguous(self):
         import tempfile
         from pathlib import Path
