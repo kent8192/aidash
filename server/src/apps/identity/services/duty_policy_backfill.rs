@@ -30,9 +30,7 @@ pub(crate) fn member_policy_after() -> aidash_domain::policy::Policy {
 pub(crate) const SCHEDULE_CREATE: &str = "schedule.create";
 
 pub(crate) fn forward() -> String {
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
-	};
+	use reinhardt::query::{Alias, Expr, ExprTrait, Query, SimpleExpr};
 	let current = member_policy_after();
 	let mut previous = current.clone();
 	previous.actions.remove(SCHEDULE_CREATE);
@@ -48,13 +46,17 @@ pub(crate) fn forward() -> String {
 		"document->'policies' @> jsonb_build_array(?::jsonb)".into(),
 		vec![Expr::value(previous).into()],
 	);
-	Query::update()
+	let mut update = Query::update();
+	update
 		.table(Alias::new("authorization_bundles"))
 		.value_expr(Alias::new("document"), policies)
 		.value_expr(Alias::new("revision"), Expr::col("revision").add(1))
 		.value_expr(Alias::new("updated_at"), Expr::cust("CURRENT_TIMESTAMP"))
-		.and_where(matches_default)
-		.to_string(PostgresQueryBuilder)
+		.and_where(matches_default);
+	super::policy_revision_backfill::record_update(
+		&mut update,
+		"migration:identity/0080_schedule_member_policy",
+	)
 }
 
 /// Reversal preserves policy edits made after this data migration.

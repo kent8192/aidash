@@ -192,6 +192,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_policy_revision_backfill"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -260,6 +261,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_policy_revision_backfill"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -752,6 +754,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -1499,7 +1502,12 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 ) {
 	let fixture = fresh_database.await;
 	let name = "0113_budget_notice_delivery";
-	fixture.migrate_excluding(&[("identity", name)]).await;
+	// Keep the dependent backfill out of both histories so 0113 can be
+	// applied and reversed independently.
+	let backfill = ("identity", "0114_policy_revision_backfill");
+	fixture
+		.migrate_excluding(&[("identity", name), backfill])
+		.await;
 	fixture.tenant_root("notice-upgrade").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let id = Uuid::new_v4();
@@ -1562,7 +1570,7 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 		sqlx::query_scalar(&notices).fetch_all(&pool).await.unwrap()
 	};
 
-	fixture.migrate().await;
+	fixture.migrate_excluding(&[backfill]).await;
 	assert_eq!(read_notices().await, vec![Some(sent_at)]);
 	let pending = Query::insert()
 		.into_table(Alias::new("budget_notices"))
@@ -2499,6 +2507,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5174,6 +5183,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
+	("identity", "0114_policy_revision_backfill"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5758,6 +5768,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5859,6 +5870,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5968,6 +5980,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6858,6 +6871,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
+			("identity", "0114_policy_revision_backfill"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
 			("execution", "0152_stint_leases"),
@@ -6936,7 +6950,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 /// renaming `schedule.create` in place (#1009 review).
 #[rstest]
 #[tokio::test]
-async fn default_member_policy_from_before_scratch_spaces_gains_every_later_grant(
+async fn default_member_policy_upgrade_preserves_authorization_history(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange: the history without 0067 and everything that follows it, and a
@@ -7003,7 +7017,12 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 		"resources": {"ids": [], "kinds": ["*"]},
 		"condition": null
 	});
-	let document = json!({"tenant": tenant, "subjects": {}, "policies": [members]});
+	let document = json!({
+		"tenant": tenant,
+		"groups": {"members": {}},
+		"subjects": {"alice": {"kind": "user", "groups": ["members"]}},
+		"policies": [members]
+	});
 	for sql in [
 		Query::insert()
 			.into_table(Alias::new("tenants"))
@@ -7023,19 +7042,102 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 			.values_panic::<_, reinhardt::query::Value>([
 				tenant.into(),
 				1_i64.into(),
-				document.into(),
+				document.clone().into(),
 			])
 			.to_string(PostgresQueryBuilder),
 	] {
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	sqlx::query(
+		"INSERT INTO authorization_revisions (tenant, revision, document, actor) VALUES ($1, 1, $2, 'fixture')",
+	)
+	.bind(tenant)
+	.bind(&document)
+	.execute(&pool)
+	.await
+	.unwrap();
+
 	// Act
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[("identity", "0114_policy_revision_backfill")])
+		.await;
+
+	let authorization = aidash_server::apps::identity::services::Authorization {
+		pool: pool.clone().into(),
+	};
+	let evaluate = async |tenant: &str| {
+		let input = serde_json::from_value(json!({
+			"subject": "alice",
+			"action": "registry.create",
+			"resource": {"tenant": tenant, "kind": "registry", "id": "fixture"}
+		}))
+		.unwrap();
+		authorization.evaluate(tenant, &input).await.unwrap()
+	};
+	let decision = evaluate(tenant).await;
+	assert!(decision.allowed);
+	assert_eq!(decision.revision, 6);
+	let revisions: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+		"SELECT revision, document FROM authorization_revisions WHERE tenant = $1 ORDER BY revision",
+	)
+	.bind(tenant)
+	.fetch_all(&pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		revisions
+			.iter()
+			.map(|(revision, _)| *revision)
+			.collect::<Vec<_>>(),
+		[1, 2, 3, 4, 5, 6]
+	);
+	let mut expected_actions = document["policies"][0]["actions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|action| action.as_str().unwrap())
+		.collect::<BTreeSet<_>>();
+	let changes: [(&[&str], &[&str]); 6] = [
+		(&[], &[]),
+		(&[], &["scratch.create"]),
+		(&[], &["schedule.create"]),
+		(&["schedule.create"], &["duty.create"]),
+		(&[], &["subnode.create"]),
+		(
+			&[
+				"workspace.create",
+				"workspace.events",
+				"workspace.read",
+				"workspace.share",
+				"workspace.update",
+			],
+			&[
+				"thread.create",
+				"thread.events",
+				"thread.read",
+				"thread.share",
+				"thread.update",
+			],
+		),
+	];
+	for ((revision, snapshot), (removed, added)) in revisions.iter().zip(changes) {
+		for action in removed {
+			expected_actions.remove(action);
+		}
+		expected_actions.extend(added.iter().copied());
+		let stored_actions = snapshot["policies"][0]["actions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|action| action.as_str().unwrap())
+			.collect::<BTreeSet<_>>();
+		assert_eq!(stored_actions, expected_actions, "revision {revision}");
+	}
 
 	// Assert: Scratch Spaces (0067), Duties (0080, renamed by 0098), Subnodes
 	// (0098) and the Thread actions (0111) are granted, and no old name is left.
-	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let document: serde_json::Value =
 		sqlx::query_scalar("SELECT document FROM authorization_bundles WHERE tenant = $1")
 			.bind(tenant)
@@ -7063,6 +7165,49 @@ async fn default_member_policy_from_before_scratch_spaces_gains_every_later_gran
 	for former in ["schedule.create", "workspace.create", "workspace.read"] {
 		assert!(!actions.contains(former), "{former}: {document}");
 	}
+	// A Tenant upgraded by the original migrations has a live document but
+	// no matching history row. Give it a gap whose old document is unknown.
+	let legacy_tenant = "member-policy-legacy-upgrade";
+	fixture.tenant_root(legacy_tenant).await;
+	let mut legacy_document = document;
+	legacy_document["tenant"] = json!(legacy_tenant);
+	sqlx::query(
+		"INSERT INTO authorization_bundles (tenant, revision, document) VALUES ($1, 6, $2)",
+	)
+	.bind(legacy_tenant)
+	.bind(&legacy_document)
+	.execute(&pool)
+	.await
+	.unwrap();
+
+	// Exercise the backfill's search path independently of the migration ledger.
+	let mut tx = pool.begin().await.unwrap();
+	sqlx::query("SET LOCAL search_path = pg_catalog")
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	let result = sqlx::raw_sql(include_str!(
+		"../../../../migrations/identity/sql/forward/0114_policy_revision_backfill.sql"
+	))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	assert_eq!(result.rows_affected(), 1);
+	tx.rollback().await.unwrap();
+
+	fixture.migrate().await;
+
+	let decision = evaluate(legacy_tenant).await;
+	assert!(decision.allowed);
+	assert_eq!(decision.revision, 6);
+	let repaired: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+		"SELECT revision, document FROM authorization_revisions WHERE tenant = $1 ORDER BY revision",
+	)
+	.bind(legacy_tenant)
+	.fetch_all(&pool)
+	.await
+	.unwrap();
+	assert_eq!(repaired, [(6, legacy_document)]);
 	pool.close().await;
 }
 
