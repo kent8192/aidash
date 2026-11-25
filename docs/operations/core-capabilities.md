@@ -89,6 +89,11 @@ reports `SESSION_RESET`; a subsequent call starts with a fresh kernel. The
 kernel also ends when the Run ends or its idle session expires. Each completed
 Journal read records its range for the offload loop guard.
 
+Before returning a cell's output, the server checks access to the exported
+Journal again. If access was withdrawn or the Journal generation changed, the server
+records the discard and invalidates the kernel before acknowledging the
+output. A later call resets the kernel even if access has since been restored.
+
 ## Execution Pods (runner/2)
 
 The v2 runtime is opt-in and exposes a separate `aidash-runner/2` control
@@ -105,6 +110,12 @@ Pod, including their saved output. Saved output counts against the Scratch Space
 disk; if the disk is full, the output is marked incomplete. Docker-mode commands
 become interrupted with an unknown outcome; they can still be stopped. A Runner update waits for
 foreground commands, then replaces Pods and stops their background processes.
+
+Scratch Space patches reserve their idempotency key before dispatch. The Pod
+helper records the result on the Scratch Space PVC. When the server retries a
+pending request, it looks up the original result and rechecks current authority
+before returning it. If the result is missing, the server reports
+`PATCH_RECEIPT_UNAVAILABLE` and leaves the file contents as found.
 
 A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
@@ -128,7 +139,11 @@ command records are retained for 24 hours and 15 minutes after completion; unset
 commands and stops awaiting confirmation are retained. Each Space is limited to
 4096 command records. At the limit, new commands are refused until records can
 expire, while retries of retained commands still return their prior results.
-Python interpreters are per Run.
+Python interpreters are per Run. Pass the last result's `session_id` as
+`expected_session_id` when a cell depends on that interpreter's state. If that
+interpreter has ended or its Pod was replaced, the Runner refuses the cell with
+`SESSION_RESET`. Omit the expected ID on a new operation to rebuild state and
+use the returned ID for subsequent cells.
 The Pod stops after 30 minutes without a command or Live preview viewer;
 background processes alone do not extend its life. Preview and MCP integration
 with the application remains for wave 2.
@@ -449,6 +464,15 @@ working-area routes. Revoking a file is not limited to its uploader: any subject
 the Tenant's policy grants `reference.delete` can revoke it, and one the policy
 refuses gets 404, as for a missing file. `GET /api/references/{id}/revocation`
 gives such a subject the revision and state to revoke with, never the content.
+For a Source version with bound Reference files, `GET /api/registry/versions`
+includes a `reference_revocations` list with each file's `may_revoke` flag and,
+when true, its current revision.
+For a Source visible on the selected Node, Source details read the same hints
+from `GET /api/registry/{id}/{version}/reference-revocations?node={node}`. This
+read uses the Source's Catalog Approval and the caller's `registry.read` on the
+Source. The Registry versions list requires its collection permission.
+The advisory flag comes from an unaudited policy check. The revoke request
+checks the current policy and the expected revision.
 Revoking one file refuses new Runs of every version that
 binds it, and the error names its path. A Run that already holds the set stops
 reading a revoked file too: `file_read` and the copy refuse it, `file_search`
@@ -515,10 +539,15 @@ other files are read on demand. Name collisions use distinct identities. Loading
 instructions does not execute scripts. Existing Registry Skills remain readable
 through their exact old identities and authority.
 
-Under the legacy Exposure policy, `skill_list`, `skill_load` and `skill_read`
-behave as before, and `skill_load` marks the Skill loaded in the Run's Skill
-record. Under `deferred@1`, those tools are not bound. Direct and Registry Skills
-become Discoverable capabilities with `skill_` Model aliases. The model finds them
+Under the legacy Exposure policy, `skill_list` lists the Run's pinned direct
+Skills. A Run with a Working Area and no direct Skill configuration gets an
+empty list. Registry Skill Bindings contribute instructions to the model
+request and use `skill_read` with the exact Registry identity for packaged
+files. For direct Skills, `skill_load` marks the Skill loaded in the Run's
+Skill record.
+
+Under `deferred@1`, direct and Registry Skills become Discoverable capabilities
+with `skill_` Model aliases. The model finds them
 with `capability_search` and loads their bodies with `capability_load`. A loaded
 body is resident in later requests within `skill_bytes`, and `capability_unload`
 removes it. The load state is kept only in the Run's `context.exposure`, never in

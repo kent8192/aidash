@@ -67,6 +67,9 @@ impl GenerationProvisioning for NativeProvisioning {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn reconcile_retirements(&self) -> aidash_application::Result<()> {
+		Ok(super::lifecycle::retirement_cleanup::reconcile(&self.runtime.store).await?)
+	}
 	async fn begin_read(&self) -> aidash_application::Result<Box<dyn GenerationProvisionRead>> {
 		let visibility = crate::transactions::gate::ReadLease::begin(&self.runtime.store).await?;
 		Ok(Box::new(Read {

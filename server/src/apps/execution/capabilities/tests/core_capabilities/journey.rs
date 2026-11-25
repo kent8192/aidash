@@ -150,7 +150,7 @@ async fn journey_fixture(
 	#[with(_provider.clone())]
 	_endpoint: EndpointFuture,
 	#[from(capability_fixture)]
-	#[with("aidash://journey",_endpoint.clone(),true)]
+	#[with("aidash://journey",_endpoint.clone(),FixtureRunner::Profile)]
 	_initial_core: CoreFuture,
 	#[from(journey_core)]
 	#[with(_initial_core.clone())]

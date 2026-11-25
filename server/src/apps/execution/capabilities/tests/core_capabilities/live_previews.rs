@@ -98,16 +98,27 @@ async fn live_preview_http_returns_unavailable_when_the_pool_times_out(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let pool = c.f.store.pool.driver();
-	let mut held = Vec::new();
-	for _ in 0..pool.options().get_max_connections() {
-		held.push(pool.acquire().await.unwrap());
-	}
+	// Keep the pool wait well below the application's HTTP deadline.
+	let pool =
+		c.f.store
+			.pool
+			.options()
+			.clone()
+			.max_connections(1)
+			.min_connections(0)
+			.acquire_timeout(std::time::Duration::from_secs(1))
+			.connect_with(c.f.store.pool.connect_options().as_ref().clone())
+			.await
+			.unwrap();
+	let mut federation = c.f.clone();
+	federation.store.pool = pool.clone().into();
+	let app = common::application_with_settings(federation, Default::default()).await;
+	let held = pool.acquire().await.unwrap();
 	let error = pool.acquire().await.err().unwrap();
 	assert!(matches!(error, sqlx::Error::PoolTimedOut));
 	let authorization = format!("Bearer {}", c.token);
 	let response = common::http_response(
-		&c.app,
+		&app,
 		"GET",
 		&format!("/api/executions/{}/live-preview", run.id),
 		&[("authorization", &authorization)],
@@ -117,6 +128,8 @@ async fn live_preview_http_returns_unavailable_when_the_pool_times_out(
 	assert_eq!(response.status_code(), 503);
 	assert_eq!(response.headers()[http::header::RETRY_AFTER], "1");
 	drop(held);
+	drop(app);
+	pool.close().await;
 }
 
 #[rstest::rstest]
@@ -340,18 +353,25 @@ async fn a_newer_revision_marks_a_running_preview_stale(#[future] capability_fix
 	assert_eq!(reason, None);
 }
 
-/// A Live preview start waits for the Runner while its Run is cancelled.
-/// The stub holds the Execution Pod's preview start until released, then
-/// answers with the address the preview serves on (#745).
+/// Exercise cleanup when the Runner starts a preview after cancellation or
+/// returns an error after receiving the start request.
 #[rstest::rstest]
-#[case::stop_confirmed(false)]
-#[case::stop_retry_after_earlier_proof(true)]
+#[case::stop_confirmed(Some(false))]
+#[case::stop_retry_after_earlier_proof(Some(true))]
+#[case::stop_retry_after_failed_start(None)]
 #[tokio::test]
-async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelled(
+async fn live_preview_start_requires_termination_proof_after_cancel_or_failure(
 	#[future] capability_fixture: CoreFixture,
-	#[case] fail_cancel: bool,
+	#[case] earlier_stop_proof: Option<bool>,
 ) {
 	use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+	let failed_start = earlier_stop_proof.is_none();
+	let fail_cancel = earlier_stop_proof != Some(false);
+	let reason = if failed_start {
+		"start_failed"
+	} else {
+		"run_cancelled"
+	};
 	let case = "M6 Live preview start racing the cancel";
 	let note =
 		|what: &str, value: &dyn std::fmt::Debug| eprintln!("#781 {case} | {what} | {value:?}");
@@ -379,6 +399,11 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 					// The Runner answers once the port accepts connections.
 					while !released.load(Ordering::SeqCst) {
 						tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+					}
+					if failed_start {
+						return Ok(reinhardt::Response::new(
+							http::StatusCode::INTERNAL_SERVER_ERROR,
+						));
 					}
 					Ok(reinhardt::Response::ok()
 						.with_json(&json!({"operation_id":"preview","address":"10.0.0.9:3000"}))
@@ -447,41 +472,65 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 			.await
 			.unwrap();
 	note("row while the start waits for the Runner", &row);
-	let (status, body) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/executions/{}/control", run.id),
-		json!({"action":"cancel"}),
-	)
-	.await;
-	assert_eq!(status, 200, "cancel: {body}");
-	note("cancel status", &(status, &body["control"]));
-	note(
-		"row after the cancel (state, stop_reason, confirmed)",
-		&live_row(&c, row.0).await,
-	);
-	if fail_cancel {
-		// A prior sweep confirmed termination before this late running reply.
-		sqlx::query("UPDATE core_live_previews SET termination_confirmed = true WHERE id = $1")
-			.bind(row.0)
-			.execute(c.f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+	if let Some(earlier_stop_proof) = earlier_stop_proof {
+		let (status, body) = request(
+			&c.app,
+			&c.token,
+			"POST",
+			&format!("/api/executions/{}/control", run.id),
+			json!({"action":"cancel"}),
+		)
+		.await;
+		assert_eq!(status, 200, "cancel: {body}");
+		note("cancel status", &(status, &body["control"]));
+		note(
+			"row after the cancel (state, stop_reason, confirmed)",
+			&live_row(&c, row.0).await,
+		);
+		if earlier_stop_proof {
+			// A prior sweep confirmed termination before this late running reply.
+			sqlx::query("UPDATE core_live_previews SET termination_confirmed = true WHERE id = $1")
+				.bind(row.0)
+				.execute(c.f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		}
 	}
 	released.store(true, Ordering::SeqCst);
 	let started = start.await.unwrap();
 	let result = started.as_ref().expect("start result");
 	assert_eq!(result["status"]["state"], "stopped");
-	assert_eq!(result["status"]["stop_reason"], "run_cancelled");
+	assert_eq!(result["status"]["stop_reason"], reason);
 	assert_eq!(
 		live_row(&c, row.0).await,
 		(
 			String::from("stopped"),
-			Some(String::from("run_cancelled")),
+			Some(reason.to_owned()),
 			!fail_cancel
 		)
 	);
+	if failed_start {
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let hold: bool = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new("core_retention_holds"))
+						.and_where(Expr::col("holder_kind").eq("live_preview"))
+						.and_where(Expr::col("holder_id").eq(row.0.to_string()))
+						.to_owned(),
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(
+			hold,
+			"the revision stays retained until the Runner confirms the stop"
+		);
+	}
 	note(
 		"live_preview_start result",
 		&started
@@ -539,7 +588,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		"Runner must be cancelled"
 	);
 	assert_eq!(body["live_preview"]["state"], "stopped");
-	assert_eq!(body["live_preview"]["stop_reason"], "run_cancelled");
+	assert_eq!(body["live_preview"]["stop_reason"], reason);
 	note("rows of the cancelled Run not stopped", &holds);
 	drop(runner);
 	c.close().await;

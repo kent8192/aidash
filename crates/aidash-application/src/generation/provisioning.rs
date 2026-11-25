@@ -159,6 +159,15 @@ pub async fn reconcile(
 	repository: &dyn GenerationProvisioning,
 	validation: &DefinitionValidation,
 ) -> Result<usize> {
+	let jobs = reconcile_jobs(repository, validation).await;
+	let retirements = repository.reconcile_retirements().await;
+	jobs.and_then(|count| retirements.map(|()| count))
+}
+
+async fn reconcile_jobs(
+	repository: &dyn GenerationProvisioning,
+	validation: &DefinitionValidation,
+) -> Result<usize> {
 	next_pass_if_busy(repository.dispatch_remote().await)?;
 	next_pass_if_busy(repository.reconcile_foreign().await)?;
 	let mut visibility = repository.begin_read().await?;

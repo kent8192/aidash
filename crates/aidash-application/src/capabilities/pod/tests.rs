@@ -5,7 +5,7 @@ use crate::ports::capabilities::execution_pod::{
 	FilePatchResult, FileReadRequest, FileSearchRequest, FileSearchResult, FileWriteRequest,
 	FileWriteResult, LogChunk, LogRequest, ManifestFile, McpCallRequest, McpCallResult, McpSession,
 	McpStartRequest, PodReceipt, PreviewStartRequest, PreviewTarget, PythonSession,
-	Result as PodResult,
+	PythonStartRequest, Result as PodResult,
 };
 use std::{
 	collections::VecDeque,
@@ -17,7 +17,6 @@ use std::{
 pub(crate) struct Runtime {
 	pub(crate) calls: Mutex<Vec<String>>,
 	pub(crate) requests: Mutex<Vec<CommandRequest>>,
-	pub(crate) starts: Mutex<Vec<PythonStartRequest>>,
 	pub(crate) replies: Mutex<VecDeque<PodResult<CommandResult>>>,
 	pub(crate) ensure_error: Mutex<Option<ExecutionPodError>>,
 	/// Scratch Space files by path, which file reads, writes and manifests use.
@@ -137,7 +136,6 @@ impl ExecutionPodRuntime for Runtime {
 	}
 	async fn python_start(&self, request: &PythonStartRequest) -> PodResult<PythonSession> {
 		self.call("python_start");
-		self.starts.lock().unwrap().push(request.clone());
 		Ok(PythonSession {
 			operation_id: "session".into(),
 			scratch_space_id: request.scratch_space_id.clone(),
@@ -381,6 +379,8 @@ pub(crate) fn reply(status: &str) -> CommandResult {
 		error_code: None,
 		message: None,
 		python_result: None,
+		pod_uid: None,
+		session_id: None,
 		left_running: None,
 		session_replaced: None,
 	}
@@ -579,17 +579,46 @@ async fn a_pod_that_cannot_start_fails_the_command_before_it_is_sent() {
 }
 
 #[tokio::test]
-async fn a_python_cell_starts_the_session_with_the_run_credential_first() {
+async fn a_python_cell_carries_the_run_credential_and_returns_its_session() {
 	let (repository, runtime) = repository(operation(PYTHON, "prepared"));
-	runtime.reply(Ok(reply("queued")));
+	let session_id = Uuid::from_u128(12);
+	let mut accepted = reply("queued");
+	accepted.session_id = Some(session_id);
+	runtime.reply(Ok(accepted));
 	drive(&repository, Uuid::from_u128(7)).await.unwrap();
-	assert_eq!(runtime.calls(), ["ensure", "python_start", "python_cell"]);
-	let start = runtime.starts.lock().unwrap()[0].clone();
+	assert_eq!(runtime.calls(), ["ensure", "python_cell"]);
+	let request = runtime.requests.lock().unwrap()[0].clone();
 	assert_eq!(
-		start.proxy_credential,
+		request.proxy_credential,
 		Some(EgressCredential("run-credential".into()))
 	);
-	assert_eq!(start.run_id, Uuid::from_u128(9).to_string());
+	assert_eq!(request.run_id, Uuid::from_u128(9).to_string());
+	assert_eq!(
+		repository.operation.lock().unwrap().result["session_id"],
+		json!(session_id)
+	);
+}
+
+#[tokio::test]
+async fn a_stale_python_cell_reports_reset_without_effects() {
+	let mut operation = operation(PYTHON, "prepared");
+	let expected = Uuid::from_u128(12);
+	operation.input["expected_session_id"] = json!(expected);
+	let (repository, runtime) = repository(operation);
+	runtime.reply(Err(ExecutionPodError::Remote {
+		code: ExecutionPodErrorCode::SessionReset,
+		message: "Rebuild the Python session before retrying.".into(),
+	}));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	let saved = repository.operation.lock().unwrap();
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.result["error"]["code"], "SESSION_RESET");
+	assert_eq!(saved.result["effects_may_have_occurred"], false);
+	assert_eq!(saved.result["session_reset"], true);
+	assert_eq!(
+		serde_json::to_value(&runtime.requests.lock().unwrap()[0]).unwrap()["expected_session_id"],
+		json!(expected)
+	);
 }
 
 #[tokio::test]

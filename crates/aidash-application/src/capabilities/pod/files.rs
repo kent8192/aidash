@@ -189,14 +189,22 @@ fn glob_matcher(glob: &str) -> Result<regex::Regex> {
 		.map_err(|_| Error::Invalid("INVALID_GLOB".into()))
 }
 
-/// Apply a patch to the Scratch Space, all or nothing.
-pub async fn patch(context: &PodContext, run_id: &str, patch: String) -> Result<Value> {
+/// Apply a claimed Scratch patch or look up the receipt of an earlier dispatch.
+pub async fn patch(
+	context: &PodContext,
+	run_id: &str,
+	patch: String,
+	claim_id: uuid::Uuid,
+	apply: bool,
+) -> Result<Value> {
 	// Every path the patch names is checked here as well as by the Runner: a
 	// patch that names one outside the Scratch Space is refused whole.
 	aidash_domain::capabilities::patch::parse(&patch)?;
 	let request = FilePatchRequest {
 		scratch_space_id: context.scratch_space_id().to_owned(),
 		run_id: run_id.to_owned(),
+		claim_id,
+		apply,
 		patch,
 	};
 	let result = in_pod!(context, context.runtime.file_patch(&request))?;

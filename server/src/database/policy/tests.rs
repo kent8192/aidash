@@ -102,6 +102,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"identity.0111_thread_member_policy backward",
 	"identity.0111_thread_member_policy forward",
 	"identity.0113_budget_notice_delivery backward",
+	"identity.0114_policy_revision_backfill forward",
 	"registry.0054_remove_agent_cluster forward",
 	"registry.0070_remove_package_index_draft_bindings forward",
 	"registry.0072_remove_agent_external_service_draft_bindings forward",
@@ -111,6 +112,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"workspaces.0033_duty_checks backward",
 	"workspaces.0033_duty_checks forward",
 	"workspaces.0049_threads backward",
+	"workspaces.0067_task_duty_start backward",
+	"workspaces.0067_task_duty_start forward",
 ];
 
 #[rstest::rstest]

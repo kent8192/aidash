@@ -133,27 +133,19 @@ impl HomeScope for Scope {
 			.map(|r| r.map(Into::into))
 			.map_err(Into::into)
 	}
-	async fn control_task(&mut self, id: Uuid) -> Result<Option<Task>> {
-		let result: NativeResult<Option<Task>> = async {
-			let access = &mut *self.access;
-			Ok({
-				let query_bind_1 = id;
-				aidash_server::database::query_as(
-					&Query::select()
-						.column(Asterisk)
-						.from(Alias::new("tasks"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id=?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **access.tx)
-				.await?
-			})
+	async fn control_task(&mut self, id: Uuid, lock: bool) -> Result<Option<Task>> {
+		let mut select = Query::select();
+		select
+			.column(Asterisk)
+			.from(Alias::new("tasks"))
+			.and_where(Expr::col("id").eq(Expr::value(id)));
+		if lock {
+			select.lock(LockType::Update);
 		}
-		.await;
-		result.map_err(Into::into)
+		crate::database::query_as(&select.to_string(PostgresQueryBuilder))
+			.fetch_optional(&mut **self.access.tx)
+			.await
+			.map_err(Into::into)
 	}
 	async fn human_requests(
 		&mut self,

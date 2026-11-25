@@ -4,6 +4,12 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 async fn journal_proof(store: &Store, thread: Uuid) -> Evidence {
+	journal_proof_with_bank(store, thread).await.0
+}
+
+/// A completed Run's one-entry Journal range, and the empty participant bank
+/// of Agent "a" that recorded it.
+pub(super) async fn journal_proof_with_bank(store: &Store, thread: Uuid) -> (Evidence, Bank) {
 	let participant = memory::create_participant(
 		store,
 		&administrator(store).await,
@@ -39,11 +45,14 @@ async fn journal_proof(store: &Store, thread: Uuid) -> Evidence {
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	Evidence::JournalRange {
-		run_id: run,
-		from_seq: 1,
-		through_seq: 1,
-	}
+	(
+		Evidence::JournalRange {
+			run_id: run,
+			from_seq: 1,
+			through_seq: 1,
+		},
+		participant.bank,
+	)
 }
 
 #[rstest]
@@ -952,6 +961,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,
+			acknowledge_memory_embeddings: false,
 			spec,
 		},
 	)

@@ -1,24 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { build } from "esbuild";
-import { createRequire } from "node:module";
+import { bundleForTest } from "./bundle-for-test.mjs";
 
-const result = await build({
-  entryPoints: [
-    new URL("./run-management-render.tsx", import.meta.url).pathname,
-  ],
-  bundle: true,
-  platform: "node",
-  format: "cjs",
-  write: false,
-});
-const module = { exports: {} };
-new Function("require", "module", "exports", result.outputFiles[0].text)(
-  createRequire(import.meta.url),
-  module,
-  module.exports,
+const { renderManagement, renderOutageWait } = await bundleForTest(
+  import.meta.url,
+  {
+    entryPoints: [
+      new URL("./run-management-render.tsx", import.meta.url).pathname,
+    ],
+  },
 );
-const { renderManagement } = module.exports;
 
 test("a decline-only holder sees no Run controls", () => {
   for (const control of ["ACTIVE", "PAUSED"]) {
@@ -28,4 +19,11 @@ test("a decline-only holder sees no Run controls", () => {
   assert.match(renderManagement("PAUSED", false), /Decline this call/);
   assert.match(renderManagement("ACTIVE", true), />Pause<\/button>/);
   assert.match(renderManagement("ACTIVE", true), />Cancel execution<\/button>/);
+});
+
+test("Outage Wait facts disappear when a waiting Run is paused", () => {
+  const active = renderOutageWait("ACTIVE");
+  assert.match(active, /Outage Wait: Decider/);
+  assert.match(active, /Next try/);
+  assert.equal(renderOutageWait("PAUSED"), "");
 });

@@ -265,9 +265,15 @@ function WaitingForAnswer({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  const [cursors, setCursors] = useState<string[]>([""]);
+  const cursor = cursors.at(-1);
   const asks = useQuery({
-    queryKey: ["tool-asks", tenant, node, sourceNode],
-    queryFn: () => apiFetch<ToolAsks>(path),
+    queryKey: ["tool-asks", tenant, node, sourceNode, cursor],
+    queryFn: ({ signal }) =>
+      apiFetch<ToolAsks>(
+        cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
+        { signal },
+      ),
     refetchInterval: 10000,
   });
   const answer = async (ask: ToolAsk, choice: ToolAskChoice) => {
@@ -298,6 +304,7 @@ function WaitingForAnswer({
     }
   };
   const rows = asks.isError ? undefined : asks.data?.asks;
+  const next = asks.data?.next_cursor;
   return (
     <div className="col-span-full grid gap-2" data-tool-asks={sourceNode}>
       <span className="text-xs font-medium text-foreground">
@@ -311,7 +318,9 @@ function WaitingForAnswer({
       )}
       {asks.isPending && <Loading />}
       {rows?.length === 0 && (
-        <p className="text-xs text-muted-foreground">{t("toolAsksNone")}</p>
+        <p className="text-xs text-muted-foreground">
+          {t(next || cursor ? "toolAsksPageNone" : "toolAsksNone")}
+        </p>
       )}
       {rows?.map((ask) => (
         <div
@@ -370,6 +379,21 @@ function WaitingForAnswer({
           </div>
         </div>
       ))}
+      {(next || cursor) && (
+        <Pager
+          page={cursors.length}
+          previous={{
+            disabled: !cursor || !!busy,
+            go: () => setCursors(cursors.slice(0, -1)),
+          }}
+          next={{
+            disabled: !next || !!busy || asks.isError,
+            go: () => {
+              if (next) setCursors([...cursors, next]);
+            },
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -432,6 +456,7 @@ function FederationTools({
         )}
         {editable && open && (
           <WaitingForAnswer
+            key={tenant}
             tenant={tenant}
             node={node}
             sourceNode={row.source_node}

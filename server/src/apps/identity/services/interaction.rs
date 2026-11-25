@@ -116,13 +116,9 @@ impl Access {
 	/// its admission's (#989); see [`aidash_application::authorization::threads::run_for_action`].
 	pub(crate) async fn run_for_action(&mut self, id: Uuid) -> Result<Run> {
 		let run = self.run_for_reads(id).await?;
-		if crate::apps::identity::repositories::execution::guard::use_block(
-			self,
-			&run.metadata(),
-			false,
-		)
-		.await?
-		.is_some()
+		if crate::apps::identity::repositories::execution::guard::action_use_block(self, &run)
+			.await?
+			.is_some()
 		{
 			return Err(crate::Error::Forbidden);
 		}

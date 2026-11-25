@@ -1,6 +1,7 @@
 //! Canonical built-in memory definitions. The bank holds at most 64 live units;
 //! retained identities and model operations are bounded to 4096 records each.
 //! History and model results expire after 30 days, backups after seven days.
+//! It searches by meaning only with its Thread index's embedding (#1123).
 use super::*;
 use crate::{context::source::*, memory::*};
 
@@ -121,6 +122,7 @@ pub fn definitions() -> Result<Vec<Entry>> {
 		learn_from_runs: true,
 		maintain_observations: true,
 		refresh_mental_models: false,
+		thread_index_embedding: true,
 	};
 	policy.validate()?;
 	let provider = ProviderConfig {

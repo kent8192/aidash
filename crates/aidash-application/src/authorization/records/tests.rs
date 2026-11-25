@@ -49,6 +49,7 @@ fn scope() -> Scope {
 			created_by: "saved-author".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 3,
 			created_at: now,
 		},

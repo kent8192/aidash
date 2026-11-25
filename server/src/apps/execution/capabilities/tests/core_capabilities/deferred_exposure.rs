@@ -1274,6 +1274,72 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn legacy_registry_skill_binding_does_not_require_mounted_skills(
+	#[future] scripted_core: Deferred,
+) {
+	let d = scripted_core.await;
+	register_approved(
+		&d.c,
+		json!({
+			"id": "guide-skill",
+			"version": "1.0.0",
+			"kind": "skill",
+			"name": {"en": "Release guide"},
+			"description": {"en": "Prepare release notes from a checklist"},
+			"schema": {},
+			"config": {"instructions": GUIDE_BODY}
+		}),
+	)
+	.await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut agent =
+		d.c.f
+			.registry
+			.get(&tenant, "research", "1.1.0")
+			.await
+			.unwrap();
+	agent.version = LEGACY.into();
+	agent.binding_normalization = None;
+	agent.config["bindings"] = json!([{
+		"kind": "skill",
+		"target": {
+			"registry_deployment": d.c.f.config.deployment,
+			"id": "guide-skill",
+			"version": "1.0.0"
+		},
+		"narrow": {}
+	}]);
+	register_approved(&d.c, json!(agent)).await;
+	let mut policy = d.c.policy.clone();
+	let node = aidash_domain::nodes::NodeAddress::derived(d.c.f.config.deployment.as_str(), "acme");
+	policy["subjects"][aidash_server::domain::qualified_agent(&node, "research", LEGACY)] =
+		json!({"kind":"agent","node":aidash_domain::nodes::NodeName::derived("acme")});
+	common::replace_policy(&d.c.f.store, "acme", policy).await;
+	d.script(|_, context| {
+		if results(context, "skill_list").is_empty() {
+			Reply::Call("skill_list", json!({}))
+		} else {
+			Reply::Text("Read the release guide.")
+		}
+	});
+	let run = d.delegate(d.c.task, LEGACY).await;
+	let finished = d.drive(run.id).await;
+	let requests = d.requests().await;
+	d.close().await;
+
+	completed(&finished);
+	assert!(instructions(&requests[0]).contains(GUIDE_BODY));
+	let context = durable(&finished);
+	let list = results(&context, "skill_list");
+	assert_eq!(list.len(), 1, "{context}");
+	assert_eq!(list[0]["status"], "completed", "{}", list[0]);
+	assert_eq!(list[0]["skills"], json!([]));
+	assert_eq!(list[0]["next_cursor"], Value::Null);
+	assert_eq!(list[0]["truncated"], false);
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn legacy_agent_beside_deferred_keeps_legacy_tools_and_skill_record(
 	#[future] deferred_fixture: Deferred,
 ) {

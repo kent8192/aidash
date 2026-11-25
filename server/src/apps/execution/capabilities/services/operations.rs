@@ -39,12 +39,34 @@ pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> 
 			&repository,
 			stopping.clone()
 		)),
+		Box::pin(read_recheck_maintenance(&store, stopping.clone())),
 		Box::pin(jobs.network(stopping.clone())),
 		Box::pin(jobs.references(stopping.clone())),
 		Box::pin(jobs.cleanup(stopping.clone())),
 		Box::pin(jobs.reclamation(stopping)),
 	)
 	.map_err(crate::Error::from)?;
+	Ok(())
+}
+
+pub(crate) async fn read_recheck_maintenance(
+	store: &Store,
+	mut stopping: tokio::sync::watch::Receiver<bool>,
+) -> aidash_application::Result<()> {
+	let repository = crate::bootstrap::operation_processing_repository(store);
+	let mut passes = aidash_runtime::background::Passes::new(
+		"capabilities.read_recheck_maintenance",
+		aidash_application::capabilities::read_recheck::PERIOD,
+	);
+	while !*stopping.borrow() {
+		// Each acknowledgement is durable, so an interrupted pass can start
+		// again from the database on restart.
+		tokio::select! {
+			_ = stopping.changed() => break,
+			() = passes.run(repository.maintain_read_recheck_targets()) => {}
+		}
+		passes.pause(&mut stopping).await;
+	}
 	Ok(())
 }
 
@@ -91,21 +113,26 @@ pub(crate) async fn prepare_pod(
 	kind: &str,
 	scratch_space_id: &str,
 ) -> Result<Value> {
-	let request: aidash_domain::capabilities::operations::ShellRequest =
-		if kind == aidash_application::capabilities::pod::PYTHON {
-			let python: super::python::Python = serde_json::from_value(input)
-				.map_err(|error| crate::Error::Invalid(error.to_string()))?;
+	let (request, expected_session_id) = if kind == aidash_application::capabilities::pod::PYTHON {
+		let python: super::python::Python = serde_json::from_value(input)
+			.map_err(|error| crate::Error::Invalid(error.to_string()))?;
+		(
 			aidash_domain::capabilities::operations::ShellRequest {
 				idempotency_key: python.idempotency_key,
 				command: python.code,
 				timeout_seconds: python.timeout_seconds,
 				expected_revision: python.expected_revision,
-			}
-		} else {
+			},
+			python.expected_session_id,
+		)
+	} else {
+		(
 			serde_json::from_value::<Shell>(input)
 				.map_err(|error| crate::Error::Invalid(error.to_string()))?
-				.into()
-		};
+				.into(),
+			None,
+		)
+	};
 	crate::apps::execution::repositories::node_cancellations::require_area_open(
 		&mut **access.tx,
 		area.id,
@@ -115,6 +142,7 @@ pub(crate) async fn prepare_pod(
 		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
 		&run.metadata(),
 		request,
+		expected_session_id,
 		kind,
 		scratch_space_id,
 	)

@@ -359,16 +359,30 @@ fn only_the_requester_edits_and_resumes_their_duty() {
 	assert!(permit(person("bob", false), standing(None, None), Change::Pause).is_err());
 	assert!(permit(person("admin", true), standing(None, None), Change::Pause).is_ok());
 	assert!(permit(person("admin", true), standing(None, None), Change::Delete).is_ok());
-	assert_eq!(
-		resumption(person("alice", false), standing(Some(Halt::Failures), None)).unwrap(),
-		Resumption::Requester
+	assert!(
+		permit(
+			person("alice", false),
+			standing(Some(Halt::Failures), None),
+			Change::Resume
+		)
+		.is_ok()
 	);
-	assert!(resumption(person("admin", true), standing(Some(Halt::Paused), None)).is_err());
-	assert!(resumption(person("alice", false), standing(None, None)).is_err());
+	assert!(
+		permit(
+			person("admin", true),
+			standing(Some(Halt::Paused), None),
+			Change::Resume
+		)
+		.is_err()
+	);
+	assert!(matches!(
+		permit(person("alice", false), standing(None, None), Change::Resume),
+		Err(Error::Conflict(_))
+	));
 }
 
 #[rstest]
-fn a_duty_whose_requester_left_runs_again_only_as_its_successors_own() {
+fn a_duty_whose_requester_left_is_taken_over_only_by_its_named_successor() {
 	// Arrange
 	let waiting = standing(Some(Halt::RequesterLeft), Some("carol"));
 	// Act + Assert
@@ -396,12 +410,20 @@ fn a_duty_whose_requester_left_runs_again_only_as_its_successors_own() {
 		)
 		.is_err()
 	);
-	assert_eq!(
-		resumption(person("carol", false), waiting).unwrap(),
-		Resumption::Successor
+	assert!(permit(person("carol", false), waiting, Change::TakeOver).is_ok());
+	assert!(permit(person("admin", true), waiting, Change::TakeOver).is_err());
+	assert!(permit(person("alice", false), waiting, Change::TakeOver).is_err());
+	assert!(
+		permit(
+			person("carol", false),
+			standing(Some(Halt::Paused), Some("carol")),
+			Change::TakeOver
+		)
+		.is_err()
 	);
-	assert!(resumption(person("admin", true), waiting).is_err());
-	assert!(resumption(person("alice", false), waiting).is_err());
+	// Resuming never takes a Duty over (ADR 0145).
+	assert!(permit(person("carol", false), waiting, Change::Resume).is_err());
+	assert!(permit(person("alice", false), waiting, Change::Resume).is_err());
 	assert!(permit(person("alice", false), waiting, Change::Edit).is_err());
 }
 

@@ -35,6 +35,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 		thread.id,
 		ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec,
 		},
 	)
@@ -172,6 +173,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 		thread.id,
 		ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec: spec.clone(),
 		},
 	)
@@ -209,6 +211,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 		thread.id,
 		ConfigureIndex {
 			expected_revision: 1,
+			acknowledge_memory_embeddings: false,
 			spec: spec.clone(),
 		},
 	)
@@ -234,6 +237,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 		thread.id,
 		ConfigureIndex {
 			expected_revision: 1,
+			acknowledge_memory_embeddings: false,
 			spec,
 		},
 	)
@@ -264,6 +268,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		thread.id,
 		ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec: spec.clone(),
 		},
 	)
@@ -279,6 +284,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 			thread.id,
 			ConfigureIndex {
 				expected_revision: 1,
+				acknowledge_memory_embeddings: false,
 				spec
 			}
 		),

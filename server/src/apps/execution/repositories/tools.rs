@@ -174,7 +174,7 @@ impl ToolOperations for Operations {
 			.map_err(Into::into);
 		}
 		crate::apps::workspaces::services::duties::agent_tool(
-			&self.0.store,
+			&self.0.home.federation,
 			&self.0.run,
 			key,
 			operation,
@@ -665,7 +665,9 @@ impl ToolOperations for Operations {
 		for name in aidash_domain::subnodes::COORDINATION_TOOLS {
 			specifications.insert(
 				(*name).to_owned(),
-				providers.coordination_tool(name)?.specification(),
+				providers
+					.coordination_tool(&self.0.run, name)?
+					.specification(),
 			);
 		}
 		Ok(specifications)

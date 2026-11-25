@@ -53,8 +53,8 @@ pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	}))
 }
 
-/// [`entry`] for the call of `tool`: a policy denial is [`policy_refusal`], so it is not
-/// reported as a Catalog Approval refusal.
+/// [`entry`] for the call of `tool`. A policy denial becomes [`policy_refusal`].
+/// A caller with its own lease can correct an unregistered reference from `NotFound`.
 pub async fn tool_entry(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
@@ -144,7 +144,10 @@ async fn current_definition(
 ) -> Result<Entry> {
 	let document = match scope.document(reference).await? {
 		Some(document) => document,
-		None if !scope.inherited_lease() && !scope.registered(reference).await? => {
+		None if tool.is_some()
+			&& !scope.inherited_lease()
+			&& !scope.registered(reference).await? =>
+		{
 			return Err(Error::NotFound(format!(
 				"registry entry {}@{} was not found",
 				reference.id, reference.version

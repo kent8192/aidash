@@ -38,6 +38,10 @@ pub struct IndexSpec {
 #[serde(deny_unknown_fields)]
 pub struct ConfigureIndex {
 	pub expected_revision: i64,
+	/// Confirms that disabling the index or changing its embedding deletes or
+	/// recomputes the embeddings of this Thread's Built-in Memory facts (#1123).
+	#[serde(default)]
+	pub acknowledge_memory_embeddings: bool,
 	pub spec: IndexSpec,
 }
 

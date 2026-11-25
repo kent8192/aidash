@@ -3,9 +3,7 @@
 //! `schedule.administer` become `duty.create` and `duty.administer`
 //! everywhere, and the unchanged default member policy gains
 //! `subnode.create`. A policy someone edited keeps what they chose.
-use reinhardt::query::{
-	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
-};
+use reinhardt::query::{Alias, Expr, ExprTrait, Query, SimpleExpr};
 
 const RENAMES: [(&str, &str); 2] = [
 	("schedule.create", "duty.create"),
@@ -28,7 +26,8 @@ fn rename(from_to: impl Fn((&str, &str)) -> (String, String)) -> String {
 		matched.push("document::text LIKE ?".to_owned());
 		any.push(Expr::value(format!("%\"{from}\"%")).into());
 	}
-	Query::update()
+	let mut update = Query::update();
+	update
 		.table(Alias::new("authorization_bundles"))
 		.value_expr(
 			Alias::new("document"),
@@ -39,8 +38,11 @@ fn rename(from_to: impl Fn((&str, &str)) -> (String, String)) -> String {
 		.and_where(SimpleExpr::CustomWithExpr(
 			format!("({})", matched.join(" OR ")),
 			any,
-		))
-		.to_string(PostgresQueryBuilder)
+		));
+	super::policy_revision_backfill::record_update(
+		&mut update,
+		"migration:identity/0098_duty_member_policy",
+	)
 }
 
 fn subnode_member_policy() -> String {
@@ -75,13 +77,17 @@ fn subnode_member_policy() -> String {
 		"EXISTS (SELECT 1 FROM jsonb_array_elements(document->'policies') AS p(entry) WHERE entry @> ?::jsonb AND ?::jsonb @> entry)".into(),
 		vec![Expr::value(previous.clone()).into(), Expr::value(previous).into()],
 	);
-	Query::update()
+	let mut update = Query::update();
+	update
 		.table(Alias::new("authorization_bundles"))
 		.value_expr(Alias::new("document"), policies)
 		.value_expr(Alias::new("revision"), Expr::col("revision").add(1))
 		.value_expr(Alias::new("updated_at"), Expr::cust("CURRENT_TIMESTAMP"))
-		.and_where(matches_default)
-		.to_string(PostgresQueryBuilder)
+		.and_where(matches_default);
+	super::policy_revision_backfill::record_update(
+		&mut update,
+		"migration:identity/0098_duty_member_policy",
+	)
 }
 
 pub(crate) fn forward() -> String {

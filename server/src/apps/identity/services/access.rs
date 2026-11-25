@@ -1171,6 +1171,14 @@ impl Access {
 			.await
 			.map(|verdict| verdict == Verdict::Allowed)
 	}
+
+	/// Evaluate a display hint with the current authority and no decision audit.
+	pub(crate) async fn decide_hint(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		let audit = std::mem::replace(&mut self.audit, false);
+		let result = self.decide(resource, action).await;
+		self.audit = audit;
+		result
+	}
 	/// [`Self::decide`], and whether a refusal comes from the Subnode read-only rule rather than
 	/// from the Tenant's policy. The rule is structural: no change of policy lifts it.
 	async fn decide_with_cause(&mut self, resource: &Resource, action: &str) -> Result<Verdict> {
@@ -1268,6 +1276,7 @@ impl Access {
 			"revision": self.snapshot.revision,
 			"subjects": self.subjects,
 			"environment": self.environment,
+			"audit": self.audit,
 			"action": action,
 			"resource": resource,
 		})
@@ -1573,6 +1582,47 @@ impl Access {
 		refusal_note::set(
 			refusal_note::Note::new(RefusalCheck::Policy, Some(action)).subject(subject.cloned()),
 		);
+	}
+
+	/// Compare the refusals of a paused Run across automatic resume attempts.
+	/// Canonicalize their order because the order of independent reads can vary.
+	pub(crate) fn suspension_resume_refusal(&self, epoch: u64, refusal: &Error) -> String {
+		let deny_rules: std::collections::BTreeSet<_> = self
+			.snapshot
+			.bundle
+			.policies
+			.iter()
+			.filter(|policy| policy.effect == aidash_domain::policy::Effect::Deny)
+			.map(|policy| &policy.id)
+			.collect();
+		let mut decisions: Vec<_> = self
+			.pending_decisions
+			.iter()
+			.filter(|row| !row.decision.allowed)
+			.map(|row| {
+				let matched_denies: Vec<_> = row
+					.decision
+					.matched_policies
+					.iter()
+					.filter(|id| deny_rules.contains(id))
+					.collect();
+				crate::registry::digest(&json!([
+					row.input.subject,
+					row.input.action,
+					row.input.resource.kind,
+					row.input.resource.id,
+					row.decision.reason,
+					matched_denies,
+				]))
+			})
+			.collect();
+		decisions.sort_unstable();
+		decisions.dedup();
+		crate::registry::digest(&json!([epoch, format!("{refusal:?}"), decisions]))
+	}
+
+	pub(crate) fn discard_pending_decisions(&mut self) {
+		self.pending_decisions.clear();
 	}
 
 	pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {

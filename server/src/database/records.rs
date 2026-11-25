@@ -57,6 +57,7 @@ record!(
 		created_by,
 		dependencies,
 		parent_id,
+		started_by_duty,
 		revision,
 		created_at
 	},

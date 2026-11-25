@@ -1,7 +1,7 @@
 //! Rolling deployment and rollback: a Run whose persisted state needs a capability
 //! is only claimed by workers that advertise it, but any worker finishes its cancellation.
 use super::*;
-use aidash_domain::run_state::encode;
+use aidash_domain::run_state::{OutageTracking, encode};
 
 const OLD_WORKER: &[PersistedCapability] = &[];
 const NEW_WORKER: &[PersistedCapability] = PersistedCapability::ALL;
@@ -74,6 +74,35 @@ async fn an_old_worker_leaves_a_gated_run_untouched_until_a_capable_one_claims_i
 	// Assert: the capable worker resumes it exactly once.
 	assert_eq!(claimed.revision, 8);
 	assert!(claimed.lease_owner.is_some());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_resumed_outage_is_claimed_only_by_workers_that_can_read_its_retry_state(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let mut row = raw(now);
+	let mut run = row.decode().unwrap();
+	run.recovery.outage = Some(OutageTracking {
+		service: "Native memory".into(),
+		started_at: now - chrono::Duration::minutes(5),
+		short_retries_exhausted: true,
+	});
+	row.pending = run
+		.worker_snapshot("execution.outage_resumed")
+		.unwrap()
+		.pending;
+	*repository.0.run.lock().unwrap() = Some(row);
+
+	deploy(&repository, &[PersistedCapability::OutageWait]);
+	assert!(lease_as(&repository).await.is_none());
+	assert!(wrote_nothing(&repository));
+
+	deploy(&repository, NEW_WORKER);
+	let claimed = lease_as(&repository).await.unwrap();
+	assert!(claimed.recovery.outage.unwrap().short_retries_exhausted);
+	assert!(claimed.recovery.retry.is_none());
 }
 
 #[rstest]

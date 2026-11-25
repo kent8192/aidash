@@ -18,6 +18,7 @@ pub async fn configure(
 		thread,
 		input.expected_revision,
 		input.spec.into(),
+		input.acknowledge_memory_embeddings,
 	)
 	.await
 	.map(Into::into)

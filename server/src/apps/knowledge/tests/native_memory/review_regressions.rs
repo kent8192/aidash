@@ -47,6 +47,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		later_thread.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec: serde_json::from_value(index.spec).unwrap(),
 		},
 	)
@@ -367,6 +368,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec,
 		},
 	)

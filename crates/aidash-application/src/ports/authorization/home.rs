@@ -26,8 +26,8 @@ pub trait HomeScope: Send + Sized {
 	fn identity(&self) -> ExecutionPrincipal;
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
 	async fn task_read(&mut self, id: Uuid) -> Result<Task>;
-	/// The current control projection uses the original task SHARE lock, without reading producer text.
-	async fn control_task(&mut self, id: Uuid) -> Result<Option<Task>>;
+	/// Load the Task for control, locking it for mutation when requested.
+	async fn control_task(&mut self, id: Uuid, lock: bool) -> Result<Option<Task>>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

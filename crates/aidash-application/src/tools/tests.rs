@@ -591,6 +591,7 @@ fn fixture() -> Fixture {
 		created_by: "fixture".into(),
 		dependencies: vec![],
 		parent_id: Some(run.task_id),
+		started_by_duty: None,
 		revision: 0,
 		created_at: now,
 	};

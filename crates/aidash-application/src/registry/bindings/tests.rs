@@ -1507,6 +1507,76 @@ async fn tool_definitions_are_byte_identical_for_any_binding_order() {
 	let reversed = sent_tool_definitions(["artifact_publish", "file_read", "workspace_read"]).await;
 	assert_eq!(declared, reversed);
 }
+
+#[rstest::rstest]
+#[case::read_before_attachments(
+	"workspace_read", "1.0.0",
+	json!({"kind":"attachment","id":"attachment-id","representation":"model_input"}),
+	Some("attachment")
+)]
+#[case::read_with_attachments(
+	"workspace_read", "1.0.1",
+	json!({"kind":"attachment","id":"attachment-id","representation":"model_input"}),
+	None
+)]
+#[case::message_before_attachments(
+	"workspace_message", "1.0.0",
+	json!({"content":"See the image","files":["image.png"],"image_descriptions":{"image.png":"A mountain"}}),
+	Some("files")
+)]
+#[tokio::test]
+async fn pinned_workspace_tool_validates_its_declared_arguments(
+	#[case] operation: &str,
+	#[case] version: &str,
+	#[case] input: Value,
+	#[case] rejected: Option<&str>,
+) {
+	let seed: Vec<Entry> = serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
+	))
+	.unwrap();
+	let identity = QualifiedRef {
+		version: version.into(),
+		..QualifiedRef::builtin(NODE, operation)
+	};
+	let mut declaration = seed
+		.into_iter()
+		.find(|entry| entry.id == identity.id && entry.version == identity.version)
+		.unwrap();
+	declaration.config["registry_deployment"] = json!(NODE);
+	let mut catalog = Catalog::new();
+	catalog.insert(declaration);
+	let mut config = agent_config();
+	config.bindings.push(Binding::tool(identity));
+	let run = snapshot_run(snapshot(&mut catalog, &config, false).await.unwrap());
+	let live = Arc::new(Live::new());
+	let resolver = execution::PinnedResolver {
+		providers: live.clone(),
+		authority: live.clone(),
+		sessions: None,
+	};
+	let tools = resolver.tools(&run).await.unwrap();
+	let implementations = crate::tools::builtins();
+	crate::tools::validate_arguments(&implementations[operation].schema, &input).unwrap();
+
+	let result = tools[operation].invoke(&run, input.clone(), "call").await;
+
+	if let Some(argument) = rejected {
+		let Err(Error::Invalid(message)) = result else {
+			panic!("expected a schema error for {operation} {version}, got {result:?}");
+		};
+		assert!(
+			message.contains(&format!("aidash.{operation}@{version}")),
+			"{message}"
+		);
+		assert!(message.contains(argument), "{message}");
+		assert_eq!(live.invocations.load(Ordering::SeqCst), 0);
+	} else {
+		assert_eq!(result.unwrap(), input);
+		assert_eq!(live.invocations.load(Ordering::SeqCst), 1);
+	}
+}
+
 #[tokio::test]
 async fn saved_dispatch_enforces_narrowing_and_rechecks_revocation_and_provider_loss_before_effects()
  {

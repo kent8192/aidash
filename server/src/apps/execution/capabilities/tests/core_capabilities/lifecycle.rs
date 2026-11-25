@@ -1,6 +1,37 @@
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 
+async fn pending_question(c: &CoreFixture, run: Uuid, thread: Uuid) -> Uuid {
+	let id = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key) \
+		 VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Continue?', 'pending-question')",
+	)
+	.bind(id)
+	.bind(thread)
+	.bind(run)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	id
+}
+
+async fn assert_question_closed(c: &CoreFixture, id: Uuid) {
+	let closed: (Option<Value>, Option<String>) =
+		sqlx::query_as("SELECT response, answered_by FROM human_requests WHERE id = $1")
+			.bind(id)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(
+		closed,
+		(
+			Some(json!({"answered":false,"reason":"run_ended"})),
+			Some("system".into())
+		),
+	);
+}
+
 fn blob_path(c: &CoreFixture, digest: &str) -> std::path::PathBuf {
 	let tenant = aidash_server::capabilities::objects::digest(b"acme");
 	c.root
@@ -661,6 +692,7 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	.await;
 	assert_eq!(status, 200, "{session}");
 	let run = session["active_run_id"].as_str().unwrap();
+	let question = pending_question(&c, run.parse().unwrap(), thread).await;
 	let (status,result)=request(&c.app,&c.token,"POST",&format!("/api/executions/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"kept.txt":null},"patch":"*** Begin Patch\n*** Add File: kept.txt\n+Keep 東京 exactly\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	let (_, before) = request(
@@ -688,6 +720,7 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	let input = json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":area["id"],"expected_revision":before["revision"],"choice":"keep"}]});
 	let (status, deleted) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{deleted}");
+	assert_question_closed(&c, question).await;
 	assert_eq!(
 		request(&c.app, &c.token, "POST", &path, input).await,
 		(200, deleted)
@@ -1203,8 +1236,10 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 	.await;
 	assert_eq!(status, 200, "{area}");
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let question = pending_question(&c, run.id, run.thread_id).await;
 	let (status, cleanup) = request(&c.app, &c.token, "POST", &format!("/api/working-areas/{area_id}/cleanup"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
 	assert_eq!(status, 200, "{cleanup}");
+	assert_question_closed(&c, question).await;
 	let operation_id: Uuid = serde_json::from_value(cleanup["operation_id"].clone()).unwrap();
 	// Pause a worker transaction after it has locked the area, before its record.
 	let mut worker = c.f.store.pool.fixture_driver().begin().await.unwrap();

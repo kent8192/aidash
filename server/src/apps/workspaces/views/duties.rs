@@ -100,6 +100,20 @@ pub async fn successor(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Successor(id, input.subject)).await)
 }
+/// The named successor takes over a Duty whose Requester left; it stays
+/// stopped until they resume it (#991, ADR 0145).
+#[post(
+	"/api/duties/{id}/take-over",
+	name = "duty-take-over",
+	auth = "protected"
+)]
+pub async fn take_over(
+	#[inject] runtime: Federation,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(execute(&runtime, actor, Operation::TakeOver(id)).await)
+}
 #[post("/api/duties/{id}/run-now", name = "duty-run-now", auth = "protected")]
 pub async fn run_now(
 	#[inject] runtime: Federation,

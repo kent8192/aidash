@@ -6,7 +6,8 @@ use crate::apps::registry::serializers::agent_plugin_import::{
 use crate::apps::registry::serializers::contracts::Entry as RegistryContractsEntry;
 use crate::apps::registry::serializers::contracts::Search;
 use crate::apps::registry::serializers::contracts::{
-	McpToolHint, McpToolHintRequest, RegistryCreateResult,
+	McpToolHint, McpToolHintRequest, ReferenceRevocationHint, ReferenceRevocationsQuery,
+	RegistryCreateResult,
 };
 use crate::apps::registry::serializers::knowledge::PersonalAgent;
 use crate::apps::registry::serializers::skill_import::ImportRequest;
@@ -47,6 +48,19 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::registry_get,
 		&["String", "String"],
 	)?;
+	contracts.response::<_, Vec<ReferenceRevocationHint>>(
+		document,
+		views::management::source_revocations,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::management::source_revocations,
+		&["String", "String"],
+	)?;
+	contracts
+		.query::<_, ReferenceRevocationsQuery>(document, views::management::source_revocations)?;
 	contracts.response::<_, Vec<Fact>>(
 		document,
 		views::management::secret_readiness,

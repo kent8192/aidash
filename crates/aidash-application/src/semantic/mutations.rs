@@ -10,11 +10,15 @@ use aidash_domain::{
 use chrono::Utc;
 use uuid::Uuid;
 
+/// `acknowledged` confirms that disabling the index or changing its
+/// embedding deletes or recomputes the Thread's Built-in Memory embeddings;
+/// without it such a change is refused with the count it would affect (#1123).
 pub async fn configure(
 	repository: &dyn SemanticConfigurationRepository,
 	thread: Uuid,
 	revision: i64,
 	spec: IndexingSpec,
+	acknowledged: bool,
 ) -> Result<Index> {
 	mutations::validate_revision(revision, "invalid index revision")?;
 	let mut scope = repository.begin().await?;
@@ -36,6 +40,20 @@ pub async fn configure(
 		}
 		return Err(Error::Conflict("semantic index revision changed".into()));
 	}
+	if !acknowledged && let Some(old) = &old {
+		let previous: IndexingSpec = serde_json::from_value(old.spec.clone())?;
+		let removed = previous.enabled && !spec.enabled;
+		let changed = previous.enabled && spec.enabled && previous.embedding != spec.embedding;
+		if removed || changed {
+			let facts = scope.memory_embeddings(thread).await?;
+			if facts > 0 {
+				return Err(Error::Conflict(format!(
+					"this {} the embeddings of {facts} memory facts in this Thread; resend with acknowledge_memory_embeddings to continue",
+					if removed { "deletes" } else { "recomputes" }
+				)));
+			}
+		}
+	}
 	let (count, largest_memory) = scope.counts(thread).await?;
 	mutations::validate_configuration_counts(&spec, count, largest_memory)?;
 	let collection = format!("aidash_{}", Uuid::new_v4().simple());
@@ -51,6 +69,9 @@ pub async fn configure(
 		scope.schedule(&entry, &collection).await?;
 	}
 	scope.rebuild_images(thread, spec.max_images).await?;
+	if spec.enabled {
+		scope.backfill_memory(thread).await?;
+	}
 	scope.history(thread, current.revision).await?;
 	scope.commit().await?;
 	Ok(current)
