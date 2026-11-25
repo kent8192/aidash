@@ -54,10 +54,10 @@ pub(super) fn migration() -> Migration {
 		})
 		.add_operation(Operation::CreateIndex {
 			table: "egress_scope_connections".into(),
-			columns: vec!["tenant".into(), "run_id".into(), "host".into(), "created_at".into()],
+			columns: vec!["run_id".into()],
 			unique: false,
-			index_type: Some(IndexType::BTree),
-			where_clause: Some("(outcome = 'completed' AND run_id IS NOT NULL)".into()),
+			index_type: None,
+			where_clause: None,
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

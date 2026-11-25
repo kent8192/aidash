@@ -99,7 +99,11 @@ pub struct ScopeDaily {
 }
 
 /// Tenant traffic facts for billing. Node or Scratch Space purge leaves them intact.
-#[model(app_label = "execution", table_name = "egress_usage_daily")]
+#[model(
+	app_label = "execution",
+	table_name = "egress_usage_daily",
+	constraints = [unique(fields = ["tenant", "day"], name = "egress_usage_daily_tenant_day_key")]
+)]
 #[derive(Serialize, Deserialize)]
 pub(crate) struct EgressUsageDaily {
 	#[field(primary_key = true)]
@@ -132,7 +136,7 @@ pub struct ScopeConnection {
 	pub node: String,
 	#[field]
 	pub scope_id: Uuid,
-	#[field(null = true)]
+	#[field(null = true, index = true)]
 	pub run_id: Option<Uuid>,
 	#[field(null = true)]
 	pub admission_ms: Option<i64>,
