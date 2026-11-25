@@ -210,6 +210,42 @@ class BackgroundWatcherTest(unittest.TestCase):
         self.finish(next_op['operation_id'])
         self.wait_for(lambda: not self.controller.background_watches)
 
+    def test_watcher_observes_later_processes_after_poll_and_journal_errors(self):
+        from threading import Event, current_thread
+        from unittest.mock import patch
+
+        self.enterContext(patch('sandbox_v2.process_start_time', return_value=42))
+        poll_failed, read_failed = Event(), Event()
+        poll = self.controller._poll_background
+        read = self.controller._read_command
+        first, later = self.request(), self.request()
+
+        def poll_once_fails(pod, snapshot):
+            if not poll_failed.is_set():
+                poll_failed.set()
+                raise OSError('poll failed')
+            return poll(pod, snapshot)
+
+        def read_once_fails(operation):
+            if (operation == first['operation_id'] and current_thread().name.startswith('execution-background-')
+                    and poll_failed.is_set() and not read_failed.is_set()):
+                read_failed.set()
+                raise OSError('journal read failed')
+            return read(operation)
+
+        with patch.object(self.controller, '_poll_background', side_effect=poll_once_fails), \
+             patch.object(self.controller, '_read_command', side_effect=read_once_fails), \
+             self.assertLogs('execution_pod', level='ERROR') as logged:
+            self.controller.submit_command(first)
+            self.assertTrue(poll_failed.wait(2))
+            self.controller.submit_command(later)
+            self.finish(later['operation_id'], exit_code=17)
+            self.wait_for(lambda: self.controller.command_result(later['operation_id']).get('exit_code') == 17)
+            self.assertTrue(read_failed.is_set())
+            self.finish(first['operation_id'])
+            self.wait_for(lambda: self.controller.command_result(first['operation_id'])['status'] == 'completed')
+        self.assertEqual([str(record.exc_info[1]) for record in logged.records], ['poll failed', 'journal read failed'])
+
     def test_stops_an_adopted_process_while_sixteen_others_are_running(self):
         from unittest.mock import patch
 

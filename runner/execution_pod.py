@@ -1740,38 +1740,51 @@ print(json.dumps(r))'''
             state = {'record': record, 'claim': claim, 'key': key, 'output': BoundedOutput(limit),
                      'offsets': {'stdout': 0, 'stderr': 0}, 'missing_since': None, 'output_retry_at': None}
             if active is None:
-                active = self.background_watches[pod] = {}
-                active[operation] = state
+                active = {operation: state}
                 Thread(target=self._watch_pod, args=(pod, active),
                        name='execution-background-' + record['pod'], daemon=True).start()
+                self.background_watches[pod] = active
             else:
                 active.setdefault(operation, state)
 
     def _watch_pod(self, pod, active):
+        import logging
         import time
+        logger = logging.getLogger(__name__)
         next_poll = time.monotonic()
-        while True:
+        try:
+            while True:
+                try:
+                    with self.lock:
+                        for operation in tuple(active):
+                            try:
+                                running = self._read_command(operation)['status'] == 'running'
+                            except Exception as error:
+                                if not (isinstance(error, ExecutionPodError) and error.code == 'command_not_found'):
+                                    logger.exception('Could not read Background operation %s in Pod %s', operation, pod[0])
+                                    continue
+                                running = False
+                            if not running:
+                                del active[operation]
+                                self.live_output.pop(operation, None)
+                        if not active:
+                            # Retire under the same lock used to register new operations.
+                            del self.background_watches[pod]
+                            return
+                    delay = next_poll - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                    with self.lock:
+                        snapshot = dict(active)
+                    next_poll = time.monotonic() + BACKGROUND_POLL_SECONDS
+                    self._poll_background(pod, snapshot)
+                except Exception:
+                    logger.exception('Background watcher iteration failed for Pod %s', pod[0])
+                    time.sleep(BACKGROUND_POLL_SECONDS)
+        finally:
             with self.lock:
-                for operation in tuple(active):
-                    try:
-                        running = self._read_command(operation)['status'] == 'running'
-                    except ExecutionPodError as error:
-                        if error.code != 'command_not_found':
-                            raise
-                        running = False
-                    if not running:
-                        del active[operation]
-                        self.live_output.pop(operation, None)
-                if not active:
+                if self.background_watches.get(pod) is active:
                     del self.background_watches[pod]
-                    return
-            delay = next_poll - time.monotonic()
-            if delay > 0:
-                time.sleep(delay)
-            with self.lock:
-                snapshot = dict(active)
-            next_poll = time.monotonic() + BACKGROUND_POLL_SECONDS
-            self._poll_background(pod, snapshot)
 
     def _poll_background(self, pod, snapshot):
         import json
