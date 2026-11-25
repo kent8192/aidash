@@ -256,9 +256,7 @@ async fn later_message_denial_prevents_reading_any_attachment_bytes(
 #[rstest]
 #[tokio::test]
 async fn empty_message_lists_have_no_reads_or_cursor(mut scope: Scope, model: ModelConfig) {
-	let output = authorized(&mut scope, id(10), &[], &model, Default::default())
-		.await
-		.unwrap();
+	let output = authorized(&mut scope, id(10), &[], &model).await.unwrap();
 	assert!(output.parts.is_empty());
 	assert_eq!(output.through_seq, None);
 	assert!(!output.has_more);
@@ -1081,7 +1079,7 @@ async fn does_not_combine_individually_supported_formats_from_different_routes(
 ) {
 	model.media_routes = vec![routes(vec!["image/png".into()]), routes(vec!["wav".into()])];
 	assert!(matches!(
-		load(&mut scope, id(10), &[(7, id(1), 128000)], &model,).await,
+		load(&mut scope, id(10), &[(7, id(1), 128000)], &model).await,
 		Err(Error::MediaRouteUnavailable { .. })
 	));
 	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
