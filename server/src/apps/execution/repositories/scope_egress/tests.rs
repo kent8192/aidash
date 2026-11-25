@@ -164,10 +164,33 @@ fn admitted(outcome: ExternalAdmission) -> Admission {
 	}
 }
 
+async fn open_connection(durable: &DurableScopes, scope: &ScopeSettings) -> Uuid {
+	let id = Uuid::new_v4();
+	durable
+		.record(ConnectionRecord {
+			id,
+			scope: scope.id.clone(),
+			run_id: scope.run_id,
+			host: "registry.npmjs.org".into(),
+			port: 443,
+			admission_ms: None,
+			settle_ms: None,
+			sent_bytes: 0,
+			received_bytes: 0,
+			duration_ms: 0,
+			outcome: "unsettled".into(),
+			error: None,
+			wait_ms: None,
+		})
+		.await
+		.unwrap();
+	id
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[timeout(std::time::Duration::from_secs(180))]
-async fn host_debit_replays_a_committed_reservation_after_its_answer_is_lost(
+async fn host_debit_replays_a_cumulative_target_after_its_answer_is_lost(
 	#[future] database: DatabaseFixture,
 ) {
 	let database = database.await;
@@ -197,35 +220,139 @@ async fn host_debit_replays_a_committed_reservation_after_its_answer_is_lost(
 	let durable = DurableScopes::new(federation.store.clone(), authority.clone());
 	durable.resolve("credential").await.unwrap();
 	let day = Utc::now().date_naive();
-	let reservation = Uuid::new_v4();
+	let connection = open_connection(&durable, &scope).await;
 	// Discard the committed call's answer and retry through a fresh store adapter.
 	durable
-		.debit(&scope, Direction::Received, 30, day, reservation)
+		.debit(&scope, Direction::Received, 30, day, connection)
 		.await
 		.unwrap();
 	let retry = DurableScopes::new(federation.store.clone(), authority);
 	retry
-		.debit(&scope, Direction::Received, 30, day, reservation)
+		.debit(&scope, Direction::Received, 30, day, connection)
 		.await
 		.unwrap();
 	assert_eq!(
 		received_bytes(&federation.store, &scope.id, day, "").await,
 		30
 	);
-	assert!(matches!(
+	for target in [29, 60, 60] {
 		retry
-			.debit(&scope, Direction::Received, 31, day, reservation)
-			.await,
-		Err(aidash_application::Error::Forbidden)
-	));
+			.debit(&scope, Direction::Received, target, day, connection)
+			.await
+			.unwrap();
+	}
+	let next_day = day.succ_opt().unwrap();
 	retry
-		.debit(&scope, Direction::Received, 30, day, Uuid::new_v4())
+		.debit(&scope, Direction::Received, 60, next_day, connection)
 		.await
 		.unwrap();
+	retry
+		.debit(&scope, Direction::Received, 62, next_day, connection)
+		.await
+		.unwrap();
+	assert_eq!(
+		received_bytes(&federation.store, &scope.id, next_day, "").await,
+		2
+	);
 	assert_eq!(
 		received_bytes(&federation.store, &scope.id, day, "").await,
 		60
 	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn only_forwarded_bytes_post_to_the_run_budget_and_pause_its_run(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let f = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	let tenant = tenant_roots::tenant_scope(&f.store, "acme").await;
+	let thread = f
+		.store
+		.create_thread(&tenant, "alice", "Traffic budget")
+		.await
+		.unwrap();
+	let agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
+	let new_run = async |title: &str| {
+		let task = f
+			.store
+			.create_task(
+				&tenant,
+				thread.id,
+				&aidash_domain::NewTask {
+					title: title.into(),
+					description: "Traffic budget".into(),
+					requirements: serde_json::json!({}),
+					dependencies: vec![],
+					parent_id: None,
+				},
+				"alice",
+				None,
+			)
+			.await
+			.unwrap();
+		tenant_roots::admitted_run(&f, "acme", &task, &agent).await
+	};
+	let run = new_run("Transfer").await;
+	let sibling = new_run("Sibling").await;
+	let pool = f.store.pool.fixture_driver();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 100000, 'stop', '{}', 1, now(), 'alice', now())")
+		.bind(Uuid::new_v4()).execute(pool).await.unwrap();
+	let space = insert_space(&f, "acme", Default::default()).await;
+	let authority = Arc::new(ScratchAuthority::with_key(
+		f.store.clone(),
+		f.config.scratch_policy.clone(),
+		KEY,
+	));
+	let credential = authority.credential("acme", space, run.id).unwrap();
+	let durable = DurableScopes::new(f.store.clone(), authority);
+	let scope = durable.resolve(&credential).await.unwrap();
+	let connection = open_connection(&durable, &scope).await;
+	let day = Utc::now().date_naive();
+	let mib = 1 << 20;
+	durable
+		.debit(&scope, Direction::Sent, 2 * mib, day, connection)
+		.await
+		.unwrap();
+	let usage =
+		|| {
+			sqlx::query_as::<_, (i64, i64)>(
+			"SELECT sent_bytes, cost_nanocredits FROM egress_usage_daily WHERE tenant = 'acme' AND day = $1",
+		).bind(day.to_string()).fetch_optional(pool)
+		};
+	assert_eq!(usage().await.unwrap(), None);
+	for _ in 0..2 {
+		assert!(matches!(
+			durable.report_forwarded(&scope, connection, Direction::Sent, mib, day).await,
+			Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
+		));
+	}
+	assert_eq!(usage().await.unwrap(), Some((mib as i64, 195_312)));
+	let spend: (String, String, i64, i64) = sqlx::query_as(
+		"SELECT node, root_subject, spent_nanocredits, unpriced_calls FROM budget_spend WHERE tenant = 'acme'",
+	).fetch_one(pool).await.unwrap();
+	assert_eq!(spend, (scope.id.node.clone(), "alice".into(), 195_312, 0));
+	let control = |run: Uuid| {
+		sqlx::query_scalar::<_, String>("SELECT control FROM task_executions WHERE id = $1")
+			.bind(run)
+			.fetch_one(pool)
+	};
+	assert_eq!(control(run.id).await.unwrap(), "PAUSED");
+	assert_eq!(control(sibling.id).await.unwrap(), "ACTIVE");
 }
 
 #[rstest::rstest]
@@ -440,9 +567,11 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	assert!(hidden.is_empty(), "another Tenant must not see scope state");
 	other.commit().await.unwrap();
 	let day = Utc::now().date_naive();
+	let first_connection = open_connection(&durable, &scope).await;
+	let second_connection = open_connection(&durable, &scope).await;
 	let (left, right) = tokio::join!(
-		durable.debit(&scope, Direction::Sent, 8, day, uuid::Uuid::new_v4()),
-		durable.debit(&scope, Direction::Sent, 8, day, uuid::Uuid::new_v4())
+		durable.debit(&scope, Direction::Sent, 8, day, first_connection),
+		durable.debit(&scope, Direction::Sent, 8, day, second_connection)
 	);
 	assert_ne!(
 		left.is_ok(),
@@ -451,7 +580,13 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	);
 	assert!(
 		durable
-			.debit(&scope, Direction::Sent, 3, day, uuid::Uuid::new_v4())
+			.debit(
+				&scope,
+				Direction::Sent,
+				3,
+				day,
+				open_connection(&durable, &scope).await
+			)
 			.await
 			.is_err()
 	);
@@ -460,7 +595,13 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		.await
 		.unwrap();
 	durable
-		.debit(&scope, Direction::Sent, 2, day, uuid::Uuid::new_v4())
+		.debit(
+			&scope,
+			Direction::Sent,
+			2,
+			day,
+			open_connection(&durable, &scope).await,
+		)
 		.await
 		.unwrap();
 	let first = admitted(
@@ -625,7 +766,13 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	.unwrap();
 	assert_eq!(events, 1);
 	durable
-		.debit(&scope, Direction::Sent, 1, day, uuid::Uuid::new_v4())
+		.debit(
+			&scope,
+			Direction::Sent,
+			1,
+			day,
+			open_connection(&durable, &scope).await,
+		)
 		.await
 		.unwrap();
 	for _ in 0..2 {
@@ -743,7 +890,13 @@ async fn initialization_cache_is_bounded_and_evicted_scopes_keep_their_budget(
 	let scope = durable.resolve(&credential).await.unwrap();
 	let day = Utc::now().date_naive();
 	durable
-		.debit(&scope, Direction::Received, 5, day, Uuid::new_v4())
+		.debit(
+			&scope,
+			Direction::Received,
+			5,
+			day,
+			open_connection(&durable, &scope).await,
+		)
 		.await
 		.unwrap();
 
@@ -762,7 +915,13 @@ async fn initialization_cache_is_bounded_and_evicted_scopes_keep_their_budget(
 
 	let reopened = durable.resolve(&credential).await.unwrap();
 	durable
-		.debit(&reopened, Direction::Received, 7, day, Uuid::new_v4())
+		.debit(
+			&reopened,
+			Direction::Received,
+			7,
+			day,
+			open_connection(&durable, &reopened).await,
+		)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -830,8 +989,8 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		.unwrap();
 	tenant_roots::tenant_root(&federation, "acme").await;
 	let mut chosen = aidash_domain::scratch::ScratchSettings {
-		daily_sent_bytes: 11,
-		daily_received_bytes: 22,
+		daily_sent_bytes: Some(11),
+		daily_received_bytes: Some(22),
 		..Default::default()
 	};
 	chosen.allowed_hosts = aidash_domain::scratch::HostAllowlist::Hosts(
@@ -970,8 +1129,8 @@ async fn a_spent_budget_refuses_an_external_service_request_before_its_record(
 		&federation,
 		"acme",
 		aidash_domain::scratch::ScratchSettings {
-			daily_sent_bytes: 100,
-			daily_received_bytes: 100,
+			daily_sent_bytes: Some(100),
+			daily_received_bytes: Some(100),
 			external_services: ["maps".to_owned()].into(),
 			..Default::default()
 		},
@@ -1040,9 +1199,32 @@ async fn a_spent_budget_refuses_an_external_service_request_before_its_record(
 			.unwrap(),
 	);
 	assert!(matches!(
-		admission.meter.charge(Direction::Received, 5).await,
+		admission.meter.charge_cumulative(Direction::Received, 5, 5).await,
 		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
 	));
+	assert!(matches!(
+		admission.meter.charge_cumulative(Direction::Received, 4, 4).await,
+		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
+	));
+	let received: i64 =
+		sqlx::query_scalar("SELECT received_bytes FROM egress_requests WHERE id = $1")
+			.bind(admission.request)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	assert_eq!(received, 5);
+	let scope = durable.resolve(&credential).await.unwrap();
+	assert_eq!(
+		received_bytes(
+			&federation.store,
+			&scope.id,
+			Utc::now().date_naive(),
+			"maps"
+		)
+		.await,
+		5
+	);
+
 	admission
 		.meter
 		.finish(200, RequestTimes::default(), None)
@@ -1167,8 +1349,8 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 		.unwrap();
 	tenant_roots::tenant_root(&federation, "acme").await;
 	let chosen = aidash_domain::scratch::ScratchSettings {
-		daily_sent_bytes: 10,
-		daily_received_bytes: 10,
+		daily_sent_bytes: Some(10),
+		daily_received_bytes: Some(10),
 		..Default::default()
 	};
 	let space = insert_space(&federation, "acme", chosen).await;
@@ -1221,7 +1403,7 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 	.await
 	.unwrap();
 	assert!(matches!(
-		durable.debit(&open, Direction::Received, 1, day, uuid::Uuid::new_v4()).await,
+		durable.debit(&open, Direction::Received, 1, day, open_connection(&durable, &open).await).await,
 		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
 	));
 

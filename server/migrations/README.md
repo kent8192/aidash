@@ -69,6 +69,13 @@ parameters alongside each committed charge. Existing daily counters need no
 backfill. Receipts follow their scope through Node and Tenant purge. Forced
 Tenant row security uses SQL assets because Reinhardt cannot express policies.
 `execution/0163_scope_host_debit_state` registers the receipt model state.
+`execution/0165_scope_connection_debits` replaces the receipts with two
+cumulative counters on each connection, adds External service request
+checkpoints, and creates Tenant-owned daily usage facts. Stop old gateway
+instances before applying it so their reservations settle under the old schema.
+Reversal recreates the empty receipt table and restores its database-only
+constraints, index, and forced Tenant policy. Reinhardt cannot express the
+row-level policy, so the migration uses SQL assets.
 
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.

@@ -286,7 +286,8 @@ impl RuntimeTasks {
 							federation.config.scratch_policy.clone(),
 						),
 					),
-				),
+				)
+				.with_prices(federation.config.egress_prices),
 			);
 			let stopping = receiver.clone();
 			// Waiting Host connections hold open files, so their budget follows

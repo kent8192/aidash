@@ -40,6 +40,7 @@ const RETIRED: &[&str] = &[
 	"generation_summary_usage",
 	"egress_budgets",
 	"egress_sessions",
+	"egress_scope_host_debits",
 	// The Research category (#987, ADR 0138).
 	"research_attempts",
 	"research_fragments",

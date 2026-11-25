@@ -373,6 +373,8 @@ impl ServiceSecrets {
 			.status(0)
 			.sent_bytes(0)
 			.received_bytes(0)
+			.scope_charged_sent(0)
+			.scope_charged_received(0)
 			.duration_ms(0)
 			.admission_ms(None)
 			.settle_ms(None)
@@ -489,7 +491,12 @@ impl ServiceMeter {
 	/// Adds forwarded bytes to the request record, then rechecks, in one
 	/// transaction, so that a store failure leaves nothing half committed for
 	/// the gateway's retry to count twice.
-	async fn record_and_recheck(&self, direction: Direction, bytes: i64) -> Result<Result<()>> {
+	async fn record_and_recheck(
+		&self,
+		direction: Direction,
+		bytes: i64,
+		cumulative: bool,
+	) -> Result<Result<()>> {
 		let mut tx = self
 			.store
 			.pool
@@ -503,12 +510,15 @@ impl ServiceMeter {
 			.map_err(reinhardt::core::exception::Error::from)?
 			.pop()
 			.ok_or(Error::Forbidden)?;
-		match direction {
-			Direction::Sent => record.sent_bytes = record.sent_bytes.saturating_add(bytes),
-			Direction::Received => {
-				record.received_bytes = record.received_bytes.saturating_add(bytes)
-			}
-		}
+		let counter = match direction {
+			Direction::Sent => &mut record.sent_bytes,
+			Direction::Received => &mut record.received_bytes,
+		};
+		*counter = if cumulative {
+			(*counter).max(bytes)
+		} else {
+			counter.saturating_add(bytes)
+		};
 		RequestRecord::objects()
 			.save_with_executor(&mut *tx, &record)
 			.await
@@ -550,11 +560,25 @@ impl Meter for ServiceMeter {
 		let bytes = i64::try_from(bytes).map_err(|_| aidash_application::Error::Forbidden)?;
 		// The bytes already crossed the gateway, so they are recorded whatever
 		// the recheck decides.
-		self.record_and_recheck(direction, bytes)
+		self.record_and_recheck(direction, bytes, false)
 			.await
 			.map_err(aidash_application::Error::from)?
 			.map_err(aidash_application::Error::from)
 	}
+	async fn charge_cumulative(
+		&self,
+		direction: Direction,
+		_: usize,
+		cumulative: u64,
+	) -> aidash_application::Result<()> {
+		let cumulative =
+			i64::try_from(cumulative).map_err(|_| aidash_application::Error::Forbidden)?;
+		self.record_and_recheck(direction, cumulative, true)
+			.await
+			.map_err(aidash_application::Error::from)?
+			.map_err(aidash_application::Error::from)
+	}
+
 	async fn finish(
 		&self,
 		status: u16,
