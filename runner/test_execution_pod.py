@@ -3041,6 +3041,21 @@ class LongRunningBackgroundTest(unittest.TestCase):
         self.assertEqual(self.observe(2001)[operation]['stop_reason'], 'pod_updated')
         self.assertEqual(len(self.deletions), 1)
 
+    def test_base_update_deferral_is_capped_across_runner_restarts(self):
+        first = self.record(1, seconds=9000)
+        self.restart()
+        self.controller.config['helper_image'] = 'next-base'
+        self.observe(2000)
+        self.assertFalse(self.deletions)
+        self.now = 9000
+        later = self.record(2, seconds=86400)
+        self.completed(first, {'status': 'completed', 'exit_code': 0})
+        self.restart()
+        self.observe(2000 + 86400 - 1)
+        self.assertFalse(self.deletions)
+        self.assertEqual(self.observe(2000 + 86400)[later]['stop_reason'], 'pod_updated')
+        self.assertEqual(len(self.deletions), 1)
+
     def test_incompatible_protocol_retires_the_pod_even_during_work(self):
         operation = self.record(1, seconds=9000, protocol='0.9.0')
         self.restart()

@@ -53,7 +53,7 @@ class ForegroundAdoptionTest(unittest.TestCase):
                  patch.object(sandbox_v2, 'OPERATION_DIRECTORY', str(Path(directory) / 'operations')), \
                  patch.object(sandbox_v2, 'OUTPUT_DIRECTORY', str(Path(directory) / 'output')), \
                  patch.object(execution_pod, 'chroot_helper_command', side_effect=lambda *args: ['/bin/sh', '-c', args[-1]]):
-                result = sandbox_v2.supervise_foreground(operation, 'run', '.', 'exit 7', 10, False,
+                result = sandbox_v2.supervise_foreground(operation, 'run', '.', 'exit 7', 7000, False,
                                                          expected_pod_uid='pod', record_changes=False)
                 self.assertEqual((result['status'], result['exit_code']), ('completed', 7))
                 self.assertNotIn('left_running', result)

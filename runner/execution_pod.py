@@ -19,6 +19,7 @@ REFUSAL_RETENTION_SECONDS = 7 * 86400
 JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 BACKGROUND_RETENTION_SECONDS = 7 * 86400
 BACKGROUND_STOP_GRACE_SECONDS = 60
+IDLE_MONITOR_SECONDS = 30
 
 
 def background_deadline(record):
@@ -1116,13 +1117,15 @@ print(json.dumps(r))'''
                 record = json.loads(path.read_bytes())
                 operation = record['operation_id']
                 status = record.get('status')
+                effective = record.get('pod_stop_reason', reason)
+                if effective == 'pod_idle' and record.get('kind') != 'left':
+                    effective = record.get('requested_stop_reason', 'stopped')
                 if status == 'queued':
-                    self._update_command(operation, status='cancelled', outcome='not_started', stop_reason=reason)
+                    self._update_command(operation, status='cancelled', outcome='not_started', stop_reason=effective)
                     future = self.futures.get(operation)
                     if future:
                         future.cancel()
                 elif status == 'running' or (status == 'interrupted' and background_end_pending(record)):
-                    effective = record.get('pod_stop_reason', reason)
                     output = self.live_output.get(operation, {})
                     self._update_command(operation, status='interrupted', outcome='unknown',
                                          **({'output_tail': output['output_tail']} if 'output_tail' in output else {}),
@@ -2904,7 +2907,8 @@ print(json.dumps(r))'''
                     except ExecutionPodError as error:
                         import sys
                         print('Execution Pod deadline stop is pending: ' + str(error), file=sys.stderr, flush=True)
-                    hold |= background_end_pending(self._read_command(operation))
+                    hold |= (current < end + BACKGROUND_STOP_GRACE_SECONDS + IDLE_MONITOR_SECONDS
+                             and background_end_pending(self._read_command(operation)))
                     continue
             hold |= current < end + BACKGROUND_STOP_GRACE_SECONDS
         return hold
@@ -2977,7 +2981,7 @@ print(json.dumps(r))'''
                     self.stop_idle()
                 except Exception as error:
                     print('Execution Pod idle monitor failed: ' + str(error), file=sys.stderr, flush=True)
-                time.sleep(30)
+                time.sleep(IDLE_MONITOR_SECONDS)
 
         threading.Thread(target=monitor, name='execution-pod-idle', daemon=True).start()
 
