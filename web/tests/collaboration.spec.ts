@@ -2880,6 +2880,47 @@ const namedLimits = {
 
 for (const locale of ["en-US", "ja-JP"] as const) {
   const ja = locale === "ja-JP";
+  test(`Scratch Space settings explain when an External service exceeds Deployment limits in ${locale}`, async ({
+    page,
+  }) => {
+    await setup(page, { subject: true, locale });
+    const space = {
+      ...namedSpace,
+      settings: {
+        ...namedSpace.settings,
+        external_services: ["images", "maps"],
+      },
+      external_service_status: [
+        { id: "images", usable: false, reason: "limits_exceeded" },
+        { id: "maps", usable: true },
+      ],
+    };
+    await page.route("**/api/scratch-spaces**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/limits")) return route.fulfill({ json: namedLimits });
+      if (path === boundSpace) return route.fulfill({ json: space });
+      return route.fulfill({ json: [space] });
+    });
+    await page.goto(
+      `/settings?view=node&channel=thread-one&focus=${boundSpaceId}`,
+    );
+    await expect(
+      page.getByText(
+        ja
+          ? "外部サービス images は現在使用できません: サービスの制限値がデプロイメントの上限を超えています"
+          : "External service images cannot be used now: its limits exceed the Deployment maximums",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        ja
+          ? /外部サービス maps は現在使用できません/
+          : /External service maps cannot be used/,
+      ),
+    ).toHaveCount(0);
+  });
+
   test(`conversation header names its Scratch Space and links to it in ${locale}`, async ({
     page,
   }) => {

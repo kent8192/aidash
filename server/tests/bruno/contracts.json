@@ -52739,7 +52739,7 @@
                 "type": "string"
               },
               "reason": {
-                "description": "Why it is not usable: `not_found`, `not_approved` or `approval_limited`.",
+                "description": "Reason for an unusable service. Values are `not_found`, `not_approved`, `approval_limited`, and `limits_exceeded`.",
                 "type": ["string", "null"]
               },
               "usable": {
@@ -52953,7 +52953,7 @@
                 "type": "string"
               },
               "reason": {
-                "description": "Why it is not usable: `not_found`, `not_approved` or `approval_limited`.",
+                "description": "Reason for an unusable service. Values are `not_found`, `not_approved`, `approval_limited`, and `limits_exceeded`.",
                 "type": ["string", "null"]
               },
               "usable": {
@@ -53278,7 +53278,7 @@
                 "type": "string"
               },
               "reason": {
-                "description": "Why it is not usable: `not_found`, `not_approved` or `approval_limited`.",
+                "description": "Reason for an unusable service. Values are `not_found`, `not_approved`, `approval_limited`, and `limits_exceeded`.",
                 "type": ["string", "null"]
               },
               "usable": {
