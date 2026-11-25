@@ -30,6 +30,7 @@ pub enum ExecutionPodErrorCode {
 	RequestRejected,
 	RunnerUnavailable,
 	PythonUnavailable,
+	SessionReset,
 	InvalidPath,
 	PreviewStartFailed,
 	/// The operation id was refused before the Runner accepted it.
@@ -64,6 +65,7 @@ impl From<&str> for ExecutionPodErrorCode {
 			"request_rejected" => Self::RequestRejected,
 			"runner_unavailable" => Self::RunnerUnavailable,
 			"python_unavailable" => Self::PythonUnavailable,
+			"session_reset" => Self::SessionReset,
 			"invalid_path" => Self::InvalidPath,
 			"preview_start_failed" => Self::PreviewStartFailed,
 			"command_refused" => Self::CommandRefused,
@@ -99,6 +101,7 @@ impl std::fmt::Display for ExecutionPodErrorCode {
 			Self::RequestRejected => "request_rejected",
 			Self::RunnerUnavailable => "runner_unavailable",
 			Self::PythonUnavailable => "python_unavailable",
+			Self::SessionReset => "session_reset",
 			Self::InvalidPath => "invalid_path",
 			Self::PreviewStartFailed => "preview_start_failed",
 			Self::CommandRefused => "command_refused",
@@ -158,6 +161,8 @@ pub struct CommandRequest {
 	pub run_id: String,
 	pub code: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<uuid::Uuid>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub cwd: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub timeout_seconds: Option<u32>,
@@ -170,6 +175,8 @@ pub struct CommandRequest {
 pub struct CommandResult {
 	pub operation_id: String,
 	pub status: String,
+	/// UID from the Runner journal at command admission.
+	pub pod_uid: Option<String>,
 	pub scratch_space_id: Option<String>,
 	pub run_id: Option<String>,
 	pub background: Option<bool>,
@@ -182,6 +189,8 @@ pub struct CommandResult {
 	pub error_code: Option<String>,
 	pub message: Option<String>,
 	pub python_result: Option<Value>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub session_id: Option<uuid::Uuid>,
 	pub left_running: Option<String>,
 	/// The Run's Python interpreter was started afresh for this cell (the Pod
 	/// was replaced), so earlier variables are gone.
@@ -264,6 +273,9 @@ pub struct FileSearchResult {
 pub struct FilePatchRequest {
 	pub scratch_space_id: String,
 	pub run_id: String,
+	pub claim_id: uuid::Uuid,
+	/// Only the original admission can apply the patch. Retries reconcile its receipt.
+	pub apply: bool,
 	pub patch: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -290,6 +290,28 @@ pub fn add_user_subject(
 	if approval_target(bundle, subject, false, groups, false)? != ApprovalTarget::NewSubject {
 		return Err(Error::Conflict("subject already exists".into()));
 	}
+	insert_user_subject(bundle, subject, groups)
+}
+
+/// Adds the administrator subject selected by Host Access bootstrap.
+/// Assignable Groups constrain Tenant Administrator operations such as
+/// registration approval. Host Access uses the Tenant's administrators group.
+pub fn add_bootstrap_administrator(bundle: &mut PolicyBundle, subject: &str) -> Result<()> {
+	if bundle.subjects.contains_key(subject) {
+		return Err(Error::Conflict("subject already exists".into()));
+	}
+	insert_user_subject(
+		bundle,
+		subject,
+		&[super::tenancy::ADMINISTRATORS.to_owned()].into(),
+	)
+}
+
+fn insert_user_subject(
+	bundle: &mut PolicyBundle,
+	subject: &str,
+	groups: &BTreeSet<String>,
+) -> Result<()> {
 	bundle.subjects.insert(
 		subject.into(),
 		Subject {

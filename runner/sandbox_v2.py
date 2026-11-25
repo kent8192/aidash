@@ -557,7 +557,7 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     if disk_full.is_set():
         result.update(error_code='disk_full', message='System change tracking was incomplete because the Scratch Space is full')
     result.update(operation_id=left_id if adopted else operation_id, run_id=run_id)
-    if adopted and left_auth:
+    if left_auth:
         result['auth'] = sign_result(result, left_auth)
     persist_result(result['operation_id'], result)
     running.unlink(missing_ok=True)
@@ -844,7 +844,7 @@ if __name__ == '__main__':
         if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
             raise ValueError('Execution Pod identity changed')
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from files_v2 import FileService, InvalidPath, run_bounded
+        from files_v2 import FileService, InvalidPath, PatchReceiptUnavailable, run_bounded
         try:
             request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
             service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
@@ -852,6 +852,8 @@ if __name__ == '__main__':
             if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
                 raise ValueError('invalid file operation')
             result = {'result': run_bounded(service, operation, request)}
+        except PatchReceiptUnavailable as error:
+            result = {'error': {'code': 'patch_receipt_unavailable', 'message': str(error)}}
         except InvalidPath as error:
             result = {'error': {'code': 'invalid_path', 'message': str(error)}}
         except (ValueError, KeyError, TypeError, OSError) as error:
@@ -871,26 +873,37 @@ if __name__ == '__main__':
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         print(json.dumps({'available': probe.returncode == 0}))
         raise SystemExit(0)
-    if (len(sys.argv) in (11, 12) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
+    if (len(sys.argv) in (11, 12, 13) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
         token = None
+        options = sys.argv[11:]
+        if options not in ([], ['proof-stdin'], ['proxy-stdin'], ['proof-stdin', 'proxy-stdin']):
+            raise ValueError('invalid supervisor input')
+        docker = sys.argv[2] == 'docker'
+        proof = 'proof-stdin' in options
         for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY'):
             os.environ.pop(key, None)
-        if sys.argv[2] == 'docker':
+        if docker or proof:
             import re
-            token = sys.stdin.buffer.readline(66).strip()
-            if not re.fullmatch(b'[0-9a-f]{64}', token):
-                raise ValueError('invalid result nonce')
-        if len(sys.argv) == 12:
-            if sys.argv[11] != 'proxy-stdin':
-                raise ValueError('invalid supervisor input')
+            if ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+                raise OSError(ctypes.get_errno(), 'prctl')
+            def read_key():
+                key = sys.stdin.buffer.readline(66).strip()
+                if not re.fullmatch(b'[0-9a-f]{64}', key):
+                    raise ValueError('invalid result nonce')
+                return key
+            token = read_key() if docker else None
+            left_auth = read_key() if proof else token
+        else:
+            left_auth = None
+        if 'proxy-stdin' in options:
             proxy = sys.stdin.buffer.readline(2049).decode('ascii').strip()
             if not proxy.startswith('http://aidash:') or len(proxy) > 2048:
                 raise ValueError('invalid process proxy')
             for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
                 os.environ[key] = proxy
-        if sys.argv[2] == 'docker' or len(sys.argv) == 12:
+        if docker or proof or 'proxy-stdin' in options:
             null = os.open('/dev/null', os.O_RDONLY)
             os.dup2(null, 0)
             os.close(null)
@@ -898,7 +911,7 @@ if __name__ == '__main__':
         outcome = supervise(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
                                     record_changes=sys.argv[3] == 'command', output_limit=int(sys.argv[10]),
-                                    left_auth=token)
+                                    left_auth=left_auth)
         if token is not None:
             import json
             frame = b'\x1eaidash-result:' + token + b':' + json.dumps(outcome, separators=(',', ':')).encode() + b'\n'

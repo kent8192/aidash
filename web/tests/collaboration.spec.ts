@@ -2880,6 +2880,47 @@ const namedLimits = {
 
 for (const locale of ["en-US", "ja-JP"] as const) {
   const ja = locale === "ja-JP";
+  test(`Scratch Space settings explain when an External service exceeds Deployment limits in ${locale}`, async ({
+    page,
+  }) => {
+    await setup(page, { subject: true, locale });
+    const space = {
+      ...namedSpace,
+      settings: {
+        ...namedSpace.settings,
+        external_services: ["images", "maps"],
+      },
+      external_service_status: [
+        { id: "images", usable: false, reason: "limits_exceeded" },
+        { id: "maps", usable: true },
+      ],
+    };
+    await page.route("**/api/scratch-spaces**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/limits")) return route.fulfill({ json: namedLimits });
+      if (path === boundSpace) return route.fulfill({ json: space });
+      return route.fulfill({ json: [space] });
+    });
+    await page.goto(
+      `/settings?view=node&channel=thread-one&focus=${boundSpaceId}`,
+    );
+    await expect(
+      page.getByText(
+        ja
+          ? "外部サービス images は現在使用できません: サービスの制限値がデプロイメントの上限を超えています"
+          : "External service images cannot be used now: its limits exceed the Deployment maximums",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        ja
+          ? /外部サービス maps は現在使用できません/
+          : /External service maps cannot be used/,
+      ),
+    ).toHaveCount(0);
+  });
+
   test(`conversation header names its Scratch Space and links to it in ${locale}`, async ({
     page,
   }) => {
@@ -3844,4 +3885,61 @@ test("a remote decline holder sees only the paused call and cannot send a senten
     .click();
   await expect.poll(() => declines).toEqual([{ call: call.call }]);
   expect(errors).toEqual([]);
+});
+
+test("a successor can edit the Duty immediately when takeover succeeds and resume is refused", async ({
+  page,
+}) => {
+  const { deleteThread } = await setup(page, {
+    locale: "en-US",
+    subject: true,
+  });
+  for (const thread of fixture().threads) deleteThread(thread.id);
+  const waiting = {
+    id: "weekly-review",
+    title: "Weekly review",
+    agent: { id: "reporter", version: "1.0.0" },
+    trigger: null,
+    next_scheduled_at: null,
+    status: "stopped",
+    halt: "requester_left",
+    requester: "alice",
+    thread_deleted: true,
+    may_take_over: true,
+  };
+  const taken = {
+    ...waiting,
+    status: "paused",
+    halt: "paused",
+    requester: "bob",
+    mine: true,
+    may_take_over: false,
+    may_edit: true,
+    may_resume: true,
+  };
+  let duty = waiting;
+  const refusal = "Ask the Scratch Space creator to add you as a member.";
+  await page.route("**/api/duties?scope=mine", (route) =>
+    route.fulfill({ json: [duty] }),
+  );
+  await page.route("**/api/duties/weekly-review/take-over", (route) => {
+    duty = taken;
+    return route.fulfill({ json: taken });
+  });
+  await page.route("**/api/duties/weekly-review/resume", (route) =>
+    route.fulfill({ status: 400, json: { error: { message: refusal } } }),
+  );
+
+  await page.goto("/collaboration");
+  const duties = page.getByRole("region", { name: "Duties", exact: true });
+  const takeover = duties.getByRole("button", { name: "Take over and resume" });
+  await takeover.click();
+  await expect(duties.getByRole("alert")).toContainText(refusal);
+  await expect(
+    duties.getByRole("button", { name: "Edit", exact: true }),
+  ).toBeEnabled();
+  await expect(takeover).toHaveCount(0);
+  await expect(
+    duties.getByRole("button", { name: "Resume", exact: true }),
+  ).toBeEnabled();
 });

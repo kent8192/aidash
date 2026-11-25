@@ -75,6 +75,64 @@ test("an older task completing emits one notice from the visible event", async (
   await expect(page.locator(".intent-toast")).toHaveCount(0);
 });
 
+test("Duty completions from state and events appear only in the bell", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const { passAnswerDeadline } = await setup(page, {
+    subject: true,
+    locale: "en-US",
+  });
+  passAnswerDeadline();
+  await page.route("**/api/duties/notices", (route) =>
+    route.fulfill({ json: { stopped: [], scheduled_tasks: [] } }),
+  );
+  await page.goto("/collaboration?channel=thread-one");
+  const data = await stateAfterLoad(page);
+  const toasts: string[] = [];
+  await page.exposeFunction("recordToast", (title: string) =>
+    toasts.push(title),
+  );
+  await page.evaluate(() => {
+    const observer = new MutationObserver(() => {
+      const toast = document.querySelector(".intent-toast-open");
+      if (toast?.textContent)
+        void (
+          window as unknown as { recordToast: (text: string) => Promise<void> }
+        ).recordToast(toast.textContent);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+  const completed = {
+    ...data.tasks[0],
+    status: "COMPLETED" as const,
+    revision: data.tasks[0].revision + 1,
+    started_by_duty: "duty-digest",
+  };
+  data.tasks[0] = completed;
+  data.events.push({
+    id: "duty-completion-event",
+    sequence: 123456,
+    kind: "task.completed",
+    thread_id: completed.thread_id,
+    node: data.threads[0].node,
+    created_at: new Date().toISOString(),
+    data: {
+      task: { ...completed, id: "event-only-task", title: "Duty digest" },
+    },
+  });
+  await refreshState(page);
+  // Wait for the bell's unread indicator before advancing the toast timer.
+  const bell = page.getByRole("button", { name: "Notifications", exact: true });
+  await expect(bell.locator(".bg-brand-mark")).toBeVisible();
+  await page.clock.runFor(NOTICE_INTERVAL + 5500);
+  expect(toasts).toEqual([]);
+  await bell.click();
+  const center = page.locator(".intent-notifications");
+  await expect(center).toContainText(completed.title);
+  await expect(center).toContainText("Duty digest");
+});
+
 test("a notice opens an older task through its thread snapshot", async ({
   page,
 }) => {

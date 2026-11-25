@@ -329,7 +329,9 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 	let mut lease = match access {
 		Ok(Some(access)) => Lease::Scoped(Box::new(access)),
 		Ok(None) => Lease::within(store, &store.thread_tenancy(run.thread_id).await?).await?,
-		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(None),
+		Err(Error::Forbidden | Error::CredentialForbidden(_) | Error::Conflict(_)) => {
+			return Ok(None);
+		}
 		Err(e) => return Err(e),
 	};
 	let result = async {
@@ -686,6 +688,7 @@ async fn execute(
 			lease: &mut lease,
 			models: &models,
 			delivered: &mut Vec::new(),
+			start_keyword_scores: None,
 		};
 		match input {
 			Input::OffloadedRange {

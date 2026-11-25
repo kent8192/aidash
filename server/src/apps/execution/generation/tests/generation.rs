@@ -12,6 +12,8 @@ use tokio::sync::Notify;
 use upstream_fixtures::{async_upstream, reply};
 #[path = "../../tests/support/legacy.rs"]
 mod common;
+#[path = "../../tests/support/late_subnode.rs"]
+mod late_subnode;
 use common::*;
 
 use serde_json::{Value, json};
@@ -682,6 +684,16 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 		.find(|run| run.task_id.to_string() == second)
 		.unwrap()
 		.id;
+	let subnode = late_subnode::seed_subnode(&f, original, &[]).await;
+	let subnode_query = Query::select()
+		.columns(["state", "ended_reason"].map(Alias::new))
+		.from(Alias::new("subnodes"))
+		.and_where(Expr::col("id").eq(Expr::value(subnode)))
+		.to_string(PostgresQueryBuilder);
+	let subnode_state = || {
+		sqlx::query_as::<_, (String, Option<String>)>(&subnode_query)
+			.fetch_one(f.store.pool.fixture_driver())
+	};
 	let complete = |run: uuid::Uuid| {
 		let pool = f.store.pool.fixture_driver().clone();
 		async move {
@@ -707,6 +719,7 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 	)
 	.await;
 	assert_eq!(jobs[0]["status"], "ACTIVE", "{jobs}");
+	assert_eq!(subnode_state().await.unwrap(), ("active".into(), None));
 	// The reused Run makes its model calls under the generated agent and
 	// finishes its own Task.
 	let worker = aidash_server::harness::Harness {
@@ -742,7 +755,42 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 			.as_str(),
 		"COMPLETED"
 	);
-	// Once no chain uses it, it retires as before.
+	// Interrupt reconciliation after retirement commits while the creating Run
+	// is still locked. A subsequent pass must find and finish the cleanup.
+	let pool = f.store.pool.fixture_driver();
+	let mut locked_run = pool.begin().await.unwrap();
+	sqlx::query("SELECT id FROM task_executions WHERE id = $1 FOR NO KEY UPDATE")
+		.bind(original)
+		.execute(&mut *locked_run)
+		.await
+		.unwrap();
+	let runtime = f.clone();
+	let sweep =
+		tokio::spawn(
+			async move { aidash_server::generation::provision::reconcile(&runtime).await },
+		);
+	let request_id: uuid::Uuid =
+		serde_json::from_value(generated["generation"]["id"].clone()).unwrap();
+	let committed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let status: String =
+				sqlx::query_scalar("SELECT status FROM generation_requests WHERE id = $1")
+					.bind(request_id)
+					.fetch_one(pool)
+					.await
+					.unwrap();
+			if status == "COMPLETED" {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await;
+	sweep.abort();
+	assert!(sweep.await.unwrap_err().is_cancelled());
+	locked_run.rollback().await.unwrap();
+	committed.expect("retirement must commit before cleanup acquires the creator lock");
+	assert_eq!(subnode_state().await.unwrap(), ("active".into(), None));
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
@@ -755,6 +803,10 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 	)
 	.await;
 	assert_eq!(jobs[0]["status"], "COMPLETED", "{jobs}");
+	assert_eq!(
+		subnode_state().await.unwrap(),
+		("dissolved".into(), Some("creator_agent_removed".into()))
+	);
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }

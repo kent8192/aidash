@@ -1,8 +1,9 @@
 //! Management HTTP endpoints.
 use crate::http::json::Json;
 use crate::{
+	apps::registry::serializers::contracts::ReferenceRevocationsQuery,
 	authorization::identity::Actor,
-	registry::{Entry, Search},
+	registry::{EntityRef, Entry, Search},
 };
 use reinhardt::Depends;
 use reinhardt::Path;
@@ -47,6 +48,24 @@ pub async fn registry_versions(
 	Query(page): Query<crate::apps::registry::serializers::contracts::VersionPage>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.registry_versions(actor, page).await)
+}
+
+#[get(
+	"/api/registry/{id}/{version}/reference-revocations",
+	name = "registry-source-revocations",
+	auth = "protected"
+)]
+pub async fn source_revocations(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Path((id, version)): Path<(String, String)>,
+	Query(query): Query<ReferenceRevocationsQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.source_revocations(actor, EntityRef { id, version }, query.node)
+			.await,
+	)
 }
 
 #[post("/api/registry", name = "registry-create", auth = "protected")]

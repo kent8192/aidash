@@ -165,7 +165,7 @@ fn remaining(started: Instant, limit: Duration) -> Duration {
 		.max(Duration::from_millis(1))
 }
 
-async fn limit_locks(tx: &mut dyn TransactionExecutor, limit: Duration) -> Result<()> {
+pub(crate) async fn limit_locks(tx: &mut dyn TransactionExecutor, limit: Duration) -> Result<()> {
 	set_local(tx, "lock_timeout", format!("{}ms", limit.as_millis())).await
 }
 

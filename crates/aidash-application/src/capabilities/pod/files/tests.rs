@@ -198,6 +198,8 @@ async fn a_patch_reaches_the_runner_with_the_run() {
 		&context,
 		"run",
 		"*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch".into(),
+		uuid::Uuid::nil(),
+		true,
 	)
 	.await
 	.unwrap();
@@ -216,6 +218,8 @@ async fn a_patch_whose_helper_failed_on_a_running_pod_is_never_repeated() {
 		&context,
 		"run",
 		"*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch".into(),
+		uuid::Uuid::nil(),
+		true,
 	)
 	.await;
 	assert!(
@@ -234,7 +238,12 @@ async fn a_patch_naming_a_path_outside_the_scratch_space_is_refused_before_the_r
 		"*** Begin Patch\n*** Delete File: /etc/passwd\n*** End Patch",
 		"*** Begin Patch\n*** Update File: a//b\n@@\n-x\n+y\n*** End Patch",
 	] {
-		assert!(patch(&context, "run", text.into()).await.is_err(), "{text}");
+		assert!(
+			patch(&context, "run", text.into(), uuid::Uuid::nil(), true)
+				.await
+				.is_err(),
+			"{text}"
+		);
 	}
 	assert!(runtime.calls().is_empty());
 }

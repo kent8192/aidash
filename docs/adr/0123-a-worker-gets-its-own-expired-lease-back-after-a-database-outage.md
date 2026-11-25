@@ -6,7 +6,8 @@ Three changes make that hold:
 
 - **The renewal fence.** The lease renewal requires only that `lease_owner` is still the worker. Every other worker write keeps requiring an unexpired lease, including the checks that a lease has time left before an outside call. A claim replaces the owner under the row lock, so a renewal never revives a lease another worker took.
 - **A step that failed on the outage or hit an expired lease fence renews first.** Such a step stops renewing when it returns, so before it records the failure the worker renews its lease, waiting for the database. If renewal succeeds after a lease-lost conflict, the worker records a retry without charging a recovery. If another worker took the Run meanwhile, the failure is theirs and the worker drops it.
-- **A hold on recoveries.** Every process meets an outage at once, and every lease held across it expires. For one lease period after a process last failed to reach the database, its recovery claims leave Runs whose expired lease still names an owner. New Runs, Runs with no owner and cancelled Runs are claimed at once. Lock waits, deadlocks and statement timeouts do not start the hold, because the database is up.
+- **A hold on recoveries.** A connection failure starts a per-process hold. During the hold, recovery claims leave Runs whose expired lease still names an owner. New Runs, Runs with no owner and cancelled Runs are claimed at once. Connection I/O, TLS and protocol failures and PostgreSQL SQLSTATE patterns `08xxx` and `57P0x` qualify. Pool acquisition timeouts, lock waits, deadlocks and statement timeouts can occur while the database is up and leave the hold unchanged.
+- **Bounded hold (#882).** The hold ends one configured lease period after the first connection failure in a streak (30 s by default). A later connection failure starts a new streak after a full lease period without a connection failure. This lets recovery resume even if a process keeps observing connection errors while some claims can reach the database.
 
 A worker cut off from the database while the others reach it still has its Run taken over and charged, because another worker really runs the step again.
 
@@ -20,5 +21,6 @@ A worker cut off from the database while the others reach it still has its Run t
 ## Consequences
 
 - A process that dies right after an outage has its Runs recovered up to one lease period later.
+- If the outage lasts past the hold deadline, recovery claims can take over expired leases as soon as they reach the database. The original worker can still renew its own lease as long as it still owns it.
 - A worker whose step was cut off but kept running across an outage may write again once it renews. This is the same worker; nobody else ran the step in between.
 - `aidash_worker_lease_reclaims_total` counts reclaimed leases, and a warning names each Run with how long its lease had expired.

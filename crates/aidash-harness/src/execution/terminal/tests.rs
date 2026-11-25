@@ -68,6 +68,7 @@ fn task(scope: &Scope, status: TaskStatus) -> Task {
 		created_by: "fixture".into(),
 		dependencies: vec![],
 		parent_id: None,
+		started_by_duty: None,
 		revision: 2,
 		created_at: scope.metadata.updated_at,
 	}

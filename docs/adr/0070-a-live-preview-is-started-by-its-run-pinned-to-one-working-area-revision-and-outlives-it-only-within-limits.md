@@ -31,6 +31,10 @@ For a Remote Grant Run, the receiver rechecks the admission subject chain and an
 
 If a stop wins while a Live preview start waits for the Runner, the stopped state and its original reason remain authoritative. The Runner is asked to stop the operation, and the revision hold remains until termination is confirmed.
 
+A start attempt can reach the Runner before the caller receives an error. The preview records `start_failed` and keeps the revision hold until the Runner confirms termination. The sweep retries an unconfirmed stop. A refusal before dispatch can release the hold immediately.
+
+If the Runner receives a stop before it has admitted the preview, it journals a refusal for the operation ID before confirming the stop. The same journal lock protects admission, so a delayed start sees the refusal before it can enter the command queue. The refusal survives a Runner restart and follows the command refusal retention window, extended while the start handler is still in flight.
+
 ## Amendment (2026-11-14, #745)
 
 ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.

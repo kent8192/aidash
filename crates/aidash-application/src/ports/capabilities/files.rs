@@ -44,6 +44,26 @@ pub trait VerifiedFile: Send {
 	async fn fill_buf(&mut self) -> Result<&[u8]>;
 	fn consume(&mut self, count: usize);
 }
+/// An upload staged without a Run authority transaction.
+#[async_trait]
+pub trait ScratchUpload: Send {
+	type Sealed: Send;
+	async fn write_block(&mut self, bytes: &[u8]) -> Result<()>;
+	async fn seal(self, digest: &str) -> Result<Self::Sealed>;
+}
+
+#[async_trait]
+pub trait ScratchStager: Send {
+	type Upload: ScratchUpload;
+	async fn stage(&mut self, area: Uuid, size: u64) -> Result<Self::Upload>;
+}
+
+#[async_trait]
+pub trait ScratchPublisher: FileScopePort {
+	type Upload: Send;
+	async fn publish_scratch_upload(&mut self, upload: Self::Upload) -> Result<(Uuid, String)>;
+}
+
 #[async_trait]
 pub trait FileScopePort: Send {
 	fn local_node(&self) -> &str;
@@ -83,6 +103,13 @@ pub trait FileScopePort: Send {
 	) -> Result<Option<super::pod_operations::PodContext>> {
 		Ok(None)
 	}
+	/// Recheck Scratch Space access and retain it through detached file settlement.
+	async fn recheck_pod(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<Option<super::pod_operations::PodContext>> {
+		self.pod(run).await
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn require_current(&mut self, area: &Area, run: &RunMetadata) -> Result<()>;
@@ -95,11 +122,27 @@ pub trait FileScopePort: Send {
 	) -> Result<Value>;
 	async fn output(&mut self, area: &Area, id: Uuid) -> Result<Option<(String, i64, String)>>;
 	async fn open(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>>;
+	/// Authorize an immutable object before a detached range transfer.
+	async fn open_ranges(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>> {
+		self.open(file).await
+	}
 	/// Of these Reference records, the ids that can no longer be used because the
 	/// file was revoked, expired or removed (ADR 0114). One query however many ids.
 	async fn unusable_references(&mut self, ids: &[Uuid]) -> Result<BTreeSet<Uuid>>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
+	/// Replace a pending Scratch patch claim while holding the request lock.
+	async fn complete_patch(
+		&mut self,
+		_key: Uuid,
+		_digest: &str,
+		_claim: Uuid,
+		_result: &Value,
+	) -> Result<()> {
+		Err(crate::Error::External(
+			"Scratch patch settlement unavailable".into(),
+		))
+	}
 	async fn begin_pending(&mut self, area: Uuid, size: u64) -> Result<()>;
 	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>>;
 	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()>;

@@ -21,7 +21,11 @@ use crate::apps::workspaces::models::{
 	ScratchSpace as SpaceRecord, ScratchSpaceMember as MemberRecord,
 	ScratchSpaceSettings as SettingsRecord,
 };
-use crate::{Error, Result, apps::identity::services::access::Access};
+use crate::{
+	Error, Result,
+	apps::{execution::repositories::egress, identity::services::access::Access},
+	store::Store,
+};
 
 /// Resolve an operator-named Space before opening its Tenant transaction.
 pub(crate) async fn tenant_by_id(pool: &crate::database::native::Pool, id: Uuid) -> Result<String> {
@@ -46,7 +50,7 @@ pub(crate) async fn load(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Option<ScratchSpace>> {
-	load_with_lock(tx, tenant, id, true).await
+	load_with_lock(tx, tenant, id, Some(LockType::NoKeyUpdate)).await
 }
 
 /// Reads without a lock, for a check that decides nothing about the row's future.
@@ -55,14 +59,23 @@ pub(crate) async fn read(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Option<ScratchSpace>> {
-	load_with_lock(tx, tenant, id, false).await
+	load_with_lock(tx, tenant, id, None).await
+}
+
+/// Hold membership, state and settings stable until the caller commits.
+pub(crate) async fn hold_for_use(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> Result<Option<ScratchSpace>> {
+	load_with_lock(tx, tenant, id, Some(LockType::Share)).await
 }
 
 async fn load_with_lock(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	id: Uuid,
-	lock: bool,
+	lock: Option<LockType>,
 ) -> Result<Option<ScratchSpace>> {
 	let mut query = Query::select();
 	query
@@ -83,8 +96,8 @@ async fn load_with_lock(
 		.from(Alias::new("scratch_spaces"))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 		.and_where(Expr::col("id").eq(Expr::value(id)));
-	if lock {
-		query.lock(LockType::NoKeyUpdate);
+	if let Some(lock) = lock {
+		query.lock(lock);
 	}
 	let (sql, values) = query.build(PostgresQueryBuilder);
 	let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
@@ -726,7 +739,7 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	}
 	async fn load(&mut self, id: Uuid) -> aidash_application::Result<ScratchSpace> {
 		let tenant = self.access.identity.tenant.clone();
-		load_with_lock(&mut **self.access.tx, &tenant, id, false)
+		load_with_lock(&mut **self.access.tx, &tenant, id, None)
 			.await
 			.map_err(aidash_application::Error::from)?
 			.ok_or_else(|| aidash_application::Error::NotFound("Scratch Space".into()))
@@ -812,7 +825,7 @@ impl ScratchServices for NativeScratchServices<'_> {
 		// to certain subjects or Agents, covers it (#738). Services already on the
 		// Space are not passed here, so a later withdrawal never blocks a save.
 		let tenant = access.identity.tenant.clone();
-		let usable = crate::apps::execution::repositories::egress::usable_services(
+		let usable = egress::usable_services(
 			&mut access.tx,
 			&tenant,
 			node.as_str(),
@@ -892,7 +905,7 @@ impl NativeScratchServices<'_> {
 			// across retries. Existing spaces need no Node allocation lock.
 			let scratch_id =
 				remote_space_id(&tenant, &run.node, &run.home_node, run.thread_id, &person);
-			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, false)
+			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, None)
 				.await
 				.map_err(aidash_application::Error::from)?
 			{
@@ -1019,8 +1032,7 @@ async fn registered_service(access: &mut Access, id: &str) -> Result<bool> {
 		.is_empty())
 }
 
-/// Whether one External service on a Scratch Space is usable now, and the reason
-/// when it is not: `not_found`, `not_approved` or `approval_limited` (#738).
+/// Whether one External service on a Scratch Space is usable now.
 pub(crate) struct ServiceState {
 	pub id: String,
 	pub usable: bool,
@@ -1029,11 +1041,12 @@ pub(crate) struct ServiceState {
 
 /// The state of every External service on `space`, for its settings display.
 pub(crate) async fn service_states(
+	store: &Store,
 	access: &mut Access,
 	space: &ScratchSpace,
 ) -> Result<Vec<ServiceState>> {
 	let tenant = access.identity.tenant.clone();
-	let usable = crate::apps::execution::repositories::egress::usable_services(
+	let usable = egress::usable_services(
 		&mut access.tx,
 		&tenant,
 		space.node.as_str(),
@@ -1043,7 +1056,13 @@ pub(crate) async fn service_states(
 	let mut states = Vec::new();
 	for (id, result) in usable {
 		let reason = match result {
-			Ok(_) => None,
+			Ok(entry) => {
+				let exceeds_limits =
+					aidash_domain::egress::definition(&entry).is_ok_and(|definition| {
+						egress::check_service_limits(store, &definition).is_err()
+					});
+				exceeds_limits.then_some("limits_exceeded")
+			}
 			Err(reason) if reason == aidash_domain::egress::SERVICE_APPROVAL_LIMITED => {
 				Some("approval_limited")
 			}
@@ -1062,6 +1081,7 @@ pub(crate) async fn service_states(
 /// The External services of a Run's Scratch Space that are usable now, as its
 /// starting instructions list them. Empty when the Space is gone or not Active.
 pub(crate) async fn usable_lines(
+	store: &Store,
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	space: Uuid,
@@ -1072,7 +1092,7 @@ pub(crate) async fn usable_lines(
 	if space.state != aidash_domain::scratch::ScratchState::Active {
 		return Ok(Vec::new());
 	}
-	let usable = crate::apps::execution::repositories::egress::usable_services(
+	let usable = egress::usable_services(
 		tx,
 		tenant,
 		space.node.as_str(),
@@ -1085,6 +1105,9 @@ pub(crate) async fn usable_lines(
 		let Ok(definition) = aidash_domain::egress::definition(&entry) else {
 			continue;
 		};
+		if egress::check_service_limits(store, &definition).is_err() {
+			continue;
+		}
 		let description = entry
 			.description
 			.get("en")

@@ -51,7 +51,9 @@ administrator fallback.
   Administrator's receipt grants no read of it, and it is closed while the Tenant is deleted or purged.
 - **Required-Home receivers.** A receiver Run whose content is hidden is still stoppable by this Deployment;
   the command is never forwarded to another Deployment, and the reason is never sent. Existing remote state
-  synchronization carries the phase and control.
+  synchronization carries the phase and control. A Safety Stop pause requires fresh authority from the receiving
+  Tenant to resume. While the pause holds, the receiver refuses the Home's Resume and Decline as well as any
+  Home Pause that would replace the control source.
 - **Subjects.** A Tenant Subject's contract on the route is unchanged; a Subject request carrying an
   administrator-only field is refused with 400. Subject operations are not added to the Safety Stop audit.
 

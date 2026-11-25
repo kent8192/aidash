@@ -743,6 +743,7 @@ async fn command(pod: &StdioPod, run: Uuid, code: String) -> std::result::Result
 			scratch_space_id: pod.settings.scratch_space_id.clone(),
 			run_id: run.to_string(),
 			code,
+			expected_session_id: None,
 			cwd: None,
 			timeout_seconds: Some(PREPARE_SECONDS),
 			background: false,

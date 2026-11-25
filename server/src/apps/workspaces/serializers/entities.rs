@@ -26,6 +26,7 @@ impl From<TaskRecord> for Task {
 			created_by: record.created_by,
 			dependencies: record.dependencies,
 			parent_id: record.parent_id,
+			started_by_duty: record.started_by_duty,
 			revision: record.revision,
 			created_at: record.created_at,
 		}

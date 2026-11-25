@@ -225,7 +225,7 @@ async fn stopping_a_flow_cancels_its_runs_ends_its_subnodes_and_pauses_its_dutie
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
 	let duty = duty_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-1",
 		"duty_create",
@@ -314,7 +314,7 @@ async fn stopping_a_flow_cancels_a_tick_that_commits_while_the_stop_waits(
 	let c = capability_fixture.await;
 	let root = admit(&c).await;
 	let duty = duty_tool(
-		&c.f.store,
+		&c.f,
 		&root,
 		"call-1",
 		"duty_create",
@@ -657,7 +657,7 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		.unwrap()
 		.to_owned();
 	let duty = duty_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-2",
 		"duty_create",

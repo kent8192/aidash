@@ -551,6 +551,11 @@ pub struct Policy {
 	/// Automatic work is explicit and pinned to this Registry policy version.
 	pub maintain_observations: bool,
 	pub refresh_mental_models: bool,
+	/// Search by meaning with the embedding of the bank's Thread semantic
+	/// index, when that index is enabled. Without one, recall stays keyword,
+	/// time and link search. Exclusive with a pinned `embedding` role (#1123).
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub thread_index_embedding: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -663,6 +668,11 @@ impl Policy {
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.bounds.validate()?;
+		if self.thread_index_embedding && self.embedding.is_some() {
+			return Err(Error::Invalid(
+				"memory uses either a pinned embedding or its Thread index embedding".into(),
+			));
+		}
 		if !(1..=1_000_000).contains(&self.semantic_link_min_similarity_millionths) {
 			return Err(Error::Invalid(
 				"memory semantic graph cutoff must be explicit and positive".into(),

@@ -239,10 +239,8 @@ async fn exhausted_semantic_retries_enter_outage_wait(repository: Repository, no
 		let run = repository.run.lock().unwrap();
 		let recovery = &run.as_ref().unwrap().recovery;
 		assert_eq!(recovery.semantic_reason, Some(SemanticFailure::Unavailable));
-		// Only the wait's `wake_at` schedules the next check: the kept retry
-		// carries no later time that would hold the wake-up back.
-		let retry = recovery.retry.as_ref().unwrap();
-		assert_eq!((retry.count, retry.at), (OUTAGE_RETRIES, now));
+		assert!(recovery.retry.is_none());
+		assert!(recovery.semantic_outage_retries_exhausted());
 		assert_eq!(
 			aidash_domain::semantic::recovery::Recovery::new(SemanticFailure::Unavailable, true)
 				.actions,
@@ -862,6 +860,7 @@ async fn a_node_outage_pauses_once_its_wait_reaches_the_bound(
 		run.recovery.outage = Some(aidash_domain::run_state::OutageTracking {
 			service: "Node aidash://other/sibling".into(),
 			started_at: now - aidash_domain::run_state::OUTAGE_BOUND,
+			short_retries_exhausted: false,
 		});
 	}
 	recover(
@@ -1025,48 +1024,37 @@ async fn closed_native_memory_is_retried_then_waited_out(
 		RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { service, .. }
 			if service == "Native memory")
 	));
-	// The wait keeps the spent short retries for its wake-up to restore, so a
-	// failure after the wake waits again at once (ADR 0129).
-	assert_eq!(
-		run.as_ref()
-			.unwrap()
-			.recovery
-			.retry
-			.as_ref()
-			.map(|retry| retry.count),
-		Some(OUTAGE_RETRIES)
-	);
+	assert!(run.as_ref().unwrap().recovery.retry.is_none());
 }
 
 #[rstest]
+#[case::service("Native memory", ExecutionFailure::ServiceOutage("Native memory".into()))]
+#[case::semantic(
+	SEMANTIC_CONTEXT_OUTAGE,
+	ExecutionFailure::Semantic(SemanticFailure::Unavailable)
+)]
 #[tokio::test]
-async fn a_service_outage_after_its_wake_waits_again_without_more_short_retries(
+async fn an_outage_after_its_wake_waits_again_without_more_short_retries(
 	repository: Repository,
 	now: DateTime<Utc>,
+	#[case] service: &str,
+	#[case] failure: ExecutionFailure,
 ) {
-	// The step the wake-up resumed, with the count the wait kept restored.
+	// The resumed step retains the outage, with a fresh generic retry budget.
 	{
 		let mut run = repository.run.lock().unwrap();
 		let run = run.as_mut().unwrap();
-		run.recovery.retry = Some(RetryState {
-			count: OUTAGE_RETRIES,
-			at: now,
-		});
-		run.recovery.outage = Some(aidash_domain::run_state::OutageTracking {
-			service: "Native memory".into(),
+		run.recovery.outage = Some(OutageTracking {
+			service: service.into(),
 			started_at: now - chrono::Duration::minutes(5),
+			short_retries_exhausted: true,
 		});
 	}
 	let later = now + chrono::Duration::minutes(5);
 	assert!(
-		!recover(
-			&repository,
-			repository.token,
-			ExecutionFailure::ServiceOutage("Native memory".into()),
-			later,
-		)
-		.await
-		.unwrap()
+		!recover(&repository, repository.token, failure, later,)
+			.await
+			.unwrap()
 	);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),

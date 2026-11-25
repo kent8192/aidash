@@ -2,7 +2,7 @@
 //! "disabling or removing the creating Agent deletes its Subnodes").
 //!
 //! After a Catalog Approval is withdrawn or disabled, or the Tenant's policy
-//! is saved, the change has committed: [`sweep`] then finds the active
+//! is saved, or generation retires an Agent, this service finds the active
 //! Subnodes whose creating Agent version is definitely unusable on their Node
 //! ([`aidash_domain::subnodes::creator_removed`]) and ends them the way their
 //! creator's own end would, one creating Run per transaction. Each
@@ -32,13 +32,16 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
+use std::time::Duration;
 use uuid::Uuid;
+
+const RETIREMENT_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// Ends what a committed change made unusable. It holds none of the change's
 /// locks. A failure is logged, not returned: the change itself stands, and the
-/// next withdrawal or policy save in the Tenant sweeps again.
+/// next withdrawal, policy save or retirement in the Tenant sweeps again.
 pub(crate) async fn sweep(store: &Store, tenant: &str) {
-	match end_removed_creators(store, tenant).await {
+	match end_removed_creators(store, tenant, None).await {
 		Ok(ended) if !ended.is_empty() => {
 			tracing::info!(
 				tenant,
@@ -57,34 +60,68 @@ pub(crate) async fn sweep(store: &Store, tenant: &str) {
 	}
 }
 
-/// The creating Runs whose Subnodes ended. One creating Run that fails is
-/// logged and does not keep the others' Subnodes running.
-pub(crate) async fn end_removed_creators(store: &Store, tenant: &str) -> Result<Vec<Uuid>> {
+/// Clean up one retired version. The worker retains its pending marker if
+/// any creator could not be checked or ended in this pass.
+pub(crate) async fn end_retired_creators(
+	store: &Store,
+	tenant: &str,
+	node: &NodeAddress,
+	agent: &EntityRef,
+) -> Result<()> {
+	end_removed_creators(store, tenant, Some((node, agent))).await?;
+	Ok(())
+}
+
+async fn end_removed_creators(
+	store: &Store,
+	tenant: &str,
+	retired: Option<(&NodeAddress, &EntityRef)>,
+) -> Result<Vec<Uuid>> {
 	let scope = TenancyScope::tenant(tenant)?;
 	let candidates = store
 		.pool
 		.atomic(&scope, async |tx| {
-			candidates(tx, &store.deployment, tenant).await
+			if retired.is_some() {
+				crate::database::authority_change::limit_locks(tx, RETIREMENT_LOCK_WAIT).await?;
+			}
+			candidates(tx, &store.deployment, tenant, retired).await
 		})
 		.await?;
 	let mut ended = vec![];
+	let mut failure = None;
 	for creator in candidates {
-		match end_one(store, &scope, tenant, creator).await {
+		match end_one(store, &scope, tenant, creator, retired.is_some()).await {
 			Ok(true) => ended.push(creator),
 			Ok(false) => {}
-			Err(error) => tracing::warn!(
-				%error,
-				tenant,
-				%creator,
-				"could not end the Subnodes of a disabled creating Agent"
-			),
+			Err(error) => {
+				tracing::warn!(
+					%error,
+					tenant,
+					%creator,
+					"could not end the Subnodes of a disabled creating Agent"
+				);
+				failure.get_or_insert(error);
+			}
 		}
 	}
-	Ok(ended)
+	match (retired, failure) {
+		(Some(_), Some(error)) => Err(error),
+		_ => Ok(ended),
+	}
 }
 
-async fn end_one(store: &Store, scope: &TenancyScope, tenant: &str, creator: Uuid) -> Result<bool> {
+async fn end_one(
+	store: &Store,
+	scope: &TenancyScope,
+	tenant: &str,
+	creator: Uuid,
+	retryable: bool,
+) -> Result<bool> {
 	let mut tx = store.pool.begin(scope).await?.into_executor().await?;
+	if retryable {
+		// Bound time spent waiting for locks without limiting the cascade itself.
+		crate::database::authority_change::limit_locks(tx.as_mut(), RETIREMENT_LOCK_WAIT).await?;
+	}
 	let ended = aidash_application::subnodes::end_if_creator_removed(
 		&mut Removal {
 			cascade: Cascade {
@@ -129,8 +166,9 @@ async fn candidates(
 	tx: &mut dyn TransactionExecutor,
 	deployment: &DeploymentId,
 	tenant: &str,
+	retired: Option<(&NodeAddress, &EntityRef)>,
 ) -> Result<Vec<Uuid>> {
-	let creators = active_creators(tx, deployment, tenant, None).await?;
+	let creators = active_creators(tx, deployment, tenant, None, retired).await?;
 	if creators.is_empty() {
 		return Ok(vec![]);
 	}
@@ -154,6 +192,7 @@ async fn active_creators(
 	deployment: &DeploymentId,
 	tenant: &str,
 	creator: Option<Uuid>,
+	retired: Option<(&NodeAddress, &EntityRef)>,
 ) -> Result<Vec<Creator>> {
 	let mut query = Query::select();
 	query
@@ -173,6 +212,12 @@ async fn active_creators(
 		.order_by(Alias::new("creator_run_id"), Order::Asc);
 	if let Some(creator) = creator {
 		query.and_where(Expr::col("creator_run_id").eq(Expr::value(creator)));
+	}
+	if let Some((node, agent)) = retired {
+		query
+			.and_where(Expr::col("node").is_in([node.to_string(), node.node.as_str().to_owned()]))
+			.and_where(Expr::col("creator_agent_id").eq(Expr::value(agent.id.as_str())))
+			.and_where(Expr::col("creator_agent_version").eq(Expr::value(agent.version.as_str())));
 	}
 	let rows: Vec<(Uuid, String, String, String)> =
 		crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
@@ -286,13 +331,17 @@ impl CreatorRemovalScope for Removal<'_> {
 		crate::apps::execution::repositories::subnodes::lock_for_end(self.cascade.tx, creator)
 			.await?;
 		let deployment = self.cascade.store.deployment.clone();
-		Ok(
-			active_creators(self.cascade.tx, &deployment, self.tenant, Some(creator))
-				.await?
-				.into_iter()
-				.next()
-				.map(|creator| (creator.agent, creator.node.to_string())),
+		Ok(active_creators(
+			self.cascade.tx,
+			&deployment,
+			self.tenant,
+			Some(creator),
+			None,
 		)
+		.await?
+		.into_iter()
+		.next()
+		.map(|creator| (creator.agent, creator.node.to_string())))
 	}
 	async fn catalog_enabled(
 		&mut self,

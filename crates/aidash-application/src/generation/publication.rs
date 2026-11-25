@@ -44,19 +44,19 @@ pub async fn publish(
 	scope.replace_snapshot(snapshot);
 	scope.save_authority(job).await?;
 	scope.register(&entry).await?;
-	if !job.is_local() {
-		return Ok(());
-	}
-	// An unapproved generated version could never run, so a lost
-	// `catalog.approve` refuses the activation instead of publishing it.
-	let Some(approver) = scope.approver(job).await? else {
-		return Err(Error::Forbidden);
+	let actor = if spec.approval_required {
+		let approver = scope.approver(job).await?.ok_or(Error::Forbidden)?;
+		if !scope.may_approve(&approver, &entry).await? {
+			return Err(Error::Forbidden);
+		}
+		approver
+	} else {
+		// The pinned policy authorizes publication in advance. The requester
+		// did not make an individual Catalog Approval decision.
+		"generation-service".to_owned()
 	};
-	if !scope.may_approve(&approver, &entry).await? {
-		return Err(Error::Forbidden);
-	}
 	scope.approve(job, &entry).await?;
-	scope.catalog_history(job, &entry, &approver).await
+	scope.catalog_history(job, &entry, &actor).await
 }
 /// Whether the generated agent of `job` may work on `task` in a chain whose
 /// root is `root`: on the Task it was generated for, or, for a local request,

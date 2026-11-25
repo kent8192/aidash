@@ -8,9 +8,7 @@
 //! `{home}/workspaces/{id}`, which is now `{home}/threads/{id}`
 //! (`authorization::tools::remote_identifier`); a deny that kept either old
 //! name would stop matching and so fail open.
-use reinhardt::query::{
-	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
-};
+use reinhardt::query::{Alias, Expr, ExprTrait, Query, SimpleExpr};
 
 /// The first five are actions (see `before_threads`); a condition names an
 /// attribute by its JSON Pointer, so both the bare name and the pointer go.
@@ -61,7 +59,8 @@ fn rename(from_to: impl Fn((&str, &str)) -> (String, String)) -> String {
 	}
 	matched.push("document::text ~ ?".to_owned());
 	any.push(Expr::value(home_resource_id(&from)).into());
-	Query::update()
+	let mut update = Query::update();
+	update
 		.table(Alias::new("authorization_bundles"))
 		.value_expr(
 			Alias::new("document"),
@@ -72,8 +71,11 @@ fn rename(from_to: impl Fn((&str, &str)) -> (String, String)) -> String {
 		.and_where(SimpleExpr::CustomWithExpr(
 			format!("({})", matched.join(" OR ")),
 			any,
-		))
-		.to_string(PostgresQueryBuilder)
+		));
+	super::policy_revision_backfill::record_update(
+		&mut update,
+		"migration:identity/0111_thread_member_policy",
+	)
 }
 
 pub(crate) fn forward() -> String {

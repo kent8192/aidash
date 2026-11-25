@@ -6,6 +6,8 @@ A Run paused because its Account was suspended records the reason `account_suspe
 
 An owner may also resume, in one dashboard action, every Run of theirs paused by a suspension. Each Run gets the same checks as a manual resume.
 
+When the periodic pass refuses a Task execution because its owner no longer has permission, it records the authorization decisions once for that refusal. Later passes still check current authority, including changes outside the Tenant's policy, and record a new decision when the refusal changes.
+
 Recovery of a person who lost every sign-in method stays with GCIP or the upstream identity provider. On Deployments with common sign-in, the dashboard asks a person with only one usable sign-in method to add another, and links to the Authentication Server's account page. Dismissing the request hides it for 30 days.
 
 ## Considered Options

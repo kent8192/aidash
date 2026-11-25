@@ -23,6 +23,12 @@ struct Fake {
 	manages_budgets: bool,
 	/// The Duties handed over, and to whom.
 	handed_over: Vec<(Uuid, String)>,
+	/// Deleted Threads, and when.
+	deleted: BTreeMap<Uuid, DateTime<Utc>>,
+	/// Whether a deleted Thread's Scratch Space can no longer be used.
+	scratch_gone: bool,
+	/// Threads opened in place of a deleted one: (deleted, new, title).
+	reopened: Vec<(Uuid, Uuid, String)>,
 }
 
 impl Fake {
@@ -46,6 +52,9 @@ impl Fake {
 			budgets: BTreeMap::new(),
 			manages_budgets: false,
 			handed_over: vec![],
+			deleted: BTreeMap::new(),
+			scratch_gone: false,
+			reopened: vec![],
 		}
 	}
 
@@ -128,6 +137,34 @@ impl DutyScope for Fake {
 		self.threads.insert(own);
 		Ok(own)
 	}
+	async fn thread_deleted_at(&mut self, thread: Uuid) -> Result<Option<DateTime<Utc>>> {
+		Ok(self.deleted.get(&thread).copied())
+	}
+	async fn reopen_thread(
+		&mut self,
+		deleted: Uuid,
+		deleted_at: DateTime<Utc>,
+		definition: &Definition,
+	) -> Result<Uuid> {
+		assert_eq!(self.deleted.get(&deleted), Some(&deleted_at));
+		if self.scratch_gone {
+			return Err(Error::Invalid("the Scratch Space is gone".into()));
+		}
+		let own = Uuid::new_v4();
+		self.threads.insert(own);
+		self.reopened.push((deleted, own, definition.title.clone()));
+		Ok(own)
+	}
+	async fn bind_replacement_thread(&mut self, duty: &Duty, deleted: Uuid) -> Result<()> {
+		let stored = self
+			.duties
+			.get_mut(&duty.id)
+			.ok_or_else(|| Error::NotFound("duty not found".into()))?;
+		assert_eq!(stored.thread_id, deleted);
+		stored.thread_id = duty.thread_id;
+		stored.origin_thread_id = duty.origin_thread_id;
+		Ok(())
+	}
 	async fn insert(&mut self, duty: &Duty) -> Result<()> {
 		self.duties.insert(duty.id, duty.clone());
 		Ok(())
@@ -154,7 +191,7 @@ impl DutyScope for Fake {
 	async fn hand_over(&mut self, duty: &Duty, successor: &str) -> Result<()> {
 		assert_eq!(successor, self.subject);
 		// The Duty's own Thread becomes the successor's, with every action.
-		if duty.origin_thread_id.is_some() {
+		if duty.origin_thread_id.is_some() && !self.deleted.contains_key(&duty.thread_id) {
 			self.threads.insert(duty.thread_id);
 		}
 		self.handed_over.push((duty.id, successor.to_owned()));
@@ -420,7 +457,7 @@ async fn an_administrator_pauses_but_only_the_requester_resumes() {
 	assert_eq!(paused.halt, Some(Halt::Paused));
 	assert!(
 		matches!(&refused, Err(Error::Domain(aidash_domain::Error::Invalid(message)))
-			if message.starts_with("only the Duty's Requester, or the successor named for it")),
+			if message.starts_with("only the Duty's Requester can resume it")),
 		"{refused:?}"
 	);
 	assert_eq!(resumed.halt, None);
@@ -429,7 +466,7 @@ async fn an_administrator_pauses_but_only_the_requester_resumes() {
 
 #[rstest]
 #[tokio::test]
-async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
+async fn a_successor_takes_a_departed_requesters_duty_over_then_resumes_it() {
 	// Arrange: Alice left; the Duty stopped.
 	let thread = Uuid::new_v4();
 	let mut alice = alice_in(thread);
@@ -442,22 +479,31 @@ async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
 	admin.duties.insert(duty.id, duty.clone());
 	// Act
 	let named = name_successor(&mut admin, duty.id, "carol").await.unwrap();
-	// Both may read the Duty's own Thread (#1008); only the successor resumes.
+	// Both may read the Duty's own Thread (#1008); only the successor takes
+	// it over, and resuming does not (ADR 0145).
 	let mut carol = alice_in(thread).acting_as("carol");
 	carol.duties = admin.duties.clone();
 	carol.threads.insert(duty.thread_id);
 	let mut bob = alice_in(thread).acting_as("bob");
 	bob.duties = admin.duties.clone();
 	bob.threads.insert(duty.thread_id);
-	let refused = resume(&mut bob, duty.id).await;
-	let taken = resume(&mut carol, duty.id).await.unwrap();
+	let refused = take_over(&mut bob, duty.id).await;
+	let resumed_first = resume(&mut carol, duty.id).await;
+	let taken = take_over(&mut carol, duty.id).await.unwrap();
+	let resumed = resume(&mut carol, duty.id).await.unwrap();
 	// Assert
 	assert_eq!(named.successor.as_deref(), Some("carol"));
 	assert!(refused.is_err());
+	assert!(resumed_first.is_err());
 	assert_eq!(taken.requester, "carol");
-	assert_eq!(taken.credential_id, carol.credential);
-	assert_eq!(taken.halt, None);
+	assert_eq!(taken.halt, Some(Halt::Paused));
 	assert_eq!(taken.successor, None);
+	assert_eq!(
+		taken.credential_id, duty.credential_id,
+		"taking over changes no credential; resuming does"
+	);
+	assert_eq!(resumed.credential_id, carol.credential);
+	assert_eq!(resumed.halt, None);
 	assert!(
 		name_successor(&mut admin, duty.id, "mallory")
 			.await
@@ -738,12 +784,12 @@ mod templates {
 	}
 }
 
-/// A successor takes a Duty over before their rights are judged: its own
-/// Thread becomes theirs, so a policy that limits Threads to their owner lets
-/// them resume it (#1011). A resume by the Requester hands nothing over.
+/// Taking a Duty over makes its own Thread the successor's, so a policy that
+/// limits Threads to their owner lets them resume it (#1011, ADR 0145).
+/// Resuming hands nothing over.
 #[rstest]
 #[tokio::test]
-async fn a_successor_takes_over_the_dutys_own_thread_before_resuming() {
+async fn a_successor_takes_over_the_dutys_own_thread() {
 	// Arrange: Alice left; Carol, named, holds nothing in the Duty's Thread.
 	let thread = Uuid::new_v4();
 	let mut alice = alice_in(thread);
@@ -757,20 +803,168 @@ async fn a_successor_takes_over_the_dutys_own_thread_before_resuming() {
 	carol.duties.insert(duty.id, duty.clone());
 	assert!(!carol.threads.contains(&duty.thread_id));
 	// Act
-	let taken = resume(&mut carol, duty.id).await.unwrap();
+	let taken = take_over(&mut carol, duty.id).await.unwrap();
 	// Assert
 	assert_eq!(taken.requester, "carol");
 	assert_eq!(carol.handed_over, vec![(duty.id, "carol".to_owned())]);
 	assert!(carol.threads.contains(&duty.thread_id));
-	let mut paused = taken.clone();
-	paused.stop(Halt::Paused, carol.now);
-	carol.duties.insert(duty.id, paused);
 	resume(&mut carol, duty.id).await.unwrap();
 	assert_eq!(
 		carol.handed_over.len(),
 		1,
 		"the Requester's own resume hands nothing over"
 	);
+}
+
+/// A Duty whose own Thread was deleted gets a new one when its Requester
+/// resumes it, in place of the deleted one, whatever stopped it (#991,
+/// ADR 0145).
+#[rstest]
+#[case(Halt::ThreadDeleted)]
+#[case(Halt::Paused)]
+#[case(Halt::Failures)]
+#[tokio::test]
+async fn resuming_a_duty_whose_thread_was_deleted_opens_a_new_one(#[case] halt: Halt) {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	let old = duty.thread_id;
+	duty.stop(halt, alice.now);
+	alice.duties.insert(duty.id, duty.clone());
+	alice.deleted.insert(old, alice.now);
+	alice.threads.remove(&old);
+	// Act
+	let resumed = resume(&mut alice, duty.id).await.unwrap();
+	// Assert
+	assert_eq!(resumed.halt, None);
+	assert_ne!(resumed.thread_id, old);
+	assert_eq!(
+		alice.reopened,
+		vec![(old, resumed.thread_id, definition().title)]
+	);
+	assert_eq!(resumed.origin_thread_id, Some(thread));
+}
+
+/// An edit is the Requester's own action too: it opens the new Thread with
+/// the edited title and leaves the Duty stopped.
+#[rstest]
+#[tokio::test]
+async fn editing_a_duty_whose_thread_was_deleted_opens_a_new_one_and_keeps_it_stopped() {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	let old = duty.thread_id;
+	duty.stop(Halt::ThreadDeleted, alice.now);
+	alice.duties.insert(duty.id, duty.clone());
+	alice.deleted.insert(old, alice.now);
+	alice.threads.remove(&old);
+	// Act
+	let edited = update(
+		&mut alice,
+		duty.id,
+		Patch {
+			title: Some("Daily dependency check".into()),
+			..Patch::default()
+		},
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert_eq!(edited.halt, Some(Halt::ThreadDeleted));
+	assert_ne!(edited.thread_id, old);
+	assert_eq!(alice.reopened.len(), 1);
+	assert_eq!(alice.reopened[0].2, "Daily dependency check");
+	// A later resume keeps the new Thread.
+	let resumed = resume(&mut alice, duty.id).await.unwrap();
+	assert_eq!(resumed.thread_id, edited.thread_id);
+	assert_eq!(alice.reopened.len(), 1);
+}
+
+/// The issue #991 reported: the Requester left and the Duty's Thread was
+/// deleted. The successor takes it over and resumes it in a new Thread.
+#[rstest]
+#[tokio::test]
+async fn a_successor_recovers_a_duty_whose_thread_was_deleted() {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	let old = duty.thread_id;
+	duty.stop(Halt::RequesterLeft, alice.now);
+	duty.successor = Some("carol".into());
+	let mut carol = alice_in(thread).acting_as("carol");
+	carol.duties.insert(duty.id, duty.clone());
+	carol.deleted.insert(old, alice.now);
+	// Act
+	let taken = take_over(&mut carol, duty.id).await.unwrap();
+	let resumed = resume(&mut carol, duty.id).await.unwrap();
+	// Assert
+	assert!(
+		!carol.threads.contains(&old),
+		"a deleted Thread is not handed over"
+	);
+	assert_eq!(taken.thread_id, old);
+	assert_eq!(resumed.requester, "carol");
+	assert_eq!(resumed.halt, None);
+	assert_ne!(resumed.thread_id, old);
+	assert!(carol.threads.contains(&resumed.thread_id));
+}
+
+/// The new Thread opens only where the deleted one was: when that Scratch
+/// Space is gone, resuming refuses and the Duty stays as it was.
+#[rstest]
+#[tokio::test]
+async fn a_duty_is_never_moved_to_another_scratch_space() {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	let old = duty.thread_id;
+	duty.stop(Halt::ThreadDeleted, alice.now);
+	alice.duties.insert(duty.id, duty.clone());
+	alice.deleted.insert(old, alice.now);
+	alice.scratch_gone = true;
+	// Act
+	let refused = resume(&mut alice, duty.id).await;
+	// Assert
+	assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
+	let kept = &alice.duties[&duty.id];
+	assert_eq!(kept.thread_id, old);
+	assert_eq!(kept.halt, Some(Halt::ThreadDeleted));
+}
+
+/// A Duty from before #1008 worked in the Thread it was registered in. Its
+/// new Thread is its own, so that Thread becomes its origin and a later
+/// takeover hands the new one over.
+#[rstest]
+#[tokio::test]
+async fn a_duty_from_before_own_threads_gets_one_when_its_thread_goes() {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
+		.await
+		.unwrap();
+	duty.thread_id = thread;
+	duty.origin_thread_id = None;
+	duty.stop(Halt::ThreadDeleted, alice.now);
+	alice.duties.insert(duty.id, duty.clone());
+	alice.deleted.insert(thread, alice.now);
+	// Act
+	let resumed = resume(&mut alice, duty.id).await.unwrap();
+	// Assert
+	assert_ne!(resumed.thread_id, thread);
+	assert_eq!(resumed.origin_thread_id, Some(thread));
 }
 
 /// Deleting a Duty removes its Budgets (#1012 decision 25): a person needs

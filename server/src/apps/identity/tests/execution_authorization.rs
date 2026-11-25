@@ -711,8 +711,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			.iter()
 			.all(|entry| { entry["tags"].as_array().unwrap().contains(&json!("system")) })
 	);
-	// `research` is registered only in acme, so the other Tenant finds no such
-	// definition rather than an unapproved one (#813).
+	// Exact Catalog reads use the same refusal for missing and unapproved
+	// definitions. `research` is registered only in acme (#936).
 	assert_eq!(
 		request(
 			&app,
@@ -723,7 +723,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		)
 		.await
 		.0,
-		404
+		403
 	);
 	let catalog = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1});
 	assert_eq!(
@@ -7336,9 +7336,11 @@ impl SubnodeRig {
 				.unwrap()
 				.remove("binding_normalization");
 			if name == "subnode-creator" {
+				// Journal handover tests use the 1.1.0 subnode_task declaration.
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
-					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.1.0"},"alias":"subnode_task","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_add_member","version":"1.0.0"},"alias":"subnode_add_member","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.delete_subnode","version":"1.0.0"},"alias":"delete_subnode","narrow":{}}),
 				]);
 			} else {
@@ -7465,6 +7467,111 @@ impl SubnodeRig {
 			.await
 			.unwrap();
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_create_reports_a_missing_member_without_pausing_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let call_id = "create-with-missing-member";
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0",
+				"members":["subnode-leader@1.0.0", "subnode-leader@2.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			call_id,
+		)
+		.await
+	);
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig.result_of(rig.creator_run, call_id).await.unwrap();
+	assert!(
+		result["error"].as_str().is_some_and(|error| {
+			error.contains("registry entry subnode-leader@2.0.0 was not found")
+		}),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_add_member_reports_a_missing_version_without_pausing_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(
+		&f,
+		&fixture.application,
+		&["subnode-leader", "subnode-second"],
+		true,
+	)
+	.await;
+	let created = rig
+		.inject(
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0",
+				"members":["subnode-leader@1.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			"create-subnode",
+		)
+		.await;
+	let subnode_id = created["subnode_id"]
+		.as_str()
+		.unwrap_or_else(|| panic!("creation: {created}"));
+
+	let call_id = "add-missing-member";
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_add_member",
+			json!({"subnode_id":subnode_id,"agent":"subnode-second@2.0.0"}),
+			call_id,
+		)
+		.await
+	);
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig.result_of(rig.creator_run, call_id).await.unwrap();
+	assert!(
+		result["error"].as_str().is_some_and(|error| {
+			error.contains("registry entry subnode-second@2.0.0 was not found")
+		}),
+		"{result}"
+	);
+	let added = rig
+		.inject(
+			"subnode_add_member",
+			json!({"subnode_id":subnode_id,"agent":"subnode-second@1.0.0"}),
+			"add-corrected-member",
+		)
+		.await;
+	assert_eq!(added["added"], true, "{added}");
+	cleanup(f, &url, &schema).await;
 }
 
 /// #754 decision 6 for a local delegation: the Subnode's task is in another Thread, so the

@@ -709,6 +709,84 @@ async fn member_creates_and_delegates_tasks_when_its_creator_has_read_its_own_th
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_runs_cannot_delegate_to_a_federation_peer(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	let mut policy = rig.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"register-peer",
+		"effect":"allow",
+		"subjects":{"ids":["alice"]},
+		"actions":["node_registration.update"],
+		"resources":{"kinds":["node_registration"]}
+	}));
+	set_policy(&f, &rig.app, &policy).await;
+	let peer = common::register_source(&f, &rig.app, "aidash://subnode-peer", "acme").await;
+	let target = peer.address();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"allow-peer-execution",
+		"effect":"allow",
+		"subjects":{"any":true},
+		"actions":["federation.execute"],
+		"resources":{"kinds":["node"],"ids":[target]}
+	}));
+	set_policy(&f, &rig.app, &policy).await;
+	let (.., leader) = rig.subnode_with_task().await;
+	let member_task = rig.create_task(leader, "Work for member", &[]).await;
+	let member = rig.delegate(leader, member_task, "subnode-second").await;
+
+	let mut outcomes = Vec::new();
+	for (role, run) in [("leader", leader), ("member", member)] {
+		let task = rig.create_task(run, role, &[]).await;
+		let result = rig
+			.call_result(
+				run,
+				"task_delegate",
+				json!({"task_id":task,"node_id":target,"agent":{"id":"research","version":"1.0.0"}}),
+				"delegate-to-peer",
+			)
+			.await;
+		let saved = f.store.run(&TEST_FIXTURE, run).await.unwrap();
+		let reasons: Vec<String> = sqlx::query_scalar(
+			"SELECT decision->>'reason' FROM authorization_decisions
+			 WHERE run_id = $1 AND action = 'federation.execute' AND resource_id = $2
+			   AND decision->>'allowed' = 'false'",
+		)
+		.bind(run)
+		.bind(&target)
+		.fetch_all(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		let grant: bool = sqlx::query_scalar(
+			"SELECT EXISTS (SELECT 1 FROM authorization_remote_grants WHERE task_id = $1)",
+		)
+		.bind(task)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		outcomes.push((role, saved.control, result, reasons, grant));
+	}
+	cleanup(f, &url, &schema).await;
+	assert!(
+		outcomes.iter().all(|(_, control, result, reasons, grant)| {
+			*control == aidash_domain::RunControl::Active
+				&& result["error"].as_str().is_some_and(|error| {
+					error.contains(
+						"Subnode members can delegate Tasks only to members of their own Subnode",
+					)
+				}) && reasons.iter().any(|reason| reason == "subnode_delegation")
+				&& !grant
+		}),
+		"{outcomes:#?}"
+	);
+}
+
 /// Only a Run inside the Subnode skips the creator's reads: a person who may not
 /// read the creator's conversation stays refused on the Task it gave the Subnode.
 #[rstest::rstest]

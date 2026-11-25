@@ -1,30 +1,43 @@
 //! Host Access bootstrap of a Tenant and its administrators.
+use crate::apps::identity::models::bootstrap_reservations::{GrantTarget, lock_email};
 use crate::apps::identity::models::{
-	AuthorizationBundle, BootstrapDeploymentAdministratorReservation, DashboardMapping,
-	DemoReservation, Tenant,
+	AuthorizationBundle, AuthorizationRevision, BootstrapDeploymentAdministratorReservation,
+	DashboardMapping, DemoReservation, Tenant, demo_reservations,
 };
 use crate::apps::identity::repositories::tenants::{self, Creator};
 use crate::config::Config;
 use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::ports::authorization::dashboard::AccountPolicy;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use aidash_domain::identity::tenancy::{ADMINISTRATORS, OWNER};
+use aidash_domain::identity::tenancy::{self, BootstrapSubject};
+use aidash_domain::identity::tenant_administration;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, query::FieldAssignment};
 use reinhardt::query::{
 	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
-use std::collections::BTreeSet;
+use uuid::Uuid;
+
+/// The issuer, source and actor name of everything Host Access does here.
+const HOST_ACCESS: &str = "host_access";
 
 #[derive(Debug)]
 pub struct Outcome {
 	pub tenant: String,
 	pub created: bool,
 	pub tenant_administrator: &'static str,
+	/// The subject the address is reserved for or mapped to: `owner`, or a
+	/// `host-administrator` subject when `owner` is unusable (#966).
+	pub subject: String,
 	pub deployment_administrator: &'static str,
 }
 
+/// Bootstraps `selector`'s Tenant for `email` and grants `email` Deployment
+/// Administrator. The grant is Deployment-wide, so it is made even when the
+/// Tenant cannot be recovered (#966); the Tenant's error is then returned with
+/// the grant's outcome appended.
 pub async fn bootstrap(
 	pool: &Pool,
 	config: &Config,
@@ -42,8 +55,67 @@ pub async fn bootstrap(
 			"email must contain one @ with text on both sides".into(),
 		));
 	}
-	let selector = aidash_domain::identity::tenancy::label(selector)?;
-	let selector = selector.as_str();
+	let selector = selector.trim();
+	let policy = config.dashboard_policy();
+	let recovered = recover_tenant(pool, config, policy.as_ref(), &email, selector).await;
+	let target = match &recovered {
+		Ok(tenant) => GrantTarget::TenantHolder(tenant.identity),
+		Err(_) => GrantTarget::FindHolder,
+	};
+	let deployment_administrator = BootstrapDeploymentAdministratorReservation::grant_or_hold(
+		pool,
+		policy.as_ref(),
+		&email,
+		target,
+	)
+	.await?;
+	match recovered {
+		Ok(tenant) => Ok(Outcome {
+			tenant: tenant.name,
+			created: tenant.created,
+			tenant_administrator: tenant.administrator,
+			subject: tenant.subject,
+			deployment_administrator,
+		}),
+		Err(error) => Err(not_recovered(error, selector, deployment_administrator)),
+	}
+}
+
+/// What the Tenant half of Bootstrap came to.
+struct Recovered {
+	name: String,
+	created: bool,
+	identity: Option<Uuid>,
+	administrator: &'static str,
+	subject: String,
+}
+
+/// Appends the Deployment Administrator outcome to a refusal of the Tenant.
+/// Any other error is returned as it is.
+fn not_recovered(error: Error, selector: &str, deployment_administrator: &str) -> Error {
+	let note = |reason: String| {
+		format!(
+			"Tenant {selector:?} not recovered: {reason}. Deployment Administrator: {deployment_administrator}"
+		)
+	};
+	match error {
+		Error::Conflict(reason) => Error::Conflict(note(reason)),
+		Error::NotFound(reason) => Error::NotFound(note(reason)),
+		Error::Invalid(reason) => Error::Invalid(note(reason)),
+		error => error,
+	}
+}
+
+/// Names or creates the Tenant, then reserves `email` as its Tenant
+/// Administrator and maps the identity holding it when there is one.
+async fn recover_tenant(
+	pool: &Pool,
+	config: &Config,
+	policy: Option<&AccountPolicy>,
+	email: &str,
+	selector: &str,
+) -> Result<Recovered> {
+	let selector = tenancy::label(selector)?;
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::Bootstrap);
 	let (tenant, created) = pool
 		.atomic(&scope, async |tx| {
@@ -80,7 +152,7 @@ pub async fn bootstrap(
 			let tenant = tenants::create(
 				tx,
 				config.deployment.as_str(),
-				selector,
+				&selector,
 				false,
 				Creator::HostAccess,
 			)
@@ -88,56 +160,63 @@ pub async fn bootstrap(
 			Ok((tenant.name, true))
 		})
 		.await?;
-	let policy = config.dashboard_policy();
-	let (identity, tenant_administrator) = pool
+	let (identity, administrator, subject) = pool
 		.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+			lock_email(tx, email).await?;
 			if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &tenant)
 				.await?
 			{
 				return Err(Error::Conflict("Tenant is deleted".into()));
 			}
 			let mut snapshot = AuthorizationBundle::lock_for_maintenance(tx, &tenant).await?;
-			if !snapshot.bundle.subjects.contains_key(OWNER) {
-				aidash_domain::identity::tenant_administration::add_user_subject(
-					&mut snapshot.bundle,
-					OWNER,
-					&BTreeSet::from([ADMINISTRATORS.to_owned()]),
-				)?;
+			let earlier = DemoReservation::objects()
+				.filter(DemoReservation::field_tenant().eq(tenant.clone()))
+				.filter(DemoReservation::field_email().eq(email.to_owned()))
+				.filter(DemoReservation::field_source().eq(HOST_ACCESS.to_owned()))
+				.all_with_db(tx)
+				.await?
+				.pop();
+			let used_names = AuthorizationRevision::subject_names(tx, &tenant).await?;
+			let chosen = tenancy::bootstrap_subject(
+				&snapshot.bundle,
+				earlier.as_ref().map(|r| r.subject.as_str()),
+				&used_names,
+			);
+			if let BootstrapSubject::New(name) = &chosen {
+				tenant_administration::add_bootstrap_administrator(&mut snapshot.bundle, name)?;
 				AuthorizationBundle::replace(
 					tx,
 					&tenant,
 					snapshot.revision,
 					serde_json::to_value(&snapshot.bundle)?,
-					"host_access",
+					HOST_ACCESS,
 					None,
 				)
 				.await?;
-			} else {
-				let owner = &snapshot.bundle.subjects[OWNER];
-				if owner.kind != aidash_domain::policy::SubjectKind::User
-					|| !owner.enabled
-					|| !owner.groups.contains(ADMINISTRATORS)
-				{
-					return Err(Error::Conflict(
-						"owner subject is not an enabled administrator".into(),
-					));
-				}
 			}
-			let existing_reservation = DemoReservation::objects()
-				.filter(DemoReservation::field_tenant().eq(tenant.clone()))
-				.filter(DemoReservation::field_email().eq(email.clone()))
-				.filter(DemoReservation::field_source().eq("host_access".to_owned()))
-				.exists_with_db(tx)
-				.await?;
+			let subject = chosen.name().to_owned();
+			// Moving the address to another subject starts its Reservation
+			// over: the identity that spent it was mapped to the old subject.
+			let moved = earlier.as_ref().is_some_and(|r| r.subject != subject);
+			if let Some(earlier) = earlier.as_ref().filter(|_| moved) {
+				let fields: Vec<FieldAssignment> = vec![
+					(DemoReservation::field_subject(), subject.clone()).into(),
+					(
+						DemoReservation::field_spent_at(),
+						None::<chrono::DateTime<chrono::Utc>>,
+					)
+						.into(),
+					(DemoReservation::field_spent_by(), None::<uuid::Uuid>).into(),
+				];
+				DemoReservation::objects()
+					.filter(DemoReservation::field_id().eq(earlier.id))
+					.update_fields_with_conn(tx, fields)
+					.await?;
+			}
+			let existing_reservation = earlier.is_some() && !moved;
 			let reservation =
-				DemoReservation::hold(tx, &tenant, &email, OWNER, "host_access").await?;
-			if reservation.source != "host_access" || reservation.subject != OWNER {
-				return Err(Error::Conflict(
-					"email already has another Tenant reservation".into(),
-				));
-			}
-			let holders =
-				crate::apps::identity::models::demo_reservations::holders(tx, &email).await?;
+				DemoReservation::hold(tx, &tenant, email, &subject, HOST_ACCESS).await?;
+			let holders = demo_reservations::holders(tx, email).await?;
 			// As for Demo reservations, an ambiguous or disabled holder waits
 			// for the first eligible identity to sign in again.
 			let id = match &holders[..] {
@@ -156,7 +235,7 @@ pub async fn bootstrap(
 				DashboardMapping::objects()
 					.filter(DashboardMapping::field_identity_id().eq(id))
 					.filter(DashboardMapping::field_tenant().eq(tenant.clone()))
-					.filter(DashboardMapping::field_subject().eq(OWNER.to_owned()))
+					.filter(DashboardMapping::field_subject().eq(subject.clone()))
 					.filter(DashboardMapping::field_enabled().eq(true))
 					.exists_with_db(tx)
 					.await?
@@ -183,8 +262,7 @@ pub async fn bootstrap(
 				&& !already_mapped
 			{
 				let result =
-					DemoReservation::fulfil_in(tx, policy.as_ref(), &tenant, reservation.id, id)
-						.await?;
+					DemoReservation::fulfil_in(tx, policy, &tenant, reservation.id, id).await?;
 				if let crate::apps::identity::models::Fulfilment::Skipped(reason) = result {
 					return Err(Error::Conflict(format!(
 						"reservation cannot be fulfilled: {reason:?}"
@@ -202,21 +280,16 @@ pub async fn bootstrap(
 				} else {
 					"reserved"
 				},
+				subject,
 			))
 		})
 		.await?;
-	let deployment_administrator = BootstrapDeploymentAdministratorReservation::grant_or_hold(
-		pool,
-		policy.as_ref(),
-		&email,
-		identity,
-	)
-	.await?;
-	Ok(Outcome {
-		tenant,
+	Ok(Recovered {
+		name: tenant,
 		created,
-		tenant_administrator,
-		deployment_administrator,
+		identity,
+		administrator,
+		subject,
 	})
 }
 
@@ -276,7 +349,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			pool.close().await;
 			let outcome = outcome?;
 			println!(
-				"Tenant {} {}. Tenant Administrator: {}; Deployment Administrator: {}. Sign in with {} at {}.",
+				"Tenant {} {}. Tenant Administrator: {} as subject {}{}; Deployment Administrator: {}. Sign in with {} at {}.",
 				outcome.tenant,
 				if outcome.created {
 					"created"
@@ -284,6 +357,12 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					"already exists"
 				},
 				outcome.tenant_administrator,
+				outcome.subject,
+				if outcome.subject == aidash_domain::identity::tenancy::OWNER {
+					""
+				} else {
+					" (owner is unusable)"
+				},
 				outcome.deployment_administrator,
 				email,
 				config.dashboard_origin

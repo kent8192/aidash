@@ -533,36 +533,30 @@ impl CleanupScope for Scope<'_> {
 		result.map_err(Into::into)
 	}
 	async fn cancel_runs(&mut self, area: &Area) -> Result<()> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = area.id;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("task_executions"))
-						.value(Alias::new("control"), "CANCELLED")
-						.and_where(
-							Expr::col(Alias::new("id")).in_subquery(
-								Query::select()
-									.column(Alias::new("run_id"))
-									.from(Alias::new("core_runs"))
-									.and_where(
-										Expr::col(Alias::new("area_id"))
-											.eq(Expr::value(query_bind_1.to_owned())),
-									)
-									.to_owned(),
-							),
-						)
-						.and_where(Expr::col(Alias::new("phase")).is_not_in([
-							"COMPLETED",
-							"FAILED",
-							"CANCELLED",
-						]))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
+		let result: NativeResult<()> = async {
+			let tx = &mut **self.access.tx;
+			let runs: Vec<Uuid> = crate::database::native::query_scalar(
+				&Query::update()
+					.table(Alias::new("task_executions"))
+					.value(Alias::new("control"), "CANCELLED")
+					.and_where(
+						Expr::col("id").in_subquery(
+							Query::select()
+								.column(Alias::new("run_id"))
+								.from(Alias::new("core_runs"))
+								.and_where(Expr::col("area_id").eq(Expr::value(area.id)))
+								.to_owned(),
+						),
+					)
+					.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
+					.returning(["id"])
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut *tx)
+			.await?;
+			for run in runs {
+				crate::apps::execution::models::HumanRequest::close_for_run(tx, run).await?;
+			}
 			Ok(())
 		}
 		.await;

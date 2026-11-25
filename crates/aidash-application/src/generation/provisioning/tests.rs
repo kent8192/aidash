@@ -232,6 +232,9 @@ impl GenerationProvisioning for Repository {
 	async fn reconcile_foreign(&self) -> Result<()> {
 		point(&self.0, "foreign").await
 	}
+	async fn reconcile_retirements(&self) -> Result<()> {
+		Ok(())
+	}
 	async fn begin_read(&self) -> Result<Box<dyn GenerationProvisionRead>> {
 		point(&self.0, "read_begin").await?;
 		self.0.lock().unwrap().visibility += 1;

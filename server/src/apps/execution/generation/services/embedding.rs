@@ -30,6 +30,7 @@ pub(crate) async fn reserve_input(
 
 /// `tenancy` is the scope of the reservation: the Tenant whose bank or Run
 /// asks for the embedding, which holds even when no origin lease applies.
+#[allow(clippy::too_many_arguments)] // The optional arm keeps the same origin and scope.
 pub(crate) async fn reserve_many(
 	accesses: &mut [&mut Access],
 	store: &Store,
@@ -38,14 +39,16 @@ pub(crate) async fn reserve_many(
 	config: &EmbeddingConfig,
 	text: &str,
 	origin: Origin,
+	optional: bool,
 ) -> Result<Option<Reservation>> {
 	let mut approved = vec![];
 	for access in accesses {
 		access.resume_inherited().await?;
-		let current = aidash_application::generation::embedding::authorize(
+		let current = aidash_application::generation::embedding::authorize_for_search(
 			&mut crate::bootstrap::generation_embedding_authority_scope(access),
 			store.deployment.as_str(),
 			config,
+			optional,
 		)
 		.await;
 		access.suspend().await?;

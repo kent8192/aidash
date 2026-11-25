@@ -7,8 +7,7 @@ use crate::{Error, Result};
 use aidash_domain::{
 	approval_rules::ApprovalMode,
 	duties::{
-		self, Actor, BudgetRemoval, Change, Definition, Deleter, Duty, Halt, Patch, Resumption,
-		Tick,
+		self, Actor, BudgetRemoval, Change, Definition, Deleter, Duty, Halt, Patch, Tick,
 		templates::{Source, Template},
 	},
 	registry::EntityRef,
@@ -68,6 +67,26 @@ pub trait DutyScope: Send {
 	/// `from`, created by the Requester, with the Duty's title and its
 	/// mission as the first message (#1008, ADR 0140).
 	async fn open_thread(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid>;
+	/// When the Thread was deleted, or None while it is not. A deleted Thread
+	/// keeps its row, so this reads it whoever may see it.
+	async fn thread_deleted_at(&mut self, thread: Uuid) -> Result<Option<DateTime<Utc>>>;
+	/// Opens a new own Thread for a Duty whose Thread was deleted at
+	/// `deleted_at`, in that Thread's Node and Scratch Space, created by the
+	/// Requester, with the Duty's title and its mission as the first message
+	/// plus a line saying when the previous Thread was deleted. The person
+	/// must be allowed to open a Thread there as anyone would: use the Node
+	/// and the Scratch Space and create a Thread; taking a Duty over grants
+	/// none of these. Refuses when that Scratch Space can no longer be used;
+	/// it never moves the Duty to another one (ADR 0145).
+	async fn reopen_thread(
+		&mut self,
+		deleted: Uuid,
+		deleted_at: DateTime<Utc>,
+		definition: &Definition,
+	) -> Result<Uuid>;
+	/// Stages a replacement Thread binding for the permission checks in this
+	/// transaction. The final save raises the Duty's revision.
+	async fn bind_replacement_thread(&mut self, duty: &Duty, deleted: Uuid) -> Result<()>;
 	async fn insert(&mut self, duty: &Duty) -> Result<()>;
 	/// Loads and locks a Duty for change.
 	async fn load_for_update(&mut self, id: Uuid) -> Result<Duty>;
@@ -75,11 +94,10 @@ pub trait DutyScope: Send {
 	/// Saves a loaded Duty; the adapter raises its revision.
 	async fn save(&mut self, duty: &Duty) -> Result<()>;
 	async fn delete(&mut self, id: Uuid) -> Result<()>;
-	/// Hands a Duty over to its successor in this transaction, before the
-	/// successor's rights are checked: the Duty's own Thread, when it opened
-	/// one, becomes theirs, and the bookings Runs made for its triggers are
-	/// dropped, so no event of the Duty wakes a Run acting for the departed
-	/// Requester.
+	/// Hands a Duty over to its successor in this transaction: the Duty's
+	/// own Thread, when it opened one and it is not deleted, becomes theirs,
+	/// and the bookings Runs made for its triggers are dropped, so no event
+	/// of the Duty wakes a Run acting for the departed Requester.
 	async fn hand_over(&mut self, duty: &Duty, successor: &str) -> Result<()>;
 	/// Who last set each Budget that targets the Duty (#1012).
 	async fn budget_setters(&mut self, duty: Uuid) -> Result<Vec<String>>;
@@ -250,7 +268,7 @@ async fn visible(scope: &mut dyn DutyScope, id: Uuid, lock: bool) -> Result<Duty
 		scope.load(id).await?
 	};
 	// The named successor sees the Duty they are asked to take over,
-	// even without the Thread, so they can review and resume it.
+	// even without the Thread, so they can review and take it over.
 	if duty.requester == scope.subject()
 		|| duty.successor.as_deref() == Some(scope.subject())
 		|| scope.sees_thread(duty.thread_id).await?
@@ -340,8 +358,10 @@ pub async fn own(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 
 /// Applies `patch` to a loaded Duty as its Requester's edit; the caller saves.
 async fn change(scope: &mut dyn DutyScope, duty: &mut Duty, patch: &Patch) -> Result<()> {
-	scope.require_thread(duty.thread_id, duties::CREATE).await?;
 	let (definition, retimed) = patch.apply(&duty.definition);
+	// A new Thread opens with the title and mission as edited.
+	replace_deleted_thread(scope, duty, &definition).await?;
+	scope.require_thread(duty.thread_id, duties::CREATE).await?;
 	check_definition(scope, duty.thread_id, &definition).await?;
 	let rewatched = definition.watcher != duty.definition.watcher;
 	duty.definition = definition;
@@ -378,32 +398,58 @@ pub async fn pause(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 	Ok(duty)
 }
 
-/// Resumes a Duty as the person's own action. A named successor takes
-/// it over and becomes its Requester; nobody else resumes one whose
-/// Requester left (ADR 0134).
+/// Opens a new own Thread for a Duty whose Thread was deleted, as its
+/// Requester's first edit or resume after the deletion (ADR 0145). The old
+/// Thread's memory stays with it. A Duty from before #1008 worked in the
+/// Thread it was registered in; that Thread becomes its origin, so the new
+/// one is handed over with the Duty like any Duty's own Thread.
+async fn replace_deleted_thread(
+	scope: &mut dyn DutyScope,
+	duty: &mut Duty,
+	definition: &Definition,
+) -> Result<()> {
+	let Some(deleted_at) = scope.thread_deleted_at(duty.thread_id).await? else {
+		return Ok(());
+	};
+	let deleted = duty.thread_id;
+	duty.thread_id = scope.reopen_thread(deleted, deleted_at, definition).await?;
+	duty.origin_thread_id.get_or_insert(deleted);
+	// The replacement must bear the Duty ID when policy checks its Thread.
+	scope.bind_replacement_thread(duty, deleted).await
+}
+
+/// Takes over a Duty whose Requester left, as its named successor's own
+/// action: they become its Requester, and it stays stopped, as paused, until
+/// they resume it (ADR 0145). Their rights and what the Duty names are
+/// checked when they edit or resume it.
+pub async fn take_over(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
+	let mut duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::TakeOver).await?;
+	let subject = scope.subject().to_owned();
+	if !scope.is_person(&subject).await? {
+		return Err(Error::Invalid(
+			"a Duty acts as a person, and only a person of the Tenant can take one over".into(),
+		));
+	}
+	scope.hand_over(&duty, &subject).await?;
+	let now = scope.now();
+	duty.take_over(&subject, now);
+	duty.updated_at = now;
+	scope.save(&duty).await?;
+	Ok(duty)
+}
+
+/// Resumes a Duty as its Requester's own action. A named successor takes
+/// it over first (ADR 0145). A Duty whose Thread was deleted gets a new one.
 pub async fn resume(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 	let mut duty = visible(scope, id, true).await?;
-	let (subject, administers) = actor(scope).await?;
-	let resumption = duties::resumption(
-		Actor {
-			subject: &subject,
-			administers,
-		},
-		duty.standing(),
-	)?;
-	// A successor takes the Duty, and its own Thread, over first: their
-	// rights there are then judged as its owner's.
-	if resumption == Resumption::Successor {
-		scope.hand_over(&duty, &subject).await?;
-	}
+	permitted(scope, &duty, Change::Resume).await?;
+	let definition = duty.definition.clone();
+	replace_deleted_thread(scope, &mut duty, &definition).await?;
 	// Resuming is registering again: the person must still be allowed to,
 	// within the limits, with what the Duty names.
 	scope.require_thread(duty.thread_id, duties::CREATE).await?;
 	check_definition(scope, duty.thread_id, &duty.definition).await?;
-	if resumption == Resumption::Successor {
-		duty.requester = subject;
-		duty.created_by_run_id = None;
-	}
 	let now = scope.now();
 	// The person resumes it as their own action, with their Mapping's
 	// credential as it stands now (ADR 0134).

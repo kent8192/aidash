@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 33] {
+fn assets() -> [(&'static str, String); 36] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -137,6 +137,10 @@ fn assets() -> [(&'static str, String); 33] {
 			crate::apps::identity::repositories::budgets::rollback_notices(),
 		),
 		(
+			"identity/sql/forward/0114_policy_revision_backfill.sql",
+			crate::apps::identity::services::policy_revision_backfill::forward(),
+		),
+		(
 			"execution/sql/forward/0148_duplicate_areas.sql",
 			crate::apps::workspaces::services::thread_backfill::duplicate_areas(),
 		),
@@ -159,6 +163,14 @@ fn assets() -> [(&'static str, String); 33] {
 		(
 			"execution/sql/forward/0153_area_queue_sleep_backfill.sql",
 			crate::apps::execution::services::area_queue_sleep_backfill::forward(),
+		),
+		(
+			"workspaces/sql/forward/0067_task_duty_start.sql",
+			crate::apps::workspaces::services::duty_start_backfill::forward(),
+		),
+		(
+			"workspaces/sql/backward/0067_task_duty_start.sql",
+			crate::apps::workspaces::services::duty_start_backfill::backward(),
 		),
 	]
 }
@@ -337,6 +349,12 @@ mod tests {
 				"0111_thread_member_policy",
 				"0111_thread_member_policy",
 				true,
+			),
+			(
+				"identity",
+				"0114_policy_revision_backfill",
+				"0114_policy_revision_backfill",
+				false,
 			),
 			("execution", "0148_threads", "0148_duplicate_areas", false),
 			("workspaces", "0033_duty_checks", "0033_duty_halts", true),

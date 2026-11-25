@@ -720,6 +720,24 @@ async fn incomplete_images_do_not_block_text_retrieval_or_use_text_source_quota(
 	.unwrap();
 	assert_eq!(result.matches.len(), 1);
 }
+#[tokio::test]
+async fn a_withdrawn_builtin_projection_does_not_block_other_thread_search_results() {
+	let (_, mut scope, vector) = fixture();
+	let mut projection = entry();
+	projection.id = Uuid::from_u128(8);
+	projection.point_id = Uuid::from_u128(9);
+	projection.source = json!({"kind": "unit", "id": projection.id});
+	projection.metadata["thread_index_embedding"] = json!(true);
+	projection.state = "REVOKED".into();
+	scope.rows.push(projection);
+
+	let result = search(&mut scope, &vector, index().thread_id, &input(), None, None)
+		.await
+		.unwrap();
+	assert_eq!(result.matches.len(), 1);
+	assert_eq!(result.matches[0].entry_id, entry().id);
+}
+
 #[rstest]
 #[case::pending(0)]
 #[case::stale_index(1)]

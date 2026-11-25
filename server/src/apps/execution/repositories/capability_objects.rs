@@ -82,11 +82,24 @@ impl PendingObject {
 		self.finish_in(tx.as_mut(), tenant, expected).await
 	}
 	pub(crate) async fn finish_in(
-		mut self,
+		self,
 		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 		tenant: &str,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
+		self.require_tenant(tenant)?;
+		self.seal(expected).await?.publish_in(tx, tenant).await
+	}
+
+	fn require_tenant(&self, tenant: &str) -> Result<()> {
+		if tenant != self.tenant {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+
+	/// Store the verified blob while the reservation still protects it from GC.
+	pub(crate) async fn seal(mut self, expected: Option<&str>) -> Result<SealedObject> {
 		let hash = format!("{:x}", std::mem::take(&mut self.hash).finalize());
 		if self.written != self.size || expected.is_some_and(|expected| hash != expected) {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
@@ -96,7 +109,7 @@ impl PendingObject {
 			.expect("pending upload file")
 			.sync_all()
 			.await?;
-		let tenant = tenant.to_owned();
+		let tenant = self.tenant.clone();
 		// Persist the proposed digest before exposing a blob so a later
 		// maintenance pass can find a write whose DB transaction rolled back.
 		let intent_dir = self.runtime.0.storage.join(".intents");
@@ -232,24 +245,50 @@ impl PendingObject {
 			.await?;
 		}
 		blob_tx.commit().await?;
+		drop(self.file.take());
+		Ok(SealedObject { upload: self, hash })
+	}
+}
+
+/// Owns the reservation until the logical object is recorded or the upload is dropped.
+pub(crate) struct SealedObject {
+	upload: PendingObject,
+	hash: String,
+}
+
+impl SealedObject {
+	pub(crate) async fn publish(self, access: &mut Access) -> Result<(Uuid, String)> {
+		self.publish_in(access.tx.as_mut(), &access.identity.tenant)
+			.await
+	}
+
+	async fn publish_in(
+		self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		tenant: &str,
+	) -> Result<(Uuid, String)> {
+		let Self { upload, hash } = self;
+		upload.require_tenant(tenant)?;
+		// The transaction that began the upload retains its object lock
+		// until this logical object's publication commits or rolls back.
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("core_objects"))
 				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
 				.values(vec![
-					self.id.into(),
-					tenant.into(),
-					self.area.into_value(),
-					self.kind.clone().into(),
+					upload.id.into(),
+					tenant.to_owned().into(),
+					upload.area.into_value(),
+					upload.kind.clone().into(),
 					hash.clone().into(),
-					(self.size as i64).into(),
+					(upload.size as i64).into(),
 				])
 				.map_err(Error::Invalid)?
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(tx)
 		.await?;
-		Ok((self.id, hash))
+		Ok((upload.id, hash))
 	}
 }
 
@@ -892,19 +931,17 @@ impl Runtime {
 		}
 		// Ownership survives a database rollback or process crash. The advisory
 		// lock keeps a collector from mistaking an uncommitted object for an orphan.
-		{
-			let query_bind_1 = format!("core-object:{id}");
-			crate::database::native::query(
-				&Query::select()
-					.expr(SimpleExpr::CustomWithExpr(
-						"(pg_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *tx)
-			.await?
-		};
+		let lock = format!("core-object:{id}");
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
 		let intents = self.0.storage.join(".intents");
 		tokio::fs::create_dir_all(&intents).await?;
 		let mut intent_options = tokio::fs::OpenOptions::new();
@@ -1074,7 +1111,11 @@ impl Runtime {
 		}
 		Ok(())
 	}
-	async fn validate_object(&self, access: &mut Access, entry: &FileEntry) -> Result<()> {
+	pub(crate) async fn validate_object(
+		&self,
+		access: &mut Access,
+		entry: &FileEntry,
+	) -> Result<()> {
 		let metadata: Option<(String, i64)> = {
 			let query_bind_1 = entry.file_id;
 			let query_bind_2 = &access.identity.tenant;

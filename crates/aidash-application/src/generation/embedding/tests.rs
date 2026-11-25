@@ -596,6 +596,24 @@ async fn rejected_authority_or_provider_pins_never_charge_ancestors(
 	} else {
 		assert!(matches!(result, Err(Error::Forbidden)));
 	}
+	let optional = authorize_for_search(
+		&mut Authority(world.clone()),
+		"aidash://origin",
+		&config(),
+		true,
+	)
+	.await;
+	if matches!(
+		reason,
+		"missing_embedding_parent"
+			| "provider_revision_parent"
+			| "wrong_kind"
+			| "changed_configuration"
+	) {
+		assert!(matches!(optional, Err(Error::SemanticUnavailable)));
+	} else {
+		assert!(matches!(optional, Err(Error::Forbidden)));
+	}
 	assert_empty(&world);
 	assert!(
 		!world

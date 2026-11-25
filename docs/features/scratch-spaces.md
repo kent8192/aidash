@@ -8,6 +8,8 @@ A space may choose an execution image and External services. Without an image it
 
 The Tenant policy action `scratch.create` controls space creation and is allowed to Tenant users by default. Deployment Administrators have no Tenant authority to read spaces.
 
+If a plain HTTP proxy request already has a Host connection record when the gateway returns a proxy error, the record includes that error code. The `egress_client_closed` refusal tally counts clients that disconnect while waiting for a connection limit. Waits cancelled by gateway shutdown are excluded from that tally.
+
 ## Operator configuration
 
 The `[deployment]` settings `scratch_capacity_bytes`, `scratch_cpu_millis`, and `scratch_memory_bytes` set ceilings. Capacity defaults to a ceiling of 1 TiB; the CPU and memory defaults are 4,000 millicores and 16 GiB. `scratch_daily_sent_bytes` and `scratch_daily_received_bytes` set per-day egress ceilings, each defaulting to 1 TiB. `scratch_docker_allowed` enables Docker for the Offering, and `scratch_docker_tenants` lists additional Tenants for which Docker may be enabled. `scratch_all_hosts_allowed` controls whether the Offering permits choosing all hosts. `scratch_tenant_hosts` maps Tenant names to their permitted host lists; a one-element `['*']` list represents all hosts. Without a Tenant entry the public-registry defaults apply. `scratch_tenant_images` maps Tenant names to approved image references.

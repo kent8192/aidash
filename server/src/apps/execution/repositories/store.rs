@@ -49,6 +49,11 @@ pub(crate) struct ThreadInsert<'a> {
 	pub created_by: &'a str,
 }
 
+pub(crate) enum DutyTaskStart {
+	Automatic(Uuid),
+	Manual(Uuid),
+}
+
 #[derive(Clone)]
 pub struct Store {
 	pub provider_key_material_reader:
@@ -76,6 +81,10 @@ pub struct Store {
 	/// Restoration claims survive external retirement without consuming the
 	/// control connections retirement itself needs. Shared across Store clones.
 	pub restoration_pool: Pool,
+	/// Scratch saves keep upload ownership until publication returns the worker's
+	/// data connections. Blob accounting can borrow the extra staging connection.
+	pub(crate) scratch_upload_pool: Pool,
+	pub(crate) scratch_upload_slots: std::sync::Arc<tokio::sync::Semaphore>,
 	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub semantic_client: reqwest::Client,
 	/// Model and embedding clients: `semantic_client` for Provider Catalog
@@ -506,6 +515,13 @@ impl Store {
 			.min_connections(0)
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_lazy_with(pool.connect_options().as_ref().clone());
+		let scratch_upload_pool = pool
+			.options()
+			.clone()
+			.max_connections(MAX_WORKER_SLOTS as u32 + 1)
+			.min_connections(0)
+			.idle_timeout(std::time::Duration::from_secs(10))
+			.connect_lazy_with(pool.connect_options().as_ref().clone());
 		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::from_env(
@@ -530,6 +546,10 @@ impl Store {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
 			restoration_pool: restoration_pool.into(),
+			scratch_upload_pool: scratch_upload_pool.into(),
+			scratch_upload_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
+				MAX_WORKER_SLOTS,
+			)),
 			deployment,
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
@@ -678,6 +698,8 @@ impl Store {
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
 			restoration_pool: self.restoration_pool.clone(),
+			scratch_upload_pool: self.scratch_upload_pool.clone(),
+			scratch_upload_slots: self.scratch_upload_slots.clone(),
 			deployment: self.deployment.clone(),
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
@@ -739,6 +761,8 @@ impl Store {
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			restoration_pool: self.restoration_pool.clone(),
+			scratch_upload_pool: self.scratch_upload_pool.clone(),
+			scratch_upload_slots: self.scratch_upload_slots.clone(),
 			control_pool: control_pool
 				.with_memory_recovery(self.control_pool.memory_recovery())
 				.with_dashboard_policy(self.control_pool.dashboard_policy()),
@@ -1123,6 +1147,19 @@ impl Store {
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
+		self.create_task_with_duty_in(tx, thread, input, creator, key, None)
+			.await
+	}
+
+	pub(crate) async fn create_task_with_duty_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		thread: Uuid,
+		input: &NewTask,
+		creator: &str,
+		key: Option<&str>,
+		duty: Option<DutyTaskStart>,
+	) -> Result<Task> {
 		nonempty(&input.title, "task title")?;
 		nonempty(&input.description, "task description")?;
 		if !input.requirements.is_object() {
@@ -1225,6 +1262,12 @@ impl Store {
 				));
 			}
 		}
+		// Both associations must be in place before emitting task.created.
+		let (duty_id, started_by_duty) = match duty {
+			Some(DutyTaskStart::Automatic(duty)) => (Some(duty), Some(duty)),
+			Some(DutyTaskStart::Manual(duty)) => (Some(duty), None),
+			None => (None, None),
+		};
 		let task: Option<Task> = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = thread;
@@ -1248,6 +1291,8 @@ impl Store {
 						reinhardt::query::Alias::new("dependencies"),
 						reinhardt::query::Alias::new("parent_id"),
 						reinhardt::query::Alias::new("creation_key"),
+						reinhardt::query::Alias::new("duty_id"),
+						reinhardt::query::Alias::new("started_by_duty"),
 						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
@@ -1288,6 +1333,8 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
+							.expr(Expr::value(duty_id))
+							.expr(Expr::value(started_by_duty))
 							.expr(crate::database::scope::tenant_of(
 								"threads",
 								"id",
@@ -1338,6 +1385,7 @@ impl Store {
 					|| t.requirements != input.requirements
 					|| t.dependencies != input.dependencies
 					|| t.parent_id != input.parent_id
+					|| t.started_by_duty != started_by_duty
 					|| t.created_by != creator
 				{
 					return Err(Error::Conflict(
@@ -3567,7 +3615,6 @@ impl Store {
 				.await?;
 			}
 			self.close_plugin_sessions_soon(saved.id);
-			self.stop_python_soon(saved.id);
 		}
 		self.run_event(
 			tx,
@@ -3841,22 +3888,7 @@ impl Store {
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		self.close_plugin_sessions_soon(run.id);
-		self.stop_python_soon(run.id);
 		Ok(())
-	}
-
-	/// Stops an ended Run's Python session in its Execution Pod without making
-	/// the caller wait. A paused Run keeps its session for when it resumes.
-	fn stop_python_soon(&self, run: Uuid) {
-		let store = self.clone();
-		tokio::spawn(async move {
-			if let Err(error) =
-				crate::apps::execution::repositories::operations::pods::stop_python(&store, run)
-					.await
-			{
-				tracing::info!(%run, %error, "Python session not stopped at the Run's end");
-			}
-		});
 	}
 
 	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for

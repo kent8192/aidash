@@ -83,6 +83,7 @@ impl GenerationVisibility for Scope {
 			created_by: "alice".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 1,
 			created_at: DateTime::from_timestamp(1000, 0).unwrap(),
 		}))

@@ -102,6 +102,7 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 			"migrations/identity/sql/forward/0098_duty_member_policy.sql",
 			"migrations/identity/sql/forward/0110_reply_thread_modes.sql",
 			"migrations/identity/sql/forward/0111_thread_member_policy.sql",
+			"migrations/identity/sql/forward/0114_policy_revision_backfill.sql",
 			"migrations/registry/sql/forward/0054_remove_agent_cluster.sql",
 			"migrations/registry/sql/forward/0055_remove_structured_harness_contracts.sql",
 			"migrations/registry/sql/forward/0070_remove_package_index_draft_bindings.sql",
@@ -109,9 +110,11 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 			"migrations/registry/sql/forward/0074_remove_research_providers.sql",
 			"migrations/workspaces/sql/backward/0033_duty_halts.sql",
 			"migrations/workspaces/sql/backward/0049_workspace_goal.sql",
+			"migrations/workspaces/sql/backward/0067_task_duty_start.sql",
 			"migrations/workspaces/sql/forward/0021_conversation_scratch_space.sql",
 			"migrations/workspaces/sql/forward/0024_workspace_scratch_space.sql",
 			"migrations/workspaces/sql/forward/0033_duty_halts.sql",
+			"migrations/workspaces/sql/forward/0067_task_duty_start.sql",
 		]
 	);
 	for path in migration_openers {
