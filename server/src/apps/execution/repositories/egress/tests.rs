@@ -54,11 +54,20 @@ async fn register(
 	base_url: &str,
 	secret: Option<&str>,
 ) {
-	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let mut config = json!({"base_url": base_url, "methods": ["GET"]});
 	if let Some(secret) = secret {
 		config["secret"] = json!(secret);
 	}
+	register_config(f, id, version, config).await;
+}
+
+async fn register_config(
+	f: &crate::federation::Federation,
+	id: &str,
+	version: &str,
+	config: serde_json::Value,
+) {
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	f.registry
 		.register(
 			&tenant,
@@ -115,7 +124,7 @@ async fn insert_space(f: &crate::federation::Federation, services: &[&str]) -> U
 		id: Uuid::new_v4(),
 		node: tenant_roots::fixture_node_name("acme"),
 		name: "services".to_owned(),
-		creator: "owner".to_owned(),
+		creator: "alice".to_owned(),
 		state: aidash_domain::scratch::ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
@@ -174,6 +183,99 @@ fn refused(outcome: ExternalAdmission) -> ServiceRefusal {
 			panic!("admitted {}", admission.definition.base_url)
 		}
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn lowered_egress_limits_are_reflected_in_settings_and_task_instructions(
+	#[future] database: DatabaseFixture,
+) {
+	use crate::apps::workspaces::{repositories::scratch::usable_lines, services::scratch};
+	use aidash_domain::egress::Limits;
+
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let mut f = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	let token = tenant_roots::tenant_token(&f.store, "acme").await;
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let node = tenant_roots::fixture_node_name("acme");
+	register(&f, "images", "1.0.0", "https://v1.example.test/", None).await;
+	register_config(
+		&f,
+		"images",
+		"2.0.0",
+		json!({
+			"base_url": "https://v2.example.test/",
+			"methods": ["GET"],
+			"limits": { "received_bytes": 4096 },
+		}),
+	)
+	.await;
+	register(&f, "maps", "1.0.0", "https://maps.example.test/", None).await;
+	for (id, version) in [("images", "1.0.0"), ("images", "2.0.0"), ("maps", "1.0.0")] {
+		set_approval(&f, &node, id, version, true).await;
+	}
+	let space = insert_space(&f, &["images", "maps"]).await;
+	let scope = scope(space, Some(Uuid::new_v4()));
+	assert_eq!(
+		admitted(
+			ServiceSecrets::new(f.store.clone())
+				.admit(&scope, "images", "GET", "", DIGEST)
+				.await
+				.unwrap()
+		)
+		.definition
+		.base_url,
+		"https://v2.example.test/",
+	);
+	Arc::make_mut(&mut f.store.capabilities.0).egress = Some(
+		serde_json::from_value(json!({
+			"listen": "127.0.0.1:0",
+			"limits": Limits { received_bytes: 4095, ..Limits::default() },
+		}))
+		.unwrap(),
+	);
+	assert!(matches!(
+		ServiceSecrets::new(f.store.clone()).admit(&scope, "images", "GET", "", DIGEST).await,
+		Err(crate::Error::Invalid(reason)) if reason == "External service limits exceed Deployment ceilings"
+	));
+
+	let actor = authorization.authenticate(&token).await.unwrap();
+	let view = scratch::execute(&f, actor, scratch::Operation::Read(space))
+		.await
+		.unwrap();
+	let mut tx = f
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
+	let lines = usable_lines(&f.store, &mut tx, "acme", space)
+		.await
+		.unwrap();
+	tx.rollback().await.unwrap();
+	assert_eq!(
+		(
+			&view["external_service_status"],
+			lines
+				.iter()
+				.map(|line| line.id.as_str())
+				.collect::<Vec<_>>()
+		),
+		(
+			&json!([
+				{"id": "images", "usable": false, "reason": "limits_exceeded"},
+				{"id": "maps", "usable": true},
+			]),
+			vec!["maps"]
+		),
+	);
 }
 
 #[rstest::rstest]
@@ -360,10 +462,11 @@ async fn a_scratch_space_uses_the_newest_version_approved_for_everyone_on_its_no
 		.begin(&TenancyScope::tenant("acme").unwrap())
 		.await
 		.unwrap();
-	let lines =
-		crate::apps::workspaces::repositories::scratch::usable_lines(&mut tx, "acme", space)
-			.await
-			.unwrap();
+	let lines = crate::apps::workspaces::repositories::scratch::usable_lines(
+		&f.store, &mut tx, "acme", space,
+	)
+	.await
+	.unwrap();
 	tx.rollback().await.unwrap();
 	assert_eq!(
 		lines

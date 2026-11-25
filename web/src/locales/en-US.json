@@ -1122,6 +1122,7 @@
   "scratchServiceApprovalLimited": "it is approved only for certain users or Agents, so it does not count for a Scratch Space",
   "scratchServiceNotFound": "it is not registered",
   "scratchServiceNotApproved": "no Catalog Approval for everyone on this Node covers it",
+  "scratchServiceLimitsExceeded": "its limits exceed the Deployment maximums",
   "scratchHostsWithinTenant": "Hosts must be permitted by the Tenant allowlist.",
   "scratchDockerUnavailable": "The Deployment operator has not enabled Docker for this Tenant.",
   "scratchCreator": "Creator",

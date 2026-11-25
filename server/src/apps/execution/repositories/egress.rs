@@ -347,12 +347,7 @@ impl ServiceSecrets {
 		if destination == aidash_domain::keyless::Destination::Forbidden {
 			return Err(Error::Forbidden);
 		}
-		// An External service may only lower the Deployment's maximums (ADR
-		// 0054). Registration checked them then; a version registered before
-		// they were lowered is not used above them now.
-		if let Some(limits) = definition.limits {
-			limits.lower_than(deployment_ceilings(store))?;
-		}
+		check_service_limits(store, &definition)?;
 		// The Space's daily allowance and the service's own daily share are
 		// read in the transaction that writes the request record, before any
 		// secret is attached. A spent budget, or a failed read, rolls back:
@@ -417,16 +412,23 @@ impl ServiceSecrets {
 	}
 }
 
-/// The Deployment's maximums for an External service's limits, the same ones
-/// registration validates against.
-fn deployment_ceilings(store: &Store) -> aidash_domain::egress::Limits {
-	store
+/// Registration checks limits against the Deployment maximums (ADR 0054).
+/// Check again when using a version because those maximums can be lowered.
+pub(crate) fn check_service_limits(
+	store: &Store,
+	definition: &ExternalService,
+) -> aidash_domain::Result<()> {
+	let ceilings = store
 		.capabilities
 		.0
 		.egress
 		.as_ref()
 		.map(|egress| egress.limits)
-		.unwrap_or_default()
+		.unwrap_or_default();
+	if let Some(limits) = definition.limits {
+		limits.lower_than(ceilings)?;
+	}
+	Ok(())
 }
 
 /// The host a request record names for a Tenant Secret, never its value. A
@@ -592,9 +594,7 @@ impl Meter for ServiceMeter {
 	}
 }
 
-/// Whether each of `services` is usable from a Scratch Space on `node` now: the
-/// approved registry entry, or the refusal code (#738). A thin wrapper so the
-/// Scratch Space settings and a Run's starting instructions apply the same rule.
+/// The newest approved version for each service, or the approval refusal code.
 pub(crate) async fn usable_services(
 	tx: &mut Transaction,
 	tenant: &str,

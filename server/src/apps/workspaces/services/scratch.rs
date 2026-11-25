@@ -72,13 +72,13 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					last_used_at: now,
 				};
 				app::create(&mut scope, &space).await?;
-				let states = service_states(scope.access, &space).await?;
+				let states = service_states(&f.store, scope.access, &space).await?;
 				serde_json::to_value(ScratchView::new(space, now, states))?
 			}
 			Operation::List(node) => {
 				let mut views = Vec::new();
 				for space in app::list(&mut scope, &node, now).await? {
-					let states = service_states(scope.access, &space).await?;
+					let states = service_states(&f.store, scope.access, &space).await?;
 					views.push(ScratchView::new(space, now, states));
 				}
 				serde_json::to_value(views)?
@@ -91,7 +91,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 			}
 			Operation::Read(id) => {
 				let space = app::read(&mut scope, id, now).await?;
-				let states = service_states(scope.access, &space).await?;
+				let states = service_states(&f.store, scope.access, &space).await?;
 				serde_json::to_value(ScratchView::new(space, now, states))?
 			}
 			Operation::Settings(id, value) => {
