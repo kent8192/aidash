@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::apps::execution::capabilities::models::egress::{EgressUsageDaily, ScopeConnection};
 use crate::apps::identity::repositories::budgets;
-use crate::database::native::{self, Transaction};
+use crate::database::native::{self, Pool, Transaction};
 use crate::{Error, Result, store::Store};
 
 const BUDGET_PAUSE: &str = "Egress Budget Hard Limit reached; raise the limit, then resume the Run";
@@ -211,17 +211,12 @@ impl Traffic {
 
 /// CONNECT exposes a host and total bytes, so a transfer here is a completed
 /// Host connection. Match within a Run over the last two weeks.
-pub(super) async fn similar_transfer(
+async fn similar_transfer(
 	tx: &mut Transaction,
 	row: &ScopeConnection,
+	run: Uuid,
 	now: DateTime<Utc>,
 ) -> Result<bool> {
-	let Some(run) = row.run_id else {
-		return Ok(false);
-	};
-	if row.sent_bytes == 0 || row.outcome != "completed" {
-		return Ok(false);
-	}
 	// The two-sided comparison is integral and cannot overflow.
 	let tolerance = row.sent_bytes / 100;
 	let previous = ScopeConnection::objects()
@@ -240,16 +235,27 @@ pub(super) async fn similar_transfer(
 	Ok(!previous.is_empty())
 }
 
-pub(super) fn observe_transfer(row: &ScopeConnection, repeat: bool) {
-	if let Some(run) = row.run_id
-		&& row.sent_bytes > 0
-		&& row.outcome == "completed"
-	{
-		metrics::histogram!("aidash_egress_observed_transfer_sent_bytes")
-			.record(row.sent_bytes as f64);
-		if repeat {
+pub(super) async fn observe_transfer(pool: &Pool, row: &ScopeConnection, now: DateTime<Utc>) {
+	let Some(run) = row.run_id else {
+		return;
+	};
+	if row.sent_bytes == 0 || row.outcome != "completed" {
+		return;
+	}
+	metrics::histogram!("aidash_egress_observed_transfer_sent_bytes").record(row.sent_bytes as f64);
+	let lookup = async {
+		let mut tx = super::begin_timed(pool, &row.tenant).await?;
+		let repeat = similar_transfer(&mut tx, row, run, now).await?;
+		tx.commit().await?;
+		Ok::<_, Error>(repeat)
+	};
+	// Observe after committing accounting, with a bounded read.
+	match tokio::time::timeout(std::time::Duration::from_secs(1), lookup).await {
+		Ok(Ok(true)) => {
 			metrics::counter!("aidash_egress_observed_similar_transfers_total").increment(1);
-			tracing::info!(%run, host = %row.host, sent_bytes = row.sent_bytes, "egress_similar_sent_transfer");
+			tracing::info!(%run, connection = %row.id, sent_bytes = row.sent_bytes, "egress_similar_sent_transfer");
 		}
+		Ok(Ok(false)) => {}
+		_ => metrics::counter!("aidash_egress_observation_failures_total").increment(1),
 	}
 }

@@ -736,12 +736,6 @@ impl EgressScopes for DurableScopes {
 						.map_or_else(Utc::now, |row| row.created_at),
 				)
 				.finish();
-			let repeat = if observed {
-				accounting::similar_transfer(&mut tx, &row, now).await?
-			} else {
-				false
-			};
-
 			if existing.is_some() {
 				ScopeConnection::objects()
 					.save_with_executor(&mut *tx, &row)
@@ -756,7 +750,7 @@ impl EgressScopes for DurableScopes {
 			tx.commit().await?;
 			if observed {
 				sent.observe(row.run_id, now);
-				accounting::observe_transfer(&row, repeat);
+				accounting::observe_transfer(&self.store.pool, &row, now).await;
 			}
 			if stop && let Some(run) = row.run_id {
 				self.store
