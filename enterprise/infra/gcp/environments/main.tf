@@ -29,6 +29,7 @@ module "environment" {
     workload_pool  = google_container_cluster.aidash.workload_identity_config[0].workload_pool
     node_locations = [local.zone]
     standby_zones  = local.standby_zones
+    subnetwork     = length(var.egress_ip_groups) > 0 ? google_compute_subnetwork.aidash.id : null
   }
 }
 
@@ -56,6 +57,8 @@ output "environments" {
     provider_credentials   = m.provider_credentials
     gcip                   = m.gcip
     memory_recovery        = m.memory_recovery
+    egress_shared          = try(var.egress_ip_groups["shared"].environments[id], null)
+    egress_ip_groups       = { for group, config in var.egress_ip_groups : group => config.environments[id] if group != "shared" && contains(keys(config.environments), id) }
   } }
 }
 

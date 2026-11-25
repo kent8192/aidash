@@ -263,6 +263,29 @@ def read_change_log(path):
         return [json.loads(line) for line in file]
 
 
+def tenant_proxy_endpoint(config, credential):
+    """Route using the Tenant in the credential supplied by the trusted API.
+
+    Every gateway verifies the complete signed credential before forwarding.
+    """
+    endpoints = config.get('tenant_proxy_endpoints', {})
+    if not endpoints:
+        return config.get('proxy_endpoint')
+    import base64
+    import binascii
+    try:
+        prefix, _space, encoded, _run, _signature = credential.split('.')
+        if prefix != 'aidash-run-v1':
+            raise ValueError
+        tenant = base64.b64decode(encoded + '=' * (-len(encoded) % 4),
+                                  altchars=b'-_', validate=True).decode('utf-8')
+        if not tenant:
+            raise ValueError
+    except (AttributeError, binascii.Error, ValueError):
+        raise ValueError('invalid Tenant identity in proxy credential') from None
+    return endpoints.get(tenant, config.get('proxy_endpoint'))
+
+
 def pod_proxy_url(endpoint, credential):
     """The proxy address a Pod uses, carrying its credential to the Egress gateway."""
     import re
@@ -753,7 +776,8 @@ class ExecutionPodController:
         expected_policy = v2_network_policy(self.config)
         policies = self.backend.kube(['get', 'networkpolicies', '-o', 'json'])
         verify_network_policies(json.loads(policies.stdout)['items'], pod['metadata']['labels'], expected_policy)
-        gateway = urlsplit(self.config['proxy_endpoint'])
+        gateway = urlsplit(self.config.get('tenant_proxy_endpoints', {}).get(
+            settings.get('tenant_id'), self.config['proxy_endpoint']))
         gateway_ip = str(ipaddress.IPv4Address(gateway.hostname))
         node_ip = str(ipaddress.IPv4Address(pod['status']['hostIP']))
         nonce = uuid.uuid4().hex
@@ -1614,9 +1638,10 @@ print(json.dumps(r))'''
         credential = request.get('proxy_credential')
         proxy = None
         if credential is not None:
-            if not self.config.get('proxy_endpoint'):
+            endpoint = tenant_proxy_endpoint(self.config, credential)
+            if not endpoint:
                 raise ValueError('proxy endpoint is unavailable')
-            proxy = pod_proxy_url(self.config['proxy_endpoint'], credential)
+            proxy = pod_proxy_url(endpoint, credential)
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self.lock:
             self._require_space_termination_confirmed(scratch_id)

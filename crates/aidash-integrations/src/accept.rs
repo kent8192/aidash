@@ -44,8 +44,16 @@ impl AcceptFailures {
 			Ok(accepted) => Some(accepted),
 			Err(error) => {
 				self.record_failure(&error);
+				let delay = if self.service == "egress gateway"
+					&& error.raw_os_error() == Some(libc::EMFILE)
+				{
+					metrics::counter!("aidash_egress_accept_emfile_total").increment(1);
+					Duration::from_millis(100)
+				} else {
+					RETRY_AFTER
+				};
 				tokio::select! {
-					_ = tokio::time::sleep(RETRY_AFTER) => {},
+					_ = tokio::time::sleep(delay) => {},
 					_ = stopping.changed() => {},
 				}
 				None

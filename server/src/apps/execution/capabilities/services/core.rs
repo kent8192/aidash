@@ -118,16 +118,10 @@ impl Runtime {
 		}
 		if let Some(egress) = &profile.egress {
 			egress.limits.validate()?;
-			// One Scratch Space's own limit is not configurable, so a Tenant's
-			// may not be lower than it.
-			if egress.proxy_tenant_tunnels
-				< aidash_application::egress::TunnelLimits::default().concurrent
-				|| egress.proxy_tenant_tunnels >= egress.proxy_global_tunnels
-				|| egress.proxy_global_tunnels > tokio::sync::Semaphore::MAX_PERMITS
+			if egress.memory_limit_bytes == Some(0)
+				|| (egress.in_process && !egress.tenant_groups.is_empty())
 			{
-				return Err(Error::Invalid(
-					"invalid Egress proxy tunnel capacity".into(),
-				));
+				return Err(Error::Invalid("Egress IP groups require standalone gateways and a positive memory limit when set".into()));
 			}
 			if profile.runner.is_none() {
 				return Err(Error::Invalid("Egress requires a Runner".into()));

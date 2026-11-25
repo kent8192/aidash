@@ -312,45 +312,23 @@ minute, the pattern of a scan, the gateway logs a warning, counts it in
 `aidash_egress_many_hosts_total` and records a `many_hosts` operator event, once
 a minute at most. No consumer delivers these events yet.
 
-Each gateway instance has a Host connection limit of 32 open connections per
-scope, 256 per Tenant and 1,024 overall. The Tenant and global limits can be
-configured in the capability profile; the Tenant limit must be at least the
-scope limit and lower than the global limit. A connection over a limit waits up
-to 10 seconds for another to close, first come first served, then receives 429
-with `egress_tunnel_limit`, `egress_tenant_tunnel_limit` or
-`egress_global_tunnel_limit`. A scope may have any number of connections
-waiting. The gateway may have half of its open-file limit (counted up to
-1,048,576) beyond a reserve of 8,192 waiting, at least 64, and one Tenant a
-quarter of that; a connection
-beyond the Tenant's share is refused at once. The server raises its soft
-open-file limit to the hard limit at startup and logs the budget it derived. A
-`CONNECT` gives its listener slot back before it waits, so one Tenant's waiting
-connections never keep another Tenant's from being accepted; the listener has
-512 slots. A plain HTTP request keeps its slot while it waits, so a Tenant's
-waiting plain HTTP requests may hold at most a quarter of the slots (128); one
-beyond that is refused at once with `egress_tenant_tunnel_limit`. A connection
-that waited is checked against its scope once more before it is forwarded. Clients keep tunnels open between requests, so while a
-connection of a scope waits, that scope's tunnels that carried nothing for two
-seconds close as `egress_idle_reclaimed` and give their slots to the waiters
-(a tunnel whose bytes wait on a debit is not idle); the client opens a new
-tunnel when it needs one. A credential resolved for a new
-connection is reused for five seconds, so a burst of connections reads the
-store once; a revoked credential may still open connections for that long, and
-each open tunnel's own five-second recheck closes them.
+During a file descriptor shortage, a new Host connection or External service
+request waits if its Tenant already holds more than the replica's average number
+of open connections per active Tenant. The gateway rechecks the credential
+during the wait. During a memory shortage, a connection above its Tenant's
+share receives HTTP 503 with `egress_fair_share`. When a Scratch Space has a waiter, an idle tunnel of
+that Space makes way after two seconds without activity. A tunnel awaiting a
+debit is busy. Credentials resolved for new connections can be reused for five
+seconds, and open tunnels recheck them independently.
 
-A connection costs the database nothing until it holds its limits: the
-credential is read, but nothing is written. A connection that ends before then
-(invalid target, host not allowed, limit still full, client gone while waiting
-as `egress_client_closed`) is counted per scope, minute, host and reason in
-`egress_scope_refusals`, written once a minute by each gateway instance and at
-shutdown; a minute keeps 50 hosts of one scope apart and counts the rest under
-an empty host. A connection that holds its limits has a row in
-`egress_scope_connections`, whose `error` keeps the code its client received
-when the gateway answered with one and `wait_ms` the time it waited. The waits
-and refusals are also counted in
-`aidash_egress_host_connection_wait_seconds{limit}` and
-`aidash_egress_host_connection_limit_refused_total{limit}`, where `limit` is
-`space`, `tenant` or `deployment`. DNS resolution and a stalled client write each have a 30-second
+The gateway tallies attempts that end before admission in
+`egress_scope_refusals`. Each replica writes its tallies once a minute and on
+shutdown. Each minute keeps up to 50 distinct hosts per scope. Additional hosts
+share one tally. Admitted Host connections have rows in
+`egress_scope_connections`. The Run's Egress waits show the host and recorded
+`wait_ms` for connections that waited. Requests to External services include
+their wait in admission time. See [Egress operations](operations/egress.md) for
+the thresholds and metrics. DNS resolution and a stalled client write each have a 30-second
 deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host

@@ -154,6 +154,15 @@ class FakeCluster:
     def items(self, kind, namespace=None, selector=None):
         bounded_timeout(1)
         kind = KINDS[kind.lower()]
+        if selector == "app.kubernetes.io/instance=app,app.kubernetes.io/component=egress":
+            deployments = [obj for (other, scope, _), obj in self.objects.items()
+                           if other == "deployment" and scope == namespace
+                           and obj["metadata"].get("labels", {}).get("app.kubernetes.io/component") == "egress"
+                           and obj["metadata"].get("labels", {}).get("app.kubernetes.io/instance") == "app"]
+            if kind == "deployment":
+                return deepcopy(deployments)
+            return [{"status": {"phase": "Running"}} for obj in deployments
+                    for _ in range(obj["spec"]["replicas"])]
         if kind == "pod":
             names = SELECTORS.get(selector)
             pods = []
@@ -235,7 +244,7 @@ class FakeCluster:
 
     def scale(self, namespace, target, replicas):
         kind, name = target.split("/", 1)
-        self.record("scale", identity(namespace), SHORT[name], replicas)
+        self.record("scale", identity(namespace), SHORT.get(name, name), replicas)
         key = self.key(kind, name, namespace)
         if key not in self.objects:
             raise RuntimeError("kubectl failed (exit 1); no private command output was logged")

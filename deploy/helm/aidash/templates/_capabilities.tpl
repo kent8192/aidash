@@ -77,10 +77,37 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- toJson $s -}}
 {{- end -}}
 
+{{- define "aidash.egressSelector" -}}
+{{- toJson (dict "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "egress") -}}
+{{- end -}}
+
+{{- define "aidash.egressTenantGroups" -}}
+{{- $assignments := dict -}}
+{{- $used := dict .Values.execution.egress.clusterIP true -}}
+{{- range $name, $group := .Values.execution.egress.ipGroups -}}
+  {{- if or (eq $name "shared") (not (regexMatch "^[a-z][a-z0-9-]{0,38}[a-z0-9]$" $name)) -}}
+    {{- fail "an Egress IP group name must be a DNS label of 2 to 40 characters other than shared" -}}
+  {{- end -}}
+  {{- if or (not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" $group.clusterIP)) (hasKey $used $group.clusterIP) -}}
+    {{- fail (printf "Egress IP group %s must have a unique reserved IPv4 Service IP" $name) -}}
+  {{- end -}}
+  {{- $_ := set $used $group.clusterIP true -}}
+  {{- range $tenant := $group.tenants -}}
+    {{- if or (not (trim $tenant)) (hasKey $assignments $tenant) -}}
+      {{- fail "each Tenant must occur in exactly one configured Egress IP group" -}}
+    {{- end -}}
+    {{- $_ := set $assignments $tenant $name -}}
+  {{- end -}}
+{{- end -}}
+{{- toJson $assignments -}}
+{{- end -}}
+
 {{- define "aidash.egressSettings" -}}
 {{- $e := .Values.execution.egress -}}
 {{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" $e.clusterIP) -}}{{ fail "execution.egress.clusterIP must be a reserved internal IPv4 Service IP" }}{{- end -}}
 {{- if not .Values.execution.runner.enabled -}}{{ fail "execution.egress requires execution.runner.enabled" }}{{- end -}}
-{{- if or (lt (int $e.proxyTenantTunnels) 32) (le (int $e.proxyGlobalTunnels) (int $e.proxyTenantTunnels)) -}}{{ fail "execution.egress proxyTenantTunnels must be at least 32, one Scratch Space's limit, and below proxyGlobalTunnels" }}{{- end -}}
-{{- toJson (dict "listen" (printf "0.0.0.0:%d" (int $e.port)) "namespace" .Release.Namespace "pod_selector" (dict "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "server") "limits" $e.limits "proxy_global_tunnels" (int $e.proxyGlobalTunnels) "proxy_tenant_tunnels" (int $e.proxyTenantTunnels)) -}}
+{{- toJson (dict "listen" (printf "0.0.0.0:%d" (int $e.port)) "namespace" .Release.Namespace
+  "pod_selector" (include "aidash.egressSelector" . | fromJson) "limits" $e.limits
+  "in_process" false "memory_limit_bytes" 2147483648
+  "tenant_groups" (include "aidash.egressTenantGroups" . | fromJson)) -}}
 {{- end -}}

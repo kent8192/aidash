@@ -146,7 +146,7 @@ pub struct ScopeConnection {
 	/// is still open, and for rows older than #845.
 	#[field(field_type = "text", null = true)]
 	pub error: Option<String>,
-	/// How long the connection waited for a Host connection limit. Null until
+	/// How long the connection waited for its Egress fair share. Null until
 	/// the wait is over, and for rows older than #845.
 	#[field(null = true)]
 	pub wait_ms: Option<i64>,

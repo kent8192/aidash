@@ -110,7 +110,7 @@ server:
   replicas: 1
   resources:
     requests: { cpu: 100m, memory: 128Mi }
-    limits: { cpu: "2", memory: 1Gi }
+    limits: { cpu: "2", memory: 2Gi }
 sse:
   reconcileIntervalMs: 5000
   backpressureTimeoutSeconds: 30
@@ -252,9 +252,13 @@ execution:
     # Reserve an unused Service IP in the cluster's Service CIDR before enabling.
     clusterIP: ""
     port: 8950
-    # Per gateway instance; the Tenant limit must be below the global limit.
-    proxyGlobalTunnels: 1024
-    proxyTenantTunnels: 256
+    # Each dedicated group has its own reserved ClusterIP and Tenant IDs.
+    # The matching node pool is labelled aidash.run/egress-ip-group: <group>.
+    ipGroups: {}
+    sharedNodePool: false
+    # Managed deployments set replicas to zero until database migration completes.
+    suspended: false
+    metricsScrapeNamespaces: []
     limits:
       { sent_bytes: 1073741824, received_bytes: 1073741824, requests: 1000 }
   limits:

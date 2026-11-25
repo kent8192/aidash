@@ -324,6 +324,7 @@ dependencies = [
  "hyper-util",
  "image",
  "jsonwebtoken 11.1.0",
+ "libc",
  "metrics",
  "object_store",
  "openidconnect",

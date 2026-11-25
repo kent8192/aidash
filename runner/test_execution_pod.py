@@ -301,6 +301,17 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
 
 
 class PodProxyUrlTest(unittest.TestCase):
+    def test_tenant_credentials_choose_dedicated_or_shared_proxy(self):
+        from execution_pod import tenant_proxy_endpoint
+        config = {'proxy_endpoint': 'http://10.0.0.8:8950',
+                  'tenant_proxy_endpoints': {'acme': 'http://10.0.0.9:8950'}}
+        self.assertEqual(tenant_proxy_endpoint(config, 'aidash-run-v1.space.YWNtZQ.run.sig'),
+                         'http://10.0.0.9:8950')
+        self.assertEqual(tenant_proxy_endpoint(config, 'aidash-run-v1.space.b3RoZXI.run.sig'),
+                         'http://10.0.0.8:8950')
+        with self.assertRaisesRegex(ValueError, 'invalid Tenant identity'):
+            tenant_proxy_endpoint(config, 'aidash-run-v1.space.!!!!.run.sig')
+
     def test_a_credential_travels_in_the_proxy_url(self):
         from execution_pod import pod_proxy_url
         self.assertEqual(pod_proxy_url('http://10.0.0.8:8888', 'aidash-scope-v1.a-b_c'),
