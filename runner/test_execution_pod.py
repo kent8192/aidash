@@ -1059,6 +1059,7 @@ with patch('execution_pod.helper_command', side_effect=guest):
         with tempfile.TemporaryDirectory() as directory:
             state, output = Path(directory) / 'operations', Path(directory) / 'output'
             response = subprocess.run([sys.executable, '-c', script, str(state), str(output), operation],
+                                      cwd=Path(__file__).parent,
                                       env=dict(os.environ, AIDASH_POD_UID='pod'), capture_output=True,
                                       check=True, timeout=5)
             self.assertEqual(json.loads(response.stdout), {'started': True})
