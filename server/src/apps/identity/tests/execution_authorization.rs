@@ -7339,6 +7339,7 @@ impl SubnodeRig {
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_add_member","version":"1.0.0"},"alias":"subnode_add_member","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.delete_subnode","version":"1.0.0"},"alias":"delete_subnode","narrow":{}}),
 				]);
 			} else {
@@ -7504,6 +7505,71 @@ async fn subnode_create_reports_a_missing_member_without_pausing_the_run(
 		}),
 		"{result}"
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_add_member_reports_a_missing_version_without_pausing_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(
+		&f,
+		&fixture.application,
+		&["subnode-leader", "subnode-second"],
+		true,
+	)
+	.await;
+	let created = rig
+		.inject(
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0",
+				"members":["subnode-leader@1.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			"create-subnode",
+		)
+		.await;
+	let subnode_id = created["subnode_id"]
+		.as_str()
+		.unwrap_or_else(|| panic!("creation: {created}"));
+
+	let call_id = "add-missing-member";
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_add_member",
+			json!({"subnode_id":subnode_id,"agent":"subnode-second@2.0.0"}),
+			call_id,
+		)
+		.await
+	);
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig.result_of(rig.creator_run, call_id).await.unwrap();
+	assert!(
+		result["error"].as_str().is_some_and(|error| {
+			error.contains("registry entry subnode-second@2.0.0 was not found")
+		}),
+		"{result}"
+	);
+	let added = rig
+		.inject(
+			"subnode_add_member",
+			json!({"subnode_id":subnode_id,"agent":"subnode-second@1.0.0"}),
+			"add-corrected-member",
+		)
+		.await;
+	assert_eq!(added["added"], true, "{added}");
 	cleanup(f, &url, &schema).await;
 }
 
