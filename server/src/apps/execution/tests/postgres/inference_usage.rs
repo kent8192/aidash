@@ -1261,12 +1261,14 @@ async fn retried_model_calls_record_late_usage_once_under_the_original_owner(
 		.await
 		.unwrap();
 
+	// Complete the initial recovery scan while the original lease is live.
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("task_executions"))
 			.value_expr(
 				Alias::new("lease_until"),
-				Expr::value(chrono::Utc::now() - chrono::TimeDelta::seconds(1)),
+				Expr::value(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH),
 			)
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
@@ -1276,7 +1278,7 @@ async fn retried_model_calls_record_late_usage_once_under_the_original_owner(
 	.unwrap();
 
 	let replacement = Uuid::new_v4();
-	let recovered = store.lease_run(replacement, 30).await.unwrap().unwrap();
+	let recovered = common::lease_entered_run(&store, replacement).await;
 	assert_eq!(recovered.id, run.id);
 	assert!(recovered.recovery.lease_recoveries > run.recovery.lease_recoveries);
 	assert_eq!(usage_row(&store, first.attempt).await.0, "unknown");
@@ -1308,16 +1310,18 @@ async fn retried_model_calls_record_late_usage_once_under_the_original_owner(
 			.await
 			.unwrap();
 	}
-	let active: (Option<String>, i64) = sqlx::query_as(
-		"SELECT outcome, (usage->>'input_tokens')::bigint FROM model_calls WHERE id = $1",
-	)
-	.bind(first.attempt)
-	.fetch_one(store.pool.fixture_driver())
-	.await
-	.unwrap();
+	let call_query = Query::select()
+		.columns(["outcome", "usage"])
+		.from("model_calls")
+		.and_where(Expr::col("id").eq(Expr::value(first.attempt)))
+		.to_string(PostgresQueryBuilder);
+	let active: (Option<String>, serde_json::Value) = sqlx::query_as(&call_query)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap();
 	assert_eq!(
-		active,
-		(None, 5),
+		(active.0, &active.1["input_tokens"]),
+		(None, &json!(5)),
 		"a late attempt supplies facts without closing the retry"
 	);
 	assert_eq!(ledger(&store).await, (70_000, 0));
@@ -1334,20 +1338,21 @@ async fn retried_model_calls_record_late_usage_once_under_the_original_owner(
 		.await
 		.unwrap();
 	let attempts: Vec<Uuid> = sqlx::query_scalar(
-		"SELECT model_call_id FROM inference_usage WHERE run_id = $1 ORDER BY created_at, attempt_id",
+		&Query::select()
+			.column("model_call_id")
+			.from("inference_usage")
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(run.id)
 	.fetch_all(store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(attempts, [first.attempt, first.attempt]);
-	let accepted: (String, i64) = sqlx::query_as(
-		"SELECT outcome, (usage->>'input_tokens')::bigint FROM model_calls WHERE id = $1",
-	)
-	.bind(first.attempt)
-	.fetch_one(store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(accepted, ("accepted".into(), 15));
+	let accepted: (String, serde_json::Value) = sqlx::query_as(&call_query)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(accepted.0, "accepted");
+	assert_eq!(accepted.1["input_tokens"], json!(15));
 	assert_eq!(ledger(&store).await, (100_000, 0));
 }

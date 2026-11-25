@@ -3989,14 +3989,23 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let origin_spend = || {
-		sqlx::query_scalar::<_, i64>(
-			"SELECT COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend
-		 WHERE tenant = 'acme' AND root_subject = 'alice'",
-		)
-		.fetch_one(store.pool.fixture_driver())
+	let spend = async |root_subject: &str, node: Option<&str>| {
+		let mut query = Query::select();
+		query
+			.expr(reinhardt::query::Func::sum(Expr::col("unpriced_calls").into()).cast_as("int8"))
+			.from("budget_spend")
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("root_subject").eq(root_subject));
+		if let Some(node) = node {
+			query.and_where(Expr::col("node").eq(node));
+		}
+		let total: Option<i64> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap();
+		total.unwrap_or_default()
 	};
-	let billed_before = origin_spend().await.unwrap();
+	let billed_before = spend("alice", None).await;
 
 	let outcome = if backpressure {
 		memory::Outcome::Candidates(
@@ -4011,8 +4020,16 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		panic!("learning must return review candidates")
 	};
 	let attribution: (String, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
-		"SELECT node, run_id, stint_id FROM model_calls WHERE tenant = 'acme' AND purpose = 'memory_role'",
-	).fetch_one(store.pool.fixture_driver()).await.unwrap();
+		&Query::select()
+			.columns(["node", "run_id", "stint_id"])
+			.from("model_calls")
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("purpose").eq("memory_role"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
 	assert_eq!(
 		attribution,
 		(
@@ -4021,16 +4038,8 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			None
 		)
 	);
-	assert_eq!(origin_spend().await.unwrap(), billed_before);
-	let billed_to_node: i64 = sqlx::query_scalar(
-		"SELECT COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend
-		 WHERE tenant = 'acme' AND node = $1 AND root_subject = ''",
-	)
-	.bind(&attribution.0)
-	.fetch_one(store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert!(billed_to_node > 0);
+	assert_eq!(spend("alice", None).await, billed_before);
+	assert!(spend("", Some(&attribution.0)).await > 0);
 
 	assert_eq!(candidates.len(), 2);
 	assert_eq!(candidates[0].content.verification, Verification::Unverified);

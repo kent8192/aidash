@@ -235,21 +235,46 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 	assert!(first.is_err(), "the scripted response is incomplete");
 	let pool = store.pool.fixture_driver();
 	let call: Uuid = sqlx::query_scalar(
-		"UPDATE model_calls SET request_digest = 'sha256:' || repeat('1', 64)
-		 WHERE id IN (SELECT model_call_id FROM inference_usage WHERE attempt_id IN
-		   (SELECT id FROM memory_model_attempts WHERE operation_id = $1))
-		 RETURNING id",
+		&Query::select()
+			.column(("inference_usage", "model_call_id"))
+			.from("memory_model_attempts")
+			.inner_join(
+				"inference_usage",
+				Expr::col(("inference_usage", "attempt_id"))
+					.equals(("memory_model_attempts", "id")),
+			)
+			.and_where(
+				Expr::col(("memory_model_attempts", "operation_id"))
+					.eq(Expr::value(retry.operation_id)),
+			)
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(retry.operation_id)
 	.fetch_one(pool)
 	.await
 	.unwrap();
 	// Represent a first request encoded for a different transport. The durable
 	// memory replay identity and logical request are the same on the next attempt.
+	let first_digest = format!("sha256:{}", "1".repeat(64));
 	sqlx::query(
-		"UPDATE memory_model_attempts SET created_at = now() - interval '1 hour' WHERE operation_id = $1",
+		&Query::update()
+			.table("model_calls")
+			.value("request_digest", first_digest.clone())
+			.and_where(Expr::col("id").eq(Expr::value(call)))
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(retry.operation_id)
+	.execute(pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table("memory_model_attempts")
+			.value(
+				"created_at",
+				chrono::Utc::now() - chrono::TimeDelta::hours(1),
+			)
+			.and_where(Expr::col("operation_id").eq(Expr::value(retry.operation_id)))
+			.to_string(PostgresQueryBuilder),
+	)
 	.execute(pool)
 	.await
 	.unwrap();
@@ -258,19 +283,30 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 		.unwrap();
 	assert!(matches!(reflected, memory::Outcome::Reflection(_)));
 	assert_eq!(chat.load(Ordering::SeqCst), 3);
-	let physical: i64 =
-		sqlx::query_scalar("SELECT COUNT(*) FROM inference_usage WHERE model_call_id = $1")
-			.bind(call)
-			.fetch_one(pool)
-			.await
-			.unwrap();
+	let physical: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col("attempt_id").into(),
+			))
+			.from("inference_usage")
+			.and_where(Expr::col("model_call_id").eq(Expr::value(call)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
 	assert_eq!(physical, 2);
-	let digest: String = sqlx::query_scalar("SELECT request_digest FROM model_calls WHERE id = $1")
-		.bind(call)
-		.fetch_one(pool)
-		.await
-		.unwrap();
-	assert_eq!(digest, format!("sha256:{}", "1".repeat(64)));
+	let digest: String = sqlx::query_scalar(
+		&Query::select()
+			.column("request_digest")
+			.from("model_calls")
+			.and_where(Expr::col("id").eq(Expr::value(call)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(digest, first_digest);
 
 	drop(server);
 }

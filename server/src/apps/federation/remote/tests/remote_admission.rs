@@ -99,14 +99,18 @@ async fn receiver_admission_checks_pins_and_revalidates_after_reconnect(
 				.unwrap()
 				.contains("PROJECTION_RETIRED")
 		);
-		let count: i64 = sqlx::query_scalar(
-			"SELECT COUNT(*) FROM authorization_remote_admissions WHERE grant_id = $1",
+		let admission: Option<Uuid> = sqlx::query_scalar(
+			&Query::select()
+				.column("grant_id")
+				.from("authorization_remote_admissions")
+				.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
 		)
-		.bind(grant)
-		.fetch_one(b.store.pool.fixture_driver())
+		.fetch_optional(b.store.pool.fixture_driver())
 		.await
 		.unwrap();
-		assert_eq!(count, 0);
+		assert_eq!(admission, None);
 		assert!(b.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
 		drop(aa);
 		drop(ba);

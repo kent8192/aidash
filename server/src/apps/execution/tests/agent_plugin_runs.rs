@@ -16,6 +16,9 @@ use aidash_server::{
 };
 use common::*;
 use http::Method;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+};
 use reinhardt::test::stub::StubRouter;
 use serde_json::{Value, json};
 use std::sync::{
@@ -1290,9 +1293,12 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	// A real Native worker stores the current structured contract in the
 	// database for the Run step and both of its samples.
 	let versions: Vec<(i32, i32)> = sqlx::query_as(
-		"SELECT projection_version, harness_contract FROM inference_usage WHERE run_id = $1",
+		&Query::select()
+			.columns(["projection_version", "harness_contract"])
+			.from("inference_usage")
+			.and_where(Expr::col("run_id").eq(Expr::value(world.run.id)))
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(world.run.id)
 	.fetch_all(world.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -1368,26 +1374,93 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	assert_eq!(world.model.sampling.lock().unwrap().len(), 2);
 	assert_eq!(world.mcp.requests("tools/call").len(), 2);
 	assert_eq!(events(&world, "inference.accepted").await.len(), 3);
-	// A single Stint can span more than one Model Call page.
-	sqlx::query(
-		"INSERT INTO model_calls
-		 (id, tenant, node, run_id, stint_id, purpose, model_id, model_version, request_digest, started_at)
-		 SELECT gen_random_uuid(), tenant, node, run_id, id, 'mcp_sampling', 'fixture', '1',
-		        'sha256:' || repeat('0', 64), now()
-		 FROM stints CROSS JOIN generate_series(1, 101) WHERE id = $1",
-	).bind(provenance[0].0).execute(world.f.store.pool.fixture_driver()).await.unwrap();
-	// Older Stints fill the first Stint page. The sampled calls still need
-	// their actual owner on both pages.
-	sqlx::query(
-		"INSERT INTO stints (id, tenant, run_id, agent_id, agent_version, node, started_at, ended_at, end_reason)
-		 SELECT gen_random_uuid(), tenant, run_id, agent_id, agent_version, node,
-		        started_at - interval '1 day', started_at - interval '1 hour', 'waiting'
-		 FROM stints CROSS JOIN generate_series(1, 101) WHERE id = $1",
+	let pool = world.f.store.pool.fixture_driver();
+	let stint_id = provenance[0].0;
+	let (tenant, agent, version, node, started): (
+		String,
+		String,
+		String,
+		String,
+		chrono::DateTime<chrono::Utc>,
+	) = sqlx::query_as(
+		&Query::select()
+			.columns(["tenant", "agent_id", "agent_version", "node", "started_at"])
+			.from("stints")
+			.and_where(Expr::col("id").eq(Expr::value(stint_id)))
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(provenance[0].0)
-	.execute(world.f.store.pool.fixture_driver())
+	.fetch_one(pool)
 	.await
 	.unwrap();
+
+	// One Stint spans two Model Call pages. Older Stints fill the first Stint
+	// page, so the sampled calls still need their actual owner on both pages.
+	let mut calls = Query::insert();
+	calls.into_table("model_calls").columns(
+		[
+			"id",
+			"tenant",
+			"node",
+			"run_id",
+			"stint_id",
+			"purpose",
+			"model_id",
+			"model_version",
+			"request_digest",
+			"started_at",
+		]
+		.map(Alias::new),
+	);
+	let mut stints = Query::insert();
+	stints.into_table("stints").columns(
+		[
+			"id",
+			"tenant",
+			"run_id",
+			"agent_id",
+			"agent_version",
+			"node",
+			"started_at",
+			"ended_at",
+			"end_reason",
+		]
+		.map(Alias::new),
+	);
+	let digest = format!("sha256:{}", "0".repeat(64));
+	let now = chrono::Utc::now();
+	for _ in 0..101 {
+		calls.values_panic([
+			Expr::value(uuid::Uuid::new_v4()),
+			Expr::value(tenant.clone()),
+			Expr::value(node.clone()),
+			Expr::value(world.run.id),
+			Expr::value(stint_id),
+			Expr::value("mcp_sampling"),
+			Expr::value("fixture"),
+			Expr::value("1"),
+			Expr::value(digest.clone()),
+			Expr::value(now),
+		]);
+		stints.values_panic([
+			Expr::value(uuid::Uuid::new_v4()),
+			Expr::value(tenant.clone()),
+			Expr::value(world.run.id),
+			Expr::value(agent.clone()),
+			Expr::value(version.clone()),
+			Expr::value(node.clone()),
+			Expr::value(started - chrono::TimeDelta::days(1)),
+			Expr::value(started - chrono::TimeDelta::hours(1)),
+			Expr::value("waiting"),
+		]);
+	}
+	sqlx::query(&calls.to_string(PostgresQueryBuilder))
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query(&stints.to_string(PostgresQueryBuilder))
+		.execute(pool)
+		.await
+		.unwrap();
 	let mut seen_stints = std::collections::BTreeSet::new();
 	let mut seen = std::collections::BTreeSet::new();
 	for (offset, expected_calls) in [(0, 100), (100, 3), (200, 0)] {

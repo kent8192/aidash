@@ -405,12 +405,17 @@ async fn a_run_with_a_retired_pin_fails_at_the_next_worker_step(
 		.unwrap();
 	let before = store.run(&ACME, run.id).await.unwrap();
 	assert_eq!(before.context.journal.head, 1);
-	let saved_history: serde_json::Value =
-		sqlx::query_scalar("SELECT event FROM run_context_events WHERE run_id = $1 AND seq = 1")
-			.bind(run.id)
-			.fetch_one(store.pool.fixture_driver())
-			.await
-			.unwrap();
+	let saved_history: serde_json::Value = sqlx::query_scalar(
+		&Query::select()
+			.column("event")
+			.from("run_context_events")
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("seq").eq(1))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
 	assert_eq!(saved_history, serde_json::to_value(previous).unwrap());
 	let app = common::application(federation.clone()).await;
 	let actor = common::tenant_token(&store, "acme").await;
@@ -433,12 +438,18 @@ async fn a_run_with_a_retired_pin_fails_at_the_next_worker_step(
 		"{failed:?}"
 	);
 	assert!(failed.recovery.retry.is_none());
-	let usage: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inference_usage WHERE run_id = $1")
-		.bind(run.id)
-		.fetch_one(store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert_eq!(usage, 0);
+	let usage: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column("attempt_id")
+			.from("inference_usage")
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(usage, None);
 
 	for _ in 0..3 {
 		if store.run(&ACME, run.id).await.unwrap().phase() == RunPhase::Failed {

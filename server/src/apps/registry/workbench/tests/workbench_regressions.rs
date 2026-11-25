@@ -857,23 +857,37 @@ async fn expired_workbench_dispatch_recovers_and_settles_a_late_provider_report(
 	let (wb, started) = model_waiting_for_real_tool;
 	let pool = wb.f.store.pool.fixture_driver();
 	let id: uuid::Uuid = sqlx::query_scalar(
-		"UPDATE inference_usage SET recovery_after = now() - interval '1 second'
-		 WHERE tenant = 'acme' AND purpose = 'auxiliary' AND outcome = 'dispatched'
-		 RETURNING model_call_id",
+		&Query::update()
+			.table("inference_usage")
+			.value(
+				"recovery_after",
+				chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+			)
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("purpose").eq("auxiliary"))
+			.and_where(Expr::col("outcome").eq("dispatched"))
+			.returning(["model_call_id"])
+			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(pool)
 	.await
 	.unwrap();
 	assert_eq!(wb.f.store.close_orphaned_inference().await.unwrap(), 1);
 	assert_eq!(wb.f.store.close_orphaned_inference().await.unwrap(), 0);
-	let state = || {
-		sqlx::query_as::<_, (String, String, Option<i64>)>(
-			"SELECT m.outcome, u.outcome, u.input_tokens FROM model_calls m
-		 JOIN inference_usage u ON u.model_call_id = m.id WHERE m.id = $1",
+	let state_query = Query::select()
+		.columns([
+			("model_calls", "outcome"),
+			("inference_usage", "outcome"),
+			("inference_usage", "input_tokens"),
+		])
+		.from("model_calls")
+		.inner_join(
+			"inference_usage",
+			Expr::col(("inference_usage", "model_call_id")).equals(("model_calls", "id")),
 		)
-		.bind(id)
-		.fetch_one(pool)
-	};
+		.and_where(Expr::col(("model_calls", "id")).eq(Expr::value(id)))
+		.to_string(PostgresQueryBuilder);
+	let state = || sqlx::query_as::<_, (String, String, Option<i64>)>(&state_query).fetch_one(pool);
 	assert_eq!(
 		state().await.unwrap(),
 		("failed".into(), "unknown".into(), None)
@@ -897,13 +911,21 @@ async fn expired_workbench_dispatch_recovers_and_settles_a_late_provider_report(
 		state().await.unwrap(),
 		("failed".into(), "completed".into(), Some(30))
 	);
-	let spent: i64 = sqlx::query_scalar(
-		"SELECT COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend WHERE tenant = 'acme'",
+	let spent: Option<i64> = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::sum(Expr::col("unpriced_calls").into()).cast_as("int8"))
+			.from("budget_spend")
+			.and_where(Expr::col("tenant").eq("acme"))
+			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(pool)
 	.await
 	.unwrap();
-	assert_eq!(spent, 1, "the late Workbench usage reaches its Budget once");
+	assert_eq!(
+		spent,
+		Some(1),
+		"the late Workbench usage reaches its Budget once"
+	);
 	wb.cleanup().await;
 }
 

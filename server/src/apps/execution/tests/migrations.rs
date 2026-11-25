@@ -7445,18 +7445,26 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 		.rollback_migrations(std::slice::from_ref(&recovery))
 		.await
 		.unwrap();
-	let retained: Uuid =
-		sqlx::query_scalar("SELECT model_call_id FROM inference_usage WHERE model_call_id = $1")
-			.bind(model_call)
-			.fetch_one(&pool)
-			.await
-			.unwrap();
+	let mut usage = Query::select();
+	usage
+		.from("inference_usage")
+		.and_where(Expr::col("model_call_id").eq(Expr::value(model_call)));
+	let retained: Uuid = sqlx::query_scalar(
+		&usage
+			.clone()
+			.column("model_call_id")
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
 	assert_eq!(retained, model_call);
 	executor.apply_migrations(&[recovery]).await.unwrap();
 	let pending: bool = sqlx::query_scalar(
-		"SELECT late_report_pending FROM inference_usage WHERE model_call_id = $1",
+		&usage
+			.column("late_report_pending")
+			.to_string(PostgresQueryBuilder),
 	)
-	.bind(model_call)
 	.fetch_one(&pool)
 	.await
 	.unwrap();
