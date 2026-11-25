@@ -66,11 +66,8 @@ pub enum EndReason {
 /// is withdrawn or disabled (`catalog_enabled == Some(false)`), or the Tenant's
 /// policy names its Agent subject and disables it (`subject_enabled ==
 /// Some(false)`). A generated version's approval that its retirement
-/// disabled counts too. Absence proves nothing: a generated version may run
-/// with no approval row on the Node (one registered unapproved, as on the
-/// receiving Node of a foreign generation), and a subject missing from the
-/// policy bundle may be one that was never written there. Neither absence
-/// ends a Subnode.
+/// disabled counts too. An approval or subject missing from storage does not
+/// by itself establish that the creating Agent was disabled.
 pub fn creator_removed(catalog_enabled: Option<bool>, subject_enabled: Option<bool>) -> bool {
 	catalog_enabled == Some(false) || subject_enabled == Some(false)
 }
