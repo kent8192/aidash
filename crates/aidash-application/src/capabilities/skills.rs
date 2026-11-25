@@ -191,9 +191,20 @@ pub async fn invoke(
 	name: &str,
 	input: Value,
 ) -> Result<Value> {
-	let mut record = scope.skill_record(run.id).await?;
-	let mut pinned: Vec<Pinned> = serde_json::from_value(record.data.clone())?;
+	let record = scope.skill_record(run.id).await;
 	if name == "skill_list" {
+		let pinned: Vec<Pinned> = match record {
+			Ok(record) => serde_json::from_value(record.data)?,
+			// Registry Skills contribute to instructions without a mounted Skill record.
+			Err(error @ Error::NotFound(_)) => {
+				let config = AgentConfig::from_snapshot(scope.binding_snapshot()?)?;
+				if config.core_capabilities.skills {
+					return Err(error);
+				}
+				Vec::new()
+			}
+			Err(error) => return Err(error),
+		};
 		let p: SkillList =
 			serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
 		let start = p.cursor.unwrap_or(0);
@@ -206,6 +217,8 @@ pub async fn invoke(
 			json!({"skills":pinned[start..end].iter().map(|p|&p.metadata).collect::<Vec<_>>(),"next_cursor":(end<pinned.len()).then_some(end),"truncated":end<pinned.len()}),
 		);
 	}
+	let mut record = record?;
+	let mut pinned: Vec<Pinned> = serde_json::from_value(record.data.clone())?;
 	let (id, digest, path, offset, limit) = if name == "skill_load" {
 		let p: SkillLoad =
 			serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
