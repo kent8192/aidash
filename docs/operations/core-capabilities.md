@@ -128,7 +128,11 @@ command records are retained for 24 hours and 15 minutes after completion; unset
 commands and stops awaiting confirmation are retained. Each Space is limited to
 4096 command records. At the limit, new commands are refused until records can
 expire, while retries of retained commands still return their prior results.
-Python interpreters are per Run.
+Python interpreters are per Run. Pass the last result's `session_id` as
+`expected_session_id` when a cell depends on that interpreter's state. If that
+interpreter has ended or its Pod was replaced, the Runner refuses the cell with
+`SESSION_RESET`. Omit the expected ID on a new operation to rebuild state and
+use the returned ID for subsequent cells.
 The Pod stops after 30 minutes without a command or Live preview viewer;
 background processes alone do not extend its life. Preview and MCP integration
 with the application remains for wave 2.

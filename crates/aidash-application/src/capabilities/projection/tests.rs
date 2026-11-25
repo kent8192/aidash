@@ -51,6 +51,24 @@ async fn completed_command_reports_adopted_background_process() {
 	);
 }
 #[tokio::test]
+async fn a_pod_python_result_exposes_the_interpreter_id() {
+	let session = Uuid::from_u128(12);
+	let input = json!({"expected_session_id": null});
+	let data = json!({"session_id": session});
+	let operation = OperationView {
+		kind: super::super::pod::PYTHON,
+		..view("completed", &input, &data)
+	};
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &operation, 0).await.unwrap();
+	assert_eq!(page.session_id, Some(session));
+}
+
+#[tokio::test]
 async fn polling_at_the_output_end_omits_unchanged_output_and_keeps_the_cursor() {
 	let data = json!({"output_file": output_file()});
 	let input = json!({});
