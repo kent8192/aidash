@@ -837,7 +837,7 @@ impl<'a> Executor<'a> {
 		harness_contract: aidash_domain::harness_contract::HarnessContract,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
-		retry_truncated: bool,
+		retry_key: Option<&str>,
 		cache_breakpoints: bool,
 	) -> Result<()> {
 		use aidash_application::context::{
@@ -978,6 +978,14 @@ impl<'a> Executor<'a> {
 		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
+		let retry_truncated = retry_key.is_none();
+		let retry_key = retry_key.map(str::to_owned).unwrap_or_else(|| {
+			format!(
+				"{}:{}:{}:{}",
+				summarizer.definition_digest, first.seq, last.seq, model_call.request_digest
+			)
+		});
+		let model_call = model_call.with_retry_key(&retry_key);
 		// The candidate carries the previous summary's sources as well.
 		// A continued request shows the summarizer everything it renders, so
 		// the summary depends on all of it, not only what it folds.
@@ -1200,7 +1208,7 @@ impl<'a> Executor<'a> {
 							harness_contract,
 							plan,
 							tools,
-							false,
+							Some(&retry_key),
 							cache_breakpoints,
 						))
 						.await;
@@ -2293,7 +2301,7 @@ impl<'a> Executor<'a> {
                         // request fit (ADR 0125): a failed summary is dropped and
                         // the step goes on with the projection it already has.
                         let forced = plan.pruned.offload_reads.summary_pending && plan.before_tokens <= fitting.budget.window;
-                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true, explicit_cache)).await {
+                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, None, explicit_cache)).await {
                             // Every exit of `summarize` settles its attempt first.
                             Err(Error::Context(_) | Error::ContextOverflow) if forced => {
                                 run.context.offload_reads.release();

@@ -3989,6 +3989,15 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
+	let origin_spend = || {
+		sqlx::query_scalar::<_, i64>(
+			"SELECT COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend
+		 WHERE tenant = 'acme' AND root_subject = 'alice'",
+		)
+		.fetch_one(store.pool.fixture_driver())
+	};
+	let billed_before = origin_spend().await.unwrap();
+
 	let outcome = if backpressure {
 		memory::Outcome::Candidates(
 			review_pressure::retry_learning(&store, &participant.bank, &proof).await,
@@ -4001,6 +4010,28 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let memory::Outcome::Candidates(candidates) = outcome else {
 		panic!("learning must return review candidates")
 	};
+	let attribution: (String, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+		"SELECT node, run_id, stint_id FROM model_calls WHERE tenant = 'acme' AND purpose = 'memory_role'",
+	).fetch_one(store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(
+		attribution,
+		(
+			aidash_domain::nodes::NodeName::derived("acme").to_string(),
+			None,
+			None
+		)
+	);
+	assert_eq!(origin_spend().await.unwrap(), billed_before);
+	let billed_to_node: i64 = sqlx::query_scalar(
+		"SELECT COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend
+		 WHERE tenant = 'acme' AND node = $1 AND root_subject = ''",
+	)
+	.bind(&attribution.0)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(billed_to_node > 0);
+
 	assert_eq!(candidates.len(), 2);
 	assert_eq!(candidates[0].content.verification, Verification::Unverified);
 	let extracted: serde_json::Value =

@@ -9,7 +9,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{Json, Model, execution::convert_values};
 use reinhardt::model;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, UpdateStatement,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -127,30 +127,27 @@ impl InferenceUsage {
 		Self::abandon(tx, run, None, Some(dispatch.purpose.as_str())).await?;
 		let tenant =
 			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
-		if let Some(call) = &dispatch.model_call {
-			let owner =
-				crate::apps::execution::repositories::model_calls::Attribution::awake(tx, run)
-					.await?;
-			crate::apps::execution::repositories::model_calls::start(
-				tx,
-				dispatch.attempt,
-				&owner,
-				&aidash_domain::registry::EntityRef {
-					id: dispatch.model_id.clone(),
-					version: dispatch.model_version.clone(),
-				},
-				call,
+		let model_call = if let Some(call) = &dispatch.model_call {
+			use crate::apps::execution::repositories::model_calls;
+			let owner = model_calls::Attribution::awake(tx, run).await?;
+			Some(
+				model_calls::start_run_call(
+					tx,
+					&owner,
+					dispatch.attempt,
+					&aidash_domain::registry::EntityRef {
+						id: dispatch.model_id.clone(),
+						version: dispatch.model_version.clone(),
+					},
+					call,
+				)
+				.await?,
 			)
-			.await?;
-		}
-		Self::insert_dispatch(
-			tx,
-			tenant,
-			Some(run),
-			dispatch.model_call.as_ref().map(|_| dispatch.attempt),
-			dispatch,
-		)
-		.await?;
+		} else {
+			None
+		};
+		Self::insert_dispatch(tx, tenant, Some(run), model_call, dispatch).await?;
+
 		if dispatch.purpose.as_str() == "summary" {
 			// Creation of a compaction journal precedes authorization and may
 			// finish without I/O. Only this durable dispatch establishes that the
@@ -158,10 +155,7 @@ impl InferenceUsage {
 			let (sql, values) = Query::update()
 				.table(Alias::new("context_compaction_attempts"))
 				.value_expr(Alias::new("provider_dispatched"), Expr::value(true))
-				.value_expr(
-					Alias::new("model_call_id"),
-					Expr::value(dispatch.model_call.as_ref().map(|_| dispatch.attempt)),
-				)
+				.value_expr(Alias::new("model_call_id"), Expr::value(model_call))
 				.and_where(Expr::col("id").eq(Expr::value(dispatch.attempt)))
 				.and_where(Expr::col("run_id").eq(Expr::value(run)))
 				.and_where(Expr::col("stage").eq(Expr::value("summary")))
@@ -245,6 +239,22 @@ impl InferenceUsage {
 		Self::abandon(tx, run, Some(lease), None).await
 	}
 
+	fn abandon_update() -> UpdateStatement {
+		Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value_expr(
+				Alias::new("outcome"),
+				Expr::value(UsageOutcome::Unknown.as_str()),
+			)
+			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
+			.value_expr(
+				Alias::new("late_report_pending"),
+				Expr::col("model_call_id").is_not_null(),
+			)
+			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
+			.to_owned()
+	}
+
 	/// Make the Run's dispatched attempts unknown, except those of `kept`.
 	async fn abandon(
 		tx: &mut dyn TransactionExecutor,
@@ -252,16 +262,9 @@ impl InferenceUsage {
 		kept: Option<Uuid>,
 		purpose: Option<&str>,
 	) -> Result<()> {
-		let mut update = Query::update();
+		let mut update = Self::abandon_update();
 		update
-			.table(Alias::new(Self::table_name()))
-			.value_expr(
-				Alias::new("outcome"),
-				Expr::value(UsageOutcome::Unknown.as_str()),
-			)
-			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
 			.and_where(Expr::col("purpose").ne(UsagePurpose::Auxiliary.as_str()));
 		if let Some(purpose) = purpose {
 			update.and_where(Expr::col("purpose").eq(Expr::value(purpose)));
@@ -279,7 +282,6 @@ impl InferenceUsage {
 				tx,
 				id,
 				aidash_domain::model_call::Outcome::Failed,
-				None,
 			)
 			.await?;
 		}
@@ -295,7 +297,7 @@ impl InferenceUsage {
 		attempt: Uuid,
 		outcome: &UsageOutcome,
 	) -> Result<bool> {
-		let written = Self::write_completion_for(tx, attempt, Some(run), outcome).await?;
+		let written = Self::write_completion_for(tx, attempt, Some(run), outcome, false).await?;
 		if written && matches!(outcome, UsageOutcome::Completed(_)) {
 			Self::record_calibration_sample(tx, attempt).await?;
 		}
@@ -316,19 +318,29 @@ impl InferenceUsage {
 				)
 				.await?;
 			}
-		} else if let UsageOutcome::Completed(usage) = outcome
-			&& Self::abandoned(tx, run, attempt).await?
-		{
-			// A newer lease made this attempt unknown, so its record keeps
-			// no usage, but the provider billed the call when it finished:
-			// the Budget ledger still takes its cost, or one unpriced call.
-			crate::apps::identity::repositories::budgets::record_spend(
-				tx,
-				run,
-				usage.cost.map(|cost| cost.nanocredits),
-				Utc::now(),
-			)
-			.await?;
+		} else if let UsageOutcome::Completed(usage) = outcome {
+			use crate::apps::execution::repositories::model_calls;
+			let call = Self::model_call(tx, run, attempt).await?;
+			let billable = if let Some(call) = call {
+				if Self::write_late_completion(tx, attempt, outcome).await? {
+					model_calls::settle(tx, call, None, Some(usage)).await?;
+					true
+				} else {
+					false
+				}
+			} else {
+				// Retain the historical behavior of a Run step's abandoned record.
+				Self::abandoned(tx, run, attempt).await?
+			};
+			if billable {
+				crate::apps::identity::repositories::budgets::record_spend(
+					tx,
+					run,
+					usage.cost.map(|cost| cost.nanocredits),
+					Utc::now(),
+				)
+				.await?;
+			}
 		}
 		Ok(written)
 	}
@@ -338,7 +350,48 @@ impl InferenceUsage {
 		attempt: Uuid,
 		outcome: &UsageOutcome,
 	) -> Result<bool> {
-		Self::write_completion_for(tx, attempt, None, outcome).await
+		Self::write_completion_for(tx, attempt, None, outcome, false).await
+	}
+
+	pub(crate) async fn model_call(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		attempt: Uuid,
+	) -> Result<Option<Uuid>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("model_call_id"))
+				.from(Alias::new(Self::table_name()))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("attempt_id").eq(Expr::value(attempt)))
+				.and_where(Expr::col("model_call_id").is_not_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await
+	}
+
+	pub(crate) async fn abandon_auxiliary_attempt(
+		tx: &mut dyn TransactionExecutor,
+		attempt: Uuid,
+	) -> Result<bool> {
+		let result = crate::database::native::query(
+			&Self::abandon_update()
+				.and_where(Expr::col("attempt_id").eq(Expr::value(attempt)))
+				.and_where(Expr::col("model_call_id").is_not_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		Ok(result.rows_affected() == 1)
+	}
+
+	pub(crate) async fn write_late_completion(
+		tx: &mut dyn TransactionExecutor,
+		attempt: Uuid,
+		outcome: &UsageOutcome,
+	) -> Result<bool> {
+		Self::write_completion_for(tx, attempt, None, outcome, true).await
 	}
 
 	async fn write_completion_for(
@@ -346,6 +399,7 @@ impl InferenceUsage {
 		attempt: Uuid,
 		run: Option<Uuid>,
 		outcome: &UsageOutcome,
+		late: bool,
 	) -> Result<bool> {
 		let mut update = Query::update();
 		update
@@ -390,9 +444,19 @@ impl InferenceUsage {
 		if let Some(run) = run {
 			update.and_where(Expr::col("run_id").eq(Expr::value(run)));
 		}
+		if late {
+			update
+				.and_where(Expr::col("late_report_pending").eq(Expr::value(true)))
+				.value_expr(Alias::new("late_report_pending"), Expr::value(false));
+		}
+		let previous = if late {
+			UsageOutcome::Unknown.as_str()
+		} else {
+			DISPATCHED
+		};
 		let (sql, values) = update
 			.and_where(Expr::col("attempt_id").eq(Expr::value(attempt)))
-			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
+			.and_where(Expr::col("outcome").eq(Expr::value(previous)))
 			.build(PostgresQueryBuilder);
 		Ok(tx
 			.execute(&sql, convert_values(values))

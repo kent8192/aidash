@@ -1357,6 +1357,67 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	assert_eq!(world.model.sampling.lock().unwrap().len(), 2);
 	assert_eq!(world.mcp.requests("tools/call").len(), 2);
 	assert_eq!(events(&world, "inference.accepted").await.len(), 3);
+	// A single Stint can span more than one Model Call page.
+	sqlx::query(
+		"INSERT INTO model_calls
+		 (id, tenant, node, run_id, stint_id, purpose, model_id, model_version, request_digest, started_at)
+		 SELECT gen_random_uuid(), tenant, node, run_id, id, 'mcp_sampling', 'fixture', '1',
+		        'sha256:' || repeat('0', 64), now()
+		 FROM stints CROSS JOIN generate_series(1, 101) WHERE id = $1",
+	).bind(provenance[0].0).execute(world.f.store.pool.fixture_driver()).await.unwrap();
+	// Older Stints fill the first Stint page. The sampled calls still need
+	// their actual owner on both pages.
+	sqlx::query(
+		"INSERT INTO stints (id, tenant, run_id, agent_id, agent_version, node, started_at, ended_at, end_reason)
+		 SELECT gen_random_uuid(), tenant, run_id, agent_id, agent_version, node,
+		        started_at - interval '1 day', started_at - interval '1 hour', 'waiting'
+		 FROM stints CROSS JOIN generate_series(1, 101) WHERE id = $1",
+	)
+	.bind(provenance[0].0)
+	.execute(world.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let mut seen_stints = std::collections::BTreeSet::new();
+	let mut seen = std::collections::BTreeSet::new();
+	for (offset, expected_calls) in [(0, 100), (100, 3), (200, 0)] {
+		let (status, page) = request(
+			&world.app,
+			&world.token,
+			"GET",
+			&format!("/api/executions/{}?offset={offset}", world.run.id),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{page}");
+		let stints = page["stints"].as_array().unwrap();
+		let calls: Vec<_> = stints
+			.iter()
+			.flat_map(|stint| {
+				stint["model_calls"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.map(move |call| (stint, call))
+			})
+			.collect();
+		assert_eq!(calls.len(), expected_calls);
+		let retained_owners: std::collections::BTreeSet<_> = calls
+			.iter()
+			.map(|(stint, _)| stint["id"].as_str().unwrap())
+			.collect();
+		for stint in stints {
+			let id = stint["id"].as_str().unwrap();
+			assert!(seen_stints.insert(id.to_owned()) || retained_owners.contains(id));
+		}
+		assert!(stints.len() <= 100 + retained_owners.len());
+		if offset == 0 {
+			assert_eq!(stints.len(), 100 + retained_owners.len());
+		}
+		for (stint, call) in calls {
+			assert_eq!(stint["id"], call["owner"]["stint_id"]);
+			assert!(seen.insert(call["id"].as_str().unwrap().to_owned()));
+		}
+	}
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

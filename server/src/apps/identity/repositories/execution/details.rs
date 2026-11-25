@@ -273,12 +273,17 @@ impl RunDetailsScope for Scope<'_> {
 			.map(|row| serde_json::from_value(serde_json::to_value(row)?))
 			.collect::<std::result::Result<_, _>>()?)
 	}
-	async fn stints(&mut self, id: Uuid) -> Result<Vec<aidash_domain::model_call::Stint>> {
+	async fn stints(
+		&mut self,
+		id: Uuid,
+		offset: u64,
+	) -> Result<Vec<aidash_domain::model_call::Stint>> {
 		let access = self.access.get();
 		crate::apps::execution::repositories::model_calls::stints(
 			&mut **access.tx,
 			&access.identity.tenant,
 			id,
+			offset,
 		)
 		.await
 		.map_err(Into::into)
