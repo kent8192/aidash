@@ -743,7 +743,7 @@ async fn initialization_cache_is_bounded_and_evicted_scopes_keep_their_budget(
 	let scope = durable.resolve(&credential).await.unwrap();
 	let day = Utc::now().date_naive();
 	durable
-		.debit(&scope, Direction::Received, 5, day)
+		.debit(&scope, Direction::Received, 5, day, Uuid::new_v4())
 		.await
 		.unwrap();
 
@@ -762,7 +762,7 @@ async fn initialization_cache_is_bounded_and_evicted_scopes_keep_their_budget(
 
 	let reopened = durable.resolve(&credential).await.unwrap();
 	durable
-		.debit(&reopened, Direction::Received, 7, day)
+		.debit(&reopened, Direction::Received, 7, day, Uuid::new_v4())
 		.await
 		.unwrap();
 	assert_eq!(

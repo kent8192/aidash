@@ -64,11 +64,11 @@ to the same Tenant, Node and scope, and Node deletion cascades through them.
 policies as schema operations, so the migration uses SQL assets. `0111` records
 the corresponding model state.
 
-`execution/0158_scope_host_debits` records a Host reservation ID and its debit
+`execution/0162_scope_host_debits` records a Host reservation ID and its debit
 parameters alongside each committed charge. Existing daily counters need no
 backfill. Receipts follow their scope through Node and Tenant purge. Forced
 Tenant row security uses SQL assets because Reinhardt cannot express policies.
-`execution/0159_scope_host_debit_state` registers the receipt model state.
+`execution/0163_scope_host_debit_state` registers the receipt model state.
 
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.

@@ -4,8 +4,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0158_scope_host_debits", "execution")
-		.add_dependency("execution", "0156_model_call_state")
+	Migration::new("0162_scope_host_debits", "execution")
+		.add_dependency("execution", "0161_generation_subnode_cleanup")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
@@ -61,7 +61,7 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0158_scope_host_debits.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0158_scope_host_debits.sql").into()),
+			sql: include_str!("sql/forward/0162_scope_host_debits.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0162_scope_host_debits.sql").into()),
 		})
 }

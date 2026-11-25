@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0159_scope_host_debit_state", "execution")
-		.add_dependency("execution", "0158_scope_host_debits")
+	Migration::new("0163_scope_host_debit_state", "execution")
+		.add_dependency("execution", "0162_scope_host_debits")
 		.state_only(true)
 		.add_operation(Operation::CreateTable {
 			name: "egress_scope_host_debits".into(),
