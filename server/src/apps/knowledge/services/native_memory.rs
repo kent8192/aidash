@@ -5,13 +5,16 @@ use crate::{
 	Error, Result, authorization::identity::Actor, database::native, federation::Federation,
 	store::Store,
 };
+use aidash_application::memory::start_recall_content;
 use aidash_domain::{memory::*, registry::EntityRef};
+use icu_segmenter::WordSegmenter;
 use reinhardt::{
 	injectable,
 	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -295,6 +298,22 @@ pub(crate) async fn operate_staged(
 	run: Option<Uuid>,
 	delivered: &mut Vec<Unit>,
 ) -> Result<Outcome> {
+	operate_staged_in(store, lease, input, run, delivered, None).await
+}
+
+struct TaskStartSearch<'a> {
+	keywords: &'a [&'a str],
+	scores: &'a mut HashMap<Uuid, i32>,
+}
+
+async fn operate_staged_in(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	input: Operation,
+	run: Option<Uuid>,
+	delivered: &mut Vec<Unit>,
+	start_search: Option<TaskStartSearch<'_>>,
+) -> Result<Outcome> {
 	use super::super::repositories::{candidates, memory_scope::Scope, publications};
 	use aidash_application::ports::memory::MemoryScope;
 	repository::lock_thread(lease, input.bank.thread, input.action.writes()).await?;
@@ -516,11 +535,16 @@ pub(crate) async fn operate_staged(
 		policy: &policy,
 		models: &models,
 	};
+	let (start_keywords, start_keyword_scores) = match start_search {
+		Some(search) => (Some(search.keywords), Some(search.scores)),
+		None => (None, None),
+	};
 	let mut authority = Scope {
 		store,
 		lease,
 		models: &models,
 		delivered,
+		start_keyword_scores,
 	};
 	match &input.action {
 		Action::RecallIncludingDormant { query } => Ok(Outcome::Recall(
@@ -528,9 +552,16 @@ pub(crate) async fn operate_staged(
 				.recall_including_dormant(&mut authority, &input.bank, query)
 				.await?,
 		)),
-		Action::Recall { query } => Ok(Outcome::Recall(
-			engine.recall(&mut authority, &input.bank, query).await?,
-		)),
+		Action::Recall { query } => {
+			let recall = if let Some(keywords) = start_keywords {
+				engine
+					.recall_at_task_start(&mut authority, &input.bank, query, keywords)
+					.await?
+			} else {
+				engine.recall(&mut authority, &input.bank, query).await?
+			};
+			Ok(Outcome::Recall(recall))
+		}
 		Action::Reflect { query } => Ok(Outcome::Reflection(
 			engine.reflect(&mut authority, &input.bank, query).await?,
 		)),
@@ -681,7 +712,7 @@ pub(crate) async fn run_recall(
 			.await?
 			.0 == SharingScope::TenantAgent
 	{
-		return run_shared_recall(store, lease, run, query, key).await;
+		return run_shared_recall(store, lease, run, &query, key, None).await;
 	}
 	operate_in(
 		store,
@@ -701,6 +732,30 @@ pub(crate) async fn run_recall(
 	.await
 }
 
+const START_RECALL_MAX_TERMS: usize = 16;
+const START_RECALL_MIN_TERM_CHARS: usize = 2;
+const SHARED_RECALL_MAX_RESULTS: usize = 8;
+
+fn start_recall_keywords(text: &str) -> Vec<&str> {
+	let mut seen = HashSet::new();
+	let segmenter = WordSegmenter::new_dictionary(Default::default());
+	let mut start = 0;
+	segmenter
+		.segment_str(text)
+		.map(|end| {
+			let word = &text[start..end];
+			start = end;
+			word
+		})
+		.flat_map(|word| word.split(|ch: char| !ch.is_alphanumeric()))
+		.filter(|term| {
+			term.chars().take(START_RECALL_MIN_TERM_CHARS).count() == START_RECALL_MIN_TERM_CHARS
+		})
+		.filter(|term| seen.insert(term.to_lowercase()))
+		.take(START_RECALL_MAX_TERMS)
+		.collect()
+}
+
 /// Search once at Run start. Tenant widening considers only this Agent's
 /// provenance in other authorized Threads, and refuses an unbounded scan.
 pub(crate) async fn run_start_recall(
@@ -709,15 +764,20 @@ pub(crate) async fn run_start_recall(
 	run: &aidash_domain::Run,
 	query: RecallQuery,
 ) -> Result<Outcome> {
-	run_shared_recall(store, lease, run, query, "start").await
+	let keywords = start_recall_keywords(&query.text);
+	if keywords.is_empty() {
+		return Ok(Outcome::Recall(Recall::Empty));
+	}
+	run_shared_recall(store, lease, run, &query, "start", Some(&keywords)).await
 }
 
 async fn run_shared_recall(
 	store: &Store,
 	lease: &mut Lease<'_>,
 	run: &aidash_domain::Run,
-	query: RecallQuery,
+	query: &RecallQuery,
 	key: &str,
+	start_keywords: Option<&[&str]>,
 ) -> Result<Outcome> {
 	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
@@ -728,6 +788,15 @@ async fn run_shared_recall(
 	let scope = super::super::repositories::sharing::get(&mut **lease.tx(), &binding.bank.tenant)
 		.await?
 		.0;
+	let start_result_limit = if start_keywords.is_some() {
+		policy(lease, &binding.bank.tenant, &binding.provider)
+			.await?
+			.bounds
+			.max_results
+			.min(SHARED_RECALL_MAX_RESULTS)
+	} else {
+		0
+	};
 	let mut banks = vec![binding.bank.clone()];
 	if scope == SharingScope::TenantAgent {
 		let rows = native::query(
@@ -775,9 +844,11 @@ async fn run_shared_recall(
 		}
 	}
 	let mut selected = Vec::new();
+	let mut start_candidates = Vec::new();
 	for bank in banks {
 		let foreign = bank.thread != run.thread_id;
 		let mut delivered = Vec::new();
+		let mut scores = HashMap::new();
 		let operation = Operation {
 			operation_id: request_id(
 				run.id,
@@ -792,25 +863,57 @@ async fn run_shared_recall(
 				query: query.clone(),
 			},
 		};
-		let outcome =
-			match operate_staged(store, lease, operation, Some(run.id), &mut delivered).await {
-				Ok(value) => value,
-				Err(Error::Forbidden | Error::Conflict(_)) if foreign => continue,
-				Err(error) => return Err(error),
-			};
+		let outcome = match operate_staged_in(
+			store,
+			lease,
+			operation,
+			Some(run.id),
+			&mut delivered,
+			start_keywords.map(|keywords| TaskStartSearch {
+				keywords,
+				scores: &mut scores,
+			}),
+		)
+		.await
+		{
+			Ok(value) => value,
+			Err(Error::Forbidden | Error::Conflict(_)) if foreign => continue,
+			Err(error) => return Err(error),
+		};
 		if let Outcome::Recall(Recall::Ready { units }) = outcome {
+			if start_keywords.is_some() {
+				start_candidates.extend(
+					units
+						.into_iter()
+						.map(|unit| (scores.get(&unit.id).copied().unwrap_or_default(), unit)),
+				);
+				continue;
+			}
 			for unit in units {
-				if selected.len() >= 8 {
+				if selected.len() >= SHARED_RECALL_MAX_RESULTS {
 					break;
 				}
-				let mut candidate = selected.clone();
-				candidate.push(unit.clone());
-				if serde_json::to_vec(&Outcome::Recall(Recall::Ready { units: candidate }))?.len()
-					<= query.max_tokens
-				{
-					selected.push(unit);
+				selected.push(unit);
+				let size = serde_json::to_vec(&Outcome::Recall(Recall::Ready {
+					units: selected.clone(),
+				}))?
+				.len();
+				if size > query.max_tokens {
+					selected.pop();
 				}
 			}
+		}
+	}
+	// Distinct keyword counts are comparable across banks. Stable sorting
+	// preserves the existing bank and rerank order when counts tie.
+	start_candidates.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+	for (_, unit) in start_candidates {
+		if selected.len() >= start_result_limit {
+			break;
+		}
+		selected.push(unit);
+		if serde_json::to_vec(&start_recall_content(&selected))?.len() > query.max_tokens {
+			selected.pop();
 		}
 	}
 	if !selected.is_empty() {
@@ -861,13 +964,7 @@ pub(crate) async fn run_hydrate(
 			Err(error) => return Err(error),
 		}
 	}
-	Ok(serde_json::to_value(Outcome::Recall(
-		if recalled.is_empty() {
-			Recall::Empty
-		} else {
-			Recall::Ready { units: recalled }
-		},
-	))?)
+	Ok(start_recall_content(&recalled))
 }
 
 /// One Run-start Unit under the Run's current authority and provenance.

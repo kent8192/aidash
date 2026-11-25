@@ -1772,6 +1772,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		lease: &mut lease,
 		models: &models,
 		delivered: &mut delivered,
+		start_keyword_scores: None,
 	}
 	.recall_including_dormant_snapshot(&bank, 1)
 	.await
@@ -1883,6 +1884,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 		lease: &mut lease,
 		models: &models,
 		delivered: &mut delivered,
+		start_keyword_scores: None,
 	};
 	let own = scope.vectors(&banks[0], &admitted[..1]).await.unwrap();
 	assert_eq!(own.keys().copied().collect::<Vec<_>>(), [admitted[0].id]);
