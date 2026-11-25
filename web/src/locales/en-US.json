@@ -886,6 +886,7 @@
   "federationToolsSave": "Save tool lists",
   "toolAsksTitle": "Waiting for an answer",
   "toolAsksNone": "No remote Run is waiting for this registration's tool lists.",
+  "toolAsksPageNone": "No waiting calls found on this page.",
   "toolAsksHelp": "A remote Run called a tool that a tool list lacks and stopped. Answer for your side: allow it for this Run only, add it to the list, decline the call, or block it.",
   "toolAsksPattern": "Pattern to add (optional, such as registry:github/*)",
   "toolAsksRunOnly": "This Run only",

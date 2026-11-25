@@ -4737,6 +4737,288 @@ async fn the_home_answers_the_tool_ask_of_a_run_that_slept_past_its_grants_lifet
 	p.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let db = p.a.store.pool.fixture_driver();
+	let mut grants = vec![p.grant];
+	let receiver = node_of(&p.b);
+	for index in 0..25 {
+		let (status, created) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/threads/{}/tasks", task.thread_id),
+			json!({"title": format!("Other remote task {index}"), "description": "Unrelated work"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{created}");
+		let task_id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+		// Sort these before the waiting Run's v4 grant when their expiry ties.
+		let grant = Uuid::from_u128(index + 1);
+		grants.push(grant);
+		let path = format!("/api/tasks/{task_id}/remote-grants");
+		let (status, prepared) = request(
+			&p.aa, &p.token, "POST", &path,
+			json!({"id":grant,"node_id":receiver,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300,"semantic":{"mode":"disabled"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{prepared}");
+		let (status, activated) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("{path}/{grant}/activate"),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{activated}");
+		// Record the receiver's claim without stepping its Run into model work.
+		let binding = Query::select()
+			.expr(Expr::constant_true())
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
+			.and_where(Expr::col("activated_at").is_not_null())
+			.to_owned();
+		let claim = sqlx::query(
+			&Query::update()
+				.table(Alias::new("tasks"))
+				.value(
+					Alias::new("owner"),
+					task.owner
+						.as_deref()
+						.expect("the receiver owns the original Task"),
+				)
+				.value(Alias::new("status"), "CLAIMED")
+				.and_where(Expr::col("id").eq(Expr::value(task_id)))
+				.and_where(Expr::exists(binding))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(db)
+		.await
+		.unwrap();
+		assert_eq!(claim.rows_affected(), 1, "{activated}");
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(
+				Alias::new("expires_at"),
+				chrono::Utc::now() + chrono::Duration::hours(1),
+			)
+			.and_where(Expr::col("id").is_in(grants.into_iter().map(Expr::value)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
+	let node = common::default_node(&p.a.store, "acme").await.node;
+	let receiver = receiver.replace(':', "%3A").replace('/', "%2F");
+	let asks = format!("/api/tenants/acme/nodes/{node}/registrations/{receiver}/tool-asks");
+	let administrator = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let (status, listed) = administrator.send("GET", &asks, Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed["asks"], json!([]), "{listed}");
+	let cursor = listed["next_cursor"]
+		.as_str()
+		.expect("another candidate page");
+	let cursor = percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC);
+	let (status, listed) = administrator
+		.send("GET", &format!("{asks}?cursor={cursor}"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed.get("next_cursor"), None, "{listed}");
+	let home: Vec<_> = listed["asks"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|ask| ask["side"] == "home")
+		.collect();
+	assert_eq!(home.len(), 1, "{listed}");
+	assert_eq!(home[0]["id"], json!(p.grant), "{listed}");
+	assert_eq!(home[0]["call"], json!(call), "{listed}");
+	assert_eq!(home[0]["task_title"], json!(task.title), "{listed}");
+	let (status, invalid) = administrator
+		.send("GET", &format!("{asks}?cursor=invalid"), Value::Null)
+		.await;
+	assert_eq!(status, 400, "{invalid}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_tool_asks_resume_only_the_matching_system_pause(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let path = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}/control",
+		p.admission
+	);
+	let resume = |call, key| {
+		common::peer_request(
+			&p.ba,
+			(&p.a, "acme"),
+			&receiver,
+			"",
+			&path,
+			json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": key}}),
+		)
+	};
+	let revision = p.run().await.control_revision;
+	for target in [
+		("stale-call", "task_delegate"),
+		(call.as_str(), "stale-tool"),
+	] {
+		let (status, body) = resume(target.0, target.1).await;
+		assert_eq!(status, 409, "{body}");
+		assert_eq!(p.run().await.control_revision, revision);
+	}
+	let (status, body) = resume(&call, "task_delegate").await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(p.run().await.control, aidash_domain::RunControl::Active);
+
+	p.pause_receiver_on_call().await;
+	let revision = p.run().await.control_revision;
+	let (status, body) = resume(&call, "task_delegate").await;
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(p.run().await.control_revision, revision);
+
+	let overwritten_call = p.pause_receiver_on_home_ask().await;
+	let (status, body) = common::peer_request(
+		&p.ba,
+		(&p.a, "acme"),
+		&receiver,
+		"",
+		&path,
+		json!({"grant_id": p.grant, "action": "pause"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let paused = p.run().await;
+	let (status, body) = resume(&overwritten_call, "task_delegate").await;
+	assert_eq!(status, 409, "{body}");
+	let after = p.run().await;
+	assert_eq!(after.control, aidash_domain::RunControl::Paused);
+	assert_eq!(after.control_source, aidash_domain::ControlSource::Tenant);
+	assert_eq!(after.control_revision, paused.control_revision);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_control_revalidates_the_grants_disabled_identity(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let browser = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let credential = Uuid::parse_str(&browser.credential).unwrap();
+	let db = p.a.store.pool.fixture_driver();
+	// Give the fixture grant the dashboard credential of the same Home subject.
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(Alias::new("credential_id"), credential)
+			.and_where(Expr::col("id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let path = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}/control",
+		p.admission
+	);
+	let resume = |input| common::peer_request(&p.ba, (&p.a, "acme"), &receiver, "", &path, input);
+	let call = p.pause_receiver_on_home_ask().await;
+	let input = json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": "task_delegate"}});
+	let (status, body) = resume(input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	p.pause_receiver_on_home_ask().await;
+	let paused = p.run().await;
+	let identity = Query::select()
+		.column(Alias::new("identity_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("credential_id").eq(Expr::value(credential)))
+		.to_owned();
+	let result = sqlx::query(
+		&Query::update()
+			.table(Alias::new("dashboard_identities"))
+			.value_expr(Alias::new("disabled_at"), Expr::current_timestamp())
+			.and_where(Expr::col("id").in_subquery(identity))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
+	assert_eq!(result.rows_affected(), 1);
+	for input in [input, json!({"grant_id": p.grant, "action": "resume"})] {
+		let (status, body) = resume(input).await;
+		assert_eq!(status, 403, "{body}");
+		let after = p.run().await;
+		assert_eq!(after.control, aidash_domain::RunControl::Paused);
+		assert_eq!(after.control_revision, paused.control_revision);
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_control_keeps_the_receivers_safety_stop(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let revision = p.run().await.control_revision;
+	let token = format!("Bearer {}", p.b.config.api_token);
+	let operation = Uuid::new_v4().to_string();
+	let stop = common::http_response(
+		&p.ba,
+		"POST",
+		&format!("/api/executions/{}/management", p.admission),
+		&[("authorization", &token), ("content-type", "application/json"), ("idempotency-key", &operation)],
+		&serde_json::to_vec(&json!({"tenant":"acme","action":"pause","expected_control_revision":revision,"reason":"stop the receiver"})).unwrap(),
+	)
+	.await;
+	assert_eq!(stop.status_code(), 200, "{:?}", stop.body());
+	let stopped = p.run().await;
+	assert_eq!(
+		stopped.control_source,
+		aidash_domain::ControlSource::DeploymentAdministrator
+	);
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let prefix = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}",
+		p.admission
+	);
+	let control = format!("{prefix}/control");
+	let declines = format!("{prefix}/declined-calls");
+	for (path, input) in [
+		(&control, json!({"grant_id": p.grant, "action": "resume"})),
+		(
+			&control,
+			json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": "task_delegate"}}),
+		),
+		(&control, json!({"grant_id": p.grant, "action": "pause"})),
+		(&declines, json!({"grant_id": p.grant, "call": call})),
+	] {
+		let (status, body) =
+			common::peer_request(&p.ba, (&p.a, "acme"), &receiver, "", path, input).await;
+		assert_eq!(status, 409, "{body}");
+		let after = p.run().await;
+		assert_eq!(after.control, aidash_domain::RunControl::Paused);
+		assert_eq!(after.control_source, stopped.control_source);
+		assert_eq!(after.control_revision, stopped.control_revision);
+	}
+	p.close().await;
+}
+
 /// The hourly renewal (ADR 0109 amendment of 2026-11-17) uses the Home's one
 /// liveness rule (#1013 review): a grant whose activation the Home never
 /// recorded is not renewed, though its Run is bound and its Task claimed. Once

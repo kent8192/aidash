@@ -1230,6 +1230,12 @@ impl PeerAdmissionRepository for Repository<'_> {
 		crate::transactions::gate::read_in(&mut tx).await?;
 		if let Some(ask) = tool_ask {
 			require_home_ask(&mut *tx, id, &ask.call, &ask.key).await?;
+		} else if matches!(
+			action,
+			RemoteExecutionControl::Pause | RemoteExecutionControl::Resume
+		) {
+			// A Home pause would overwrite the control source that protects the Safety Stop.
+			require_no_safety_stop(&mut *tx, id, LockType::NoKeyUpdate).await?;
 		}
 		let run = store.control_in(&mut tx, id, action.action()).await?;
 		tx.commit().await?;
@@ -1248,6 +1254,8 @@ impl PeerAdmissionRepository for Repository<'_> {
 		crate::transactions::gate::read_in(&mut tx).await?;
 		if let Some(key) = tool_ask_key {
 			require_home_ask(&mut *tx, id, call, key).await?;
+		} else {
+			require_no_safety_stop(&mut *tx, id, LockType::Update).await?;
 		}
 		// The receiver's event says the Home declined it, and never names the Home's person.
 		let declined = store
@@ -1289,6 +1297,20 @@ impl PeerAdmissionRepository for Repository<'_> {
 		self.runtime.notify.notify_waiters()
 	}
 }
+
+async fn require_no_safety_stop(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	lock: LockType,
+) -> Result<()> {
+	if crate::apps::execution::repositories::subnodes::safety_paused(tx, run, lock).await? {
+		return Err(aidash_application::Error::Conflict(
+			"the receiving Node's Safety Stop holds the remote Run".into(),
+		));
+	}
+	Ok(())
+}
+
 async fn require_home_ask(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	run: Uuid,

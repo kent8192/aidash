@@ -141,7 +141,7 @@ export type ToolAsk = {
   paused_since: string | null;
 };
 
-export type ToolAsks = { asks: ToolAsk[] };
+export type ToolAsks = { asks: ToolAsk[]; next_cursor?: string };
 
 /** The answers a side may give; only the receiving Node keeps a Block. */
 export function toolAskChoices(side: ToolAskSide): ToolAskChoice[] {
