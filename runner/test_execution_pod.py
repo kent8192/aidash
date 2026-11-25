@@ -391,7 +391,8 @@ class ProcessCapabilityTest(unittest.TestCase):
         effective = int(next(line.split()[1] for line in status.splitlines() if line.startswith('CapEff:')), 16)
         if not effective & (1 << 8):
             self.skipTest('CAP_SETPCAP is required to exercise bounding-set reduction')
-        result = subprocess.run([sys.executable, 'sandbox_v2.py', 'normal', '/bin/cat', '/proc/self/status'],
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('sandbox_v2.py')),
+                                 'normal', '/bin/cat', '/proc/self/status'],
                                 capture_output=True, text=True, check=True)
         fields = dict(line.split(':', 1) for line in result.stdout.splitlines() if ':' in line)
         blocked = sum(1 << cap for cap in (12, 13, 18, 21))
@@ -2137,6 +2138,16 @@ class LeadReviewRegressionTest(unittest.TestCase):
             self.assertNotIn('last_command_at', json.loads(purged.read_text()))
 
 class DockerFramingRegressionTest(unittest.TestCase):
+    def test_transport_timeout_includes_the_helper_upload(self):
+        import os
+        from execution_pod import drain_process
+
+        transport = drain_process(
+            [sys.executable, '-c', 'import time; time.sleep(1)'],
+            os.environ, 16, .1, input_prefix=b'x' * 1048576,
+        )
+        self.assertTrue(transport['transport_timed_out'])
+
     def test_framed_result_survives_bounded_output_and_preserves_exit_code(self):
         import json
         import os
@@ -2287,6 +2298,7 @@ class CommandJournalTest(unittest.TestCase):
                 self.assertEqual(result['stdout'], 'aGkK')
                 controller.submit_command(request)
                 self.assertEqual(transport.call_count, 1)
+            controller.queues['scratch'].close()
 
     def test_changelog_is_read_in_bounded_chunks(self):
         import base64

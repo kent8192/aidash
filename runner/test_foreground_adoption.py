@@ -86,7 +86,7 @@ with patch.object(execution_pod, 'chroot_helper_command', return_value=command),
             root = Path(directory)
             with subprocess.Popen(
                 [sys.executable, '-c', code, directory, operation],
-                env=dict(os.environ, AIDASH_POD_UID='pod'),
+                env=dict(os.environ, AIDASH_POD_UID='pod'), cwd=Path(__file__).resolve().parent,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             ) as runner_exec:
                 output = root / 'output' / (operation + '.stdout')

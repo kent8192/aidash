@@ -53,7 +53,14 @@ def helper_command(*args):
 
 
 def base_command(*args):
-    return [*HELPER_PYTHON, '/.aidash-helpers/pod_base.py', *args]
+    # A Deployment may keep its previous, digest-pinned base during a Runner
+    # upgrade. Its immutable mount still has the legacy startup entry point.
+    bootstrap = (
+        "from pathlib import Path; import runpy; "
+        "p = Path('/.aidash-helpers/pod_base.py'); "
+        "runpy.run_path(str(p if p.is_file() else p.with_name('sandbox_v2.py')), run_name='__main__')"
+    )
+    return [*HELPER_PYTHON, '-c', bootstrap, *args]
 
 
 def chroot_helper_command(*args):
@@ -350,10 +357,7 @@ def execution_manifests(settings, config):
                     'volumeMounts': [{'name': 'helpers', 'mountPath': '/helpers'},
                                      {'name': 'scratch', 'mountPath': '/scratch-system'}]},
                    {'name': 'image-root', 'image': settings['image'],
-                    'command': ['/.aidash-helpers/loader', '--library-path',
-                                '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
-                                '/.aidash-helpers/python/bin/python3', '-I',
-                                '/.aidash-helpers/pod_base.py', 'init'],
+                    'command': base_command('init'),
                     'env': [{'name': key, 'value': ''} for key in ('LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME')] +
                            [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()},
                             {'name': 'AIDASH_IMAGE_ID', 'value': settings['image']}],
@@ -683,8 +687,10 @@ class ExecutionPodController:
         """Prove a live listener is unreachable from another Pod."""
         import ipaddress
         import json
+        import os
         import select
         import subprocess
+        import time
         address = str(ipaddress.IPv4Address(pod['status']['podIP']))
         name = pod['metadata']['name']
         arguments, bundle = self._prepare_exec(['exec', '-i', name, '-c', 'execution', '--'] +
@@ -693,10 +699,19 @@ class ExecutionPodController:
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                      env=self.backend.environment)
         try:
-            if bundle:
-                transport.stdin.write(bundle)
-                transport.stdin.flush()
-            readable, _, _ = select.select([transport.stdout], [], [], 15)
+            deadline = time.monotonic() + 15
+            pending = memoryview(bundle)
+            if pending:
+                os.set_blocking(transport.stdin.fileno(), False)
+            while pending:
+                _, writable, _ = select.select([], [transport.stdin], [], max(0, deadline - time.monotonic()))
+                if not writable:
+                    raise ValueError('could not send the ingress listener helper')
+                try:
+                    pending = pending[os.write(transport.stdin.fileno(), pending[:65536]):]
+                except BlockingIOError:
+                    continue
+            readable, _, _ = select.select([transport.stdout], [], [], max(0, deadline - time.monotonic()))
             if not readable:
                 raise ValueError('ingress listener did not start')
             port = json.loads(transport.stdout.readline())['port']
@@ -1487,7 +1502,8 @@ print(json.dumps(r))'''
                                          pod_stop_confirmed=True, stop_pending=False, terminal_at=time.time())
                 if uid and uid == record['pod_uid']:
                     adopted = False
-                    if not record.get('docker_enabled') or record.get('time_limited'):
+                    if (not record.get('docker_enabled') or record.get('time_limited')
+                            or (record.get('kind') == 'left' and record.get('result_proof_key'))):
                         observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
                                                      helper_command('result', operation_id), check=False, timeout=5)
                         if observed.returncode == 0:
@@ -1941,9 +1957,9 @@ print(json.dumps(r))'''
         if not isinstance(outcome, dict) or not protocol_supported(
                 outcome.get('protocol_version', LEGACY_HELPER_PROTOCOL)):
             return False
-        if not record.get('time_limited'):
-            return True
         key = record.get('result_proof_key')
+        if not record.get('time_limited') and not (record.get('kind') == 'left' and key):
+            return True
         return bool(key and verify_adopted_result(outcome, key.encode('ascii')))
 
     def _finish_command(self, record, outcome, output=None, *, allow_late=False, left_auth=None,
@@ -2762,8 +2778,14 @@ print(json.dumps(r))'''
             if not background_end_pending(self._read_command(operation_id)):
                 return self.command_result(operation_id, retry_stop=False, observe_late=False)
         if interrupted_docker and docker_finished():
-            self._update_command(operation_id, status='interrupted', terminal_at=record.get('terminal_at', time.time()),
-                                 fence_window_elapsed=True)
+            current = self.command_result(operation_id, retry_stop=False)
+            if current['status'] in ('completed', 'timed_out', 'stopped', 'cancelled'):
+                return current
+            evidence = {'fence_window_elapsed': True}
+            if record.get('stop_signal_sent'):
+                evidence.update(run_stop_confirmed=True, stop_pending=False,
+                                stop_reason=record['requested_stop_reason'], terminal_at=time.time())
+            self._update_command(operation_id, status='interrupted', **evidence)
             return self.command_result(operation_id, retry_stop=False)
         # A future can leave the queue before its in-Pod supervisor publishes
         # the stop marker. Wait for that short startup window instead of losing
@@ -2772,6 +2794,8 @@ print(json.dumps(r))'''
         while True:
             try:
                 self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] + helper_command('stop', operation_id))
+                if interrupted_docker:
+                    self._update_command(operation_id, status='interrupted', stop_signal_sent=True)
                 return {'operation_id': operation_id, 'status': 'stopping'}
             except Exception as error:
                 current = self.command_result(operation_id, retry_stop=False)
@@ -3222,27 +3246,22 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None, *, f
 
     output = BoundedOutput(output_limit, capture_tail=capture_tail)
     frame = _ResultFrameReader(frame_token, output) if frame_token else None
-    process = subprocess.Popen(argv, stdin=subprocess.PIPE if frame or input_data or input_prefix else subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, env=environment, start_new_session=True)
-    if frame or input_data or input_prefix:
-        try:
-            if input_prefix:
-                process.stdin.write(input_prefix)
-            if frame:
-                process.stdin.write((frame_token + '\n').encode('ascii'))
-            if input_data:
-                process.stdin.write(input_data)
-            process.stdin.close()
-        except BrokenPipeError:
-            pass
+    payload = input_prefix + ((frame_token + '\n').encode('ascii') if frame else b'') + (input_data or b'')
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE if payload else subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=environment, start_new_session=True)
     expires = None if timeout is None else time.monotonic() + timeout
     timed_out = False
     last_publish = 0.0
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
         selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+        pending_input = memoryview(payload)
+        if process.stdin:
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE, 'stdin')
         try:
-            while selector.get_map():
+            while selector.get_map() or process.poll() is None:
                 if expires is not None and time.monotonic() >= expires and not timed_out:
                     timed_out = True
                     try:
@@ -3251,6 +3270,18 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None, *, f
                         pass
                     break
                 for key, _ in selector.select(.1):
+                    if key.data == 'stdin':
+                        try:
+                            count = os.write(key.fd, pending_input[:65536])
+                            pending_input = pending_input[count:]
+                        except BlockingIOError:
+                            continue
+                        except BrokenPipeError:
+                            pending_input = memoryview(b'')
+                        if not pending_input:
+                            selector.unregister(key.fileobj)
+                            key.fileobj.close()
+                        continue
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if chunk:
                         if frame and key.data == 'stderr':
