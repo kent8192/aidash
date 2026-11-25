@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0157_generation_subnode_cleanup", "execution")
-		.add_dependency("execution", "0156_model_call_state")
+	Migration::new("0161_generation_subnode_cleanup", "execution")
+		.add_dependency("execution", "0160_stdio_session_model_state")
 		.database_only(true)
 		.add_operation(Operation::AddColumn {
 			table: "generation_requests".into(),
