@@ -19,14 +19,14 @@ pub struct BootstrapDeploymentAdministratorReservation {
 
 use super::{
 	AdministrationActor, AdministrationEvent, DashboardDeploymentAdministratorGrant,
-	DashboardIdentity, DemoReservation, database_time,
+	DashboardIdentity, DemoReservation, database_time, demo_reservations,
 };
 use crate::{Result, database::native::Pool};
 use aidash_application::ports::authorization::dashboard::AccountPolicy;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
+use reinhardt::db::orm::{AtomicTransaction, Model};
 use reinhardt::query::{
 	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
@@ -39,12 +39,17 @@ fn may_administer(policy: Option<&AccountPolicy>, issuer: &str) -> bool {
 	policy.is_some_and(|policy| policy.unrestricted(issuer))
 }
 
+pub(crate) enum GrantTarget {
+	TenantHolder(Option<Uuid>),
+	FindHolder,
+}
+
 impl BootstrapDeploymentAdministratorReservation {
 	pub(crate) async fn grant_or_hold(
 		pool: &Pool,
 		policy: Option<&AccountPolicy>,
 		email: &str,
-		identity: Option<Uuid>,
+		target: GrantTarget,
 	) -> Result<&'static str> {
 		pool.atomic(
 			&TenancyScope::Deployment(DeploymentScopeReason::Bootstrap),
@@ -57,6 +62,19 @@ impl BootstrapDeploymentAdministratorReservation {
 					.await
 					.map_err(reinhardt::core::exception::Error::from)?
 					.pop();
+				let identity = match target {
+					GrantTarget::TenantHolder(identity) => identity,
+					GrantTarget::FindHolder => {
+						match demo_reservations::holders(tx, email).await?[..] {
+							[(id, true)] => Some(id),
+							_ => None,
+						}
+					}
+				};
+				let identity = match identity {
+					Some(id) if spent_by_another(tx, email, id).await? => None,
+					identity => identity,
+				};
 				let outcome;
 				if let Some(id) = identity {
 					let account = DashboardIdentity::objects()
@@ -165,14 +183,7 @@ impl BootstrapDeploymentAdministratorReservation {
 				// the address's Tenant reservations first, so once another
 				// identity holds one, this reservation waits for that identity
 				// rather than splitting the roles between two accounts.
-				let split = DemoReservation::objects()
-					.filter(DemoReservation::field_email().eq(email.to_owned()))
-					.filter(DemoReservation::field_source().eq("host_access".to_owned()))
-					.all_with_db(tx)
-					.await?
-					.iter()
-					.any(|reservation| reservation.spent_by.is_some_and(|by| by != identity));
-				if !eligible || split {
+				if !eligible || spent_by_another(tx, email, identity).await? {
 					return Ok(());
 				}
 				let existing = DashboardDeploymentAdministratorGrant::objects()
@@ -214,8 +225,18 @@ impl BootstrapDeploymentAdministratorReservation {
 	}
 }
 
-/// Serializes reservation creation and consumption even when the row is absent.
-async fn lock_email(tx: &mut dyn TransactionExecutor, email: &str) -> Result<()> {
+async fn spent_by_another(tx: &mut AtomicTransaction, email: &str, identity: Uuid) -> Result<bool> {
+	Ok(DemoReservation::objects()
+		.filter(DemoReservation::field_email().eq(email.to_owned()))
+		.filter(DemoReservation::field_source().eq("host_access".to_owned()))
+		.filter(DemoReservation::field_spent_by().ne(Some(identity)))
+		.exists_with_db(tx)
+		.await?)
+}
+
+/// Serializes Host Access reservation writes and grant decisions per address.
+/// Acquire this before any Tenant policy or identity lock.
+pub(crate) async fn lock_email(tx: &mut dyn TransactionExecutor, email: &str) -> Result<()> {
 	let hash = SimpleExpr::FunctionCall(
 		"hashtextextended".into_iden(),
 		vec![

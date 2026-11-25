@@ -54,7 +54,7 @@ mod dashboard_registration_requests;
 pub use dashboard_registration_requests::DashboardRegistrationRequest;
 mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
-mod bootstrap_reservations;
+pub(crate) mod bootstrap_reservations;
 pub use bootstrap_reservations::BootstrapDeploymentAdministratorReservation;
 mod demo_data;
 pub use demo_data::{DemoDataLoad, DemoReservation, DemoTenant};
