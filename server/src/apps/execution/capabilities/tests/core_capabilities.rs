@@ -542,7 +542,6 @@ async fn runtime_fixture(
 	c
 }
 
-#[cfg(feature = "capability-runtime-tests")]
 async fn operation_until(
 	c: &CoreFixture,
 	run: Uuid,

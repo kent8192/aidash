@@ -37,6 +37,7 @@ pub struct Profile {
 	pub processes: u32,
 	pub operation_seconds: u64,
 	pub maximum_seconds: u64,
+	pub background_maximum_seconds: u64,
 	pub idle_seconds: u64,
 	pub recovery_seconds: u64,
 	pub grant_seconds: u64,

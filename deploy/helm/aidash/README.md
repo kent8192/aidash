@@ -296,7 +296,7 @@ by default. `execution.sandboxImage` must contain an immutable digest. Build it
 with `runner/Dockerfile`. Build the trusted image with:
 
 ```sh
-docker buildx build -f runner/control.Dockerfile -t your-registry/aidash-runner:0.1.0 runner
+docker buildx build -f runner/control.Dockerfile -t your-registry/aidash-runner:0.1.0 runner\ndocker buildx build -f runner/control.Dockerfile --target pod-base -t your-registry/aidash-pod-base:0.1.0 runner
 ```
 
 Set **separate** `execution.runner.image`, `execution.guard.image` and

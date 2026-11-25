@@ -1008,9 +1008,14 @@ impl FrameworkResult {
 					output["status"].as_str(),
 					Some("prepared" | "submitted" | "running" | "cancelling")
 				);
-				let seconds =
-					i64::try_from(input["wait_seconds"].as_u64().unwrap_or(300).min(3600))
-						.expect("bounded wait");
+				let default_wait = if input["background"] == true { 0 } else { 300 };
+				let seconds = i64::try_from(
+					input["wait_seconds"]
+						.as_u64()
+						.unwrap_or(default_wait)
+						.min(3600),
+				)
+				.expect("bounded wait");
 				if active && seconds > 0 {
 					let id =
 						serde_json::from_value(output["operation_id"].clone()).map_err(|_| {

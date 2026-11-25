@@ -15,6 +15,9 @@ pub async fn prepare<O: Send>(
 	kind: &str,
 	extra: Value,
 ) -> Result<Value> {
+	if input.background || input.notify_on_exit {
+		return Err(Error::Invalid("BACKGROUND_REQUIRES_EXECUTION_POD".into()));
+	}
 	let limits = scope.limits();
 	let seconds = input.seconds(limits)?;
 	let digest = input.digest(kind, run.id, &extra);

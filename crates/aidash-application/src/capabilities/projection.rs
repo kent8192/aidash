@@ -112,6 +112,7 @@ pub async fn result(
 		runtime_millis: operation.result["runtime_millis"].as_u64(),
 		deadline_expired: operation.result["deadline_expired"].as_bool(),
 		left_running: operation.result["left_running"].as_str().map(str::to_owned),
+		stop_reason: operation.result["stop_reason"].as_str().map(str::to_owned),
 	})
 }
 #[cfg(test)]

@@ -1,6 +1,8 @@
 //! What Agent tools that run in the Execution Pod of a Scratch Space need from
 //! their adapters (#745, ADR 0136).
-use super::execution_pod::{EgressCredential, ExecutionPodRuntime, ExecutionPodSettings};
+use super::execution_pod::{
+	CommandResult, EgressCredential, ExecutionPodRuntime, ExecutionPodSettings,
+};
 use crate::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -36,8 +38,10 @@ pub struct PodOperation {
 	/// `seconds`. It never holds the Run credential.
 	pub input: Value,
 	pub result: Value,
-	/// The Run has finished, so its running work is stopped.
+	/// The Run has finished. Foreground work is stopped.
 	pub run_finished: bool,
+	/// Cancellation was requested or completed. Background work stops too.
+	pub run_cancelled: bool,
 }
 
 /// The capability worker's view of Pod operations. Every call commits on its own.
@@ -48,6 +52,13 @@ pub trait PodOperationRepository: Send + Sync {
 	async fn load(&self, id: Uuid) -> Result<PodOperation>;
 	/// The Pod this operation runs in, with its Run's credential.
 	async fn context(&self, operation: &PodOperation) -> Result<PodContext>;
+	/// Recover a previously admitted Background receipt after its Space or authority ended.
+	async fn background_after_context_lost(
+		&self,
+		_operation: &PodOperation,
+	) -> Result<Option<CommandResult>> {
+		Ok(None)
+	}
 	/// Record a new state and result, only while the row is still in `expected`.
 	/// Returns whether it was written.
 	async fn save(&self, id: Uuid, expected: &str, state: &str, result: &Value) -> Result<bool>;
