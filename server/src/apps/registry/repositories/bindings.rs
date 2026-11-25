@@ -346,12 +346,8 @@ pub(crate) async fn system_definition(
 	node: &str,
 	reference: &aidash_domain::registry::EntityRef,
 ) -> crate::Result<aidash_domain::registry::Entry> {
-	let expected = aidash_application::registry::system::pinned_declaration(
-		&crate::bootstrap::registry_validation(),
-		node,
-		reference,
-	)?
-	.ok_or(crate::Error::Forbidden)?;
+	let expected = crate::bootstrap::pinned_system_declaration(node, reference)?
+		.ok_or(crate::Error::Forbidden)?;
 	let saved = crate::apps::registry::models::transaction_records::definition(
 		tx,
 		&reference.id,

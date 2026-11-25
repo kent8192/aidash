@@ -19,6 +19,12 @@ definition of its Binding snapshot (`registry.read`) under the current approval 
 runs at each worker boundary, on resume and wherever a running command or operation of the Run is
 rechecked.
 
+File actions reuse the Run's loaded Binding snapshot (#941). The Node prepares the expected
+bytes of built-in definitions once per Deployment ID and reuses them when comparing stored
+versions. Each action still reads the current Catalog Approval and restriction where required,
+checks policy, and verifies definition contents. Withdrawal disables the version's Catalog
+Approval row, which the next action observes.
+
 ## Considered Options
 
 - **Keep the approval in the read check.** A withdrawal then hides far more than the Runs that

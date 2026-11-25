@@ -101,6 +101,23 @@ pub(crate) async fn use_block(
 		.blocked())
 }
 
+/// A file action has already loaded the Run's Binding through its Read Recheck.
+pub(crate) async fn action_use_block(
+	access: &mut Access,
+	run: &aidash_domain::Run,
+) -> Result<Option<EntityRef>> {
+	let metadata = run.metadata();
+	let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
+		return use_block(access, &metadata, false).await;
+	};
+	aidash_application::authorization::execution::guard::recheck_loaded_binding(
+		&mut UseGuard { access },
+		&metadata,
+		snapshot,
+	)
+	.await
+}
+
 #[async_trait]
 impl RunGuardScope for RunGuard<'_> {
 	fn bundle(&self) -> &PolicyBundle {

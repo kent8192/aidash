@@ -5,7 +5,7 @@ use crate::{
 };
 use aidash_domain::{
 	RunMetadata,
-	registry::{AgentConfig, EntityRef, Entry},
+	registry::{AgentConfig, EntityRef, Entry, bindings::BindingSnapshot},
 };
 
 /// What a [`recheck`] of the definitions a Run uses found.
@@ -58,24 +58,56 @@ pub async fn recheck(
 	run: &RunMetadata,
 	read_context: bool,
 ) -> Result<UseRecheck> {
+	let entry = match approved_agent(scope, run).await? {
+		Ok(entry) => entry,
+		Err(reference) => return Ok(UseRecheck::Blocked(reference)),
+	};
+	if read_context {
+		let snapshot = scope.binding_snapshot(run).await?;
+		check_binding(scope, &snapshot, entry).await
+	} else {
+		let agent = AgentConfig::from_definition(serde_json::from_value(entry.config.clone())?);
+		Ok(UseRecheck::Usable {
+			entry: Box::new(entry),
+			agent: Box::new(agent),
+		})
+	}
+}
+
+/// Use Recheck for an action that already loaded its admitted Binding.
+pub async fn recheck_loaded_binding(
+	scope: &mut dyn UseRecheckScope,
+	run: &RunMetadata,
+	snapshot: &BindingSnapshot,
+) -> Result<Option<EntityRef>> {
+	let entry = match approved_agent(scope, run).await? {
+		Ok(entry) => entry,
+		Err(reference) => return Ok(Some(reference)),
+	};
+	Ok(check_binding(scope, snapshot, entry).await?.blocked())
+}
+
+async fn approved_agent(
+	scope: &mut dyn UseRecheckScope,
+	run: &RunMetadata,
+) -> Result<std::result::Result<Entry, EntityRef>> {
 	let reference = EntityRef {
 		id: run.agent_id.clone(),
 		version: run.agent_version.clone(),
 	};
-	let entry = match scope.catalog(&reference, "agent.execute").await {
-		Ok(entry) => entry,
-		Err(Error::Forbidden) => return Ok(UseRecheck::Blocked(reference)),
-		Err(error) => return Err(error),
-	};
-	if !read_context {
-		let agent = AgentConfig::from_definition(serde_json::from_value(entry.config.clone())?);
-		return Ok(UseRecheck::Usable {
-			entry: Box::new(entry),
-			agent: Box::new(agent),
-		});
+	match scope.catalog(&reference, "agent.execute").await {
+		Ok(entry) => Ok(Ok(entry)),
+		Err(Error::Forbidden) => Ok(Err(reference)),
+		Err(error) => Err(error),
 	}
-	let snapshot = scope.binding_snapshot(run).await?;
-	let agent = AgentConfig::from_snapshot(&snapshot)?;
+}
+
+async fn check_binding(
+	scope: &mut dyn UseRecheckScope,
+	snapshot: &BindingSnapshot,
+	entry: Entry,
+) -> Result<UseRecheck> {
+	let agent = AgentConfig::from_snapshot(snapshot)?;
 	// Current local approval applies independently of a newer active pointer.
 	// Never resolve another Node's definition by its unqualified ID through
 	// this local catalog.
