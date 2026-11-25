@@ -14,6 +14,20 @@ struct Journal {
 	ended: bool,
 }
 
+impl Journal {
+	fn require_admission(&self, admission: Uuid) -> Result<()> {
+		if self.admission != admission
+			|| self
+				.requests
+				.iter()
+				.any(|record| record.request.run_id != admission)
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+}
+
 async fn records(tx: &mut dyn TransactionExecutor, grant: Uuid, lock: bool) -> Result<Journal> {
 	let mut query = Query::select();
 	query
@@ -229,15 +243,14 @@ pub(crate) async fn close_for_run(
 	grant: Uuid,
 	admission: Uuid,
 ) -> Result<()> {
-	let mut journal = records(tx, grant, true).await?;
-	if journal.admission != admission
-		|| journal
-			.requests
-			.iter()
-			.any(|record| record.request.run_id != admission)
-	{
-		return Err(Error::Forbidden);
+	// Closure is monotonic. A poll of an already closed journal needs no write lock.
+	let journal = records(tx, grant, false).await?;
+	journal.require_admission(admission)?;
+	if journal.ended {
+		return Ok(());
 	}
+	let mut journal = records(tx, grant, true).await?;
+	journal.require_admission(admission)?;
 	if journal.ended {
 		return Ok(());
 	}

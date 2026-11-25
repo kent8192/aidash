@@ -164,7 +164,7 @@ impl HomeScope for SourceSession {
 		self.repository.call("task.read");
 		Ok(self.task.clone())
 	}
-	async fn control_task(&mut self, _: Uuid) -> Result<Option<Task>> {
+	async fn control_task(&mut self, _: Uuid, _: bool) -> Result<Option<Task>> {
 		self.repository.call("task.control_projection");
 		let mut task = self.task.clone();
 		if self

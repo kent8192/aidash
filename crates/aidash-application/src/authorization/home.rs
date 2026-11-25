@@ -50,7 +50,10 @@ async fn managed_task<S: HomeScope>(scope: &mut S, id: Uuid, read: bool) -> Resu
 	if read {
 		return scope.task_read(id).await;
 	}
-	let task = scope.control_task(id).await?.ok_or(Error::Forbidden)?;
+	let task = scope
+		.control_task(id, false)
+		.await?
+		.ok_or(Error::Forbidden)?;
 	let resource = scope.task_resource(&task).await?;
 	scope.require(&resource, "task.delegate").await?;
 	Ok(task)
@@ -369,12 +372,17 @@ pub async fn control<R: HomeRepository>(
 		// Receiver stop precedes Home ledger closure. No source row locks span that RPC.
 		let mut scope = repository.begin().await?;
 		let result = async {
-			let current = managed_task(&mut scope, task, false).await?;
+			// Take the grant lease before the Task, as Home command writers do.
+			// A failed authorization recheck rolls back the revocation.
+			scope.revoke(id).await?;
+			let current = scope
+				.control_task(task, true)
+				.await?
+				.ok_or(Error::Forbidden)?;
 			let resource = scope.task_resource(&current).await?;
+			scope.require(&resource, "task.delegate").await?;
 			let run = scope.resource("run", admission, resource.attributes);
 			scope.require(&run, "run.control").await?;
-			// Revocation shares the lease row with every Home command; completed effects stay fenced.
-			scope.revoke(id).await?;
 			scope.close_human_requests(id, admission).await?;
 			if !matches!(
 				current.status,
@@ -458,8 +466,11 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 					.await?
 					.ok_or(Error::Forbidden)?;
 				match scope.binding(grant.id).await? {
-					Some(bound) => scope.human_requests(grant.id, bound.admission_id).await,
-					None => Ok(vec![]),
+					Some(bound) => Ok((
+						Some(bound.admission_id),
+						scope.human_requests(grant.id, bound.admission_id).await?,
+					)),
+					None => Ok((None, vec![])),
 				}
 			}
 			.await;
@@ -517,41 +528,67 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				}
 			}
 		}
-		let mut human_requests = match requests {
-			Ok(result) => result?,
-			Err(_) => {
+		let (admission, mut human_requests) = match requests {
+			Ok(Ok(value)) => value,
+			Ok(Err(_)) | Err(_) => {
 				status = Err(Error::External("remote status unavailable".into()));
 				if !binding.disabled() {
 					reason = Some(Failure::Unavailable);
 				}
-				vec![]
+				(None, vec![])
 			}
 		};
-		if let Some(activation) = ended {
-			if activation.grant_id != grant.id || activation.run_id != activation.admission_id {
-				return Err(Error::Forbidden);
+		let ended_admission = admission.filter(|id| {
+			ended.as_ref().is_some_and(|activation| {
+				activation.grant_id == grant.id
+					&& activation.admission_id == *id
+					&& activation.run_id == *id
+			})
+		});
+		let cleanup_failed = if ended.is_some() {
+			let closed = tokio::time::timeout_at(deadline, async {
+				let admission = ended_admission.ok_or(Error::Forbidden)?;
+				let mut scope = repository.begin().await?;
+				let result = scope.close_human_requests(grant.id, admission).await;
+				finish(scope, result).await?;
+				// Release the journal lock before re-evaluating read authority.
+				let mut reader = repository.begin().await?;
+				let result = reader.human_requests(grant.id, admission).await;
+				finish(reader, result).await
+			})
+			.await
+			.unwrap_or_else(|_| Err(Error::External("remote question cleanup timed out".into())));
+			match closed {
+				Ok(requests) => {
+					human_requests = requests;
+					false
+				}
+				Err(error) => {
+					tracing::warn!(grant = %grant.id, %error, "could not close remote questions");
+					status = Err(error);
+					human_requests.clear();
+					if !binding.disabled() {
+						reason = Some(Failure::Unavailable);
+					}
+					true
+				}
 			}
-			let mut scope = repository.begin().await?;
-			let result = scope
-				.close_human_requests(grant.id, activation.admission_id)
-				.await;
-			finish(scope, result).await?;
-			// Do not take Task and policy read locks while holding the journal lock.
-			let mut reader = repository.begin().await?;
-			let result = reader
-				.human_requests(grant.id, activation.admission_id)
-				.await;
-			human_requests = finish(reader, result).await?;
-		}
-		let mut semantic = repository
-			.semantic_status(grant.id, &binding, reason)
-			.await?;
+		} else {
+			false
+		};
+		let mut semantic = if cleanup_failed {
+			aidash_domain::semantic::remote::status::project(&binding, reason, None)?
+		} else {
+			repository
+				.semantic_status(grant.id, &binding, reason)
+				.await?
+		};
 		// A cancelled or finished remote Run keeps its cause visible but, like the
 		// local management view, offers no action that would resume it. A paused
 		// remote Run claims no retry, so like a paused local Run it has none
 		// scheduled.
 		match status.as_ref().ok().and_then(Option::as_ref) {
-			Some(activation) if !activation.recoverable() => semantic.recovery = None,
+			_ if ended_admission.is_some() => semantic.recovery = None,
 			Some(activation)
 				if matches!(activation.control, RemoteExecutionControlState::Paused) =>
 			{

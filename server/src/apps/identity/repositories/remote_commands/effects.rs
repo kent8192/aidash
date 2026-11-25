@@ -16,7 +16,7 @@ use reinhardt::query::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 impl Scope<'_> {
-	/// Match the Task-before-journal order used by Home cancellation.
+	/// Lock the Task before closing its journal, as requester and lifecycle cancels do.
 	async fn close_run_questions(
 		&mut self,
 		task: Uuid,
