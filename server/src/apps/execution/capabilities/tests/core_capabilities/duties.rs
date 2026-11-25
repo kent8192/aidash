@@ -336,6 +336,60 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	)
 	.await;
 	assert_eq!(status, 200, "{snapshot}");
+	// The Duty says its Thread is gone, and resuming it opens a new one in
+	// the same Scratch Space (#991, ADR 0145).
+	let (status, shown) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/duties/{id}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{shown}");
+	assert_eq!(shown["duty"]["thread_deleted"], true, "{shown}");
+	let (status, resumed) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/duties/{id}/resume"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{resumed}");
+	assert_eq!(resumed["halt"], Value::Null);
+	assert_eq!(resumed["thread_deleted"], false);
+	let new: Uuid = serde_json::from_value(resumed["thread_id"].clone()).unwrap();
+	assert_ne!(new, own);
+	let driver = c.f.store.pool.fixture_driver();
+	let spaces: Vec<Uuid> =
+		sqlx::query_scalar("SELECT scratch_space_id FROM threads WHERE id = ANY($1) ORDER BY id")
+			.bind(vec![own, new])
+			.fetch_all(driver)
+			.await
+			.unwrap();
+	assert_eq!(spaces.len(), 2);
+	assert_eq!(spaces[0], spaces[1]);
+	let (status, opened) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/threads/{new}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{opened}");
+	let first: String = sqlx::query_scalar(
+		"SELECT content FROM messages WHERE thread_id = $1 ORDER BY created_at LIMIT 1",
+	)
+	.bind(new)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	assert!(
+		first.contains("The Duty's previous Thread was deleted at"),
+		"{first}"
+	);
 	c.close().await;
 }
 
@@ -482,10 +536,10 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		"trigger": {"kind": "cron", "expression": "0 9 * * 1-5", "time_zone": "Asia/Tokyo"},
 	});
 	// Act
-	let created = agent_tool(&c.f.store, &run, "call-1", "duty_create", input.clone())
+	let created = agent_tool(&c.f, &run, "call-1", "duty_create", input.clone())
 		.await
 		.unwrap();
-	let listed = agent_tool(&c.f.store, &run, "call-2", "duty_list", json!({}))
+	let listed = agent_tool(&c.f, &run, "call-2", "duty_list", json!({}))
 		.await
 		.unwrap();
 	// Assert: it acts as the person at the root of the Run's chain.
@@ -520,7 +574,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 	.unwrap();
 	let foreign = register(&c, elsewhere, definition("Elsewhere", 86_400)).await;
 	let reach = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-3",
 		"duty_delete",
@@ -545,7 +599,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 			.unwrap();
 	let mut again = input;
 	again["title"] = json!("Set up by a Duty");
-	let created = agent_tool(&c.f.store, &scheduled, "call-4", "duty_create", again).await;
+	let created = agent_tool(&c.f, &scheduled, "call-4", "duty_create", again).await;
 	assert!(
 		created
 			.as_ref()
@@ -553,7 +607,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		"{created:?}"
 	);
 	assert!(
-		agent_tool(&c.f.store, &scheduled, "call-5", "duty_list", json!({}))
+		agent_tool(&c.f, &scheduled, "call-5", "duty_list", json!({}))
 			.await
 			.is_ok()
 	);
@@ -760,13 +814,13 @@ async fn a_retried_duty_tool_call_returns_the_duty_it_registered(
 		"trigger": {"kind": "interval", "every_seconds": 3600},
 	});
 	// Act: the same tool call arrives twice, as after a lost answer.
-	let first = agent_tool(&c.f.store, &run, "call-a", "duty_create", input.clone())
+	let first = agent_tool(&c.f, &run, "call-a", "duty_create", input.clone())
 		.await
 		.unwrap();
-	let again = agent_tool(&c.f.store, &run, "call-a", "duty_create", input.clone())
+	let again = agent_tool(&c.f, &run, "call-a", "duty_create", input.clone())
 		.await
 		.unwrap();
-	let other = agent_tool(&c.f.store, &run, "call-b", "duty_create", input)
+	let other = agent_tool(&c.f, &run, "call-b", "duty_create", input)
 		.await
 		.unwrap();
 	// Assert
@@ -1999,7 +2053,8 @@ fn owners_only(c: &CoreFixture) -> Value {
 /// policy that limits Threads to their owner lets them resume it, read it and
 /// delete it, and the departed Requester no longer reaches it. The bookings
 /// the departed Requester's Runs made go, so the next event starts a Task for
-/// the successor (#1011).
+/// the successor (#1011). Taking over leaves it paused; resuming is a second
+/// call (#991, ADR 0145).
 #[rstest::rstest]
 #[tokio::test]
 async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
@@ -2035,13 +2090,25 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 		.send("GET", &format!("/api/threads/{own}"), Value::Null)
 		.await;
 	assert_ne!(status, 200, "bob does not own the Duty's Thread yet");
+	let (status, refused) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	assert_ne!(status, 200, "resuming never takes a Duty over: {refused}");
 	// Act
+	let (status, taken) = bob
+		.send("POST", &format!("/api/duties/{id}/take-over"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{taken}");
+	assert_eq!(taken["requester"], "bob");
+	assert_eq!(taken["halt"], "paused");
+	assert_eq!(taken["may_resume"], true);
 	let (status, resumed) = bob
 		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
 		.await;
 	// Assert: bob holds the Duty and its Thread; alice's booking went.
 	assert_eq!(status, 200, "{resumed}");
 	assert_eq!(resumed["requester"], "bob");
+	assert_eq!(resumed["halt"], Value::Null);
 	let owner: String =
 		sqlx::query_scalar("SELECT owner_subject FROM authorization_threads WHERE thread_id = $1")
 			.bind(own)
@@ -2093,6 +2160,221 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 		)
 		.await;
 	assert_eq!(status, 200, "{deleted}");
+	c.close().await;
+}
+
+/// The replacement owns the Duty's policy identity during recovery, and
+/// a refused recovery leaves the previous binding intact.
+#[rstest::rstest]
+#[case::edit(true)]
+#[case::resume(false)]
+#[tokio::test]
+async fn recovery_checks_permissions_on_the_replacements_duty_id(
+	#[future] capability_fixture: CoreFixture,
+	#[case] edit: bool,
+) {
+	let c = capability_fixture.await;
+	let duty = register(&c, thread(&c).await, definition("Weekly review", 604_800)).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query("UPDATE threads SET deleted_at = now() WHERE id = $1")
+		.bind(own)
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE duties SET halt = 'paused', halted_at = now() WHERE id = $1")
+		.bind(id)
+		.execute(driver)
+		.await
+		.unwrap();
+
+	let mut policy = c.policy.clone();
+	policy["policies"][0]["actions"] = json!([
+		"node.use",
+		"thread.create",
+		"thread.read",
+		"registry.read",
+		"agent.execute"
+	]);
+	let rules = policy["policies"].as_array_mut().unwrap();
+	rules.push(json!({
+		"id": "recover-this-duty",
+		"effect": "allow",
+		"subjects": {"ids": ["alice"]},
+		"actions": ["duty.create"],
+		"resources": {"kinds": ["thread"]},
+		"condition": {"op": "eq",
+			"left": {"source": "resource", "path": "/duty_id"},
+			"right": {"source": "literal", "value": id}},
+	}));
+	let (method, path, body) = if edit {
+		(
+			"PATCH",
+			format!("/api/duties/{id}"),
+			json!({"title": "Daily review"}),
+		)
+	} else {
+		("POST", format!("/api/duties/{id}/resume"), Value::Null)
+	};
+	let recover = || request(&c.app, &c.token, method, &path, body.clone());
+
+	// Without task.create, the replacement and its binding both roll back.
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
+	let thread_count =
+		|| sqlx::query_scalar::<_, i64>("SELECT count(*) FROM threads").fetch_one(driver);
+	let before = thread_count().await.unwrap();
+	let (status, refused) = recover().await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(thread_count().await.unwrap(), before);
+	assert_eq!(duty_thread(&c, id).await, own);
+	assert_eq!(halt(&c, id).await.as_deref(), Some("paused"));
+
+	// Grant both actions only on a Thread bearing this Duty's ID.
+	policy["policies"]
+		.as_array_mut()
+		.unwrap()
+		.last_mut()
+		.unwrap()["actions"] = json!(["duty.create", "task.create"]);
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let (status, recovered) = recover().await;
+	assert_eq!(status, 200, "{recovered}");
+	let replacement = duty_thread(&c, id).await;
+	assert_ne!(replacement, own);
+	assert_eq!(recovered["thread_id"], json!(replacement));
+	assert_eq!(recovered["thread_deleted"], false);
+	assert_eq!(
+		recovered["halt"],
+		if edit { json!("paused") } else { Value::Null }
+	);
+	assert_eq!(thread_count().await.unwrap(), before + 1);
+	c.close().await;
+}
+
+/// A deleted Thread can only be replaced in an admissible Scratch Space.
+#[rstest::rstest]
+#[case::image_approval_withdrawn(false, "execution policy")]
+#[case::concurrent_deletion(true, "can no longer be used")]
+#[tokio::test]
+async fn recovery_refuses_an_unusable_scratch_space(
+	#[future] capability_fixture: CoreFixture,
+	#[case] deleting: bool,
+	#[case] reason: &str,
+) {
+	let c = capability_fixture.await;
+	let duty = register(&c, thread(&c).await, definition("Weekly review", 604_800)).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let driver = c.f.store.pool.fixture_driver();
+	let space: Uuid = sqlx::query_scalar(
+		"UPDATE threads SET deleted_at = now() WHERE id = $1 RETURNING scratch_space_id",
+	)
+	.bind(own)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	sqlx::query("UPDATE duties SET halt = 'paused', halted_at = now() WHERE id = $1")
+		.bind(id)
+		.execute(driver)
+		.await
+		.unwrap();
+
+	let path = format!("/api/duties/{id}/resume");
+	let resume = request(&c.app, &c.token, "POST", &path, Value::Null);
+	let (status, refused) = if deleting {
+		// Hold the tombstone uncommitted so an unlocked read sees an active
+		// Space. Updating its state takes the same row lock as deletion.
+		let mut deletion = driver.begin().await.unwrap();
+		sqlx::query("UPDATE scratch_spaces SET state = 'cleared' WHERE id = $1")
+			.bind(space)
+			.execute(&mut *deletion)
+			.await
+			.unwrap();
+		let blocker = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *deletion)
+			.await
+			.unwrap();
+		tokio::pin!(resume);
+		tokio::select! {
+			result = &mut resume => panic!("resume completed before deletion committed: {result:?}"),
+			_ = super::lifecycle_tests::wait_for_blocked_connection(driver, blocker) => {}
+		}
+		deletion.commit().await.unwrap();
+		resume.await
+	} else {
+		// The Space retains a pinned image that is absent from the operator's
+		// current allowlist, just as it would after an approval is withdrawn.
+		let image = format!("registry.example.invalid/retired@sha256:{}", "a".repeat(64));
+		sqlx::query(
+			"UPDATE scratch_space_settings \
+			 SET settings = jsonb_set(settings, '{execution_image}', to_jsonb($2::text)) \
+			 WHERE space_id = $1",
+		)
+		.bind(space)
+		.bind(image)
+		.execute(driver)
+		.await
+		.unwrap();
+		resume.await
+	};
+	assert_eq!(status, 400, "{refused}");
+	assert!(refused.to_string().contains(reason), "{refused}");
+	assert_eq!(halt(&c, id).await.as_deref(), Some("paused"));
+	assert_eq!(duty_thread(&c, id).await, own);
+	let live_threads: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM threads WHERE scratch_space_id = $1 AND deleted_at IS NULL",
+	)
+	.bind(space)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	assert_eq!(live_threads, 1, "only the origin Thread remains live");
+	c.close().await;
+}
+
+/// Taking a Duty over grants no right to the Scratch Space its deleted
+/// Thread was in: a successor who cannot use it is refused a new Thread
+/// there and keeps the Duty paused (#991, ADR 0145).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_successor_outside_the_scratch_space_gets_no_new_thread_there(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: alice's Duty lost its Thread and its Requester; bob is named.
+	let c = capability_fixture.await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, thread(&c).await, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query("UPDATE threads SET deleted_at = now() WHERE id = $1")
+		.bind(own)
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query(
+		"UPDATE duties SET halt = 'requester_left', halted_at = now(), successor = 'bob' WHERE id = $1",
+	)
+	.bind(id)
+	.execute(driver)
+	.await
+	.unwrap();
+	let bob = common::BrowserMapping::new(&c.f, "acme", "bob").await;
+	// Act
+	let (status, taken) = bob
+		.send("POST", &format!("/api/duties/{id}/take-over"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{taken}");
+	assert_eq!(taken["thread_deleted"], true, "{taken}");
+	let (status, refused) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	// Assert
+	assert_ne!(status, 200, "{refused}");
+	assert!(refused.to_string().contains("you cannot use"), "{refused}");
+	assert_eq!(halt(&c, id).await.as_deref(), Some("paused"));
+	assert_eq!(duty_thread(&c, id).await, own);
 	c.close().await;
 }
 
@@ -2149,8 +2431,8 @@ async fn a_successor_discards_a_booking_already_in_flight(
 			pid = super::lifecycle_tests::wait_for_blocked_connection(driver, blocker_pid) => pid,
 			result = &mut booking => panic!("booking completed before its trigger was unlocked: {result:?}"),
 		};
-		let resume_path = format!("/api/duties/{id}/resume");
-		let resume = bob.send("POST", &resume_path, Value::Null);
+		let take_over_path = format!("/api/duties/{id}/take-over");
+		let resume = bob.send("POST", &take_over_path, Value::Null);
 		tokio::pin!(resume);
 		let early = tokio::select! {
 			result = &mut resume => Some(result),
@@ -2165,6 +2447,10 @@ async fn a_successor_discards_a_booking_already_in_flight(
 	};
 	assert_eq!(status, 200, "{resumed}");
 	assert_eq!(resumed["requester"], "bob");
+	let (status, resumed) = bob
+		.send("POST", &format!("/api/duties/{id}/resume"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{resumed}");
 
 	let (status, receipt) = send_event(
 		&c,
@@ -2187,7 +2473,7 @@ async fn stopping_a_flow_cancels_the_tasks_of_a_deleted_duty(
 	let c = capability_fixture.await;
 	let creator = admit(&c).await;
 	let duty = agent_tool(
-		&c.f.store,
+		&c.f,
 		&creator,
 		"create-scheduled-duty",
 		"duty_create",
@@ -2288,7 +2574,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
 	let created = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-1",
 		"duty_create",
@@ -2318,7 +2604,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 	};
 	// Act / Assert: the Agent may pause it but not delete it.
 	let refused = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-2",
 		"duty_delete",
@@ -2333,7 +2619,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 		"{refused}"
 	);
 	let paused = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-3",
 		"duty_delete",
@@ -2361,7 +2647,7 @@ async fn deleting_a_duty_never_lifts_a_budget_someone_else_set(
 		.unwrap();
 	assert!(
 		agent_tool(
-			&c.f.store,
+			&c.f,
 			&run,
 			"call-4",
 			"duty_delete",
@@ -2401,7 +2687,7 @@ async fn a_hard_limit_on_a_duty_stops_the_duty_its_agent_set_up(
 			.find(|candidate| candidate.task_id == report.started[0])
 			.unwrap();
 	let created = agent_tool(
-		&c.f.store,
+		&c.f,
 		&run,
 		"call-1",
 		"duty_create",

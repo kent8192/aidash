@@ -57669,7 +57669,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -57774,11 +57774,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -57807,7 +57816,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -57824,7 +57834,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -58075,7 +58085,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -58180,11 +58190,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -58213,7 +58232,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -58230,7 +58250,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -58478,7 +58498,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -58583,11 +58603,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -58616,7 +58645,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -58633,7 +58663,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -58838,7 +58868,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -59053,7 +59083,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -59158,11 +59188,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -59191,7 +59230,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -59208,7 +59248,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -59584,7 +59624,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -59689,11 +59729,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -59722,7 +59771,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -59739,7 +59789,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -59987,7 +60037,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -60092,11 +60142,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -60125,7 +60184,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -60142,7 +60202,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -60390,7 +60450,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -60495,11 +60555,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -60528,7 +60597,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -60545,7 +60615,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -60793,7 +60863,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -60898,11 +60968,20 @@
                   }
                 ],
                 "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -60931,7 +61010,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -60948,7 +61028,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -63328,7 +63408,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -63433,11 +63513,20 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -63466,7 +63555,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -63483,7 +63573,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -63838,7 +63928,7 @@
                 "type": "boolean"
               },
               "may_resume": {
-                "description": "Resume it: its Requester, or the successor named for it.",
+                "description": "Resume it: its Requester.",
                 "type": "boolean"
               },
               "mine": {
@@ -63943,11 +64033,20 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "thread_id",
+              "thread_deleted",
               "origin_thread_id",
               "requester",
               "mine",
@@ -63976,7 +64075,8 @@
               "updated_at",
               "may_edit",
               "may_manage",
-              "may_resume"
+              "may_resume",
+              "may_take_over"
             ],
             "type": "object"
           },
@@ -63993,7 +64093,7 @@
             "type": "object"
           },
           "Halt": {
-            "description": "Why a Duty does not run. Only its Requester resumes it, except that a\nnamed successor resumes one whose Requester left and so becomes its\nRequester (ADR 0134).",
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
             "oneOf": [
               {
                 "description": "Its Requester or an administrator paused it.",
@@ -64152,5 +64252,418 @@
     },
     "source": "server/src/apps/registry/views/management.rs",
     "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "duty-take-over",
+    "path": "/api/duties/{id}/take-over",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "DutyTemplateSource": {
+            "additionalProperties": false,
+            "description": "The template version a Duty was installed from, so a later version can be\noffered to its Requester as an update. Updates are never applied by\nthemselves.",
+            "properties": {
+              "key": {
+                "description": "The Marketplace version's key.",
+                "type": "string"
+              },
+              "owner_tenant": {
+                "type": "string"
+              },
+              "package_id": {
+                "type": "string"
+              },
+              "repository": {
+                "description": "The Node that published it.",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "repository",
+              "owner_tenant",
+              "package_id",
+              "version"
+            ],
+            "type": "object"
+          },
+          "DutyView": {
+            "description": "A Duty as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Requester's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Requester or a holder of `duty.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Requester.",
+                "type": "boolean"
+              },
+              "may_take_over": {
+                "description": "Take it over: the successor named for a Duty whose Requester left\n(ADR 0145).",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Requester.",
+                "type": "boolean"
+              },
+              "mission": {
+                "description": "What the Duty is for.",
+                "type": "string"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "pause_after_failures": {
+                "description": "Failed Tasks in a row after which it pauses itself; 0 never does.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "procedure": {
+                "description": "The checklist its Agent follows on every Task.",
+                "type": "string"
+              },
+              "requester": {
+                "description": "The person every Run of the Duty acts as.",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "router": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Script"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that decides what each event no Task booked does (#1011)."
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "template": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DutyTemplateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Marketplace template version it was installed from (#1011 D4)."
+              },
+              "thread_deleted": {
+                "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
+                "type": "boolean"
+              },
+              "thread_id": {
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Trigger"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When it wakes by the clock, if it does."
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "watcher": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Watcher"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The script that polls an outside service on its own interval."
+              },
+              "watcher_next_at": {
+                "description": "When the Watcher runs next.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "thread_id",
+              "thread_deleted",
+              "origin_thread_id",
+              "requester",
+              "mine",
+              "title",
+              "mission",
+              "procedure",
+              "agent",
+              "trigger",
+              "approval_mode",
+              "max_lateness_seconds",
+              "pause_after_failures",
+              "router",
+              "watcher",
+              "watcher_next_at",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "template",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume",
+              "may_take_over"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Duty does not run. Only its Requester resumes it; a named\nsuccessor first takes over one whose Requester left (ADR 0145).",
+            "oneOf": [
+              {
+                "description": "Its Requester or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "As many Runs in a row failed as its Requester allows.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Requester left the Tenant or lost access; it waits for a successor.",
+                "enum": ["requester_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              }
+            ]
+          },
+          "Language": {
+            "description": "The language a script is written in.",
+            "enum": ["python", "shell"],
+            "type": "string"
+          },
+          "Script": {
+            "additionalProperties": false,
+            "description": "A Router's or Watcher's code.",
+            "properties": {
+              "language": {
+                "$ref": "#/components/schemas/Language"
+              },
+              "source": {
+                "description": "At most 64 KiB, without NUL.",
+                "type": "string"
+              }
+            },
+            "required": ["language", "source"],
+            "type": "object"
+          },
+          "Trigger": {
+            "description": "When a Duty fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Duty was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          },
+          "Watcher": {
+            "additionalProperties": false,
+            "description": "A script that polls an outside service on its own interval, independent of\nthe Duty's time trigger. Its stdout is a JSON array of events.",
+            "properties": {
+              "every_seconds": {
+                "description": "Seconds between two runs: one minute to one year.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "script": {
+                "$ref": "#/components/schemas/Script"
+              }
+            },
+            "required": ["script", "every_seconds"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DutyView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/duties.rs",
+    "uuid_parameters": ["id"]
   }
 ]

@@ -174,7 +174,7 @@ impl ToolOperations for Operations {
 			.map_err(Into::into);
 		}
 		crate::apps::workspaces::services::duties::agent_tool(
-			&self.0.store,
+			&self.0.home.federation,
 			&self.0.run,
 			key,
 			operation,

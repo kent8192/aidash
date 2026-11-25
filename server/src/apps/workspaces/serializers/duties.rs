@@ -20,6 +20,9 @@ pub(crate) struct DutyView {
 	pub id: Uuid,
 	/// The Duty's own Thread, where its Tasks belong (#1008).
 	pub thread_id: Uuid,
+	/// Its own Thread was deleted: its Requester's next edit or resume opens
+	/// a new one, without the old Thread's memory (#991, ADR 0145).
+	pub thread_deleted: bool,
 	/// The Thread it was registered from; None for a Duty from before #1008.
 	pub origin_thread_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
@@ -66,25 +69,29 @@ pub(crate) struct DutyView {
 	pub may_edit: bool,
 	/// Pause and delete: its Requester or a holder of `duty.administer`.
 	pub may_manage: bool,
-	/// Resume it: its Requester, or the successor named for it.
+	/// Resume it: its Requester.
 	pub may_resume: bool,
+	/// Take it over: the successor named for a Duty whose Requester left
+	/// (ADR 0145).
+	pub may_take_over: bool,
 }
 
 impl DutyView {
 	pub fn new(duty: Duty, viewer: &str, administers: bool) -> Self {
-		use aidash_domain::duties::{Actor, Change, permit, resumption};
+		use aidash_domain::duties::{Actor, Change, permit};
 		let actor = Actor {
 			subject: viewer,
 			administers,
 		};
 		let may = |change| permit(actor, duty.standing(), change).is_ok();
 		let (may_edit, may_manage) = (may(Change::Edit), may(Change::Pause));
-		let may_resume = resumption(actor, duty.standing()).is_ok();
+		let (may_resume, may_take_over) = (may(Change::Resume), may(Change::TakeOver));
 		let status = duty.status().to_owned();
 		let definition = duty.definition;
 		Self {
 			id: duty.id,
 			thread_id: duty.thread_id,
+			thread_deleted: false,
 			origin_thread_id: duty.origin_thread_id,
 			mine: duty.requester == viewer,
 			requester: duty.requester,
@@ -114,7 +121,14 @@ impl DutyView {
 			may_edit,
 			may_manage,
 			may_resume,
+			may_take_over,
 		}
+	}
+
+	/// Marks whether its own Thread is among the deleted ones.
+	pub fn with_deleted(mut self, deleted: &std::collections::HashSet<Uuid>) -> Self {
+		self.thread_deleted = deleted.contains(&self.thread_id);
+		self
 	}
 }
 
