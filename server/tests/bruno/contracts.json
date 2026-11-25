@@ -23463,6 +23463,27 @@
             "required": ["registry_deployment", "id", "version"],
             "type": "object"
           },
+          "ReferenceRevocationHint": {
+            "properties": {
+              "may_revoke": {
+                "type": "boolean"
+              },
+              "path": {
+                "type": "string"
+              },
+              "reference_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "description": "The current revision for an allowed revoke, omitted otherwise.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              }
+            },
+            "required": ["reference_id", "path", "may_revoke"],
+            "type": "object"
+          },
           "RegistryVersion": {
             "description": "One version in the Tenant's Registry with its approval state and history.\nDiscovery and execution see only approved versions; this view sees every\nversion the caller may read.",
             "properties": {
@@ -23492,6 +23513,13 @@
               "provider_warning": {
                 "description": "Disclosure shown only when approving this exact Provider tool version.",
                 "type": ["string", "null"]
+              },
+              "reference_revocations": {
+                "description": "Revocation hints for the Reference files bound to this Source.",
+                "items": {
+                  "$ref": "#/components/schemas/ReferenceRevocationHint"
+                },
+                "type": "array"
               },
               "subject": {
                 "anyOf": [
@@ -64081,6 +64109,48 @@
       }
     },
     "source": "server/src/apps/marketplace/views/duty_templates.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "registry-source-revocations",
+    "path": "/api/registry/{id}/{version}/reference-revocations",
+    "query_parameters": ["node"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ReferenceRevocationHint": {
+            "properties": {
+              "may_revoke": {
+                "type": "boolean"
+              },
+              "path": {
+                "type": "string"
+              },
+              "reference_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "description": "The current revision for an allowed revoke, omitted otherwise.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              }
+            },
+            "required": ["reference_id", "path", "may_revoke"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/ReferenceRevocationHint"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/registry/views/management.rs",
     "uuid_parameters": []
   }
 ]

@@ -3,7 +3,9 @@ use crate::apps::identity::services::tenant_secret_readiness;
 use crate::apps::registry::serializers::agent_plugin_import::{
 	AgentPluginImportResult, AttachListing, PluginImportRequest, PluginToolsRequest,
 };
-use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
+use crate::apps::registry::serializers::contracts::{
+	McpToolHint, McpToolHintRequest, ReferenceRevocationHint,
+};
 use crate::apps::registry::services::agent_plugin_import;
 use crate::{
 	Error, Result,
@@ -66,6 +68,24 @@ impl RegistryManagement {
 			page.offset,
 		)
 		.await;
+		access.finish(result).await
+	}
+
+	/// Revocation hints for a single Source visible on the selected Node.
+	pub(crate) async fn source_revocations(
+		&self,
+		actor: Actor,
+		source: EntityRef,
+		node: aidash_domain::nodes::NodeName,
+	) -> Result<Vec<ReferenceRevocationHint>> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let mut access = Access::begin(&self.runtime.store, &identity).await?;
+		access.set_node(node);
+		let result =
+			crate::apps::registry::repositories::versions::source_revocations(&mut access, &source)
+				.await;
 		access.finish(result).await
 	}
 	/// A new definition or version in the subject's Tenant, under `registry.create`.
