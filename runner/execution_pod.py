@@ -3,7 +3,6 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, RLock
 from helper_protocol import HELPER_PROTOCOL, LEGACY_HELPER_PROTOCOL, protocol_supported
-from pod_base import initialize_system_root
 
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60

@@ -113,7 +113,8 @@ class SystemTreeTest(unittest.TestCase):
     def test_image_change_is_reported_until_reset_applies_it(self):
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root, system_image_changed
+        from execution_pod import system_image_changed
+        from pod_base import initialize_system_root
         image_a, image_b = 'image@sha256:' + 'a' * 64, 'image@sha256:' + 'b' * 64
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
@@ -133,7 +134,8 @@ class SystemTreeTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from execution_pod import initialize_system_root, system_image_changed
+        from execution_pod import system_image_changed
+        from pod_base import initialize_system_root
         image_id = 'image@sha256:' + 'a' * 64
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
@@ -157,7 +159,7 @@ class SystemTreeTest(unittest.TestCase):
     def test_initial_copy_reuses_system_and_reset_recopies_image(self):
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
 
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -238,7 +240,7 @@ class FullDiskRegressionTest(unittest.TestCase):
         import shutil
         from pathlib import Path
         from unittest.mock import patch
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
             image.mkdir()
@@ -349,7 +351,7 @@ class StartupStorageRegressionTest(unittest.TestCase):
     def test_stale_staging_is_removed_before_reusing_existing_root(self):
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
             image.mkdir()
@@ -491,7 +493,7 @@ class PodManifestTest(unittest.TestCase):
         import os
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
 
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

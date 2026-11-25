@@ -602,7 +602,7 @@ if __name__ == '__main__':
     if sys.argv[1:] == ['init']:
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
         copied = initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true',
                                         image_identity=os.environ['AIDASH_IMAGE_ID'])
         if copied or not (Path('/scratch-image') / 'environment.json').exists():

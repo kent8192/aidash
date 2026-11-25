@@ -324,8 +324,8 @@ class ChartsTest(unittest.TestCase):
         profile = profiles[0]
         # Exactly the Rust `Profile` fields (deny_unknown_fields): no Runner-only host_tasks.
         self.assertEqual(set(profile), {'admission', 'storage', 'cpu', 'memory_bytes', 'processes', 'working_bytes',
-                                        'temporary_bytes', 'output_bytes', 'maximum_seconds', 'idle_seconds',
-                                        'operation_seconds', 'runner'})
+                                        'temporary_bytes', 'output_bytes', 'maximum_seconds', 'background_maximum_seconds',
+                                        'idle_seconds', 'operation_seconds', 'runner'})
         self.assertIs(profile['admission'], True)
         for key in set(profile) & set(runner_profile) - {'runner'}:
             self.assertEqual(profile[key], runner_profile[key], key)
