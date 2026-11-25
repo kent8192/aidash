@@ -278,13 +278,44 @@ async fn only_forwarded_bytes_post_to_the_run_budget_and_pause_its_run(
 		.create_thread(&tenant, "alice", "Traffic budget")
 		.await
 		.unwrap();
+	let name = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let endpoint = "http://127.0.0.1:9/v1";
+	f.store.keyless.permit_origin_of(endpoint).unwrap();
+	for (kind, id, config) in [
+		(
+			"model",
+			"traffic-model",
+			serde_json::json!({
+				"provider": "openrouter", "model_id": "fixture", "endpoint": endpoint,
+				"context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {},
+			}),
+		),
+		(
+			"agent",
+			"traffic-agent",
+			serde_json::json!({
+				"schema_version": 1, "model": {"id": "traffic-model", "version": "1.0.0"},
+				"instructions": "Test traffic accounting", "bindings": [], "remove_default": [],
+			}),
+		),
+	] {
+		f.registry
+			.register(
+				&name,
+				serde_json::from_value(serde_json::json!({
+					"id": id, "version": "1.0.0", "kind": kind,
+					"name": {"en": id}, "description": {"en": "Traffic accounting fixture"},
+					"capabilities": [], "languages": ["en"], "schema": {"type": "object"},
+					"config": config,
+				}))
+				.unwrap(),
+			)
+			.await
+			.unwrap();
+	}
 	let agent = f
 		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			"research",
-			"1.0.0",
-		)
+		.get(&name, "traffic-agent", "1.0.0")
 		.await
 		.unwrap();
 	let new_run = async |title: &str| {
@@ -336,10 +367,13 @@ async fn only_forwarded_bytes_post_to_the_run_budget_and_pause_its_run(
 		};
 	assert_eq!(usage().await.unwrap(), None);
 	for _ in 0..2 {
-		assert!(matches!(
-			durable.report_forwarded(&scope, connection, Direction::Sent, mib, day).await,
-			Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
-		));
+		let result = durable
+			.report_forwarded(&scope, connection, Direction::Sent, mib, day)
+			.await;
+		assert!(
+			matches!(&result, Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"),
+			"{result:?}"
+		);
 	}
 	assert_eq!(usage().await.unwrap(), Some((mib as i64, 195_312)));
 	let spend: (String, String, i64, i64) = sqlx::query_as(
