@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   bytesFromGiB,
+  isScratchUnavailable,
   millisFromCores,
   loadScratchSpaces,
 } from "./scratch-settings";
@@ -330,12 +331,13 @@ export function ThreadScratchSpace({
     retry: false,
   });
   if (space.isError) {
-    const refused =
-      space.error instanceof ApiError &&
-      (space.error.status === 403 || space.error.status === 404);
     return (
       <p className="text-xs text-muted-foreground">
-        {t(refused ? "scratchUnavailable" : "scratchReadError")}
+        {t(
+          isScratchUnavailable(space.error)
+            ? "scratchUnavailable"
+            : "scratchReadError",
+        )}
       </p>
     );
   }
@@ -445,7 +447,7 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
       {(list.isError || limits.isError) && (
         <Notice role="alert">{t("scratchLoadError")}</Notice>
       )}
-      {list.data?.unavailable && id === focus && (
+      {list.isSuccess && list.data.unavailable && id === focus && (
         <Notice role="alert">{t("scratchUnavailable")}</Notice>
       )}
       {space?.expired && <Notice>{t("scratchExpired")}</Notice>}
