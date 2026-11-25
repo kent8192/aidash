@@ -165,6 +165,24 @@ pub async fn authorize(
 	node: &str,
 	config: &EmbeddingConfig,
 ) -> Result<Option<Approved>> {
+	authorize_for_search(scope, node, config, false).await
+}
+
+/// Optional Thread-index recall can skip an embedding the generated chain did
+/// not approve. Other authority failures still propagate.
+pub async fn authorize_for_search(
+	scope: &mut dyn GenerationEmbeddingAuthority,
+	node: &str,
+	config: &EmbeddingConfig,
+	optional: bool,
+) -> Result<Option<Approved>> {
+	let refusal = |error| {
+		if optional {
+			Error::SemanticUnavailable
+		} else {
+			error
+		}
+	};
 	let jobs = scope.requests(node).await?;
 	let Some(first) = jobs.first() else {
 		return Ok(None);
@@ -182,15 +200,15 @@ pub async fn authorize(
 	let mut reference = None;
 	for job in &jobs {
 		let approved = scope.pinned_policy(job).await?.embedding.ok_or_else(|| {
-			Error::Invalid(
+			refusal(Error::Invalid(
 				"generated semantic memory requires an approved embedding provider".into(),
-			)
+			))
 		})?;
 		if reference
 			.as_ref()
 			.is_some_and(|reference| reference != &approved.provider)
 		{
-			return Err(Error::Forbidden);
+			return Err(refusal(Error::Forbidden));
 		}
 		reference = Some(approved.provider);
 	}
@@ -200,7 +218,7 @@ pub async fn authorize(
 	if entry.kind != "embedding"
 		|| serde_json::from_value::<EmbeddingConfig>(entry.config)? != *config
 	{
-		return Err(Error::Forbidden);
+		return Err(refusal(Error::Forbidden));
 	}
 	Ok(Some(Approved {
 		node: node.to_owned(),

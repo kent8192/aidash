@@ -261,7 +261,7 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
     setError("");
     setResult(null);
     try {
-      await action();
+      if ((await action()) === false) return;
       await client.invalidateQueries({ queryKey: ["semantic", thread] });
       if (dialogGeneration.current === submittedDialogGeneration) {
         closeDialogs();
@@ -271,6 +271,38 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
     } finally {
       setBusy(false);
     }
+  };
+  const configure = (draft: SemanticIndexSpec) => {
+    const submittedDialogGeneration = dialogGeneration.current;
+    const request = { expected_revision: current?.revision ?? 0, spec: draft };
+    return mutate(async () => {
+      try {
+        return await semanticConfigure(thread, request);
+      } catch (e) {
+        const warning =
+          e instanceof ApiError && e.status === 409
+            ? /^this (deletes|recomputes) the embeddings of (\d+) memory facts in this Thread; resend with acknowledge_memory_embeddings to continue$/.exec(
+                e.message,
+              )
+            : undefined;
+        if (!warning) throw e;
+        const message = t(
+          warning[1] === "deletes"
+            ? "semanticConfirmDeleteMemoryEmbeddings"
+            : "semanticConfirmReplaceMemoryEmbeddings",
+        ).replace("{count}", warning[2]);
+        if (
+          dialogGeneration.current !== submittedDialogGeneration ||
+          !window.confirm(message)
+        ) {
+          return false;
+        }
+        return semanticConfigure(thread, {
+          ...request,
+          acknowledge_memory_embeddings: true,
+        });
+      }
+    });
   };
   const failures = [
     index.error,
@@ -557,14 +589,7 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
             }
             previous={spec}
             busy={busy}
-            submit={(draft) =>
-              mutate(() =>
-                semanticConfigure(thread, {
-                  expected_revision: current?.revision ?? 0,
-                  spec: draft,
-                }),
-              )
-            }
+            submit={configure}
           />
           {dialogAlert}
         </Modal>

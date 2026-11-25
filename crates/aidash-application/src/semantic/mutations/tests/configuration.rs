@@ -131,7 +131,7 @@ impl SemanticConfigurationSession for Configuration {
 #[tokio::test]
 async fn configuring_commits_one_complete_immutable_generation() {
 	let repository = Repository(Configuration::default());
-	let result = configure(&repository, Uuid::from_u128(1), 0, spec())
+	let result = configure(&repository, Uuid::from_u128(1), 0, spec(), false)
 		.await
 		.unwrap();
 	assert_eq!(result.revision, 1);
@@ -169,7 +169,7 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 			})
 			.with_counts((i64::MAX, usize::MAX)),
 	);
-	let result = configure(&repository, Uuid::from_u128(1), 0, spec())
+	let result = configure(&repository, Uuid::from_u128(1), 0, spec(), false)
 		.await
 		.unwrap();
 	assert_eq!(result.revision, 1);
@@ -208,7 +208,7 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 async fn failed_configuration_does_not_commit_partial_generations(#[case] failure: &'static str) {
 	let repository = Repository(Configuration::default().with_failure(failure));
 	assert_eq!(
-		configure(&repository, Uuid::from_u128(1), 0, spec())
+		configure(&repository, Uuid::from_u128(1), 0, spec(), false)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -231,7 +231,7 @@ async fn failed_configuration_does_not_commit_partial_generations(#[case] failur
 async fn invalid_revision_never_opens_a_database_transaction(#[case] revision: i64) {
 	let repository = Repository(Configuration::default());
 	assert_eq!(
-		configure(&repository, Uuid::from_u128(1), revision, spec())
+		configure(&repository, Uuid::from_u128(1), revision, spec(), false)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -249,7 +249,7 @@ async fn shared_index_lock_fences_configuration_against_existing_sources(
 ) {
 	let repository = Repository(Configuration::default().with_counts(counts));
 	assert_eq!(
-		configure(&repository, Uuid::from_u128(1), 0, spec())
+		configure(&repository, Uuid::from_u128(1), 0, spec(), false)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -274,7 +274,7 @@ async fn shared_index_lock_fences_configuration_against_existing_sources(
 async fn stale_configuration_does_not_replace_another_generation() {
 	let repository = Repository(Configuration::default().with_old(index()));
 	assert_eq!(
-		configure(&repository, Uuid::from_u128(1), 0, spec())
+		configure(&repository, Uuid::from_u128(1), 0, spec(), false)
 			.await
 			.unwrap_err()
 			.to_string(),

@@ -312,6 +312,8 @@
   "semanticHelp": "Search authorized memories, messages and artifacts by meaning. Index status and source revisions remain visible.",
   "semanticIndex": "Embedding index",
   "semanticConfigure": "Configure index",
+  "semanticConfirmDeleteMemoryEmbeddings": "This deletes the embeddings of {count} memory facts in this Thread. Continue?",
+  "semanticConfirmReplaceMemoryEmbeddings": "This recomputes the embeddings of {count} memory facts in this Thread. Continue?",
   "semanticUnconfigured": "No index configured for this thread.",
   "semanticAutoOn": "Use in agent context",
   "semanticAutoOff": "Manual search only",

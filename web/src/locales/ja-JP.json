@@ -312,6 +312,8 @@
   "semanticHelp": "許可されたメモリ・メッセージ・成果物を意味で検索します。索引の状態と元データの版を確認できます。",
   "semanticIndex": "埋め込み索引",
   "semanticConfigure": "索引を設定",
+  "semanticConfirmDeleteMemoryEmbeddings": "このスレッドの記憶 {count} 件の埋め込みを削除します。続行しますか？",
+  "semanticConfirmReplaceMemoryEmbeddings": "このスレッドの記憶 {count} 件の埋め込みを再計算します。続行しますか？",
   "semanticUnconfigured": "このスレッドには索引が設定されていません。",
   "semanticAutoOn": "Agentの文脈に使用",
   "semanticAutoOff": "手動検索のみ",
