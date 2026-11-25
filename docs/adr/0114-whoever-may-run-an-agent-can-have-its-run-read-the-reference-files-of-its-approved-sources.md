@@ -21,6 +21,7 @@ Registering a Source and having it approved is the moment a person makes its fil
 - Revoking one file refuses new Runs of every Agent version that binds it, and the error names the file's path. A Run never continues with part of its Reference set missing.
 - An Area given a Reference set cannot export files to another Node. Revoking a file never locks that Area, because it holds nothing of the file until it copies it. While a copy is there, revoking the file makes the Area unusable, and only the uploader can download the copy as made. A copy as made cannot be shared, nor can a file with the same content as one of the Area's Reference files, so copying it again does not get around this. Editing a copy makes it that person's own file, and this boundary does not follow it: someone who may read a file can already retype it.
 - A Run that created a Subnode reads its members' Areas but not their Reference sets, which stay inside the Runs whose Agent versions bind them. A copy a member made is readable.
+- The same file-sharing checks apply to attachments in a Run's `thread_message` to its own Thread (#1051). Reference provenance or a matching digest bars the file. An Area holding private originals, Reference text, or received files cannot attach files.
 - Who may upload is not changed by this decision.
 
 ## Amendment (2026-11-17)

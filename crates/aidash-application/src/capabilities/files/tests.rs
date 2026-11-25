@@ -881,11 +881,8 @@ async fn message_attachments_can_snapshot_saved_files_while_the_area_is_running(
 	);
 }
 
-/// A message with files from a receiving Area goes to another Tenant's Home, so the rule of a
-/// share to that Home holds (ADR 0139, ADR 0114): a Reference file, a copy of it as made and a
-/// file with its bytes stay; an edited copy goes. A local Area's message keeps its own rule.
 #[tokio::test]
-async fn a_receiving_areas_message_never_carries_a_reference_file_or_a_copy_as_made() {
+async fn message_files_enforce_reference_sharing_rules_for_local_and_receiving_areas() {
 	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
 	let record = Uuid::new_v4();
 	let file = |path: &str, digest: &str, kind, provenance| FileEntry {
@@ -909,42 +906,37 @@ async fn a_receiving_areas_message_never_carries_a_reference_file_or_a_copy_as_m
 		file("copy.txt", "reference", FileScope::Working, reference),
 		// The same bytes saved again carry no provenance of a Reference.
 		file("out/doc.txt", "reference", FileScope::Working, json!({})),
-		file("edited.txt", "edited", FileScope::Working, json!({})),
+		file("ordinary.txt", "ordinary", FileScope::Working, json!({})),
 	];
 	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
 	let area = scope.area.as_mut().unwrap();
 	area.manifest = json!(manifest);
-	area.constraints = json!([home]);
-	for path in ["references/doc.txt", "copy.txt", "out/doc.txt"] {
-		assert!(
-			matches!(
-				snapshot_message_files(&mut scope, &run, &[path.into()]).await,
-				Err(Error::NotFound(_))
-			),
-			"{path} stays"
-		);
+	for (destination, constraints) in [("local Thread", vec![]), ("remote Home", vec![home])] {
+		scope.area.as_mut().unwrap().constraints = json!(constraints);
+		for path in ["copy.txt", "out/doc.txt", "references/doc.txt"] {
+			assert!(
+				matches!(
+					snapshot_message_files(&mut scope, &run, &[path.into()]).await,
+					Err(Error::NotFound(_))
+				),
+				"{destination} must refuse {path}"
+			);
+		}
+		let sent = snapshot_message_files(&mut scope, &run, &["ordinary.txt".into()])
+			.await
+			.unwrap();
+		assert_eq!(sent[0].0.path, "ordinary.txt");
+		assert_eq!(sent[0].1, b"abcdefgh");
+
+		// Copying a Reference also adds a constraint that bars the Area from sending files.
+		let mut barred = constraints;
+		barred.push(json!({"kind":"reference","id":record}));
+		scope.area.as_mut().unwrap().constraints = json!(barred);
+		assert!(matches!(
+			snapshot_message_files(&mut scope, &run, &["ordinary.txt".into()]).await,
+			Err(Error::Forbidden)
+		));
 	}
-	let sent = snapshot_message_files(&mut scope, &run, &["edited.txt".into()])
-		.await
-		.unwrap();
-	assert_eq!(sent[0].0.path, "edited.txt");
-	// An Area that copied a Reference file, or holds private text or received files, sends none,
-	// as it shares none.
-	scope.area.as_mut().unwrap().constraints = json!([home, {"kind":"reference","id":record}]);
-	assert!(matches!(
-		snapshot_message_files(&mut scope, &run, &["edited.txt".into()]).await,
-		Err(Error::Forbidden)
-	));
-	// A local Area posts to its own Thread, where only the Reference file itself stays.
-	scope.area.as_mut().unwrap().constraints = json!([]);
-	let local = snapshot_message_files(&mut scope, &run, &["out/doc.txt".into()])
-		.await
-		.unwrap();
-	assert_eq!(local[0].0.path, "out/doc.txt");
-	assert!(matches!(
-		snapshot_message_files(&mut scope, &run, &["references/doc.txt".into()]).await,
-		Err(Error::NotFound(_))
-	));
 }
 
 #[tokio::test]
