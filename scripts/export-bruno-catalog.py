@@ -35,6 +35,8 @@ ADDITIONS = {
     ("POST", "/api/marketplace/packages/{key}/duty"): ("marketplace-install-duty", "marketplace/duty_templates"),
     ("POST", "/api/duties/{id}/template-update"): ("duty-template-update", "marketplace/duty_templates"),
     ("GET", "/api/threads/{id}/executions"): ("thread-executions", "execution/management"),
+    # A named successor takes a Duty over (#991, ADR 0145).
+    ("POST", "/api/duties/{id}/take-over"): ("duty-take-over", "workspaces/duties"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
     ("GET", "/api/authorization/{tenant}/catalog/requests/pending/count"): ("authorization-catalog-requests-pending-count", "policies"),

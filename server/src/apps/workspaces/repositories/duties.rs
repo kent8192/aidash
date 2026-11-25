@@ -366,6 +366,36 @@ pub(crate) async fn load(
 	record(tx, tenant, id, lock).await?.map(domain).transpose()
 }
 
+/// Associates the replacement with the already locked Duty so the Thread
+/// resource lookup can read the Duty ID before the final save.
+pub(crate) async fn bind_replacement_thread(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: &Duty,
+	deleted: Uuid,
+) -> Result<()> {
+	let updated = native::query(
+		&Query::update()
+			.table(Alias::new("duties"))
+			.value(Alias::new("thread_id"), Expr::value(duty.thread_id))
+			.value(
+				Alias::new("origin_thread_id"),
+				Expr::value(duty.origin_thread_id),
+			)
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(duty.id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(deleted)))
+			.and_where(Expr::col("revision").eq(duty.revision))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	if updated.rows_affected() != 1 {
+		return Err(Error::Conflict("duty revision changed".into()));
+	}
+	Ok(())
+}
+
 /// Saves a loaded Duty at the revision it was read at, and raises it.
 pub(crate) async fn save(
 	tx: &mut dyn TransactionExecutor,
@@ -496,6 +526,29 @@ pub(crate) async fn take_over_thread(
 	.execute(&mut *tx)
 	.await?;
 	Ok(())
+}
+
+/// The Threads among `threads` that were deleted.
+pub(crate) async fn deleted_threads(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	threads: &[Uuid],
+) -> Result<std::collections::HashSet<Uuid>> {
+	if threads.is_empty() {
+		return Ok(Default::default());
+	}
+	let deleted: Vec<Uuid> = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").is_in(threads.iter().copied().map(Expr::value)))
+			.and_where(Expr::col("deleted_at").is_not_null())
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut *tx)
+	.await?;
+	Ok(deleted.into_iter().collect())
 }
 
 /// Which Duties a list reads.

@@ -11,7 +11,7 @@ use crate::apps::marketplace::serializers::duty_templates::{
 use crate::apps::workspaces::{
 	repositories::{duties as duty_repository, duty_events},
 	serializers::duties::DutyView,
-	services::duties::Adapter,
+	services::duties::{self as duty_service, Adapter},
 };
 use crate::{
 	Error, Result,
@@ -44,14 +44,15 @@ fn subject(actor: &Actor) -> Result<&SubjectIdentity> {
 
 /// The person's own Duty and the kinds of its triggers.
 async fn own_duty(
-	store: &crate::store::Store,
+	f: &Federation,
 	access: &mut Access,
 	id: Uuid,
 ) -> Result<(Duty, Vec<TriggerKind>)> {
 	let duty = duty_app::own(
 		&mut Adapter {
 			access: &mut *access,
-			store,
+			store: &f.store,
+			scratch_policy: &f.config.scratch_policy,
 			now: Utc::now(),
 		},
 		id,
@@ -67,15 +68,16 @@ async fn own_duty(
 }
 
 /// The view of a Duty for the person acting.
-async fn view(store: &crate::store::Store, access: &mut Access, duty: Duty) -> Result<DutyView> {
+async fn view(f: &Federation, access: &mut Access, duty: Duty) -> Result<DutyView> {
 	let mut scope = Adapter {
 		access: &mut *access,
-		store,
+		store: &f.store,
+		scratch_policy: &f.config.scratch_policy,
 		now: Utc::now(),
 	};
 	let administers = scope.administers().await?;
 	let viewer = scope.subject().to_owned();
-	Ok(DutyView::new(duty, &viewer, administers))
+	duty_service::view(&mut scope, duty, &viewer, administers).await
 }
 
 /// The template one of the person's own Duties would publish as: its work,
@@ -84,7 +86,7 @@ async fn view(store: &crate::store::Store, access: &mut Access, duty: Duty) -> R
 pub(crate) async fn draft(f: &Federation, actor: Actor, id: Uuid) -> Result<Value> {
 	let mut access = Access::begin(&f.store, subject(&actor)?).await?;
 	let result = async {
-		let (duty, kinds) = own_duty(&f.store, &mut access, id).await?;
+		let (duty, kinds) = own_duty(f, &mut access, id).await?;
 		Ok(serde_json::to_value(Template::draft(
 			&duty.definition,
 			&kinds,
@@ -106,7 +108,7 @@ pub(crate) async fn publish(
 ) -> Result<Response> {
 	let mut access = storage::begin(&f.store, subject(&actor)?, true).await?;
 	let result = async {
-		let (duty, kinds) = own_duty(&f.store, &mut access, id).await?;
+		let (duty, kinds) = own_duty(f, &mut access, id).await?;
 		let template = Template::from_duty(
 			&duty.definition,
 			&kinds,
@@ -185,6 +187,7 @@ pub(crate) async fn install(
 					&mut Adapter {
 						access: &mut access,
 						store: &f.store,
+						scratch_policy: &f.config.scratch_policy,
 						now,
 					},
 					input.thread_id,
@@ -196,7 +199,7 @@ pub(crate) async fn install(
 			}
 		};
 		Ok(InstalledDuty {
-			duty: view(&f.store, &mut access, duty).await?,
+			duty: view(f, &mut access, duty).await?,
 			triggers_to_create: template.to_create(),
 		})
 	}
@@ -227,6 +230,7 @@ pub(crate) async fn update(
 			&mut Adapter {
 				access: &mut access,
 				store: &f.store,
+				scratch_policy: &f.config.scratch_policy,
 				now,
 			},
 			id,
@@ -234,7 +238,7 @@ pub(crate) async fn update(
 			Source::of(&version, None),
 		)
 		.await?;
-		view(&f.store, &mut access, duty).await
+		view(f, &mut access, duty).await
 	}
 	.await;
 	handoff(&f.store, access, result).await
