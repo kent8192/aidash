@@ -838,6 +838,18 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	.execute(&mut *tx)
 	.await
 	.unwrap();
+	let question = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key) \
+		 VALUES ($1, $2, $3, $4, 'QUESTION', 'Continue?', 'pending-question')",
+	)
+	.bind(question)
+	.bind(&tenant)
+	.bind(thread)
+	.bind(run)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
 	tx.commit().await.unwrap();
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
 	// A blocked mutation must keep deletion's policy fence until its effect commits.
@@ -959,6 +971,19 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	assert_eq!(
 		state().await,
 		("CANCELLED".into(), Some("tenant deleted".into()))
+	);
+	let closed: (Option<Value>, Option<String>) =
+		sqlx::query_as("SELECT response, answered_by FROM human_requests WHERE id = $1")
+			.bind(question)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+	assert_eq!(
+		closed,
+		(
+			Some(json!({"answered":false,"reason":"run_ended"})),
+			Some("system".into())
+		),
 	);
 	d.finish().await;
 }

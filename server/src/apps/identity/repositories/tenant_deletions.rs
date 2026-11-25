@@ -338,7 +338,13 @@ async fn cancel_stopped_runs(tx: &mut dyn TransactionExecutor, tenant: &str) -> 
 				Expr::value(RUN_REASON).into(),
 			],
 		))
+		.returning(["id"])
 		.build(PostgresQueryBuilder);
-	tx.execute(&sql, convert_values(values)).await?;
+	for row in tx.fetch_all(&sql, convert_values(values)).await? {
+		let run = row
+			.get("id")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		crate::apps::execution::models::HumanRequest::close_for_run(tx, run).await?;
+	}
 	Ok(())
 }

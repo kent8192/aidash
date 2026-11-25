@@ -11135,6 +11135,26 @@ async fn remote_question_closes_when_home_observes_cancelled_run(#[future(awt)] 
 		closed["response"],
 		json!({"answered":false,"reason":"run_ended"})
 	);
+	// A concurrent reader of the closed journal must not stall another poll.
+	let mut reader = p.a.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query(
+		"SELECT grant_id FROM authorization_remote_execution WHERE grant_id = $1 FOR SHARE",
+	)
+	.bind(p.grant)
+	.fetch_one(&mut *reader)
+	.await
+	.unwrap();
+	let list_path = format!("/api/tasks/{}/remote-executions", p.task);
+	let (status, body) = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		request(&p.aa, &p.token, "GET", &list_path, Value::Null),
+	)
+	.await
+	.expect("a repeated status poll tried to lock an already closed journal");
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body[0]["unavailable"], false, "{body}");
+	assert_eq!(body[0]["human_requests"][0]["response"], closed["response"]);
+	reader.rollback().await.unwrap();
 	let path = format!(
 		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
 		p.task, p.grant
@@ -11181,14 +11201,43 @@ async fn home_cancellation_closes_remote_questions_and_refuses_late_answers(
 	.await;
 	assert_eq!(status, 200, "{response}");
 	let control_path = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
-	let (status, body) = request(
-		&p.aa,
-		&p.token,
-		"POST",
-		&control_path,
-		json!({"action":"cancel"}),
-	)
-	.await;
+	let (status, body) = {
+		// Match the Task lock taken by the Node-deletion and flow-stop cancel.
+		let pool = &p.a.store.pool;
+		let mut blocker = pool.fixture_driver().begin().await.unwrap();
+		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		sqlx::query("SELECT id FROM tasks WHERE id = $1 FOR UPDATE")
+			.bind(p.task)
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		let cancel = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&control_path,
+			json!({"action":"cancel"}),
+		);
+		tokio::pin!(cancel);
+		tokio::select! {
+			result = &mut cancel => panic!("cancel did not wait for the Task: {result:?}"),
+			() = common::wait_for_blocked(pool, pid, 1) => {},
+		}
+		// The lifecycle transaction can still take the journal lock while
+		// the person's cancel waits for the Task.
+		sqlx::query(
+			"SELECT grant_id FROM authorization_remote_execution WHERE grant_id = $1 FOR UPDATE NOWAIT",
+		)
+		.bind(p.grant)
+		.fetch_one(&mut *blocker)
+		.await
+		.expect("cancel locked the journal while waiting for the Task");
+		blocker.rollback().await.unwrap();
+		cancel.await
+	};
 	assert_eq!(status, 200, "{body}");
 	let journal: Value = sqlx::query_scalar(
 		"SELECT human_requests FROM authorization_remote_execution WHERE grant_id = $1",
