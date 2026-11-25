@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use reinhardt::query::{
 	Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query, SelectStatement, UpdateStatement,
 };
+use std::time::Duration;
+use tokio::time::Instant;
 fn a(name: &str) -> Alias {
 	Alias::new(name)
 }
@@ -16,31 +18,41 @@ pub(crate) struct RecoveryCursors {
 	pub outage: Outage,
 }
 
-/// When this process last failed to reach the database (#786).
-///
-/// Every process meets an outage at the same time, and every lease held across
-/// it expires. For one lease period after the last such failure, recovery claims
-/// leave Runs that still name a previous owner alone, so a worker that kept
-/// running gets its own lease back instead of having its Run taken over.
+/// A streak of connection failures observed by this process (ADR 0123).
 #[derive(Default)]
-pub(crate) struct Outage(std::sync::Mutex<Option<std::time::Instant>>);
+pub(crate) struct Outage(std::sync::Mutex<Option<FailureStreak>>);
+
+struct FailureStreak {
+	first: Instant,
+	last: Instant,
+}
+
 impl Outage {
-	/// Remembers the failure if the database could not be reached.
-	pub fn note(&self, error: &crate::Error) {
-		if error.is_database_unreachable() {
-			*self
-				.0
-				.lock()
-				.unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+	/// A gap of at least one lease period lets a later failure start a new hold.
+	pub fn note(&self, error: &crate::Error, lease_seconds: i32) {
+		if !error.is_database_unreachable() {
+			return;
 		}
+		let mut streak = self
+			.0
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let now = Instant::now();
+		let period = Duration::from_secs(lease_seconds.max(0) as u64);
+		let first = streak
+			.as_ref()
+			.filter(|streak| now.duration_since(streak.last) < period)
+			.map_or(now, |streak| streak.first);
+		*streak = Some(FailureStreak { first, last: now });
 	}
-	/// Whether the last failure to reach the database is within one lease period.
+	/// A streak holds recoveries for at most one lease period from its first failure.
 	pub fn holds_recoveries(&self, lease_seconds: i32) -> bool {
 		self.0
 			.lock()
 			.unwrap_or_else(std::sync::PoisonError::into_inner)
-			.is_some_and(|last| {
-				last.elapsed() < std::time::Duration::from_secs(lease_seconds.max(0) as u64)
+			.as_ref()
+			.is_some_and(|streak| {
+				streak.first.elapsed() < Duration::from_secs(lease_seconds.max(0) as u64)
 			})
 	}
 }

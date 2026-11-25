@@ -44,7 +44,7 @@ impl Repository {
 			.store
 			.recovery_cursors
 			.outage
-			.note(&error);
+			.note(&error, self.lease_seconds());
 		self::error(error)
 	}
 }
@@ -67,25 +67,23 @@ impl ActivationRepository for Repository {
 	}
 	async fn claim_scope(&self) -> aidash_application::Result<Box<dyn ClaimScope>> {
 		let store = &self.harness.federation.store;
+		let tx = store
+			.pool
+			.begin(&TenancyScope::Deployment(
+				DeploymentScopeReason::ActivationClaim,
+			))
+			.await
+			.map_err(|e| self.noted(e))?
+			.into_executor()
+			.await
+			.map_err(|e| self.noted(e))?;
 		Ok(Box::new(scheduling::Scope {
 			capabilities: aidash_domain::run_state::PersistedCapability::supported(),
 			holds_recoveries: store
 				.recovery_cursors
 				.outage
 				.holds_recoveries(self.lease_seconds()),
-			tx: self
-				.harness
-				.federation
-				.store
-				.pool
-				.begin(&TenancyScope::Deployment(
-					DeploymentScopeReason::ActivationClaim,
-				))
-				.await
-				.map_err(|e| self.noted(e))?
-				.into_executor()
-				.await
-				.map_err(|e| self.noted(e))?,
+			tx,
 		}))
 	}
 	async fn recover(&self) -> aidash_application::Result<Option<(Run, Uuid)>> {
