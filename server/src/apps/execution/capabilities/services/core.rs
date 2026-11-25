@@ -73,6 +73,8 @@ impl Default for Profile {
 			// Deployment may raise the maximum to a day (#1009, ADR 0141).
 			operation_seconds: 600,
 			maximum_seconds: 600,
+			background_maximum_seconds:
+				aidash_domain::capabilities::operations::DEFAULT_BACKGROUND_MAXIMUM_SECONDS,
 			idle_seconds: 1800,
 			recovery_seconds: 7 * 86400,
 			grant_seconds: 3600,
@@ -149,6 +151,8 @@ impl Runtime {
 			|| !(16..=4096).contains(&profile.processes)
 			|| profile.operation_seconds == 0
 			|| !(1..=86400).contains(&profile.maximum_seconds)
+			|| !(1..=aidash_domain::capabilities::operations::BACKGROUND_MAXIMUM_SECONDS)
+				.contains(&profile.background_maximum_seconds)
 			|| !(1..=1800).contains(&profile.idle_seconds)
 			|| profile.recovery_seconds == 0
 			|| profile.recovery_seconds > 365 * 86400
