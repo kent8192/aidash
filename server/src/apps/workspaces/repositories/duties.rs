@@ -366,6 +366,36 @@ pub(crate) async fn load(
 	record(tx, tenant, id, lock).await?.map(domain).transpose()
 }
 
+/// Associates the replacement with the already locked Duty so the Thread
+/// resource lookup can read the Duty ID before the final save.
+pub(crate) async fn bind_replacement_thread(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: &Duty,
+	deleted: Uuid,
+) -> Result<()> {
+	let updated = native::query(
+		&Query::update()
+			.table(Alias::new("duties"))
+			.value(Alias::new("thread_id"), Expr::value(duty.thread_id))
+			.value(
+				Alias::new("origin_thread_id"),
+				Expr::value(duty.origin_thread_id),
+			)
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(duty.id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(deleted)))
+			.and_where(Expr::col("revision").eq(duty.revision))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	if updated.rows_affected() != 1 {
+		return Err(Error::Conflict("duty revision changed".into()));
+	}
+	Ok(())
+}
+
 /// Saves a loaded Duty at the revision it was read at, and raises it.
 pub(crate) async fn save(
 	tx: &mut dyn TransactionExecutor,

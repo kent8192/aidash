@@ -2097,6 +2097,94 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 	c.close().await;
 }
 
+/// The replacement owns the Duty's policy identity during recovery, and
+/// a refused recovery leaves the previous binding intact.
+#[rstest::rstest]
+#[case::edit(true)]
+#[case::resume(false)]
+#[tokio::test]
+async fn recovery_checks_permissions_on_the_replacements_duty_id(
+	#[future] capability_fixture: CoreFixture,
+	#[case] edit: bool,
+) {
+	let c = capability_fixture.await;
+	let duty = register(&c, thread(&c).await, definition("Weekly review", 604_800)).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let own = duty_thread(&c, id).await;
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query("UPDATE threads SET deleted_at = now() WHERE id = $1")
+		.bind(own)
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE duties SET halt = 'paused', halted_at = now() WHERE id = $1")
+		.bind(id)
+		.execute(driver)
+		.await
+		.unwrap();
+
+	let mut policy = c.policy.clone();
+	policy["policies"][0]["actions"] = json!([
+		"node.use",
+		"thread.create",
+		"thread.read",
+		"registry.read",
+		"agent.execute"
+	]);
+	let rules = policy["policies"].as_array_mut().unwrap();
+	rules.push(json!({
+		"id": "recover-this-duty",
+		"effect": "allow",
+		"subjects": {"ids": ["alice"]},
+		"actions": ["duty.create"],
+		"resources": {"kinds": ["thread"]},
+		"condition": {"op": "eq",
+			"left": {"source": "resource", "path": "/duty_id"},
+			"right": {"source": "literal", "value": id}},
+	}));
+	let (method, path, body) = if edit {
+		(
+			"PATCH",
+			format!("/api/duties/{id}"),
+			json!({"title": "Daily review"}),
+		)
+	} else {
+		("POST", format!("/api/duties/{id}/resume"), Value::Null)
+	};
+	let recover = || request(&c.app, &c.token, method, &path, body.clone());
+
+	// Without task.create, the replacement and its binding both roll back.
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
+	let thread_count =
+		|| sqlx::query_scalar::<_, i64>("SELECT count(*) FROM threads").fetch_one(driver);
+	let before = thread_count().await.unwrap();
+	let (status, refused) = recover().await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(thread_count().await.unwrap(), before);
+	assert_eq!(duty_thread(&c, id).await, own);
+	assert_eq!(halt(&c, id).await.as_deref(), Some("paused"));
+
+	// Grant both actions only on a Thread bearing this Duty's ID.
+	policy["policies"]
+		.as_array_mut()
+		.unwrap()
+		.last_mut()
+		.unwrap()["actions"] = json!(["duty.create", "task.create"]);
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let (status, recovered) = recover().await;
+	assert_eq!(status, 200, "{recovered}");
+	let replacement = duty_thread(&c, id).await;
+	assert_ne!(replacement, own);
+	assert_eq!(recovered["thread_id"], json!(replacement));
+	assert_eq!(recovered["thread_deleted"], false);
+	assert_eq!(
+		recovered["halt"],
+		if edit { json!("paused") } else { Value::Null }
+	);
+	assert_eq!(thread_count().await.unwrap(), before + 1);
+	c.close().await;
+}
+
 /// A deleted Thread can only be replaced in an admissible Scratch Space.
 #[rstest::rstest]
 #[case::image_approval_withdrawn(false, "execution policy")]

@@ -353,6 +353,17 @@ impl DutyScope for Adapter<'_> {
 		self.access.require(&resource, "thread.create").await?;
 		Ok(self.open_in(id, &place, definition, Some(&note)).await?)
 	}
+	async fn bind_replacement_thread(
+		&mut self,
+		duty: &Duty,
+		deleted: Uuid,
+	) -> aidash_application::Result<()> {
+		let tenant = tenant(self.access);
+		repository::bind_replacement_thread(&mut *self.access.tx, &tenant, duty, deleted).await?;
+		self.access.tx.forget_thread_owner(deleted);
+		self.access.tx.forget_thread_owner(duty.thread_id);
+		Ok(())
+	}
 	async fn insert(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
 		repository::insert(&mut *self.access.tx, &tenant, duty).await?;

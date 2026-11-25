@@ -155,6 +155,16 @@ impl DutyScope for Fake {
 		self.reopened.push((deleted, own, definition.title.clone()));
 		Ok(own)
 	}
+	async fn bind_replacement_thread(&mut self, duty: &Duty, deleted: Uuid) -> Result<()> {
+		let stored = self
+			.duties
+			.get_mut(&duty.id)
+			.ok_or_else(|| Error::NotFound("duty not found".into()))?;
+		assert_eq!(stored.thread_id, deleted);
+		stored.thread_id = duty.thread_id;
+		stored.origin_thread_id = duty.origin_thread_id;
+		Ok(())
+	}
 	async fn insert(&mut self, duty: &Duty) -> Result<()> {
 		self.duties.insert(duty.id, duty.clone());
 		Ok(())

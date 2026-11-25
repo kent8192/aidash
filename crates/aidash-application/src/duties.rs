@@ -84,6 +84,9 @@ pub trait DutyScope: Send {
 		deleted_at: DateTime<Utc>,
 		definition: &Definition,
 	) -> Result<Uuid>;
+	/// Stages a replacement Thread binding for the permission checks in this
+	/// transaction. The final save raises the Duty's revision.
+	async fn bind_replacement_thread(&mut self, duty: &Duty, deleted: Uuid) -> Result<()>;
 	async fn insert(&mut self, duty: &Duty) -> Result<()>;
 	/// Loads and locks a Duty for change.
 	async fn load_for_update(&mut self, id: Uuid) -> Result<Duty>;
@@ -411,7 +414,8 @@ async fn replace_deleted_thread(
 	let deleted = duty.thread_id;
 	duty.thread_id = scope.reopen_thread(deleted, deleted_at, definition).await?;
 	duty.origin_thread_id.get_or_insert(deleted);
-	Ok(())
+	// The replacement must bear the Duty ID when policy checks its Thread.
+	scope.bind_replacement_thread(duty, deleted).await
 }
 
 /// Takes over a Duty whose Requester left, as its named successor's own
