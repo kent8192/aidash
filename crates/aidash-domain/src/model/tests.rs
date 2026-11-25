@@ -410,3 +410,30 @@ fn explicit_mode_follows_the_slug_and_the_declaration(
 fn metric_family_stays_bounded(#[case] model_id: &str, #[case] family: &str) {
 	assert_eq!(cached_model(model_id, None).metric_family(), family);
 }
+
+/// #1122: a memory role call lowers a configured reasoning effort to
+/// `minimal`, so its typed JSON fits the model's output limit, and keeps an
+/// unset effort and `none` as they are. The output limit itself is untouched.
+#[rstest::rstest]
+#[case::unset(None, None)]
+#[case::none(Some(ReasoningEffort::None), Some(ReasoningEffort::None))]
+#[case::minimal(Some(ReasoningEffort::Minimal), Some(ReasoningEffort::Minimal))]
+#[case::low(Some(ReasoningEffort::Low), Some(ReasoningEffort::Minimal))]
+#[case::high(Some(ReasoningEffort::High), Some(ReasoningEffort::Minimal))]
+#[case::max(Some(ReasoningEffort::Max), Some(ReasoningEffort::Minimal))]
+fn memory_roles_reason_at_most_minimally(
+	#[case] configured: Option<ReasoningEffort>,
+	#[case] expected: Option<ReasoningEffort>,
+) {
+	// Arrange
+	let mut config = plan_model(&["text"]);
+	config.reasoning_effort = configured;
+	config.max_output_tokens = Some(1024);
+
+	// Act
+	let role = config.for_memory_role();
+
+	// Assert
+	assert_eq!(role.reasoning_effort, expected);
+	assert_eq!(role.output_token_limit(), 1024);
+}

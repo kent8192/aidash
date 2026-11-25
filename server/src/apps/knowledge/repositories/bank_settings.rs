@@ -8,8 +8,9 @@
 //! The default bounds are 64 live Units, 32 candidates, 8 recall results,
 //! 8192 bytes per Unit, 16384 input bytes, 16 entities/evidence/links per Unit,
 //! 3 graph hops, 64 graph visits, and 8192 context tokens. A model operation
-//! has at most 4 calls, 16384 tokens, 1,000,000 microcurrency, 2 retries, and
-//! 30 seconds per call. Oldest eligible Units are evicted at the live cap;
+//! has at most 4 calls, 65536 tokens, 1,000,000 microcurrency, 2 retries, and
+//! 180 seconds per call, so a reasoning model's call finishes and a failed
+//! attempt can be retried (#1122). Oldest eligible Units are evicted at the live cap;
 //! Units that the current Run cannot read are protected from its eviction, so
 //! admission fails if too few Units are eligible. Research identities are
 //! retained independently of Journal contents to enforce expiry and revocation.

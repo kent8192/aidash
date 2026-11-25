@@ -122,7 +122,7 @@ pub const EXPLICIT_CACHE_PREFIXES: &[&str] = &["anthropic/", "openai/gpt-5.6", "
 const EXPLICIT_ONLY_CACHE_PREFIXES: &[&str] = &["openai/gpt-5.6", "openai/gpt-6"];
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
 	None,
@@ -651,6 +651,23 @@ impl ModelConfig {
 			));
 		}
 		Ok(Duration::from_secs(u64::from(seconds)))
+	}
+
+	/// The configuration a memory role call (extraction, reflection,
+	/// observation) uses. Its typed JSON follows the model's reasoning inside
+	/// the same output limit, and the administrator's limit is a hard cap for a
+	/// BYOK route. A configured effort above `minimal` is lowered to `minimal`:
+	/// at `low`, reasoning alone used up to 5,577 of 8,192 output tokens of one
+	/// extraction and the JSON was cut off or the call outlived its deadline
+	/// (#1122). An unset effort and `none` are left as they are.
+	pub fn for_memory_role(&self) -> ModelConfig {
+		let mut config = self.clone();
+		if let Some(effort) = config.reasoning_effort
+			&& !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal)
+		{
+			config.reasoning_effort = Some(ReasoningEffort::Minimal);
+		}
+		config
 	}
 
 	/// Preserve the historical output allowance for model versions registered

@@ -888,16 +888,14 @@ impl Models {
 		purpose: MaintenancePurpose,
 	) -> Result<Produced<T>> {
 		let config: ModelConfig =
-			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?;
+			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?
+				.for_memory_role();
 		let input = instruction
 			.len()
 			.checked_add(serde_json::to_string(&context)?.len())
 			.ok_or_else(|| Error::Invalid("memory input overflow".into()))?;
-		let output = config
-			.max_output_tokens
-			.ok_or_else(|| Error::Invalid("memory role requires an explicit output limit".into()))?
-			as usize;
-		let output = output.min(allowance.tokens.saturating_sub(input));
+		let output =
+			(config.output_token_limit() as usize).min(allowance.tokens.saturating_sub(input));
 		if output == 0 {
 			return Err(Error::Invalid(
 				"memory model input leaves no response allowance".into(),
