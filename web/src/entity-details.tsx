@@ -1,6 +1,7 @@
 import { Badge as Tag } from "./components/ui/badge";
 import { Facts, Hint } from "./components/patterns";
 import { ArrowUpRight } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import type { Entry, Run, State, Task } from "./types";
 import { Badge, useI18n } from "./ui";
 import { RecordView } from "./record-view";
@@ -14,10 +15,9 @@ import {
 import { approvalState } from "./catalog-approval-model";
 import { ModelSource } from "./model-source";
 import { toolReplay } from "./tool-declaration";
-import {
-  boundReferences,
-  ReferenceRevocations,
-} from "./capabilities/reference-revoke";
+import { ReferenceRevocations } from "./capabilities/reference-revoke";
+import { registrySourceRevocations } from "./generated/aidash";
+import { useNodes } from "./nodes";
 
 type Selection =
   | { kind: "entityDetail"; entity: Entry }
@@ -41,10 +41,32 @@ export function EntityDetails({
   const version = versions.isError
     ? undefined
     : versions.data?.find((value) => same(value.entry));
+  const visible = data.registry.find(same);
+  const subject = data.access.kind === "subject" ? data.access : null;
+  const node = useNodes().nodes.find((node) => node.address === data.node.id);
+  const revocations = useQuery({
+    queryKey: [
+      "source-reference-revocations",
+      subject?.tenant,
+      subject?.subject,
+      node?.name,
+      entity.id,
+      entity.version,
+    ],
+    queryFn: ({ signal }) =>
+      registrySourceRevocations(
+        encodeURIComponent(entity.id),
+        encodeURIComponent(entity.version),
+        { node: node!.name },
+        { signal },
+      ),
+    enabled:
+      subject !== null && node !== undefined && visible?.kind === "source",
+  });
   // Re-resolve on every authorized snapshot instead of retaining the modal's
   // old metadata.
   const current =
-    data.registry.find(same) ??
+    visible ??
     (version && ["unapproved", "withdrawn"].includes(approvalState(version))
       ? version.entry
       : undefined);
@@ -122,7 +144,16 @@ export function EntityDetails({
         />
       )}
       {current.kind === "source" && (
-        <ReferenceRevocations references={boundReferences(current.config)} />
+        <ReferenceRevocations
+          key={JSON.stringify([data.node.id, current.id, current.version])}
+          references={
+            visible
+              ? revocations.isError
+                ? undefined
+                : revocations.data
+              : version?.reference_revocations
+          }
+        />
       )}
       <section className="grid min-w-0 gap-2 border-t border-border pt-4">
         <h4 className="text-[13px] font-semibold text-foreground">

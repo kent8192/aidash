@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { setup } from "./collaboration-fixture";
+import { fixture, setup } from "./collaboration-fixture";
 import {
   registryVersion,
   routeRegistryVersions,
@@ -59,6 +59,117 @@ const registry = [
   entry(6, "model", "", ""),
   entry(7, "model", "Research model", "調査モデル"),
 ];
+
+test("Open Source details offer revoke when Registry versions become forbidden", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { subject: true });
+  const allowed = {
+    reference_id: "019b0000-0000-7000-8000-000000000001",
+    path: "allowed.md",
+  };
+  const denied = {
+    reference_id: "019b0000-0000-7000-8000-000000000002",
+    path: "denied.md",
+  };
+  const source = {
+    ...entry(0, "source", "Project references"),
+    config: {
+      schema_version: 1,
+      source: {
+        adapter: "reference_attachments",
+        references: [allowed, denied].map((file) => ({
+          ...file,
+          digest: "a".repeat(64),
+        })),
+      },
+    },
+  };
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: { ...fixture(), access: tenantSubject, registry: [source] },
+    }),
+  );
+  let mayReadCollection = true;
+  let mayRevoke = false;
+  const hints = () => [
+    mayRevoke
+      ? { ...allowed, may_revoke: true, revision: 7 }
+      : { ...allowed, may_revoke: false },
+    { ...denied, may_revoke: false },
+  ];
+  await page.route(
+    (url) => url.pathname === "/api/registry/versions",
+    (route) =>
+      mayReadCollection
+        ? route.fulfill({
+            json: {
+              versions: [
+                registryVersion(source, { reference_revocations: hints() }),
+              ],
+              next_offset: null,
+            },
+          })
+        : route.fulfill({ status: 403, json: {} }),
+  );
+  const hintsPath = `/api/registry/${source.id}/${source.version}/reference-revocations`;
+  await page.route(
+    (url) => url.pathname === hintsPath,
+    (route) => route.fulfill({ json: hints() }),
+  );
+  const probes: string[] = [];
+  await page.route("**/api/references/*/revocation", (route) => {
+    probes.push(route.request().url());
+    return route.fulfill({ status: 404, json: {} });
+  });
+  const revokePath = `**/api/references/${allowed.reference_id}/revoke`;
+  await page.route(revokePath, (route) => {
+    mayRevoke = false;
+    return route.fulfill({
+      json: { reference_id: allowed.reference_id, status: "revoked" },
+    });
+  });
+
+  await page.goto("/settings?view=registry");
+  await page.getByRole("button", { name: /Project references/ }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "Project references", exact: true }),
+  ).toBeVisible();
+  const allowedRow = dialog
+    .getByRole("listitem")
+    .filter({ hasText: "allowed.md" });
+  const deniedRow = dialog
+    .getByRole("listitem")
+    .filter({ hasText: "denied.md" });
+  await expect(deniedRow).toContainText("Cannot revoke");
+  await expect(allowedRow).toContainText("Cannot revoke");
+  expect(probes).toEqual([]);
+  mayReadCollection = false;
+  mayRevoke = true;
+  const collectionDenied = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/registry/versions",
+  );
+  await page.clock.fastForward(2000);
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("visibilitychange")),
+  );
+  expect((await collectionDenied).status()).toBe(403);
+  await expect(
+    dialog.getByRole("button", { name: "Revoke", exact: true }),
+  ).toHaveCount(1);
+  await allowedRow.getByRole("button", { name: "Revoke", exact: true }).click();
+  const submitted = page.waitForRequest(revokePath);
+  const refreshed = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === hintsPath,
+  );
+  await allowedRow.getByRole("button", { name: "Confirm revoke" }).click();
+  expect((await submitted).postDataJSON()).toEqual({ expected_revision: 7 });
+  expect((await refreshed).ok()).toBe(true);
+  await expect(allowedRow).toContainText("Cannot revoke");
+  expect(probes).toEqual([]);
+});
 
 for (const locale of ["en-US", "ja-JP"]) {
   test(`registry labels use names while submitting IDs in ${locale}`, async ({

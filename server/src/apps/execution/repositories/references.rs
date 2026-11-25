@@ -34,7 +34,44 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
+
+fn reference_resource(access: &Access, id: Uuid, owner: &str) -> aidash_domain::policy::Resource {
+	access.resource("reference", id, json!({"owner": owner}))
+}
+
+/// Read the current revisions for display. The revoke request locks the record
+/// and checks both the policy and the revision again.
+pub(crate) async fn revocation_revisions(
+	access: &mut Access,
+	ids: &[Uuid],
+) -> NativeResult<BTreeMap<Uuid, i64>> {
+	if ids.is_empty() {
+		return Ok(BTreeMap::new());
+	}
+	let rows: Vec<(Uuid, String, i64)> = crate::database::native::query_as(
+		&Query::select()
+			.columns(["id", "owner", "revision"].map(Alias::new))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col("tenant").eq(Expr::value(&access.identity.tenant)))
+			.and_where(Expr::col("kind").eq("reference"))
+			.and_where(Expr::col("id").is_in(ids.iter().copied().map(Expr::value)))
+			.and_where(Expr::col("state").is_not_in(["revoked", "expired"]))
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["id", "owner", "revision"])
+	.fetch_all(&mut **access.tx)
+	.await?;
+	let mut revisions = BTreeMap::new();
+	for (id, owner, revision) in rows {
+		let resource = reference_resource(access, id, &owner);
+		if access.decide_hint(&resource, "reference.delete").await? {
+			revisions.insert(id, revision);
+		}
+	}
+	Ok(revisions)
+}
 
 /// Reconciling references reaches every Tenant's capability records.
 const MAINTENANCE: TenancyScope =
@@ -329,10 +366,7 @@ impl ReferenceScope for Scope<'_> {
 	async fn require(&mut self, id: Uuid, owner: &str, action: &str) -> Result<()> {
 		let access = self.authority.get_mut();
 		access
-			.require(
-				&access.resource("reference", id, json!({"owner":owner})),
-				action,
-			)
+			.require(&reference_resource(access, id, owner), action)
 			.await
 			.map_err(Into::into)
 	}
