@@ -8,10 +8,9 @@ fn idle_and_daily_budgets_have_bounded_positive_values() {
 	let mut settings = ScratchSettings::default();
 	assert_eq!(settings.daily_sent_bytes, None);
 	assert_eq!(settings.daily_received_bytes, None);
-	let mut json = serde_json::to_value(&settings).unwrap();
-	let fields = json.as_object_mut().unwrap();
-	fields.remove("daily_sent_bytes");
-	fields.remove("daily_received_bytes");
+	let json = serde_json::to_value(&settings).unwrap();
+	assert!(json.get("daily_sent_bytes").is_none());
+	assert!(json.get("daily_received_bytes").is_none());
 	assert_eq!(
 		serde_json::from_value::<ScratchSettings>(json).unwrap(),
 		settings

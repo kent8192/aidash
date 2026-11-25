@@ -84,7 +84,9 @@ pub struct ScratchSettings {
 	pub cpu_millis: u32,
 	pub memory_bytes: u64,
 	pub docker_enabled: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub daily_sent_bytes: Option<u64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub daily_received_bytes: Option<u64>,
 }
 
