@@ -1482,8 +1482,8 @@ impl WorkerAuthority {
 				&mut access,
 				run,
 				domain.clone(),
-				pending.clone(),
-				previews::Dispatch::failed(String::new()),
+				pending.id,
+				previews::Dispatch::NotDispatched,
 			)
 			.await;
 			let started = access.finish(result).await?;
@@ -1507,13 +1507,11 @@ impl WorkerAuthority {
 		)
 		.await
 		{
-			Ok(host) => previews::Dispatch {
-				pod_host: Some(host),
-				startup_log: String::new(),
+			Ok(host) => previews::Dispatch::Serving {
+				pod_host: host,
 				started_at: chrono::Utc::now(),
-				failure: None,
 			},
-			Err(error) => previews::Dispatch::failed(error.to_string()),
+			Err(_) => previews::Dispatch::Failed,
 		};
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
@@ -1522,7 +1520,7 @@ impl WorkerAuthority {
 			&mut access,
 			run,
 			domain.clone(),
-			pending.clone(),
+			pending.id,
 			dispatched,
 		)
 		.await;

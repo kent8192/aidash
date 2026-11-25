@@ -1,4 +1,5 @@
 """Scheduling primitives for commands sharing an Execution Pod."""
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, RLock
 
@@ -511,6 +512,7 @@ class ExecutionPodController:
         self.queues = {}
         self.futures = {}
         self.process_proxies = {}
+        self.preview_starts = Counter()
         self.mcp_locks = {}
         self.left_result_keys = {}
         self.live_output = {}
@@ -543,9 +545,12 @@ class ExecutionPodController:
                         continue
                     try:
                         record = json.loads(path.read_bytes())
-                        space = record['scratch_space_id']
+                        space = record.get('scratch_space_id')
                         if not isinstance(space, str) or not space:
-                            raise ValueError('invalid journal Space identity')
+                            # Preview stops can arrive before the Runner knows their Space.
+                            if not (directory == 'execution-v2' and space is None
+                                    and record.get('kind') == 'preview' and record.get('status') == 'refused'):
+                                raise ValueError('invalid journal Space identity')
                         index.setdefault(space, set()).add(path.name)
                         if directory == 'execution-v2':
                             self.journal_metadata[path.name] = self._prune_metadata(record)
@@ -598,7 +603,8 @@ class ExecutionPodController:
                     retention = REFUSAL_RETENTION_SECONDS if record.get('status') == 'refused' else JOURNAL_RETENTION_SECONDS
                     if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
                             or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
-                            or record.get('stop_pending') or record.get('operation_id') in self.futures):
+                            or record.get('stop_pending') or record.get('operation_id') in self.futures
+                            or record.get('operation_id') in self.preview_starts):
                         continue
                     # A Python session pointer cannot outlive the record it names.
                     run = record.get('run_id')
@@ -2431,10 +2437,39 @@ print(json.dumps(r))'''
             lock.release()
 
     def stop_preview(self, operation_id):
-        """Stop a Live preview; another kind of Background process is refused."""
-        if self._read_command(operation_id).get('kind') != 'preview':
-            raise ExecutionPodError('command_not_found', 'Live preview does not exist')
-        return self.stop_background(operation_id)
+        """Stop an admitted Live preview or durably refuse its future admission."""
+        import time
+        from control import save
+
+        if not isinstance(operation_id, str) or operation_id.endswith('.left'):
+            raise ValueError('canonical operation UUID required')
+        path = self._command_path(operation_id)
+        self._ensure_journal_index()
+        while True:
+            # Use the same lock as the final submit check and journal write, so
+            # a start still looking up its Pod cannot slip past a successful stop.
+            with self.lock:
+                try:
+                    record = self._read_command(operation_id)
+                except ExecutionPodError as error:
+                    if error.code != 'command_not_found':
+                        raise
+                    record = {'operation_id': operation_id, 'kind': 'preview',
+                              'status': 'refused', 'terminal_at': time.time()}
+                    save(path, record)
+                    self.journal_index.setdefault(None, set()).add(path.name)
+                    self.journal_metadata[path.name] = self._prune_metadata(record)
+                if record.get('kind') != 'preview':
+                    raise ExecutionPodError('command_conflict', 'Operation ID does not belong to a Live preview')
+                if record['status'] == 'refused':
+                    return {'operation_id': operation_id, 'status': 'cancelled', 'outcome': 'not_started'}
+            try:
+                return self.stop_background(operation_id)
+            except ExecutionPodError as error:
+                if error.code != 'command_not_found':
+                    raise
+                # Cleanup removed the record between reads. Recheck and fence
+                # a future submission before acknowledging the stop.
 
     def stop_mcp(self, operation_id):
         if self._read_command(operation_id).get('kind') != 'mcp_session':
@@ -2451,6 +2486,22 @@ print(json.dumps(r))'''
         return self.stop_run(scratch_space_id, run_id, kinds=('mcp_session',))
 
     def start_preview(self, request):
+        operation = request['operation_id']
+        if not isinstance(operation, str):
+            raise ValueError('canonical operation UUID required')
+        # A delayed handler must see its refusal even if retention expires
+        # while it is still in preflight or waiting for command admission.
+        with self.lock:
+            self.preview_starts[operation] += 1
+        try:
+            return self._start_preview(request)
+        finally:
+            with self.lock:
+                self.preview_starts[operation] -= 1
+                if not self.preview_starts[operation]:
+                    del self.preview_starts[operation]
+
+    def _start_preview(self, request):
         import base64
         import ipaddress
         import time
