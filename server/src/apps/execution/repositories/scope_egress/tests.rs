@@ -167,6 +167,171 @@ fn admitted(outcome: ExternalAdmission) -> Admission {
 #[rstest::rstest]
 #[tokio::test]
 #[timeout(std::time::Duration::from_secs(180))]
+async fn host_debit_replays_a_committed_reservation_after_its_answer_is_lost(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let scope = ScopeSettings {
+		run_id: None,
+		id: ScopeId {
+			tenant: "acme".into(),
+			node: tenant_roots::fixture_node_name("acme").to_string(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget {
+			sent_bytes: 100,
+			received_bytes: 100,
+		},
+		anomaly: AnomalyRule::default(),
+		operator_allows_all: false,
+		tunnel_limits: Default::default(),
+	};
+	let authority = Arc::new(Authority(scope.clone()));
+	let durable = DurableScopes::new(federation.store.clone(), authority.clone());
+	durable.resolve("credential").await.unwrap();
+	let day = Utc::now().date_naive();
+	let reservation = Uuid::new_v4();
+	// Discard the committed call's answer and retry through a fresh store adapter.
+	durable
+		.debit(&scope, Direction::Received, 30, day, reservation)
+		.await
+		.unwrap();
+	let retry = DurableScopes::new(federation.store.clone(), authority);
+	retry
+		.debit(&scope, Direction::Received, 30, day, reservation)
+		.await
+		.unwrap();
+	assert_eq!(
+		received_bytes(&federation.store, &scope.id, day, "").await,
+		30
+	);
+	assert!(matches!(
+		retry
+			.debit(&scope, Direction::Received, 31, day, reservation)
+			.await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	retry
+		.debit(&scope, Direction::Received, 30, day, Uuid::new_v4())
+		.await
+		.unwrap();
+	assert_eq!(
+		received_bytes(&federation.store, &scope.id, day, "").await,
+		60
+	);
+}
+
+#[rstest::rstest]
+#[case::node(false)]
+#[case::tenant(true)]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn scope_purge_erases_a_daily_row_committed_while_purge_waits(
+	#[future] database: DatabaseFixture,
+	#[case] whole_tenant: bool,
+) {
+	use crate::apps::identity::services::{node_purge, tenant_purge};
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	let store = &federation.store;
+	let pool = store.pool.fixture_driver();
+	tenant_roots::tenant_scope(store, "acme").await;
+	let node = tenant_roots::second_node_in(pool, "acme").await;
+	let scope = ScopeId {
+		tenant: "acme".into(),
+		node: node.to_string(),
+		scratch_space: Uuid::new_v4(),
+	};
+	let day = Utc::now().date_naive();
+	sqlx::query("INSERT INTO egress_scope_state (scope_id, tenant, node) VALUES ($1, 'acme', $2)")
+		.bind(scope.scratch_space)
+		.bind(node.as_str())
+		.execute(pool)
+		.await
+		.unwrap();
+	if whole_tenant {
+		sqlx::query("INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_step, purge_failures) VALUES ($1, 'acme', now() - interval '31 days', 'deployment_administrator', now() - interval '1 day', 'rows', 0)")
+			.bind(Uuid::new_v4()).execute(pool).await.unwrap();
+	} else {
+		sqlx::query("INSERT INTO node_deletions (id, tenant, node, deleted_at, deleted_by_kind, purge_after, purge_step, purge_failures) VALUES ($1, 'acme', $2, now() - interval '31 days', 'deployment_administrator', now() - interval '1 day', 'rows', 0)")
+			.bind(Uuid::new_v4()).bind(node.as_str()).execute(pool).await.unwrap();
+	}
+
+	// Hold the same state lock as charge and write the day's first row. Keep
+	// the charge uncommitted until PostgreSQL reports purge waiting on it.
+	let mut charge = begin_timed(&store.pool, "acme").await.unwrap();
+	let _ = locked_state_now(&mut charge, &scope).await.unwrap();
+	let mut row = daily(&mut charge, &scope, day, "").await.unwrap();
+	row.received_bytes = 1;
+	ScopeDaily::objects()
+		.save_with_executor(&mut *charge, &row)
+		.await
+		.unwrap();
+	let (sql, values) = Query::select()
+		.expr_as(
+			reinhardt::query::Expr::cust("pg_backend_pid()"),
+			Alias::new("pid"),
+		)
+		.build(PostgresQueryBuilder);
+	let pid: i32 = charge
+		.fetch_one(&sql, convert_values(values))
+		.await
+		.unwrap()
+		.get("pid")
+		.unwrap();
+
+	let purge = async {
+		if whole_tenant {
+			let deletion = tenant_purge::claim(store).await.unwrap().pop().unwrap();
+			tenant_purge::purge_tenant(store, deletion).await.unwrap();
+		} else {
+			let deletion = node_purge::claim(store).await.unwrap().pop().unwrap();
+			node_purge::purge_node(store, deletion).await.unwrap();
+		}
+	};
+	let finish_charge = async {
+		tokio::time::timeout(std::time::Duration::from_secs(30), async {
+			while !sqlx::query_scalar::<_, bool>(
+				"SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+			)
+			.bind(pid)
+			.fetch_one(pool)
+			.await
+			.unwrap()
+			{
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		})
+		.await
+		.expect("purge must wait for the in-flight charge");
+		charge.commit().await.unwrap();
+	};
+	tokio::join!(purge, finish_charge);
+	for table in ["egress_scope_daily", "egress_scope_state"] {
+		let remaining: i64 =
+			sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE scope_id = $1"))
+				.bind(scope.scratch_space)
+				.fetch_one(pool)
+				.await
+				.unwrap();
+		assert_eq!(remaining, 0, "{table} survives purge");
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
 async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	#[future] database: DatabaseFixture,
 ) {
@@ -276,8 +441,8 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	other.commit().await.unwrap();
 	let day = Utc::now().date_naive();
 	let (left, right) = tokio::join!(
-		durable.debit(&scope, Direction::Sent, 8, day),
-		durable.debit(&scope, Direction::Sent, 8, day)
+		durable.debit(&scope, Direction::Sent, 8, day, uuid::Uuid::new_v4()),
+		durable.debit(&scope, Direction::Sent, 8, day, uuid::Uuid::new_v4())
 	);
 	assert_ne!(
 		left.is_ok(),
@@ -286,7 +451,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	);
 	assert!(
 		durable
-			.debit(&scope, Direction::Sent, 3, day)
+			.debit(&scope, Direction::Sent, 3, day, uuid::Uuid::new_v4())
 			.await
 			.is_err()
 	);
@@ -295,7 +460,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		.await
 		.unwrap();
 	durable
-		.debit(&scope, Direction::Sent, 2, day)
+		.debit(&scope, Direction::Sent, 2, day, uuid::Uuid::new_v4())
 		.await
 		.unwrap();
 	let first = admitted(
@@ -460,7 +625,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	.unwrap();
 	assert_eq!(events, 1);
 	durable
-		.debit(&scope, Direction::Sent, 1, day)
+		.debit(&scope, Direction::Sent, 1, day, uuid::Uuid::new_v4())
 		.await
 		.unwrap();
 	for _ in 0..2 {
@@ -1056,7 +1221,7 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 	.await
 	.unwrap();
 	assert!(matches!(
-		durable.debit(&open, Direction::Received, 1, day).await,
+		durable.debit(&open, Direction::Received, 1, day, uuid::Uuid::new_v4()).await,
 		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
 	));
 
