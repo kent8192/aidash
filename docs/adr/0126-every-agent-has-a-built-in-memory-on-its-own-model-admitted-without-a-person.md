@@ -28,3 +28,13 @@ Each fact names its Run and Context Journal range. A later Run reads details bac
 ## Amendment (2026-11-17)
 
 A Run that a Remote Grant started recalls and writes memory through its Home (ADR 0139). Recall reads the Home Workspace's published bank and the Agent's participant bank there, as the Run's starting context already did, and writes go only to the participant bank, so nothing the Run learns stays on the receiving Node and it never writes the Home's shared memory directly.
+
+## Amendment (2026-11-23)
+
+Task-start recall ranks facts that match any literal keyword from the Task title and description.
+Unicode word segmentation also supplies keywords for prose without spaces, such as Japanese.
+The Thread owns the bank by default under ADR 0140. Tenant-wide sharing also considers the
+same Agent's facts in other authorized Threads. The number of distinct matching words determines
+priority across eligible banks. Recall looks past oversized facts to fit up to eight facts
+in 1024 UTF-8 bytes of JSON, including their Unit IDs, revisions and provenance. Each inference
+reloads the selected revisions under current authority.

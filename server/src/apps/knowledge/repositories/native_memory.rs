@@ -1,11 +1,12 @@
 //! Unit changes, exact-request receipts and dependent fences share one authority transaction.
 use super::{access::Lease, units};
 use crate::{Error, Result, database::native};
+use aidash_application::ports::memory::KeywordQuery;
 use aidash_domain::memory::*;
 use chrono::{SubsecRound, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, Func, LockType, OnConflict, Order, PostgresQueryBuilder,
-	Query, QueryStatementBuilder, SimpleExpr,
+	Alias, ArrayType, ColumnRef, Expr, ExprTrait, Func, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr, Value,
 };
 use std::collections::{BTreeSet, VecDeque};
 
@@ -1347,34 +1348,72 @@ pub(crate) async fn recall_including_dormant(
 pub(crate) async fn keyword(
 	lease: &mut Lease<'_>,
 	bank: &Bank,
-	text: &str,
+	query: KeywordQuery<'_>,
 	allowed: &[Uuid],
 	limit: usize,
-) -> Result<Vec<Uuid>> {
+) -> Result<Vec<(Uuid, i32)>> {
 	if allowed.is_empty() {
 		return Ok(Vec::new());
 	}
 	let bank_id = bank_id(lease, bank, false).await?.ok_or(Error::Forbidden)?;
-	let expression = SimpleExpr::CustomWithExpr(
-		"? &@~ ?".into(),
-		vec![Expr::col("text").into(), Expr::value(text).into()],
-	);
-	native::query_scalar(
+	let (expression, matched_terms, score) = match query {
+		KeywordQuery::Text(text) => (
+			SimpleExpr::CustomWithExpr(
+				"? &@~ ?".into(),
+				vec![Expr::col("text").into(), Expr::value(text).into()],
+			),
+			Expr::value(0),
+			Expr::cust("pgroonga_score(tableoid, ctid)"),
+		),
+		KeywordQuery::Any(terms) => {
+			if terms.is_empty() {
+				return Ok(Vec::new());
+			}
+			let keywords = Expr::value(Value::Array(
+				ArrayType::String,
+				Some(Box::new(terms.iter().copied().map(Value::from).collect())),
+			));
+			// Each distinct term contributes once even when its text repeats.
+			let matched_terms = terms.iter().fold(Expr::value(0), |score, term| {
+				let matched = SimpleExpr::CustomWithExpr(
+					"? &@ ?".into(),
+					vec![Expr::col("text").into(), Expr::value(*term).into()],
+				);
+				score
+					.add(Expr::case().when(matched, 1).else_result(0))
+					.into()
+			});
+			(
+				// PGroonga interprets each array element as a literal keyword.
+				SimpleExpr::CustomWithExpr(
+					"? &@| ?::text[]".into(),
+					vec![Expr::col("text").into(), keywords.into()],
+				),
+				matched_terms,
+				Expr::col("matched_terms"),
+			)
+		}
+	};
+	let rows = native::query(
 		&Query::select()
 			.column(Alias::new("id"))
+			.expr_as(matched_terms, Alias::new("matched_terms"))
 			.from(Alias::new("memory_units"))
 			.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
 			.and_where(Expr::col("id").is_in(allowed.iter().copied().map(Expr::value)))
 			.and_where(expression)
 			.and_where(Expr::col("deleted").eq(false))
 			.and_where(Expr::col("stale").eq(false))
-			.order_by_expr(Expr::cust("pgroonga_score(tableoid, ctid)"), Order::Desc)
+			.order_by_expr(score, Order::Desc)
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(limit as u64)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&mut **lease.tx())
-	.await
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	rows.into_iter()
+		.map(|row| Ok((row.try_get("id")?, row.try_get("matched_terms")?)))
+		.collect()
 }
 
 /// Negative identities and audit receipts have an explicit finite bank capacity.

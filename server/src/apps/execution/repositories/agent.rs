@@ -1347,18 +1347,18 @@ impl ExecutionEnvironment for Environment<'_> {
 			lease.finish(result).await
 		};
 		let outcome = outcome.map_err(aidash_application::Error::from)?;
-		let sources = match &outcome {
+		let units = match outcome {
 			crate::semantic::native_memory::Outcome::Recall(
 				aidash_domain::memory::Recall::Ready { units },
-			) => units
+			) => units,
+			_ => Vec::new(),
+		};
+		Ok(Some(StartMemory {
+			sources: units
 				.iter()
 				.map(aidash_domain::memory::Unit::evidence)
 				.collect(),
-			_ => vec![],
-		};
-		Ok(Some(StartMemory {
-			sources,
-			content: serde_json::to_value(outcome)?,
+			content: aidash_application::memory::start_recall_content(&units),
 		}))
 	}
 
