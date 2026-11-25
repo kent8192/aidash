@@ -1978,7 +1978,8 @@ class LeadReviewRegressionTest(unittest.TestCase):
             self.assertEqual(clock[0], 60)
             self.assertEqual(result['stdout'], 'cGFydA==')
             self.assertTrue(result['truncated'])
-            self.assertTrue(outcome['output_incomplete'])
+            self.assertTrue(result['output_incomplete'])
+            self.assertNotIn('output_incomplete', outcome)
             self.assertTrue(all(value <= 15 for value in attempts))
 
     def test_resumed_polling_uses_separate_foreground_and_background_intervals(self):

@@ -114,8 +114,8 @@ async fn check(
 			stopped
 		}
 		Outcome::Unconfirmed => match target {
-			Target::Operation(_) | Target::RevokedRun(_) => {
-				tracing::warn!(?target, "running command continues with unconfirmed reads");
+			Target::Operation(_) | Target::StdioSession(_) | Target::RevokedRun(_) => {
+				tracing::warn!(?target, "Pod work continues with unconfirmed reads");
 				Ok(())
 			}
 			// The preview withholds its responses in an Outage Wait, and stops

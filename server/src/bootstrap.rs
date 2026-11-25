@@ -492,6 +492,13 @@ impl RuntimeTasks {
 				aidash_runtime::capabilities::read_recheck_loop(&repository, stopping).await
 			});
 			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.read_recheck_maintenance", async move {
+				crate::apps::execution::capabilities::services::operations::read_recheck_maintenance(
+					&jobs, stopping,
+				)
+				.await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
 			tasks.spawn_service("capabilities.network", async move {
 				capability_background_jobs(&jobs).network(stopping).await
 			});

@@ -1742,8 +1742,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == 'POST' and path in (
                 '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
                 '/v2/commands/submit', '/v2/commands/result', '/v2/commands/refuse', '/v2/commands/stop',
-                '/v2/runs/cancel', '/v2/runs/stop',
-                '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
+                '/v2/runs/cancel', '/v2/runs/stop', '/v2/runs/stop_sessions',
+                '/v2/background/ended', '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
                 '/v2/previews/start', '/v2/previews/stop',
                 '/v2/mcp/start', '/v2/mcp/call', '/v2/mcp/stop', '/v2/mcp/stop_run',
@@ -1774,6 +1774,12 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.cancel_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/runs/stop':
                 return runner.execution_pods.stop_run(request['scratch_space_id'], request['run_id'])
+            if path == '/v2/runs/stop_sessions':
+                return runner.execution_pods.stop_sessions(request['scratch_space_id'], request['run_id'])
+            if path == '/v2/background/ended':
+                return runner.execution_pods.background_ended(
+                    request['scratch_space_id'], request['run_id'], request['operation_id'],
+                    request.get('pod_uid'))
             if path == '/v2/background/list':
                 return runner.execution_pods.background_processes(request['scratch_space_id'])
             if path == '/v2/background/stop':

@@ -186,6 +186,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0154_worker_stints"),
 	("execution", "0155_model_calls"),
 	("execution", "0156_model_call_state"),
+	("execution", "0157_stdio_session_recheck"),
+	("execution", "0160_stdio_session_model_state"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -252,6 +254,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0154_worker_stints"),
 	("execution", "0155_model_calls"),
 	("execution", "0156_model_call_state"),
+	("execution", "0157_stdio_session_recheck"),
+	("execution", "0160_stdio_session_model_state"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -281,6 +285,8 @@ async fn reverse_task_executions(
 		"0154_worker_stints",
 		"0155_model_calls",
 		"0156_model_call_state",
+		"0157_stdio_session_recheck",
+		"0160_stdio_session_model_state",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -358,7 +364,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0156_model_call_state"]);
+	assert_eq!(head("execution"), ["0160_stdio_session_model_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0066_deleted_duty_flow_ancestry"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -372,7 +378,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		136
+		137
 	);
 	let tables = migrations
 		.iter()
@@ -638,12 +644,15 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0157_policy_probe")
+		.get_migration("execution", "0161_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0156_model_call_state".to_owned())]
+		vec![(
+			"execution".to_owned(),
+			"0160_stdio_session_model_state".to_owned()
+		)]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -737,6 +746,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -1230,7 +1241,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		136
+		137
 	);
 }
 
@@ -2482,6 +2493,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5171,6 +5184,8 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0154_worker_stints"),
 	("execution", "0155_model_calls"),
 	("execution", "0156_model_call_state"),
+	("execution", "0157_stdio_session_recheck"),
+	("execution", "0160_stdio_session_model_state"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5737,6 +5752,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5836,6 +5853,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5943,6 +5962,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6470,6 +6491,8 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6589,6 +6612,8 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6840,6 +6865,8 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7096,6 +7123,8 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 		.migrate_excluding(&[
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
+			("execution", "0157_stdio_session_recheck"),
+			("execution", "0160_stdio_session_model_state"),
 		])
 		.await;
 	let tenant = "call-owner";

@@ -1,5 +1,5 @@
 //! The 30 second Read Recheck of running commands and Live previews (ADR 0116).
-use super::reconciliation::Repository;
+use super::{pod_sessions, reconciliation::Repository};
 use crate::{
 	Error, Result as NativeResult,
 	apps::{
@@ -22,27 +22,28 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, IntoValue, OnConflict, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder as _,
+	Alias, BinOper, Expr, ExprTrait as _, IntoValue, OnConflict, Order, PostgresQueryBuilder,
+	Query, QueryStatementBuilder as _, types::PgBinOper,
 };
+use serde_json::json;
+use std::collections::BTreeSet;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
-async fn check_operation(repository: &Repository<'_>, id: Uuid) -> NativeResult<()> {
-	let snapshot = repository.snapshot(id).await?;
-	let identity = SubjectIdentity {
-		http_session: None,
-		credential_id: snapshot.credential_id,
-		tenant: snapshot.tenant.clone(),
-		subject: snapshot.principal.clone(),
-	};
-	let mut access = Access::begin(repository.store, &identity).await?;
-	access.subjects = serde_json::from_value(snapshot.subjects.clone())?;
+async fn check_run(
+	store: &Store,
+	run_id: Uuid,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	kind: &str,
+) -> NativeResult<()> {
+	let mut access = Access::begin(store, identity).await?;
+	access.subjects = subjects;
 	let result = async {
-		let mut check = access.rechecking(snapshot.run_id);
-		let run = check.recheck_run_reads(snapshot.run_id).await?;
-		// A list change acts like a withdrawal (ADR 0139): a command whose tool the Run's
-		// lists no longer let it use stops at this recheck, as a revoked read does.
-		let tool = aidash_domain::capabilities::operations::capability_of(&snapshot.kind);
+		let mut check = access.rechecking(run_id);
+		let run = check.recheck_run_reads(run_id).await?;
+		// A list change acts like a withdrawal (ADR 0139).
+		let tool = aidash_domain::capabilities::operations::capability_of(kind);
 		if super::remote_tools::withdrawn(check.tx.as_mut(), run.id, tool).await? {
 			return Err(Error::Forbidden);
 		}
@@ -54,6 +55,169 @@ async fn check_operation(repository: &Repository<'_>, id: Uuid) -> NativeResult<
 	}
 	.await;
 	access.finish(result).await
+}
+
+async fn check_operation(repository: &Repository<'_>, id: Uuid) -> NativeResult<()> {
+	let snapshot = repository.snapshot(id).await?;
+	let identity = SubjectIdentity {
+		http_session: None,
+		credential_id: snapshot.credential_id,
+		tenant: snapshot.tenant.clone(),
+		subject: snapshot.principal.clone(),
+	};
+	check_run(
+		repository.store,
+		snapshot.run_id,
+		&identity,
+		serde_json::from_value(snapshot.subjects.clone())?,
+		&snapshot.kind,
+	)
+	.await
+}
+
+async fn check_stdio(store: &Store, run: Uuid) -> NativeResult<()> {
+	let Some(session) = pod_sessions::stdio(store, run).await? else {
+		return Ok(());
+	};
+	check_run(
+		store,
+		run,
+		&session.identity(),
+		session.subjects,
+		"mcp_stdio",
+	)
+	.await
+}
+
+impl Repository<'_> {
+	/// Durable targets stay eligible for maintenance until the Runner confirms
+	/// the outcome. Runner timeouts must not delay the authorization pass.
+	pub(crate) async fn maintain_read_recheck_targets(&self) -> Result<()> {
+		const CONCURRENT_CALLS: usize = 4;
+		let background = background_runs(self.store).await?;
+		let probes = async {
+			let mut jobs = JoinSet::new();
+			for id in background {
+				let store = self.store.clone();
+				jobs.spawn(async move {
+					let result: Result<()> = async {
+						let snapshot = Repository { store: &store }.snapshot(id).await?;
+						retire_ended_background(&store, &snapshot).await?;
+						Ok(())
+					}
+					.await;
+					if let Err(error) = result {
+						tracing::warn!(%id, %error, "Background retirement pending");
+					}
+				});
+				if jobs.len() == CONCURRENT_CALLS {
+					join_maintenance_job(&mut jobs).await?;
+				}
+			}
+			while join_maintenance_job(&mut jobs).await? {}
+			Ok(())
+		};
+		let cleanup = async {
+			let mut sessions = BTreeSet::new();
+			for id in pod_sessions::python_targets(self.store).await? {
+				match self.snapshot(id).await {
+					Ok(snapshot) => {
+						if let Some(space) = snapshot.input["scratch_space_id"].as_str() {
+							sessions.insert((snapshot.tenant, snapshot.run_id, space.to_owned()));
+						}
+					}
+					Err(error) => tracing::warn!(%id, %error, "Python session lookup pending"),
+				}
+			}
+			for run in pod_sessions::stdio_targets(self.store).await? {
+				match pod_sessions::stdio(self.store, run).await {
+					Ok(Some(session)) => {
+						sessions.insert((session.tenant, run, session.space));
+					}
+					Ok(None) => {}
+					Err(error) => tracing::warn!(%run, %error, "Stdio session lookup pending"),
+				}
+			}
+			let mut jobs = JoinSet::new();
+			for (tenant, run, space) in sessions {
+				let store = self.store.clone();
+				jobs.spawn(async move {
+					if let Err(error) =
+						pod_sessions::stop_if_ended(&store, &tenant, run, &space).await
+					{
+						tracing::warn!(%run, %error, "terminal session cleanup pending");
+					}
+				});
+				if jobs.len() == CONCURRENT_CALLS {
+					join_maintenance_job(&mut jobs).await?;
+				}
+			}
+			while join_maintenance_job(&mut jobs).await? {}
+			Ok(())
+		};
+		let (probed, cleaned) = tokio::join!(probes, cleanup);
+		probed.and(cleaned)
+	}
+}
+
+async fn join_maintenance_job(jobs: &mut JoinSet<()>) -> Result<bool> {
+	jobs.join_next()
+		.await
+		.transpose()
+		.map(|job| job.is_some())
+		.map_err(|error| aidash_application::Error::External(error.to_string()))
+}
+
+async fn retire_ended_background(
+	store: &Store,
+	snapshot: &aidash_domain::capabilities::operations::reconciliation::Snapshot,
+) -> NativeResult<()> {
+	if snapshot.input["runtime"] != "pod"
+		|| snapshot.result["left_running"].is_null()
+		|| snapshot.result["background_retired"] == true
+	{
+		return Ok(());
+	}
+	let Some(space) = snapshot.input["scratch_space_id"].as_str() else {
+		return Ok(());
+	};
+	let Ok(runner) = crate::bootstrap::operation_runner(store) else {
+		return Ok(());
+	};
+	let evidence = runner
+		.background_ended(
+			space,
+			&snapshot.run_id.to_string(),
+			&snapshot.id.to_string(),
+			snapshot.result["pod_uid"].as_str(),
+		)
+		.await;
+	if !matches!(evidence, Ok(true)) {
+		return Ok(());
+	}
+	// Update the observed row only. Retain the Background id for shell_poll.
+	crate::database::native::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value_expr(
+				Alias::new("result"),
+				Expr::col("result").binary(
+					BinOper::PgOperator(PgBinOper::Concatenate),
+					Expr::value(json!({"background_retired": true})),
+				),
+			)
+			.and_where(Expr::col("id").eq(Expr::value(snapshot.id)))
+			.and_where(Expr::col("tenant").eq(snapshot.tenant.clone()))
+			.and_where(Expr::col("result").eq(Expr::value(snapshot.result.clone())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(
+		store
+			.pool
+			.in_scope(&TenancyScope::tenant(&snapshot.tenant)?),
+	)
+	.await?;
+	Ok(())
 }
 
 async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
@@ -70,18 +234,21 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 	.await
 }
 
-/// The Background-target query: one ended Pod command per Run that left Background processes
-/// running, for Runs the Read Recheck has not refused.
-fn background_runs_query() -> String {
-	// Correlated with the outer row: only this Run's refusal ends its target.
+pub(super) fn unrevoked(table: &str, run_column: &str) -> reinhardt::query::SimpleExpr {
 	let revoked = Query::select()
 		.expr(Expr::value(1_i32))
 		.from_as(Alias::new("egress_run_revocations"), Alias::new("r"))
 		.and_where(
 			Expr::col((Alias::new("r"), Alias::new("run_id")))
-				.equals((Alias::new("core_operations"), Alias::new("run_id"))),
+				.equals((Alias::new(table), Alias::new(run_column))),
 		)
 		.to_owned();
+	Expr::exists(revoked).not()
+}
+
+/// The Background-target query: one ended Pod command per Run that left Background processes
+/// running, for Runs the Read Recheck has not refused.
+fn background_runs_query() -> String {
 	Query::select()
 		.distinct_on([Alias::new("run_id")])
 		.column(Alias::new("id"))
@@ -89,7 +256,15 @@ fn background_runs_query() -> String {
 		.and_where(Expr::col(Alias::new("state")).is_not_in(["prepared", "submitted", "running"]))
 		.and_where(Expr::cust("input->>'runtime' = 'pod'"))
 		.and_where(Expr::cust("result->>'left_running' IS NOT NULL"))
-		.and_where(Expr::exists(revoked).not())
+		.and_where(
+			Expr::col("result")
+				.binary(
+					BinOper::PgOperator(PgBinOper::Contains),
+					Expr::value(json!({"background_retired": true})),
+				)
+				.not(),
+		)
+		.and_where(unrevoked("core_operations", "run_id"))
 		.order_by(Alias::new("run_id"), Order::Asc)
 		.order_by(Alias::new("updated_at"), Order::Desc)
 		.to_string(PostgresQueryBuilder)
@@ -225,12 +400,19 @@ pub(crate) async fn stop_pending_run_with_runner(
 #[async_trait]
 impl ReadRecheckRepository for Repository<'_> {
 	async fn targets(&self) -> Result<Vec<Target>> {
-		let mut targets: Vec<Target> = running_commands(self.store)
+		let operations: BTreeSet<_> = running_commands(self.store)
 			.await?
 			.into_iter()
 			.chain(background_runs(self.store).await?)
-			.map(Target::Operation)
+			.chain(pod_sessions::python_targets(self.store).await?)
 			.collect();
+		let mut targets: Vec<_> = operations.into_iter().map(Target::Operation).collect();
+		targets.extend(
+			pod_sessions::stdio_targets(self.store)
+				.await?
+				.into_iter()
+				.map(Target::StdioSession),
+		);
 		targets.extend(
 			live_previews::serving(self.store)
 				.await?
@@ -254,6 +436,7 @@ impl ReadRecheckRepository for Repository<'_> {
 	async fn check(&self, target: Target) -> Result<Outcome> {
 		let checked = match target {
 			Target::Operation(id) => check_operation(self, id).await.map(|()| true),
+			Target::StdioSession(id) => check_stdio(self.store, id).await.map(|()| true),
 			Target::LivePreview(id) => live_previews::read_recheck(self.store, id).await,
 			Target::RevokedRun(_) => return Ok(Outcome::Refused),
 		};
@@ -287,6 +470,12 @@ impl ReadRecheckRepository for Repository<'_> {
 					Some(tenant) => stop_pod_run(self.store, &tenant, id).await,
 					None => Ok(()),
 				}
+			}
+			Target::StdioSession(id) => {
+				if let Some(session) = pod_sessions::stdio(self.store, id).await? {
+					stop_pod_run(self.store, &session.tenant, id).await?;
+				}
+				Ok(())
 			}
 			Target::Operation(id) => {
 				let snapshot = self.snapshot(id).await?;

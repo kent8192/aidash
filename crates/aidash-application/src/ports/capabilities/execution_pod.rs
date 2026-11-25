@@ -170,6 +170,8 @@ pub struct CommandRequest {
 pub struct CommandResult {
 	pub operation_id: String,
 	pub status: String,
+	/// UID from the Runner journal at command admission.
+	pub pod_uid: Option<String>,
 	pub scratch_space_id: Option<String>,
 	pub run_id: Option<String>,
 	pub background: Option<bool>,
