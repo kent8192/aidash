@@ -312,10 +312,11 @@ minute, the pattern of a scan, the gateway logs a warning, counts it in
 `aidash_egress_many_hosts_total` and records a `many_hosts` operator event, once
 a minute at most. No consumer delivers these events yet.
 
-During a file descriptor or memory shortage, a new Host connection or External
-service request waits if its Tenant already holds more than the replica's
-average number of open connections per active Tenant. The gateway rechecks the
-credential while it waits. When a Scratch Space has a waiter, an idle tunnel of
+During a file descriptor shortage, a new Host connection or External service
+request waits if its Tenant already holds more than the replica's average number
+of open connections per active Tenant. The gateway rechecks the credential
+during the wait. During a memory shortage, a connection above its Tenant's
+share receives HTTP 503 with `egress_fair_share`. When a Scratch Space has a waiter, an idle tunnel of
 that Space makes way after two seconds without activity. A tunnel awaiting a
 debit is busy. Credentials resolved for new connections can be reused for five
 seconds, and open tunnels recheck them independently.

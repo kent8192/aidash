@@ -23,19 +23,25 @@ continue to configure `execution.pods.proxy` when Helm Egress is disabled.
 
 ## Pressure and metrics
 
-Every second a replica samples file descriptors and RSS. A shortage starts
-above 80% of the file descriptor or memory budget and clears below 70% of both.
-A Tenant above the mean number of open connections per active Tenant waits
-until its share is available or the shortage clears. The Run's Egress waits
-show completed Host admission waits from `egress_scope_connections.wait_ms`.
-External service records include their wait in admission time.
+Every second a replica samples file descriptors and RSS. Each resource enters
+shortage above 80% of its budget and leaves below 70%. With open-file pressure
+alone, a Tenant above the mean number of open connections per active Tenant
+waits until its share is available or the shortage clears. Under memory
+pressure, an over-share connection receives HTTP 503 with `egress_fair_share`.
+The gateway counts these refusals by scope. It also releases over-share
+waiters if memory pressure begins during their wait.
+
+The Run's Egress waits show admitted Host connections from
+`egress_scope_connections.wait_ms`. External service records include their
+wait in admission time.
 
 `AIDASH_METRICS_LISTEN` enables the standalone metrics listener. Helm binds it
 on port 9090. Configure `execution.egress.metricsScrapeNamespaces` with the
 namespaces of external Prometheus scrapers. Scrape each gateway replica for:
 
 - `aidash_egress_open_connections{tenant}` and `aidash_egress_open_connections_total`
-- `aidash_egress_waiting_connections`, `aidash_egress_resource_shortage` and `aidash_egress_fair_share_wait_seconds`
+- `aidash_egress_waiting_connections` and `aidash_egress_fair_share_wait_seconds`
+- `aidash_egress_resource_shortage` and `aidash_egress_resource_shortage_by_type{resource}`
 - `aidash_egress_process_open_files`, `aidash_egress_process_rss_bytes` and `aidash_egress_borrowed_buffer_bytes`
 - `aidash_egress_accept_emfile_total`
 

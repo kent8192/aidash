@@ -1006,6 +1006,8 @@ async fn serve_with_clients(
 	metrics::gauge!("aidash_egress_open_connections_total").set(0);
 	metrics::gauge!("aidash_egress_waiting_connections").set(0);
 	metrics::gauge!("aidash_egress_resource_shortage").set(0);
+	metrics::gauge!("aidash_egress_resource_shortage_by_type", "resource" => "open_files").set(0);
+	metrics::gauge!("aidash_egress_resource_shortage_by_type", "resource" => "memory").set(0);
 	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
 	let mut tallies = tokio::time::interval(TALLY_INTERVAL);
 	tallies.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1192,7 +1194,12 @@ async fn forward_service(
 		.await
 	{
 		Ok(acquired) => acquired,
-		Err((status, code)) => return refuse(status, code),
+		Err((status, code)) => {
+			if (status, code) == proxy::FAIR_SHARE_REFUSAL {
+				manager.tally(&scope.id, aidash_domain::egress::SERVICES_HOST, code);
+			}
+			return refuse(status, code);
+		}
 	};
 	*connection_lease.lock().unwrap() = Some(Arc::new(permit));
 	let admitted = scopes

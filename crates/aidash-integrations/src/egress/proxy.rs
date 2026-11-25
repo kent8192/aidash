@@ -153,12 +153,27 @@ impl FailureReport {
 struct CapacityCounts {
 	open: std::collections::HashMap<String, usize>,
 	total: usize,
-	shortage: bool,
-	file_fraction: f64,
-	memory_fraction: f64,
+	files_short: bool,
+	memory_short: bool,
 	waiting: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
 	waiting_total: usize,
 	queue: std::collections::HashMap<String, std::collections::VecDeque<uuid::Uuid>>,
+}
+
+impl CapacityCounts {
+	fn shortage(&self) -> bool {
+		self.files_short || self.memory_short
+	}
+}
+
+fn under_pressure(previous: bool, fraction: Option<f64>) -> bool {
+	fraction.map_or(previous, |fraction| {
+		if previous {
+			fraction >= 0.70
+		} else {
+			fraction > 0.80
+		}
+	})
 }
 
 #[derive(Default)]
@@ -184,6 +199,8 @@ const WAIT_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The answer to a connection whose Scratch Space stopped while it waited.
 type Stopped = (hyper::StatusCode, &'static str);
+pub(super) const FAIR_SHARE_REFUSAL: Stopped =
+	(hyper::StatusCode::SERVICE_UNAVAILABLE, "egress_fair_share");
 
 /// What lets a tunnel make way for its Scratch Space's waiting connections.
 #[derive(Clone)]
@@ -298,7 +315,7 @@ impl Drop for TunnelPermit {
 		}
 		counts.total -= 1;
 		metrics::gauge!("aidash_egress_open_connections_total").set(counts.total as f64);
-		if counts.shortage && counts.waiting_total != 0 {
+		if counts.shortage() && counts.waiting_total != 0 {
 			self.capacity.changed.notify_waiters();
 		}
 	}
@@ -349,56 +366,63 @@ impl TunnelManager {
 
 	pub(super) fn update_pressure(&self, files: Option<f64>, memory: Option<f64>) {
 		let mut counts = self.capacity.counts.lock().unwrap();
-		// Keep the last measurement when a resource momentarily cannot be read.
-		counts.file_fraction = files.unwrap_or(counts.file_fraction);
-		counts.memory_fraction = memory.unwrap_or(counts.memory_fraction);
-		let pressure = counts.file_fraction.max(counts.memory_fraction);
-		let shortage = if counts.shortage {
-			pressure >= 0.70
-		} else {
-			pressure > 0.80
-		};
-		if counts.shortage != shortage {
-			counts.shortage = shortage;
-			metrics::gauge!("aidash_egress_resource_shortage").set(f64::from(shortage));
+		let previous = (counts.files_short, counts.memory_short);
+		counts.files_short = under_pressure(counts.files_short, files);
+		counts.memory_short = under_pressure(counts.memory_short, memory);
+		if previous != (counts.files_short, counts.memory_short) {
+			metrics::gauge!("aidash_egress_resource_shortage").set(f64::from(counts.shortage()));
+			metrics::gauge!("aidash_egress_resource_shortage_by_type", "resource" => "open_files")
+				.set(f64::from(counts.files_short));
+			metrics::gauge!("aidash_egress_resource_shortage_by_type", "resource" => "memory")
+				.set(f64::from(counts.memory_short));
 			self.capacity.changed.notify_waiters();
 		}
 	}
 
 	#[cfg(test)]
 	fn try_acquire(&self, scope: &ScopeSettings) -> Option<TunnelPermit> {
-		self.try_admit(scope, None)
+		let mut counts = self.capacity.counts.lock().unwrap();
+		self.try_admit(&mut counts, scope, None).unwrap()
 	}
 
-	fn try_admit(&self, scope: &ScopeSettings, ticket: Option<uuid::Uuid>) -> Option<TunnelPermit> {
+	fn try_admit(
+		&self,
+		counts: &mut CapacityCounts,
+		scope: &ScopeSettings,
+		ticket: Option<uuid::Uuid>,
+	) -> Result<Option<TunnelPermit>, Stopped> {
 		let tenant = &scope.id.tenant;
-		let mut counts = self.capacity.counts.lock().unwrap();
 		let open = counts.open.get(tenant).copied().unwrap_or(0);
 		// Comparing to the floored mean is exact for integer connection counts.
-		if (counts.shortage && open > counts.total / counts.open.len().max(1))
+		let over_share = open > counts.total / counts.open.len().max(1);
+		if counts.memory_short {
+			if over_share {
+				return Err(FAIR_SHARE_REFUSAL);
+			}
+		} else if (counts.files_short && over_share)
 			|| counts
 				.queue
 				.get(tenant)
 				.is_some_and(|queue| queue.front().copied() != ticket)
 		{
-			return None;
+			return Ok(None);
 		}
 		counts.open.insert(tenant.clone(), open + 1);
 		counts.total += 1;
 		metrics::gauge!("aidash_egress_open_connections", "tenant" => tenant.clone())
 			.set((open + 1) as f64);
 		metrics::gauge!("aidash_egress_open_connections_total").set(counts.total as f64);
-		if counts.shortage && counts.waiting_total != 0 {
+		if counts.shortage() && counts.waiting_total != 0 {
 			self.capacity.changed.notify_waiters();
 		}
-		Some(TunnelPermit {
+		Ok(Some(TunnelPermit {
 			capacity: self.capacity.clone(),
 			tenant: tenant.clone(),
-		})
+		}))
 	}
 
-	/// Waits through a shortage while still observing credential revocation
-	/// and shutdown. A disconnect drops the wait guard with the request.
+	/// Waits through open-file pressure while observing credential revocation
+	/// and shutdown. Memory pressure refuses excess connections promptly.
 	pub(super) async fn acquire_watched(
 		&self,
 		scope: &ScopeSettings,
@@ -409,13 +433,13 @@ impl TunnelManager {
 		if is_stopping(&stopping) {
 			return Err(shutdown);
 		}
-		if let Some(permit) = self.try_admit(scope, None) {
-			return Ok((permit, std::time::Duration::ZERO));
-		}
 		let started = tokio::time::Instant::now();
-		let ticket = uuid::Uuid::new_v4();
-		let _turn = {
+		let turn = {
 			let mut counts = self.capacity.counts.lock().unwrap();
+			if let Some(permit) = self.try_admit(&mut counts, scope, None)? {
+				return Ok((permit, std::time::Duration::ZERO));
+			}
+			let ticket = uuid::Uuid::new_v4();
 			*counts.waiting.entry(scope.id.clone()).or_default() += 1;
 			counts
 				.queue
@@ -452,8 +476,11 @@ impl TunnelManager {
 			if is_stopping(&stopping) {
 				return Err(shutdown);
 			}
-			if let Some(permit) = self.try_admit(scope, Some(ticket)) {
-				return Ok((permit, started.elapsed()));
+			{
+				let mut counts = self.capacity.counts.lock().unwrap();
+				if let Some(permit) = self.try_admit(&mut counts, scope, Some(turn.ticket))? {
+					return Ok((permit, started.elapsed()));
+				}
 			}
 			tokio::select! {
 				_ = changed => {},
@@ -465,7 +492,12 @@ impl TunnelManager {
 	/// Counts a connection that ended before it held a limit. A minute keeps
 	/// at most `TALLY_HOSTS` hosts of one scope apart; Sandboxed code chooses
 	/// the host names, so the rest are counted together under an empty host.
-	fn tally(&self, scope: &aidash_domain::egress::ScopeId, host: &str, reason: &'static str) {
+	pub(super) fn tally(
+		&self,
+		scope: &aidash_domain::egress::ScopeId,
+		host: &str,
+		reason: &'static str,
+	) {
 		let minute = chrono::Utc::now().timestamp().div_euclid(60);
 		let mut tallies = self.tallies.lock().unwrap();
 		let key = (scope.clone(), minute, host.to_owned(), reason);
@@ -1958,6 +1990,49 @@ mod tests {
 	}
 
 	#[tokio::test(start_paused = true)]
+	async fn memory_shortage_refuses_excess_connections_without_waiting() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let dominant = test_settings();
+		let _held = manager.try_acquire(&dominant).unwrap();
+		let _pressure = shortage(&manager, &dominant);
+		let waiting = tokio::spawn({
+			let (manager, dominant) = (manager.clone(), dominant.clone());
+			async move { manager.acquire_watched(&dominant, || None).await.err() }
+		});
+		tokio::task::yield_now().await;
+		assert!(!waiting.is_finished());
+
+		// The resource changed even though aggregate shortage was already active.
+		manager.update_pressure(Some(0.75), Some(0.81));
+		let refusal = manager.acquire_watched(&dominant, || panic!("memory refusal queued"));
+		tokio::pin!(refusal);
+		assert!(matches!(
+			futures_util::poll!(&mut refusal),
+			std::task::Poll::Ready(Err((
+				hyper::StatusCode::SERVICE_UNAVAILABLE,
+				"egress_fair_share"
+			)))
+		));
+		assert_eq!(waiting.await.unwrap(), Some(super::FAIR_SHARE_REFUSAL));
+
+		let mut newcomer = dominant.clone();
+		newcomer.id.tenant = "new".into();
+		let (_, waited) = manager.acquire_watched(&newcomer, || None).await.unwrap();
+		assert!(waited.is_zero());
+
+		// Memory hysteresis holds independently of the file threshold.
+		manager.update_pressure(Some(0.65), Some(0.75));
+		assert_eq!(
+			manager.acquire_watched(&dominant, || None).await.err(),
+			Some(super::FAIR_SHARE_REFUSAL),
+		);
+		manager.update_pressure(Some(0.65), Some(0.69));
+		let (_, waited) = manager.acquire_watched(&dominant, || None).await.unwrap();
+		assert!(waited.is_zero());
+	}
+
+	#[tokio::test(start_paused = true)]
 	async fn shortage_waits_only_above_the_share_and_records_elapsed_time() {
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
 		let manager = Arc::new(super::TunnelManager::new(receiver));
@@ -2741,6 +2816,78 @@ mod tests {
 		drop(first);
 		stop.send(true).unwrap();
 		server.await.unwrap().unwrap();
+	}
+
+	#[tokio::test]
+	async fn host_and_external_service_memory_refusals_are_returned_and_counted() {
+		use hyper_util::rt::TokioIo;
+
+		let scope = settings_allowing_any_host();
+		let scopes = Arc::new(MemoryScopes::new("token".into(), scope.clone()));
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let _held = manager.try_acquire(&scope).unwrap();
+		let _pressure = shortage(&manager, &scope);
+		manager.update_pressure(Some(0.60), Some(0.81));
+
+		for (target, service) in [
+			("registry.npmjs.org", false),
+			(aidash_domain::egress::SERVICES_HOST, true),
+		] {
+			let (mut client, gateway) = tokio::io::duplex(1024);
+			let scopes = scopes.clone();
+			let manager = manager.clone();
+			let authority = hyper::service::service_fn(move |request| {
+				let scopes = scopes.clone();
+				let manager = manager.clone();
+				async move {
+					let settings = Arc::new(Default::default());
+					let lease = Arc::new(std::sync::Mutex::new(None));
+					let response = if service {
+						super::super::forward_service(
+							request,
+							reqwest::Client::new(),
+							reqwest::Client::new(),
+							scopes,
+							manager,
+							settings,
+							lease,
+						)
+						.await
+					} else {
+						super::forward(request, scopes, manager, &settings, lease).await
+					};
+					Ok::<_, std::convert::Infallible>(response)
+				}
+			});
+			let server = tokio::spawn(async move {
+				hyper::server::conn::http1::Builder::new()
+					.keep_alive(false)
+					.serve_connection(TokioIo::new(gateway), authority)
+					.await
+					.unwrap();
+			});
+			client.write_all(format!("GET http://{target}/package HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+			let mut response = String::new();
+			tokio::time::timeout(
+				std::time::Duration::from_secs(2),
+				client.read_to_string(&mut response),
+			)
+			.await
+			.expect("an over-share connection must not queue under memory pressure")
+			.unwrap();
+			assert!(response.starts_with("HTTP/1.1 503"));
+			assert!(response.contains("egress_fair_share"));
+			server.await.unwrap();
+		}
+		manager.flush_tallies(&*scopes).await;
+		let tallies = scopes.refusals();
+		for host in ["registry.npmjs.org", aidash_domain::egress::SERVICES_HOST] {
+			assert!(tallies.iter().any(|tally| {
+				tally.host == host && tally.reason == "egress_fair_share" && tally.count == 1
+			}));
+		}
+		assert!(scopes.records().is_empty());
 	}
 
 	#[tokio::test]
