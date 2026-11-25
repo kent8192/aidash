@@ -42,11 +42,19 @@ resource "google_compute_router" "aidash" {
   network = google_compute_network.aidash.id
 }
 resource "google_compute_router_nat" "aidash" {
-  name                               = "aidash"
-  router                             = google_compute_router.aidash.name
-  region                             = google_compute_router.aidash.region
-  nat_ip_allocate_option             = "AUTO_ONLY"
-  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+  name                                = "aidash"
+  router                              = google_compute_router.aidash.name
+  region                              = google_compute_router.aidash.region
+  nat_ip_allocate_option              = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat  = "LIST_OF_SUBNETWORKS"
+  enable_dynamic_port_allocation      = true
+  min_ports_per_vm                    = 1024
+  max_ports_per_vm                    = 65536
+  enable_endpoint_independent_mapping = false
+  subnetwork {
+    name                    = google_compute_subnetwork.aidash.id
+    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
+  }
 }
 
 // Host-network Pods can obtain the node identity's token, so it holds no Aidash
@@ -106,6 +114,13 @@ resource "google_container_cluster" "aidash" {
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
     services_secondary_range_name = "services"
+    dynamic "additional_ip_ranges_config" {
+      for_each = google_compute_subnetwork.egress
+      content {
+        subnetwork           = additional_ip_ranges_config.value.id
+        pod_ipv4_range_names = [additional_ip_ranges_config.value.secondary_ip_range[0].range_name]
+      }
+    }
   }
   private_cluster_config {
     enable_private_nodes    = true
@@ -149,6 +164,13 @@ resource "google_container_node_pool" "system" {
   cluster        = google_container_cluster.aidash.name
   node_locations = [local.zone]
   node_count     = local.any_running ? 1 : 0
+  dynamic "network_config" {
+    for_each = length(var.egress_ip_groups) > 0 ? [google_compute_subnetwork.aidash.id] : []
+    content {
+      subnetwork = network_config.value
+      pod_range  = "pods"
+    }
+  }
   management {
     auto_repair  = true
     auto_upgrade = true
@@ -182,6 +204,13 @@ resource "google_container_node_pool" "system_standby" {
   autoscaling {
     total_min_node_count = 0
     total_max_node_count = 1
+  }
+  dynamic "network_config" {
+    for_each = length(var.egress_ip_groups) > 0 ? [google_compute_subnetwork.aidash.id] : []
+    content {
+      subnetwork = network_config.value
+      pod_range  = "pods"
+    }
   }
   management {
     auto_repair  = true
