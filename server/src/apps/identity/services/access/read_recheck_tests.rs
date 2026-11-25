@@ -60,13 +60,17 @@ impl Fixture {
 	}
 
 	async fn set_policy(&self, expected: i64, deny: Option<(&str, &str)>) {
+		self.replace_policy(expected, policy(deny)).await;
+	}
+
+	async fn replace_policy(&self, expected: i64, bundle: Value) {
 		Authorization {
 			pool: self.store.pool.clone(),
 		}
 		.replace(
 			"acme",
 			expected,
-			serde_json::from_value(policy(deny)).unwrap(),
+			serde_json::from_value(bundle).unwrap(),
 			"deployment_administrator",
 		)
 		.await
@@ -1382,6 +1386,294 @@ async fn a_live_preview_that_cannot_be_confirmed_stops_without_blaming_authority
 		.unwrap();
 	tx.commit().await.unwrap();
 	assert_eq!(saved.last_request_at, last_request_at);
+}
+
+struct SuspensionAuthority {
+	source: Uuid,
+	suspended: bool,
+}
+
+#[async_trait::async_trait]
+impl aidash_application::ports::accounts::Authority for SuspensionAuthority {
+	async fn validate_interactive(&self, _: Uuid, _: Uuid) -> aidash_application::Result<()> {
+		panic!("a Task execution uses its original credential")
+	}
+
+	async fn validate_origin(&self, source: Uuid) -> aidash_application::Result<()> {
+		assert_eq!(source, self.source);
+		if self.suspended {
+			return Err(aidash_application::Error::AccountSuspended { epoch: 1 });
+		}
+		Ok(())
+	}
+
+	async fn origin_binding(
+		&self,
+		source: Uuid,
+	) -> aidash_application::Result<aidash_domain::accounts::DurableOrigin> {
+		self.validate_origin(source).await?;
+		Ok(aidash_domain::accounts::DurableOrigin {
+			identity_id: source,
+			account_id: Some(source),
+			suspension_epoch: Some(1),
+			source_disable_epoch: Some(0),
+		})
+	}
+
+	async fn validate_bound_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> aidash_application::Result<()> {
+		self.validate_origin(origin.identity_id).await
+	}
+
+	async fn resume_suspended_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+		epoch: u64,
+	) -> aidash_application::Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		assert_eq!(epoch, 1);
+		self.origin_binding(origin.identity_id).await.map(Some)
+	}
+}
+
+async fn bind_common_account(fixture: &mut Fixture, suspended: bool) -> Uuid {
+	use aidash_application::ports::authorization::dashboard::{AccountPolicy, Issuer};
+	use std::sync::Arc;
+
+	let source = Uuid::new_v4();
+	let mapping = Uuid::new_v4();
+	let issuer = "https://upstream.example.test";
+	sqlx::query("INSERT INTO dashboard_identities (id,issuer,subject,last_valid_at) VALUES ($1,$2,'reader',clock_timestamp())")
+		.bind(source).bind(issuer).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO dashboard_mappings (id,identity_id,tenant,subject,credential_id) VALUES ($1,$2,'acme','reader',$3)")
+		.bind(mapping).bind(source).bind(fixture.identity.credential_id)
+		.execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO dashboard_execution_origins (run_id,tenant,identity_id,mapping_id,account_id,suspension_epoch,source_disable_epoch) VALUES ($1,'acme',$2,$3,$2,0,0)")
+		.bind(fixture.run).bind(source).bind(mapping).execute(fixture.driver()).await.unwrap();
+	fixture.store.pool = fixture
+		.store
+		.pool
+		.clone()
+		.with_dashboard_policy(Some(AccountPolicy {
+			authority: Some(Arc::new(SuspensionAuthority { source, suspended })),
+			issuers: Arc::new(Issuer(issuer.into())),
+			personal_tenants: false,
+			demo_data: false,
+		}));
+	source
+}
+
+#[rstest]
+#[tokio::test]
+async fn account_suspension_refuses_running_commands_and_previews(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let mut fixture = fixture(database.await, 1).await;
+	bind_common_account(&mut fixture, true).await;
+	let (operation, preview) = running_targets(&fixture).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	for target in [Target::Operation(operation), Target::LivePreview(preview)] {
+		assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn memory_maintenance_skips_a_completed_run_whose_identity_was_disabled(
+	#[future] database: DatabaseFixture,
+) {
+	let mut fixture = fixture(database.await, 1).await;
+	sqlx::query("UPDATE task_executions SET home_node=$2 || '/' || node WHERE id=$1")
+		.bind(fixture.run)
+		.bind(DEPLOYMENT)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let source = bind_common_account(&mut fixture, false).await;
+	sqlx::query("UPDATE dashboard_identities SET disabled_at=clock_timestamp() WHERE id=$1")
+		.bind(source)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	for (id, kind, config) in [
+		(
+			"model",
+			"model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"fixture",
+			"agent",
+			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}),
+		),
+	] {
+		sqlx::query(
+			"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,'1.0.0',$2,$3)",
+		)
+		.bind(id)
+		.bind(kind)
+		.bind(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config}))
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	}
+	let participant = Uuid::new_v4();
+	sqlx::query("INSERT INTO memory_participants (id,home,tenant,thread_id,principal,agent_id,agent_version,revision,deleted) VALUES ($1,$2,'acme',$3,'reader','fixture','1.0.0',1,false)")
+		.bind(participant).bind(DEPLOYMENT).bind(fixture.thread)
+		.execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO memory_run_bindings (run_id,tenant,participant_id,provider_id,provider_version,participant_revision) VALUES ($1,'acme',$2,'fixture-memory','1.0.0',1)")
+		.bind(fixture.run).bind(participant).execute(fixture.driver()).await.unwrap();
+	let run = fixture
+		.store
+		.run(&TenancyScope::tenant("acme").unwrap(), fixture.run)
+		.await
+		.unwrap();
+	let agent =
+		aidash_domain::entities::agent_subject(&run.home_node, &run.agent_id, &run.agent_version);
+	sqlx::query(
+		"UPDATE authorization_execution SET subject_chain=ARRAY['reader',$2] WHERE run_id=$1",
+	)
+	.bind(run.id)
+	.bind(agent)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	assert!(matches!(
+		crate::authorization::execution::access_for_run(&fixture.store, &run.metadata(), true)
+			.await,
+		Err(Error::CredentialForbidden(
+			crate::error::CredentialReason::IdentityDisabled
+		))
+	));
+
+	crate::semantic::worker::sweep(&fixture.store)
+		.await
+		.unwrap();
+
+	let discovered: Uuid =
+		sqlx::query_scalar("SELECT cursor_id FROM memory_learning_discovery WHERE deployment=$1")
+			.bind(DEPLOYMENT)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert_eq!(discovered, fixture.run);
+	let scheduled: bool =
+		sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM memory_engine_jobs WHERE id=$1)")
+			.bind(fixture.run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert!(!scheduled);
+}
+
+#[rstest]
+#[tokio::test]
+async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::authorization::dashboard::Accounts;
+	let mut fixture = fixture(database.await, 1).await;
+	let source = bind_common_account(&mut fixture, false).await;
+	sqlx::query("UPDATE task_executions SET control='PAUSED', error='account_suspended', pending=jsonb_set(pending,'{recovery}','{\"account_suspension_epoch\":1}') WHERE id=$1")
+		.bind(fixture.run).execute(fixture.driver()).await.unwrap();
+	fixture.set_policy(1, Some(("reader", "run.control"))).await;
+	let config = crate::config::runtime::Config {
+		smtp: None,
+		scratch_policy: Default::default(),
+		deployment: fixture.store.deployment.clone(),
+		endpoint: String::new(),
+		database_url: fixture._database.url.clone(),
+		nats_url: String::new(),
+		api_token: String::new(),
+		web_dir: String::new(),
+		lease_seconds: 30,
+		tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+			aidash_domain::offering::Offering::SelfHosted,
+		),
+		credential_max_seconds: 90 * 24 * 60 * 60,
+		federation: false,
+		deployment_key: None,
+		demo_data: false,
+		oidc: None,
+		marketplace: crate::config::marketplace::MarketplaceSettings {
+			endpoint: None,
+			connections: Vec::new(),
+			poll_seconds: 60,
+		},
+		common_auth: None,
+		common_issuers: None,
+		sign_in: None,
+		tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+		preview: None,
+		dashboard_origin: String::new(),
+	};
+	let repository =
+		crate::apps::identity::repositories::dashboard::Repository(crate::federation::Federation {
+			sandbox: Default::default(),
+			registry: crate::registry::Registry::new(
+				fixture
+					._database
+					.connection
+					.clone()
+					.into_postgres()
+					.unwrap(),
+				&config.deployment,
+			)
+			.unwrap(),
+			store: fixture.store.clone(),
+			config,
+			client: reqwest::Client::new(),
+			notify: Default::default(),
+		});
+	let denials = "action='run.control' AND decision->>'allowed'='false'";
+	let check = async |expected_denials| {
+		let mut recovery = repository.recovery().await.unwrap();
+		assert!(!recovery.resume_original(source, fixture.run).await.unwrap());
+		assert_eq!(fixture.rows(denials).await, expected_denials);
+		let decisions = fixture.rows("tenant='acme'").await;
+
+		let mut next_pass = repository.recovery().await.unwrap();
+		assert!(
+			next_pass
+				.waiting(source)
+				.await
+				.unwrap()
+				.contains(&fixture.run)
+		);
+		assert!(
+			!next_pass
+				.resume_original(source, fixture.run)
+				.await
+				.unwrap()
+		);
+		assert_eq!(fixture.rows("tenant='acme'").await, decisions);
+	};
+	check(1).await;
+
+	let mut bundle = policy(Some(("reader", "run.control")));
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"unrelated", "effect":"deny", "subjects":{"ids":["viewer"]},
+		"actions":["run.control"], "resources":{"kinds":["*"]}
+	}));
+	fixture.replace_policy(2, bundle.clone()).await;
+	check(1).await;
+
+	sqlx::query("UPDATE task_executions SET revision=revision+1 WHERE id=$1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	check(1).await;
+
+	bundle["policies"][1]["id"] = json!("new-revocation");
+	fixture.replace_policy(3, bundle).await;
+	check(2).await;
 }
 
 #[rstest]

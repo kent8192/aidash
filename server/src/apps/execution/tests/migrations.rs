@@ -197,6 +197,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
+	("identity", "0115_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -270,6 +271,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
+	("identity", "0115_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -770,6 +772,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -1514,11 +1517,15 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 ) {
 	let fixture = fresh_database.await;
 	let name = "0113_budget_notice_delivery";
-	// Keep the dependent backfill out of both histories so 0113 can be
-	// applied and reversed independently.
+	// Keep the dependent identity migrations out of both histories so 0113
+	// can be applied and reversed independently.
 	let backfill = ("identity", "0114_policy_revision_backfill");
 	fixture
-		.migrate_excluding(&[("identity", name), backfill])
+		.migrate_excluding(&[
+			("identity", name),
+			backfill,
+			("identity", "0115_suspension_resume_refusal"),
+		])
 		.await;
 	fixture.tenant_root("notice-upgrade").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -2524,6 +2531,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5201,6 +5209,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
+	("identity", "0115_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5792,6 +5801,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5898,6 +5908,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6012,6 +6023,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6913,6 +6925,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
 			("execution", "0152_stint_leases"),
@@ -7105,7 +7118,10 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 
 	// Act
 	fixture
-		.migrate_excluding(&[("identity", "0114_policy_revision_backfill")])
+		.migrate_excluding(&[
+			("identity", "0114_policy_revision_backfill"),
+			("identity", "0115_suspension_resume_refusal"),
+		])
 		.await;
 
 	let authorization = aidash_server::apps::identity::services::Authorization {

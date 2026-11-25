@@ -28,7 +28,7 @@ fn credential_refusals_keep_status_and_report_the_reason() {
 			"mapping_disabled",
 		),
 		(
-			Error::CredentialForbidden(CredentialReason::IdentityDisabled),
+			Error::from(aidash_application::Error::IdentityDisabled),
 			403,
 			"identity_disabled",
 		),

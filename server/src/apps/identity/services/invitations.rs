@@ -431,7 +431,12 @@ impl Invitations {
 				.await
 			{
 				Ok(snapshot) => snapshot,
-				Err(Error::Forbidden | Error::Unauthorized) => continue,
+				Err(
+					Error::Forbidden
+					| Error::Unauthorized
+					| Error::CredentialForbidden(_)
+					| Error::AccountSuspended { .. },
+				) => continue,
 				Err(error) => return Err(error),
 			};
 			// A credential can also exist without a Mapping. Recheck this exact

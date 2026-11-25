@@ -44,6 +44,8 @@ pub struct DashboardExecutionOrigin {
 	pub suspension_epoch: Option<i64>,
 	#[field(null = true)]
 	pub source_disable_epoch: Option<i64>,
+	#[field(field_type = "text", null = true)]
+	pub suspension_resume_refusal: Option<String>,
 }
 
 impl DashboardExecutionOrigin {
@@ -180,6 +182,7 @@ impl DashboardExecutionOrigin {
 					.account_id(account_id)
 					.suspension_epoch(suspension_epoch)
 					.source_disable_epoch(source_disable_epoch)
+					.suspension_resume_refusal(None)
 					.finish(),
 				true,
 			)));
@@ -236,6 +239,7 @@ impl DashboardExecutionOrigin {
 				.account_id(None)
 				.suspension_epoch(None)
 				.source_disable_epoch(None)
+				.suspension_resume_refusal(None)
 				.finish(),
 			false,
 		)))
@@ -396,6 +400,31 @@ impl DashboardExecutionOrigin {
 			.is_some())
 	}
 
+	/// Claim the audit of a changed automatic resume refusal. The caller holds
+	/// the paused Run and commits this change with the authorization decisions.
+	pub(crate) async fn record_suspension_resume_refusal(
+		db: &mut dyn TransactionExecutor,
+		run: Uuid,
+		refusal: &str,
+	) -> Result<bool> {
+		let column = "suspension_resume_refusal";
+		let query = Query::update()
+			.table(Alias::new("dashboard_execution_origins"))
+			.value(Alias::new(column), refusal)
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.cond_where(
+				reinhardt::query::Condition::any()
+					.add(Expr::col(column).is_null())
+					.add(Expr::col(column).ne(refusal)),
+			)
+			.to_string(PostgresQueryBuilder);
+		Ok(crate::database::native::query(&query)
+			.execute(db)
+			.await?
+			.rows_affected()
+			> 0)
+	}
+
 	/// Called only while the paused Run is locked and its original local authority
 	/// is held. The authority validates the administrator's exact epoch choice.
 	pub(crate) async fn rebind_suspended(
@@ -422,6 +451,7 @@ impl DashboardExecutionOrigin {
 			.value(Alias::new("account_id"), fresh.account_id)
 			.value(Alias::new("suspension_epoch"), suspension_epoch)
 			.value(Alias::new("source_disable_epoch"), source_epoch)
+			.value(Alias::new("suspension_resume_refusal"), None::<String>)
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&query).execute(db).await?;
