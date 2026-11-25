@@ -15,6 +15,28 @@ The Rust coverage upload job installs Codecov CLI 11.3.1 from PyPI through the p
 `codecov/codecov-action`'s official `use_pypi` input. OIDC authentication,
 the explicit LCOV input and `fail_ci_if_error: true` remain required.
 
+## E2E-only coverage floor
+
+Codecov reports all partitions together. The **Rust coverage upload** job also
+runs `scripts/e2e-coverage-gate.py` on the same LCOV files, and the job fails
+when coverage from E2E tests alone drops below the floor in
+`scripts/e2e-coverage.toml` (Issue #1127).
+
+- **What counts as covered:** only hits from the integration partitions
+  (identity, execution, persistence, collaboration, federation,
+  knowledge/marketplace). These run the server against disposable PostgreSQL and
+  fake services. Hits from the foundation and server-unit partitions do not count.
+- **What is measured:** every instrumented line any partition loaded, so code
+  that no E2E test links still counts as uncovered.
+- **What is left out:** `tests/` directories, `tests.rs` and `*_tests.rs` files,
+  migrations, items gated on `cfg(test)`, and the globs listed under `[[exclude]]`
+  with their reasons.
+
+Raise `threshold` in the same PR that adds E2E coverage, and never lower it to
+land a change. The program's goal is `target` (90%). To see the per-component
+table locally, download the `rust-coverage-*` artifacts of a full CI run into one
+directory and run `python3 scripts/e2e-coverage-gate.py <directory>`.
+
 ## Partitioned execution
 
 Sixteen independent jobs execute the locked Cargo targets in eight fields: foundation, server unit

@@ -257,6 +257,8 @@ jobs:
           PY_CHECK
           echo "files=$(cat coverage/files.txt)" >> "$GITHUB_OUTPUT"
         id: coverage-files
+      - name: Hold E2E-only coverage at its floor (Issue #1127)
+        run: python3 scripts/e2e-coverage-gate.py coverage/parts
       - name: Upload all Rust partitions to Codecov together
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
@@ -512,6 +514,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_local_k8s_credentials.py
       - run: python3 -m unittest discover -s scripts -p test_ci_success_aggregate.py
       - run: python3 -m unittest discover -s scripts -p test_develop_red.py
+      - run: python3 -m unittest discover -s scripts -p test_e2e_coverage_gate.py
       # Fixed-task evaluator (#122): deterministic corpus, oracles and guard rails; no Docker or credentials.
       - run: python3 -m unittest discover -s scripts -p test_fixed_task_evaluation.py
       # Matched projection campaign import, statistical gates and shared limits (#181).
