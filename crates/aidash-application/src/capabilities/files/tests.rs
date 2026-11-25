@@ -1,6 +1,19 @@
 use super::*;
 use crate::ports::capabilities::files::Limits;
 use aidash_domain::{policy::Resource, registry::Entry};
+async fn invoke(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	name: &str,
+	input: Value,
+	key: &str,
+) -> Result<Envelope> {
+	match super::invoke(scope, run, name, input, key).await? {
+		Invocation::Complete(result) => Ok(result),
+		Invocation::Pod(_) => panic!("expected a Working Area result"),
+	}
+}
+
 struct Scope {
 	bytes: Vec<u8>,
 	/// What a file holds when it is not the default `bytes`, by path.
@@ -975,7 +988,7 @@ async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 	let message = Uuid::new_v4();
 	let attachment = Uuid::new_v4();
 	let key = Uuid::new_v4();
-	let output = copy_thread_attachment(
+	let AttachmentCopy::Complete(output) = copy_thread_attachment(
 		&mut scope,
 		&run,
 		key,
@@ -988,7 +1001,9 @@ async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 		b"image",
 	)
 	.await
-	.unwrap();
+	.unwrap() else {
+		panic!("expected a Working Area copy");
+	};
 	assert_eq!(scope.pending, b"image");
 	assert_eq!(
 		output["file"]["provenance"],
@@ -1018,9 +1033,8 @@ async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 		"digest".into(),
 		&too_large,
 	)
-	.await
-	.unwrap_err();
-	assert!(matches!(error, Error::Conflict(reason) if reason == "WORKING_QUOTA"));
+	.await;
+	assert!(matches!(error, Err(Error::Conflict(reason)) if reason == "WORKING_QUOTA"));
 }
 
 /// A receiving Area cannot read its Home's message, so a copy of that message's attachment
@@ -1034,7 +1048,7 @@ async fn a_receiving_areas_attachment_copy_adds_no_home_message_source() {
 	let area = scope.area.as_ref().unwrap().clone();
 	let message = Uuid::new_v4();
 	let attachment = Uuid::new_v4();
-	let output = copy_thread_attachment(
+	let AttachmentCopy::Complete(output) = copy_thread_attachment(
 		&mut scope,
 		&run,
 		Uuid::new_v4(),
@@ -1047,7 +1061,9 @@ async fn a_receiving_areas_attachment_copy_adds_no_home_message_source() {
 		b"image",
 	)
 	.await
-	.unwrap();
+	.unwrap() else {
+		panic!("expected a Working Area copy");
+	};
 	// The file still says where it came from.
 	assert_eq!(output["file"]["provenance"]["message_id"], json!(message));
 	assert_eq!(
@@ -1305,19 +1321,14 @@ fn working_copy(paths: &[&str]) -> WorkingCopy {
 async fn copying_saved_files_into_the_scratch_space_needs_the_active_run() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
 	let area = scope.area.as_ref().unwrap().clone();
-	let runtime = std::sync::Arc::new(crate::capabilities::pod::tests::Runtime::default());
-	let context = crate::capabilities::pod::tests::context(runtime.clone());
-	let refused = crate::capabilities::pod::save::copy(
+	let refused = crate::capabilities::pod::save::Copy::prepare(
 		&mut scope,
 		&run,
 		&area,
-		&context,
 		working_copy(&[&file.path]),
 	)
-	.await
-	.unwrap_err();
-	assert!(matches!(refused, Error::Conflict(message) if message == "RUN_NOT_ACTIVE"));
-	assert!(runtime.calls().is_empty());
+	.await;
+	assert!(matches!(refused, Err(Error::Conflict(message)) if message == "RUN_NOT_ACTIVE"));
 }
 
 #[tokio::test]
@@ -1327,15 +1338,17 @@ async fn copying_saved_files_writes_them_at_their_paths() {
 	let area = scope.area.as_ref().unwrap().clone();
 	let runtime = std::sync::Arc::new(crate::capabilities::pod::tests::Runtime::default());
 	let context = crate::capabilities::pod::tests::context(runtime.clone());
-	let copied = crate::capabilities::pod::save::copy(
+	let Prepared::Call(mut copy) = crate::capabilities::pod::save::Copy::prepare(
 		&mut scope,
 		&run,
 		&area,
-		&context,
 		working_copy(&[&file.path]),
 	)
 	.await
-	.unwrap();
+	.unwrap() else {
+		panic!("expected a fresh copy");
+	};
+	let copied = copy.execute(&run, &context).await.unwrap();
 	assert_eq!(copied["copied"][0]["path"], file.path);
 	let writes = runtime.writes.lock().unwrap().clone();
 	assert_eq!(writes.len(), 1);

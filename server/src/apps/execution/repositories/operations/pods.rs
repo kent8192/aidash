@@ -103,19 +103,43 @@ pub(crate) async fn tool_context(
 	access: &mut Access,
 	run: &RunMetadata,
 ) -> Result<Option<PodContext>> {
+	context_for_tool(store, access, run, false).await
+}
+
+/// A detached file call keeps the Scratch Space membership stable through settlement.
+pub(crate) async fn settle_file_context(
+	store: &Store,
+	access: &mut Access,
+	run: &RunMetadata,
+) -> Result<Option<PodContext>> {
+	context_for_tool(store, access, run, true).await
+}
+
+async fn context_for_tool(
+	store: &Store,
+	access: &mut Access,
+	run: &RunMetadata,
+	settling_file: bool,
+) -> Result<Option<PodContext>> {
 	if store.capabilities.0.runner.is_none() {
 		return Ok(None);
 	}
 	let policy = policy(store)?;
 	let mut services = scratch::NativeScratchServices { policy: &policy };
-	let (space_id, _) = services.run_binding_metadata(access, run).await?;
+	let (space_id, starter) = services.run_binding_metadata(access, run).await?;
 	let tenant = access.identity.tenant.clone();
 	if run_revoked(&mut **access.tx, &tenant, run.id).await? {
 		return Err(NativeError::Forbidden.into());
 	}
-	let space = scratch::read(&mut **access.tx, &tenant, space_id)
-		.await?
-		.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;
+	let space = if settling_file {
+		scratch::hold_for_use(&mut **access.tx, &tenant, space_id).await?
+	} else {
+		scratch::read(&mut **access.tx, &tenant, space_id).await?
+	}
+	.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;
+	if !space.may_use(&starter) || space.node != run.node {
+		return Err(NativeError::Forbidden.into());
+	}
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 

@@ -46,7 +46,7 @@ pub(crate) async fn load(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Option<ScratchSpace>> {
-	load_with_lock(tx, tenant, id, true).await
+	load_with_lock(tx, tenant, id, Some(LockType::NoKeyUpdate)).await
 }
 
 /// Reads without a lock, for a check that decides nothing about the row's future.
@@ -55,14 +55,23 @@ pub(crate) async fn read(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Option<ScratchSpace>> {
-	load_with_lock(tx, tenant, id, false).await
+	load_with_lock(tx, tenant, id, None).await
+}
+
+/// Hold membership, state and settings stable until the caller commits.
+pub(crate) async fn hold_for_use(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> Result<Option<ScratchSpace>> {
+	load_with_lock(tx, tenant, id, Some(LockType::Share)).await
 }
 
 async fn load_with_lock(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	id: Uuid,
-	lock: bool,
+	lock: Option<LockType>,
 ) -> Result<Option<ScratchSpace>> {
 	let mut query = Query::select();
 	query
@@ -83,8 +92,8 @@ async fn load_with_lock(
 		.from(Alias::new("scratch_spaces"))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 		.and_where(Expr::col("id").eq(Expr::value(id)));
-	if lock {
-		query.lock(LockType::NoKeyUpdate);
+	if let Some(lock) = lock {
+		query.lock(lock);
 	}
 	let (sql, values) = query.build(PostgresQueryBuilder);
 	let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
@@ -726,7 +735,7 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	}
 	async fn load(&mut self, id: Uuid) -> aidash_application::Result<ScratchSpace> {
 		let tenant = self.access.identity.tenant.clone();
-		load_with_lock(&mut **self.access.tx, &tenant, id, false)
+		load_with_lock(&mut **self.access.tx, &tenant, id, None)
 			.await
 			.map_err(aidash_application::Error::from)?
 			.ok_or_else(|| aidash_application::Error::NotFound("Scratch Space".into()))
@@ -892,7 +901,7 @@ impl NativeScratchServices<'_> {
 			// across retries. Existing spaces need no Node allocation lock.
 			let scratch_id =
 				remote_space_id(&tenant, &run.node, &run.home_node, run.thread_id, &person);
-			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, false)
+			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, None)
 				.await
 				.map_err(aidash_application::Error::from)?
 			{

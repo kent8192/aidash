@@ -483,7 +483,10 @@ def test_file_routes_write_search_patch_and_manifest(tmp_path):
         assert post('search', {'pattern': 'hello', 'regex': False, 'max_results': 5})['matches'] == [
             {'path': 'x', 'line': 1, 'text': 'hello'}]
         patch = '*** Begin Patch\n*** Update File: x\n@@\n-hello\n+world\n*** End Patch\n'
-        assert post('patch', {'run_id': 'r', 'patch': patch}) == {'changed': ['x']}
+        request = {'run_id': 'r', 'patch': patch,
+                   'claim_id': '00000000-0000-4000-8000-000000000001', 'apply': True}
+        assert post('patch', request) == {'changed': ['x']}
+        assert post('patch', dict(request, apply=False)) == {'changed': ['x']}
         result = post('manifest', {'root': '.', 'ignore_files': [], 'exclude': [], 'include': [], 'max_files': 5})
         assert [(entry['path'], entry['size']) for entry in result['files']] == [('x', 6)]
         assert (root / 'x').read_bytes() == b'world\n'

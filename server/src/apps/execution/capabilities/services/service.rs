@@ -68,6 +68,11 @@ pub(crate) async fn working_area(
 		Err(error) => Err(error.into()),
 	}
 }
+pub(crate) enum Invocation {
+	Complete(Box<Envelope>),
+	Pod(Box<application::DeferredPodFile>),
+}
+
 pub(crate) async fn invoke(
 	store: &Store,
 	access: &mut Access,
@@ -75,15 +80,24 @@ pub(crate) async fn invoke(
 	name: &str,
 	input: Value,
 	key: &str,
-) -> Result<Envelope> {
-	let output = application::invoke(
+) -> Result<Invocation> {
+	match application::invoke(
 		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
 		&run.metadata(),
 		name,
 		input,
 		key,
 	)
-	.await?;
+	.await?
+	{
+		application::Invocation::Complete(output) => {
+			Ok(Invocation::Complete(Box::new(envelope(output)?)))
+		}
+		application::Invocation::Pod(request) => Ok(Invocation::Pod(request)),
+	}
+}
+
+pub(crate) fn envelope(output: aidash_domain::capabilities::files::Envelope) -> Result<Envelope> {
 	Ok(Envelope {
 		operation_id: output.operation_id,
 		status: output.status,

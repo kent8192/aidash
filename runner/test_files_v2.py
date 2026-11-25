@@ -1,4 +1,5 @@
 import base64
+import uuid
 
 import pytest
 
@@ -70,15 +71,57 @@ def test_patch_validates_all_hunks_before_changing_any_file(tmp_path):
     patch = ('*** Begin Patch\n*** Update File: one\n@@\n-old\n+new\n'
              '*** Update File: two\n@@\n-missing\n+wrong\n*** End Patch\n')
     with pytest.raises(ValueError):
-        service.patch({'run_id': 'r', 'patch': patch})
+        service.patch({'run_id': 'r', 'patch': patch, 'claim_id': str(uuid.uuid4()), 'apply': True})
     assert (scratch / 'one').read_text() == 'old\n'
     assert (scratch / 'two').read_text() == 'other\n'
     patch = ('*** Begin Patch\n*** Update File: one\n@@\n-old\n+new\n'
              '*** Delete File: two\n*** Add File: three\n+created\n*** End Patch\n')
-    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['one', 'two', 'three']}
+    assert service.patch({'run_id': 'r', 'patch': patch, 'claim_id': str(uuid.uuid4()), 'apply': True}) == {'changed': ['one', 'two', 'three']}
     assert (scratch / 'one').read_text() == 'new\n'
     assert not (scratch / 'two').exists()
     assert (scratch / 'three').read_text() == 'created\n'
+
+
+
+def test_patch_receipt_replays_without_applying_an_insertion_again(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    path = scratch / 'notes'
+    path.write_text('anchor\n')
+    state = tmp_path / 'state'
+    request = {
+        'run_id': 'r', 'claim_id': str(uuid.uuid4()), 'apply': True,
+        'patch': '*** Begin Patch\n*** Update File: notes\n@@ anchor\n+once\n*** End Patch',
+    }
+
+    def apply():
+        return FileService(scratch, state).patch(request)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.submit(apply), pool.submit(apply)
+        assert first.result() == second.result() == {'changed': ['notes']}
+    assert path.read_text() == 'anchor\nonce\n'
+
+    restarted = FileService(scratch, state)
+    assert restarted.patch(dict(request, apply=False)) == {'changed': ['notes']}
+    with pytest.raises(ValueError, match='conflict'):
+        restarted.patch(dict(request, patch=request['patch'].replace('+once', '+twice')))
+    assert path.read_text() == 'anchor\nonce\n'
+
+
+def test_reconciling_a_patch_without_a_receipt_never_edits_files(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    service = FileService(scratch, tmp_path / 'state')
+    request = {
+        'run_id': 'r', 'claim_id': str(uuid.uuid4()), 'apply': False,
+        'patch': '*** Begin Patch\n*** Add File: notes\n+content\n*** End Patch',
+    }
+    with pytest.raises(ValueError, match='receipt unavailable'):
+        service.patch(request)
+    assert not (scratch / 'notes').exists()
 
 
 def test_search_reads_large_text_files_in_bounded_chunks_and_skips_binary(tmp_path):
@@ -127,14 +170,14 @@ def test_patch_changes_only_the_lines_it_names(tmp_path):
     service = FileService(scratch, tmp_path / 'state')
     patch = ('*** Begin Patch\n*** Update File: crlf\n@@\n-two\n+TWO\n+added\n'
              '*** Update File: feed\n@@\n-old\n+new\n*** End Patch\n')
-    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['crlf', 'feed']}
+    assert service.patch({'run_id': 'r', 'patch': patch, 'claim_id': str(uuid.uuid4()), 'apply': True}) == {'changed': ['crlf', 'feed']}
     assert (scratch / 'crlf').read_bytes() == b'one\r\nTWO\r\nadded\r\nthree\r\n'
     assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nlast'
     patch = '*** Begin Patch\n*** Update File: feed\n@@\n-last\n+final\n*** End of File\n*** End Patch\n'
-    service.patch({'run_id': 'r', 'patch': patch})
+    service.patch({'run_id': 'r', 'patch': patch, 'claim_id': str(uuid.uuid4()), 'apply': True})
     assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal'
     patch = '*** Begin Patch\n*** Update File: feed\n@@ final\n+appended\n*** End Patch\n'
-    service.patch({'run_id': 'r', 'patch': patch})
+    service.patch({'run_id': 'r', 'patch': patch, 'claim_id': str(uuid.uuid4()), 'apply': True})
     assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal\nappended'
 
 
@@ -177,7 +220,7 @@ def test_new_files_get_their_missing_parent_directories(tmp_path):
     (scratch / 'link').symlink_to(tmp_path / 'outside', target_is_directory=True)
     service = FileService(scratch, tmp_path / 'state')
     patch = '*** Begin Patch\n*** Add File: src/pkg/main.py\n+print(1)\n*** End Patch\n'
-    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['src/pkg/main.py']}
+    assert service.patch({'run_id': 'r', 'patch': patch, 'claim_id': str(uuid.uuid4()), 'apply': True}) == {'changed': ['src/pkg/main.py']}
     assert (scratch / 'src' / 'pkg' / 'main.py').read_text() == 'print(1)\n'
     chunk = {'run_id': 'r', 'data': base64.b64encode(b'x').decode(), 'offset': 0, 'final': True}
     service.write(dict(chunk, path='copies/deep/x'))

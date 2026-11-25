@@ -63,6 +63,8 @@ async fn interruption_store(
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 		pool: pool.clone().into(),
 		restoration_pool: pool.clone().into(),
+		scratch_upload_pool: pool.clone().into(),
+		scratch_upload_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
 		control_pool: pool.into(),
 		deployment: aidash_domain::nodes::DeploymentId::parse("aidash://interruption-poll-test")
 			.unwrap(),
