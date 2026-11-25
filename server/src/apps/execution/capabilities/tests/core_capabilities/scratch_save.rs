@@ -492,13 +492,13 @@ async fn a_background_exit_is_committed_as_a_task_input_with_the_operation(
 	background_exit_runner: BackgroundExitRunner,
 	#[from(background_exit_endpoint)]
 	#[with(background_exit_runner.clone())]
-	endpoint: EndpointFuture,
+	_endpoint: EndpointFuture,
 	#[from(capability_fixture)]
-	#[with("aidash://execution-test",endpoint.clone(),FixtureRunner::Stub(endpoint.clone()))]
+	#[with("aidash://execution-test",_endpoint.clone(),FixtureRunner::Stub(_endpoint.clone()))]
 	core: CoreFuture,
 	worker_control: WorkerControl,
 ) {
-	use aidash_domain::run_state::{ReadyState, ResumeState};
+	use aidash_domain::run_state::{ReadyState, ResumeState, encode};
 	use aidash_server::domain::{RunState, WaitingState};
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	if std::env::var_os("AIDASH_SCRATCH_SAVE_TEST_CHILD").is_none() {
@@ -518,18 +518,22 @@ async fn a_background_exit_is_committed_as_a_task_input_with_the_operation(
 	)
 	.await;
 	assert_eq!(status, 200, "{operation}");
-	let waiting = common::pending(RunState::Waiting(Box::new(WaitingState::TaskWait {
-		wake_at: chrono::Utc::now() + chrono::Duration::minutes(30),
-		cursor: 0,
-		resume: ResumeState::Ready(ReadyState {}),
-	})));
+	let waiting = encode(
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
+			wake_at: chrono::Utc::now() + chrono::Duration::minutes(30),
+			cursor: 0,
+			resume: ResumeState::Ready(ReadyState {}),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
 	let database = c.f.store.pool.fixture_driver();
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("task_executions"))
 			.value("phase", "WAITING")
 			.value("pending", waiting)
-			.and_where(Expr::col("id").eq(run.id))
+			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(database)
@@ -559,7 +563,7 @@ async fn a_background_exit_is_committed_as_a_task_input_with_the_operation(
 				Query::select()
 					.column("run_id")
 					.from("run_activations")
-					.and_where(Expr::col("run_id").eq(run.id))
+					.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 					.and_where(Expr::col("reason").eq("input"))
 					.to_owned(),
 			))
