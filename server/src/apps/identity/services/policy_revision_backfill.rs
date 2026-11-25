@@ -43,6 +43,6 @@ pub(crate) fn forward() -> String {
 	)
 	.to_string(PostgresQueryBuilder);
 	format!(
-		"SET LOCAL search_path = public, pg_catalog;\nSET LOCAL aidash.scope = 'deployment';\n{insert};\n"
+		"SET LOCAL aidash.scope = 'deployment';\nSET LOCAL search_path = public, pg_catalog;\n{insert};\n"
 	)
 }
