@@ -134,16 +134,12 @@ pub fn credentials_match(expected: &str, provided: &str) -> bool {
 /// Limits for one gateway instance and scope tunnel.
 #[derive(Clone, Copy, Debug)]
 pub struct TunnelLimits {
-	/// Host connections one Scratch Space may have open at once. No setting
-	/// changes it, so a Tenant's own limit is checked against this default.
-	pub concurrent: usize,
 	pub idle_timeout: std::time::Duration,
 	pub max_lifetime: std::time::Duration,
 }
 impl Default for TunnelLimits {
 	fn default() -> Self {
 		Self {
-			concurrent: 32,
 			idle_timeout: std::time::Duration::from_secs(300),
 			max_lifetime: std::time::Duration::from_secs(86400),
 		}
@@ -180,7 +176,7 @@ pub struct ConnectionRecord {
 	pub outcome: String,
 	/// The code the client received, for a connection that did not complete.
 	pub error: Option<String>,
-	/// How long it waited for a Host connection limit; `None` until known.
+	/// How long it waited for its Egress fair share; `None` until known.
 	pub wait_ms: Option<u64>,
 }
 
@@ -231,8 +227,7 @@ pub trait EgressScopes: Send + Sync {
 		query_digest: &str,
 	) -> Result<ExternalAdmission>;
 	/// Refuses a new connection once the scope's daily budget is spent. It reads
-	/// and writes nothing else, so a connection costs the store no write before
-	/// it holds a Host connection limit (#845).
+	/// and writes nothing else. The gateway records a connection after admission.
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
 	/// Reauthenticate the credential and return current policy.
 	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings>;
@@ -256,8 +251,8 @@ pub trait EgressScopes: Send + Sync {
 	) -> Result<()>;
 	/// Idempotently inserts or updates a connection by record ID.
 	async fn record(&self, record: ConnectionRecord) -> Result<()>;
-	/// Adds counts of connections that ended before they held a Host connection
-	/// limit. Each tally is written once; a lost write loses only counts.
+	/// Adds counts of connections that ended before admission. Each tally is
+	/// written once; a lost write loses only counts.
 	async fn record_refusals(&self, tallies: Vec<RefusalTally>) -> Result<()>;
 	/// Tells the operator that a scope allowed to reach any host reached more
 	/// distinct hosts in a minute than its anomaly rule expects. Nothing stops.

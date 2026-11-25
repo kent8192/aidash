@@ -57,19 +57,6 @@ const STREAM_INTERRUPTED: &str = "stream_interrupted";
 /// How often counts of connections that ended before they held a Host
 /// connection limit are written (#845).
 const TALLY_INTERVAL: Duration = Duration::from_secs(60);
-/// Connections served at once. Beyond this a connection is refused. A Host
-/// connection gives its slot back once admitted, so the slots cover only the
-/// admission of a burst from several Scratch Spaces (#845).
-const CONNECTION_SLOTS: usize = 512;
-/// Refused connections answered at once, and for how long each. Sandboxed code
-/// can open connections freely, so answering them must be bounded too; beyond
-/// this a connection is dropped unanswered.
-const REFUSAL_SLOTS: usize = 8;
-const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
-/// Sandboxed code can fill the slots at will, so the log is thinned. The
-/// counter stays exact.
-const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
-const CONNECTION_LIMIT: &str = "egress_connection_limit";
 /// How much of a request body may be discarded after the answer, and for how
 /// long. These bytes never leave the gateway, so they are not charged.
 const LINGER_BYTES: u64 = 8 * 1024 * 1024;
@@ -838,7 +825,6 @@ struct LingeringClose<S> {
 	linger: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
 	closed: bool,
 	/// Told once the answer has been written and the sending side is closed.
-	answered: Option<tokio::sync::oneshot::Sender<()>>,
 	tunnel: Option<Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>>,
 }
 impl<S> LingeringClose<S> {
@@ -849,7 +835,6 @@ impl<S> LingeringClose<S> {
 			bytes_left: LINGER_BYTES,
 			linger: None,
 			closed: false,
-			answered: None,
 			tunnel: None,
 		}
 	}
@@ -859,13 +844,6 @@ impl<S> LingeringClose<S> {
 		tunnel: Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>,
 	) -> Self {
 		self.tunnel = Some(tunnel);
-		self
-	}
-
-	/// Reports through `answered` when the answer is out, so that a caller can
-	/// bound the answering apart from the discarding that follows it.
-	fn announcing(mut self, answered: tokio::sync::oneshot::Sender<()>) -> Self {
-		self.answered = Some(answered);
 		self
 	}
 }
@@ -942,9 +920,6 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 		if !self.closed {
 			std::task::ready!(std::pin::Pin::new(&mut self.inner).poll_shutdown(cx))?;
 			self.closed = true;
-			if let Some(answered) = self.answered.take() {
-				let _ = answered.send(());
-			}
 		}
 		if self.unread.0.load(Ordering::Relaxed) {
 			if let Some(tunnel) = self.tunnel.take() {
@@ -956,64 +931,35 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 	}
 }
 
-/// Per-instance proxy capacity. Tenant capacity must be at least one Scratch
-/// Space's and lower than global capacity.
-#[derive(Clone, Copy, Debug)]
-pub struct ProxyLimits {
-	pub global_concurrent: usize,
-	pub tenant_concurrent: usize,
-	/// Host connections that may wait for a limit at once; a Tenant may use a
-	/// quarter. The server derives it from its open-file limit
-	/// ([`waiting_budget`]).
-	pub waiting: usize,
+/// Operator settings for one gateway process.
+#[derive(Clone, Debug, Default)]
+pub struct GatewaySettings {
+	pub memory_limit_bytes: Option<u64>,
+	/// The default group is named `shared`; absent Tenants belong to it.
+	pub group: Option<String>,
+	pub tenant_groups: std::collections::HashMap<String, String>,
 }
-impl Default for ProxyLimits {
-	fn default() -> Self {
-		Self {
-			global_concurrent: 1024,
-			tenant_concurrent: 256,
-			waiting: 2048,
-		}
+
+impl GatewaySettings {
+	fn accepts(&self, tenant: &str) -> bool {
+		let group = self.group.as_deref().unwrap_or("shared");
+		self.tenant_groups
+			.get(tenant)
+			.map_or("shared", String::as_str)
+			== group
 	}
 }
 
-/// Open files kept back from waiting Host connections for everything else the
-/// process opens: database and NATS connections, listeners, open connections
-/// and files.
-const RESERVED_OPEN_FILES: u64 = 8192;
-
-/// Open files counted at most. An unlimited limit (macOS often reports
-/// `RLIM_INFINITY`) leaves memory as the bound, so the budget stays finite.
-const COUNTED_OPEN_FILES: u64 = 1 << 20;
-
-/// The waiting budget for a process allowed `open_files` open files: half of
-/// what remains after the reserve, and at least 64, so that a small limit still
-/// leaves waiting possible without letting it exhaust the process (#845).
-pub fn waiting_budget(open_files: u64) -> usize {
-	let budget = open_files
-		.min(COUNTED_OPEN_FILES)
-		.saturating_sub(RESERVED_OPEN_FILES)
-		/ 2;
-	usize::try_from(budget).unwrap_or(usize::MAX).max(64)
-}
+pub use resources::{RECOMMENDED_OPEN_FILES, open_file_limits};
 
 /// Serve the Execution Pod proxy: Host connections, and External service
 /// requests sent as plain HTTP to [`aidash_domain::egress::SERVICES_HOST`].
 pub async fn serve_with_scopes(
 	listener: TcpListener,
 	scopes: Arc<dyn EgressScopes>,
-	limits: ProxyLimits,
+	settings: GatewaySettings,
 	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
-	if limits.tenant_concurrent < aidash_application::egress::TunnelLimits::default().concurrent
-		|| limits.tenant_concurrent >= limits.global_concurrent
-		|| limits.global_concurrent > tokio::sync::Semaphore::MAX_PERMITS
-		|| limits.waiting == 0
-	{
-		return Err(aidash_application::Error::Invalid(
-			"invalid Egress proxy tunnel capacity".into(),
-		));
-	}
 	let client = reqwest::Client::builder()
 		.redirect(reqwest::redirect::Policy::none())
 		.no_proxy()
@@ -1029,7 +975,7 @@ pub async fn serve_with_scopes(
 		.read_timeout(IDLE)
 		.build()
 		.map_err(crate::http_error)?;
-	serve_with_clients(listener, scopes, limits, stopping, client, public).await
+	serve_with_clients(listener, scopes, settings, stopping, client, public).await
 }
 
 /// The serving loop, with the upstream clients supplied. Tests give it clients
@@ -1037,16 +983,29 @@ pub async fn serve_with_scopes(
 async fn serve_with_clients(
 	listener: TcpListener,
 	scopes: Arc<dyn EgressScopes>,
-	limits: ProxyLimits,
+	settings: GatewaySettings,
 	mut stopping: watch::Receiver<bool>,
 	client: reqwest::Client,
 	public: reqwest::Client,
 ) -> crate::Result<()> {
-	let slots = Arc::new(tokio::sync::Semaphore::new(CONNECTION_SLOTS));
-	let refusals = Arc::new(tokio::sync::Semaphore::new(REFUSAL_SLOTS));
-	let mut refused = RefusedConnections::default();
 	let mut connections = tokio::task::JoinSet::new();
-	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
+	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone()));
+	let memory_limit = resources::memory_limit(settings.memory_limit_bytes);
+	let settings = Arc::new(settings);
+	if let Some((_, hard)) = open_file_limits()
+		&& hard < RECOMMENDED_OPEN_FILES
+	{
+		tracing::warn!(
+			hard,
+			recommended = RECOMMENDED_OPEN_FILES,
+			"Egress gateway open-file limit is low; raise the node's LimitNOFILE"
+		);
+	}
+	let mut sampling = tokio::time::interval(resources::SAMPLE_INTERVAL);
+	sampling.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+	metrics::gauge!("aidash_egress_open_connections_total").set(0);
+	metrics::gauge!("aidash_egress_waiting_connections").set(0);
+	metrics::gauge!("aidash_egress_resource_shortage").set(0);
 	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
 	let mut tallies = tokio::time::interval(TALLY_INTERVAL);
 	tallies.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1064,6 +1023,7 @@ async fn serve_with_clients(
 		}
 		tokio::select! {
 			_ = stopping.changed() => {},
+			_ = sampling.tick() => resources::sample(&tunnels, memory_limit),
 			_ = tallies.tick() => {
 				let scopes = scopes.clone();
 				let tunnels = tunnels.clone();
@@ -1073,32 +1033,23 @@ async fn serve_with_clients(
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
 				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
-				let Ok(permit) = slots.clone().try_acquire_owned() else {
-					let answering = refusals.clone().try_acquire_owned();
-					refused.note(answering.is_ok());
-					if let Ok(permit) = answering {
-						connections.spawn(async move { let _permit = permit; refuse_connection(socket).await; });
-					}
-					continue;
-				};
-				let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
+				let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone(); let settings = settings.clone();
 				connections.spawn(async move {
-					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
 					let unread = UnreadBody::default();
 					let noting = unread.clone();
 					let lingering_tunnel = connection_lease.clone();
 					let service = service_fn(move |request| {
 						noting.note(&request);
-						let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
+						let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let settings=settings.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
 								let connect = request.method() == hyper::Method::CONNECT;
 								// An External service request never becomes a Host connection: it
 								// is not counted, allowlisted or resolved as one (#738).
 								let mut response = if is_services_host(&request) {
-									if connect { refuse(StatusCode::BAD_REQUEST, "external_service_requires_http") } else { forward_service(request, client, public, scopes).await }
-								} else { proxy::forward(request, scopes, tunnels, permit, connection_lease).await };
+									if connect { refuse(StatusCode::BAD_REQUEST, "external_service_requires_http") } else { forward_service(request, client, public, scopes, tunnels, settings, connection_lease).await }
+								} else { proxy::forward(request, scopes, tunnels, &settings, connection_lease).await };
 								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
 								response
 							} else { refuse(StatusCode::NOT_FOUND, "egress_route_not_found") };
@@ -1112,73 +1063,6 @@ async fn serve_with_clients(
 			}
 		}
 	}
-}
-
-/// Connections refused since the last log line.
-#[derive(Default)]
-struct RefusedConnections {
-	unlogged: u64,
-	logged_at: Option<Instant>,
-}
-impl RefusedConnections {
-	fn note(&mut self, answered: bool) {
-		let outcome = if answered { "answered" } else { "dropped" };
-		metrics::counter!("aidash_egress_connections_refused_total", "outcome" => outcome)
-			.increment(1);
-		self.unlogged += 1;
-		if self
-			.logged_at
-			.is_none_or(|at| at.elapsed() >= REFUSAL_LOG_INTERVAL)
-		{
-			tracing::warn!(
-				refused = self.unlogged,
-				slots = CONNECTION_SLOTS,
-				"Egress connection slots are full"
-			);
-			self.unlogged = 0;
-			self.logged_at = Some(Instant::now());
-		}
-	}
-}
-
-/// Reads the request head first: closing a socket with unread data resets it,
-/// which can destroy the answer on its way to the client. Only the answering is
-/// bounded by `REFUSAL_WINDOW`; what the client still sends afterwards is
-/// discarded under the wrapper's own limits (#726), as for any refusal.
-async fn refuse_connection(socket: tokio::net::TcpStream) {
-	let unread = UnreadBody::default();
-	let noting = unread.clone();
-	let service = service_fn(move |request| {
-		noting.note(&request);
-		async {
-			let mut response = failure(StatusCode::SERVICE_UNAVAILABLE, CONNECTION_LIMIT);
-			response.headers_mut().insert(
-				hyper::header::CONNECTION,
-				hyper::header::HeaderValue::from_static("close"),
-			);
-			Ok::<_, Infallible>(response)
-		}
-	});
-	let (answered, answering) = tokio::sync::oneshot::channel();
-	let serving = hyper::server::conn::http1::Builder::new()
-		.timer(TokioTimer::new())
-		.keep_alive(false)
-		.header_read_timeout(REFUSAL_WINDOW)
-		.max_headers(64)
-		.serve_connection(
-			TokioIo::new(LingeringClose::new(socket, unread).announcing(answered)),
-			service,
-		);
-	tokio::pin!(serving);
-	tokio::select! {
-		_ = &mut serving => return,
-		answered = tokio::time::timeout(REFUSAL_WINDOW, answering) => {
-			if answered.is_err() {
-				return;
-			}
-		}
-	}
-	let _ = serving.await;
 }
 
 fn target(admission: &Admission, path: &str, query: Option<&str>) -> Result<Url, BoxError> {
@@ -1252,6 +1136,9 @@ async fn forward_service(
 	client: reqwest::Client,
 	public: reqwest::Client,
 	scopes: Arc<dyn EgressScopes>,
+	manager: Arc<proxy::TunnelManager>,
+	settings: Arc<GatewaySettings>,
+	connection_lease: Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>,
 ) -> Response<Body> {
 	let Some(token) = proxy::credential(request.headers()) else {
 		return proxy::auth_required();
@@ -1287,6 +1174,27 @@ async fn forward_service(
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
 	let admitting = tokio::time::Instant::now();
+	let scope = match manager.resolve(&*scopes, token).await {
+		Ok(scope) => scope,
+		Err(aidash_application::Error::Unauthorized) => return proxy::auth_required(),
+		Err(aidash_application::Error::Forbidden) => {
+			return refuse(StatusCode::FORBIDDEN, "egress_forbidden");
+		}
+		Err(_) => return refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_unavailable"),
+	};
+	if !settings.accepts(&scope.id.tenant) {
+		return refuse(StatusCode::FORBIDDEN, "egress_wrong_ip_group");
+	}
+	let (permit, _) = match manager
+		.acquire_watched(&scope, || {
+			Some(manager.watch_space(scopes.clone(), &scope, token))
+		})
+		.await
+	{
+		Ok(acquired) => acquired,
+		Err((status, code)) => return refuse(status, code),
+	};
+	*connection_lease.lock().unwrap() = Some(Arc::new(permit));
 	let admitted = scopes
 		.admit_external(
 			token,
@@ -1747,3 +1655,6 @@ mod tests;
 
 mod progress;
 mod proxy;
+
+mod buffers;
+mod resources;

@@ -159,3 +159,51 @@ pub async fn preview_gateway(settings: ProjectSettings) -> Result<()> {
 	};
 	result.map_err(Into::into)
 }
+
+/// Run only the Execution Pod proxy and its process metrics on a shared pool of eight.
+pub async fn egress_gateway(settings: ProjectSettings) -> Result<()> {
+	require_migrated(&settings).await?;
+	let config = Config::from_settings(&settings)?;
+	let pool = crate::database::runtime::connect(&config.database_url, 8)
+		.await?
+		.into_postgres()
+		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
+	let mut store = crate::store::Store::from_pool_for_role(pool, config.deployment.clone(), true)
+		.await?
+		.with_data_protection_floor(settings.deployment.data_protection_floor);
+	super::configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
+	super::configure_tenant_secrets(
+		&mut store,
+		&settings.provider_credentials,
+		ProcessRole::Server,
+	)?;
+	let group = std::env::var("AIDASH_EGRESS_IP_GROUP").ok();
+	let gateway = super::EgressGateway::bind(&store, &config, group).await?;
+	crate::apps::execution::services::metrics::initialize_recorder()?;
+	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
+	let mut stopped = coordinator.subscribe();
+	let mut tasks = aidash_runtime::Supervisor::new(Duration::from_secs(20));
+	let stopping = tasks.stop_receiver();
+	tasks.spawn_service("egress gateway", super::runtime_task(gateway.run(stopping)));
+	tasks.spawn_service(
+		"metrics",
+		super::runtime_task(crate::apps::execution::services::metrics::run(
+			coordinator.clone(),
+			vec![("egress", store.pool.clone())],
+		)),
+	);
+	tasks
+		.run_with_shutdown(
+			async {
+				tokio::select! {
+					_ = shutdown_signal() => {},
+					_ = stopped.recv() => {},
+				}
+			},
+			|| {
+				coordinator.shutdown();
+			},
+		)
+		.await
+		.map_err(Into::into)
+}
