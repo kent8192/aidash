@@ -2046,7 +2046,8 @@ impl WorkerAuthority {
 		let creator_authority = binding_authority(&usable, &config)?;
 		let mut members = std::collections::BTreeMap::new();
 		for agent in &input.members {
-			let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
+			let entry =
+				catalog::tool_entry(&mut lease, agent, "agent.execute", "subnode_create").await?;
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
 				&mut lease,
@@ -2157,13 +2158,18 @@ impl WorkerAuthority {
 			creator_bindings = Some(bindings);
 		}
 		let candidate = match command {
-			Command::Add { agent, .. } => Some(agent),
-			Command::Task { .. } => Some(&subnode.leader),
+			Command::Add { agent, .. } => Some((agent, Some("subnode_add_member"))),
+			Command::Task { .. } => Some((&subnode.leader, None)),
 			_ => None,
 		};
-		if let Some(candidate) = candidate {
+		if let Some((candidate, tool)) = candidate {
 			lease.set_node(run.node.clone());
-			let entry = catalog::entry(&mut lease, candidate, "agent.execute").await?;
+			let entry = match tool {
+				Some(tool) => {
+					catalog::tool_entry(&mut lease, candidate, "agent.execute", tool).await?
+				}
+				None => catalog::entry(&mut lease, candidate, "agent.execute").await?,
+			};
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
 				&mut lease,
