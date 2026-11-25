@@ -75,6 +75,8 @@ pub trait GenerationProvisioning: Send + Sync {
 	fn now(&self) -> DateTime<Utc>;
 	async fn dispatch_remote(&self) -> Result<()>;
 	async fn reconcile_foreign(&self) -> Result<()>;
+	/// Resume Subnode cleanup recorded by committed generation retirements.
+	async fn reconcile_retirements(&self) -> Result<()>;
 	async fn begin_read(&self) -> Result<Box<dyn GenerationProvisionRead>>;
 	/// Whether the job's requester may still see its Task, with the Task's Read
 	/// dependencies checked under a shared lease. A Node that does not answer is

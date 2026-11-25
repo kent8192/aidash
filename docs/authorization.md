@@ -278,17 +278,17 @@ so no Agent stops a flow. A Task created under another answers 400.
 
 Disabling or removing the creating Agent deletes its Subnodes (#1012). After a
 Catalog Approval is withdrawn or disabled (`POST /api/authorization/{tenant}/catalog`
-or `.../catalog/approvals` with `enabled: false`, or a carried withdrawal), and
-after every policy save (`POST /api/authorization/{tenant}`), Aidash ends each
-active Subnode whose creating Agent version is definitely unusable on the
-Subnode's Node: its Catalog Approval there is disabled, or the policy names its
-Agent subject with `enabled: false` (a generated version's retirement disables
-both). A version with no approval row on that Node (such as a generated version
-registered unapproved) or no subject is not treated as removed. The Subnode ends as its
+or `.../catalog/approvals` with `enabled: false`, or a carried withdrawal), a
+policy is saved (`POST /api/authorization/{tenant}`), or a generated Agent is
+retired, Aidash ends each active Subnode whose creating Agent version is disabled
+on the Subnode's Node. A disabled Catalog Approval or a policy subject with
+`enabled: false` establishes that the version was disabled. The Subnode ends as its
 creator's own end would, with reason `creator_agent_removed`: its member Runs
-are cancelled and its records stay readable. This runs right after the change
-commits, one creating Run per transaction that checks again under lock; a
-failure is logged and the next such change in the Tenant looks again.
+are cancelled and its records stay readable. Each creating Run is checked again
+under lock in its own transaction. Generation retirement records the pending
+cleanup when it commits, and the generation worker retries it until it succeeds.
+Catalog and policy changes run the check after their transaction commits. They
+log failures and check again on the next such change in the Tenant.
 
 A Node Registration is a Tenant Administrator's decision that one of its Nodes accepts one named Node of another Tenant, and addresses outbound exchange to it. `POST /api/tenants/{tenant}/nodes/{node}/registrations` takes `{source_node, endpoint?, key_id?, atomic_transactions, enabled, expected_revision}` under `node_registration.update` and answers the registration. `expected_revision` is 0 to create and the revision being replaced otherwise; a stale revision, or creating one that exists, answers 409. For a Node of this Deployment, `endpoint` and `key_id` must be absent and `source_node` must hold a name some Tenant holds; a Node of the owning Tenant answers 422, because the Tenant's policy decides within the Tenant. For a Node of another Deployment, both are required: the server fetches `{endpoint}/.well-known/aidash` with a 5 second timeout and requires its `id` to be the Node's Deployment, its `protocol_version` to be `0.4`, and its `key.id` to be the key ID typed, and the PEM to hash to that key ID. Anything else answers 422 with the reason. The registration stores the fetched public key as its initial trust anchor; the key ID the administrator types establishes that trust, not the endpoint. Planned rollover can advance its receiving keyset after the complete request and predecessor-signed transition verify, without replacing its authorization. See [Deployment Key rollover](protocol.md#deployment-key-rollover). Disabling needs no answer from the other Deployment and keeps what the registration pinned. `GET` on the same path lists the Node's registrations (`offset`, `limit` as for Peer Mappings), and `GET /api/tenants/{tenant}/nodes/{node}/registration-history?after=0&limit=100` lists every revision in order, under `node_registration.read`. Every administrator registration update is appended to `dashboard_administration_history` as `node_registration.update`; cryptographic advancement does not create an authorization revision. `PUT /api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-lists` (the address percent-encoded) takes `{revision, request: {tools, hosts}, allowance, block}`, all three lists required, under `node.federation_tools.manage` and answers the registration. The registration stores the Federation Tool Request, Allowance and Block of ADR 0139; a registration never edited holds the default lists, and the lists are part of the registration record that `GET` returns. An invalid pattern answers 422 and a stale `revision` answers 409. The write bumps the registration's revision, stamps the actor, appends a history row and is audited as `node.federation_tools.manage`. Members never hold the action.
 
@@ -518,7 +518,7 @@ Approving an agent version also makes the agent a subject of the Tenant's policy
 
 Approval alone does not grant a policy action; policy permission alone does not expose an unapproved entry. Discovery and execution see only approved versions satisfying `registry.read`. Scoped API and worker discovery search the local Node and source-authorized Nodes. Worker decisions intersect every subject in the originating execution chain.
 
-Approving a generation needs `generation.approve` and `catalog.approve`, and a Deployment Administrator cannot approve one. At publication the generated version is approved only while its approver still holds `catalog.approve`; otherwise, and on the receiving Node of a foreign generation, it is registered unapproved.
+Individually approving a generation needs `generation.approve` and `catalog.approve`, and a Deployment Administrator cannot approve one. Publication registers the generated version, creates its Agent subject and records its Catalog Approval on the Node that generated it. For an individual approval, the approver must still hold `catalog.approve` at publication. When the pinned Generation Policy authorizes automatic publication, Catalog Approval history records `generation-service` as the actor. A foreign generation uses the receiving Node's Catalog Approval when admitting its bound Remote Grant.
 
 A subject can POST `{"revision":0,"agent":{"id":"research","version":"1.0.0"}}` to `/api/tasks/{id}/claim`, or delegate to the local Node through `/api/tasks/{id}/delegate`. The task must be OPEN with completed dependencies. Admission checks thread access, `agent.execute` and `task.execute`, then commits the task claim, run and execution grant together. Local delegation additionally requires `task.delegate` for the originating chain and records its delivery atomically.
 
