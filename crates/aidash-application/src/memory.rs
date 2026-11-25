@@ -642,7 +642,9 @@ impl Engine<'_> {
 			budget.charge(output.usage)?;
 			output.output
 		} else if self.policy.thread_index_embedding {
-			self.thread_semantic(scope, bank, &query.text, &allowed, limit, budget)
+			// Boxed: recall runs deep inside worker turns, and this optional
+			// arm's state would otherwise widen every recall future's stack frame.
+			Box::pin(self.thread_semantic(scope, bank, &query.text, &allowed, limit, budget))
 				.await?
 		} else {
 			Vec::new()
