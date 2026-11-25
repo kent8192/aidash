@@ -17,6 +17,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use reinhardt::db::orm::AtomicTransaction;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
@@ -395,43 +396,36 @@ impl Models {
 		drop(generation);
 		Ok(())
 	}
-	/// Resolve the owner and Budget scope together before dispatch.
-	async fn billing(&self) -> Result<(model_calls::Attribution, budgets::Charge)> {
-		let tenant = &self.bank.tenant;
-		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
-		self.store
-			.control_pool
-			.atomic(&scope, async |tx| {
-				let (owner, charge) = if let Some(run) = self.work_run {
-					let owner = model_calls::Attribution::awake(tx, run).await?;
-					let charge = budgets::charge_of(tx, run).await?.ok_or(Error::Forbidden)?;
-					(owner, charge)
-				} else {
-					let charge = budgets::thread_charge(tx, tenant, self.bank.thread).await?;
-					let owner =
-						model_calls::Attribution::node(charge.tenant.clone(), charge.node.clone());
-					(owner, charge)
-				};
-				budgets::admit(budgets::gate_for(tx, &charge, Utc::now()).await?.0)?;
-				Ok((owner, charge))
-			})
-			.await
-	}
-
-	/// Passes the Budgets for a call `prepare` reserved. A refused call was
-	/// never sent, so its reservation goes back whole: the attempt is removed
-	/// and the operation's totals return, and a Budget refusal spends none of
-	/// the operation's retries or call budget (#1012).
-	async fn admit_reserved(
+	/// Check the Budget and resolve the dispatch metadata before sending.
+	/// A refusal releases the reservation, preserving the operation's retries
+	/// and durable call and token budgets.
+	async fn admit_reserved<T>(
 		&self,
 		reservation: &Reservation,
-	) -> Result<(model_calls::Attribution, budgets::Charge)> {
-		let refused = match self.billing().await {
-			Ok(billing) => return Ok(billing),
-			Err(error) => error,
-		};
-		self.release_reserved(reservation).await?;
-		Err(refused)
+		on_admitted: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction, budgets::Charge) -> Result<T>,
+	) -> Result<T> {
+		let tenant = &self.bank.tenant;
+		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+		let result = self
+			.store
+			.control_pool
+			.atomic(&scope, async |tx| {
+				let charge = if let Some(run) = self.work_run {
+					budgets::charge_of(tx, run).await?.ok_or(Error::Forbidden)?
+				} else {
+					budgets::thread_charge(tx, tenant, self.bank.thread).await?
+				};
+				budgets::admit(budgets::gate_for(tx, &charge, Utc::now()).await?.0)?;
+				on_admitted(tx, charge).await
+			})
+			.await;
+		match result {
+			Ok(admitted) => Ok(admitted),
+			Err(refused) => {
+				self.release_reserved(reservation).await?;
+				Err(refused)
+			}
+		}
 	}
 
 	/// Release the reservation for a call rejected before provider dispatch.
@@ -981,7 +975,17 @@ impl Models {
 			Prepared::AtCapacity => return Err(model_operation_capacity()),
 			Prepared::SkipOnReplay => unreachable!("required calls always check their own replay"),
 		};
-		let (owner, billing) = self.admit_reserved(&reservation).await?;
+		let (owner, billing) = self
+			.admit_reserved(&reservation, async |tx, charge| {
+				let owner = match self.work_run {
+					Some(run) => model_calls::Attribution::awake(tx, run).await?,
+					None => {
+						model_calls::Attribution::node(charge.tenant.clone(), charge.node.clone())
+					}
+				};
+				Ok((owner, charge))
+			})
+			.await?;
 		let origin = self
 			.reserve_model(reservation.id, input, output as u32)
 			.await?;
@@ -1198,7 +1202,9 @@ impl Models {
 			Prepared::AtCapacity => return Err(model_operation_capacity()),
 			Prepared::SkipOnReplay => return Err(Error::SemanticUnavailable),
 		};
-		let (_, billing) = self.admit_reserved(&reservation).await?;
+		let billing = self
+			.admit_reserved(&reservation, async |_, charge| Ok(charge))
+			.await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
