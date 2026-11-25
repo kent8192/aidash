@@ -4203,12 +4203,12 @@ mod tests {
 	) -> String {
 		use hyper::service::service_fn;
 		use std::convert::Infallible;
-		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let address = gateway.local_addr().unwrap();
+		// Keep the local HTTP exchange independent of kernel scheduling when
+		// the test clock is paused. The upstream connection still uses TCP.
+		let (mut client, gateway) = tokio::io::duplex(4096);
 		let manager = manager.clone();
 		let settings = settings.clone();
 		let served = tokio::spawn(async move {
-			let (socket, _) = gateway.accept().await.unwrap();
 			let service = service_fn(move |request| {
 				let manager = manager.clone();
 				let scopes = scopes.clone();
@@ -4232,10 +4232,9 @@ mod tests {
 				}
 			});
 			let _ = hyper::server::conn::http1::Builder::new()
-				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.serve_connection(hyper_util::rt::TokioIo::new(gateway), service)
 				.await;
 		});
-		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
 		client
 			.write_all(
 				format!(
@@ -4251,10 +4250,15 @@ mod tests {
 		String::from_utf8_lossy(&response).into_owned()
 	}
 
-	async fn closed_address() -> std::net::SocketAddr {
-		// Nothing listens on a port that was just released.
-		let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		unused.local_addr().unwrap()
+	fn closed_address() -> (tokio::net::TcpSocket, std::net::SocketAddr) {
+		// Keep the port bound without listening. Darwin drops SYNs to this
+		// socket, so the callers use a paused clock there to test the timeout.
+		let socket = tokio::net::TcpSocket::new_v4().unwrap();
+		socket
+			.bind((std::net::Ipv4Addr::LOCALHOST, 0).into())
+			.unwrap();
+		let address = socket.local_addr().unwrap();
+		(socket, address)
 	}
 
 	fn manager() -> (tokio::sync::watch::Sender<bool>, Arc<super::TunnelManager>) {
@@ -4282,13 +4286,16 @@ mod tests {
 		response
 	}
 
-	#[tokio::test]
-	async fn a_refused_upstream_connection_leaves_its_cause_without_host_or_credential() {
+	#[cfg_attr(target_vendor = "apple", tokio::test(start_paused = true))]
+	#[cfg_attr(not(target_vendor = "apple"), tokio::test)]
+	async fn a_failed_upstream_connection_leaves_its_cause_without_host_or_credential() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
 		let (_stop, manager) = manager();
-		let closed = closed_address().await;
+		let (_reservation, closed) = closed_address();
+		let bind_error = tokio::net::TcpListener::bind(closed).await.unwrap_err();
+		assert_eq!(bind_error.kind(), std::io::ErrorKind::AddrInUse);
 		let response = forward_once(&manager, scopes.clone(), &settings, vec![closed]).await;
 		assert!(response.contains("egress_connect_failed"), "{response}");
 		manager.drain().await;
@@ -4296,21 +4303,30 @@ mod tests {
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "WARN", "connect").len(), 1, "{logs}");
 		assert!(logs.contains(FAILED), "{logs}");
-		assert!(logs.to_lowercase().contains("refused"), "{logs}");
+		let cause = logs.to_lowercase();
+		assert!(
+			cause.contains("refused")
+				|| (cfg!(target_vendor = "apple") && cause.contains("timed out")),
+			"{logs}"
+		);
 		assert!(logs.contains(&scopes.records()[0].id.to_string()), "{logs}");
 		assert_private(&logs);
 		assert_eq!(observed.count(&failures("connect")), 1);
 	}
 
-	#[tokio::test]
+	#[cfg_attr(target_vendor = "apple", tokio::test(start_paused = true))]
+	#[cfg_attr(not(target_vendor = "apple"), tokio::test)]
 	async fn repeated_upstream_failures_log_one_line_and_count_every_one() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
 		let (_stop, manager) = manager();
-		let closed = closed_address().await;
-		for _ in 0..5 {
-			forward_once(&manager, scopes.clone(), &settings, vec![closed]).await;
+		let (_reservation, closed) = closed_address();
+		// Overlap the attempts so even timeouts fit in one log interval.
+		let attempts =
+			(0..5).map(|_| forward_once(&manager, scopes.clone(), &settings, vec![closed]));
+		for response in futures_util::future::join_all(attempts).await {
+			assert!(response.contains("egress_connect_failed"), "{response}");
 		}
 		manager.drain().await;
 		let logs = observed.logs();
