@@ -2,7 +2,7 @@
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::serializers::node_registrations::{RegistrationInput, ToolListsInput};
 use crate::apps::identity::serializers::peer::{HistoryPage, MappingPage};
-use crate::apps::identity::serializers::tool_asks::ToolAskAnswerInput;
+use crate::apps::identity::serializers::tool_asks::{ToolAskAnswerInput, ToolAskPage};
 use crate::apps::identity::services::node_registrations::NodeRegistrations;
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
@@ -123,10 +123,11 @@ pub async fn tool_asks(
 		node,
 		source_node,
 	}): PathStruct<RegistrationPath>,
+	Query(page): Query<ToolAskPage>,
 ) -> ViewResult<Response> {
 	crate::http::json(
 		service
-			.tool_asks(actor, origin, tenant, node, source_node)
+			.tool_asks(actor, origin, tenant, node, source_node, page.cursor)
 			.await,
 	)
 }

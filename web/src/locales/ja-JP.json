@@ -886,6 +886,7 @@
   "federationToolsSave": "ツールリストを保存",
   "toolAsksTitle": "回答待ち",
   "toolAsksNone": "この登録のツールリストについて回答を待っているリモート Run はありません。",
+  "toolAsksPageNone": "このページには回答待ちの呼び出しがありません。",
   "toolAsksHelp": "リモート Run が、ツールリストに無いツールを呼び出して停止しました。自分側の立場で、この Run だけ許可する、リストに追加する、呼び出しを断る、ブロックする、のいずれかを選んでください。",
   "toolAsksPattern": "追加するパターン（任意。例: registry:github/*）",
   "toolAsksRunOnly": "この Run のみ許可",

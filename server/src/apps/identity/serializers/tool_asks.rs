@@ -29,10 +29,20 @@ pub(crate) struct ToolAskRecord {
 	pub(crate) paused_since: Option<DateTime<Utc>>,
 }
 
+/// Continue looking for Home asks for this registration.
+#[derive(Deserialize, JsonSchema)]
+pub struct ToolAskPage {
+	/// The `next_cursor` from the preceding page.
+	pub(crate) cursor: Option<String>,
+}
+
 /// The calls waiting for an answer about one registration, receiver asks first.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ToolAsks {
 	pub(crate) asks: Vec<ToolAskRecord>,
+	/// Resume scanning Home Grants, even if this page found no Home asks.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub(crate) next_cursor: Option<String>,
 }
 
 /// How the people of a side answer one ask.
