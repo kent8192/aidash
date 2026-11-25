@@ -84,8 +84,8 @@ pub struct ScratchSettings {
 	pub cpu_millis: u32,
 	pub memory_bytes: u64,
 	pub docker_enabled: bool,
-	pub daily_sent_bytes: u64,
-	pub daily_received_bytes: u64,
+	pub daily_sent_bytes: Option<u64>,
+	pub daily_received_bytes: Option<u64>,
 }
 
 impl Default for ScratchSettings {
@@ -99,8 +99,8 @@ impl Default for ScratchSettings {
 			cpu_millis: 4000,
 			memory_bytes: 16 * GIB,
 			docker_enabled: false,
-			daily_sent_bytes: 100 * GIB,
-			daily_received_bytes: 100 * GIB,
+			daily_sent_bytes: None,
+			daily_received_bytes: None,
 		}
 	}
 }
@@ -151,10 +151,12 @@ impl ScratchSettings {
 		effective.capacity_bytes = effective.capacity_bytes.min(ceilings.capacity_bytes);
 		effective.cpu_millis = effective.cpu_millis.min(ceilings.cpu_millis);
 		effective.memory_bytes = effective.memory_bytes.min(ceilings.memory_bytes);
-		effective.daily_sent_bytes = effective.daily_sent_bytes.min(ceilings.daily_sent_bytes);
+		effective.daily_sent_bytes = effective
+			.daily_sent_bytes
+			.map(|bytes| bytes.min(ceilings.daily_sent_bytes));
 		effective.daily_received_bytes = effective
 			.daily_received_bytes
-			.min(ceilings.daily_received_bytes);
+			.map(|bytes| bytes.min(ceilings.daily_received_bytes));
 		effective.allowed_hosts = effective.allowed_hosts.intersection(tenant_hosts);
 		effective
 	}
@@ -175,10 +177,12 @@ impl ScratchSettings {
 			|| self
 				.idle_expiry_days
 				.is_some_and(|days| !(1..=365).contains(&days))
-			|| self.daily_sent_bytes == 0
-			|| self.daily_sent_bytes > ceilings.daily_sent_bytes
-			|| self.daily_received_bytes == 0
-			|| self.daily_received_bytes > ceilings.daily_received_bytes
+			|| self
+				.daily_sent_bytes
+				.is_some_and(|bytes| bytes == 0 || bytes > ceilings.daily_sent_bytes)
+			|| self
+				.daily_received_bytes
+				.is_some_and(|bytes| bytes == 0 || bytes > ceilings.daily_received_bytes)
 			|| self.execution_image.as_ref().is_some_and(|s| {
 				let Some((name, digest)) = s.rsplit_once("@sha256:") else {
 					return true;

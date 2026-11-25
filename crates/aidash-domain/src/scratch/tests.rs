@@ -6,22 +6,32 @@ fn idle_and_daily_budgets_have_bounded_positive_values() {
 	let limits = ScratchCeilings::default();
 	let hosts = HostAllowlist::All;
 	let mut settings = ScratchSettings::default();
+	assert_eq!(settings.daily_sent_bytes, None);
+	assert_eq!(settings.daily_received_bytes, None);
+	let mut json = serde_json::to_value(&settings).unwrap();
+	let fields = json.as_object_mut().unwrap();
+	fields.remove("daily_sent_bytes");
+	fields.remove("daily_received_bytes");
+	assert_eq!(
+		serde_json::from_value::<ScratchSettings>(json).unwrap(),
+		settings
+	);
 	assert!(settings.validate(&limits, &hosts).is_ok());
 	settings.idle_expiry_days = Some(366);
 	assert!(settings.validate(&limits, &hosts).is_err());
 	settings.idle_expiry_days = None;
-	settings.daily_sent_bytes = 0;
+	settings.daily_sent_bytes = Some(0);
 	assert!(settings.validate(&limits, &hosts).is_err());
-	settings.daily_sent_bytes = 1024 * 1024 * 1024 * 1024 + 1;
+	settings.daily_sent_bytes = Some(1024 * 1024 * 1024 * 1024 + 1);
 	assert!(settings.validate(&limits, &hosts).is_err());
-	settings.daily_sent_bytes = 1024 * 1024 * 1024 * 1024;
-	settings.daily_received_bytes = 0;
+	settings.daily_sent_bytes = Some(1024 * 1024 * 1024 * 1024);
+	settings.daily_received_bytes = Some(0);
 	assert!(settings.validate(&limits, &hosts).is_err());
-	settings.daily_received_bytes = 1024 * 1024 * 1024 * 1024 + 1;
+	settings.daily_received_bytes = Some(1024 * 1024 * 1024 * 1024 + 1);
 	assert!(settings.validate(&limits, &hosts).is_err());
 	let mut tighter = limits;
 	tighter.daily_sent_bytes = 50 * 1024 * 1024 * 1024;
-	settings.daily_received_bytes = 1;
+	settings.daily_received_bytes = Some(1);
 	assert!(settings.validate(&tighter, &hosts).is_err());
 }
 
