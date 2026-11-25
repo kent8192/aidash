@@ -245,6 +245,7 @@ impl DashboardAuthority {
 				if !matches!(
 					error,
 					Error::Forbidden
+						| Error::IdentityDisabled
 						| Error::AccountSuspended { .. }
 						| Error::IdentityStatusUnavailable
 				) =>

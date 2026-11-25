@@ -82,6 +82,7 @@ pub async fn result(
 			operation
 				.input
 				.get("session_id")
+				.or_else(|| operation.result.get("session_id"))
 				.cloned()
 				.unwrap_or(Value::Null),
 		)?,

@@ -1,6 +1,7 @@
 use super::{contracts::*, management::*, service, sessions};
 use crate::{
 	Error, Result,
+	apps::execution::repositories::store::DutyTaskStart,
 	authorization::{access::Access, execution, identity::Actor},
 	domain::{NewTask, Run},
 	federation::Federation,
@@ -159,27 +160,41 @@ async fn dispatch(
 	name: &str,
 	input: Value,
 ) -> Result<Envelope> {
+	use super::service::Invocation;
+	use crate::apps::execution::repositories::{files::ScratchStaging, subnodes};
+
+	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
+	let key = Uuid::new_v4().to_string();
+	let writes = !matches!(
+		name,
+		"file_read" | "file_search" | "skill_list" | "skill_load" | "skill_read"
+	);
+	let result = async {
+		if writes {
+			subnodes::require_writable(access.tx.native_mut(), run.thread_id).await?;
+		}
+		service::invoke(&f.store, &mut access, &run, name, input, &key).await
+	}
+	.await;
+	let tenant = access.identity.tenant.clone();
+	let policy_revision = access.snapshot.revision;
+	let request = match access.finish(result).await? {
+		Invocation::Complete(output) => return Ok(*output),
+		Invocation::Pod(request) => request,
+	};
+	let mut stage = ScratchStaging::new(&f.store, &tenant);
+	let ran = request.execute(&run.metadata(), &mut stage).await;
 	let (mut access, run) = run_access(&f, actor, id).await?;
 	let result = async {
-		if !matches!(
-			name,
-			"file_read" | "file_search" | "skill_list" | "skill_load" | "skill_read"
-		) {
-			crate::apps::execution::repositories::subnodes::require_writable(
-				access.tx.native_mut(),
-				run.thread_id,
-			)
-			.await?;
+		if access.snapshot.revision != policy_revision {
+			return Err(Error::Forbidden);
 		}
-		service::invoke(
-			&f.store,
-			&mut access,
-			&run,
-			name,
-			input,
-			&Uuid::new_v4().to_string(),
-		)
-		.await
+		if writes {
+			subnodes::require_writable(access.tx.native_mut(), run.thread_id).await?;
+		}
+		let mut scope = crate::bootstrap::file_scope(Some(&f.store), &mut access, Some(&run));
+		let output = ran?.settle(&mut scope, &run.metadata(), name, &key).await?;
+		service::envelope(output)
 	}
 	.await;
 	access.finish(result).await
@@ -536,17 +551,15 @@ pub(crate) async fn readable_thread(access: &mut Access, thread: Uuid) -> Result
 
 /// Starts an Agent's Run in a Thread inside `access`'s transaction, as its
 /// subject: a Root Task and its delegation. Duties start their Tasks through
-/// it as their Requester (#557, #1011). The Task is None when the idempotency
-/// key returned an earlier start.
-/// Starts a Task in a Thread and claims its Run. A Duty's start names the
-/// Duty, which the Task records before the claim pins the Duty's mission
-/// and procedure (#1011).
+/// it as their Requester (#557, #1011). The Task records its Duty before the
+/// claim pins the Duty's mission and procedure. The Task ID is None when the
+/// idempotency key returned an earlier start.
 pub(crate) async fn start_in_thread(
 	f: &Federation,
 	access: &mut Access,
 	(thread, agent): (Uuid, String),
 	input: Enqueue,
-	duty: Option<Uuid>,
+	duty: Option<DutyTaskStart>,
 ) -> Result<(Area, Option<Uuid>)> {
 	// Thread deletion takes this same row lock before writing its
 	// tombstone, so a Run cannot commit behind a delete that already passed
@@ -563,7 +576,7 @@ pub(crate) async fn start_in_thread(
 	let creator = access.identity.subject.clone();
 	let task = f
 		.store
-		.create_task_in(
+		.create_task_with_duty_in(
 			&mut access.tx,
 			thread,
 			&NewTask {
@@ -575,18 +588,9 @@ pub(crate) async fn start_in_thread(
 			},
 			&creator,
 			None,
-		)
-		.await?;
-	if let Some(duty) = duty {
-		let tenant = access.identity.tenant.clone();
-		crate::apps::workspaces::repositories::duties::mark_task_duty(
-			&mut **access.tx,
-			&tenant,
-			task.id,
 			duty,
 		)
 		.await?;
-	}
 	let delegation = execution::delegate_in(
 		f,
 		access,

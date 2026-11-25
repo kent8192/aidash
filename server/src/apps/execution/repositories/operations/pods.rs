@@ -103,51 +103,44 @@ pub(crate) async fn tool_context(
 	access: &mut Access,
 	run: &RunMetadata,
 ) -> Result<Option<PodContext>> {
+	context_for_tool(store, access, run, false).await
+}
+
+/// A detached file call keeps the Scratch Space membership stable through settlement.
+pub(crate) async fn settle_file_context(
+	store: &Store,
+	access: &mut Access,
+	run: &RunMetadata,
+) -> Result<Option<PodContext>> {
+	context_for_tool(store, access, run, true).await
+}
+
+async fn context_for_tool(
+	store: &Store,
+	access: &mut Access,
+	run: &RunMetadata,
+	settling_file: bool,
+) -> Result<Option<PodContext>> {
 	if store.capabilities.0.runner.is_none() {
 		return Ok(None);
 	}
 	let policy = policy(store)?;
 	let mut services = scratch::NativeScratchServices { policy: &policy };
-	let (space_id, _) = services.run_binding_metadata(access, run).await?;
+	let (space_id, starter) = services.run_binding_metadata(access, run).await?;
 	let tenant = access.identity.tenant.clone();
 	if run_revoked(&mut **access.tx, &tenant, run.id).await? {
 		return Err(NativeError::Forbidden.into());
 	}
-	let space = scratch::read(&mut **access.tx, &tenant, space_id)
-		.await?
-		.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;
-	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
-}
-
-/// Stop the ended Run's Python session in its Execution Pod: each session
-/// holds one of the Space's session slots until it stops, and nothing else
-/// stops it. Nothing happens for a Run that ran no Python cell.
-pub(crate) async fn stop_python(store: &Store, run: Uuid) -> NativeResult<()> {
-	if store.capabilities.0.runner.is_none() {
-		return Ok(());
+	let space = if settling_file {
+		scratch::hold_for_use(&mut **access.tx, &tenant, space_id).await?
+	} else {
+		scratch::read(&mut **access.tx, &tenant, space_id).await?
 	}
-	let space: Option<String> = crate::database::native::query_scalar(
-		&Query::select()
-			.expr(Expr::cust("input->>'scratch_space_id'"))
-			.from(Alias::new("core_operations"))
-			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
-			.and_where(
-				Expr::col(Alias::new("kind")).eq(aidash_application::capabilities::pod::PYTHON),
-			)
-			.and_where(Expr::cust(POD_ROWS))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(store.pool.in_scope(&MAINTENANCE))
-	.await?;
-	let Some(space) = space else {
-		return Ok(());
-	};
-	let runner = crate::bootstrap::operation_runner(store)?;
-	runner
-		.python_stop(&space, &run.to_string())
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))
+	.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;
+	if !space.may_use(&starter) || space.node != run.node {
+		return Err(NativeError::Forbidden.into());
+	}
+	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
 /// The Scratch Space whose Execution Pod a Run's tools use.

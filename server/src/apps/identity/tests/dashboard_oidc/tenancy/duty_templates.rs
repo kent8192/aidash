@@ -247,7 +247,18 @@ async fn a_published_duty_installs_as_the_installers_own_duty(
 		.await;
 	assert_eq!(status, 200, "{triggers}");
 	assert_eq!(triggers, json!([]));
-	// Act + Assert: a retried install returns the same Duty.
+	// Act + Assert: a retried install returns the same Duty and reports
+	// that its own Thread was deleted.
+	assert_eq!(mine["thread_deleted"], false);
+	let own_thread = mine["thread_id"].as_str().unwrap();
+	let (status, deleted) = f
+		.bob(
+			"POST",
+			&format!("/api/threads/{own_thread}/delete"),
+			json!({"idempotency_key": Uuid::new_v4(), "files": []}),
+		)
+		.await;
+	assert_eq!(status, 200, "{deleted}");
 	let (status, again) = f
 		.bob(
 			"POST",
@@ -257,6 +268,7 @@ async fn a_published_duty_installs_as_the_installers_own_duty(
 		.await;
 	assert_eq!(status, 200, "{again}");
 	assert_eq!(again["duty"]["id"], bob_duty.as_str());
+	assert_eq!(again["duty"]["thread_deleted"], true);
 	// Act + Assert: a Duty template is never installed as a Registry copy.
 	let (status, refused) = f
 		.bob(
@@ -323,6 +335,7 @@ async fn a_published_duty_installs_as_the_installers_own_duty(
 	assert_eq!(updated["mission"], "Fix failing CI runs and report them.");
 	assert_eq!(updated["template"]["version"], "1.1.0");
 	assert_eq!(updated["requester"], "bob");
+	assert_eq!(updated["thread_deleted"], false);
 	f.d.finish().await;
 }
 

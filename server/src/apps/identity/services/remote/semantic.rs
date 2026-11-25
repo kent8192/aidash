@@ -35,6 +35,7 @@ pub(crate) fn failure(error: &Error) -> Failure {
 		Error::RemoteSemantic(reason) => *reason,
 		Error::Forbidden
 		| Error::Unauthorized
+		| Error::AccountSuspended { .. }
 		| Error::CredentialForbidden(_)
 		| Error::CredentialUnauthorized(_) => Failure::Authority,
 		Error::Invalid(_) | Error::NotFound(_) => Failure::Configuration,

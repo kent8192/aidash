@@ -1015,6 +1015,63 @@ async fn establish_delegated_read(world: &World, created: usize) -> Task {
 	delegated
 }
 
+/// Count failed requests to the sibling while the one-connection pool keeps
+/// it silent. Driving the native router keeps server-side events in the
+/// request's scoped subscriber.
+async fn read_with_peer_attempts(world: &World, path: &str) -> ((u16, Value), usize) {
+	use futures_util::StreamExt as _;
+	use tracing::instrument::WithSubscriber as _;
+
+	struct PeerLog(Arc<Mutex<Vec<u8>>>);
+
+	impl std::io::Write for PeerLog {
+		fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+			self.0.lock().unwrap().extend_from_slice(bytes);
+			Ok(bytes.len())
+		}
+
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	let log = Arc::new(Mutex::new(Vec::new()));
+	let writer = log.clone();
+	let subscriber = tracing_subscriber::fmt()
+		.with_max_level(tracing::Level::WARN)
+		.with_ansi(false)
+		.with_writer(move || PeerLog(writer.clone()))
+		.finish();
+	let request = http::Request::get(path)
+		.header("authorization", format!("Bearer {}", world.token))
+		.body(bytes::Bytes::new())
+		.unwrap();
+	let response = async {
+		let mut response = world.app.clone().native_oneshot(request).await.unwrap();
+		let status = response.status.as_u16();
+		// The native router can return finite JSON in its response stream.
+		let body = if let Some(mut stream) = response.take_stream_body() {
+			let mut body = bytes::BytesMut::new();
+			while let Some(chunk) = stream.next().await {
+				body.extend_from_slice(&chunk.unwrap());
+			}
+			body.freeze()
+		} else {
+			response.body
+		};
+		(status, serde_json::from_slice(&body).unwrap())
+	}
+	.with_subscriber(subscriber)
+	.await;
+	let log = log.lock().unwrap();
+	let node = format!("node={}", world.sibling);
+	let attempts = String::from_utf8_lossy(&log)
+		.lines()
+		.filter(|line| line.contains("a Node did not answer a check") && line.contains(&node))
+		.count();
+	(response, attempts)
+}
+
 /// A Run that delegated to the second Node and then created Tasks follows the
 /// delegated Run's results. Those Tasks and the RequiredHome delegated Task
 /// need the Node's answer, so while it is silent they are each counted once
@@ -1063,17 +1120,12 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 
 	// Act: the second Node stops answering.
 	let original = limit_pool(&mut world, 1).await;
-	let first = std::time::Instant::now();
-	let (status, tasks) = world.get("/api/tasks").await;
-	let first = first.elapsed();
+	let ((status, tasks), attempts) = read_with_peer_attempts(&world, "/api/tasks").await;
 	// Assert: the Tasks that need the Node are left out and counted under it,
 	// the rest stay, and every missing row is counted.
 	assert_eq!(status, 200, "{tasks}");
 	// The first list waits for the silent Node, which the second must not.
-	assert!(
-		first >= Duration::from_millis(900),
-		"the first list asks the silent Node: {first:?}"
-	);
+	assert_eq!(attempts, 1, "the first list asks the silent Node once");
 	let hidden: Vec<_> = children
 		.iter()
 		.filter(|child| !listed(&tasks, child.id))
@@ -1102,23 +1154,12 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 		hidden.len() as u64,
 	)];
 	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
-	// A second list within the memory does not wait on the Node again. Without
-	// the memory every list read asks the silent Node, which cannot get a
-	// connection before the pool's one-second acquire timeout, so the read
-	// takes at least that second and this bound fails whatever the host's load
-	// (#770, Q16). With the memory only the read's own work remains, which took
-	// about 0.6 s on a loaded host. It runs straight after the first list: the
-	// reads below took over 40 s together on slow runners, longer than the
-	// 30 s memory (#1006).
-	let second = std::time::Instant::now();
-	let (status, tasks) = world.get("/api/tasks").await;
-	let second = second.elapsed();
+	// Read again before the slower reads below can outlast the 30 s memory
+	// (#1006). Count peer attempts independently of the list's duration.
+	let ((status, tasks), attempts) = read_with_peer_attempts(&world, "/api/tasks").await;
 	assert_eq!(status, 200, "{tasks}");
 	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
-	assert!(
-		second < Duration::from_secs(1),
-		"the second list waited {second:?} after {first:?}"
-	);
+	assert_eq!(attempts, 0, "the second list remembers the silent Node");
 	let (status, graph) = common::post_graph(
 		&world.app,
 		&source,
@@ -1171,15 +1212,10 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	assert_eq!(tasks_bob["unconfirmed"], json!([]), "{tasks_bob}");
 	assert!(hidden.iter().all(|child| !listed(&tasks_bob, child.id)));
 	// A single read still asks the Node, whatever the lists remember.
-	let asking = std::time::Instant::now();
-	let (status, body) = world.get(&single).await;
+	let ((status, body), attempts) = read_with_peer_attempts(&world, &single).await;
 	assert_eq!(status, 503, "{body}");
 	assert_eq!(body["code"], "node_unreachable", "{body}");
-	assert!(
-		asking.elapsed() >= Duration::from_millis(900),
-		"a single read asks the Node: {:?}",
-		asking.elapsed()
-	);
+	assert_eq!(attempts, 1, "a single read asks the Node");
 
 	// The Node answers again. A single read asks and clears what the lists
 	// remembered, so the Tasks return and the count goes.

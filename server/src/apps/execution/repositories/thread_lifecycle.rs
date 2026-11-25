@@ -7,7 +7,10 @@ use crate::apps::execution::capabilities::{
 	services::sessions,
 };
 use crate::{Error as NativeError, Result as NativeResult};
-use aidash_application::{Error, Result, ports::capabilities::thread_lifecycle::ThreadScope};
+use aidash_application::{
+	Error, Result,
+	ports::capabilities::{cleanup::CleanupScope, thread_lifecycle::ThreadScope},
+};
 use aidash_domain::capabilities::{
 	cleanup::Choice,
 	sessions::Area,
@@ -163,40 +166,7 @@ impl ThreadScope for Scope<'_> {
 		Ok(())
 	}
 	async fn cancel_generation(&mut self, area: &Area) -> Result<()> {
-		let result: NativeResult<()> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = area.id;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("task_executions"))
-						.value(Alias::new("control"), "CANCELLED")
-						.and_where(
-							Expr::col(Alias::new("id")).in_subquery(
-								Query::select()
-									.column(Alias::new("run_id"))
-									.from(Alias::new("core_runs"))
-									.and_where(
-										Expr::col(Alias::new("area_id"))
-											.eq(Expr::value(query_bind_1.to_owned())),
-									)
-									.to_owned(),
-							),
-						)
-						.and_where(Expr::col(Alias::new("phase")).is_not_in([
-							"COMPLETED",
-							"FAILED",
-							"CANCELLED",
-						]))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
+		CleanupScope::cancel_runs(self, area).await
 	}
 	async fn stop_work(&mut self, thread: Uuid) -> Result<()> {
 		let store = self

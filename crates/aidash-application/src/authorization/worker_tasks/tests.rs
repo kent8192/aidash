@@ -134,6 +134,7 @@ fn scope() -> Scope {
 			created_by: "producer".into(),
 			dependencies: vec![],
 			parent_id: Some(id(2)),
+			started_by_duty: None,
 			revision: 1,
 			created_at: Utc::now(),
 		},

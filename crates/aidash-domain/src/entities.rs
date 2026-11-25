@@ -197,6 +197,9 @@ pub struct Task {
 	pub created_by: String,
 	pub dependencies: Vec<Uuid>,
 	pub parent_id: Option<Uuid>,
+	/// The Duty that started this Task automatically, if any.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub started_by_duty: Option<Uuid>,
 	pub revision: i64,
 	pub created_at: DateTime<Utc>,
 }

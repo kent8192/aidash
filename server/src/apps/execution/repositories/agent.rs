@@ -1276,6 +1276,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		};
 		let mut tx = store.pool.begin(scope).await?;
 		let lines = crate::apps::workspaces::repositories::scratch::usable_lines(
+			store,
 			&mut tx,
 			&tenant,
 			authority.guard.scratch_space_id,
@@ -1346,18 +1347,18 @@ impl ExecutionEnvironment for Environment<'_> {
 			lease.finish(result).await
 		};
 		let outcome = outcome.map_err(aidash_application::Error::from)?;
-		let sources = match &outcome {
+		let units = match outcome {
 			crate::semantic::native_memory::Outcome::Recall(
 				aidash_domain::memory::Recall::Ready { units },
-			) => units
+			) => units,
+			_ => Vec::new(),
+		};
+		Ok(Some(StartMemory {
+			sources: units
 				.iter()
 				.map(aidash_domain::memory::Unit::evidence)
 				.collect(),
-			_ => vec![],
-		};
-		Ok(Some(StartMemory {
-			sources,
-			content: serde_json::to_value(outcome)?,
+			content: aidash_application::memory::start_recall_content(&units),
 		}))
 	}
 
@@ -1955,7 +1956,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 						)));
 					}
 				}
-				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
+				tools.insert((*name).to_owned(), providers.coordination_tool(run, name)?);
 			}
 		}
 		if handed.is_some() || aidash_domain::context::journal_query::offloaded_any(&run.context) {

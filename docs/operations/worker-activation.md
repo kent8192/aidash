@@ -120,6 +120,11 @@ delivery, and the retained thread event cursor and remote Task snapshot.
 24-hour bound counts from the first failure. Roll out every worker before an outage
 can put a Run in this wait.
 
+`outage_retry_state` is required while the Outage Wait tracks exhausted short
+retries for a semantic or service outage (#1034). A worker that only supports
+`outage_wait` can still load waits written before this field was added. New
+workers carry the field through the resumed step until it makes progress.
+
 `unassigned_abandonment` covers a saved completion that names the Unassigned Tasks
 it abandons (#772). A cancel settles that completion with exactly those Tasks.
 

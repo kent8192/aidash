@@ -342,6 +342,45 @@ impl OperationAdmissionScope<Uuid> for Scope {
 	}
 }
 #[rstest]
+#[tokio::test]
+async fn pod_python_admission_preserves_the_expected_session_in_idempotency(
+	mut scope: Scope,
+	run: RunMetadata,
+	input: ShellRequest,
+) {
+	let session = Uuid::from_u128(11);
+	super::pod::accept(
+		&mut scope,
+		&run,
+		input.clone(),
+		Some(session),
+		super::pod::PYTHON,
+		"space",
+	)
+	.await
+	.unwrap();
+	let accepted = &scope.accepted[0];
+	assert_eq!(accepted.input["expected_session_id"], json!(session));
+	scope.previous = Some((accepted.id, accepted.digest.clone()));
+
+	super::pod::accept(
+		&mut scope,
+		&run,
+		input.clone(),
+		Some(session),
+		super::pod::PYTHON,
+		"space",
+	)
+	.await
+	.unwrap();
+	assert!(matches!(
+		super::pod::accept(&mut scope, &run, input, Some(Uuid::from_u128(12)), super::pod::PYTHON, "space").await,
+		Err(Error::Conflict(code)) if code == "IDEMPOTENCY_CONFLICT"
+	));
+	assert_eq!(scope.accepted.len(), 1);
+}
+
+#[rstest]
 #[case::shell("shell",vec!["health:shell","admit"])]
 #[case::python("code_interpreter",vec!["health:python","admit"])]
 #[tokio::test]

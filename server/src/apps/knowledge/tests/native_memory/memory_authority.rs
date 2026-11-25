@@ -152,6 +152,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	.unwrap();
 	aidash_server::semantic::service::configure(&f.store, &actor, conversation.thread.id, aidash_server::semantic::ConfigureIndex {
         expected_revision: 0,
+        acknowledge_memory_embeddings: false,
         spec: aidash_server::semantic::IndexSpec {
             embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
             vector: aidash_domain::semantic::VectorConfig { provider:"postgres".into(), endpoint:"local".into(), credential_env:None },

@@ -461,6 +461,125 @@ fn only_alice_uses_references(c: &mut CoreFixture, bob_may_revoke: bool) {
 
 #[rstest::rstest]
 #[tokio::test]
+async fn source_versions_offer_reference_revocation_without_auditing_the_hint(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use reinhardt::query::{Alias, Expr, ExprTrait as _, Func, PostgresQueryBuilder, Query};
+
+	let mut c = Box::pin(capability_fixture).await;
+	let (status, added) = add(&c, &c.token, vec![file("plan.md", "plan\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	let reference = &added["files"][0]["reference"];
+	let id = reference["reference_id"].as_str().unwrap();
+	let source_id = "source-revocation-hints";
+	let (status, source) = register_source(&c, &c.token, source_id, &added["references"]).await;
+	assert_eq!(status, 200, "{source}");
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, approval) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node,"entry":{"id":source_id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approval}");
+	only_alice_uses_references(&mut c, false);
+	c.policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-reads-registry","effect":"allow","subjects":{"ids":["bob"]},
+		"actions":["registry.read"],"resources":{"kinds":["registry","source"]}
+	}));
+	let (status, policy) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":c.policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+	let versions = format!("/api/registry/versions?node={node}");
+	let hints = format!("/api/registry/{source_id}/1.0.0/reference-revocations?node={node}");
+	let decisions = Query::select()
+		.expr(Func::count(Expr::col("sequence").into()))
+		.from(Alias::new("authorization_decisions"))
+		.and_where(Expr::col("tenant").eq("acme"))
+		.and_where(Expr::col("action").eq("reference.delete"))
+		.and_where(Expr::col("resource_id").eq(id))
+		.to_string(PostgresQueryBuilder);
+	let audit_count = || async {
+		sqlx::query_scalar::<_, i64>(&decisions)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	let before = audit_count().await;
+	// The old page's probe writes a denial even though the request rolls back.
+	let (status, probe) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/revocation"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 404, "{probe}");
+	assert_eq!(audit_count().await, before + 1);
+
+	for (token, expected) in [
+		(
+			bob,
+			json!([{ "reference_id": id, "path": "plan.md", "may_revoke": false }]),
+		),
+		(
+			&c.token,
+			json!([{ "reference_id": id, "path": "plan.md", "may_revoke": true, "revision": reference["revision"] }]),
+		),
+	] {
+		let (status, page) = request(&c.app, token, "GET", &versions, Value::Null).await;
+		assert_eq!(status, 200, "{page}");
+		let source = page["versions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry"]["id"] == source_id)
+			.unwrap();
+		assert_eq!(source["reference_revocations"], expected);
+		let (status, scoped) = request(&c.app, token, "GET", &hints, Value::Null).await;
+		assert_eq!(status, 200, "{scoped}");
+		assert_eq!(scoped, expected);
+	}
+	let policies = c.policy["policies"].as_array_mut().unwrap();
+	policies.retain(|policy| policy["id"] != "bob-reads-registry");
+	policies.extend([
+		json!({"id":"bob-reads-source","effect":"allow","subjects":{"ids":["bob"]},"actions":["registry.read"],"resources":{"kinds":["source"],"ids":[source_id]}}),
+		json!({"id":"bob-revokes-reference","effect":"allow","subjects":{"ids":["bob"]},"actions":["reference.delete"],"resources":{"kinds":["reference"],"ids":[id]}}),
+	]);
+	let (status, policy) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":3,"bundle":c.policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	let (status, page) = request(&c.app, bob, "GET", &versions, Value::Null).await;
+	assert_eq!(status, 403, "{page}");
+	let (status, scoped) = request(&c.app, bob, "GET", &hints, Value::Null).await;
+	assert_eq!(status, 200, "{scoped}");
+	assert_eq!(
+		scoped,
+		json!([{ "reference_id": id, "path": "plan.md", "may_revoke": true, "revision": reference["revision"] }])
+	);
+	assert_eq!(audit_count().await, before + 1);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_subject_the_policy_grants_reference_delete_revokes_a_file_it_did_not_upload(
 	#[future] capability_fixture: CoreFixture,
 ) {
@@ -762,6 +881,23 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
+	let patch = |revision: Value, path: &'static str| {
+		let endpoint = path_for_patch(run.id);
+		let app = &c.app;
+		let token = &token;
+		async move {
+			request(
+				app,
+				token,
+				"POST",
+				&endpoint,
+				json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{path:null},"patch":format!("*** Begin Patch\n*** Add File: {path}\n+note\n*** End Patch")}),
+			)
+			.await
+		}
+	};
+	let (status, first) = patch(area["revision"].clone(), "first.md").await;
+	assert_eq!(status, 200, "{first}");
 	let approve = |revision: i64, enabled: bool| {
 		request(
 			&c.app,
@@ -774,6 +910,9 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	let (status, withdrawn) = approve(1, false).await;
 	assert_eq!(status, 200, "{withdrawn}");
 
+	let (status, denied) = patch(first["revision"].clone(), "second.md").await;
+	assert_eq!(status, 403, "{denied}");
+
 	for (route, input) in [
 		(
 			"files/read",
@@ -785,7 +924,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		),
 		(
 			"files/materialize",
-			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
+			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":first["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
 		),
 	] {
 		let (status, denied) = request(
@@ -813,6 +952,9 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "needle\n", "{read}");
+	// The rejected patch did not publish a revision or leave a file behind.
+	let (status, second) = patch(first["revision"].clone(), "second.md").await;
+	assert_eq!(status, 200, "{second}");
 	c.close().await;
 }
 

@@ -45,6 +45,7 @@ fn scope() -> Scope {
 			created_by: "primary".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 1,
 			created_at: now,
 		},

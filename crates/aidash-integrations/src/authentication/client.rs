@@ -398,6 +398,12 @@ impl Authority for Client {
 		{
 			return Err(Error::AccountSuspended { epoch });
 		}
+		if !response.active
+			&& response.reason == "identity_disabled"
+			&& Uuid::parse_str(&response.source_identity_id).ok() == Some(source_identity)
+		{
+			return Err(Error::IdentityDisabled);
+		}
 		require_validity(source_identity, &response, false)?;
 		Ok(aidash_domain::accounts::DurableOrigin {
 			identity_id: source_identity,

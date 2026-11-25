@@ -139,7 +139,6 @@ function frame(
       JSON.stringify([data.deployment.id, request.thread_id]),
     ),
   );
-  const scheduled = new Set(schedules?.scheduled_tasks ?? []);
   const entries: NoticeEntry[] = data.tasks.map((task) => {
     const kind =
       task.status === "FAILED"
@@ -152,7 +151,7 @@ function frame(
       scope: JSON.stringify([data.deployment.id, task.thread_id]),
       signature: `${task.revision}:${task.status}`,
       kind,
-      quiet: quietCompletion(kind, task.id, scheduled),
+      quiet: quietCompletion(kind, task.started_by_duty),
       detail: task.title.slice(0, 180),
       threadTitle:
         data.threads.find((thread) => thread.id === task.thread_id)?.title ??
@@ -209,7 +208,10 @@ function frame(
       eventSequence: event.sequence,
       signature: `${value.revision}:${value.status}`,
       kind,
-      quiet: quietCompletion(kind, value.id, scheduled),
+      quiet: quietCompletion(
+        kind,
+        value.started_by_duty ?? windowed?.started_by_duty,
+      ),
       detail: value.title.slice(0, 180),
       threadTitle:
         data.threads.find((thread) => thread.id === event.thread_id)?.title ??

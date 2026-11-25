@@ -5,18 +5,31 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[rstest]
-fn outage_tracking_survives_wake_and_is_cleared_after_progress(mut run: Run) {
+#[case::decider("Decider", false, 6)]
+#[case::service("Native memory", true, 0)]
+fn outage_tracking_survives_wake_and_is_cleared_after_progress(
+	mut run: Run,
+	#[case] service: &str,
+	#[case] short_retries_exhausted: bool,
+	#[case] decider_retry: u32,
+) {
 	let start = chrono::DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
 		.unwrap()
 		.to_utc();
 	run.recovery.outage = Some(crate::run_state::OutageTracking {
-		service: "Decider".into(),
+		service: service.into(),
 		started_at: start,
+		short_retries_exhausted,
 	});
-	run.recovery.decider_retry = 6;
+	run.recovery.decider_retry = decider_retry;
 	let resumed = run.worker_snapshot("execution.outage_resumed").unwrap();
-	assert_eq!(resumed.pending["recovery"]["outage"]["service"], "Decider");
-	assert_eq!(resumed.pending["recovery"]["decider_retry"], 6);
+	let (_, recovery) = crate::run_state::decode(run.phase(), resumed.pending).unwrap();
+	let outage = recovery.outage.unwrap();
+	assert_eq!(outage.service, service);
+	assert_eq!(outage.started_at, start);
+	assert_eq!(outage.short_retries_exhausted, short_retries_exhausted);
+	assert_eq!(recovery.decider_retry, decider_retry);
+	assert!(recovery.retry.is_none());
 	let completed = run.worker_snapshot("model.completed").unwrap();
 	assert!(completed.pending["recovery"].get("outage").is_none());
 	assert!(completed.pending["recovery"].get("decider_retry").is_none());

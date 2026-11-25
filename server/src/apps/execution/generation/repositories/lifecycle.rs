@@ -13,6 +13,9 @@ use reinhardt::query::{
 use serde_json::{Value, json};
 
 use uuid::Uuid;
+
+pub(super) mod retirement_cleanup;
+
 pub(crate) struct NativeLifecycle<'a> {
 	pub runtime: &'a Federation,
 	pub transaction: &'a mut crate::database::native::Transaction,
@@ -301,7 +304,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 
 	async fn retire_catalog(&mut self, job: &Request) -> aidash_application::Result<Option<i64>> {
 		let tx = &mut *self.transaction;
-		Ok({
+		let revision = {
 			let query_bind_1 = &job.tenant;
 			let query_bind_2 = &job.agent_id;
 			let query_bind_3 = &job.agent_version;
@@ -333,7 +336,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			)
 			.scalar_optional(&mut **tx)
 			.await?
-		})
+		};
+		// A prepared or active version may have only its subject retired,
+		// including foreign versions previously published without Catalog Approval.
+		if revision.is_some() || job.prepared || job.status == "ACTIVE" {
+			retirement_cleanup::enqueue(tx, job.id).await?;
+		}
+		Ok(revision)
 	}
 
 	async fn record_retirement(

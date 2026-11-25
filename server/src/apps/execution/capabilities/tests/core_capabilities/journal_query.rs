@@ -3,7 +3,10 @@ use super::*;
 use aidash_application::ports::execution::ExecutionStore as _;
 use aidash_domain::context::ContextEvent;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use std::sync::Mutex;
+use std::sync::{
+	Mutex,
+	atomic::{AtomicBool, Ordering},
+};
 
 #[rstest::rstest]
 #[tokio::test]
@@ -25,6 +28,12 @@ async fn builtin_sends_the_current_journal_to_the_same_run_session(
 	let executor = c.f.store.for_run(TEST_FIXTURE);
 	let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
 	let records = calls.clone();
+	let change_during_cell = Arc::new(AtomicBool::new(false));
+	let interrupt_ack = Arc::new(AtomicBool::new(false));
+	let change = change_during_cell.clone();
+	let interrupt = interrupt_ack.clone();
+	let driver = c.f.store.pool.fixture_driver().clone();
+	let run_id = run.id;
 	let profile = (*c.f.store.capabilities.0).clone();
 	let health = json!({"protocol":"aidash-runner/1","verified":true,"python_verified":true,
 		"image":"fixture@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -47,9 +56,25 @@ async fn builtin_sends_the_current_journal_to_the_same_run_session(
 			json!({"status":"completed","writer_frozen":true,"stdout":STANDARD.encode(latest),"truncated":false})
 		} else if path.starts_with("/v1/sessions/") && !path.ends_with("/stop") { json!({"live":true}) }
 		else if path.ends_with("/stop") { json!({"termination_confirmed":true}) }
-		else if path.ends_with("/ack") { json!({"acknowledged":true}) }
+		else if path.ends_with("/ack") { json!({"acknowledged":!interrupt.swap(false, Ordering::SeqCst)}) }
 		else { panic!("unexpected runner request: {path}") };
-		async move { reinhardt::Response::ok().with_json(&response).unwrap() }
+		let change = path.ends_with("/start") && change.swap(false, Ordering::SeqCst);
+		let driver = driver.clone();
+		async move {
+			if change {
+				let event = serde_json::to_value(ContextEvent::ModelMediaObservation {
+					text: "changed during cell".into(), through_seq: None, truncated: false,
+				}).unwrap();
+				sqlx::query("UPDATE run_context_events SET event=$1, digest=$2 WHERE run_id=$3 AND seq=(SELECT max(seq) FROM run_context_events WHERE run_id=$3)")
+					.bind(&event)
+					.bind(aidash_domain::registry::rules::digest(&event))
+					.bind(run_id)
+					.execute(&driver)
+					.await
+					.unwrap();
+			}
+			reinhardt::Response::ok().with_json(&response).unwrap()
+		}
 	}));
 	let runner = upstream_fixtures::upstream(Arc::new(router)).await;
 	let mut profile = profile;
@@ -203,6 +228,75 @@ async fn builtin_sends_the_current_journal_to_the_same_run_session(
 			.count(),
 		3
 	);
+	// Change the generation after the cell runs, then lose the first receipt.
+	// Restoring exactly the old Journal makes the old authority fingerprint
+	// match again, so only the durable discard can force a fresh session.
+	let driver = c.f.store.pool.fixture_driver();
+	let (seq, event, digest): (i64, Value, String) = sqlx::query_as(
+		"SELECT seq, event, digest FROM run_context_events WHERE run_id=$1 ORDER BY seq DESC LIMIT 1",
+	)
+	.bind(run.id)
+	.fetch_one(driver)
+	.await
+	.unwrap();
+	let input = json!({"code":"journal()"});
+	let key = "journal-withdrawn-during-cell";
+	c.f.store
+		.invocation_start(
+			&TEST_FIXTURE,
+			&run,
+			worker,
+			key,
+			"journal_query",
+			&input,
+			true,
+		)
+		.await
+		.unwrap();
+	change_during_cell.store(true, Ordering::SeqCst);
+	interrupt_ack.store(true, Ordering::SeqCst);
+	let error = tool.invoke(&context, input.clone(), key).await.unwrap_err();
+	assert!(
+		error.to_string().contains("JOURNAL_RECEIPT_UNCONFIRMED"),
+		"{error}"
+	);
+	sqlx::query("UPDATE run_context_events SET event=$1, digest=$2 WHERE run_id=$3 AND seq=$4")
+		.bind(event)
+		.bind(digest)
+		.bind(run.id)
+		.bind(seq)
+		.execute(driver)
+		.await
+		.unwrap();
+	let recovered = tool.invoke(&context, input.clone(), key).await.unwrap();
+	assert_eq!(recovered["error"]["code"], "SESSION_RESET");
+	assert_ne!(recovered["session_id"], sessions[2]);
+	let fresh = tool.invoke(&context, input, key).await.unwrap();
+	assert!(fresh["stdout"].as_str().unwrap().contains("call-withdrawn"));
+	c.f.store
+		.invocation_finish(&TEST_FIXTURE, &run, worker, key, &fresh)
+		.await
+		.unwrap();
+	let requests = calls.lock().unwrap().clone();
+	let submitted: Vec<_> = requests
+		.iter()
+		.filter(|call| call["path"] == "/v1/operations")
+		.collect();
+	assert_eq!(submitted.len(), 5);
+	let discarded = &submitted[3]["body"];
+	let ack = format!(
+		"/v1/operations/{}/ack",
+		discarded["operation_id"].as_str().unwrap()
+	);
+	assert_eq!(
+		requests.iter().filter(|call| call["path"] == ack).count(),
+		2
+	);
+	assert_ne!(
+		discarded["operation_id"],
+		submitted[4]["body"]["operation_id"]
+	);
+	assert_eq!(submitted[4]["body"]["session_id"], recovered["session_id"]);
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	};

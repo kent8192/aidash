@@ -120,6 +120,7 @@ impl EgressScopes for MemoryScopes {
 		direction: Direction,
 		bytes: u64,
 		day: NaiveDate,
+		_reservation: uuid::Uuid,
 	) -> Result<()> {
 		self.check(&scope.id)?;
 		let mut s = self.state.lock().unwrap();
@@ -226,12 +227,12 @@ mod tests {
 		let scope = authority.resolve("token").await.unwrap();
 		let day = chrono::Utc::now().date_naive();
 		authority
-			.debit(&scope, Direction::Sent, 10, day)
+			.debit(&scope, Direction::Sent, 10, day, uuid::Uuid::new_v4())
 			.await
 			.unwrap();
 		assert!(
 			authority
-				.debit(&scope, Direction::Sent, 1, day)
+				.debit(&scope, Direction::Sent, 1, day, uuid::Uuid::new_v4())
 				.await
 				.is_err()
 		);
@@ -248,7 +249,7 @@ mod tests {
 			.await
 			.unwrap();
 		authority
-			.debit(&scope, Direction::Sent, 1, day)
+			.debit(&scope, Direction::Sent, 1, day, uuid::Uuid::new_v4())
 			.await
 			.unwrap();
 		authority

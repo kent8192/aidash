@@ -238,6 +238,7 @@ fn scope(run: RunMetadata) -> Scope {
 			created_by: "creator".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 1,
 			created_at: now,
 		},

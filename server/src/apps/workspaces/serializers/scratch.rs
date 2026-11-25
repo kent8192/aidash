@@ -41,7 +41,7 @@ pub(crate) struct ScratchLimits {
 pub(crate) struct ExternalServiceStatus {
 	pub id: String,
 	pub usable: bool,
-	/// Why it is not usable: `not_found`, `not_approved` or `approval_limited`.
+	/// Reason for an unusable service. Values are `not_found`, `not_approved`, `approval_limited`, and `limits_exceeded`.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<String>,
 }

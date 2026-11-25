@@ -60,6 +60,7 @@ pub(crate) mod data_protection_backfill;
 pub(crate) mod duty_actions_backfill;
 pub(crate) mod duty_policy_backfill;
 pub(crate) mod package_index_approvals;
+pub(crate) mod policy_revision_backfill;
 pub(crate) mod research_approval_cleanup;
 pub(crate) mod scratch_policy_backfill;
 pub(crate) mod thread_policy_backfill;

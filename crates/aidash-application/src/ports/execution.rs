@@ -531,6 +531,11 @@ pub trait ExecutionTool: Send + Sync {
 		Vec::new()
 	}
 	fn replay_safe(&self) -> bool;
+	/// Check arguments against the bound declaration before a caller reads
+	/// directly from Home to fit a result.
+	fn validate_input(&self, _input: &Value) -> Result<()> {
+		Ok(())
+	}
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
 	fn mcp_rounds(&self) -> bool {
 		false

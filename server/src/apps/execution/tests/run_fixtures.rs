@@ -43,6 +43,7 @@ pub fn run() -> Run {
 		control_source: Default::default(),
 		semantic_retry_cycle: 0,
 		pending_human_request_id: None,
+		stdio_session: None,
 	}
 }
 

@@ -266,8 +266,8 @@ struct Reach {
 	told: bool,
 }
 
-/// Counts a connection that is dropped while it waits for a limit: its client
-/// went away, and the future serving it with it.
+/// Counts a connection dropped while waiting for a limit unless the gateway
+/// itself is stopping.
 struct PendingTally {
 	manager: Arc<TunnelManager>,
 	scope: aidash_domain::egress::ScopeId,
@@ -276,7 +276,7 @@ struct PendingTally {
 }
 impl Drop for PendingTally {
 	fn drop(&mut self) {
-		if self.armed {
+		if self.armed && !is_stopping(&self.manager.stopping) {
 			self.manager.tally(&self.scope, &self.host, CLIENT_CLOSED);
 		}
 	}
@@ -846,11 +846,7 @@ impl Batch {
 	}
 	/// Debits until the store decides. A store that does not answer is tried
 	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
-	///
-	/// A debit carries no key, so one whose commit landed but whose answer was
-	/// lost is debited again: the same `amount`, at most one batch, counts
-	/// twice and stays counted for the day. That errs toward the allowance,
-	/// never past it; keying each reservation would need a store change.
+	/// Every attempt uses the same reservation ID, including after a lost commit answer.
 	async fn debit(
 		&mut self,
 		amount: u64,
@@ -860,11 +856,12 @@ impl Batch {
 			metrics::histogram!("aidash_egress_debit_seconds"),
 			tokio::time::Instant::now(),
 		);
+		let reservation = uuid::Uuid::new_v4();
 		let mut pause = DEBIT_RETRY;
 		let result = loop {
 			match self
 				.scopes
-				.debit(&self.settings, self.direction, amount, day)
+				.debit(&self.settings, self.direction, amount, day, reservation)
 				.await
 			{
 				Err(error) if !debit_decided(&error) => {
@@ -1846,6 +1843,7 @@ async fn forward_http(
 	let sent = audit.sent.clone();
 	let received = audit.received.clone();
 	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
+	let (client_error_tx, client_error) = tokio::sync::oneshot::channel();
 	let stopping = manager.stopping.clone();
 	// Idle reclamation is for CONNECT tunnels kept open between requests
 	// (#845 decision 27). This connection carries one request with
@@ -1879,15 +1877,23 @@ async fn forward_http(
 			let _ = result_tx.send(outcome);
 			// A stall must not hold the Scratch Space's limit while the record retries.
 			drop(permit);
+			audit.error = client_error.await.ok();
 			audit.finish().await;
 		});
 	}
+	// Sending a proxy error or dropping the sender lets the transfer task
+	// finalize the record. It publishes its outcome before waiting for this,
+	// since that outcome may determine the client's response.
+	let fail = |status, code| {
+		let _ = client_error_tx.send(code);
+		super::failure(status, code)
+	};
 	let (mut sender, connection) =
 		match hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(client)).await {
 			Ok(pair) => pair,
 			Err(error) => {
 				report.upstream("handshake", super::causes(&error));
-				return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
+				return fail(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 			}
 		};
 	tokio::spawn(async move {
@@ -1896,7 +1902,7 @@ async fn forward_http(
 	let (mut parts, body) = request.into_parts();
 	let target = match url[url::Position::BeforePath..].parse() {
 		Ok(target) => target,
-		Err(_) => return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target"),
+		Err(_) => return fail(StatusCode::BAD_REQUEST, INVALID_TARGET),
 	};
 	parts.uri = target;
 	let connection_headers = parts
@@ -1924,7 +1930,7 @@ async fn forward_http(
 	}
 	let host = &url[url::Position::BeforeHost..url::Position::AfterPort];
 	let Ok(host) = header::HeaderValue::from_str(host) else {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return fail(StatusCode::BAD_REQUEST, INVALID_TARGET);
 	};
 	parts.headers.insert(header::HOST, host);
 	parts.headers.insert(
@@ -1940,11 +1946,11 @@ async fn forward_http(
 			// The transfer may finish after writing the response into the duplex
 			// buffer but before Hyper has parsed its headers.
 			Ok("completed") => { transfer_completed = true; pending_response.await },
-			Ok("egress_budget_exhausted") => return super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
+			Ok("egress_budget_exhausted") => return fail(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
 			ended => {
 				let code = ended.unwrap_or("the transfer stopped");
 				report.upstream("request", format!("ended before a response: {code}"));
-				return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
+				return fail(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
 			}
 		},
 	};
@@ -1952,7 +1958,7 @@ async fn forward_http(
 		Ok(response) => response,
 		Err(error) => {
 			report.upstream("request", super::causes(&error));
-			return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
+			return fail(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
 		}
 	};
 	let (mut parts, body) = response.into_parts();
@@ -2566,8 +2572,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			b: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.0.debit(s, d, b, day).await
+			self.0.debit(s, d, b, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -2631,8 +2638,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			n: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.0.debit(s, d, n, day).await
+			self.0.debit(s, d, n, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -2794,8 +2802,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			n: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.0.debit(s, d, n, day).await
+			self.0.debit(s, d, n, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -4018,6 +4027,7 @@ mod tests {
 		debit_fails: bool,
 		/// The number of debits still to fail before the store answers again.
 		debit_failures: std::sync::atomic::AtomicU32,
+		debit_reservations: Arc<std::sync::Mutex<Vec<uuid::Uuid>>>,
 		/// How long each debit takes before it is answered.
 		debit_delay: std::time::Duration,
 		refund_fails: bool,
@@ -4032,6 +4042,7 @@ mod tests {
 				resolve_fails: false,
 				debit_fails: false,
 				debit_failures: Default::default(),
+				debit_reservations: Default::default(),
 				debit_delay: std::time::Duration::ZERO,
 				refund_fails: false,
 				record_hangs: false,
@@ -4075,7 +4086,9 @@ mod tests {
 			d: aidash_application::egress::Direction,
 			n: u64,
 			day: chrono::NaiveDate,
+			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
+			self.debit_reservations.lock().unwrap().push(reservation);
 			tokio::time::sleep(self.debit_delay).await;
 			let failing = self
 				.debit_failures
@@ -4088,7 +4101,7 @@ mod tests {
 					"pool timed out debiting".into(),
 				));
 			}
-			self.memory.debit(s, d, n, day).await
+			self.memory.debit(s, d, n, day, reservation).await
 		}
 		async fn refund(
 			&self,
@@ -4190,12 +4203,12 @@ mod tests {
 	) -> String {
 		use hyper::service::service_fn;
 		use std::convert::Infallible;
-		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let address = gateway.local_addr().unwrap();
+		// Keep the local HTTP exchange independent of kernel scheduling when
+		// the test clock is paused. The upstream connection still uses TCP.
+		let (mut client, gateway) = tokio::io::duplex(4096);
 		let manager = manager.clone();
 		let settings = settings.clone();
 		let served = tokio::spawn(async move {
-			let (socket, _) = gateway.accept().await.unwrap();
 			let service = service_fn(move |request| {
 				let manager = manager.clone();
 				let scopes = scopes.clone();
@@ -4219,10 +4232,9 @@ mod tests {
 				}
 			});
 			let _ = hyper::server::conn::http1::Builder::new()
-				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.serve_connection(hyper_util::rt::TokioIo::new(gateway), service)
 				.await;
 		});
-		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
 		client
 			.write_all(
 				format!(
@@ -4238,10 +4250,15 @@ mod tests {
 		String::from_utf8_lossy(&response).into_owned()
 	}
 
-	async fn closed_address() -> std::net::SocketAddr {
-		// Nothing listens on a port that was just released.
-		let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		unused.local_addr().unwrap()
+	fn closed_address() -> (tokio::net::TcpSocket, std::net::SocketAddr) {
+		// Keep the port bound without listening. Darwin drops SYNs to this
+		// socket, so the callers use a paused clock there to test the timeout.
+		let socket = tokio::net::TcpSocket::new_v4().unwrap();
+		socket
+			.bind((std::net::Ipv4Addr::LOCALHOST, 0).into())
+			.unwrap();
+		let address = socket.local_addr().unwrap();
+		(socket, address)
 	}
 
 	fn manager() -> (tokio::sync::watch::Sender<bool>, Arc<super::TunnelManager>) {
@@ -4269,13 +4286,16 @@ mod tests {
 		response
 	}
 
-	#[tokio::test]
-	async fn a_refused_upstream_connection_leaves_its_cause_without_host_or_credential() {
+	#[cfg_attr(target_vendor = "apple", tokio::test(start_paused = true))]
+	#[cfg_attr(not(target_vendor = "apple"), tokio::test)]
+	async fn a_failed_upstream_connection_leaves_its_cause_without_host_or_credential() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
 		let (_stop, manager) = manager();
-		let closed = closed_address().await;
+		let (_reservation, closed) = closed_address();
+		let bind_error = tokio::net::TcpListener::bind(closed).await.unwrap_err();
+		assert_eq!(bind_error.kind(), std::io::ErrorKind::AddrInUse);
 		let response = forward_once(&manager, scopes.clone(), &settings, vec![closed]).await;
 		assert!(response.contains("egress_connect_failed"), "{response}");
 		manager.drain().await;
@@ -4283,27 +4303,59 @@ mod tests {
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "WARN", "connect").len(), 1, "{logs}");
 		assert!(logs.contains(FAILED), "{logs}");
-		assert!(logs.to_lowercase().contains("refused"), "{logs}");
+		let cause = logs.to_lowercase();
+		assert!(
+			cause.contains("refused")
+				|| (cfg!(target_vendor = "apple") && cause.contains("timed out")),
+			"{logs}"
+		);
 		assert!(logs.contains(&scopes.records()[0].id.to_string()), "{logs}");
 		assert_private(&logs);
 		assert_eq!(observed.count(&failures("connect")), 1);
 	}
 
-	#[tokio::test]
+	#[cfg_attr(target_vendor = "apple", tokio::test(start_paused = true))]
+	#[cfg_attr(not(target_vendor = "apple"), tokio::test)]
 	async fn repeated_upstream_failures_log_one_line_and_count_every_one() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
 		let (_stop, manager) = manager();
-		let closed = closed_address().await;
-		for _ in 0..5 {
-			forward_once(&manager, scopes.clone(), &settings, vec![closed]).await;
+		let (_reservation, closed) = closed_address();
+		// Overlap the attempts so even timeouts fit in one log interval.
+		let attempts =
+			(0..5).map(|_| forward_once(&manager, scopes.clone(), &settings, vec![closed]));
+		for response in futures_util::future::join_all(attempts).await {
+			assert!(response.contains("egress_connect_failed"), "{response}");
 		}
 		manager.drain().await;
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "WARN", "connect").len(), 1, "{logs}");
 		assert_eq!(lines_at(&logs, "DEBUG", "connect").len(), 4, "{logs}");
 		assert_eq!(observed.count(&failures("connect")), 5);
+	}
+
+	#[tokio::test]
+	async fn only_waiters_dropped_before_shutdown_are_counted_as_client_closed() {
+		let (stop, manager) = manager();
+		let settings = test_settings();
+		let scopes = MemoryScopes::new(CREDENTIAL.into(), settings.clone());
+		let waiting = || super::PendingTally {
+			manager: manager.clone(),
+			scope: settings.id.clone(),
+			host: HOST.into(),
+			armed: true,
+		};
+		let client_closed = waiting();
+		let shutdown_aborted = waiting();
+		drop(client_closed);
+		stop.send(true).unwrap();
+		drop(shutdown_aborted);
+		manager.flush_tallies(&scopes).await;
+		let tallies = scopes.refusals();
+		assert_eq!(tallies.len(), 1);
+		assert_eq!(tallies[0].reason, "egress_client_closed");
+		assert_eq!(tallies[0].count, 1);
 	}
 
 	#[tokio::test]
@@ -4323,6 +4375,9 @@ mod tests {
 		assert!(response.contains("egress_upstream_failed"), "{response}");
 		upstream_task.await.unwrap();
 		manager.drain().await;
+		let records = scopes.records();
+		assert_eq!(records.len(), 1);
+		assert_eq!(records[0].error.as_deref(), Some("egress_upstream_failed"));
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "WARN", "request").len(), 1, "{logs}");
 		assert!(logs.contains("closed"), "{logs}");
@@ -4793,6 +4848,7 @@ mod tests {
 		let settings = settings_allowing_any_host();
 		let scopes = FaultyScopes::new(&settings);
 		scopes.debit_failures.store(4, Ordering::SeqCst);
+		let reservations = scopes.debit_reservations.clone();
 		let (received, result) = hello_through(settings, scopes, Default::default()).await;
 		assert_eq!(&received, b"hello");
 		assert!(
@@ -4802,6 +4858,8 @@ mod tests {
 			"{result:?}"
 		);
 		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
+		let reservations = reservations.lock().unwrap();
+		assert_eq!(reservations.as_slice(), &[reservations[0]; 5]);
 	}
 
 	/// Sends `hello` through the only tunnel its Scratch Space may hold while

@@ -74,6 +74,7 @@ impl EgressScopes for AuthorityScopes {
 		_: Direction,
 		_: u64,
 		_: chrono::NaiveDate,
+		_: uuid::Uuid,
 	) -> Result<()> {
 		unreachable!("a service request is metered by its own meter")
 	}
@@ -1266,8 +1267,11 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 		direction: Direction,
 		bytes: u64,
 		day: chrono::NaiveDate,
+		reservation: uuid::Uuid,
 	) -> Result<()> {
-		self.scopes.debit(scope, direction, bytes, day).await
+		self.scopes
+			.debit(scope, direction, bytes, day, reservation)
+			.await
 	}
 	async fn refund(
 		&self,

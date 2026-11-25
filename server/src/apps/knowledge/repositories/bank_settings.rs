@@ -229,6 +229,41 @@ pub(crate) async fn set(
 				"clear the bank before removing its indexed embedding".into(),
 			));
 		}
+		if previous.thread_index_embedding
+			&& policy.embedding.is_none()
+			&& !policy.thread_index_embedding
+		{
+			for unit in &unit_ids {
+				let revision: Option<i64> = native::query_scalar(
+					&Query::update()
+						.table(Alias::new("semantic_entries"))
+						.value_expr(Alias::new("deleted"), Expr::value(true))
+						.value_expr(Alias::new("state"), Expr::value("DELETED"))
+						.value_expr(Alias::new("revision"), Expr::col("revision").add(1_i64))
+						.value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()"))
+						.and_where(Expr::col("id").eq(Expr::value(*unit)))
+						.and_where(Expr::col("thread_id").eq(Expr::value(bank.thread)))
+						.and_where(Expr::col("key").eq(format!("memory-unit:{unit}")))
+						.and_where(Expr::col("deleted").eq(false))
+						.returning([Alias::new("revision")])
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_optional(&mut **lease.tx())
+				.await?;
+				if let Some(revision) = revision {
+					super::storage::retire_points(lease.tx(), *unit).await?;
+					super::storage::history(
+						lease.tx(),
+						bank.thread,
+						Some(*unit),
+						revision,
+						"DELETED",
+						"memory bank switched to keyword search",
+					)
+					.await?;
+				}
+			}
+		}
 		if policy.bounds.max_graph_visits < previous.bounds.max_graph_visits {
 			let rows = native::query(
 				&Query::select()

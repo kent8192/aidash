@@ -21,6 +21,7 @@ import {
   haltText,
   patchOf,
   dutyActions,
+  threadDeletedCopy,
   tickLabel,
   triggerSummary,
   type FormProblem,
@@ -225,10 +226,15 @@ export function DutiesPanel({
     setBusy(true);
     setError("");
     try {
-      await run();
-      await client.invalidateQueries({ queryKey: ["duties"] });
-      await client.invalidateQueries({ queryKey: ["duty"] });
-      await client.invalidateQueries({ queryKey: ["duty-notices"] });
+      // Takeover can commit before resume refuses. Refresh the committed
+      // state even when the action ends with an error.
+      await run().finally(() =>
+        Promise.all([
+          client.invalidateQueries({ queryKey: ["duties"] }),
+          client.invalidateQueries({ queryKey: ["duty"] }),
+          client.invalidateQueries({ queryKey: ["duty-notices"] }),
+        ]),
+      );
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -283,6 +289,9 @@ export function DutiesPanel({
             {duty.halt && duty.halt !== "paused" && (
               <Hint>{haltText(duty.halt, duty.halt_reason, ja)}</Hint>
             )}
+            {duty.thread_deleted && (
+              <Hint>{ja ? threadDeletedCopy.ja : threadDeletedCopy.en}</Hint>
+            )}
             <div className="flex flex-wrap gap-2">
               {dutyActions(duty).edit && (
                 <Button
@@ -314,9 +323,21 @@ export function DutiesPanel({
                   variant="outline"
                   disabled={busy}
                   onClick={() =>
-                    void act(() =>
-                      apiFetch(`/api/duties/${duty.id}/resume`, json({})),
-                    )
+                    void act(async () => {
+                      // A successor takes the Duty over first, then resumes
+                      // it as its Requester (#991). If resuming refuses, it
+                      // stays theirs, paused, for them to edit.
+                      if (dutyActions(duty).resume === "takeOver") {
+                        await apiFetch(
+                          `/api/duties/${duty.id}/take-over`,
+                          json({}),
+                        );
+                      }
+                      return apiFetch(
+                        `/api/duties/${duty.id}/resume`,
+                        json({}),
+                      );
+                    })
                   }
                 >
                   {dutyActions(duty).resume === "resume"

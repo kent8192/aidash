@@ -4731,6 +4731,288 @@ async fn the_home_answers_the_tool_ask_of_a_run_that_slept_past_its_grants_lifet
 	p.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn home_tool_asks_find_a_waiting_run_beyond_the_first_25_live_grants(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let db = p.a.store.pool.fixture_driver();
+	let mut grants = vec![p.grant];
+	let receiver = node_of(&p.b);
+	for index in 0..25 {
+		let (status, created) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/threads/{}/tasks", task.thread_id),
+			json!({"title": format!("Other remote task {index}"), "description": "Unrelated work"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{created}");
+		let task_id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+		// Sort these before the waiting Run's v4 grant when their expiry ties.
+		let grant = Uuid::from_u128(index + 1);
+		grants.push(grant);
+		let path = format!("/api/tasks/{task_id}/remote-grants");
+		let (status, prepared) = request(
+			&p.aa, &p.token, "POST", &path,
+			json!({"id":grant,"node_id":receiver,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300,"semantic":{"mode":"disabled"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{prepared}");
+		let (status, activated) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("{path}/{grant}/activate"),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{activated}");
+		// Record the receiver's claim without stepping its Run into model work.
+		let binding = Query::select()
+			.expr(Expr::constant_true())
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
+			.and_where(Expr::col("activated_at").is_not_null())
+			.to_owned();
+		let claim = sqlx::query(
+			&Query::update()
+				.table(Alias::new("tasks"))
+				.value(
+					Alias::new("owner"),
+					task.owner
+						.as_deref()
+						.expect("the receiver owns the original Task"),
+				)
+				.value(Alias::new("status"), "CLAIMED")
+				.and_where(Expr::col("id").eq(Expr::value(task_id)))
+				.and_where(Expr::exists(binding))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(db)
+		.await
+		.unwrap();
+		assert_eq!(claim.rows_affected(), 1, "{activated}");
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(
+				Alias::new("expires_at"),
+				chrono::Utc::now() + chrono::Duration::hours(1),
+			)
+			.and_where(Expr::col("id").is_in(grants.into_iter().map(Expr::value)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
+	let node = common::default_node(&p.a.store, "acme").await.node;
+	let receiver = receiver.replace(':', "%3A").replace('/', "%2F");
+	let asks = format!("/api/tenants/acme/nodes/{node}/registrations/{receiver}/tool-asks");
+	let administrator = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let (status, listed) = administrator.send("GET", &asks, Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed["asks"], json!([]), "{listed}");
+	let cursor = listed["next_cursor"]
+		.as_str()
+		.expect("another candidate page");
+	let cursor = percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC);
+	let (status, listed) = administrator
+		.send("GET", &format!("{asks}?cursor={cursor}"), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed.get("next_cursor"), None, "{listed}");
+	let home: Vec<_> = listed["asks"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|ask| ask["side"] == "home")
+		.collect();
+	assert_eq!(home.len(), 1, "{listed}");
+	assert_eq!(home[0]["id"], json!(p.grant), "{listed}");
+	assert_eq!(home[0]["call"], json!(call), "{listed}");
+	assert_eq!(home[0]["task_title"], json!(task.title), "{listed}");
+	let (status, invalid) = administrator
+		.send("GET", &format!("{asks}?cursor=invalid"), Value::Null)
+		.await;
+	assert_eq!(status, 400, "{invalid}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_tool_asks_resume_only_the_matching_system_pause(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let path = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}/control",
+		p.admission
+	);
+	let resume = |call, key| {
+		common::peer_request(
+			&p.ba,
+			(&p.a, "acme"),
+			&receiver,
+			"",
+			&path,
+			json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": key}}),
+		)
+	};
+	let revision = p.run().await.control_revision;
+	for target in [
+		("stale-call", "task_delegate"),
+		(call.as_str(), "stale-tool"),
+	] {
+		let (status, body) = resume(target.0, target.1).await;
+		assert_eq!(status, 409, "{body}");
+		assert_eq!(p.run().await.control_revision, revision);
+	}
+	let (status, body) = resume(&call, "task_delegate").await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(p.run().await.control, aidash_domain::RunControl::Active);
+
+	p.pause_receiver_on_call().await;
+	let revision = p.run().await.control_revision;
+	let (status, body) = resume(&call, "task_delegate").await;
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(p.run().await.control_revision, revision);
+
+	let overwritten_call = p.pause_receiver_on_home_ask().await;
+	let (status, body) = common::peer_request(
+		&p.ba,
+		(&p.a, "acme"),
+		&receiver,
+		"",
+		&path,
+		json!({"grant_id": p.grant, "action": "pause"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let paused = p.run().await;
+	let (status, body) = resume(&overwritten_call, "task_delegate").await;
+	assert_eq!(status, 409, "{body}");
+	let after = p.run().await;
+	assert_eq!(after.control, aidash_domain::RunControl::Paused);
+	assert_eq!(after.control_source, aidash_domain::ControlSource::Tenant);
+	assert_eq!(after.control_revision, paused.control_revision);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_control_revalidates_the_grants_disabled_identity(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let browser = common::BrowserMapping::new(&p.a, "acme", "alice").await;
+	let credential = Uuid::parse_str(&browser.credential).unwrap();
+	let db = p.a.store.pool.fixture_driver();
+	// Give the fixture grant the dashboard credential of the same Home subject.
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_grants"))
+			.value(Alias::new("credential_id"), credential)
+			.and_where(Expr::col("id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let path = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}/control",
+		p.admission
+	);
+	let resume = |input| common::peer_request(&p.ba, (&p.a, "acme"), &receiver, "", &path, input);
+	let call = p.pause_receiver_on_home_ask().await;
+	let input = json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": "task_delegate"}});
+	let (status, body) = resume(input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	p.pause_receiver_on_home_ask().await;
+	let paused = p.run().await;
+	let identity = Query::select()
+		.column(Alias::new("identity_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("credential_id").eq(Expr::value(credential)))
+		.to_owned();
+	let result = sqlx::query(
+		&Query::update()
+			.table(Alias::new("dashboard_identities"))
+			.value_expr(Alias::new("disabled_at"), Expr::current_timestamp())
+			.and_where(Expr::col("id").in_subquery(identity))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(db)
+	.await
+	.unwrap();
+	assert_eq!(result.rows_affected(), 1);
+	for input in [input, json!({"grant_id": p.grant, "action": "resume"})] {
+		let (status, body) = resume(input).await;
+		assert_eq!(status, 403, "{body}");
+		let after = p.run().await;
+		assert_eq!(after.control, aidash_domain::RunControl::Paused);
+		assert_eq!(after.control_revision, paused.control_revision);
+	}
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_control_keeps_the_receivers_safety_stop(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let call = p.pause_receiver_on_home_ask().await;
+	let revision = p.run().await.control_revision;
+	let token = format!("Bearer {}", p.b.config.api_token);
+	let operation = Uuid::new_v4().to_string();
+	let stop = common::http_response(
+		&p.ba,
+		"POST",
+		&format!("/api/executions/{}/management", p.admission),
+		&[("authorization", &token), ("content-type", "application/json"), ("idempotency-key", &operation)],
+		&serde_json::to_vec(&json!({"tenant":"acme","action":"pause","expected_control_revision":revision,"reason":"stop the receiver"})).unwrap(),
+	)
+	.await;
+	assert_eq!(stop.status_code(), 200, "{:?}", stop.body());
+	let stopped = p.run().await;
+	assert_eq!(
+		stopped.control_source,
+		aidash_domain::ControlSource::DeploymentAdministrator
+	);
+	let receiver = common::default_node(&p.b.store, "acme").await;
+	let prefix = format!(
+		"/federation/v0.1/scoped/execution/admissions/{}",
+		p.admission
+	);
+	let control = format!("{prefix}/control");
+	let declines = format!("{prefix}/declined-calls");
+	for (path, input) in [
+		(&control, json!({"grant_id": p.grant, "action": "resume"})),
+		(
+			&control,
+			json!({"grant_id": p.grant, "action": "resume", "tool_ask": {"call": call, "key": "task_delegate"}}),
+		),
+		(&control, json!({"grant_id": p.grant, "action": "pause"})),
+		(&declines, json!({"grant_id": p.grant, "call": call})),
+	] {
+		let (status, body) =
+			common::peer_request(&p.ba, (&p.a, "acme"), &receiver, "", path, input).await;
+		assert_eq!(status, 409, "{body}");
+		let after = p.run().await;
+		assert_eq!(after.control, aidash_domain::RunControl::Paused);
+		assert_eq!(after.control_source, stopped.control_source);
+		assert_eq!(after.control_revision, stopped.control_revision);
+	}
+	p.close().await;
+}
+
 /// The hourly renewal (ADR 0109 amendment of 2026-11-17) uses the Home's one
 /// liveness rule (#1013 review): a grant whose activation the Home never
 /// recorded is not renewed, though its Run is bound and its Task claimed. Once
@@ -5774,18 +6056,6 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	p.close().await;
 }
 
-async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication, agent: &Value) {
-	let (status, body) = request(
-		ba,
-		&common::tenant_token(&b.store, "acme").await,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":agent,"expected_revision":0,"enabled":true}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-}
-
 async fn prepare_generated_pair(
 	a: &Federation,
 	b: &Federation,
@@ -5980,9 +6250,6 @@ async fn prepare_generated_pair(
 	let (status, replayed) = request(aa, token, "POST", &route, input.clone()).await;
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed, prepared);
-	if !approval {
-		approve_foreign_generated(b, ba, &prepared["agent"]).await;
-	}
 	let count: i64 = {
 		let query_bind_1 = task;
 		sqlx::query_scalar(
@@ -6107,14 +6374,8 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		count, 0,
 		"approval publishes the definition but cannot activate a Run"
 	);
-	assert_ne!(
-		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
-			.await
-			.0,
-		200,
-		"the receiver registers a foreign generation unapproved"
-	);
-	approve_foreign_generated(&p.b, &p.ba, &pending["agent"]).await;
+	// The generation approval publishes everything the receiver needs to admit
+	// the exact version through the bound Remote Grant.
 	let (status, body) = request(&p.aa, &p.token, "POST", &grant_route, grant).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, activated) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
@@ -6122,6 +6383,28 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	let (status, replayed) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed["admission_id"], activated["admission_id"]);
+	let approval: (bool, String) = sqlx::query_as(
+		&Query::select()
+			.columns(["enabled", "actor"].map(Alias::new))
+			.from(Alias::new("authorization_catalog_history"))
+			.and_where(Expr::col("tenant").eq(Expr::value("acme")))
+			.and_where(Expr::col("node").eq(Expr::value(
+				aidash_domain::nodes::NodeName::derived("acme").as_str(),
+			)))
+			.and_where(
+				Expr::col("entry_id").eq(Expr::value(pending["agent"]["id"].as_str().unwrap())),
+			)
+			.and_where(
+				Expr::col("entry_version")
+					.eq(Expr::value(pending["agent"]["version"].as_str().unwrap())),
+			)
+			.and_where(Expr::col("revision").eq(Expr::value(1_i64)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(approval, (true, "alice".into()));
 	let rows: (i64, i64) = {
 		let query_bind_1 = node_of(&p.a);
 		let query_bind_2 = p.task;
@@ -6155,6 +6438,65 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		foreign_with_local_ids, 0,
 		"a foreign request leaves both local columns null"
 	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn foreign_generation_policy_can_publish_for_a_requester_without_catalog_approval(
+	#[with(false, false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-catalog-approval", "effect":"deny", "subjects":{"ids":["alice"]},
+		"actions":["catalog.approve"], "resources":{"kinds":["registry"]}
+	}));
+	common::replace_policy(&p.b.store, "acme", policy).await;
+
+	let (task, _, prepared) = prepare_generated_pair(
+		&p.a,
+		&p.b,
+		&p.aa,
+		&p.ba,
+		&p.token,
+		p.task,
+		(false, false, false),
+	)
+	.await;
+	let grant = Uuid::new_v4();
+	let route = format!("/api/tasks/{task}/remote-grants");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&route,
+		json!({"id":grant,"node_id":node_of(&p.b),"agent":prepared["agent"],"ttl_seconds":300,"semantic":{"mode":"disabled"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("{route}/{grant}/activate"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let history: (bool, String) = sqlx::query_as(
+		"SELECT enabled, actor FROM authorization_catalog_history \
+		 WHERE tenant = 'acme' AND node = $1 AND entry_id = $2 AND entry_version = $3 AND revision = 1",
+	)
+	.bind(aidash_domain::nodes::NodeName::derived("acme").as_str())
+	.bind(prepared["agent"]["id"].as_str().unwrap())
+	.bind(prepared["agent"]["version"].as_str().unwrap())
+	.fetch_one(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(history, (true, "generation-service".into()));
 	p.close().await;
 }
 
@@ -11129,6 +11471,26 @@ async fn remote_question_closes_when_home_observes_cancelled_run(#[future(awt)] 
 		closed["response"],
 		json!({"answered":false,"reason":"run_ended"})
 	);
+	// A concurrent reader of the closed journal must not stall another poll.
+	let mut reader = p.a.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query(
+		"SELECT grant_id FROM authorization_remote_execution WHERE grant_id = $1 FOR SHARE",
+	)
+	.bind(p.grant)
+	.fetch_one(&mut *reader)
+	.await
+	.unwrap();
+	let list_path = format!("/api/tasks/{}/remote-executions", p.task);
+	let (status, body) = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		request(&p.aa, &p.token, "GET", &list_path, Value::Null),
+	)
+	.await
+	.expect("a repeated status poll tried to lock an already closed journal");
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body[0]["unavailable"], false, "{body}");
+	assert_eq!(body[0]["human_requests"][0]["response"], closed["response"]);
+	reader.rollback().await.unwrap();
 	let path = format!(
 		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
 		p.task, p.grant
@@ -11175,14 +11537,43 @@ async fn home_cancellation_closes_remote_questions_and_refuses_late_answers(
 	.await;
 	assert_eq!(status, 200, "{response}");
 	let control_path = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
-	let (status, body) = request(
-		&p.aa,
-		&p.token,
-		"POST",
-		&control_path,
-		json!({"action":"cancel"}),
-	)
-	.await;
+	let (status, body) = {
+		// Match the Task lock taken by the Node-deletion and flow-stop cancel.
+		let pool = &p.a.store.pool;
+		let mut blocker = pool.fixture_driver().begin().await.unwrap();
+		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		sqlx::query("SELECT id FROM tasks WHERE id = $1 FOR UPDATE")
+			.bind(p.task)
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		let cancel = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&control_path,
+			json!({"action":"cancel"}),
+		);
+		tokio::pin!(cancel);
+		tokio::select! {
+			result = &mut cancel => panic!("cancel did not wait for the Task: {result:?}"),
+			() = common::wait_for_blocked(pool, pid, 1) => {},
+		}
+		// The lifecycle transaction can still take the journal lock while
+		// the person's cancel waits for the Task.
+		sqlx::query(
+			"SELECT grant_id FROM authorization_remote_execution WHERE grant_id = $1 FOR UPDATE NOWAIT",
+		)
+		.bind(p.grant)
+		.fetch_one(&mut *blocker)
+		.await
+		.expect("cancel locked the journal while waiting for the Task");
+		blocker.rollback().await.unwrap();
+		cancel.await
+	};
 	assert_eq!(status, 200, "{body}");
 	let journal: Value = sqlx::query_scalar(
 		"SELECT human_requests FROM authorization_remote_execution WHERE grant_id = $1",

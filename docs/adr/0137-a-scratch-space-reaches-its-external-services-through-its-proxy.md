@@ -32,3 +32,7 @@ Agent definitions no longer bind External services. New registrations with such 
 - A Live preview page that needs a service calls its own server in the Pod, which calls the service.
 - The per-operation budgets, the Live preview egress sessions and the `/v1` and Bearer `/v2/services` routes are removed.
 - Amends ADR 0054, ADR 0111 and ADR 0136.
+
+## Amendment (2026-11-23, #1038)
+
+The newest approved version must fit the Deployment's current `egress.limits` (ADR 0054). If a Deployment lowers those limits below the version's limits, requests are refused. Scratch Space settings report `limits_exceeded` for the service, and Task execution instructions omit it.

@@ -29,6 +29,8 @@ use uuid::Uuid;
 mod admission;
 #[path = "native_memory/budgets.rs"]
 mod budgets;
+#[path = "native_memory/builtin_semantic.rs"]
+mod builtin_semantic;
 #[path = "native_memory/change_matrix.rs"]
 mod change_matrix;
 #[path = "native_memory/decay.rs"]
@@ -3177,6 +3179,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,
+			acknowledge_memory_embeddings: false,
 			spec: configuration,
 		},
 	)

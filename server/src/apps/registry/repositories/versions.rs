@@ -3,13 +3,21 @@
 use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationCatalogHistory};
 use crate::apps::registry::models::Definition;
 use crate::apps::registry::serializers::contracts::{
-	AgentSubject, ApprovalRecord, Entry, RegistryVersion, RegistryVersions, VersionApproval,
+	AgentSubject, ApprovalRecord, Entry, ReferenceRevocationHint, RegistryVersion,
+	RegistryVersions, VersionApproval,
 };
 use crate::authorization::access::Access;
 use crate::{Error, Result};
-use aidash_domain::nodes::NodeName;
+use aidash_domain::{
+	capabilities::ReferenceAttachment,
+	nodes::NodeName,
+	registry::bindings::sources::{NativeContext, NativeSource},
+};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::Model;
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
 
 const PAGE: usize = 100;
 
@@ -124,13 +132,78 @@ pub(crate) async fn page(
 			),
 			needs_approval: !aidash_application::registry::system::is_builtin(&entry),
 			entry,
+			reference_revocations: Vec::new(),
 			approval,
 			history,
 			subject,
 		});
 	}
+	let attachments: Vec<_> = versions
+		.iter()
+		.map(|version| reference_attachments(&version.entry))
+		.collect();
+	let ids: Vec<_> = attachments
+		.iter()
+		.flatten()
+		.map(|attachment| attachment.reference_id)
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.collect();
+	let revisions =
+		crate::apps::execution::repositories::references::revocation_revisions(access, &ids)
+			.await?;
+	for (version, files) in versions.iter_mut().zip(attachments) {
+		version.reference_revocations = revocation_hints(files, &revisions);
+	}
 	Ok(RegistryVersions {
 		versions,
 		next_offset,
 	})
+}
+
+pub(crate) async fn source_revocations(
+	access: &mut Access,
+	source: &aidash_domain::registry::EntityRef,
+) -> Result<Vec<ReferenceRevocationHint>> {
+	let entry = aidash_application::authorization::catalog::get(
+		&mut crate::bootstrap::catalog_scope(access),
+		source,
+	)
+	.await?;
+	let files = reference_attachments(&entry);
+	let ids: Vec<_> = files.iter().map(|file| file.reference_id).collect();
+	let revisions =
+		crate::apps::execution::repositories::references::revocation_revisions(access, &ids)
+			.await?;
+	Ok(revocation_hints(files, &revisions))
+}
+
+fn revocation_hints(
+	files: Vec<ReferenceAttachment>,
+	revisions: &BTreeMap<Uuid, i64>,
+) -> Vec<ReferenceRevocationHint> {
+	files
+		.into_iter()
+		.map(|file| {
+			let revision = revisions.get(&file.reference_id).copied();
+			ReferenceRevocationHint {
+				reference_id: file.reference_id,
+				path: file.path,
+				may_revoke: revision.is_some(),
+				revision,
+			}
+		})
+		.collect()
+}
+
+fn reference_attachments(entry: &Entry) -> Vec<ReferenceAttachment> {
+	if entry.kind == "source"
+		&& let Ok(NativeContext {
+			source: NativeSource::ReferenceAttachments { references },
+			..
+		}) = NativeContext::deserialize(&entry.config)
+	{
+		return references;
+	}
+	Vec::new()
 }

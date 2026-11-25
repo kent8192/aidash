@@ -23,4 +23,9 @@ An in-flight request's check is the Continuation Check. It notices a stopped Run
 
 A Host connection's byte debit follows the same rule as its check: a slow store is not a refusal. A debit the store does not answer, or answers with an error rather than a decision, holds the connection's bytes and is tried again; only three failed checks close the connection as unable to reach its authority. One debit waits at most 30 seconds, after which the connection closes as `egress_budget_wait_timeout`, so a debit stuck behind the Scratch Space's state lock is named rather than left to the five-minute idle timeout. A refund runs after the bytes have moved, so one that fails is reported and leaves the unused bytes counted for the day, but does not change how the connection ended. Debits stay paid before the bytes they cover, so a slow store never lets a connection exceed its Scratch Space egress allowance.
 
+Each Host reservation carries a UUID that stays the same across retries (#1037).
+The store commits the reservation receipt and daily byte debit in one transaction.
+After a lost reply, the receipt lets the store acknowledge the same debit without
+taking the bytes again. The receipt is retained until the scope is purged.
+
 Considered: letting bytes move on credit while a debit waits, which keeps downloads moving but can exceed the allowance; and keeping the five-second debit deadline, which under load on 2026-11-11 closed working connections mid-download while their checks still had failures to spare, and marked finished ones as failed when their refund timed out.

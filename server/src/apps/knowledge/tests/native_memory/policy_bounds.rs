@@ -995,6 +995,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
+			acknowledge_memory_embeddings: false,
 			spec,
 		},
 	)

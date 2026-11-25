@@ -510,7 +510,8 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 			// The Run retries by itself while it waits, so management offers
 			// only `wait`; `retries_exhausted` comes at the bound (ADR 0129).
 			assert_eq!(reason, "unavailable", "{run:?}");
-			assert!(run.recovery.retry.is_some(), "{run:?}");
+			assert!(run.recovery.semantic_outage_retries_exhausted(), "{run:?}");
+			assert!(run.recovery.retry.is_none(), "{run:?}");
 			assert!(
 				matches!(&run.state, RunState::Waiting(wait)
 					if matches!(wait.as_ref(), WaitingState::Outage { service, .. } if service == "Semantic context")),
@@ -529,6 +530,16 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 		}
 	}
 
+	let run_id = run_id.unwrap();
+	let (status, management) = common::get(
+		&fixture._fixture.application,
+		&fixture.token,
+		&format!("/api/executions/{run_id}/management"),
+	)
+	.await;
+	assert_eq!(status, 200, "{management}");
+	assert_eq!(management["semantic_recovery"]["actions"], json!(["wait"]));
+
 	fixture.fault.clear();
 	if pending_entry {
 		aidash_server::semantic::worker::sweep(&fixture.f.store)
@@ -536,7 +547,7 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 			.unwrap();
 	}
 	// The wait wakes at its next check; nobody resumes the Run.
-	advance_outage_wake(&fixture, run_id.unwrap()).await;
+	advance_outage_wake(&fixture, run_id).await;
 	run_to_inference(&fixture, 1).await;
 	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
@@ -1086,6 +1097,7 @@ async fn configure(
 		&format!("/api/threads/{thread}/semantic/index"),
 		serde_json::to_value(ConfigureIndex {
 			expected_revision: revision,
+			acknowledge_memory_embeddings: false,
 			spec: spec.clone(),
 		})
 		.unwrap(),
@@ -1820,6 +1832,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			&format!("/api/threads/{}/semantic/index", other.id),
 			serde_json::to_value(ConfigureIndex {
 				expected_revision: 0,
+				acknowledge_memory_embeddings: false,
 				spec: spec(&endpoint),
 			})
 			.unwrap()
@@ -2115,6 +2128,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	reconfigured.max_results = 1;
 	let reconfigure = serde_json::to_value(ConfigureIndex {
 		expected_revision: 1,
+		acknowledge_memory_embeddings: false,
 		spec: reconfigured,
 	})
 	.unwrap();

@@ -328,6 +328,7 @@ pub(crate) async fn retrieve(
 				lease,
 				models: &models,
 				delivered: &mut Vec::new(),
+				start_keyword_scores: None,
 			};
 			engine.recall(&mut scope, &declared.bank, &query).await?
 		};

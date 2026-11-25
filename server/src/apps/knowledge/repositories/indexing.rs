@@ -624,6 +624,56 @@ impl SemanticIndexingSession for Session {
 			let policy =
 				crate::semantic::native_memory::policy(&mut self.lease, &bank.tenant, &provider)
 					.await?;
+			if policy.thread_index_embedding {
+				// Built-in Memory has no embedding role of its own: its Units
+				// are embedded like the Thread's other sources, with the
+				// index's embedding and ledger, under the projecting subject's
+				// saved authority (#1123). Only a Unit still visible at the
+				// projected revision is sent; a withdrawn or revoked one was
+				// already marked by its projection.
+				let origin = super::unit_origins::load(&mut self.lease, entry)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				let current = super::units::load(&mut self.lease, entry, false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				if Some(origin.revision) != row.metadata["unit_revision"].as_i64()
+					|| Some(current.revision) != row.metadata["unit_revision"].as_i64()
+					|| current.bank != bank
+					|| !current.visible()
+				{
+					return Err(Error::Forbidden.into());
+				}
+				use crate::apps::identity::repositories::budgets;
+				let scope = TenancyScope::tenant(&bank.tenant)?;
+				let charge = self
+					.store
+					.control_pool
+					.atomic(&scope, async |tx| {
+						let charge = budgets::thread_charge(tx, &bank.tenant, thread).await?;
+						let (gate, _) = budgets::gate_for(tx, &charge, chrono::Utc::now()).await?;
+						budgets::admit(gate)?;
+						Ok(charge)
+					})
+					.await?;
+				let vector = service::embed(
+					&self.store,
+					&mut self.lease,
+					thread,
+					config,
+					text,
+					crate::generation::embedding::Origin::Index(entry),
+				)
+				.await?;
+				// Commit the unpriced call independently of vector publication.
+				self.store
+					.control_pool
+					.atomic(&scope, async |tx| {
+						budgets::record_charge(tx, &charge, None, chrono::Utc::now()).await
+					})
+					.await?;
+				return Ok(vector);
+			}
 			let role = policy
 				.embedding
 				.as_ref()

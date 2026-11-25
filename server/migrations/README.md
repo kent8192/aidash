@@ -74,6 +74,12 @@ to the same Tenant, Node and scope, and Node deletion cascades through them.
 policies as schema operations, so the migration uses SQL assets. `0111` records
 the corresponding model state.
 
+`execution/0162_scope_host_debits` records a Host reservation ID and its debit
+parameters alongside each committed charge. Existing daily counters need no
+backfill. Receipts follow their scope through Node and Tenant purge. Forced
+Tenant row security uses SQL assets because Reinhardt cannot express policies.
+`execution/0163_scope_host_debit_state` registers the receipt model state.
+
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation
@@ -1033,6 +1039,9 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `identity/0113_budget_notice_delivery` makes a Budget's Soft Limit notice recoverable (#1012). Pending notices store the spend that crossed the limit and an expiring delivery claim. Existing notices retain their timestamps. A successful SMTP delivery sets `sent_at`, and a window without SMTP is recorded as skipped. Reversal preserves sent notices and drops pending and skipped ones using a Reinhardt Query asset checked by `manage migrationseeds --check`.
 
+`identity/0114_policy_revision_backfill` repairs the current authorization revision for each Tenant whose history row is missing (#1025). It copies the live document in Deployment Scope and preserves existing history on conflict. Superseded policy documents are unavailable and their gaps stay unfilled. The four member policy migrations now record every revision they advance, including on renames during rollback. Reinhardt Query builds the update and insert, with a PostgreSQL data-modifying CTE to pass the returned snapshots between them because Reinhardt cannot express that composition. `manage migrationseeds --check` checks the generated assets. Reversing 0114 preserves the history rows because authorization decisions can reference them.
+`identity/0115_suspension_resume_refusal` adds a nullable field to the saved execution origin (#977). The periodic suspension resume pass uses it to recognize an unchanged refusal. The first refusal and its authorization decisions commit together.
+
 `registry/0081_thread_tools` admits the `core.threads@1` builtins `thread_read`, `thread_observe`, `thread_search`, `thread_message` and `task_wait`, the default tools that replace the `core.workspace@1` ones (#1008), with exactly the rules of the tools they replace, and lets an Agent remove them from its defaults. The Workspace tools stay valid: saved Agent versions pin them. Its SQL replaces PostgreSQL validation functions, which Reinhardt migrations cannot express; the rollback refuses with SQLSTATE `55000` while stored definitions declare the Thread tools.
 
 `registry/0082_thread_source_scope` lets the native memory Source validator (`aidash_native_context_before_sources`, behind `aidash_native_context_is_valid`) accept the scope `thread`, which Sources name since #1008, beside `participant` and `workspace` (stored versions, which Rust reads as the Thread). Nothing enforces that validator on stored rows: `registry_context_config` skips native configurations (no `schema_version`) since `registry/0015_binding_memory_merge`, and its only other caller, the `packages` check, went with that table in `registry/0026_remove_legacy_installations`. The migration only keeps the function consistent with what the code writes. The function body has no typed Reinhardt operation, so it is a reversible SQL asset copied from `registry/0067_optional_memory_roles` with the extra value; the reverse restores the 0067 body.
@@ -1056,6 +1065,13 @@ those three changes. `execution/0156_model_call_state` records the optional
 Run relation and Model Call ID in the Usage Record model state. Rollback
 requires background Usage Records to be cleared before restoring the
 required Run relation.
+
+`execution/0157_stdio_session_recheck` adds a nullable stdio session registration and its partial index to Task executions. `execution/0160_stdio_session_model_state` records the column in the ORM migration state. The registration keeps a potentially live session in Read Recheck across a server restart and is cleared after the Runner confirms termination. The migration leaves existing rows null. Roll out the matching Runner helper image so the standard Execution Pod replacement ends stdio sessions from before registration was available.
+`execution/0161_generation_subnode_cleanup` adds the database-only
+`generation_requests.subnode_cleanup_at` and a partial index for pending work.
+Retirement sets the timestamp in its transaction. The generation worker clears
+it after checking the retired version's Subnodes or reschedules it if cleanup
+fails.
 
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 
@@ -1122,3 +1138,5 @@ physical `scope` default is retained for existing write paths.
 `workspaces/0065_duty_pending_events` adds a Tenant-scoped outbox for Watcher output and Duty completion triggers (#1011). Pending events commit with script or tick settlement. The scheduler retries delivery and removes each row in the same transaction as the event receipt and any Task changes. Pending rows cascade with their receiving Duty or trigger. PostgreSQL row-level security uses SQL assets because Reinhardt cannot express row policies.
 
 `workspaces/0066_deleted_duty_flow_ancestry` adds the database-only `tasks.deleted_duty_parent_id`. Deleting an Agent-created Duty copies its creating Task ID to the Tasks that outlive it. Flow traversal follows that link across Threads in both directions. Reversing the typed operations removes the preserved links and their index.
+
+`workspaces/0067_task_duty_start` adds the optional `tasks.started_by_duty` field (#990). It records the Duty that started the Task automatically and remains available after the Duty is deleted. The Query-backed migration assets recover provenance from existing automatic ticks and script Tasks and copy it into their stored Task events. Reversal removes the event field and drops the column.

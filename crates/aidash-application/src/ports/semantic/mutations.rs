@@ -47,6 +47,14 @@ pub trait SemanticConfigurationSession: Send {
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()>;
 	/// Re-evaluate image quota assignments in publication order for this generation.
 	async fn rebuild_images(&mut self, thread: Uuid, max_images: usize) -> Result<()>;
+	/// Built-in Memory facts admitted before the index was enabled enter it (#1123).
+	async fn backfill_memory(&mut self, _thread: Uuid) -> Result<()> {
+		Ok(())
+	}
+	/// Built-in Memory facts with an embedding projection in this Thread.
+	async fn memory_embeddings(&mut self, _thread: Uuid) -> Result<i64> {
+		Ok(0)
+	}
 	async fn history(&mut self, thread: Uuid, revision: i64) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }

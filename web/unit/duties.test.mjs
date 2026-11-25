@@ -192,10 +192,10 @@ test("a notices answer without a stopped list yields no entries instead of throw
 });
 
 test("only a scheduled Task's completion is quiet", () => {
-  const scheduled = new Set(["t1"]);
-  assert.equal(quietCompletion("completed", "t1", scheduled), true);
-  assert.equal(quietCompletion("failed", "t1", scheduled), false);
-  assert.equal(quietCompletion("completed", "t2", scheduled), false);
+  assert.equal(quietCompletion("completed", "duty-id"), true);
+  assert.equal(quietCompletion("failed", "duty-id"), false);
+  assert.equal(quietCompletion("completed", null), false);
+  assert.equal(quietCompletion("completed", undefined), false);
 });
 
 function row(overrides) {
@@ -229,15 +229,22 @@ test("a row offers only what the viewer may do", () => {
     resume: null,
     remove: true,
   });
-  // Waiting for a successor: only the named successor takes it over.
+  // Waiting for a successor: only the named successor takes it over, then
+  // resumes it as its Requester (#991).
   assert.equal(
-    dutyActions(row({ status: "stopped", may_resume: true })).resume,
+    dutyActions(row({ status: "stopped", may_take_over: true })).resume,
     "takeOver",
   );
   assert.equal(
     dutyActions(row({ status: "stopped", mine: true, may_resume: false }))
       .resume,
     null,
+  );
+  // The Requester's own stopped Duty, such as one whose Thread was deleted.
+  assert.equal(
+    dutyActions(row({ status: "stopped", mine: true, may_resume: true }))
+      .resume,
+    "resume",
   );
 });
 

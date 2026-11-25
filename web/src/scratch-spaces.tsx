@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   bytesFromGiB,
+  isScratchUnavailable,
   millisFromCores,
   loadScratchSpaces,
 } from "./scratch-settings";
@@ -38,6 +39,19 @@ const split = (value: string) =>
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
+
+function serviceReasonKey(reason: string | null | undefined) {
+  switch (reason) {
+    case "approval_limited":
+      return "scratchServiceApprovalLimited";
+    case "not_found":
+      return "scratchServiceNotFound";
+    case "limits_exceeded":
+      return "scratchServiceLimitsExceeded";
+    default:
+      return "scratchServiceNotApproved";
+  }
+}
 
 function Edit({
   space,
@@ -157,16 +171,7 @@ function Edit({
           <Notice key={service.id}>
             {t("scratchServiceUnusable")
               .replace("{id}", service.id)
-              .replace(
-                "{reason}",
-                t(
-                  service.reason === "approval_limited"
-                    ? "scratchServiceApprovalLimited"
-                    : service.reason === "not_found"
-                      ? "scratchServiceNotFound"
-                      : "scratchServiceNotApproved",
-                ),
-              )}
+              .replace("{reason}", t(serviceReasonKey(service.reason)))}
           </Notice>
         ))}
       <Field label={t("scratchCpu")}>
@@ -330,12 +335,13 @@ export function ThreadScratchSpace({
     retry: false,
   });
   if (space.isError) {
-    const refused =
-      space.error instanceof ApiError &&
-      (space.error.status === 403 || space.error.status === 404);
     return (
       <p className="text-xs text-muted-foreground">
-        {t(refused ? "scratchUnavailable" : "scratchReadError")}
+        {t(
+          isScratchUnavailable(space.error)
+            ? "scratchUnavailable"
+            : "scratchReadError",
+        )}
       </p>
     );
   }
@@ -445,7 +451,7 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
       {(list.isError || limits.isError) && (
         <Notice role="alert">{t("scratchLoadError")}</Notice>
       )}
-      {list.data?.unavailable && id === focus && (
+      {list.isSuccess && list.data.unavailable && id === focus && (
         <Notice role="alert">{t("scratchUnavailable")}</Notice>
       )}
       {space?.expired && <Notice>{t("scratchExpired")}</Notice>}

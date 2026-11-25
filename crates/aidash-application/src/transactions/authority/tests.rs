@@ -189,6 +189,7 @@ impl TransactionAuthorityScope for Scope {
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 0,
 			created_at: chrono::Utc::now(),
 		})

@@ -192,6 +192,24 @@ async fn ordinary_exact_read_locks_distribution_before_catalog_and_policy() {
 }
 
 #[tokio::test]
+async fn peer_catalog_read_refuses_missing_and_unapproved_definitions_alike() {
+	use crate::authorization::refusal_note::{Note, scoped};
+	use aidash_domain::tool::RefusalCheck;
+
+	let mut scope = Fixture::new();
+	scope.unapproved.insert("first".into());
+	for id in ["first", "missing"] {
+		let reference = reference(id);
+		let (result, note) = scoped(entry(&mut scope, &reference, "registry.read")).await;
+		assert!(matches!(result, Err(Error::Forbidden)), "{id}: {result:?}");
+		assert_eq!(
+			note,
+			Some(Note::new(RefusalCheck::Catalog, Some("registry.read")))
+		);
+	}
+}
+
+#[tokio::test]
 async fn missing_definition_is_a_correctable_call_error() {
 	let mut scope = Fixture::new();
 	let result = tool_entry(

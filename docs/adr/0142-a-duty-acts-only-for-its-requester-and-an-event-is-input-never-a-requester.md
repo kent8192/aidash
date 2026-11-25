@@ -21,6 +21,7 @@ Decided on 2026-11-17 and 2026-11-18 in the agent activation grilling (umbrella 
 ## Consequences
 
 - A departed requester's Duties stay visible but stopped until a person takes them over or deletes them.
+- As decided in #557, a Task a Duty starts automatically completes in the notification bell only. Failures still toast. State snapshots and Task events carry the optional `started_by_duty` ID from creation, so the dashboard can apply the rule as soon as completion arrives (#990).
 - Mail, Slack and other delivery are built inside a Duty with its procedure and tools; Aidash adds no notification channel of its own beyond Budget mail.
 - Where webhooks cannot reach a Deployment, a Watcher polls instead; there is no inbound relay.
 

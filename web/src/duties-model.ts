@@ -91,10 +91,15 @@ export type Duty = {
   revision: number;
   created_at: string;
   updated_at: string;
-  /** What the viewer may do: edit, pause or delete, resume. */
+  /** Its own Thread was deleted; its Requester's next edit or resume
+   *  opens a new one, without the old Thread's memory (#991). */
+  thread_deleted?: boolean;
+  /** What the viewer may do: edit, pause or delete, resume, and take over
+   *  as the named successor (#991). */
   may_edit: boolean;
   may_manage: boolean;
   may_resume: boolean;
+  may_take_over?: boolean;
 };
 export type Tick = {
   id: string;
@@ -451,6 +456,12 @@ export const haltCopy: Record<Halt, { ja: string; en: string }> = {
   },
 };
 
+/** Said beside a Duty whose own Thread was deleted (#991). */
+export const threadDeletedCopy = {
+  ja: "職務のスレッドは削除されています。再開すると新しいスレッドが開きます（以前のスレッドの記憶は引き継がれません）。",
+  en: "Its Thread was deleted. Resuming it opens a new Thread, without the old Thread's memory.",
+};
+
 /** "skipped (limit)" and the like, for the tick history. */
 export function tickLabel(tick: Tick, ja: boolean): string {
   const status = {
@@ -523,21 +534,20 @@ export function dutyNoticeEntries(
   };
 }
 
-/** Whether a Task entry's notice stays out of the toast: a scheduled Run's
- *  completion is shown in the bell only; its failure still toasts. */
+/** A Duty-started Task's completion stays in the bell. Its failure still toasts. */
 export function quietCompletion(
   kind: NoticeEntry["kind"],
-  task: string,
-  scheduled: ReadonlySet<string>,
+  startedByDuty: unknown,
 ): boolean {
-  return kind === "completed" && scheduled.has(task);
+  return kind === "completed" && typeof startedByDuty === "string";
 }
 
 /** Which actions a Duty's row offers the viewer. The server decides
  *  the `may_*` flags from the same rules it enforces: only the Requester
  *  edits or resumes; the Requester or a holder of `duty.administer`
  *  pauses and deletes; only the named successor takes a departed
- *  Requester's Duty over. */
+ *  Requester's Duty over, after which they resume it as its Requester
+ *  (#991). "takeOver" makes both calls. */
 export function dutyActions(duty: Duty): {
   edit: boolean;
   pause: boolean;
@@ -547,11 +557,10 @@ export function dutyActions(duty: Duty): {
   return {
     edit: duty.may_edit,
     pause: duty.status === "active" && duty.may_manage,
-    resume:
-      duty.status !== "active" && duty.may_resume
-        ? duty.mine
-          ? "resume"
-          : "takeOver"
+    resume: duty.may_take_over
+      ? "takeOver"
+      : duty.status !== "active" && duty.may_resume
+        ? "resume"
         : null,
     remove: duty.may_manage,
   };
