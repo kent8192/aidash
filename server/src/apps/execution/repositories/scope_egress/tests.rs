@@ -356,6 +356,48 @@ async fn only_forwarded_bytes_post_to_the_run_budget_and_pause_its_run(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn reversing_connection_accounting_restores_the_scoped_receipt_table(
+	#[future] database: DatabaseFixture,
+) {
+	use reinhardt::db::migrations::{DatabaseMigrationExecutor, FilesystemSource, MigrationSource};
+
+	let database = database.await;
+	let source =
+		FilesystemSource::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migration = source
+		.get_migration("execution", "0165_scope_connection_debits")
+		.await
+		.unwrap();
+	let owner = database.owner_connection.clone();
+	let history = source.all_migrations().await.unwrap();
+	let mut executor =
+		DatabaseMigrationExecutor::new(owner.clone()).with_migration_history(history.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let sql = owner.into_postgres().unwrap();
+	let restored: (bool, bool, i64) = sqlx::query_as(
+		"SELECT relrowsecurity, relforcerowsecurity,
+		        (SELECT count(*) FROM pg_constraint WHERE conrelid = pg_class.oid AND contype = 'f')
+		 FROM pg_class WHERE oid = 'egress_scope_host_debits'::regclass",
+	)
+	.fetch_one(&sql)
+	.await
+	.unwrap();
+	assert_eq!(restored, (true, true, 2));
+	executor.apply_migrations(&history).await.unwrap();
+	let retired: bool =
+		sqlx::query_scalar("SELECT to_regclass('egress_scope_host_debits') IS NULL")
+			.fetch_one(&sql)
+			.await
+			.unwrap();
+	assert!(retired);
+}
+
+#[rstest::rstest]
 #[case::node(false)]
 #[case::tenant(true)]
 #[tokio::test]
