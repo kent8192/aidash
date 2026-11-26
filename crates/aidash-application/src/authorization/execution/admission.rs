@@ -18,6 +18,28 @@ pub async fn admit(
 	let task = scope.task(task_id).await?.ok_or(Error::Forbidden)?;
 	scope.subnode_admission(&task, agent).await?;
 	let inherited = super::inherit(scope, task_id).await?;
+	if agent.id == crate::registry::system::configurator::ID {
+		let identity = scope.identity();
+		if inherited == super::Inherited::Remote {
+			return Err(Error::Invalid(
+				"tenant_configurator_remote_grant_forbidden".into(),
+			));
+		}
+		if scope.subjects() != [identity.subject.clone()]
+			|| scope
+				.dashboard_origin(identity.credential_id)
+				.await?
+				.is_none()
+			|| !aidash_domain::identity::tenant_administration::configurator_administrator(
+				scope.bundle(),
+				&identity.subject,
+				scope.node_id(),
+			) {
+			return Err(Error::Invalid(
+				"tenant_configurator_administrator_required".into(),
+			));
+		}
+	}
 	let thread = scope.thread(task.thread_id).await?;
 	scope.set_context(thread.attributes.clone());
 	let task_resource = scope.task_resource(&task).await?;

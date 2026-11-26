@@ -644,7 +644,7 @@ impl TenantAdministrator {
 			let mut issuable_subjects = vec![];
 			let mut decisions = vec![];
 			for (id, subject) in candidates {
-				if mapped.contains(id) {
+				if mapped.contains(id) || id.contains("/agents/aidash.tenant-configurator@") {
 					continue;
 				}
 				let evaluation =

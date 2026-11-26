@@ -533,7 +533,9 @@ pub(crate) async fn covering(
 	Ok(Some(Covering {
 		subject: row.root_subject,
 		mode,
-		bypass_accepted: row.bypass_accepted_at.is_some(),
+		bypass_accepted: row.bypass_accepted_at.is_some()
+			|| (run.agent_id == aidash_application::registry::system::configurator::ID
+				&& row.thread_mode.is_some()),
 		answer_deadline_seconds: row.answer_deadline_seconds,
 	}))
 }

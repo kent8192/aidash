@@ -197,7 +197,10 @@ pub(crate) async fn copy(
 			copies.insert(key, Some(candidate));
 		}
 	}
-	let mut policy_changed = false;
+	let mut policy_changed = aidash_application::registry::system::configurator::install_subject(
+		&mut snapshot.bundle,
+		&deployment.node(target.clone()),
+	);
 	for row in copies.values().flatten() {
 		if let Some(subject) = &row.agent {
 			let name = aidash_domain::qualified_agent(

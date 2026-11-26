@@ -6,6 +6,30 @@ use crate::{Error, Result};
 use serde_json::json;
 use std::collections::BTreeSet;
 
+pub const CONFIGURATOR_ID: &str = "aidash.tenant-configurator";
+/// A mapped person with Tenant administration actions, as in the settings overview.
+pub fn configurator_administrator(bundle: &PolicyBundle, person: &str, deployment: &str) -> bool {
+	bundle
+		.subjects
+		.get(person)
+		.is_some_and(|s| s.kind == SubjectKind::User)
+		&& ACTIONS.iter().any(|action| {
+			bundle
+				.evaluate(&crate::policy::Evaluation {
+					subject: person.into(),
+					action: (*action).into(),
+					resource: crate::policy::Resource {
+						tenant: bundle.tenant.clone(),
+						kind: resource_kind(action).into(),
+						id: COLLECTION.into(),
+						attributes: json!({}),
+					},
+					environment: json!({"node_id":deployment,"transport":"api"}),
+				})
+				.allowed
+		})
+}
+
 pub const REGISTRATION_READ: &str = "registration.read";
 pub const REGISTRATION_APPROVE: &str = "registration.approve";
 pub const REGISTRATION_REJECT: &str = "registration.reject";
@@ -79,7 +103,7 @@ pub const CONNECTION_ADMINISTER: &str = "connection.administer";
 /// setting the Tenant's Schedule limits (#557).
 pub const SCHEDULE_ADMINISTER: &str = crate::duties::ADMINISTER;
 /// Writing the Tenant Instructions every Agent of the Tenant works under
-/// (#1010). Agents never hold it: only a person's browser session writes them.
+/// (#1010). The Tenant Configurator may write them for its administrator (ADR 0151).
 pub const TENANT_INSTRUCTIONS_UPDATE: &str = "tenant.instructions.update";
 /// Administering one Node (#1007, ADR 0140): writing its Node Instructions and
 /// seeing everything in it. Tenant Administrators hold it through `*`.

@@ -12,6 +12,7 @@ use aidash_domain::{
 	tool::providers::core_descriptor,
 };
 use serde_json::json;
+pub mod configurator;
 
 /// The Decider that judges pending Tool calls in the Auto Approval Mode (ADR 0077).
 pub const APPROVAL_DECIDER_ID: &str = "aidash.approval-decider";
@@ -252,6 +253,7 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 /// Catalog Approval before anything may use it.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut declared = entries(validation, node)?;
+	declared.extend(configurator::definitions(node)?);
 	declared.push(approval_decider()?);
 	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
 	declared.extend(aidash_domain::registry::bindings::memory_defaults::definitions()?);
@@ -365,6 +367,7 @@ pub async fn seed(
 		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
+		.chain(configurator::definitions(node)?)
 		.chain(aidash_domain::registry::bindings::memory_defaults::definitions()?)
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.collect();
@@ -416,6 +419,16 @@ fn dependencies_first(entries: Vec<Entry>, node: &str) -> Vec<Entry> {
 }
 
 pub fn is_builtin(entry: &Entry) -> bool {
+	if entry.version == configurator::VERSION
+		&& matches!(entry.id.as_str(), configurator::ID | configurator::GUIDE)
+	{
+		let node = entry
+			.config
+			.pointer("/bindings/0/target/registry_deployment")
+			.and_then(|v| v.as_str())
+			.unwrap_or("");
+		return configurator::definitions(node).is_ok_and(|canonical| canonical.contains(entry));
+	}
 	if aidash_domain::registry::bindings::memory_defaults::definitions()
 		.is_ok_and(|entries| entries.contains(entry))
 	{
@@ -436,6 +449,13 @@ pub fn is_builtin(entry: &Entry) -> bool {
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
 	use aidash_domain::registry::bindings::memory_defaults;
+	if reference.version == configurator::VERSION
+		&& matches!(
+			reference.id.as_str(),
+			configurator::ID | configurator::GUIDE
+		) {
+		return true;
+	}
 	if reference.version == memory_defaults::VERSION
 		&& [
 			memory_defaults::MEMORY_ID,

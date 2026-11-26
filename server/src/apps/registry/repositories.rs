@@ -103,6 +103,53 @@ impl Registry {
 			.await?;
 		for tenant in tenants {
 			self.pool
+				.atomic(&scope(&tenant), async |tx| {
+					use crate::apps::identity::{models::AuthorizationBundle, repositories::nodes};
+					use aidash_application::registry::system::configurator;
+					if crate::apps::identity::repositories::tenant_deletions::is_deleted(
+						tx,
+						tenant.as_str(),
+					)
+					.await?
+					{
+						return Ok(());
+					}
+					let live = nodes::list_live(tx, tenant.as_str()).await?;
+					// Probe without a shared policy lock before taking the exclusive lock.
+					if live.is_empty() {
+						return Ok(());
+					}
+					let mut snapshot =
+						match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), true).await {
+							Ok(snapshot) => snapshot,
+							Err(crate::Error::NotFound(_) | crate::Error::TenantDeleted) => {
+								return Ok(());
+							}
+							Err(e) => return Err(e),
+						};
+					let mut changed = false;
+					for node in live {
+						changed |= configurator::install_subject(
+							&mut snapshot.bundle,
+							&self.deployment.node(node.name),
+						);
+					}
+					if changed {
+						snapshot.bundle.validate()?;
+						AuthorizationBundle::replace(
+							tx,
+							tenant.as_str(),
+							snapshot.revision,
+							serde_json::to_value(snapshot.bundle)?,
+							"tenant-configurator",
+							None,
+						)
+						.await?;
+					}
+					Ok(())
+				})
+				.await?;
+			self.pool
 				.scoped(&scope(&tenant), async |tx| {
 					// Built-in definitions are never agents, so carrying them changes
 					// no policy: the shared hold keeps approvals from changing while
