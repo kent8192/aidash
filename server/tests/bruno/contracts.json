@@ -64665,5 +64665,453 @@
     },
     "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "drive-browse",
+    "path": "/api/nodes/{node}/drive",
+    "query_parameters": ["after", "prefix", "version"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DriveBrowse": {
+            "properties": {
+              "can_administer": {
+                "type": "boolean"
+              },
+              "can_write": {
+                "type": "boolean"
+              },
+              "drive": {
+                "$ref": "#/components/schemas/NodeDrive"
+              },
+              "drive_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "files": {
+                "items": {
+                  "$ref": "#/components/schemas/DriveFile"
+                },
+                "type": "array"
+              },
+              "index_confirmations": {
+                "items": {
+                  "$ref": "#/components/schemas/DriveIndexConfirmation"
+                },
+                "type": "array"
+              },
+              "next_after": {
+                "type": ["string", "null"]
+              },
+              "scratch_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "scratch_capacity_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "trash": {
+                "items": {
+                  "$ref": "#/components/schemas/DriveTrash"
+                },
+                "type": "array"
+              },
+              "versions": {
+                "items": {
+                  "$ref": "#/components/schemas/DriveVersion"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "drive",
+              "files",
+              "next_after",
+              "versions",
+              "trash",
+              "can_write",
+              "can_administer",
+              "drive_bytes",
+              "scratch_capacity_bytes",
+              "scratch_bytes",
+              "index_confirmations"
+            ],
+            "type": "object"
+          },
+          "DriveFile": {
+            "properties": {
+              "added_in_version": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "size": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "added_in_version"
+            ],
+            "type": "object"
+          },
+          "DriveIndexConfirmation": {
+            "properties": {
+              "estimated_micros": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "version": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": ["id", "version", "estimated_micros"],
+            "type": "object"
+          },
+          "DriveTrash": {
+            "properties": {
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "path", "expires_at"],
+            "type": "object"
+          },
+          "DriveVersion": {
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "change_count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "version": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "author",
+              "created_at",
+              "change_count",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          "NodeDrive": {
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "head": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "node": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "node", "closed", "head"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DriveBrowse"
+        }
+      }
+    },
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "drive-download",
+    "path": "/api/nodes/{node}/drive/file",
+    "query_parameters": ["path", "version"],
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "drive-update",
+    "path": "/api/nodes/{node}/drive",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DriveMutationResult": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DrivePublication"
+              },
+              {
+                "properties": {
+                  "updated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["updated"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "drive_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "warning": {
+                    "type": "string"
+                  }
+                },
+                "required": ["drive_id", "warning"],
+                "type": "object"
+              }
+            ]
+          },
+          "DrivePublication": {
+            "oneOf": [
+              {
+                "properties": {
+                  "status": {
+                    "enum": ["published"],
+                    "type": "string"
+                  },
+                  "version": {
+                    "$ref": "#/components/schemas/DriveVersionRef"
+                  }
+                },
+                "required": ["status", "version"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "paths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "enum": ["conflict"],
+                    "type": "string"
+                  }
+                },
+                "required": ["status", "paths"],
+                "type": "object"
+              }
+            ]
+          },
+          "DriveVersionRef": {
+            "properties": {
+              "drive_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "paths": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "version": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": ["drive_id", "version", "paths"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DriveMutationResult"
+        }
+      }
+    },
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "drive-upload-start",
+    "path": "/api/nodes/{node}/drive/uploads",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DriveUploadReceipt": {
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "part_bytes": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["id", "part_bytes"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DriveUploadReceipt"
+        }
+      }
+    },
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "drive-upload-finish",
+    "path": "/api/nodes/{node}/drive/uploads/{id}/finish",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DrivePublication": {
+            "oneOf": [
+              {
+                "properties": {
+                  "status": {
+                    "enum": ["published"],
+                    "type": "string"
+                  },
+                  "version": {
+                    "$ref": "#/components/schemas/DriveVersionRef"
+                  }
+                },
+                "required": ["status", "version"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "paths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "enum": ["conflict"],
+                    "type": "string"
+                  }
+                },
+                "required": ["status", "paths"],
+                "type": "object"
+              }
+            ]
+          },
+          "DriveVersionRef": {
+            "properties": {
+              "drive_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "paths": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "version": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": ["drive_id", "version", "paths"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DrivePublication"
+        }
+      }
+    },
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "PUT",
+    "name": "drive-upload-part",
+    "path": "/api/nodes/{node}/drive/uploads/{id}/chunks",
+    "query_parameters": ["number"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DriveUploadReceipt": {
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "part_bytes": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["id", "part_bytes"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DriveUploadReceipt"
+        }
+      }
+    },
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": ["id"]
   }
 ]
