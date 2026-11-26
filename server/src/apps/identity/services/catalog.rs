@@ -1,4 +1,5 @@
 use super::{Authorization, access::Access, identity::SubjectIdentity};
+use crate::apps::identity::services::policies::catalog_row;
 use crate::{
 	Result,
 	registry::{EntityRef, Entry, Search},
@@ -48,8 +49,7 @@ impl Authorization {
 				if target.name == *node {
 					continue;
 				}
-				let row =
-					super::policies::catalog_row(&mut *tx, tenant, &target.name, entry).await?;
+				let row = catalog_row(&mut *tx, tenant, &target.name, entry).await?;
 				let revision = row.as_ref().map_or(0, |r| r.revision);
 				if row.is_none() && !enabled {
 					continue;
