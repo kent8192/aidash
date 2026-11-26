@@ -722,7 +722,8 @@ class SealAndMigrationTests(unittest.TestCase):
             values = kube.app_values(self.cluster, "develop", output, release, "a" * 40, settings)
             self.assertEqual(values["execution"]["egress"], {"enabled": False})
         values = kube.app_values(self.cluster, "develop", output, release, "a" * 40, {"provider": provider("develop"), "gcip": None})
-        self.assertEqual(values["execution"]["egress"], {"enabled": True, "clusterIP": "10.48.0.200"})
+        self.assertEqual(values["execution"]["egress"], {"enabled": True, "clusterIP": "10.48.0.200",
+                                                       "ipGroups": {}, "suspended": True})
         manifest = subprocess.check_output(["helm", "template", "app", str(kube.APP_CHART), "-f", "-"], input=json.dumps(values).encode())
         service = next(obj for obj in yaml.safe_load_all(manifest) if obj and obj["kind"] == "Service" and obj["metadata"]["name"] == "app-egress")
         self.assertEqual(service["spec"]["clusterIP"], "10.48.0.200")
@@ -1039,6 +1040,18 @@ class MemoryScheduleTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "role failed"):
             kube.reload(self.cluster, "test", self.output, self.settings)
         self.assert_suspended(True)
+
+    def test_gateway_replicas_follow_writer_start_and_stop(self):
+        self.deploy()
+        labels = {"app.kubernetes.io/instance": "app", "app.kubernetes.io/component": "egress"}
+        for name in ("app-egress", "app-egress-dedicated"):
+            self.cluster.workload("deployment", self.namespace, name, 0, metadata={"labels": labels})
+        kube.start_writers(self.cluster, "test")
+        for name in ("app-egress", "app-egress-dedicated"):
+            self.assertEqual(self.cluster.get("deployment", name, self.namespace)["spec"]["replicas"], 1)
+        kube.stop(self.cluster, "test")
+        for name in ("app-egress", "app-egress-dedicated"):
+            self.assertEqual(self.cluster.get("deployment", name, self.namespace)["spec"]["replicas"], 0)
 
     def test_stop_suspends_every_schedule_before_shutting_down_dependencies(self):
         self.deploy()

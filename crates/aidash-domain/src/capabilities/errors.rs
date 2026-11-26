@@ -16,6 +16,9 @@ pub struct CapabilityError {
 fn bounded(value: &str) -> String {
 	value.chars().take(2048).collect()
 }
+pub const BACKGROUND_LIMIT_PREFIX: &str =
+	"BACKGROUND_TIME_LIMIT_EXCEEDED: the Background time limit ceiling is ";
+
 const REVISION_PREFIX: &str = "AREA_REVISION_CHANGED: the working area is at revision ";
 /// Refusal text for a stale `expected_revision`; it carries the revision the
 /// model must send next so it can recover without guessing.
@@ -88,7 +91,14 @@ impl CapabilityError {
 			message: bounded(message),
 			retryable: matches!(status, 429 | 503),
 			details: current_revision(message)
-				.map(|revision| json!({"current_revision": revision})),
+				.map(|revision| json!({"current_revision": revision}))
+				.or_else(|| {
+					let ceiling = message
+						.strip_prefix(BACKGROUND_LIMIT_PREFIX)?
+						.parse::<u64>()
+						.ok()?;
+					Some(json!({"maximum_seconds": ceiling}))
+				}),
 		}
 	}
 	/// `retryable: false` alone did not stop an Agent repeating a stopped

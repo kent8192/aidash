@@ -747,6 +747,7 @@ async fn command(pod: &StdioPod, run: Uuid, code: String) -> std::result::Result
 			cwd: None,
 			timeout_seconds: Some(PREPARE_SECONDS),
 			background: false,
+			notify_on_exit: false,
 			proxy_credential: None,
 		})
 		.await?;

@@ -413,3 +413,5 @@ pub struct RequestRecord {
 	pub secret_host: Option<String>,
 	pub created_at: chrono::DateTime<chrono::Utc>,
 }
+
+pub mod price;

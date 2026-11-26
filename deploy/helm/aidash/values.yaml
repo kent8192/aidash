@@ -110,7 +110,7 @@ server:
   replicas: 1
   resources:
     requests: { cpu: 100m, memory: 128Mi }
-    limits: { cpu: "2", memory: 1Gi }
+    limits: { cpu: "2", memory: 2Gi }
 sse:
   reconcileIntervalMs: 5000
   backpressureTimeoutSeconds: 30
@@ -185,7 +185,9 @@ execution:
     name: ""
   pods:
     enabled: false
+    # Digest-pinned image built with --target pod-base.
     helperImage: ""
+    baseApplyImmediately: false
     storageClassName: ""
     admissionCapacityBytes: 5368709120
     metadataServerAbsent: false
@@ -250,9 +252,13 @@ execution:
     # Reserve an unused Service IP in the cluster's Service CIDR before enabling.
     clusterIP: ""
     port: 8950
-    # Per gateway instance; the Tenant limit must be below the global limit.
-    proxyGlobalTunnels: 1024
-    proxyTenantTunnels: 256
+    # Each dedicated group has its own reserved ClusterIP and Tenant IDs.
+    # The matching node pool is labelled aidash.run/egress-ip-group: <group>.
+    ipGroups: {}
+    sharedNodePool: false
+    # Managed deployments set replicas to zero until database migration completes.
+    suspended: false
+    metricsScrapeNamespaces: []
     limits:
       { sent_bytes: 1073741824, received_bytes: 1073741824, requests: 1000 }
   limits:
@@ -264,6 +270,7 @@ execution:
     temporary_bytes: 268435456
     output_bytes: 8388608
     maximum_seconds: 600
+    background_maximum_seconds: 14400
     idle_seconds: 1800
 
 # Previews (ADR 0068). Without a domain, Live previews are unavailable; local

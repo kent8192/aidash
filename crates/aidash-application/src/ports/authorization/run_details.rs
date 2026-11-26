@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub struct RunDetails {
 	pub provider_tool_activity: Vec<aidash_domain::tool::provider_tools::Activity>,
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
+	pub egress_waits: Vec<EgressWait>,
 	pub stints: Vec<aidash_domain::model_call::Stint>,
 	pub run: RunInspection,
 	/// The call the Run is paused on, only for a caller who may decline it.
@@ -19,6 +20,14 @@ pub struct RunDetails {
 	pub memory: Option<aidash_domain::memory::Binding>,
 	pub media_input_routes: Vec<Vec<String>>,
 }
+/// A Host connection that waited before the gateway admitted it.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct EgressWait {
+	pub id: Uuid,
+	pub host: String,
+	pub wait_ms: u64,
+}
+
 #[async_trait]
 pub trait RunDetailsScope: Send {
 	fn node_id(&self) -> &str;
@@ -63,6 +72,9 @@ pub trait RunDetailsScope: Send {
 		_id: Uuid,
 		_offset: u64,
 	) -> Result<Vec<aidash_domain::egress::RequestRecord>> {
+		Ok(vec![])
+	}
+	async fn egress_waits(&mut self, _run: &RunMetadata, _offset: u64) -> Result<Vec<EgressWait>> {
 		Ok(vec![])
 	}
 	async fn stints(

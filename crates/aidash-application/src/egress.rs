@@ -120,6 +120,17 @@ pub trait Meter: Send + Sync {
 	/// decisions are classified by [`DebitRefusal`]. Any other error means
 	/// the bytes were not committed, and the caller charges them again.
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
+	/// Retryable cumulative report. Adapters with a durable request record
+	/// use its high-water mark. Meters that consume deltas receive the pending
+	/// amount for this attempt.
+	async fn charge_cumulative(
+		&self,
+		direction: Direction,
+		pending: usize,
+		_cumulative: u64,
+	) -> Result<()> {
+		self.charge(direction, pending).await
+	}
 	/// Completes the metadata-only request record, including failures and partial bodies.
 	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()>;
 }
@@ -134,16 +145,12 @@ pub fn credentials_match(expected: &str, provided: &str) -> bool {
 /// Limits for one gateway instance and scope tunnel.
 #[derive(Clone, Copy, Debug)]
 pub struct TunnelLimits {
-	/// Host connections one Scratch Space may have open at once. No setting
-	/// changes it, so a Tenant's own limit is checked against this default.
-	pub concurrent: usize,
 	pub idle_timeout: std::time::Duration,
 	pub max_lifetime: std::time::Duration,
 }
 impl Default for TunnelLimits {
 	fn default() -> Self {
 		Self {
-			concurrent: 32,
 			idle_timeout: std::time::Duration::from_secs(300),
 			max_lifetime: std::time::Duration::from_secs(86400),
 		}
@@ -180,7 +187,7 @@ pub struct ConnectionRecord {
 	pub outcome: String,
 	/// The code the client received, for a connection that did not complete.
 	pub error: Option<String>,
-	/// How long it waited for a Host connection limit; `None` until known.
+	/// How long it waited for its Egress fair share; `None` until known.
 	pub wait_ms: Option<u64>,
 }
 
@@ -231,22 +238,33 @@ pub trait EgressScopes: Send + Sync {
 		query_digest: &str,
 	) -> Result<ExternalAdmission>;
 	/// Refuses a new connection once the scope's daily budget is spent. It reads
-	/// and writes nothing else, so a connection costs the store no write before
-	/// it holds a Host connection limit (#845).
+	/// and writes nothing else. The gateway records a connection after admission.
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
 	/// Reauthenticate the credential and return current policy.
 	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings>;
-	/// Atomically reserves bytes against the daily budget. Retry an unanswered
-	/// call with the same reservation ID, scope, direction, byte count and day.
-	/// Each new reservation attempt needs a fresh ID.
+	/// Reserves the increase over the connection’s previous cumulative target.
+	/// The connection must have a durable record. Retry with the same target
+	/// and day. Refunded bytes never lower the target.
 	async fn debit(
 		&self,
 		scope: &ScopeSettings,
 		direction: Direction,
-		bytes: u64,
+		cumulative: u64,
 		day: chrono::NaiveDate,
-		reservation: Uuid,
+		connection: Uuid,
 	) -> Result<()>;
+	/// Records forwarded bytes independently of the reservation. The same
+	/// cumulative report can be retried without charging for those bytes again.
+	async fn report_forwarded(
+		&self,
+		_scope: &ScopeSettings,
+		_connection: Uuid,
+		_direction: Direction,
+		_cumulative: u64,
+		_day: chrono::NaiveDate,
+	) -> Result<()> {
+		Ok(())
+	}
 	async fn refund(
 		&self,
 		scope: &ScopeSettings,
@@ -256,8 +274,8 @@ pub trait EgressScopes: Send + Sync {
 	) -> Result<()>;
 	/// Idempotently inserts or updates a connection by record ID.
 	async fn record(&self, record: ConnectionRecord) -> Result<()>;
-	/// Adds counts of connections that ended before they held a Host connection
-	/// limit. Each tally is written once; a lost write loses only counts.
+	/// Adds counts of connections that ended before admission. Each tally is
+	/// written once; a lost write loses only counts.
 	async fn record_refusals(&self, tallies: Vec<RefusalTally>) -> Result<()>;
 	/// Tells the operator that a scope allowed to reach any host reached more
 	/// distinct hosts in a minute than its anomaly rule expects. Nothing stops.

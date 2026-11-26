@@ -1,6 +1,6 @@
 use super::*;
 use aidash_application::ports::capabilities::execution_pod::{
-	CommandRequest, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime,
+	CommandRequest, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime, RunStopReason,
 };
 use axum::{
 	Json, Router,
@@ -224,6 +224,7 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 		cwd: None,
 		timeout_seconds: None,
 		background: true,
+		notify_on_exit: false,
 		proxy_credential: None,
 	};
 	let accepted = client.execute(&request).await.unwrap();
@@ -251,7 +252,7 @@ async fn execution_pod_v2_transports_process_credentials_and_file_bytes() {
 			Json(json!({"size":2}))
 		}))
 		.route("/v2/runs/stop", post(|Json(body): Json<Value>| async move {
-			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r"}));
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","reason":"run_authority_revoked"}));
 			Json(json!({"stopped":["p","left"]}))
 		}));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -286,7 +287,13 @@ async fn execution_pod_v2_transports_process_credentials_and_file_bytes() {
 		.await
 		.unwrap();
 	assert_eq!(written.size, 2);
-	assert_eq!(client.stop_run("s", "r").await.unwrap(), vec!["p", "left"]);
+	assert_eq!(
+		client
+			.stop_run("s", "r", RunStopReason::RunAuthorityRevoked)
+			.await
+			.unwrap(),
+		vec!["p", "left"]
+	);
 }
 
 #[tokio::test]

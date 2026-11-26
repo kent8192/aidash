@@ -10,7 +10,7 @@ use std::{
 		atomic::{AtomicU64, AtomicUsize, Ordering},
 	},
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 const BATCH: u64 = 1024 * 1024;
 /// How long one debit may wait for the store before its Host connection ends.
@@ -149,59 +149,38 @@ impl FailureReport {
 	}
 }
 
-/// The longest a Host connection waits for a Host connection limit before it is
-/// refused (#845). Package managers open bursts of short connections, so most
-/// waits end as soon as one of them closes.
-const LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// One semaphore per Scratch Space and per Tenant, each made on first use and
-/// dropped once nothing holds or waits on it, so waiting is first come, first
-/// served. A Space's semaphore keeps the limit it was made with until then.
 #[derive(Default)]
 struct CapacityCounts {
-	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, Arc<tokio::sync::Semaphore>>,
-	tenants: std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>,
-	waiting: Waiting,
+	open: std::collections::HashMap<String, usize>,
+	total: usize,
+	files_short: bool,
+	memory_short: bool,
+	waiting: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
+	waiting_total: usize,
+	queue: std::collections::HashMap<String, std::collections::VecDeque<uuid::Uuid>>,
 }
-/// Connections waiting for a limit. A Scratch Space may have any number
-/// waiting; the gateway as a whole may have its waiting budget, which follows
-/// its open-file limit, and a Tenant a quarter of it, so that one Tenant cannot
-/// use up the process's memory and file descriptors (#845).
-#[derive(Default)]
-struct Waiting {
-	/// Not capped: only read so that a Space's idle tunnels make way (#845).
-	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
-	tenants: std::collections::HashMap<String, usize>,
-	/// A Tenant's waiting plain HTTP requests, which keep their listener slot
-	/// while they wait (#845 decision 8), capped at `SLOT_HOLDING_WAITERS`.
-	holding_slots: std::collections::HashMap<String, usize>,
-	global: usize,
-}
-/// The listener slots one Tenant's waiting plain HTTP requests may hold: a
-/// quarter, so that the rest of the slots still accept other Tenants'
-/// connections. CONNECT gives its slot back before it waits, so it is not
-/// counted (lead decision on PR #912, layered on #845 decision 8).
-const SLOT_HOLDING_WAITERS: usize = super::CONNECTION_SLOTS / 4;
+
 impl CapacityCounts {
-	/// Forget a semaphore that nothing holds or waits on any longer.
-	fn prune(&mut self, scope: &aidash_domain::egress::ScopeId) {
-		if self
-			.scopes
-			.get(scope)
-			.is_some_and(|semaphore| Arc::strong_count(semaphore) == 1)
-		{
-			self.scopes.remove(scope);
-		}
-		if self
-			.tenants
-			.get(&scope.tenant)
-			.is_some_and(|semaphore| Arc::strong_count(semaphore) == 1)
-		{
-			self.tenants.remove(&scope.tenant);
-		}
+	fn shortage(&self) -> bool {
+		self.files_short || self.memory_short
 	}
 }
-type ScopeCounts = Arc<std::sync::Mutex<CapacityCounts>>;
+
+fn under_pressure(previous: bool, fraction: Option<f64>) -> bool {
+	fraction.map_or(previous, |fraction| {
+		if previous {
+			fraction >= 0.70
+		} else {
+			fraction > 0.80
+		}
+	})
+}
+
+#[derive(Default)]
+struct Capacity {
+	counts: std::sync::Mutex<CapacityCounts>,
+	changed: tokio::sync::Notify,
+}
 
 /// A tunnel idle this long makes way for a connection of its Scratch Space
 /// that waits for a limit (#845). Clients keep CONNECT tunnels open between
@@ -220,16 +199,8 @@ const WAIT_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The answer to a connection whose Scratch Space stopped while it waited.
 type Stopped = (hyper::StatusCode, &'static str);
-
-/// Why a connection did not get its limits.
-#[derive(Debug, PartialEq)]
-enum NotAdmitted {
-	/// A limit stayed full; the code names it.
-	Limit(&'static str),
-	/// Its Scratch Space stopped, or its credential or budget ran out, while it
-	/// waited.
-	Stopped(Stopped),
-}
+pub(super) const FAIR_SHARE_REFUSAL: Stopped =
+	(hyper::StatusCode::SERVICE_UNAVAILABLE, "egress_fair_share");
 
 /// What lets a tunnel make way for its Scratch Space's waiting connections.
 #[derive(Clone)]
@@ -307,12 +278,10 @@ fn stopped_by(
 	}
 }
 
-/// Scope tunnel capacity is separate from the HTTP listener's request pool.
+/// Tracks authenticated Host connections and External service requests.
 pub(super) struct TunnelManager {
-	global: Arc<tokio::sync::Semaphore>,
-	tenant_limit: usize,
-	waiting_budget: usize,
-	counts: ScopeCounts,
+	pub(super) buffers: Arc<super::buffers::BufferPool>,
+	capacity: Arc<Capacity>,
 	tallies: std::sync::Mutex<Tallies>,
 	/// Credentials resolved in the last `RESOLVED_FOR`, so that a burst of
 	/// connections reads the store once per credential (#845).
@@ -331,83 +300,60 @@ struct TunnelLease {
 	manager: Arc<TunnelManager>,
 }
 pub(super) struct TunnelPermit {
-	permits: Vec<tokio::sync::OwnedSemaphorePermit>,
-	counts: ScopeCounts,
-	scope: aidash_domain::egress::ScopeId,
+	capacity: Arc<Capacity>,
+	tenant: String,
 }
 impl Drop for TunnelPermit {
 	fn drop(&mut self) {
-		self.permits.clear();
-		self.counts.lock().unwrap().prune(&self.scope);
+		let mut counts = self.capacity.counts.lock().unwrap();
+		let open = counts.open.get_mut(&self.tenant).unwrap();
+		*open -= 1;
+		metrics::gauge!("aidash_egress_open_connections", "tenant" => self.tenant.clone())
+			.set(*open as f64);
+		if *open == 0 {
+			counts.open.remove(&self.tenant);
+		}
+		counts.total -= 1;
+		metrics::gauge!("aidash_egress_open_connections_total").set(counts.total as f64);
+		if counts.shortage() && counts.waiting_total != 0 {
+			self.capacity.changed.notify_waiters();
+		}
 	}
 }
-/// A connection's place among the waiters, given up however its wait ends.
+
+/// Counts a waiter until admission, cancellation or shutdown.
 struct WaitTurn {
-	counts: ScopeCounts,
+	capacity: Arc<Capacity>,
 	scope: aidash_domain::egress::ScopeId,
-	semaphores: Vec<Arc<tokio::sync::Semaphore>>,
-	/// Whether the waiting connection holds a listener slot.
-	holds_slot: bool,
+	ticket: uuid::Uuid,
 }
 impl Drop for WaitTurn {
 	fn drop(&mut self) {
-		self.semaphores.clear();
-		let mut counts = self.counts.lock().unwrap();
-		let waiting = &mut counts.waiting;
-		if let Some(n) = waiting.scopes.get_mut(&self.scope) {
-			*n -= 1;
-			if *n == 0 {
-				waiting.scopes.remove(&self.scope);
-			}
+		let mut counts = self.capacity.counts.lock().unwrap();
+		let waiting = counts.waiting.get_mut(&self.scope).unwrap();
+		*waiting -= 1;
+		if *waiting == 0 {
+			counts.waiting.remove(&self.scope);
 		}
-		if let Some(n) = waiting.tenants.get_mut(&self.scope.tenant) {
-			*n -= 1;
-			if *n == 0 {
-				waiting.tenants.remove(&self.scope.tenant);
-			}
+		let queue = counts.queue.get_mut(&self.scope.tenant).unwrap();
+		if queue.front() == Some(&self.ticket) {
+			queue.pop_front();
+			self.capacity.changed.notify_waiters();
+		} else {
+			queue.retain(|ticket| *ticket != self.ticket);
 		}
-		if self.holds_slot
-			&& let Some(n) = waiting.holding_slots.get_mut(&self.scope.tenant)
-		{
-			*n -= 1;
-			if *n == 0 {
-				waiting.holding_slots.remove(&self.scope.tenant);
-			}
+		if queue.is_empty() {
+			counts.queue.remove(&self.scope.tenant);
 		}
-		waiting.global -= 1;
-		counts.prune(&self.scope);
+		counts.waiting_total -= 1;
+		metrics::gauge!("aidash_egress_waiting_connections").set(counts.waiting_total as f64);
 	}
 }
-/// The limits in the order a connection takes them, with the code and metric
-/// label of each.
-const LIMITS: [(&str, &str); 3] = [
-	("egress_tunnel_limit", "space"),
-	("egress_tenant_tunnel_limit", "tenant"),
-	("egress_global_tunnel_limit", "deployment"),
-];
-fn limit_label(code: &str) -> &'static str {
-	LIMITS
-		.iter()
-		.find(|(limit, _)| *limit == code)
-		.map_or("unknown", |(_, label)| label)
-}
-/// A connection over a limit, after waiting for it or because too many already
-/// wait. The client receives the code; the minute's tally names it too.
-fn limit_refused(code: &'static str) -> &'static str {
-	metrics::counter!("aidash_egress_host_connection_limit_refused_total", "limit" => limit_label(code))
-		.increment(1);
-	code
-}
 impl TunnelManager {
-	pub(super) fn new(
-		stopping: tokio::sync::watch::Receiver<bool>,
-		limits: super::ProxyLimits,
-	) -> Self {
+	pub(super) fn new(stopping: tokio::sync::watch::Receiver<bool>) -> Self {
 		Self {
-			global: Arc::new(tokio::sync::Semaphore::new(limits.global_concurrent)),
-			tenant_limit: limits.tenant_concurrent,
-			waiting_budget: limits.waiting,
-			counts: Arc::new(std::sync::Mutex::new(CapacityCounts::default())),
+			buffers: Arc::default(),
+			capacity: Arc::default(),
 			tallies: Default::default(),
 			resolved: Default::default(),
 			reach: Default::default(),
@@ -417,136 +363,97 @@ impl TunnelManager {
 			failures: Arc::default(),
 		}
 	}
-	/// The semaphores of a connection's three limits, in the order it takes them.
-	fn semaphores(
+
+	pub(super) fn update_pressure(&self, files: Option<f64>, memory: Option<f64>) {
+		let mut counts = self.capacity.counts.lock().unwrap();
+		let previous = (counts.files_short, counts.memory_short);
+		counts.files_short = under_pressure(counts.files_short, files);
+		counts.memory_short = under_pressure(counts.memory_short, memory);
+		if previous != (counts.files_short, counts.memory_short) {
+			metrics::gauge!("aidash_egress_resource_shortage").set(f64::from(counts.shortage()));
+			metrics::gauge!("aidash_egress_resource_shortage_by_type", "resource" => "open_files")
+				.set(f64::from(counts.files_short));
+			metrics::gauge!("aidash_egress_resource_shortage_by_type", "resource" => "memory")
+				.set(f64::from(counts.memory_short));
+			self.capacity.changed.notify_waiters();
+		}
+	}
+
+	#[cfg(test)]
+	fn try_acquire(&self, scope: &ScopeSettings) -> Option<TunnelPermit> {
+		let mut counts = self.capacity.counts.lock().unwrap();
+		self.try_admit(&mut counts, scope, None).unwrap()
+	}
+
+	fn try_admit(
 		&self,
 		counts: &mut CapacityCounts,
 		scope: &ScopeSettings,
-	) -> [Arc<tokio::sync::Semaphore>; 3] {
-		let space = counts
-			.scopes
-			.entry(scope.id.clone())
-			.or_insert_with(|| {
-				Arc::new(tokio::sync::Semaphore::new(scope.tunnel_limits.concurrent))
-			})
-			.clone();
-		let tenant = counts
-			.tenants
-			.entry(scope.id.tenant.clone())
-			.or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.tenant_limit)))
-			.clone();
-		[space, tenant, self.global.clone()]
-	}
-	/// Take all three limits at once or none, without waiting.
-	fn try_acquire(&self, scope: &ScopeSettings) -> Result<TunnelPermit, &'static str> {
-		let mut counts = self.counts.lock().unwrap();
-		let semaphores = self.semaphores(&mut counts, scope);
-		let mut permits = Vec::with_capacity(3);
-		for (semaphore, (code, _)) in semaphores.iter().zip(LIMITS) {
-			match semaphore.clone().try_acquire_owned() {
-				Ok(permit) => permits.push(permit),
-				Err(_) => {
-					drop(permits);
-					drop(semaphores);
-					counts.prune(&scope.id);
-					return Err(code);
-				}
+		ticket: Option<uuid::Uuid>,
+	) -> Result<Option<TunnelPermit>, Stopped> {
+		let tenant = &scope.id.tenant;
+		let open = counts.open.get(tenant).copied().unwrap_or(0);
+		// Comparing to the floored mean is exact for integer connection counts.
+		let over_share = open > counts.total / counts.open.len().max(1);
+		if counts.memory_short {
+			if over_share {
+				return Err(FAIR_SHARE_REFUSAL);
 			}
+		} else if (counts.files_short && over_share)
+			|| counts
+				.queue
+				.get(tenant)
+				.is_some_and(|queue| queue.front().copied() != ticket)
+		{
+			return Ok(None);
 		}
-		Ok(TunnelPermit {
-			permits,
-			counts: self.counts.clone(),
-			scope: scope.id.clone(),
-		})
+		counts.open.insert(tenant.clone(), open + 1);
+		counts.total += 1;
+		metrics::gauge!("aidash_egress_open_connections", "tenant" => tenant.clone())
+			.set((open + 1) as f64);
+		metrics::gauge!("aidash_egress_open_connections_total").set(counts.total as f64);
+		if counts.shortage() && counts.waiting_total != 0 {
+			self.capacity.changed.notify_waiters();
+		}
+		Ok(Some(TunnelPermit {
+			capacity: self.capacity.clone(),
+			tenant: tenant.clone(),
+		}))
 	}
-	/// Take the three limits, waiting up to `LIMIT_WAIT` for a full one, and
-	/// say how long the connection waited. A limit of zero never frees up, and
-	/// a stopping gateway takes no new connections, so neither waits.
-	#[cfg(test)]
-	async fn acquire(
+
+	/// Waits through open-file pressure while observing credential revocation
+	/// and shutdown. Memory pressure refuses excess connections promptly.
+	pub(super) async fn acquire_watched(
 		&self,
 		scope: &ScopeSettings,
-		wait: std::time::Duration,
-	) -> Result<(TunnelPermit, std::time::Duration), &'static str> {
-		self.acquire_watched(scope, wait, false, || None)
-			.await
-			.map_err(|refused| match refused {
-				NotAdmitted::Limit(code) | NotAdmitted::Stopped((_, code)) => code,
-			})
-	}
-	/// As `acquire`, and a connection that has to wait also ends its wait as
-	/// soon as `watch`, made only then, says its Scratch Space stopped. A
-	/// connection that `holds_slot` of the listener while it waits (plain HTTP)
-	/// is refused at once beyond its Tenant's `SLOT_HOLDING_WAITERS`.
-	async fn acquire_watched(
-		&self,
-		scope: &ScopeSettings,
-		wait: std::time::Duration,
-		holds_slot: bool,
 		watch: impl FnOnce() -> Option<tokio::sync::watch::Receiver<Option<Stopped>>>,
-	) -> Result<(TunnelPermit, std::time::Duration), NotAdmitted> {
-		let code = match self.try_acquire(scope) {
-			Ok(permit) => return Ok((permit, std::time::Duration::ZERO)),
-			Err(code) => code,
-		};
-		if scope.tunnel_limits.concurrent == 0 || is_stopping(&self.stopping) {
-			return Err(NotAdmitted::Limit(limit_refused(code)));
-		}
-		let mut turn = {
-			let mut counts = self.counts.lock().unwrap();
-			// Nothing caps one Scratch Space's waiters: the Tenant's share and
-			// the gateway's budget bound them, and a Pod has only so many source
-			// ports for one gateway address anyway.
-			let full = if counts
-				.waiting
-				.tenants
-				.get(&scope.id.tenant)
-				.copied()
-				.unwrap_or(0)
-				>= (self.waiting_budget / 4).max(1)
-				|| (holds_slot
-					&& counts
-						.waiting
-						.holding_slots
-						.get(&scope.id.tenant)
-						.copied()
-						.unwrap_or(0) >= SLOT_HOLDING_WAITERS)
-			{
-				Some(LIMITS[1].0)
-			} else if counts.waiting.global >= self.waiting_budget {
-				Some(LIMITS[2].0)
-			} else {
-				None
-			};
-			if let Some(code) = full {
-				counts.prune(&scope.id);
-				return Err(NotAdmitted::Limit(limit_refused(code)));
-			}
-			*counts.waiting.scopes.entry(scope.id.clone()).or_default() += 1;
-			*counts
-				.waiting
-				.tenants
-				.entry(scope.id.tenant.clone())
-				.or_default() += 1;
-			if holds_slot {
-				*counts
-					.waiting
-					.holding_slots
-					.entry(scope.id.tenant.clone())
-					.or_default() += 1;
-			}
-			counts.waiting.global += 1;
-			let semaphores = self.semaphores(&mut counts, scope).to_vec();
-			WaitTurn {
-				counts: self.counts.clone(),
-				scope: scope.id.clone(),
-				semaphores,
-				holds_slot,
-			}
-		};
-		let started = tokio::time::Instant::now();
-		let deadline = started + wait;
+	) -> Result<(TunnelPermit, std::time::Duration), Stopped> {
 		let mut stopping = self.stopping.clone();
+		let shutdown = (hyper::StatusCode::SERVICE_UNAVAILABLE, "egress_stopping");
+		if is_stopping(&stopping) {
+			return Err(shutdown);
+		}
+		let started = tokio::time::Instant::now();
+		let turn = {
+			let mut counts = self.capacity.counts.lock().unwrap();
+			if let Some(permit) = self.try_admit(&mut counts, scope, None)? {
+				return Ok((permit, std::time::Duration::ZERO));
+			}
+			let ticket = uuid::Uuid::new_v4();
+			*counts.waiting.entry(scope.id.clone()).or_default() += 1;
+			counts
+				.queue
+				.entry(scope.id.tenant.clone())
+				.or_default()
+				.push_back(ticket);
+			counts.waiting_total += 1;
+			metrics::gauge!("aidash_egress_waiting_connections").set(counts.waiting_total as f64);
+			WaitTurn {
+				capacity: self.capacity.clone(),
+				scope: scope.id.clone(),
+				ticket,
+			}
+		};
 		let watched = watch();
 		let space_stopped = async move {
 			if let Some(mut watched) = watched
@@ -558,40 +465,39 @@ impl TunnelManager {
 			std::future::pending().await
 		};
 		tokio::pin!(space_stopped);
-		let mut permits = Vec::with_capacity(3);
-		for (semaphore, (code, label)) in turn.semaphores.iter().zip(LIMITS) {
-			let waited = tokio::time::Instant::now();
-			let permit = tokio::select! {
-				permit = tokio::time::timeout_at(deadline, semaphore.clone().acquire_owned()) => permit,
-				_ = async { while stopping.changed().await.is_ok() && !*stopping.borrow() {} } => return Err(NotAdmitted::Limit(limit_refused(code))),
-				stopped = &mut space_stopped => return Err(NotAdmitted::Stopped(stopped)),
-			};
-			let Ok(Ok(permit)) = permit else {
-				return Err(NotAdmitted::Limit(limit_refused(code)));
-			};
-			let waited = waited.elapsed();
-			if !waited.is_zero() {
-				metrics::histogram!("aidash_egress_host_connection_wait_seconds", "limit" => label)
-					.record(waited.as_secs_f64());
+		let _elapsed = Elapsed(
+			metrics::histogram!("aidash_egress_fair_share_wait_seconds"),
+			started,
+		);
+		loop {
+			let changed = self.capacity.changed.notified();
+			tokio::pin!(changed);
+			changed.as_mut().enable();
+			if is_stopping(&stopping) {
+				return Err(shutdown);
 			}
-			permits.push(permit);
+			{
+				let mut counts = self.capacity.counts.lock().unwrap();
+				if let Some(permit) = self.try_admit(&mut counts, scope, Some(turn.ticket))? {
+					return Ok((permit, started.elapsed()));
+				}
+			}
+			tokio::select! {
+				_ = changed => {},
+				_ = stopping.changed() => {},
+				stopped = &mut space_stopped => return Err(stopped),
+			}
 		}
-		let scope_id = turn.scope.clone();
-		turn.semaphores.clear();
-		drop(turn);
-		Ok((
-			TunnelPermit {
-				permits,
-				counts: self.counts.clone(),
-				scope: scope_id,
-			},
-			started.elapsed(),
-		))
 	}
 	/// Counts a connection that ended before it held a limit. A minute keeps
 	/// at most `TALLY_HOSTS` hosts of one scope apart; Sandboxed code chooses
 	/// the host names, so the rest are counted together under an empty host.
-	fn tally(&self, scope: &aidash_domain::egress::ScopeId, host: &str, reason: &'static str) {
+	pub(super) fn tally(
+		&self,
+		scope: &aidash_domain::egress::ScopeId,
+		host: &str,
+		reason: &'static str,
+	) {
 		let minute = chrono::Utc::now().timestamp().div_euclid(60);
 		let mut tallies = self.tallies.lock().unwrap();
 		let key = (scope.clone(), minute, host.to_owned(), reason);
@@ -676,7 +582,7 @@ impl TunnelManager {
 	}
 	/// Resolves a credential, reusing a resolution made in the last
 	/// `RESOLVED_FOR`. A refusal is never reused.
-	async fn resolve(
+	pub(super) async fn resolve(
 		&self,
 		scopes: &dyn EgressScopes,
 		token: &str,
@@ -704,7 +610,7 @@ impl TunnelManager {
 	/// Space stopped. One task checks every `WAIT_RECHECK` for all of them, so
 	/// a burst of waiters costs the store one read a second (#845 decision 28),
 	/// and it ends once none of them waits any longer.
-	fn watch_space(
+	pub(super) fn watch_space(
 		&self,
 		scopes: Arc<dyn EgressScopes>,
 		scope: &ScopeSettings,
@@ -747,11 +653,11 @@ impl TunnelManager {
 	}
 	/// Whether a connection of this Scratch Space waits for a limit now.
 	fn has_waiters(&self, scope: &aidash_domain::egress::ScopeId) -> bool {
-		self.counts
+		self.capacity
+			.counts
 			.lock()
 			.unwrap()
 			.waiting
-			.scopes
 			.contains_key(scope)
 	}
 	pub(super) async fn drain(&self) {
@@ -773,6 +679,9 @@ struct Batch {
 	direction: Direction,
 	day: chrono::NaiveDate,
 	remaining: u64,
+	cumulative: u64,
+	unused: u64,
+	reported: u64,
 	failure: FailureReport,
 	/// Why the store last did not answer a debit, for a connection that ends
 	/// waiting on it.
@@ -807,6 +716,9 @@ impl Batch {
 			direction,
 			day: chrono::Utc::now().date_naive(),
 			remaining: 0,
+			cumulative: 0,
+			unused: 0,
+			reported: 0,
 			failure,
 			unanswered: None,
 		}
@@ -814,6 +726,8 @@ impl Batch {
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
 		let day = chrono::Utc::now().date_naive();
 		if day != self.day {
+			self.report_forwarded().await?;
+			self.unused = self.unused.saturating_add(self.remaining);
 			if self.remaining != 0 {
 				// Reported like the refund that ends a tunnel, which this one is.
 				// The day's unused bytes stay counted; the connection goes on.
@@ -829,6 +743,7 @@ impl Batch {
 		}
 		let bytes = bytes as u64;
 		if self.remaining < bytes {
+			self.report_forwarded().await?;
 			let need = bytes - self.remaining;
 			let amount = BATCH.max(need);
 			match self.debit(amount, day).await {
@@ -846,7 +761,7 @@ impl Batch {
 	}
 	/// Debits until the store decides. A store that does not answer is tried
 	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
-	/// Every attempt uses the same reservation ID, including after a lost commit answer.
+	/// Every retry uses the same cumulative target, including after a lost commit answer.
 	async fn debit(
 		&mut self,
 		amount: u64,
@@ -856,12 +771,21 @@ impl Batch {
 			metrics::histogram!("aidash_egress_debit_seconds"),
 			tokio::time::Instant::now(),
 		);
-		let reservation = uuid::Uuid::new_v4();
+		let target = self
+			.cumulative
+			.checked_add(amount)
+			.ok_or(aidash_application::Error::Forbidden)?;
 		let mut pause = DEBIT_RETRY;
 		let result = loop {
 			match self
 				.scopes
-				.debit(&self.settings, self.direction, amount, day, reservation)
+				.debit(
+					&self.settings,
+					self.direction,
+					target,
+					day,
+					self.failure.connection,
+				)
 				.await
 			{
 				Err(error) if !debit_decided(&error) => {
@@ -875,8 +799,46 @@ impl Batch {
 			}
 		};
 		self.unanswered = None;
+		if result.is_ok() {
+			self.cumulative = target;
+		}
 		result
 	}
+	async fn report_forwarded(&mut self) -> io::Result<()> {
+		let actual = self
+			.cumulative
+			.saturating_sub(self.unused)
+			.saturating_sub(self.remaining);
+		if actual == self.reported {
+			return Ok(());
+		}
+		let mut delay = DEBIT_RETRY;
+		loop {
+			match self
+				.scopes
+				.report_forwarded(
+					&self.settings,
+					self.failure.connection,
+					self.direction,
+					actual,
+					self.day,
+				)
+				.await
+			{
+				Ok(()) => break,
+				Err(error) if debit_decided(&error) => return Err(debit_failed(error)),
+				Err(error) => {
+					self.unanswered = Some(error.to_string());
+					tokio::time::sleep(delay).await;
+					delay = (delay * 2).min(DEBIT_RETRY_MAX);
+				}
+			}
+		}
+		self.unanswered = None;
+		self.reported = actual;
+		Ok(())
+	}
+
 	/// Returns unused bytes of `day`, waiting at most [`REFUND_WAIT`].
 	async fn refund(&self, bytes: u64, day: chrono::NaiveDate) -> io::Result<()> {
 		let started = tokio::time::Instant::now();
@@ -906,25 +868,27 @@ impl Batch {
 	}
 }
 
+#[allow(clippy::too_many_arguments)] // Each relay direction tracks its own transfer state.
 async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 	mut read: R,
 	mut write: W,
+	buffers: &super::buffers::BufferPool,
 	batch: &mut Batch,
 	activity: tokio::sync::watch::Sender<()>,
 	charging: &AtomicUsize,
 	mut cancel: tokio::sync::watch::Receiver<bool>,
 	count: Arc<AtomicU64>,
 ) -> io::Result<()> {
-	let mut buffer = vec![0u8; BATCH as usize];
 	loop {
 		if *cancel.borrow() {
 			return Err(io::Error::other("egress_cancelled"));
 		}
-		let n = tokio::select! {
-			n = read.read(&mut buffer) => n?,
+		let (buffer, n) = tokio::select! {
+			chunk = buffers.read(&mut read) => chunk?,
 			_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
 		};
 		if n == 0 {
+			drop(buffer);
 			return tokio::select! {
 				result = write.shutdown() => result,
 				_ = cancel.changed() => Err(io::Error::other("egress_cancelled")),
@@ -947,7 +911,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 				return Err(io::Error::other("egress_cancelled"));
 			}
 			let result = tokio::select! {
-				result = write.write(&buffer[written..n]) => result,
+				result = write.write(&buffer.bytes()[written..n]) => result,
 				_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
 			};
 			match result {
@@ -997,6 +961,7 @@ where
 
 #[derive(Default)]
 struct TunnelReports {
+	buffers: Arc<super::buffers::BufferPool>,
 	settle_ms: Arc<AtomicU64>,
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
@@ -1022,6 +987,7 @@ where
 {
 	let (client_read, client_write) = tokio::io::split(client);
 	let (upstream_read, upstream_write) = tokio::io::split(upstream);
+	let buffers = counts.buffers;
 	let sent = counts.sent;
 	let received = counts.received;
 	let failure = counts.failure;
@@ -1048,6 +1014,7 @@ where
 				let result = pump(
 					client_read,
 					upstream_write,
+					&buffers,
 					&mut sent_batch,
 					activity_tx.clone(),
 					&charging,
@@ -1067,6 +1034,7 @@ where
 				let result = pump(
 					upstream_read,
 					client_write,
+					&buffers,
 					&mut received_batch,
 					activity_tx.clone(),
 					&charging,
@@ -1187,6 +1155,11 @@ where
 	// store's loss only: it is counted and reported, and the connection ends
 	// the way its transfer did (#909).
 	let settling = std::time::Instant::now();
+	// The terminal audit retries any tail that this bounded attempt could not post.
+	let _ = tokio::join!(
+		tokio::time::timeout(REFUND_WAIT, sent_batch.report_forwarded()),
+		tokio::time::timeout(REFUND_WAIT, received_batch.report_forwarded()),
+	);
 	let sent_settle = sent_batch.settle().await;
 	let received_settle = received_batch.settle().await;
 	settle_ms.store(
@@ -1514,15 +1487,14 @@ pub(super) async fn forward(
 	request: hyper::Request<hyper::body::Incoming>,
 	scopes: Arc<dyn EgressScopes>,
 	manager: Arc<TunnelManager>,
-	listener_permit: Arc<std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
+	settings: &super::GatewaySettings,
 	connection_lease: Arc<std::sync::Mutex<Option<Arc<TunnelPermit>>>>,
 ) -> hyper::Response<super::Body> {
 	use hyper::{Method, StatusCode};
 	let Some(token) = credential(request.headers()) else {
 		return auth_required();
 	};
-	// How long a connection holds a listener slot before anyone is known: the
-	// listener's slot count is sized from it (#845).
+	// Measure credential resolution and budget admission.
 	let admitting = std::time::Instant::now();
 	let scope = match manager.resolve(&*scopes, &token).await {
 		Ok(scope) => scope,
@@ -1534,6 +1506,9 @@ pub(super) async fn forward(
 			return super::refuse(status, code);
 		}
 	};
+	if !settings.accepts(&scope.id.tenant) {
+		return super::refuse(StatusCode::FORBIDDEN, "egress_wrong_ip_group");
+	}
 	if let Err(error) = scopes.admit_connection(&scope).await {
 		let (status, code) = admission_refusal(&error, &token, &manager.failures);
 		return super::refuse(status, code);
@@ -1595,14 +1570,6 @@ pub(super) async fn forward(
 			}
 		});
 	}
-	// The listener's slots are shared by every Tenant and taken before anyone is
-	// known, so an admitted CONNECT gives its slot back before it may wait for a
-	// limit; the Tenant's share of the waiting budget bounds it from here
-	// (#845). A plain HTTP connection remains charged until Hyper finishes
-	// flushing it.
-	if connect {
-		drop(listener_permit.lock().unwrap().take());
-	}
 	let mut pending = PendingTally {
 		manager: manager.clone(),
 		scope: scope.id.clone(),
@@ -1611,21 +1578,18 @@ pub(super) async fn forward(
 	};
 	// A Space that stops ends its connections' waits at once (#845 decision 2).
 	let acquired = manager
-		.acquire_watched(&scope, LIMIT_WAIT, !connect, || {
+		.acquire_watched(&scope, || {
 			Some(manager.watch_space(scopes.clone(), &scope, &token))
 		})
 		.await;
 	pending.armed = false;
 	let (permit, waited) = match acquired {
 		Ok((permit, waited)) => (Arc::new(permit), waited),
-		Err(NotAdmitted::Limit(code)) => {
-			return refuse(&host, StatusCode::TOO_MANY_REQUESTS, code);
-		}
-		Err(NotAdmitted::Stopped((status, code))) => return refuse(&host, status, code),
+		Err((status, code)) => return refuse(&host, status, code),
 	};
 	let mut audit = Audit {
 		run_id: scope.run_id,
-		admission_ms: Some(admitting.elapsed().as_millis().min(u64::MAX as u128) as u64),
+		admission_ms: Some(super::millis(admitting.elapsed().saturating_sub(waited))),
 		settle_ms: Arc::new(AtomicU64::new(0)),
 		id: uuid::Uuid::new_v4(),
 		manager: manager.clone(),
@@ -1762,6 +1726,7 @@ async fn connect_tunnel(
 	let received = audit.received.clone();
 	let upgrade = hyper::upgrade::on(&mut request);
 	let stopping = manager.stopping.clone();
+	let buffers = manager.buffers.clone();
 	let reclaim = Some(Reclaim {
 		manager: manager.clone(),
 		scope: scope.id.clone(),
@@ -1779,6 +1744,7 @@ async fn connect_tunnel(
 					credential,
 					audit.host.clone(),
 					TunnelReports {
+						buffers,
 						settle_ms: audit.settle_ms.clone(),
 						sent: sent.clone(),
 						received: received.clone(),
@@ -1845,6 +1811,7 @@ async fn forward_http(
 	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
 	let (client_error_tx, client_error) = tokio::sync::oneshot::channel();
 	let stopping = manager.stopping.clone();
+	let buffers = manager.buffers.clone();
 	// Idle reclamation is for CONNECT tunnels kept open between requests
 	// (#845 decision 27). This connection carries one request with
 	// `Connection: close`, so a quiet one is a request still in flight, which
@@ -1863,6 +1830,7 @@ async fn forward_http(
 				credential,
 				audit.host.clone(),
 				TunnelReports {
+					buffers,
 					settle_ms: audit.settle_ms.clone(),
 					sent: sent.clone(),
 					received: received.clone(),
@@ -2025,201 +1993,135 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn scope_tunnel_cap_is_independent_and_releases_capacity() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
-		let mut one = test_settings();
-		one.tunnel_limits.concurrent = 0;
-		assert!(manager.try_acquire(&one).is_err());
-		assert!(manager.counts.lock().unwrap().scopes.is_empty());
-		one.tunnel_limits.concurrent = 1;
-		let mut two = test_settings();
-		two.tunnel_limits.concurrent = 1;
-		let held = manager.try_acquire(&one).unwrap();
-		assert!(manager.try_acquire(&one).is_err());
-		assert!(manager.try_acquire(&two).is_ok());
-		drop(held);
-		assert!(manager.try_acquire(&one).is_ok());
+	// A second Tenant with one connection puts the first over its share.
+	fn shortage(manager: &super::TunnelManager, scope: &ScopeSettings) -> [super::TunnelPermit; 2] {
+		let mut neighbor = scope.clone();
+		neighbor.id.tenant = "neighbor".into();
+		let neighbor = manager.try_acquire(&neighbor).unwrap();
+		let extra = manager.try_acquire(scope).unwrap();
+		manager.update_pressure(Some(0.81), None);
+		[extra, neighbor]
 	}
 
-	#[test]
-	fn tenants_cannot_exhaust_proxy_capacity_using_multiple_scopes() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits {
-				tenant_concurrent: 64,
-				..Default::default()
-			},
-		);
-		let first = test_settings();
-		let second = test_settings();
-		let third = test_settings();
-		let held: Vec<_> = (0..32)
-			.flat_map(|_| {
-				[
-					manager.try_acquire(&first).unwrap(),
-					manager.try_acquire(&second).unwrap(),
-				]
-			})
-			.collect();
-		assert_eq!(
-			manager.try_acquire(&third).err(),
-			Some("egress_tenant_tunnel_limit")
-		);
-		let mut other_tenant = test_settings();
-		other_tenant.id.tenant = "other".into();
-		assert!(manager.try_acquire(&other_tenant).is_ok());
-		drop(held);
-		assert!(manager.try_acquire(&third).is_ok());
-	}
-
-	#[test]
-	fn tenant_and_global_exhaustion_have_distinct_codes() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits {
-				global_concurrent: 2,
-				tenant_concurrent: 1,
-				..Default::default()
-			},
-		);
-		let one = test_settings();
-		let mut two = test_settings();
-		two.id.tenant = "two".into();
-		let mut three = test_settings();
-		three.id.tenant = "three".into();
-		let _one = manager.try_acquire(&one).unwrap();
-		assert_eq!(
-			manager.try_acquire(&one).err().unwrap(),
-			"egress_tenant_tunnel_limit"
-		);
-		let _two = manager.try_acquire(&two).unwrap();
-		assert_eq!(
-			manager.try_acquire(&three).err().unwrap(),
-			"egress_global_tunnel_limit"
-		);
-	}
-
-	fn limited(concurrent: usize) -> ScopeSettings {
-		let mut settings = test_settings();
-		settings.tunnel_limits.concurrent = concurrent;
-		settings
-	}
-
-	#[tokio::test(start_paused = true)]
-	async fn a_connection_over_a_limit_waits_for_one_to_close() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
-		let one = limited(1);
-		let held = manager.try_acquire(&one).unwrap();
-		let waiting = tokio::spawn({
-			let manager = manager.clone();
-			let one = one.clone();
-			async move {
-				manager
-					.acquire(&one, super::LIMIT_WAIT)
-					.await
-					.map(|(_, waited)| waited)
-			}
-		});
-		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-		assert!(!waiting.is_finished());
-		drop(held);
-		let waited = waiting.await.unwrap().unwrap();
-		assert_eq!(waited, std::time::Duration::from_secs(2));
-		assert!(manager.counts.lock().unwrap().scopes.is_empty());
-		assert_eq!(manager.counts.lock().unwrap().waiting.global, 0);
-	}
-
-	#[tokio::test(start_paused = true)]
-	async fn a_wait_that_runs_out_names_the_limit_still_full() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits {
-				global_concurrent: 4,
-				tenant_concurrent: 1,
-				..Default::default()
-			},
-		);
-		let first = test_settings();
-		let second = test_settings();
-		let _held = manager.try_acquire(&first).unwrap();
-		let started = tokio::time::Instant::now();
-		let refused = manager.acquire(&second, super::LIMIT_WAIT).await.err();
-		assert_eq!(refused, Some("egress_tenant_tunnel_limit"));
-		assert_eq!(started.elapsed(), super::LIMIT_WAIT);
-		let counts = manager.counts.lock().unwrap();
-		assert!(
-			!counts.scopes.contains_key(&second.id),
-			"a refused wait leaves nothing behind"
-		);
-		assert!(counts.waiting.tenants.is_empty());
-	}
-
-	#[tokio::test(start_paused = true)]
-	async fn a_tenant_may_have_a_quarter_of_the_waiting_budget() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits {
-				waiting: 8,
-				..Default::default()
-			},
-		));
-		let one = limited(1);
-		let _held = manager.try_acquire(&one).unwrap();
-		for _ in 0..2 {
-			let manager = manager.clone();
-			let one = one.clone();
-			tokio::spawn(async move { manager.acquire(&one, super::LIMIT_WAIT).await.is_ok() });
-			tokio::task::yield_now().await;
+	#[tokio::test]
+	async fn one_thousand_idle_tunnels_release_relay_buffers() {
+		let pool = Arc::new(super::super::buffers::BufferPool::default());
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+		let (_stop, stopping) = tokio::sync::watch::channel(false);
+		let mut peers = Vec::new();
+		let mut relays = tokio::task::JoinSet::new();
+		let (waiting, mut polled) = tokio::sync::mpsc::channel(1);
+		for _ in 0..1000 {
+			let (client, proxy_client) = tokio::io::duplex(32);
+			let (proxy_upstream, upstream) = tokio::io::duplex(32);
+			peers.push((client, upstream));
+			let relay = super::tunnel_controlled(
+				proxy_client,
+				proxy_upstream,
+				scopes.clone(),
+				settings.clone(),
+				"token".into(),
+				"registry.npmjs.org".into(),
+				super::TunnelReports {
+					buffers: pool.clone(),
+					..Default::default()
+				},
+				stopping.clone(),
+			);
+			let waiting = waiting.clone();
+			relays.spawn(async move {
+				tokio::pin!(relay);
+				assert!(futures_util::poll!(&mut relay).is_pending());
+				waiting.send(()).await.unwrap();
+				relay.await
+			});
 		}
-		let started = tokio::time::Instant::now();
-		assert_eq!(
-			manager.acquire(&one, super::LIMIT_WAIT).await.err(),
-			Some("egress_tenant_tunnel_limit"),
-			"two waiters fill this Tenant's share of eight"
-		);
-		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
-		let mut other = limited(1);
-		other.id.tenant = "other".into();
-		let _other = manager.try_acquire(&other).unwrap();
+		for _ in 0..1000 {
+			polled.recv().await.unwrap();
+		}
+		assert_eq!(pool.borrowed_bytes(), 0);
+		let (client, upstream) = &mut peers[0];
+		client.write_all(b"alive").await.unwrap();
+		let mut bytes = [0; 5];
+		upstream.read_exact(&mut bytes).await.unwrap();
+		assert_eq!(&bytes, b"alive");
+		relays.shutdown().await;
+		assert_eq!(pool.borrowed_bytes(), 0);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn memory_shortage_refuses_excess_connections_without_waiting() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let dominant = test_settings();
+		let _held = manager.try_acquire(&dominant).unwrap();
+		let _pressure = shortage(&manager, &dominant);
 		let waiting = tokio::spawn({
-			let manager = manager.clone();
-			async move { manager.acquire(&other, super::LIMIT_WAIT).await.err() }
+			let (manager, dominant) = (manager.clone(), dominant.clone());
+			async move { manager.acquire_watched(&dominant, || None).await.err() }
 		});
 		tokio::task::yield_now().await;
-		assert!(!waiting.is_finished(), "another Tenant still waits");
+		assert!(!waiting.is_finished());
+
+		// The resource changed even though aggregate shortage was already active.
+		manager.update_pressure(Some(0.75), Some(0.81));
+		let refusal = manager.acquire_watched(&dominant, || panic!("memory refusal queued"));
+		tokio::pin!(refusal);
+		assert!(matches!(
+			futures_util::poll!(&mut refusal),
+			std::task::Poll::Ready(Err((
+				hyper::StatusCode::SERVICE_UNAVAILABLE,
+				"egress_fair_share"
+			)))
+		));
+		assert_eq!(waiting.await.unwrap(), Some(super::FAIR_SHARE_REFUSAL));
+
+		let mut newcomer = dominant.clone();
+		newcomer.id.tenant = "new".into();
+		let (_, waited) = manager.acquire_watched(&newcomer, || None).await.unwrap();
+		assert!(waited.is_zero());
+
+		// Memory hysteresis holds independently of the file threshold.
+		manager.update_pressure(Some(0.65), Some(0.75));
+		assert_eq!(
+			manager.acquire_watched(&dominant, || None).await.err(),
+			Some(super::FAIR_SHARE_REFUSAL),
+		);
+		manager.update_pressure(Some(0.65), Some(0.69));
+		let (_, waited) = manager.acquire_watched(&dominant, || None).await.unwrap();
+		assert!(waited.is_zero());
 	}
 
-	#[test]
-	fn the_waiting_budget_follows_the_open_file_limit() {
-		use super::super::waiting_budget;
-		assert_eq!(
-			waiting_budget(1024),
-			64,
-			"a small limit still lets some wait"
-		);
-		assert_eq!(waiting_budget(8192 + 1000), 500);
-		assert_eq!(waiting_budget(1_048_576), (1_048_576 - 8192) / 2);
-		assert_eq!(
-			waiting_budget(u64::MAX >> 1),
-			waiting_budget(1_048_576),
-			"an unlimited limit counts as a large one"
-		);
+	#[tokio::test(start_paused = true)]
+	async fn shortage_waits_only_above_the_share_and_records_elapsed_time() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let dominant = test_settings();
+		let held = Vec::from_iter((0..600).map(|_| manager.try_acquire(&dominant).unwrap()));
+		let _pressure = shortage(&manager, &dominant);
+		let pending = tokio::spawn({
+			let (manager, dominant) = (manager.clone(), dominant.clone());
+			async move { manager.acquire_watched(&dominant, || None).await.unwrap() }
+		});
+		let mut newcomer = dominant.clone();
+		newcomer.id.tenant = "new".into();
+		let (_, elapsed) = manager.acquire_watched(&newcomer, || None).await.unwrap();
+		assert!(elapsed.is_zero());
+		tokio::task::yield_now().await;
+		manager.update_pressure(Some(0.70), Some(0.70));
+		tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+		assert!(!pending.is_finished());
+		manager.update_pressure(Some(0.69), Some(0.69));
+		let (_, waited) = pending.await.unwrap();
+		assert_eq!(waited, std::time::Duration::from_secs(30));
+		drop(held);
 	}
 
 	#[tokio::test]
 	async fn a_minute_keeps_fifty_hosts_of_a_scope_apart() {
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let manager = super::TunnelManager::new(receiver);
 		let settings = test_settings();
 		for index in 0..60 {
 			manager.tally(
@@ -2241,74 +2143,42 @@ mod tests {
 	}
 
 	#[tokio::test(start_paused = true)]
-	async fn waiting_connections_are_admitted_in_arrival_order() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
-		let two = limited(2);
-		let held = manager.try_acquire(&two).unwrap();
-		let _other = manager.try_acquire(&two).unwrap();
-		let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-		let mut waiters = Vec::new();
-		for n in 0..2 {
-			let manager = manager.clone();
-			let two = two.clone();
-			let order = order.clone();
-			waiters.push(tokio::spawn(async move {
-				let permit = manager.acquire(&two, super::LIMIT_WAIT).await;
-				order.lock().unwrap().push(n);
-				permit.map(|(permit, _)| permit)
-			}));
-			tokio::task::yield_now().await;
-		}
-		drop(held);
-		tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-		assert_eq!(*order.lock().unwrap(), vec![0]);
-		assert!(!waiters[1].is_finished());
-	}
-
-	#[tokio::test(start_paused = true)]
 	async fn a_stopping_gateway_ends_every_wait_at_once() {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
-		let one = limited(1);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let one = test_settings();
 		let _held = manager.try_acquire(&one).unwrap();
+		let _pressure = shortage(&manager, &one);
 		let waiting = tokio::spawn({
 			let manager = manager.clone();
 			let one = one.clone();
-			async move { manager.acquire(&one, super::LIMIT_WAIT).await.err() }
+			async move { manager.acquire_watched(&one, || None).await.err() }
 		});
 		tokio::task::yield_now().await;
 		let started = tokio::time::Instant::now();
 		stop.send(true).unwrap();
-		assert_eq!(waiting.await.unwrap(), Some("egress_tunnel_limit"));
+		assert_eq!(
+			waiting.await.unwrap(),
+			Some((hyper::StatusCode::SERVICE_UNAVAILABLE, "egress_stopping"))
+		);
 		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
 	}
 
 	#[tokio::test(start_paused = true)]
 	async fn a_space_that_stops_ends_its_waits_at_once_with_one_check_for_all() {
-		let one = limited(1);
+		let one = test_settings();
 		let memory = Arc::new(MemoryScopes::new("token".into(), one.clone()));
 		let scopes: Arc<dyn EgressScopes> = memory.clone();
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
+		let manager = Arc::new(super::TunnelManager::new(receiver));
 		let _held = manager.try_acquire(&one).unwrap();
+		let _pressure = shortage(&manager, &one);
 		let waiters: Vec<_> = (0..3)
 			.map(|_| {
 				let (manager, one, scopes) = (manager.clone(), one.clone(), scopes.clone());
 				tokio::spawn(async move {
 					manager
-						.acquire_watched(&one, super::LIMIT_WAIT, false, || {
-							Some(manager.watch_space(scopes, &one, "token"))
-						})
+						.acquire_watched(&one, || Some(manager.watch_space(scopes, &one, "token")))
 						.await
 						.err()
 				})
@@ -2322,101 +2192,12 @@ mod tests {
 		for waiter in waiters {
 			assert_eq!(
 				waiter.await.unwrap(),
-				Some(super::NotAdmitted::Stopped((
-					hyper::StatusCode::FORBIDDEN,
-					"egress_credential_revoked"
-				)))
+				Some((hyper::StatusCode::FORBIDDEN, "egress_credential_revoked"))
 			);
 		}
 		assert!(started.elapsed() <= super::WAIT_RECHECK);
-		assert_eq!(manager.counts.lock().unwrap().waiting.global, 0);
+		assert_eq!(manager.capacity.counts.lock().unwrap().waiting_total, 0);
 		assert!(manager.watched.lock().unwrap().is_empty());
-	}
-
-	#[tokio::test(start_paused = true)]
-	async fn a_tenant_s_waiting_plain_http_holds_at_most_a_quarter_of_the_listener_slots() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits {
-				waiting: 1 << 16,
-				..Default::default()
-			},
-		));
-		let one = limited(1);
-		let _held = manager.try_acquire(&one).unwrap();
-		let wait = |settings: ScopeSettings, holds_slot: bool| {
-			let manager = manager.clone();
-			tokio::spawn(async move {
-				manager
-					.acquire_watched(&settings, super::LIMIT_WAIT, holds_slot, || None)
-					.await
-					.err()
-			})
-		};
-		let quarter: Vec<_> = (0..super::SLOT_HOLDING_WAITERS)
-			.map(|_| wait(one.clone(), true))
-			.collect();
-		tokio::task::yield_now().await;
-		assert_eq!(
-			super::SLOT_HOLDING_WAITERS,
-			super::super::CONNECTION_SLOTS / 4
-		);
-		let started = tokio::time::Instant::now();
-		assert_eq!(
-			wait(one.clone(), true).await.unwrap(),
-			Some(super::NotAdmitted::Limit("egress_tenant_tunnel_limit")),
-			"the next waiting plain request of the Tenant is refused at once"
-		);
-		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
-		let connect = wait(one.clone(), false);
-		let mut other = limited(1);
-		other.id.tenant = "other".into();
-		let _other = manager.try_acquire(&other).unwrap();
-		let other_plain = wait(other, true);
-		tokio::task::yield_now().await;
-		assert!(!connect.is_finished(), "CONNECT still waits");
-		assert!(
-			!other_plain.is_finished(),
-			"another Tenant's plain request still waits"
-		);
-		assert!(quarter.iter().all(|waiter| !waiter.is_finished()));
-		let mut free = limited(1);
-		free.id.tenant = "free".into();
-		assert_eq!(
-			wait(free, true).await.unwrap(),
-			None,
-			"another Tenant still gets a slot"
-		);
-		assert_eq!(
-			manager.counts.lock().unwrap().waiting.holding_slots["t"],
-			super::SLOT_HOLDING_WAITERS
-		);
-		for waiter in quarter.into_iter().chain([connect, other_plain]) {
-			waiter.abort();
-			let _ = waiter.await;
-		}
-		assert!(
-			manager
-				.counts
-				.lock()
-				.unwrap()
-				.waiting
-				.holding_slots
-				.is_empty()
-		);
-	}
-
-	#[tokio::test(start_paused = true)]
-	async fn a_limit_of_zero_refuses_without_waiting() {
-		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
-		let started = tokio::time::Instant::now();
-		assert_eq!(
-			manager.acquire(&limited(0), super::LIMIT_WAIT).await.err(),
-			Some("egress_tunnel_limit")
-		);
-		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
 	}
 
 	#[tokio::test(start_paused = true)]
@@ -2454,19 +2235,17 @@ mod tests {
 	/// A tunnel of a Space whose slot is held, with a connection of the same
 	/// Space waiting or not, idle from the start.
 	async fn idle_tunnel(with_waiter: bool) -> (bool, Option<String>) {
-		let mut settings = test_settings();
-		settings.tunnel_limits.concurrent = 1;
+		let settings = test_settings();
+
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver.clone(),
-			super::super::ProxyLimits::default(),
-		));
+		let manager = Arc::new(super::TunnelManager::new(receiver.clone()));
 		let held = manager.try_acquire(&settings).unwrap();
+		let _pressure = shortage(&manager, &settings);
 		let waiter = with_waiter.then(|| {
 			let manager = manager.clone();
 			let settings = settings.clone();
-			tokio::spawn(async move { manager.acquire(&settings, super::LIMIT_WAIT).await.is_ok() })
+			tokio::spawn(async move { manager.acquire_watched(&settings, || None).await.is_ok() })
 		});
 		let (_client, gateway_client) = tokio::io::duplex(32);
 		let (gateway_server, _server) = tokio::io::duplex(32);
@@ -2526,7 +2305,7 @@ mod tests {
 	async fn a_resolved_credential_is_reused_for_five_seconds_and_a_refusal_never() {
 		let memory = Arc::new(MemoryScopes::new("token".into(), test_settings()));
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let manager = super::TunnelManager::new(receiver);
 		let counted = CountedResolve(memory.clone(), Default::default());
 		let calls = || counted.1.load(Ordering::SeqCst);
 		manager.resolve(&counted, "token").await.unwrap();
@@ -3055,45 +2834,10 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn over_limit_is_a_typed_http_429() {
-		let mut settings = test_settings();
-		settings.tunnel_limits.concurrent = 0;
-		let scopes = Arc::new(MemoryScopes::new("credential".into(), settings));
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let address = listener.local_addr().unwrap();
-		let (stop, receiver) = tokio::sync::watch::channel(false);
-		let server = tokio::spawn(super::super::serve_with_scopes(
-			listener,
-			scopes.clone(),
-			super::super::ProxyLimits::default(),
-			receiver,
-		));
-		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-		client.write_all(b"CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\nProxy-Authorization: Bearer credential\r\nConnection: close\r\n\r\n").await.unwrap();
-		let mut response = Vec::new();
-		client.read_to_end(&mut response).await.unwrap();
-		assert!(response.starts_with(b"HTTP/1.1 429"));
-		assert!(String::from_utf8_lossy(&response).contains("egress_tunnel_limit"));
-		stop.send(true).unwrap();
-		server.await.unwrap().unwrap();
-		assert!(scopes.records().is_empty(), "no row before a permit");
-		let tallies = scopes.refusals();
-		assert_eq!(tallies.len(), 1);
-		assert_eq!(
-			(
-				tallies[0].host.as_str(),
-				tallies[0].reason.as_str(),
-				tallies[0].count
-			),
-			("registry.npmjs.org", "egress_tunnel_limit", 1)
-		);
-	}
-
-	#[tokio::test]
 	async fn a_lingering_upload_releases_its_tunnel_capacity() {
 		let mut settings = test_settings();
 		settings.allowed_hosts.hosts = vec!["127.0.0.1".into()];
-		settings.tunnel_limits.concurrent = 1;
+
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = listener.local_addr().unwrap();
@@ -3101,7 +2845,7 @@ mod tests {
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes,
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		let mut first = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -3136,6 +2880,120 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn host_and_external_service_memory_refusals_are_returned_and_counted() {
+		use hyper_util::rt::TokioIo;
+
+		let scope = settings_allowing_any_host();
+		let scopes = Arc::new(MemoryScopes::new("token".into(), scope.clone()));
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let _held = manager.try_acquire(&scope).unwrap();
+		let _pressure = shortage(&manager, &scope);
+		manager.update_pressure(Some(0.60), Some(0.81));
+
+		for (target, service) in [
+			("registry.npmjs.org", false),
+			(aidash_domain::egress::SERVICES_HOST, true),
+		] {
+			let (mut client, gateway) = tokio::io::duplex(1024);
+			let scopes = scopes.clone();
+			let manager = manager.clone();
+			let authority = hyper::service::service_fn(move |request| {
+				let scopes = scopes.clone();
+				let manager = manager.clone();
+				async move {
+					let settings = Arc::new(Default::default());
+					let lease = Arc::new(std::sync::Mutex::new(None));
+					let response = if service {
+						super::super::forward_service(
+							request,
+							reqwest::Client::new(),
+							reqwest::Client::new(),
+							scopes,
+							manager,
+							settings,
+							lease,
+						)
+						.await
+					} else {
+						super::forward(request, scopes, manager, &settings, lease).await
+					};
+					Ok::<_, std::convert::Infallible>(response)
+				}
+			});
+			let server = tokio::spawn(async move {
+				hyper::server::conn::http1::Builder::new()
+					.keep_alive(false)
+					.serve_connection(TokioIo::new(gateway), authority)
+					.await
+					.unwrap();
+			});
+			client.write_all(format!("GET http://{target}/package HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+			let mut response = String::new();
+			tokio::time::timeout(
+				std::time::Duration::from_secs(2),
+				client.read_to_string(&mut response),
+			)
+			.await
+			.expect("an over-share connection must not queue under memory pressure")
+			.unwrap();
+			assert!(response.starts_with("HTTP/1.1 503"));
+			assert!(response.contains("egress_fair_share"));
+			server.await.unwrap();
+		}
+		manager.flush_tallies(&*scopes).await;
+		let tallies = scopes.refusals();
+		for host in ["registry.npmjs.org", aidash_domain::egress::SERVICES_HOST] {
+			assert!(tallies.iter().any(|tally| {
+				tally.host == host && tally.reason == "egress_fair_share" && tally.count == 1
+			}));
+		}
+		assert!(scopes.records().is_empty());
+	}
+
+	#[tokio::test]
+	async fn a_shared_gateway_rejects_credentials_assigned_to_a_dedicated_group() {
+		let scope = test_settings();
+		let settings = super::super::GatewaySettings {
+			tenant_groups: [(scope.id.tenant.clone(), "dedicated".into())].into(),
+			group: Some("shared".into()),
+			..Default::default()
+		};
+		let scopes = Arc::new(MemoryScopes::new("token".into(), scope));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let gateway = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			scopes.clone(),
+			settings,
+			receiver,
+		));
+		for target in [
+			"http://registry.npmjs.org/",
+			"http://services.aidash.internal/api/",
+		] {
+			let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+			socket
+				.write_all(
+					format!(
+						"GET {target} HTTP/1.1\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n"
+					)
+					.as_bytes(),
+				)
+				.await
+				.unwrap();
+			let mut response = String::new();
+			socket.read_to_string(&mut response).await.unwrap();
+			assert!(response.starts_with("HTTP/1.1 403"));
+			assert!(response.contains("egress_wrong_ip_group"));
+		}
+		assert!(scopes.records().is_empty());
+		stop.send_replace(true);
+		gateway.await.unwrap().unwrap();
+	}
+
+	#[tokio::test]
 	async fn proxy_requires_scope_credential_and_rejects_private_resolution() {
 		let settings = ScopeSettings {
 			run_id: None,
@@ -3161,7 +3019,7 @@ mod tests {
 		let gateway = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes.clone(),
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			stopping,
 		));
 		async fn request(address: std::net::SocketAddr, auth: &str) -> String {
@@ -3228,7 +3086,7 @@ mod tests {
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes.clone(),
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		for index in [0, 1, 2, 0] {
@@ -3273,7 +3131,7 @@ mod tests {
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes.clone(),
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		// Reserved names never resolve, so nothing leaves the machine.
@@ -3302,7 +3160,7 @@ mod tests {
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes.clone(),
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		let host = [
@@ -3347,7 +3205,7 @@ mod tests {
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes,
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -3378,7 +3236,7 @@ mod tests {
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes.clone(),
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		for port in [22, 0] {
@@ -3413,7 +3271,7 @@ mod tests {
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes,
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -3471,10 +3329,7 @@ mod tests {
 		let gateway_task = tokio::spawn(async move {
 			let (socket, _) = gateway.accept().await.unwrap();
 			let (_stop, receiver) = tokio::sync::watch::channel(false);
-			let manager = Arc::new(super::TunnelManager::new(
-				receiver,
-				super::super::ProxyLimits::default(),
-			));
+			let manager = Arc::new(super::TunnelManager::new(receiver));
 			let service_manager = manager.clone();
 			let service = service_fn(move |request| {
 				let manager = service_manager.clone();
@@ -3570,15 +3425,14 @@ mod tests {
 				.await
 				.unwrap();
 		});
-		let settings = limited(1);
+		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
 		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let gateway_address = gateway.local_addr().unwrap();
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let pressure_slot = Arc::new(std::sync::Mutex::new(None));
+		let gateway_pressure = pressure_slot.clone();
 		let gateway_manager = manager.clone();
 		let gateway_settings = settings.clone();
 		let waiter = Arc::new(std::sync::Mutex::new(None));
@@ -3590,6 +3444,7 @@ mod tests {
 				let scopes = scopes.clone();
 				let settings = gateway_settings.clone();
 				let waiter = gateway_waiter.clone();
+				let pressure = gateway_pressure.clone();
 				async move {
 					let audit = super::Audit {
 						run_id: None,
@@ -3611,10 +3466,11 @@ mod tests {
 						started_record: false,
 					};
 					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
-					// Another connection of the Space waits for this one's slot.
+					*pressure.lock().unwrap() = Some(shortage(&manager, &settings));
+					// Another connection of the Space waits for this one to close.
 					*waiter.lock().unwrap() = Some(tokio::spawn({
 						let (manager, settings) = (manager.clone(), settings.clone());
-						async move { manager.acquire(&settings, super::LIMIT_WAIT).await.is_ok() }
+						async move { manager.acquire_watched(&settings, || None).await.is_ok() }
 					}));
 					let result = super::forward_http(
 						request,
@@ -3684,10 +3540,7 @@ mod tests {
 		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = gateway.local_addr().unwrap();
 		let (stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
+		let manager = Arc::new(super::TunnelManager::new(receiver));
 		let gateway_manager = manager.clone();
 		let task = tokio::spawn(async move {
 			let (socket, _) = gateway.accept().await.unwrap();
@@ -3797,10 +3650,7 @@ mod tests {
 		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = gateway.local_addr().unwrap();
 		let (stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			receiver,
-			super::super::ProxyLimits::default(),
-		));
+		let manager = Arc::new(super::TunnelManager::new(receiver));
 		let gateway_manager = manager.clone();
 		let gateway_scopes = scopes.clone();
 		let gateway_task = tokio::spawn(async move {
@@ -3934,10 +3784,7 @@ mod tests {
 		let gateway_task = tokio::spawn(async move {
 			let (socket, _) = gateway.accept().await.unwrap();
 			let (_stop, receiver) = tokio::sync::watch::channel(false);
-			let manager = Arc::new(super::TunnelManager::new(
-				receiver,
-				super::super::ProxyLimits::default(),
-			));
+			let manager = Arc::new(super::TunnelManager::new(receiver));
 			let service_manager = manager.clone();
 			let service = service_fn(move |request| {
 				let manager = service_manager.clone();
@@ -4027,7 +3874,7 @@ mod tests {
 		debit_fails: bool,
 		/// The number of debits still to fail before the store answers again.
 		debit_failures: std::sync::atomic::AtomicU32,
-		debit_reservations: Arc<std::sync::Mutex<Vec<uuid::Uuid>>>,
+		debit_targets: Arc<std::sync::Mutex<Vec<(uuid::Uuid, u64)>>>,
 		/// How long each debit takes before it is answered.
 		debit_delay: std::time::Duration,
 		refund_fails: bool,
@@ -4042,7 +3889,7 @@ mod tests {
 				resolve_fails: false,
 				debit_fails: false,
 				debit_failures: Default::default(),
-				debit_reservations: Default::default(),
+				debit_targets: Default::default(),
 				debit_delay: std::time::Duration::ZERO,
 				refund_fails: false,
 				record_hangs: false,
@@ -4088,7 +3935,7 @@ mod tests {
 			day: chrono::NaiveDate,
 			reservation: uuid::Uuid,
 		) -> aidash_application::Result<()> {
-			self.debit_reservations.lock().unwrap().push(reservation);
+			self.debit_targets.lock().unwrap().push((reservation, n));
 			tokio::time::sleep(self.debit_delay).await;
 			let failing = self
 				.debit_failures
@@ -4263,7 +4110,7 @@ mod tests {
 
 	fn manager() -> (tokio::sync::watch::Sender<bool>, Arc<super::TunnelManager>) {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let manager = super::TunnelManager::new(receiver);
 		(stop, Arc::new(manager))
 	}
 
@@ -4274,7 +4121,7 @@ mod tests {
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes,
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -4482,7 +4329,7 @@ mod tests {
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			scopes.clone(),
-			super::super::ProxyLimits::default(),
+			Default::default(),
 			receiver,
 		));
 		for _ in 0..3 {
@@ -4848,7 +4695,7 @@ mod tests {
 		let settings = settings_allowing_any_host();
 		let scopes = FaultyScopes::new(&settings);
 		scopes.debit_failures.store(4, Ordering::SeqCst);
-		let reservations = scopes.debit_reservations.clone();
+		let targets = scopes.debit_targets.clone();
 		let (received, result) = hello_through(settings, scopes, Default::default()).await;
 		assert_eq!(&received, b"hello");
 		assert!(
@@ -4858,8 +4705,8 @@ mod tests {
 			"{result:?}"
 		);
 		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
-		let reservations = reservations.lock().unwrap();
-		assert_eq!(reservations.as_slice(), &[reservations[0]; 5]);
+		let targets = targets.lock().unwrap();
+		assert_eq!(targets.as_slice(), &[targets[0]; 5]);
 	}
 
 	/// Sends `hello` through the only tunnel its Scratch Space may hold while
@@ -4869,20 +4716,18 @@ mod tests {
 	async fn hello_while_its_space_waits(
 		configure: impl FnOnce(&mut FaultyScopes),
 	) -> ([u8; 5], std::io::Result<()>) {
-		let mut settings = settings_allowing_any_host();
-		settings.tunnel_limits.concurrent = 1;
+		let settings = settings_allowing_any_host();
+
 		let mut scopes = FaultyScopes::new(&settings);
 		configure(&mut scopes);
 		let (_stop, stopping) = tokio::sync::watch::channel(false);
-		let manager = Arc::new(super::TunnelManager::new(
-			stopping,
-			super::super::ProxyLimits::default(),
-		));
+		let manager = Arc::new(super::TunnelManager::new(stopping));
 		let held = manager.try_acquire(&settings).unwrap();
+		let _pressure = shortage(&manager, &settings);
 		let waiter = {
 			let manager = manager.clone();
 			let settings = settings.clone();
-			tokio::spawn(async move { manager.acquire(&settings, super::DEBIT_WAIT).await.is_ok() })
+			tokio::spawn(async move { manager.acquire_watched(&settings, || None).await.is_ok() })
 		};
 		tokio::task::yield_now().await;
 		assert!(manager.has_waiters(&settings.id));
@@ -5131,7 +4976,7 @@ mod tests {
 		assert!(response.ends_with("ok"), "{response}");
 		upstream_task.await.unwrap();
 		tokio::time::timeout(std::time::Duration::from_secs(3), async {
-			while !manager.counts.lock().unwrap().scopes.is_empty() {
+			while !manager.capacity.counts.lock().unwrap().open.is_empty() {
 				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 			}
 		})

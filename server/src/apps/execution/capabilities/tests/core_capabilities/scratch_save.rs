@@ -433,3 +433,146 @@ async fn scratch_patch_claim_survives_runner_reply_loss(
 	assert_eq!(replayed["changed"], recovered["changed"]);
 	c.close().await;
 }
+
+type BackgroundExitRunner =
+	Shared<BoxFuture<'static, Arc<reinhardt::test::fixtures::server::TestServerGuard>>>;
+
+#[rstest::fixture]
+fn background_exit_runner() -> BackgroundExitRunner {
+	async {
+		let router = reinhardt::test::stub::StubRouter::new()
+			.post("/v2/pods/ensure", |_| async {
+				Ok(reinhardt::Response::ok()
+					.with_json(&json!({"protocol":"aidash-runner/2","pod":"pod","claim":"claim"}))
+					.unwrap())
+			})
+			.post(
+				"/v2/commands/submit",
+				|request: reinhardt::Request| async move {
+					let input = request.json::<Value>().unwrap();
+					assert_eq!(input["background"], true);
+					assert_eq!(input["timeout_seconds"], 9000);
+					assert_eq!(input["notify_on_exit"], true);
+					Ok(reinhardt::Response::ok()
+						.with_json(&json!({
+							"operation_id":input["operation_id"],"status":"running"
+						}))
+						.unwrap())
+				},
+			)
+			.post(
+				"/v2/commands/result",
+				|request: reinhardt::Request| async move {
+					let input = request.json::<Value>().unwrap();
+					Ok(reinhardt::Response::ok()
+						.with_json(&json!({
+							"operation_id":input["operation_id"],"status":"timed_out",
+							"stop_reason":"deadline","exit_code":-9,"output_tail":"ZG9uZQo="
+						}))
+						.unwrap())
+				},
+			)
+			.into_server_router();
+		Arc::new(reinhardt::test::fixtures::server::test_server_guard(router).await)
+	}
+	.boxed()
+	.shared()
+}
+
+#[rstest::fixture]
+fn background_exit_endpoint(background_exit_runner: BackgroundExitRunner) -> EndpointFuture {
+	async move { background_exit_runner.await.url.clone() }
+		.boxed()
+		.shared()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_background_exit_is_committed_as_a_task_input_with_the_operation(
+	background_exit_runner: BackgroundExitRunner,
+	#[from(background_exit_endpoint)]
+	#[with(background_exit_runner.clone())]
+	_endpoint: EndpointFuture,
+	#[from(capability_fixture)]
+	#[with("aidash://execution-test",_endpoint.clone(),FixtureRunner::Stub(_endpoint.clone()))]
+	core: CoreFuture,
+	worker_control: WorkerControl,
+) {
+	use aidash_domain::run_state::{ReadyState, ResumeState, encode};
+	use aidash_server::domain::{RunState, WaitingState};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	if std::env::var_os("AIDASH_SCRATCH_SAVE_TEST_CHILD").is_none() {
+		with_runner_profile().await;
+		return;
+	}
+	let _runner = background_exit_runner.await;
+	let c = core.await;
+	let run = admit(&c).await;
+	let (status, operation) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/executions/{}/shell", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"command":"sleep 5","expected_revision":1,
+			"background":true,"timeout_seconds":9000,"notify_on_exit":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{operation}");
+	let waiting = encode(
+		&RunState::Waiting(Box::new(WaitingState::TaskWait {
+			wake_at: chrono::Utc::now() + chrono::Duration::minutes(30),
+			cursor: 0,
+			resume: ResumeState::Ready(ReadyState {}),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	let database = c.f.store.pool.fixture_driver();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("task_executions"))
+			.value("phase", "WAITING")
+			.value("pending", waiting)
+			.and_where(Expr::col("id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(database)
+	.await
+	.unwrap();
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	let result =
+		operation_until(&c, run.id, "shell", &operation["operation_id"], &["failed"]).await;
+	assert_eq!(result["stop_reason"], "deadline");
+	let inputs = c.f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(inputs.len(), 1, "{inputs:?}");
+	assert!(inputs[0].is_data);
+	assert_eq!(
+		serde_json::from_str::<Value>(&inputs[0].content).unwrap(),
+		json!({"operation_id":operation["operation_id"],"status":"timed_out",
+			"stop_reason":"deadline","exit_code":-9,"output_tail":"done\n"}),
+	);
+	let activation: bool = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::exists(
+				Query::select()
+					.column("run_id")
+					.from("run_activations")
+					.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+					.and_where(Expr::col("reason").eq("input"))
+					.to_owned(),
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(database)
+	.await
+	.unwrap();
+	assert!(activation);
+	drop(worker);
+	c.close().await;
+}

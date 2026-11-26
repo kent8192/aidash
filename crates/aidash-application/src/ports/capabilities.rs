@@ -15,6 +15,9 @@ pub struct AcceptedOperation {
 #[async_trait]
 pub trait OperationAdmissionScope<O: Send>: Send {
 	fn limits(&self) -> AdmissionLimits;
+	async fn background_maximum_seconds(&mut self) -> Result<u64> {
+		Ok(aidash_domain::capabilities::operations::DEFAULT_BACKGROUND_MAXIMUM_SECONDS)
+	}
 	fn area(&self) -> AreaSnapshot;
 	async fn previous(&mut self, key: &str) -> Result<Option<(O, String)>>;
 	async fn result(&mut self, operation: &O, offset: usize) -> Result<Value>;

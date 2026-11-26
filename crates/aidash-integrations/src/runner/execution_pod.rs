@@ -211,7 +211,12 @@ impl ExecutionPodRuntime for RunnerHttp {
 	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession> {
 		self.pod_call("/v2/python/start", request).await
 	}
-	async fn stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<Vec<String>> {
+	async fn stop_run(
+		&self,
+		scratch_space_id: &str,
+		run_id: &str,
+		reason: RunStopReason,
+	) -> Result<Vec<String>> {
 		#[derive(serde::Deserialize)]
 		struct Stopped {
 			stopped: Vec<String>,
@@ -219,7 +224,7 @@ impl ExecutionPodRuntime for RunnerHttp {
 		let result: Stopped = self
 			.pod_call(
 				"/v2/runs/stop",
-				&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
+				&json!({"scratch_space_id":scratch_space_id,"run_id":run_id,"reason":reason}),
 			)
 			.await?;
 		Ok(result.stopped)

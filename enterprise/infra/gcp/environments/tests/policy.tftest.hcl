@@ -59,7 +59,8 @@ run "empty_runs_no_node_or_dns" {
       length(google_container_cluster.aidash.master_authorized_networks_config[0].cidr_blocks) == 0 &&
       !google_container_cluster.aidash.master_authorized_networks_config[0].gcp_public_cidrs_access_enabled &&
       google_compute_subnetwork.aidash.private_ip_google_access &&
-      google_compute_router_nat.aidash.source_subnetwork_ip_ranges_to_nat == "ALL_SUBNETWORKS_ALL_IP_RANGES"
+      google_compute_router_nat.aidash.source_subnetwork_ip_ranges_to_nat == "LIST_OF_SUBNETWORKS" &&
+      one(google_compute_router_nat.aidash.subnetwork).source_ip_ranges_to_nat == toset(["ALL_IP_RANGES"])
     )
     error_message = "Nodes are private behind NAT; the control plane is reachable only through the IAM-checked DNS endpoint."
   }

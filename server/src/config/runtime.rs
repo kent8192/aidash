@@ -6,6 +6,7 @@ use std::env;
 pub struct Config {
 	pub smtp: Option<crate::apps::operations::serializers::deployment::SmtpSettings>,
 	pub scratch_policy: ScratchOperatorPolicy,
+	pub egress_prices: aidash_domain::egress::price::EgressPrices,
 	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub endpoint: String,
 	pub database_url: String,
@@ -170,6 +171,10 @@ impl Config {
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
 			smtp: node.smtp.clone(),
+			egress_prices: aidash_domain::egress::price::EgressPrices {
+				sent: node.egress_sent_nanocredits_per_gib,
+				received: node.egress_received_nanocredits_per_gib,
+			},
 			scratch_policy: ScratchOperatorPolicy {
 				ceilings: aidash_domain::scratch::ScratchCeilings {
 					capacity_bytes: node.scratch_capacity_bytes,

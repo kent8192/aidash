@@ -168,6 +168,8 @@ pub struct CommandRequest {
 	pub timeout_seconds: Option<u32>,
 	#[serde(default)]
 	pub background: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub notify_on_exit: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub proxy_credential: Option<EgressCredential>,
 }
@@ -192,11 +194,21 @@ pub struct CommandResult {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub session_id: Option<uuid::Uuid>,
 	pub left_running: Option<String>,
+	pub stop_reason: Option<String>,
+	/// Base64-encoded tail of the output, from both streams.
+	pub output_tail: Option<String>,
 	/// The Run's Python interpreter was started afresh for this cell (the Pod
 	/// was replaced), so earlier variables are gone.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub session_replaced: Option<bool>,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStopReason {
+	RunCancelled,
+	RunAuthorityRevoked,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundProcesses {
 	pub processes: Vec<CommandResult>,
@@ -403,7 +415,12 @@ pub trait ExecutionPodRuntime: Send + Sync {
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses>;
 	async fn stop_background(&self, operation_id: &str) -> Result<CommandResult>;
 	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession>;
-	async fn stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<Vec<String>>;
+	async fn stop_run(
+		&self,
+		scratch_space_id: &str,
+		run_id: &str,
+		reason: RunStopReason,
+	) -> Result<Vec<String>>;
 	async fn background_log(&self, request: &LogRequest) -> Result<LogChunk>;
 	async fn file_read(&self, request: &FileReadRequest) -> Result<FileChunk>;
 	async fn file_search(&self, request: &FileSearchRequest) -> Result<FileSearchResult>;

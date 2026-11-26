@@ -324,8 +324,8 @@ class ChartsTest(unittest.TestCase):
         profile = profiles[0]
         # Exactly the Rust `Profile` fields (deny_unknown_fields): no Runner-only host_tasks.
         self.assertEqual(set(profile), {'admission', 'storage', 'cpu', 'memory_bytes', 'processes', 'working_bytes',
-                                        'temporary_bytes', 'output_bytes', 'maximum_seconds', 'idle_seconds',
-                                        'operation_seconds', 'runner'})
+                                        'temporary_bytes', 'output_bytes', 'maximum_seconds', 'background_maximum_seconds',
+                                        'idle_seconds', 'operation_seconds', 'runner'})
         self.assertIs(profile['admission'], True)
         for key in set(profile) & set(runner_profile) - {'runner'}:
             self.assertEqual(profile[key], runner_profile[key], key)
@@ -355,7 +355,7 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(len(names[0]), 8)
         self.assertEqual(names[0] & names[1], set())
 
-    def test_egress_is_an_internal_service_served_by_the_application(self):
+    def test_egress_services_select_only_their_gateway_deployments(self):
         execution = {'sandboxImage': 'sandbox' + DIGEST,
                      'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
                      'guard': {'enabled': True, 'image': 'control' + DIGEST},
@@ -367,27 +367,39 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(service['ports'], [{'name': 'egress', 'port': 8950, 'targetPort': 8950}])
         profiles = [json.loads(self.mounted(objects, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
                     for role in ('server', 'worker')]
-        # Only the application serves the gateway; the Runner no longer reads it.
-        runner_profile = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])
-        self.assertNotIn('egress', runner_profile)
-        egress = profiles[0]
-        self.assertEqual(profiles, [egress, egress])
-        self.assertNotIn('endpoint', egress)
-        self.assertEqual(egress['pod_selector'], service['selector'])
-        self.assertEqual(egress['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
-        self.assertEqual((egress.get('proxy_global_tunnels'), egress.get('proxy_tenant_tunnels')), (1024, 256))
-        custom_egress = dict(execution['egress'], proxyGlobalTunnels=240, proxyTenantTunnels=48)
-        custom = render(self.aidash, dict(values, execution=dict(execution, egress=custom_egress)), 'app', namespace='tenant-app')
+        gateway = select(objects, 'Deployment', '-egress')['spec']
+        self.assertEqual(gateway['selector']['matchLabels'], service['selector'])
+        self.assertEqual(gateway['template']['spec']['containers'][0]['args'], ['egress-gateway'])
+        resources = gateway['template']['spec']['containers'][0]['resources']
+        self.assertEqual((resources['requests']['memory'], resources['limits']['memory']), ('2Gi', '2Gi'))
+        hpa = select(objects, 'HorizontalPodAutoscaler', '-egress')['spec']
+        self.assertEqual((hpa['minReplicas'], hpa['maxReplicas']), (1, 10))
+        self.assertEqual(hpa['metrics'][0]['resource']['target']['averageUtilization'], 70)
+        self.assertEqual(profiles, [profiles[0], profiles[0]])
+        self.assertFalse(profiles[0]['in_process'])
+        self.assertEqual(profiles[0]['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
+        custom_egress = dict(execution['egress'], ipGroups={
+            'dedicated': {'clusterIP': '10.96.0.91', 'tenants': ['acme']},
+        })
+        pods = {'enabled': True, 'helperImage': 'control' + DIGEST, 'storageClassName': 'bounded'}
+        custom = render(self.aidash, dict(values, execution=dict(execution, egress=custom_egress, pods=pods)), 'app', namespace='tenant-app')
+        runner = json.loads(select(custom, 'ConfigMap', '-execution-profile')['data']['execution-pods.json'])
+        self.assertEqual(runner['proxy_endpoint'], 'http://10.96.0.90:8950')
+        self.assertEqual(runner['tenant_proxy_endpoints'], {'acme': 'http://10.96.0.91:8950'})
+        self.assertEqual(runner['proxy_selector']['app.kubernetes.io/component'], 'egress')
+        groups = [obj for obj in custom if obj['kind'] == 'Service' and
+                  obj['spec'].get('clusterIP') == '10.96.0.91']
+        self.assertEqual(len(groups), 1)
+        dedicated = select(custom, 'Deployment', groups[0]['metadata']['name'])['spec']
+        self.assertEqual(dedicated['selector']['matchLabels'], groups[0]['spec']['selector'])
+        self.assertNotEqual(dedicated['selector']['matchLabels'], service['selector'])
+        self.assertEqual(dedicated['template']['spec']['nodeSelector'], {'aidash.run/egress-ip-group': 'dedicated'})
         for role in ('server', 'worker'):
             settings = json.loads(self.mounted(custom, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
-            self.assertEqual((settings['proxy_global_tunnels'], settings['proxy_tenant_tunnels']), (240, 48))
-        with self.assertRaises(subprocess.CalledProcessError):
-            render(self.aidash, dict(values, execution=dict(execution, egress=dict(custom_egress, proxyTenantTunnels=240))), 'app', namespace='tenant-app')
-        with self.assertRaises(subprocess.CalledProcessError):
-            render(self.aidash, dict(values, execution=dict(execution, egress=dict(custom_egress, proxyTenantTunnels=16))), 'app', namespace='tenant-app')
+            self.assertEqual(settings['tenant_groups'], {'acme': 'dedicated'})
         policy = select(objects, 'NetworkPolicy', '-egress-internal')['spec']
-        self.assertEqual(policy['podSelector']['matchLabels'], service['selector'])
-        ingress = policy['ingress'][-1]
+        self.assertEqual(policy['podSelector']['matchLabels']['app.kubernetes.io/component'], 'egress')
+        ingress = policy['ingress'][0]
         self.assertEqual(ingress['ports'], [{'protocol': 'TCP', 'port': 8950}])
         self.assertEqual(ingress['from'][0], {
             'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'app-sandbox'}},
@@ -883,10 +895,14 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(state['volumeClaimTemplates'][0]['spec']['storageClassName'], 'aidash-retain')
         # The controller's migration Job reaches the dependencies alongside server and worker;
         # the activity observer reaches only PostgreSQL, never the unauthenticated NATS port.
-        application, observer, maintenance = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
+        application, egress, observer, maintenance = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
         self.assertEqual(application['from'], [{'podSelector': {'matchExpressions': [
             {'key': 'app.kubernetes.io/component', 'operator': 'In', 'values': ['server', 'worker', 'migration']}]}}])
         self.assertEqual(application['ports'], [{'protocol': 'TCP', 'port': 5432}, {'protocol': 'TCP', 'port': 4222}])
+        self.assertEqual(egress['from'], [{'podSelector': {'matchLabels': {'app.kubernetes.io/component': 'egress'}}}])
+        self.assertEqual(egress['ports'], [{'protocol': 'TCP', 'port': 5432}])
+        postgres = select(objects, 'StatefulSet', '-postgres')['spec']['template']['spec']['containers'][0]
+        self.assertEqual(postgres['args'], ['-c', 'max_connections=300'])
         self.assertEqual(observer['from'], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'fixture'}}}])
         self.assertEqual(observer['ports'], [{'protocol': 'TCP', 'port': 5432}])
         self.assertEqual(maintenance['ports'], [{'protocol': 'TCP', 'port': 5432}])
@@ -995,7 +1011,7 @@ class ChartsTest(unittest.TestCase):
                                                 if not isinstance(label, dict)), (value['kind'], labels))
                 policy = select(objects, 'NetworkPolicy', '-dependencies')['spec']
                 self.assertIn({'podSelector': {'matchLabels': {'aidash.run/activity': release}}},
-                              policy['ingress'][1]['from'])
+                              policy['ingress'][2]['from'])
         # A release namespace that YAML would read as a boolean stays a string too.
         objects = render(self.environment, values, namespace='true')
         binding = select(objects, 'RoleBinding', '-activity')

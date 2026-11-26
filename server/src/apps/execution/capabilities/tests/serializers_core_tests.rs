@@ -44,23 +44,14 @@ fn egress_profiles_require_a_runner_and_positive_cumulative_limits() {
 	value["egress"] = json!({"listen":"0.0.0.0:8950"});
 	let profile: Profile = serde_json::from_value(value.clone()).unwrap();
 	assert!(crate::capabilities::Runtime::new(profile).is_ok());
-	let mut configured = value.clone();
-	configured["egress"]["proxy_global_tunnels"] = json!(200);
-	configured["egress"]["proxy_tenant_tunnels"] = json!(40);
+	let mut grouped = value.clone();
+	grouped["egress"]["tenant_groups"] = json!({"acme":"dedicated"});
 	assert!(
-		crate::capabilities::Runtime::new(serde_json::from_value(configured.clone()).unwrap())
-			.is_ok()
-	);
-	// Below one Scratch Space's own limit of 32.
-	configured["egress"]["proxy_tenant_tunnels"] = json!(20);
-	assert!(
-		crate::capabilities::Runtime::new(serde_json::from_value(configured.clone()).unwrap())
+		crate::capabilities::Runtime::new(serde_json::from_value(grouped.clone()).unwrap())
 			.is_err()
 	);
-	configured["egress"]["proxy_tenant_tunnels"] = json!(200);
-	assert!(
-		crate::capabilities::Runtime::new(serde_json::from_value(configured).unwrap()).is_err()
-	);
+	grouped["egress"]["in_process"] = json!(false);
+	assert!(crate::capabilities::Runtime::new(serde_json::from_value(grouped).unwrap()).is_ok());
 	let mut rejected = value.clone();
 	rejected["runner"] = Value::Null;
 	assert!(crate::capabilities::Runtime::new(serde_json::from_value(rejected).unwrap()).is_err());

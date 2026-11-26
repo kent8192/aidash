@@ -143,8 +143,21 @@ impl ExecutionPodRuntime for Runtime {
 			socket_path: "/tmp/s".into(),
 		})
 	}
-	async fn stop_run(&self, _: &str, _: &str) -> PodResult<Vec<String>> {
-		unimplemented!()
+	async fn stop_run(
+		&self,
+		_: &str,
+		_: &str,
+		reason: crate::ports::capabilities::execution_pod::RunStopReason,
+	) -> PodResult<Vec<String>> {
+		match reason {
+			crate::ports::capabilities::execution_pod::RunStopReason::RunCancelled => {
+				self.call("run_cancelled")
+			}
+			crate::ports::capabilities::execution_pod::RunStopReason::RunAuthorityRevoked => {
+				self.call("run_authority_revoked")
+			}
+		}
+		Ok(vec![])
 	}
 	async fn background_log(&self, request: &LogRequest) -> PodResult<LogChunk> {
 		self.call("background_log");
@@ -348,6 +361,7 @@ fn operation(kind: &str, state: &str) -> PodOperation {
 			"runtime":"pod","scratch_space_id":"space"}),
 		result: json!({}),
 		run_finished: false,
+		run_cancelled: false,
 	}
 }
 
@@ -382,6 +396,8 @@ pub(crate) fn reply(status: &str) -> CommandResult {
 		pod_uid: None,
 		session_id: None,
 		left_running: None,
+		stop_reason: None,
+		output_tail: None,
 		session_replaced: None,
 	}
 }
@@ -655,6 +671,39 @@ async fn a_finished_runs_command_stops_with_the_runs_foreground_work() {
 	runtime.reply(Ok(reply("stopped")));
 	drive(&repository, Uuid::from_u128(7)).await.unwrap();
 	assert_eq!(runtime.calls(), ["cancel_waiting", "result"]);
+}
+
+#[rstest::rstest]
+#[case::completed(false, vec!["result"])]
+#[case::cancelled(true, vec!["run_cancelled", "result"])]
+#[tokio::test]
+async fn background_settlement_distinguishes_run_completion_and_cancellation(
+	#[case] cancelled: bool,
+	#[case] calls: Vec<&str>,
+) {
+	let mut running = operation(SHELL, "running");
+	running.run_finished = true;
+	running.run_cancelled = cancelled;
+	running.input["background"] = json!(true);
+	running.input["notify_on_exit"] = json!(true);
+	let (repository, runtime) = repository(running);
+	let status = if cancelled { "stopped" } else { "completed" };
+	let mut result = reply(status);
+	result.exit_code = Some(if cancelled { -9 } else { 0 });
+	result.stop_reason = cancelled.then(|| "run_cancelled".to_owned());
+	result.output_tail = Some(STANDARD.encode(format!("{}exit", "x".repeat(4096))));
+	runtime.reply(Ok(result));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert_eq!(runtime.calls(), calls);
+	let saved = repository.operation.lock().unwrap();
+	let notice = &saved.result["background_exit"];
+	assert_eq!(notice["status"], status);
+	assert_eq!(notice["exit_code"], if cancelled { -9 } else { 0 });
+	assert_eq!(
+		notice["stop_reason"].as_str(),
+		cancelled.then_some("run_cancelled")
+	);
+	assert_eq!(notice["output_tail"], format!("{}exit", "x".repeat(4092)));
 }
 
 #[tokio::test]

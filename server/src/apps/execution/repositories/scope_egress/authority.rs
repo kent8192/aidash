@@ -192,8 +192,8 @@ impl ScratchAuthority {
 			},
 			allowed_hosts,
 			budget: DailyBudget {
-				sent_bytes: settings.daily_sent_bytes,
-				received_bytes: settings.daily_received_bytes,
+				sent_bytes: settings.daily_sent_bytes.unwrap_or(u64::MAX),
+				received_bytes: settings.daily_received_bytes.unwrap_or(u64::MAX),
 			},
 			anomaly: AnomalyRule::default(),
 			operator_allows_all: ceilings.all_hosts_allowed,

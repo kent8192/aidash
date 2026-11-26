@@ -1,18 +1,146 @@
 {{- if .Values.execution.egress.enabled }}
 {{- $e := .Values.execution.egress -}}
+{{- $selector := include "aidash.egressSelector" . | fromJson -}}
 {{- $_ := include "aidash.egressSettings" . -}}
+{{- $profile := include "aidash.capabilityProfile" . -}}
+{{- $provider := "" -}}
+{{- if not (kindIs "invalid" .Values.providerCredentials.settings) -}}
+{{- $provider = include "aidash.providerCredentials" . -}}
+{{- end -}}
+{{- $app := printf "%s-aidash" .Release.Name -}}
+{{- $secret := required "server.existingSecret or existingSecret is required" (.Values.server.existingSecret | default .Values.existingSecret) -}}
+{{- $image := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- with .Values.image.digest -}}{{- $image = printf "%s@%s" $.Values.image.repository . -}}{{- end -}}
+{{- $groups := merge (dict "shared" (dict "clusterIP" $e.clusterIP)) $e.ipGroups -}}
+{{- range $group, $settings := $groups }}
+{{- $name := printf "%s-egress" $.Release.Name }}
+{{- if ne $group "shared" }}
+{{- $full := printf "%s-egress-%s" $.Release.Name $group }}
+{{- $name = printf "%s-%s" ($full | trunc 54 | trimSuffix "-") ($full | sha256sum | trunc 8) }}
+{{- end }}
+{{- $labels := merge (dict "aidash.run/egress-ip-group" $group) $selector }}
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-egress
+  name: {{ $name }}
 spec:
   type: ClusterIP
-  clusterIP: {{ $e.clusterIP | quote }}
-  selector:
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: server
+  clusterIP: {{ $settings.clusterIP | quote }}
+  selector: {{ toYaml $labels | nindent 4 }}
   ports:
     - { name: egress, port: {{ $e.port | int }}, targetPort: {{ $e.port | int }} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: {{ toYaml $labels | nindent 4 }}
+spec:
+  {{- if $e.suspended }}
+  replicas: 0
+  {{- end }}
+  selector:
+    matchLabels: {{ toYaml $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $labels | nindent 8 }}
+        app.kubernetes.io/name: aidash
+        aidash.run/metadata-server: allowed
+      annotations:
+        checksum/settings: {{ printf "%s\n%s\n%s" $profile $provider (toJson $.Values.deployment.settings) | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      hostNetwork: false
+      serviceAccountName: {{ $app }}-server
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      {{- with $.Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and (eq $group "shared") (not $e.sharedNodePool) }}
+      {{- with mergeOverwrite (deepCopy $.Values.nodeSelector) $.Values.environment.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with concat $.Values.tolerations $.Values.environment.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- else }}
+      nodeSelector: { aidash.run/egress-ip-group: {{ $group | quote }} }
+      tolerations:
+        - { key: aidash.run/egress-ip-group, operator: Equal, value: {{ $group | quote }}, effect: NoSchedule }
+      {{- end }}
+      containers:
+        - name: egress
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: ["egress-gateway"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - secretRef: { name: {{ $secret | quote }} }
+          env:
+            - { name: AIDASH_DEPLOYMENT_ID, value: {{ $.Values.deployment.id | quote }} }
+            - { name: AIDASH_EGRESS_IP_GROUP, value: {{ $group | quote }} }
+            - { name: AIDASH_CAPABILITY_PROFILE, value: /etc/aidash/capability-profile/profile.json }
+            - { name: AIDASH_METRICS_LISTEN, value: "0.0.0.0:9090" }
+            - { name: AIDASH_DATABASE_STATEMENT_TIMEOUT_SECONDS, value: {{ $.Values.database.statementTimeoutSeconds | int64 | toString | quote }} }
+            - name: AIDASH_CORE_RUNNER_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ $.Values.execution.runner.existingSecret | quote }}, key: {{ $.Values.execution.runner.tokenKey | quote }} } }
+            {{- if $provider }}
+            - { name: AIDASH_PROVIDER_CREDENTIAL_SETTINGS, value: /etc/aidash/provider-credentials/settings.json }
+            {{- end }}
+            {{- if $.Values.deployment.settings }}
+            - { name: AIDASH_DEPLOYMENT_SETTINGS, value: /etc/aidash/deployment-settings/settings.json }
+            {{- end }}
+          ports:
+            - { name: egress, containerPort: {{ $e.port | int }} }
+            - { name: metrics, containerPort: 9090 }
+          readinessProbe: { tcpSocket: { port: egress }, periodSeconds: 3 }
+          livenessProbe: { tcpSocket: { port: egress }, periodSeconds: 10 }
+          resources:
+            requests: { cpu: 100m, memory: 2Gi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: capability-profile, mountPath: /etc/aidash/capability-profile, readOnly: true }
+            {{- if $provider }}
+            - { name: provider-credentials, mountPath: /etc/aidash/provider-credentials, readOnly: true }
+            {{- end }}
+            {{- if $.Values.deployment.settings }}
+            - { name: deployment-settings, mountPath: /etc/aidash/deployment-settings, readOnly: true }
+            {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        - { name: capability-profile, configMap: { name: {{ $app }}-capability-profile } }
+        {{- if $provider }}
+        - { name: provider-credentials, configMap: { name: {{ $app }}-provider-credentials } }
+        {{- end }}
+        {{- if $.Values.deployment.settings }}
+        - { name: deployment-settings, configMap: { name: {{ $app }}-deployment-settings } }
+        {{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: memory, target: { type: Utilization, averageUtilization: 70 } }
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -20,15 +148,9 @@ metadata:
   name: {{ .Release.Name }}-egress-internal
 spec:
   podSelector:
-    matchLabels:
-      app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: server
+    matchLabels: {{ toYaml $selector | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
-    {{- if not .Values.backendIngress.podSelectors }}
-    # Preserve the API's ordinary ingress when it has no more specific policy.
-    - ports: [{ protocol: TCP, port: 8080 }]
-    {{- end }}
     - from:
         - namespaceSelector:
             matchLabels:
@@ -44,6 +166,16 @@ spec:
         {{- end }}
         - podSelector:
             matchLabels:
-              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
       ports: [{ protocol: TCP, port: {{ $e.port | int }} }]
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+        {{- range $namespace := $e.metricsScrapeNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $namespace | quote }}
+        {{- end }}
+      ports: [{ protocol: TCP, port: 9090 }]
 {{- end }}

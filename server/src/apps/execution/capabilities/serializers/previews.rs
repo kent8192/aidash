@@ -101,6 +101,8 @@ pub struct LivePreviewTicketInput {
 /// A Tenant's lowered Live preview limits and the Deployment's ceilings.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TenantPreviewLimits {
+	pub background_maximum_seconds: u64,
+	pub ceiling_background_maximum_seconds: u64,
 	pub tenant: String,
 	pub idle_seconds: i64,
 	pub absolute_seconds: i64,
@@ -113,6 +115,8 @@ pub struct TenantPreviewLimits {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewLimitInput {
+	/// Lower the Background time limit. Omit to keep its current setting.
+	pub background_maximum_seconds: Option<u64>,
 	pub tenant: String,
 	pub idle_seconds: i64,
 	pub absolute_seconds: i64,
