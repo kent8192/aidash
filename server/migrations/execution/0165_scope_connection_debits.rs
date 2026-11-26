@@ -63,6 +63,13 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
+		// The Tenant root reference every Tenant-owned table carries. Like
+		// 0077/0079, the logical state keeps no foreign key, so the physical
+		// key is added in SQL, apart from the rendered policy template.
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0165_egress_usage_daily_tenant_key.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0165_egress_usage_daily_tenant_key.sql").into()),
+		})
 		// Reinhardt cannot express forced Tenant row-level policies.
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0165_scope_connection_debits.sql").into(),
