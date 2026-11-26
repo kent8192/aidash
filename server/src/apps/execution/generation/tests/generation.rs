@@ -2991,8 +2991,11 @@ async fn node_deletion_settles_generation_once_after_restore(
 			.unwrap();
 		assert_eq!(f.store.runs(&TEST_FIXTURE).await.unwrap().len(), 1);
 	}
-	let sibling = second_node_in(f.store.pool.fixture_driver(), "acme").await;
 	let base = "/api/tenants/acme/nodes";
+	let (status, created) =
+		common::administer_node(&f, "acme", base, json!({"label":"Sibling"})).await;
+	assert_eq!(status, 201, "{created}");
+	let sibling = aidash_domain::nodes::NodeName::parse(created["name"].as_str().unwrap()).unwrap();
 	let (status, body) = common::administer_node(
 		&f,
 		"acme",
