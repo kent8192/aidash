@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::ModelConfig;
 
 fn model(context_window: usize, max_output_tokens: u32) -> ModelConfig {
 	serde_json::from_value(json!({
@@ -35,7 +36,7 @@ fn request(config: &ModelConfig, context: &Value) -> ModelRequest {
 /// small extraction inside the window instead of reserving the whole window
 /// for output and being refused before provider I/O.
 #[test]
-fn memory_output_is_clamped_to_the_context_window() {
+fn output_is_clamped_to_the_context_window() {
 	// Arrange
 	let config = model(32_768, 32_768);
 	let context = json!({"journal": "x".repeat(2_000)});
@@ -43,7 +44,7 @@ fn memory_output_is_clamped_to_the_context_window() {
 	let cap = config.output_token_limit() as usize;
 
 	// Act
-	let output = fit_memory_output(&mut request, config.context_window, cap).unwrap();
+	let output = request.fit_output(config.context_window, cap).unwrap();
 
 	// Assert
 	assert!(output < cap);
@@ -53,20 +54,20 @@ fn memory_output_is_clamped_to_the_context_window() {
 	// The same inputs always give the same reservation (replay key).
 	let mut again = self::request(&config, &context);
 	assert_eq!(
-		fit_memory_output(&mut again, config.context_window, cap).unwrap(),
+		again.fit_output(config.context_window, cap).unwrap(),
 		output
 	);
 }
 
 /// A cap that already fits is kept as it is.
 #[test]
-fn memory_output_keeps_a_cap_that_fits() {
+fn output_keeps_a_cap_that_fits() {
 	// Arrange
 	let config = model(128_000, 16_384);
 	let mut request = request(&config, &json!({"journal": "short"}));
 
 	// Act
-	let output = fit_memory_output(&mut request, config.context_window, 16_384).unwrap();
+	let output = request.fit_output(config.context_window, 16_384).unwrap();
 
 	// Assert
 	assert_eq!(output, 16_384);
@@ -74,7 +75,7 @@ fn memory_output_keeps_a_cap_that_fits() {
 
 /// Input that leaves no room for a response is refused.
 #[test]
-fn memory_output_refuses_input_that_fills_the_window() {
+fn output_refuses_input_that_fills_the_window() {
 	// Arrange
 	let config = model(8_192, 8_192);
 	let probe = request(&config, &json!({"journal": ""}));
@@ -83,7 +84,7 @@ fn memory_output_refuses_input_that_fills_the_window() {
 	let mut request = request(&config, &context);
 
 	// Act
-	let result = fit_memory_output(&mut request, config.context_window, 8_192);
+	let result = request.fit_output(config.context_window, 8_192);
 
 	// Assert
 	assert!(matches!(result, Err(Error::Invalid(_))));
