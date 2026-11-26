@@ -28,6 +28,21 @@ fn pod_timeout(path: &str, body: &Value) -> Duration {
 }
 
 impl RunnerHttp {
+	/// Allocated bytes of the admitted Scratch Space volume, while its Pod is running.
+	pub async fn scratch_bytes(&self, scratch_space_id: uuid::Uuid) -> Result<u64> {
+		#[derive(serde::Deserialize)]
+		struct Usage {
+			bytes: u64,
+		}
+		let usage: Usage = self
+			.pod_call(
+				"/v2/files/usage",
+				&json!({ "scratch_space_id": scratch_space_id }),
+			)
+			.await?;
+		Ok(usage.bytes)
+	}
+
 	/// Ask for proof that an adopted Background process can no longer run.
 	pub async fn background_ended(
 		&self,
