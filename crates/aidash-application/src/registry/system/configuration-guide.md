@@ -19,7 +19,7 @@ Use the mean cost of the last seven comparable Duty runs and multiply by runs pe
 
 ## Make a registered capability usable
 
-After registry_create, agent_create, mcp_server_add, tool_add, skill_add, agent_plugin_add or marketplace_install, call catalog_review_approve with the Node and the exact root id and version. This reviews the whole dependency tree and approves eligible versions and Marketplace installations together. Choose node scope for a one-workspace request. Models are approved across the Tenant. Check ready, blocked and the count of hidden items. Explain each missing connection, unavailable provider or required approver in plain words; finish independent work and revisit the root once the prerequisite is ready. Use catalog_approve for a single version.
+After registry_create, agent_create, mcp_server_add, tool_add, skill_add, agent_plugin_add or marketplace_install, call catalog_review_approve with the Node and the exact root id and version. This reviews the whole dependency tree and approves eligible versions and Marketplace installations together. Choose node scope for a one-workspace request. Models are approved across the Tenant. Check ready, blocked and the count of hidden items. Explain each missing connection, unavailable provider or required approver in plain words; finish independent work and revisit the root once the prerequisite is ready. Use catalog_approve for a single version. For a registered MCP tool, review its tool id and version. An Agent Plugin is pinned inside an agent version, so review that agent version. If registering a draft succeeded but its single-version approval reported an unapproved dependency, use the registered root id and version for the review.
 
 ## When a model is blocked by data protection
 
