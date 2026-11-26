@@ -1,5 +1,6 @@
 //! Price and post observed traffic in the transaction that advances its byte checkpoint.
 use aidash_application::egress::Direction;
+use aidash_domain::budgets::Gate;
 use aidash_domain::egress::{
 	ScopeId,
 	price::{EgressPrices, cost_increase},
@@ -20,7 +21,29 @@ use crate::{Error, Result, store::Store};
 
 const BUDGET_PAUSE: &str = "Egress Budget Hard Limit reached; raise the limit, then resume the Run";
 
-pub(super) async fn paused(tx: &mut Transaction, scope: &ScopeId, run: Uuid) -> Result<bool> {
+/// Whether a Run's credential may open or keep Host traffic. The Budgets'
+/// Hard Limit decides, whatever the Run's phase or why it is paused: a Run's
+/// Background processes outlive it (ADR 0148), and a Run paused by its model
+/// calls has the same exhausted Budget. An egress Pause also holds until a
+/// person resumes the Run, even after its limit is raised.
+pub(super) async fn refused(tx: &mut Transaction, scope: &ScopeId, run: Uuid) -> Result<bool> {
+	if paused(tx, scope, run).await? {
+		return Ok(true);
+	}
+	let Some(charge) = budgets::charge_of(tx.as_mut(), run).await? else {
+		return Ok(false);
+	};
+	if charge.tenant != scope.tenant {
+		return Err(Error::Forbidden);
+	}
+	Ok(!matches!(gate(tx, &charge).await?, Gate::Open))
+}
+
+async fn gate(tx: &mut Transaction, charge: &budgets::Charge) -> Result<Gate> {
+	Ok(budgets::gate_for(tx.as_mut(), charge, Utc::now()).await?.0)
+}
+
+async fn paused(tx: &mut Transaction, scope: &ScopeId, run: Uuid) -> Result<bool> {
 	Ok(native::query_scalar::<Uuid>(
 		&Query::select()
 			.column(Alias::new("id"))
@@ -34,6 +57,22 @@ pub(super) async fn paused(tx: &mut Transaction, scope: &ScopeId, run: Uuid) -> 
 	.scalar_optional(tx.as_mut())
 	.await?
 	.is_some())
+}
+
+/// What posting traffic decided for its connection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Posted {
+	/// The Run's Budgets refuse more traffic, so the connection ends.
+	pub stop: bool,
+	/// This post committed a Pause of the Run.
+	pub paused: bool,
+}
+
+impl std::ops::BitOrAssign for Posted {
+	fn bitor_assign(&mut self, other: Self) {
+		self.stop |= other.stop;
+		self.paused |= other.paused;
+	}
 }
 
 pub(super) struct Traffic {
@@ -51,13 +90,17 @@ impl Traffic {
 		tx: &mut Transaction,
 		scope: &ScopeId,
 		run: Option<Uuid>,
-	) -> Result<bool> {
+	) -> Result<Posted> {
 		let bytes = self.cumulative.saturating_sub(self.previous);
 		if bytes <= 0 {
-			return match run {
-				Some(run) => paused(tx, scope, run).await,
-				None => Ok(false),
+			let stop = match run {
+				Some(run) => refused(tx, scope, run).await?,
+				None => false,
 			};
+			return Ok(Posted {
+				stop,
+				paused: false,
+			});
 		}
 		let (sent, received, price) = match self.direction {
 			Direction::Sent => (bytes, 0, self.prices.sent),
@@ -120,7 +163,7 @@ impl Traffic {
 		.execute(tx.as_mut())
 		.await?;
 		let Some(run) = run else {
-			return Ok(false);
+			return Ok(Posted::default());
 		};
 		let active = native::query_scalar::<String>(
 			&Query::select()
@@ -139,12 +182,11 @@ impl Traffic {
 		.await?
 		.is_some_and(|control| control == "ACTIVE");
 		let Some(charge) = budgets::charge_of(tx.as_mut(), run).await? else {
-			return Ok(false);
+			return Ok(Posted::default());
 		};
 		if charge.tenant != scope.tenant {
 			return Err(Error::Forbidden);
 		}
-		let now = Utc::now();
 		let spent_at = self
 			.day
 			.and_hms_opt(0, 0, 0)
@@ -153,12 +195,16 @@ impl Traffic {
 		if cost > 0 {
 			budgets::record_charge(tx.as_mut(), &charge, Some(cost), spent_at).await?;
 		}
-		let (gate, _) = budgets::gate_for(tx.as_mut(), &charge, now).await?;
-		let Err(Error::BudgetExhausted { .. }) = budgets::admit(gate) else {
-			return Ok(false);
+		// Sleep lets the Run wait for its Budget (ADR 0143), so only Stop
+		// pauses it; either way the connection ends, and new ones are refused
+		// by `refused` until the Budget has room.
+		let paused = match gate(tx, &charge).await? {
+			Gate::Open => return Ok(Posted::default()),
+			Gate::Stop { .. } => active,
+			Gate::Sleep { .. } => false,
 		};
-		if active {
-			let paused = store
+		if paused {
+			let control = store
 				.control_one_in_as(
 					tx.as_mut(),
 					run,
@@ -180,18 +226,18 @@ impl Traffic {
 				.run_event(
 					tx,
 					run,
-					paused
+					control
 						.is_local(store.deployment.as_str())
-						.then_some(paused.thread_id),
+						.then_some(control.thread_id),
 					"execution.budget_exhausted",
 					serde_json::json!({
-						"run_id": run, "task_id": paused.task_id,
+						"run_id": run, "task_id": control.task_id,
 						"message": BUDGET_PAUSE, "source": "egress",
 					}),
 				)
 				.await?;
 		}
-		Ok(true)
+		Ok(Posted { stop: true, paused })
 	}
 
 	pub fn observe(&self, run: Option<Uuid>, now: DateTime<Utc>) {

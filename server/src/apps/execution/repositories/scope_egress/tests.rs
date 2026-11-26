@@ -260,6 +260,157 @@ async fn host_debit_replays_a_cumulative_target_after_its_answer_is_lost(
 	);
 }
 
+/// A Tenant Budget with a 100 000 nanocredit Hard Limit, two Runs it covers,
+/// and a scope credential for the first Run.
+struct BudgetRig {
+	_context: reinhardt::InjectionContext,
+	f: crate::federation::Federation,
+	run: Uuid,
+	sibling: Uuid,
+	space: Uuid,
+	authority: Arc<ScratchAuthority>,
+	durable: DurableScopes,
+	credential: String,
+	scope: ScopeSettings,
+}
+
+impl BudgetRig {
+	async fn new(database: &DatabaseFixture, on_hard_limit: &str) -> Self {
+		let context =
+			reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+		let settings = settings::settings_for(&database.url);
+		let f = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+			.await
+			.unwrap();
+		let tenant = tenant_roots::tenant_scope(&f.store, "acme").await;
+		let thread = f
+			.store
+			.create_thread(&tenant, "alice", "Traffic budget")
+			.await
+			.unwrap();
+		let name = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let endpoint = "http://127.0.0.1:9/v1";
+		f.store.keyless.permit_origin_of(endpoint).unwrap();
+		for (kind, id, config) in [
+			(
+				"model",
+				"traffic-model",
+				serde_json::json!({
+					"provider": "openrouter", "model_id": "fixture", "endpoint": endpoint,
+					"context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {},
+				}),
+			),
+			(
+				"agent",
+				"traffic-agent",
+				serde_json::json!({
+					"schema_version": 1, "model": {"id": "traffic-model", "version": "1.0.0"},
+					"instructions": "Test traffic accounting", "bindings": [], "remove_default": [],
+				}),
+			),
+		] {
+			f.registry
+				.register(
+					&name,
+					serde_json::from_value(serde_json::json!({
+						"id": id, "version": "1.0.0", "kind": kind,
+						"name": {"en": id}, "description": {"en": "Traffic accounting fixture"},
+						"capabilities": [], "languages": ["en"], "schema": {"type": "object"},
+						"config": config,
+					}))
+					.unwrap(),
+				)
+				.await
+				.unwrap();
+		}
+		let agent = f
+			.registry
+			.get(&name, "traffic-agent", "1.0.0")
+			.await
+			.unwrap();
+		let new_run = async |title: &str| {
+			let task = f
+				.store
+				.create_task(
+					&tenant,
+					thread.id,
+					&aidash_domain::NewTask {
+						title: title.into(),
+						description: "Traffic budget".into(),
+						requirements: serde_json::json!({}),
+						dependencies: vec![],
+						parent_id: None,
+					},
+					"alice",
+					None,
+				)
+				.await
+				.unwrap();
+			tenant_roots::admitted_run(&f, "acme", &task, &agent)
+				.await
+				.id
+		};
+		let run = new_run("Transfer").await;
+		let sibling = new_run("Sibling").await;
+		sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 100000, $2, '{}', 1, now(), 'alice', now())")
+			.bind(Uuid::new_v4())
+			.bind(on_hard_limit)
+			.execute(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		let space = insert_space(&f, "acme", Default::default()).await;
+		let authority = Arc::new(ScratchAuthority::with_key(
+			f.store.clone(),
+			f.config.scratch_policy.clone(),
+			KEY,
+		));
+		let credential = authority.credential("acme", space, run).unwrap();
+		let durable = DurableScopes::new(f.store.clone(), authority.clone());
+		let scope = durable.resolve(&credential).await.unwrap();
+		Self {
+			_context: context,
+			f,
+			run,
+			sibling,
+			space,
+			authority,
+			durable,
+			credential,
+			scope,
+		}
+	}
+
+	fn pool(&self) -> &sqlx::PgPool {
+		self.f.store.pool.fixture_driver()
+	}
+
+	/// Forwards 1 MiB on a new connection, which prices past the Hard Limit.
+	async fn exceed(&self) -> aidash_application::Result<()> {
+		let connection = open_connection(&self.durable, &self.scope).await;
+		let day = Utc::now().date_naive();
+		let mib = 1 << 20;
+		self.durable
+			.debit(&self.scope, Direction::Sent, 2 * mib, day, connection)
+			.await
+			.unwrap();
+		self.durable
+			.report_forwarded(&self.scope, connection, Direction::Sent, mib, day)
+			.await
+	}
+
+	async fn run_state(&self, run: Uuid) -> (String, Option<String>) {
+		sqlx::query_as("SELECT control, error FROM task_executions WHERE id = $1")
+			.bind(run)
+			.fetch_one(self.pool())
+			.await
+			.unwrap()
+	}
+}
+
+fn budget_refused<T: std::fmt::Debug>(result: &aidash_application::Result<T>) -> bool {
+	matches!(result, Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted")
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[timeout(std::time::Duration::from_secs(180))]
@@ -267,96 +418,13 @@ async fn only_forwarded_bytes_post_to_the_run_budget_and_pause_its_run(
 	#[future] database: DatabaseFixture,
 ) {
 	let database = database.await;
-	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
-	let settings = settings::settings_for(&database.url);
-	let f = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
-		.await
-		.unwrap();
-	let tenant = tenant_roots::tenant_scope(&f.store, "acme").await;
-	let thread = f
-		.store
-		.create_thread(&tenant, "alice", "Traffic budget")
-		.await
-		.unwrap();
-	let name = aidash_domain::tenancy::TenantName::new("acme").unwrap();
-	let endpoint = "http://127.0.0.1:9/v1";
-	f.store.keyless.permit_origin_of(endpoint).unwrap();
-	for (kind, id, config) in [
-		(
-			"model",
-			"traffic-model",
-			serde_json::json!({
-				"provider": "openrouter", "model_id": "fixture", "endpoint": endpoint,
-				"context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {},
-			}),
-		),
-		(
-			"agent",
-			"traffic-agent",
-			serde_json::json!({
-				"schema_version": 1, "model": {"id": "traffic-model", "version": "1.0.0"},
-				"instructions": "Test traffic accounting", "bindings": [], "remove_default": [],
-			}),
-		),
-	] {
-		f.registry
-			.register(
-				&name,
-				serde_json::from_value(serde_json::json!({
-					"id": id, "version": "1.0.0", "kind": kind,
-					"name": {"en": id}, "description": {"en": "Traffic accounting fixture"},
-					"capabilities": [], "languages": ["en"], "schema": {"type": "object"},
-					"config": config,
-				}))
-				.unwrap(),
-			)
-			.await
-			.unwrap();
-	}
-	let agent = f
-		.registry
-		.get(&name, "traffic-agent", "1.0.0")
-		.await
-		.unwrap();
-	let new_run = async |title: &str| {
-		let task = f
-			.store
-			.create_task(
-				&tenant,
-				thread.id,
-				&aidash_domain::NewTask {
-					title: title.into(),
-					description: "Traffic budget".into(),
-					requirements: serde_json::json!({}),
-					dependencies: vec![],
-					parent_id: None,
-				},
-				"alice",
-				None,
-			)
-			.await
-			.unwrap();
-		tenant_roots::admitted_run(&f, "acme", &task, &agent).await
-	};
-	let run = new_run("Transfer").await;
-	let sibling = new_run("Sibling").await;
-	let pool = f.store.pool.fixture_driver();
-	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 100000, 'stop', '{}', 1, now(), 'alice', now())")
-		.bind(Uuid::new_v4()).execute(pool).await.unwrap();
-	let space = insert_space(&f, "acme", Default::default()).await;
-	let authority = Arc::new(ScratchAuthority::with_key(
-		f.store.clone(),
-		f.config.scratch_policy.clone(),
-		KEY,
-	));
-	let credential = authority.credential("acme", space, run.id).unwrap();
-	let durable = DurableScopes::new(f.store.clone(), authority);
-	let scope = durable.resolve(&credential).await.unwrap();
-	let connection = open_connection(&durable, &scope).await;
+	let rig = BudgetRig::new(&database, "stop").await;
+	let (durable, scope, pool) = (&rig.durable, &rig.scope, rig.pool());
+	let connection = open_connection(durable, scope).await;
 	let day = Utc::now().date_naive();
 	let mib = 1 << 20;
 	durable
-		.debit(&scope, Direction::Sent, 2 * mib, day, connection)
+		.debit(scope, Direction::Sent, 2 * mib, day, connection)
 		.await
 		.unwrap();
 	let usage =
@@ -368,25 +436,80 @@ async fn only_forwarded_bytes_post_to_the_run_budget_and_pause_its_run(
 	assert_eq!(usage().await.unwrap(), None);
 	for _ in 0..2 {
 		let result = durable
-			.report_forwarded(&scope, connection, Direction::Sent, mib, day)
+			.report_forwarded(scope, connection, Direction::Sent, mib, day)
 			.await;
-		assert!(
-			matches!(&result, Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"),
-			"{result:?}"
-		);
+		assert!(budget_refused(&result), "{result:?}");
 	}
 	assert_eq!(usage().await.unwrap(), Some((mib as i64, 195_312)));
 	let spend: (String, String, i64, i64) = sqlx::query_as(
 		"SELECT node, root_subject, spent_nanocredits, unpriced_calls FROM budget_spend WHERE tenant = 'acme'",
 	).fetch_one(pool).await.unwrap();
 	assert_eq!(spend, (scope.id.node.clone(), "alice".into(), 195_312, 0));
-	let control = |run: Uuid| {
-		sqlx::query_scalar::<_, String>("SELECT control FROM task_executions WHERE id = $1")
-			.bind(run)
-			.fetch_one(pool)
-	};
-	assert_eq!(control(run.id).await.unwrap(), "PAUSED");
-	assert_eq!(control(sibling.id).await.unwrap(), "ACTIVE");
+	assert_eq!(rig.run_state(rig.run).await.0, "PAUSED");
+	assert_eq!(rig.run_state(rig.sibling).await.0, "ACTIVE");
+}
+
+/// A Run's Background processes outlive it (ADR 0148), and a Run its model
+/// calls paused carries their message rather than the egress one: either way
+/// the Hard Limit, not the Run's state, refuses its Host traffic.
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn a_hard_limit_refuses_host_traffic_of_finished_and_model_paused_runs(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let rig = BudgetRig::new(&database, "stop").await;
+	rig.durable.admit_connection(&rig.scope).await.unwrap();
+	sqlx::query(
+		"UPDATE task_executions SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
+	)
+	.bind(rig.run)
+	.execute(rig.pool())
+	.await
+	.unwrap();
+	let result = rig.exceed().await;
+	assert!(budget_refused(&result), "{result:?}");
+	// A finished Run is not paused, but it opens and keeps no connection.
+	assert_eq!(rig.run_state(rig.run).await, ("ACTIVE".into(), None));
+	let result = rig.durable.admit_connection(&rig.scope).await;
+	assert!(budget_refused(&result), "{result:?}");
+	let result = rig.durable.check_active(&rig.scope, &rig.credential).await;
+	assert!(budget_refused(&result), "{result:?}");
+
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED', error = 'Budget is at its Hard Limit; raise it, then resume the Run' WHERE id = $1")
+		.bind(rig.sibling)
+		.execute(rig.pool())
+		.await
+		.unwrap();
+	let credential = rig
+		.authority
+		.credential("acme", rig.space, rig.sibling)
+		.unwrap();
+	let sibling = rig.durable.resolve(&credential).await.unwrap();
+	let result = rig.durable.admit_connection(&sibling).await;
+	assert!(budget_refused(&result), "{result:?}");
+	let result = rig.durable.check_active(&sibling, &credential).await;
+	assert!(budget_refused(&result), "{result:?}");
+}
+
+/// A Sleep Hard Limit lets the Run wait for its Budget (ADR 0143), so egress
+/// refuses traffic without pausing the Run for a person to resume.
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn a_sleep_hard_limit_refuses_host_traffic_without_pausing_the_run(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let rig = BudgetRig::new(&database, "sleep").await;
+	let result = rig.exceed().await;
+	assert!(budget_refused(&result), "{result:?}");
+	assert_eq!(rig.run_state(rig.run).await, ("ACTIVE".into(), None));
+	let result = rig.durable.admit_connection(&rig.scope).await;
+	assert!(budget_refused(&result), "{result:?}");
+	let result = rig.durable.check_active(&rig.scope, &rig.credential).await;
+	assert!(budget_refused(&result), "{result:?}");
 }
 
 #[rstest::rstest]

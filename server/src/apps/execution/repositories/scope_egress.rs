@@ -189,9 +189,9 @@ impl DurableScopes {
 				.await
 				.map_err(reinhardt::core::exception::Error::from)?;
 		}
-		let mut stop = false;
+		let mut posted = accounting::Posted::default();
 		if let Some(traffic) = &traffic {
-			stop = traffic
+			posted = traffic
 				.post(&self.store, &mut tx, id, settings.run_id)
 				.await?;
 		}
@@ -199,14 +199,16 @@ impl DurableScopes {
 		if let Some(traffic) = &traffic {
 			traffic.observe(settings.run_id, now);
 		}
-		if stop && let Some(run) = settings.run_id {
+		if posted.paused
+			&& let Some(run) = settings.run_id
+		{
 			self.store
 				.run_control_committed(run, aidash_domain::entities::RunControl::Paused);
 		}
 		if let Some(refused) = refused {
 			return Err(refused.into());
 		}
-		if exhausted || stop {
+		if exhausted || posted.stop {
 			return Err(Error::Conflict("egress_budget_exhausted".into()));
 		}
 		Ok(())
@@ -494,7 +496,7 @@ impl EgressScopes for DurableScopes {
 				if !revoked.is_empty() {
 					return Err(Error::Forbidden);
 				}
-				if accounting::paused(&mut tx, &settings.id, run_id).await? {
+				if accounting::refused(&mut tx, &settings.id, run_id).await? {
 					return Err(Error::Conflict("egress_budget_exhausted".into()));
 				}
 			}
@@ -516,7 +518,7 @@ impl EgressScopes for DurableScopes {
 		if let Some(run) = settings.run_id {
 			let result: Result<()> = async {
 				let mut tx = begin_timed(&self.store.pool, &settings.id.tenant).await?;
-				if accounting::paused(&mut tx, &settings.id, run).await? {
+				if accounting::refused(&mut tx, &settings.id, run).await? {
 					return Err(Error::Conflict("egress_budget_exhausted".into()));
 				}
 				tx.commit().await
@@ -605,7 +607,7 @@ impl EgressScopes for DurableScopes {
 				cumulative: actual,
 				day,
 			};
-			let stop = traffic.post(&self.store, &mut tx, id, row.run_id).await?;
+			let posted = traffic.post(&self.store, &mut tx, id, row.run_id).await?;
 			if actual > *stored {
 				*stored = actual;
 				ScopeConnection::objects()
@@ -615,11 +617,13 @@ impl EgressScopes for DurableScopes {
 			}
 			tx.commit().await?;
 			traffic.observe(row.run_id, Utc::now());
-			if stop {
-				if let Some(run) = row.run_id {
-					self.store
-						.run_control_committed(run, aidash_domain::entities::RunControl::Paused);
-				}
+			if posted.paused
+				&& let Some(run) = row.run_id
+			{
+				self.store
+					.run_control_committed(run, aidash_domain::entities::RunControl::Paused);
+			}
+			if posted.stop {
 				return Err(Error::Conflict("egress_budget_exhausted".into()));
 			}
 			Ok(())
@@ -684,16 +688,16 @@ impl EgressScopes for DurableScopes {
 			});
 			let [sent, received] = totals;
 			let (sent, received) = (sent?, received?);
-			let mut stop = false;
+			let mut posted = accounting::Posted::default();
 			let observed = existing
 				.as_ref()
 				.is_some_and(|row| row.outcome == "unsettled")
 				&& record.outcome != "unsettled";
 			if observed {
-				stop |= sent
+				posted |= sent
 					.post(&self.store, &mut tx, &record.scope, record.run_id)
 					.await?;
-				stop |= received
+				posted |= received
 					.post(&self.store, &mut tx, &record.scope, record.run_id)
 					.await?;
 			}
@@ -752,7 +756,9 @@ impl EgressScopes for DurableScopes {
 				sent.observe(row.run_id, now);
 				accounting::observe_transfer(&self.store.pool, &row, now).await;
 			}
-			if stop && let Some(run) = row.run_id {
+			if posted.paused
+				&& let Some(run) = row.run_id
+			{
 				self.store
 					.run_control_committed(run, aidash_domain::entities::RunControl::Paused);
 			}
