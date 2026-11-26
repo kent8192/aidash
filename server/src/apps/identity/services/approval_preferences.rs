@@ -809,18 +809,16 @@ impl ApprovalPreferences {
 				access.identity.subject.clone(),
 			);
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
+			let bypass_accepted = row.as_ref().is_some_and(|p| p.bypass_accepted_at.is_some())
+				|| repository::configurator_thread(&mut *access.tx, &tenant, &subject, thread)
+					.await?;
+
 			let node = access.thread_node(thread).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
 				default_mode: repository::default_mode(row.as_ref())?,
-				modes: modes(
-					&access.snapshot.bundle,
-					&subject,
-					auto,
-					row.as_ref()
-						.is_some_and(|row| row.bypass_accepted_at.is_some()),
-				),
+				modes: modes(&access.snapshot.bundle, &subject, auto, bypass_accepted),
 			})
 		}
 		.await;
@@ -849,16 +847,16 @@ impl ApprovalPreferences {
 			);
 			repository::lock_owner(&mut *access.tx, &tenant, &subject).await?;
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
+			let bypass_accepted = row.as_ref().is_some_and(|p| p.bypass_accepted_at.is_some())
+				|| repository::configurator_thread(&mut *access.tx, &tenant, &subject, thread)
+					.await?;
+
 			if let Some(mode) = input.mode {
 				if let Some((action, id)) = mode.policy_requirement() {
 					let target = access.resource(MODE_RESOURCE, id, json!({}));
 					access.require(&target, action).await?;
 				}
-				if mode == ApprovalMode::Bypass
-					&& row
-						.as_ref()
-						.is_none_or(|row| row.bypass_accepted_at.is_none())
-				{
+				if mode == ApprovalMode::Bypass && !bypass_accepted {
 					return Err(Error::Invalid(
 						"accept the risk of Bypass in your preferences first".into(),
 					));
@@ -871,13 +869,7 @@ impl ApprovalPreferences {
 			Ok(ThreadMode {
 				mode: input.mode,
 				default_mode: repository::default_mode(row.as_ref())?,
-				modes: modes(
-					&access.snapshot.bundle,
-					&subject,
-					auto,
-					row.as_ref()
-						.is_some_and(|row| row.bypass_accepted_at.is_some()),
-				),
+				modes: modes(&access.snapshot.bundle, &subject, auto, bypass_accepted),
 			})
 		}
 		.await;

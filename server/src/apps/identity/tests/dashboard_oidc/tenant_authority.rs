@@ -2105,6 +2105,15 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	};
 	use reinhardt::Injectable;
 	let t = Team::new(runtime).await;
+	let (status, refused) = t.d.as_person(
+		&t.bob, "POST", "/api/threads", Some(&t.bob_context),
+		json!({"title":"Settings","request":"Configure this Tenant","target":{"id":ID,"version":VERSION},"target_kind":"agent"}),
+	).await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(
+		refused["code"],
+		"tenant_configurator_administrator_required"
+	);
 	let f = Federation::inject(&t.d.app.context).await.unwrap();
 	let (status, thread) =
 		t.d.as_person(
@@ -2144,7 +2153,22 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
         .bind(id).bind(task).bind(thread).bind(executor).bind(mapping).execute(&mut *tx).await.unwrap();
 	sqlx::query("INSERT INTO dashboard_execution_origins (run_id,tenant,identity_id,mapping_id) SELECT $1,tenant,identity_id,id FROM dashboard_mappings WHERE id=$2")
         .bind(id).bind(mapping).execute(&mut *tx).await.unwrap();
+	sqlx::query("INSERT INTO conversations (id,tenant,thread_id,scratch_space_id,target,target_kind,created_by) SELECT $1,tenant,id,scratch_space_id,$2,'agent',created_by FROM threads WHERE id=$3")
+		.bind(Uuid::new_v4()).bind(format!("{ID}@{VERSION}")).bind(thread).execute(&mut *tx).await.unwrap();
 	tx.commit().await.unwrap();
+	for mode in ["manual", "bypass"] {
+		let (status, changed) =
+			t.d.as_person(
+				&t.alice,
+				"PUT",
+				&format!("/api/threads/{thread}/approval-mode"),
+				Some(&t.alice_context),
+				json!({"mode":mode}),
+			)
+			.await;
+		assert_eq!(status, 200, "{changed}");
+		assert_eq!(changed["mode"], mode);
+	}
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
 	let run = f.store.run(&scope, id).await.unwrap();
 	let context = ToolContext {
