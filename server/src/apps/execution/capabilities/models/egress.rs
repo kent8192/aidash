@@ -30,6 +30,12 @@ pub struct RequestRecord {
 	pub sent_bytes: i64,
 	#[field]
 	pub received_bytes: i64,
+	#[field(default = 0)]
+	#[schemars(skip)]
+	pub scope_charged_sent: i64,
+	#[field(default = 0)]
+	#[schemars(skip)]
+	pub scope_charged_received: i64,
 	#[field]
 	pub duration_ms: i64,
 	/// The gateway's admission call. Null until the outcome is settled.
@@ -92,30 +98,36 @@ pub struct ScopeDaily {
 	pub received_bytes: i64,
 }
 
-/// A committed Host reservation, written in the same transaction as the debit.
-#[model(app_label = "execution", table_name = "egress_scope_host_debits")]
+/// Tenant traffic facts for billing. Node or Scratch Space purge leaves them intact.
+#[model(
+	app_label = "execution",
+	table_name = "egress_usage_daily",
+	constraints = [unique(fields = ["tenant", "day"], name = "egress_usage_daily_tenant_day_key")]
+)]
 #[derive(Serialize, Deserialize)]
-pub(crate) struct ScopeHostDebit {
+pub(crate) struct EgressUsageDaily {
 	#[field(primary_key = true)]
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field(field_type = "text")]
-	pub node: String,
-	#[field]
-	pub scope_id: Uuid,
-	#[field(field_type = "text")]
 	pub day: String,
 	#[field]
-	pub sent: bool,
+	pub sent_bytes: i64,
 	#[field]
-	pub bytes: i64,
+	pub received_bytes: i64,
+	#[field]
+	pub cost_nanocredits: i64,
 }
 
 /// Metadata only: request paths and payloads are deliberately absent.
 #[model(app_label = "execution", table_name = "egress_scope_connections")]
 #[derive(Serialize, Deserialize)]
 pub struct ScopeConnection {
+	#[field(default = 0)]
+	pub charged_sent: i64,
+	#[field(default = 0)]
+	pub charged_received: i64,
 	#[field(primary_key = true)]
 	pub id: Uuid,
 	#[field(field_type = "text")]
@@ -124,7 +136,7 @@ pub struct ScopeConnection {
 	pub node: String,
 	#[field]
 	pub scope_id: Uuid,
-	#[field(null = true)]
+	#[field(null = true, index = true)]
 	pub run_id: Option<Uuid>,
 	#[field(null = true)]
 	pub admission_ms: Option<i64>,
@@ -146,7 +158,7 @@ pub struct ScopeConnection {
 	/// is still open, and for rows older than #845.
 	#[field(field_type = "text", null = true)]
 	pub error: Option<String>,
-	/// How long the connection waited for a Host connection limit. Null until
+	/// How long the connection waited for its Egress fair share. Null until
 	/// the wait is over, and for rows older than #845.
 	#[field(null = true)]
 	pub wait_ms: Option<i64>,

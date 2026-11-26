@@ -52878,12 +52878,12 @@
               "daily_received_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "daily_sent_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "docker_enabled": {
                 "type": "boolean"
@@ -52919,9 +52919,7 @@
               "external_services",
               "cpu_millis",
               "memory_bytes",
-              "docker_enabled",
-              "daily_sent_bytes",
-              "daily_received_bytes"
+              "docker_enabled"
             ],
             "type": "object"
           },
@@ -53092,12 +53090,12 @@
               "daily_received_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "daily_sent_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "docker_enabled": {
                 "type": "boolean"
@@ -53133,9 +53131,7 @@
               "external_services",
               "cpu_millis",
               "memory_bytes",
-              "docker_enabled",
-              "daily_sent_bytes",
-              "daily_received_bytes"
+              "docker_enabled"
             ],
             "type": "object"
           },
@@ -53417,12 +53413,12 @@
               "daily_received_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "daily_sent_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "docker_enabled": {
                 "type": "boolean"
@@ -53458,9 +53454,7 @@
               "external_services",
               "cpu_millis",
               "memory_bytes",
-              "docker_enabled",
-              "daily_sent_bytes",
-              "daily_received_bytes"
+              "docker_enabled"
             ],
             "type": "object"
           },

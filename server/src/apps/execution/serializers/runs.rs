@@ -11,6 +11,9 @@ pub struct RunDetails {
 	/// Metadata-only gateway requests, paged with the inspection offset.
 	#[serde(default)]
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
+	/// Host connections that waited for their Egress fair share.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub egress_waits: Vec<aidash_application::ports::authorization::run_details::EgressWait>,
 	/// Awake stretches of this execution, in start order.
 	#[serde(default)]
 	pub stints: Vec<aidash_domain::model_call::Stint>,

@@ -24,6 +24,13 @@ resource "google_container_node_pool" "environment" {
   cluster        = var.cluster.name
   node_locations = var.cluster.node_locations
   node_count     = var.environment.running ? var.environment.nodes : 0
+  dynamic "network_config" {
+    for_each = var.cluster.subnetwork == null ? [] : [var.cluster.subnetwork]
+    content {
+      subnetwork = network_config.value
+      pod_range  = "pods"
+    }
+  }
   management {
     auto_repair  = true
     auto_upgrade = true
@@ -60,6 +67,13 @@ resource "google_container_node_pool" "standby" {
   autoscaling {
     total_min_node_count = 0
     total_max_node_count = var.environment.nodes
+  }
+  dynamic "network_config" {
+    for_each = var.cluster.subnetwork == null ? [] : [var.cluster.subnetwork]
+    content {
+      subnetwork = network_config.value
+      pod_range  = "pods"
+    }
   }
   management {
     auto_repair  = true

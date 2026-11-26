@@ -12,7 +12,12 @@ use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
 use aidash_integrations::{egress as egress_gateway, preview as preview_gateway};
 use async_trait::async_trait;
 use rstest::rstest;
-use std::{fs::File, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+	fs::File,
+	net::SocketAddr,
+	sync::{Arc, Mutex},
+	time::Duration,
+};
 use tokio::{
 	io::{AsyncReadExt, AsyncWriteExt},
 	net::{TcpListener, TcpSocket, TcpStream},
@@ -75,7 +80,8 @@ fn lower_descriptor_limit() {
 	// SAFETY: both calls only read or write the local struct passed to them.
 	unsafe {
 		assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
-		limit.rlim_cur = DESCRIPTORS.min(limit.rlim_max);
+		limit.rlim_max = DESCRIPTORS.min(limit.rlim_max);
+		limit.rlim_cur = limit.rlim_max;
 		assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
 	}
 }
@@ -142,6 +148,17 @@ async fn assert_outlives_running_out_of_descriptors(
 #[rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_gateways_outlive_running_out_of_descriptors() {
+	static LOGS: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+	let subscriber = tracing_subscriber::fmt()
+		.with_max_level(tracing::Level::WARN)
+		.with_ansi(false)
+		.with_writer(|| tracing_subscriber::fmt::MakeWriter::make_writer(&LOGS))
+		.finish();
+	tracing::subscriber::set_global_default(subscriber).unwrap();
+	let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+	let metrics = recorder.handle();
+	assert!(metrics::set_global_recorder(recorder).is_ok());
+
 	lower_descriptor_limit();
 
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -167,7 +184,7 @@ async fn both_gateways_outlive_running_out_of_descriptors() {
 	let gateway = tokio::spawn(egress_gateway::serve_with_scopes(
 		listener,
 		Arc::new(MemoryScopes::new("credential".into(), scope_settings())),
-		egress_gateway::ProxyLimits::default(),
+		Default::default(),
 		stopping,
 	));
 	assert_outlives_running_out_of_descriptors(
@@ -178,4 +195,12 @@ async fn both_gateways_outlive_running_out_of_descriptors() {
 		"HTTP/1.1 404 Not Found",
 	)
 	.await;
+	let logs = LOGS.lock().unwrap();
+	assert!(String::from_utf8_lossy(&logs).contains("raise the node's LimitNOFILE"));
+	let metrics = metrics.render();
+	let emfile = metrics
+		.lines()
+		.find_map(|line| line.strip_prefix("aidash_egress_accept_emfile_total "))
+		.map(|count| count.parse::<u64>().unwrap());
+	assert!(emfile.is_some_and(|count| count > 0));
 }

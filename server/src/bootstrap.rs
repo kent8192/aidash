@@ -254,6 +254,74 @@ pub fn require_egress_broker_settings(secret_manager: bool, brokered: bool) -> R
 	Ok(())
 }
 
+struct EgressGateway {
+	listener: tokio::net::TcpListener,
+	scopes: Arc<crate::apps::execution::repositories::scope_egress::DurableScopes>,
+	settings: aidash_integrations::egress::GatewaySettings,
+}
+
+impl EgressGateway {
+	async fn bind(store: &Store, config: &Config, group: Option<String>) -> Result<Self> {
+		use crate::apps::execution::repositories::scope_egress::{DurableScopes, ScratchAuthority};
+		let egress = store
+			.capabilities
+			.0
+			.egress
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("the Egress capability must be configured".into()))?;
+		if project_egress_group_invalid(&egress.tenant_groups, group.as_deref()) {
+			return Err(Error::Invalid(
+				"unexpected or missing AIDASH_EGRESS_IP_GROUP".into(),
+			));
+		}
+		require_egress_broker(store)?;
+		#[cfg(unix)]
+		if let Err(error) = aidash_runtime::open_files::raise_soft_limit() {
+			tracing::warn!(%error, "could not raise the Egress gateway soft open-file limit");
+		}
+		Ok(Self {
+			listener: tokio::net::TcpListener::bind(egress.listen).await?,
+			scopes: Arc::new(
+				DurableScopes::new(
+					store.clone(),
+					Arc::new(ScratchAuthority::new(
+						store.clone(),
+						config.scratch_policy.clone(),
+					)),
+				)
+				.with_prices(config.egress_prices),
+			),
+			settings: aidash_integrations::egress::GatewaySettings {
+				memory_limit_bytes: egress.memory_limit_bytes,
+				group,
+				tenant_groups: egress.tenant_groups.clone(),
+			},
+		})
+	}
+
+	async fn run(self, stopping: watch::Receiver<bool>) -> Result<()> {
+		aidash_integrations::egress::serve_with_scopes(
+			self.listener,
+			self.scopes,
+			self.settings,
+			stopping,
+		)
+		.await
+		.map_err(Into::into)
+	}
+}
+
+fn project_egress_group_invalid(
+	groups: &std::collections::HashMap<String, String>,
+	group: Option<&str>,
+) -> bool {
+	match group {
+		Some("shared") => false,
+		Some(group) => !groups.values().any(|assigned| assigned == group),
+		None => !groups.is_empty(),
+	}
+}
+
 /// Process-owned supervisor; dropping it cancels the supervisor and its JoinSets.
 pub struct RuntimeTasks {
 	stopping: watch::Sender<bool>,
@@ -272,46 +340,12 @@ impl RuntimeTasks {
 		let receiver = tasks.stop_receiver();
 		if event_streams.is_some()
 			&& let Some(egress) = &federation.store.capabilities.0.egress
+			&& egress.in_process
 		{
-			require_egress_broker(&federation.store)?;
-			let listener = tokio::net::TcpListener::bind(egress.listen).await?;
-			let scopes = Arc::new(
-				crate::apps::execution::repositories::scope_egress::DurableScopes::new(
-					federation.store.clone(),
-					Arc::new(
-						crate::apps::execution::repositories::scope_egress::ScratchAuthority::new(
-							federation.store.clone(),
-							federation.config.scratch_policy.clone(),
-						),
-					),
-				),
-			);
-			let stopping = receiver.clone();
-			// Waiting Host connections hold open files, so their budget follows
-			// the limit the process runs under (#845).
-			#[cfg(unix)]
-			let open_files: u64 = aidash_runtime::open_files::raise_soft_limit().unwrap_or(1024);
-			#[cfg(not(unix))]
-			let open_files = 1024;
-			let limits = aidash_integrations::egress::ProxyLimits {
-				global_concurrent: egress.proxy_global_tunnels,
-				tenant_concurrent: egress.proxy_tenant_tunnels,
-				waiting: aidash_integrations::egress::waiting_budget(open_files),
-			};
-			tracing::info!(
-				waiting = limits.waiting,
-				open_files,
-				"Egress gateway waiting budget"
-			);
+			let gateway = EgressGateway::bind(&federation.store, &federation.config, None).await?;
 			tasks.spawn_service(
 				"egress gateway",
-				runtime_task(async move {
-					aidash_integrations::egress::serve_with_scopes(
-						listener, scopes, limits, stopping,
-					)
-					.await
-					.map_err(Into::into)
-				}),
+				runtime_task(gateway.run(receiver.clone())),
 			);
 		}
 		if event_streams.is_some()
@@ -807,7 +841,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 mod compatibility;
 mod listener;
 mod watched_loop;
-pub use compatibility::{migrate, preview_gateway, require_migrated, serve};
+pub use compatibility::{egress_gateway, migrate, preview_gateway, require_migrated, serve};
 
 /// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
 /// rejected without being sent. Run inference uses `admitted_model_provider`,

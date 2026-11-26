@@ -17,7 +17,10 @@ use crate::{
 use aidash_application::{
 	Result,
 	ports::capabilities::{
-		execution_pod::{EgressCredential, ExecutionPodRuntime},
+		execution_pod::{
+			CommandResult, EgressCredential, ExecutionPodError, ExecutionPodErrorCode,
+			ExecutionPodRuntime,
+		},
 		pod_operations::{PodContext, PodOperation, PodOperationRepository},
 	},
 	tenancy::{DeploymentScopeReason, TenancyScope},
@@ -25,7 +28,8 @@ use aidash_application::{
 use aidash_domain::{RunMetadata, scratch::ScratchSpace};
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	Alias, Condition, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -177,16 +181,35 @@ static SCAN_AFTER: std::sync::Mutex<Option<Uuid>> = std::sync::Mutex::new(None);
 
 /// The next `SCAN_BATCH` active Pod operations after `after` in id order.
 async fn scan_after(store: &Store, after: Option<Uuid>) -> NativeResult<Vec<Uuid>> {
+	let cancelled_runs = Query::select()
+		.column("id")
+		.from_as("task_executions", "run")
+		.and_where(Expr::col(("run", "tenant")).equals(("core_operations", "tenant")))
+		.and_where(
+			Condition::any()
+				.add(Expr::col(("run", "phase")).eq("CANCELLED"))
+				.add(Expr::col(("run", "control")).eq("CANCELLED")),
+		)
+		.to_owned();
 	let mut query = Query::select();
 	query
 		.column(Alias::new("id"))
 		.from(Alias::new("core_operations"))
-		.and_where(Expr::col(Alias::new("state")).is_in([
-			"prepared",
-			"submitted",
-			"running",
-			"cancelling",
-		]))
+		.and_where(
+			Condition::any()
+				.add(Expr::col("state").is_in(["prepared", "submitted", "running", "cancelling"]))
+				.add(
+					Condition::all()
+						.add(Expr::cust("result->>'left_running' IS NOT NULL"))
+						.add(Expr::cust(
+							"result->>'run_stop_confirmed' IS DISTINCT FROM 'true'",
+						))
+						.add(Expr::cust(
+							"result->>'background_retired' IS DISTINCT FROM 'true'",
+						))
+						.add(Expr::col("run_id").in_subquery(cancelled_runs)),
+				),
+		)
 		.and_where(Expr::cust(POD_ROWS))
 		.order_by(Alias::new("id"), Order::Asc)
 		.limit(SCAN_BATCH as u64);
@@ -241,9 +264,9 @@ impl PodOperationRepository for Repository<'_> {
 		.fetch_optional(self.store.pool.in_scope(&MAINTENANCE))
 		.await?
 		.ok_or_else(|| NativeError::NotFound("operation unavailable".into()))?;
-		let phase: Option<String> = crate::database::native::query_scalar(
+		let status: Option<(String, String)> = crate::database::native::query_as(
 			&Query::select()
-				.column(Alias::new("phase"))
+				.columns(["phase", "control"])
 				.from(Alias::new("task_executions"))
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(operation.run_id)))
 				.and_where(
@@ -251,7 +274,8 @@ impl PodOperationRepository for Repository<'_> {
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(self.store.pool.in_scope(&MAINTENANCE))
+		.columns(&["phase", "control"])
+		.fetch_optional(self.store.pool.in_scope(&MAINTENANCE))
 		.await?;
 		Ok(PodOperation {
 			id: operation.id,
@@ -261,9 +285,12 @@ impl PodOperationRepository for Repository<'_> {
 			state: operation.state,
 			input: operation.input,
 			result: operation.result,
-			run_finished: phase
-				.as_deref()
-				.is_none_or(|phase| matches!(phase, "COMPLETED" | "FAILED" | "CANCELLED")),
+			run_cancelled: status
+				.as_ref()
+				.is_some_and(|(phase, control)| phase == "CANCELLED" || control == "CANCELLED"),
+			run_finished: status.as_ref().is_none_or(|(phase, _)| {
+				matches!(phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+			}),
 		})
 	}
 
@@ -295,8 +322,24 @@ impl PodOperationRepository for Repository<'_> {
 		)?)
 	}
 
+	async fn background_after_context_lost(
+		&self,
+		operation: &PodOperation,
+	) -> Result<Option<CommandResult>> {
+		let runner = crate::bootstrap::operation_runner(self.store)?;
+		match runner.result(&operation.id.to_string()).await {
+			Ok(reply) => Ok(Some(reply)),
+			Err(ExecutionPodError::Remote {
+				code: ExecutionPodErrorCode::CommandNotFound,
+				..
+			}) => Ok(None),
+			Err(error) => Err(aidash_application::capabilities::pod::tool_error(error)),
+		}
+	}
+
 	async fn save(&self, id: Uuid, expected: &str, state: &str, result: &Value) -> Result<bool> {
-		let written = crate::database::native::query(
+		let mut tx = self.store.pool.begin(&MAINTENANCE).await?;
+		let run: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::update()
 				.table(Alias::new("core_operations"))
 				.value(Alias::new("state"), state.to_owned())
@@ -305,12 +348,25 @@ impl PodOperationRepository for Repository<'_> {
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.and_where(Expr::col(Alias::new("state")).eq(Expr::value(expected.to_owned())))
 				.and_where(Expr::cust(POD_ROWS))
+				.returning([Alias::new("run_id")])
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(self.store.pool.in_scope(&MAINTENANCE))
-		.await?
-		.rows_affected();
-		Ok(written > 0)
+		.scalar_optional(&mut *tx)
+		.await?;
+		if let Some(run) = run
+			&& let Some(notice) = result.get("background_exit")
+		{
+			crate::apps::execution::models::RunInput::admit_background_exit(
+				&mut *tx,
+				self.store.deployment.as_ref(),
+				run,
+				id,
+				notice,
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(run.is_some())
 	}
 }
 

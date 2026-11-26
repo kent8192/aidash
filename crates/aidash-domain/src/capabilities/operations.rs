@@ -20,12 +20,19 @@ pub struct MountedFile {
 	pub scope: FileScope,
 	pub provenance: Value,
 }
+pub const DEFAULT_BACKGROUND_MAXIMUM_SECONDS: u64 = 14_400;
+pub const BACKGROUND_MAXIMUM_SECONDS: u64 = 86_400;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellRequest {
 	pub idempotency_key: Uuid,
 	pub command: String,
 	pub timeout_seconds: Option<u64>,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub background: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub notify_on_exit: bool,
 	pub expected_revision: i64,
 }
 #[derive(Clone, Copy)]

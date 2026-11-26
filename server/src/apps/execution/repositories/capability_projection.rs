@@ -51,6 +51,7 @@ impl From<OperationResult> for NativeResult {
 			output_stale_seconds: v.output_stale_seconds,
 			deadline_expired: v.deadline_expired,
 			left_running: v.left_running,
+			stop_reason: v.stop_reason,
 		}
 	}
 }

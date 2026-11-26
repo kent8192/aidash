@@ -121,8 +121,23 @@
         "egress": {
           "type": "object",
           "properties": {
-            "proxyGlobalTunnels": { "type": "integer", "minimum": 2 },
-            "proxyTenantTunnels": { "type": "integer", "minimum": 32 }
+            "ipGroups": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["clusterIP", "tenants"],
+                "additionalProperties": false,
+                "properties": {
+                  "clusterIP": { "type": "string", "minLength": 7 },
+                  "tenants": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
           }
         },
         "guard": {

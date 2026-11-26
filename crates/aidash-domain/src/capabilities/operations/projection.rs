@@ -65,4 +65,6 @@ pub struct OperationResult {
 	/// Background process adopted after the foreground command exited.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub left_running: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stop_reason: Option<String>,
 }

@@ -840,8 +840,27 @@ struct GatewayScopes {
 }
 #[async_trait]
 impl aidash_application::egress::EgressScopes for GatewayScopes {
-	async fn resolve(&self, _: &str) -> Result<aidash_application::egress::ScopeSettings, Error> {
-		unreachable!("a service request is not a Host connection")
+	async fn resolve(
+		&self,
+		credential: &str,
+	) -> Result<aidash_application::egress::ScopeSettings, Error> {
+		use aidash_application::egress::ScopeSettings;
+		if credential != POD_CREDENTIAL {
+			return Err(Error::Unauthorized);
+		}
+		Ok(ScopeSettings {
+			run_id: None,
+			id: aidash_domain::egress::ScopeId {
+				tenant: "test".into(),
+				node: "test".into(),
+				scratch_space: uuid::Uuid::nil(),
+			},
+			allowed_hosts: Default::default(),
+			budget: Default::default(),
+			anomaly: Default::default(),
+			operator_allows_all: false,
+			tunnel_limits: Default::default(),
+		})
 	}
 	async fn admit_external(
 		&self,
@@ -982,7 +1001,7 @@ async fn the_egress_gateway_forwards_a_scratch_space_secret_service_and_not_a_pl
 	let gateway = tokio::spawn(egress::serve_with_scopes(
 		listener,
 		scopes,
-		egress::ProxyLimits::default(),
+		Default::default(),
 		receiver,
 	));
 	// The Pod process reaches the gateway only as its HTTP proxy.

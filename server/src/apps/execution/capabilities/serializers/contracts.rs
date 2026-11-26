@@ -200,6 +200,8 @@ pub struct RuntimeResult {
 	/// Background process adopted when the foreground command exited.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub left_running: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stop_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -369,6 +371,12 @@ pub struct Steered {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Shell {
+	/// Start a time-limited Background process with timeout_seconds.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub background: bool,
+	/// Send an input to the Task when this Background process ends.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub notify_on_exit: bool,
 	pub idempotency_key: Uuid,
 	#[validate(length(min = 1, max = 64000))]
 	pub command: String,
@@ -451,6 +459,8 @@ pub struct OperationResult {
 	/// Background process adopted when the foreground command exited.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub left_running: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stop_reason: Option<String>,
 }
 
 use uuid::Uuid;

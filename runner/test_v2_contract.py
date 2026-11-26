@@ -8,7 +8,7 @@ from execution_pod import ExecutionPodController
 
 
 def test_image_proxy_is_not_inherited_without_process_credential(tmp_path, monkeypatch):
-    from sandbox_v2 import image_environment, save_image_environment
+    from pod_base import image_environment, save_image_environment
     root = tmp_path / 'rootfs'
     root.mkdir()
     save_image_environment(tmp_path, {'PATH': '/bin', 'HTTPS_PROXY': 'http://old:secret@proxy'})
@@ -19,7 +19,7 @@ def test_image_proxy_is_not_inherited_without_process_credential(tmp_path, monke
 def test_process_proxy_also_reaches_node_fetch(tmp_path, monkeypatch):
     # Node's built-in fetch, which corepack uses, ignores the proxy variables
     # unless asked to read them (#845).
-    from sandbox_v2 import image_environment, save_image_environment
+    from pod_base import image_environment, save_image_environment
     root = tmp_path / 'rootfs'
     root.mkdir()
     save_image_environment(tmp_path, {'PATH': '/bin', 'NODE_USE_ENV_PROXY': '0'})
@@ -74,9 +74,9 @@ def test_stop_run_stops_only_active_processes_of_that_run():
                 'background': background, 'status': status,
             }))
         stopped = []
-        def stop(operation):
+        def stop(operation, *, reason):
             stopped.append(operation)
-            controller._update_command(operation, status='stopped')
+            controller._update_command(operation, status='stopped', stop_reason=reason)
         controller._stop_command = stop
         assert controller.stop_run('space', 'run') == {'stopped': sorted(stopped)}
         assert set(stopped) == {records[0][0], records[1][0]}
@@ -91,10 +91,10 @@ def test_stop_run_waits_until_signalled_process_finishes(tmp_path):
     controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
     controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
         'scratch_space_id': 's', 'run_id': 'r', 'status': 'running', 'background': True}))
-    def stop(op):
+    def stop(op, *, reason):
         def finish():
             time.sleep(.1)
-            controller._update_command(op, status='stopped')
+            controller._update_command(op, status='stopped', stop_reason=reason)
         threading.Thread(target=finish, daemon=True).start()
         return {'status': 'stopping'}
     controller._stop_command = stop
@@ -149,7 +149,10 @@ def test_python_start_uses_image_interpreter_and_passes_run_credential(tmp_path)
     controller.submit_command = Mock(return_value={'status': 'queued'})
     session = controller.start_python('s', 'r', 'run-token')
     request = controller.submit_command.call_args.args[0]
-    assert request['code'].startswith('exec python3 -I /.aidash-helpers/python_session.py serve ')
+    import shlex
+    command = shlex.split(request['code'])
+    assert command[:4] == ['exec', 'python3', '-I', '-c']
+    assert command[5:] == ['serve', session['socket_path']]
     assert request['proxy_credential'] == 'run-token'
     assert 'run-token' not in controller._python_session_path('s', 'r').read_text()
     assert session['run_id'] == 'r'
@@ -537,7 +540,7 @@ def test_preview_and_mcp_http_routes(tmp_path):
     controller._read_command = lambda op: {'operation_id': op, 'pod': 'pod', 'pod_uid': 'uid',
         'status': 'running', 'background': True, 'docker_enabled': False,
         'kind': 'mcp_session' if op == mcp else 'preview'}
-    controller._stop_command = lambda op: {'operation_id': op, 'status': 'stopping'}
+    controller._stop_command = lambda op, *, reason: {'operation_id': op, 'status': 'stopping'}
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.runner = SimpleNamespace(token='x' * 32, execution_pods=controller)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -578,14 +581,14 @@ def test_run_stop_route_is_scoped_and_idempotent(tmp_path):
     controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
     controller._command_path(operation).write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's',
         'run_id': 'r', 'status': 'running', 'background': True}))
-    controller._stop_command = lambda op: controller._update_command(op, status='stopped')
+    controller._stop_command = lambda op, *, reason: controller._update_command(op, status='stopped', stop_reason=reason)
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.runner = SimpleNamespace(token='x' * 32, execution_pods=controller)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     def stop(run):
         connection = http.client.HTTPConnection('127.0.0.1', server.server_port)
-        connection.request('POST', '/v2/runs/stop', json.dumps({'scratch_space_id': 's', 'run_id': run}),
+        connection.request('POST', '/v2/runs/stop', json.dumps({'scratch_space_id': 's', 'run_id': run, 'reason': 'run_cancelled'}),
                            {'Authorization': 'Bearer ' + 'x' * 32})
         response = connection.getresponse()
         result = json.loads(response.read())
@@ -596,6 +599,7 @@ def test_run_stop_route_is_scoped_and_idempotent(tmp_path):
         assert stop('other') == {'stopped': []}
         assert stop('r') == {'stopped': [operation]}
         assert stop('r') == {'stopped': []}
+        assert controller.background_processes('s')['processes'][0]['stop_reason'] == 'run_cancelled'
     finally:
         server.shutdown()
         server.server_close()
@@ -618,10 +622,10 @@ def test_mcp_run_stop_route_stops_only_the_runs_stdio_sessions(tmp_path):
             'operation_id': operation, 'scratch_space_id': 's', 'run_id': run, 'kind': kind,
             'status': status, 'background': True}))
     stopped = []
-    def stop_command(op):
+    def stop_command(op, *, reason):
         stopped.append(op)
         # The watcher records the end a moment after the stop request.
-        threading.Timer(.2, lambda: controller._update_command(op, status='stopped')).start()
+        threading.Timer(.2, lambda: controller._update_command(op, status='stopped', stop_reason=reason)).start()
         return {'operation_id': op, 'status': 'stopping'}
     controller._stop_command = stop_command
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -793,7 +797,7 @@ def test_python_stop_waits_for_run_session_termination(tmp_path):
         'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'kind': 'python_session',
         'status': 'running', 'background': True,
     }))
-    controller._stop_command = Mock(side_effect=lambda op: controller._update_command(op, status='stopped'))
+    controller._stop_command = Mock(side_effect=lambda op, *, reason: controller._update_command(op, status='stopped', stop_reason=reason))
     assert controller.stop_python('s', 'r') == {'stopped': [operation]}
     assert controller._read_command(operation)['status'] == 'stopped'
 
@@ -821,7 +825,7 @@ def test_terminal_session_stop_fences_late_starts_and_retries_failed_stops(tmp_p
     with pytest.raises(ExecutionPodError, match='sessions have ended'):
         controller.submit_command({'operation_id': session, 'scratch_space_id': 's',
                                    'run_id': 'r', 'code': 'server'}, kind='mcp_session')
-    controller._stop_command = Mock(side_effect=lambda op: controller._update_command(op, status='stopped'))
+    controller._stop_command = Mock(side_effect=lambda op, *, reason: controller._update_command(op, status='stopped', stop_reason=reason))
     assert controller.stop_sessions('s', 'r') == {'stopped': [session]}
     assert controller.stop_sessions('s', 'r') == {'stopped': []}
     assert controller._read_command(background)['status'] == 'running'

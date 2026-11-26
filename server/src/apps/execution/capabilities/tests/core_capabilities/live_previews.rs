@@ -246,10 +246,13 @@ async fn invalid_live_preview_inputs_use_the_house_json_contract(
 #[rstest::rstest]
 #[tokio::test]
 async fn a_tenant_lowers_its_limits_within_the_deployment_ceilings(
-	#[future] capability_fixture: CoreFixture,
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let c = capability_fixture.await;
-	let admin = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+	let (f, url, schema) = fixture.runtime.parts();
+	bootstrap(&f, &fixture.application, "http://127.0.0.1:9").await;
+	let admin = common::BrowserMapping::new(&f, "acme", "alice").await;
 	let (status, body) = admin
 		.send("GET", "/api/preview-limits/acme", Value::Null)
 		.await;
@@ -258,17 +261,31 @@ async fn a_tenant_lowers_its_limits_within_the_deployment_ceilings(
 	assert_eq!(body["absolute_seconds"], 7200);
 	assert_eq!(body["ceiling_idle_seconds"], 900);
 	assert_eq!(body["ceiling_absolute_seconds"], 7200);
+	assert_eq!(body["background_maximum_seconds"], 14_400);
+	assert_eq!(body["ceiling_background_maximum_seconds"], 14_400);
 	let (status, body) = admin
 		.send(
 			"PUT",
 			"/api/preview-limits/acme",
-			json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0}),
+			json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,
+				"expected_revision":0,"background_maximum_seconds":14401}),
+		)
+		.await;
+	assert_eq!(status, 400, "{body}");
+	assert_eq!(body["error"]["code"], "BACKGROUND_TIME_LIMIT_EXCEEDED");
+	assert_eq!(body["error"]["details"]["maximum_seconds"], 14_400);
+	let (status, body) = admin
+		.send(
+			"PUT",
+			"/api/preview-limits/acme",
+			json!({"tenant":"acme","idle_seconds":600,"absolute_seconds":3600,"expected_revision":0,"background_maximum_seconds":7200}),
 		)
 		.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["idle_seconds"], 600);
 	assert_eq!(body["absolute_seconds"], 3600);
 	assert_eq!(body["revision"], 1);
+	assert_eq!(body["background_maximum_seconds"], 7200);
 	let (status, body) = admin
 		.send(
 			"PUT",
@@ -282,6 +299,7 @@ async fn a_tenant_lowers_its_limits_within_the_deployment_ceilings(
 		"a Tenant cannot raise the Deployment's idle ceiling"
 	);
 	assert_eq!(body["absolute_seconds"], 7200);
+	assert_eq!(body["background_maximum_seconds"], 7200);
 	let (status, body) = admin
 		.send(
 			"PUT",
@@ -290,6 +308,7 @@ async fn a_tenant_lowers_its_limits_within_the_deployment_ceilings(
 		)
 		.await;
 	assert_eq!(status, 409, "{body}");
+	cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]

@@ -580,6 +580,7 @@ function RunPanel({
     getNextPageParam: (last, pages) =>
       last.invocations.length === 100 ||
       last.egress_requests?.length === 100 ||
+      last.egress_waits?.length === 100 ||
       last.provider_tool_activity?.length === 100
         ? pages.length * 100
         : undefined,
@@ -940,6 +941,24 @@ function RunPanel({
                 <JsonView value={request} />
               </Disclosure>
             ))}
+        </Panel>
+      )}
+      {query.data?.pages.some((page) => page.egress_waits?.length) && (
+        <Panel
+          title={locale === "ja-JP" ? "外部接続の待ち時間" : "Egress waits"}
+        >
+          <ul className="space-y-1 text-sm">
+            {query.data.pages
+              .flatMap((page) => page.egress_waits ?? [])
+              .map((wait) => (
+                <li key={wait.id} className="flex justify-between gap-2">
+                  <span className="break-all">{wait.host}</span>
+                  <span className="shrink-0 tabular-nums">
+                    {wait.wait_ms.toLocaleString(locale)} ms
+                  </span>
+                </li>
+              ))}
+          </ul>
         </Panel>
       )}
       <Panel title={t("toolCalls")}>
