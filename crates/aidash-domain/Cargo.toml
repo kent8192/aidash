@@ -19,6 +19,7 @@ psl = "=2.1.245"
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
+regex = "1"
 thiserror.workspace = true
 uuid.workspace = true
 

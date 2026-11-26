@@ -746,3 +746,210 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 	assert!(persisted.response.is_none());
 	assert!(persisted.answered_by.is_none());
 }
+
+#[rstest]
+#[tokio::test]
+async fn setting_request_writes_only_to_the_named_secret_and_records_the_receipt(
+	#[future] execution: ExecutionFixture,
+) {
+	use secrecy::ExposeSecret;
+	let mut execution = Box::pin(execution).await;
+	let app = &mut execution.app;
+	let dir = tempfile::tempdir().unwrap();
+	let master = dir.path().join("master");
+	let fingerprint = dir.path().join("fingerprint");
+	std::fs::write(&master, "66".repeat(32)).unwrap();
+	std::fs::write(&fingerprint, "setting-request-fixture-fingerprint-key").unwrap();
+	let settings=serde_json::from_value(json!({"fingerprint_key":{"file":fingerprint},"store":{"kind":"postgres","master_key":{"file":master}}})).unwrap();
+	aidash_server::bootstrap::configure_provider_credentials(&mut app.runtime.store, &settings)
+		.await
+		.unwrap();
+	aidash_server::bootstrap::configure_tenant_secrets(
+		&mut app.runtime.store,
+		&settings,
+		aidash_server::bootstrap::ProcessRole::Server,
+	)
+	.unwrap();
+	app.context.set_singleton(app.runtime.clone());
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	// Seed a deployment-owned Agent in the disposable Tenant; the public Registry
+	// correctly rejects owner registrations under the aidash prefix.
+	let mut agent = app
+		.runtime
+		.registry
+		.get(&tenant, "research", "1.0.0")
+		.await
+		.unwrap();
+	agent.id = "aidash.tenant-configurator".into();
+	agent.version = "1.0.0-setting-fixture".into();
+	sqlx::query(
+		"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,$2,'agent',$3)",
+	)
+	.bind(&agent.id)
+	.bind(&agent.version)
+	.bind(json!(agent))
+	.execute(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let task = app
+		.runtime
+		.store
+		.task(&TEST_FIXTURE, execution.task)
+		.await
+		.unwrap();
+	let run = crate::endpoint::admitted_run(&app.runtime, "acme", &task, &agent).await;
+	let prompt =
+		json!({"kind":"secret","name":"fixture-key","label":"API key","hosts":["api.example.com"]});
+	let request = app
+		.runtime
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			aidash_domain::setting_requests::KIND,
+			&prompt.to_string(),
+			"setting-fixture",
+		)
+		.await
+		.unwrap();
+	let url = format!("/api/setting-requests/{}/answer", request.id);
+	let rejected = assert_json(
+		execution
+			.subject
+			.post(
+				&url,
+				&json!({"action":"accept","value":"invalid\nsecret","language":"ja"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		400,
+	);
+	assert!(rejected.to_string().contains("改行"));
+	assert!(!rejected.to_string().contains("invalid"));
+	let forged = format!("/api/human-requests/{}/answer", request.id);
+	assert_json(
+		execution
+			.subject
+			.post(
+				&forged,
+				&json!({"name":"fixture-key","outcome":"saved"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		400,
+	);
+
+	let value = "secret-value-for-the-setting-form".repeat(200);
+	let payload = json!({"action":"accept","value":value});
+	let service = app.runtime.store.tenant_secrets.as_ref().unwrap();
+	let saved = assert_json(
+		execution
+			.subject
+			.post(&url, &payload, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(
+		saved["response"],
+		json!({"name":"fixture-key","outcome":"saved"})
+	);
+	assert_eq!(saved["answered_by"], "alice");
+	assert!(!saved.to_string().contains(&value));
+	assert_eq!(
+		service
+			.resolve_value("acme", "fixture-key", "https://api.example.com/tool")
+			.await
+			.unwrap()
+			.expose_secret(),
+		value.as_str()
+	);
+	assert!(
+		service
+			.resolve_value("acme", "fixture-key", "https://other.example.com/tool")
+			.await
+			.is_err()
+	);
+	let metadata = service
+		.get_owned("acme", None, "fixture-key")
+		.await
+		.unwrap();
+	assert_json(
+		execution
+			.subject
+			.post(&url, &payload, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(
+		service
+			.get_owned("acme", None, "fixture-key")
+			.await
+			.unwrap()
+			.revision,
+		metadata.revision
+	);
+
+	let later = app
+		.runtime
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			aidash_domain::setting_requests::KIND,
+			&prompt.to_string(),
+			"declined-setting-fixture",
+		)
+		.await
+		.unwrap();
+	let declined = assert_json(
+		execution
+			.subject
+			.post(
+				&format!("/api/setting-requests/{}/answer", later.id),
+				&json!({"action":"decline"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(
+		declined["response"],
+		json!({"name":"fixture-key","outcome":"declined"})
+	);
+	// Simulate a writer that passed authorization just before the decline committed.
+	// It must never replace the pinned value or publish an additional saved receipt.
+	assert!(
+		service
+			.put_setting(
+				later.id,
+				"acme",
+				"fixture-key",
+				vec!["api.example.com".into()],
+				String::from("superseded answer").into(),
+				"alice",
+			)
+			.await
+			.is_err()
+	);
+	assert_eq!(
+		service
+			.resolve_value("acme", "fixture-key", "https://api.example.com/tool")
+			.await
+			.unwrap()
+			.expose_secret(),
+		value.as_str()
+	);
+	assert_eq!(
+		service
+			.get_owned("acme", None, "fixture-key")
+			.await
+			.unwrap()
+			.revision,
+		metadata.revision
+	);
+}

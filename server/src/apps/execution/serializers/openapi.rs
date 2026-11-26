@@ -151,6 +151,21 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
+	contracts.named::<aidash_domain::setting_requests::Form>(document, "SettingRequestForm")?;
+	contracts.request::<_, aidash_domain::setting_requests::Answer>(
+		document,
+		views::management::setting_answer,
+	)?;
+	contracts.response::<_, HumanRequest>(
+		document,
+		views::management::setting_answer,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::management::setting_answer, &["Uuid"])?;
+	for status in [400, 403, 404, 409] {
+		contracts.empty(document, views::management::setting_answer, status)?;
+	}
 	contracts.request::<_, Value>(document, views::management::human_answer)?;
 	contracts.path(document, views::management::human_answer, &["Uuid"])?;
 	contracts.response::<_, EventPage>(

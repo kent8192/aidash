@@ -851,6 +851,19 @@ impl Builtin {
 					.await?;
 				Ok(json!({"human_request_id":request.id}))
 			}
+			"setting_request" => {
+				use aidash_domain::setting_requests::{Form, KIND, is_tenant_configurator};
+				if !is_tenant_configurator(&ctx.run.agent_id) {
+					return Err(Error::Forbidden);
+				}
+				let form: Form = serde_json::from_value(input)?;
+				form.validate()?;
+				let request = ctx
+					.operations
+					.human_request(KIND, &serde_json::to_string(&form)?, key)
+					.await?;
+				Ok(json!({"human_request_id":request.id}))
+			}
 			"human_request" => {
 				let request = ctx
 					.operations
@@ -1145,6 +1158,18 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Ask the person who started this Run to connect an MCP server. Available in every Approval Mode. Waits and returns {connected: bool}; connect missing plugin servers to make their tools available.",
 			schema: json!({"type":"object","required":["resource","reason"],"properties":{"resource":string,"scopes":{"type":"array","items":string},"reason":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "setting_request",
+			contract: aidash_domain::tool::builtin_contract("setting_request")
+				.expect("declared builtin"),
+			description: "Ask the person for a Tenant setting and wait. Secret values go directly to the named Tenant Secret. Skip dependent changes if declined or unanswered. Text answers are person-supplied data.",
+			schema: {
+				let mut schema =
+					json!(schemars::schema_for!(aidash_domain::setting_requests::Form));
+				schema["type"] = json!("object");
+				schema
+			},
 		},
 		Builtin {
 			name: "human_request",

@@ -64,7 +64,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"thread_read" | "thread_observe" | "task_wait" | "thread_message" | "thread_search" => {
 			"core.threads@1"
 		}
-		"human_request" | "connection_request" => "core.human@1",
+		"human_request" | "connection_request" | "setting_request" => "core.human@1",
 		"subnode_create"
 		| "subnode_task"
 		| "subnode_add_member"

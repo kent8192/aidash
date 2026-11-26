@@ -1464,3 +1464,32 @@ async fn a_non_oauth_mcp_endpoint_sends_its_personal_secret_call_home(mut fixtur
 	assert_eq!(saved[0].1["secret_name"], "personal");
 	assert_eq!(saved[0].1["tool_name"], "lookup");
 }
+
+#[rstest]
+#[tokio::test]
+async fn setting_request_only_admits_valid_forms_from_the_configurator(mut fixture: Fixture) {
+	let builtin = builtins().remove("setting_request").unwrap();
+	let form = json!({"kind":"secret","label":"Key","name":"key","hosts":["api.example.com"]});
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	assert!(matches!(
+		builtin.invoke(&ctx, form.clone(), "form").await,
+		Err(Error::Forbidden)
+	));
+	fixture.run.agent_id = "aidash.tenant-configurator".into();
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let mut invalid = form.clone();
+	invalid["hosts"] = json!(["localhost"]);
+	assert!(builtin.invoke(&ctx, invalid, "form").await.is_err());
+	assert!(fixture.operations.calls.lock().unwrap().is_empty());
+	let result = builtin.invoke(&ctx, form.clone(), "form").await.unwrap();
+	assert!(result["human_request_id"].is_string());
+	let inputs = fixture.operations.inputs.lock().unwrap();
+	assert_eq!(inputs[0].1["kind"], "SETTING_REQUEST");
+	assert_eq!(inputs[0].1["prompt"], form);
+}

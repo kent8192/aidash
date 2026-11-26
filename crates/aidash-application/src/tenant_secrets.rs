@@ -39,6 +39,11 @@ pub trait Scope: Send {
 	async fn insert(&mut self, value: &TenantSecret) -> Result<()>;
 	/// Writes the row and appends the lifecycle event. The event carries no value.
 	async fn save(&mut self, value: &TenantSecret, event: &str, actor: &str) -> Result<()>;
+	/// Records a pending form's saved receipt in the same transaction as
+	/// the active Secret pin. A storage adapter without Human Requests refuses it.
+	async fn answer_setting(&mut self, _id: Uuid, _name: &str, _actor: &str) -> Result<()> {
+		Err(Error::Invalid("Setting Requests are unavailable.".into()))
+	}
 	/// Removes the row of a Tenant Secret whose Secret Store contents are gone.
 	async fn remove(&mut self, id: Uuid) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
@@ -435,13 +440,7 @@ fn validate_value(value: &SecretString) -> Result<()> {
 			"a Tenant Secret value is 1 to 4096 printable ASCII characters without surrounding spaces".into(),
 		));
 	}
-	// An Aidash Subject Credential stored here would let a Tenant tool, and so
-	// an Agent's chain, call Aidash's own API (#1012, ADR 0143).
-	if value.contains(aidash_domain::identity::credentials::SUBJECT_PREFIX) {
-		return Err(Error::Invalid(
-			"a Tenant Secret cannot hold an Aidash Subject Credential".into(),
-		));
-	}
+
 	Ok(())
 }
 fn unavailable() -> Error {
@@ -599,6 +598,65 @@ impl Service {
 		if let Some(value) = &input.value {
 			validate_value(value)?;
 		}
+		self.put_validated(tenant, owner, name, input, actor, None)
+			.await
+	}
+
+	/// The form has validated its single-line, 8 KiB UTF-8 value. Ordinary
+	/// Tenant Secret management retains its printable ASCII input contract.
+	pub async fn put_setting(
+		&self,
+		request: Uuid,
+		tenant: &str,
+		name: &str,
+		hosts: Vec<String>,
+		value: SecretString,
+		actor: &str,
+	) -> Result<Metadata> {
+		tenant_secrets::validate_name(name)?;
+		if !aidash_domain::setting_requests::valid_secret_value(value.expose_secret()) {
+			return Err(Error::Invalid(
+				"Enter a single-line secret of up to 8 KB without control characters.".into(),
+			));
+		}
+		let expected_revision = match self.get_owned(tenant, None, name).await {
+			Ok(metadata) => metadata.revision,
+			Err(Error::NotFound(_)) => 0,
+			Err(error) => return Err(error),
+		};
+		self.put_validated(
+			tenant,
+			None,
+			name,
+			Put {
+				expected_revision,
+				hosts: Some(hosts),
+				value: Some(value),
+			},
+			actor,
+			Some(request),
+		)
+		.await
+	}
+	async fn put_validated(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+		input: Put,
+		actor: &str,
+		request: Option<Uuid>,
+	) -> Result<Metadata> {
+		// An Aidash Subject Credential stored here would let a Tenant tool, and so
+		// an Agent's chain, call Aidash's own API (#1012, ADR 0143).
+		if input.value.as_ref().is_some_and(|v| {
+			v.expose_secret()
+				.contains(aidash_domain::identity::credentials::SUBJECT_PREFIX)
+		}) {
+			return Err(Error::Invalid(
+				"a Tenant Secret cannot hold an Aidash Subject Credential".into(),
+			));
+		}
 		let hosts = input
 			.hosts
 			.as_deref()
@@ -628,6 +686,7 @@ impl Service {
 					},
 					scope,
 					actor,
+					request,
 				)
 				.await
 			}
@@ -667,7 +726,13 @@ impl Service {
 				}
 				row.updated_at = Utc::now();
 				row.revision += 1;
-				let saved = scope.save(&row, "tenant_secret.updated", actor).await;
+				let saved = async {
+					if let Some(id) = request {
+						scope.answer_setting(id, name, actor).await?;
+					}
+					scope.save(&row, "tenant_secret.updated", actor).await
+				}
+				.await;
 				let committed = match saved {
 					Ok(()) => scope.commit().await,
 					Err(error) => Err(error),
@@ -693,6 +758,7 @@ impl Service {
 		input: NewSecret<'_>,
 		mut scope: Box<dyn Scope>,
 		actor: &str,
+		request: Option<Uuid>,
 	) -> Result<Metadata> {
 		let NewSecret {
 			tenant,
@@ -736,6 +802,9 @@ impl Service {
 		row.pinned_version = Some(version);
 		row.state = State::Active;
 		row.revision += 1;
+		if let Some(id) = request {
+			scope.answer_setting(id, name, actor).await?;
+		}
 		scope.save(&row, "tenant_secret.created", actor).await?;
 		scope.commit().await?;
 		Ok(row.into())

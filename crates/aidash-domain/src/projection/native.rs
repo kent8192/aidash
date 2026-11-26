@@ -859,6 +859,18 @@ fn single<'a>(
 			),
 		}),
 		ContextEvent::Human {
+			request_kind,
+			response,
+			..
+		} if request_kind == crate::setting_requests::KIND => history.push(NativeMessage::Data {
+			envelope: Envelope::data(
+				Source::HumanRequest,
+				json!({"request_kind":request_kind}),
+				Some(entry.seq),
+				response.clone(),
+			),
+		}),
+		ContextEvent::Human {
 			request,
 			request_kind,
 			response,

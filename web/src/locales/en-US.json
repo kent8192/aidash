@@ -180,6 +180,7 @@
   "QUESTION": "Question",
   "APPROVAL_REQUIRED": "Approval required",
   "CONFIRMATION": "Confirmation",
+  "SETTING_REQUEST": "Setting Request",
   "MCP_ELICITATION": "MCP form input",
   "INFORMATION_REQUEST": "Information requested",
   "navGroup": "THREAD",

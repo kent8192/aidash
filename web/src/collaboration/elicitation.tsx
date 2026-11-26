@@ -1,3 +1,4 @@
+import { formTitle } from "./setting-validation";
 import { useMemo, useState } from "react";
 import { Validator, format } from "@cfworker/json-schema";
 import type { HumanRequest } from "../types";
@@ -54,8 +55,10 @@ function decimalMultiple(value: number, multiple: number): boolean {
 }
 
 export function elicitationMessage(request: HumanRequest): string {
-  if (request.kind !== "MCP_ELICITATION") return request.prompt;
   try {
+    if (request.kind === "SETTING_REQUEST")
+      return formTitle(JSON.parse(request.prompt));
+    if (request.kind !== "MCP_ELICITATION") return request.prompt;
     return (JSON.parse(request.prompt) as Form).message;
   } catch {
     return request.prompt;

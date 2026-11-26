@@ -1,3 +1,4 @@
+import { finishSettingAuthorization } from "./collaboration/setting-authorization";
 import { ConnectionOutcomeBanner } from "./connections/install";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -1541,6 +1542,10 @@ const sectionRoute = createRoute({
 // one, or the key a reconnect replaced), the redirect carries that key's
 // settings page; validation warnings about the connected key are flagged.
 const callbackSearch = new URLSearchParams(window.location.search);
+// If the callback cannot submit, the form stays open for the person's manual report.
+void finishSettingAuthorization(new URL(window.location.href))
+  ?.then(() => queryClient.invalidateQueries())
+  .catch(() => undefined);
 const connectionOutcome = callbackSearch.get("connection");
 if (connectionOutcome) {
   const url = new URL(window.location.href);

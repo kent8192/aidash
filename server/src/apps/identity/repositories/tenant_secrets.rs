@@ -171,6 +171,28 @@ impl Scope for NativeScope {
 		.await?;
 		Ok(())
 	}
+	async fn answer_setting(&mut self, id: Uuid, name: &str, actor: &str) -> Result<()> {
+		use crate::apps::execution::models::HumanRequest;
+		let tx = self.tx.as_mut();
+		let request = HumanRequest::read_in(tx, id, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let request = HumanRequest::lock_setting(tx, id, request.run_id).await?;
+		let form: aidash_domain::setting_requests::Form = serde_json::from_str(&request.prompt)?;
+		if !matches!(&form,aidash_domain::setting_requests::Form::Secret{name:target,..} if target==name)
+		{
+			return Err(Error::Forbidden);
+		}
+		HumanRequest::record_answer(
+			tx,
+			id,
+			form.outcome("saved"),
+			actor,
+			Some(request.thread_id),
+		)
+		.await?;
+		Ok(())
+	}
 	async fn remove(&mut self, id: Uuid) -> Result<()> {
 		Record::objects()
 			.delete_with_executor(self.tx.as_mut(), id)

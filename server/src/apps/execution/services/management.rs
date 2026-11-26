@@ -402,6 +402,17 @@ impl HarnessManagement {
 		};
 		interaction::answer(&f, &identity, id, response).await
 	}
+	pub(crate) async fn setting_answer(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		input: aidash_domain::setting_requests::Answer,
+	) -> Result<HumanRequest> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		interaction::setting_answer(&self.runtime, &identity, id, input).await
+	}
 	pub(crate) async fn events(&self, actor: Actor, q: EventQuery) -> Result<Response> {
 		let f = self.runtime.clone();
 		// Events are Tenant content: an administrator reads none (#484).

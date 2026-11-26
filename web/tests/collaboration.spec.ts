@@ -4132,3 +4132,153 @@ test("a successor can edit the Duty immediately when takeover succeeds and resum
     duties.getByRole("button", { name: "Resume", exact: true }),
   ).toBeEnabled();
 });
+
+test("Setting Request shows destination hosts and sends a secret only to its answer endpoint", async ({
+  page,
+}) => {
+  const label = "API key for https://example.com";
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: {
+      kind: "secret",
+      label,
+      name: "demo-key",
+      hosts: ["api.example.com"],
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: label }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("link")).toHaveCount(0);
+  await expect(dialog).toContainText("Destination hosts");
+  await expect(dialog).toContainText("api.example.com");
+  const field = dialog.getByLabel(label, { exact: true });
+  await field.fill("あ".repeat(3000));
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("8 KB");
+  expect(
+    submissions.filter((item) => item.path.endsWith("/answer")),
+  ).toHaveLength(0);
+  await field.fill("setting-fixture-canary");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find(
+      (item) => item.path === "/api/setting-requests/question-one/answer",
+    )?.body,
+  ).toEqual({
+    action: "accept",
+    value: "setting-fixture-canary",
+    language: "en",
+  });
+});
+
+test("Setting Request uses Rust regex and can be deferred after a validation error", async ({
+  page,
+}) => {
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: {
+      kind: "text",
+      fields: [
+        {
+          name: "greek",
+          label: "Greek letters",
+          constraint: {
+            type: "regex",
+            pattern: "(?i)^\\p{Greek}+$",
+            message: "Use Greek letters.",
+          },
+        },
+      ],
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "Greek letters" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Greek letters").fill("abc");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Use Greek letters.");
+  await dialog.getByRole("button", { name: "Later", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find(
+      (item) => item.path === "/api/setting-requests/question-one/answer",
+    )?.body,
+  ).toEqual({ action: "decline", language: "en" });
+});
+
+test("Setting Request completes on the matching provider authorization return", async ({
+  page,
+}) => {
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: {
+      kind: "oauth",
+      label: "OpenRouter",
+      target: { type: "provider", provider: "openrouter" },
+    },
+  });
+  await page.route("**/provider-authorizations/openrouter", (route) => {
+    const back = new URL(
+      route.request().postDataJSON().return_to,
+      route.request().url(),
+    );
+    back.searchParams.set("provider_authorization", "connected");
+    return route.fulfill({ json: { authorization_url: back.href } });
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "OpenRouter" }).click();
+  await page.getByRole("button", { name: "Connect to OpenRouter" }).click();
+  await expect
+    .poll(
+      () =>
+        submissions.find(
+          (item) => item.path === "/api/setting-requests/question-one/answer",
+        )?.body,
+    )
+    .toEqual({ action: "done" });
+});
+
+test("Setting Request keeps a Japanese node purge pending until the person's operation succeeds", async ({
+  page,
+}) => {
+  const { submissions } = await setup(page, {
+    subject: true,
+    locale: "ja-JP",
+    setting: {
+      kind: "purge",
+      label: "古いノード",
+      target: { type: "node", node: "old-node" },
+    },
+  });
+  let calls = 0;
+  await page.route("**/api/tenants/acme/nodes/old-node/purge", (route) => {
+    calls++;
+    return calls === 1
+      ? route.fulfill({
+          status: 409,
+          json: { error: { message: "まだ削除されていません。" } },
+        })
+      : route.fulfill({ json: {} });
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "古いノード" }).click();
+  const dialog = page.getByRole("dialog");
+  const purge = dialog.getByRole("button", { name: "完全に消去する" });
+  await expect(purge).toHaveAttribute("data-variant", "destructive");
+  await expect(dialog.getByRole("button", { name: "あとで" })).toBeEnabled();
+  expect(calls).toBe(0);
+  await purge.click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "まだ削除されていません。",
+  );
+  expect(
+    submissions.filter((item) => item.path.endsWith("/answer")),
+  ).toHaveLength(0);
+  await purge.click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find((item) => item.path.endsWith("/answer"))?.body,
+  ).toEqual({ action: "done", language: "ja" });
+});

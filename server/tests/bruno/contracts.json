@@ -33424,6 +33424,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -38156,6 +38160,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -52577,6 +52585,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -57038,6 +57050,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -64664,6 +64680,70 @@
       }
     },
     "source": "server/src/apps/workspaces/views/duties.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "setting-request-answer",
+    "path": "/api/setting-requests/{id}/answer",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "HumanRequest": {
+            "properties": {
+              "answer_by": {
+                "description": "When the Run waiting for this question continues without an answer, if\nits person set an Answer Deadline. State and Human Request listings fill\nit from the Run's waiting state.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "answered_by": {
+                "type": ["string", "null"]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "response": {},
+              "run_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "answered_by",
+              "id",
+              "thread_id",
+              "run_id",
+              "kind",
+              "prompt",
+              "response",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/HumanRequest"
+        }
+      }
+    },
+    "source": "server/src/apps/execution/views/management.rs",
     "uuid_parameters": ["id"]
   }
 ]

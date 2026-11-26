@@ -8,18 +8,22 @@ export function connect({
   resource,
   scopes = [],
   tool,
+  returnTo,
 }: {
   tenant: string;
   resource: string;
   scopes?: string[];
   tool?: ConnectionToolReference;
+  returnTo?: string;
 }) {
   return authorizePopup(async () => {
     const result = await connectionStart(encodeURIComponent(tenant), {
       resource,
       scopes,
       tool,
-      return_to: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      return_to:
+        returnTo ??
+        `${window.location.pathname}${window.location.search}${window.location.hash}`,
     });
     return result.authorization_url;
   });
