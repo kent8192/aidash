@@ -7460,6 +7460,13 @@ async fn task_model_approval_migration_widens_only_within_the_tenant(
 	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
 		.await
 		.unwrap();
+	sqlx::query(
+		"INSERT INTO authorization_bundles (tenant, revision, document) VALUES ('acme', 1, $1)",
+	)
+	.bind(json!({"tenant":"acme","subjects":{},"policies":[]}))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
 	let home = aidash_domain::nodes::NodeName::derived("acme");
 	let second = aidash_domain::nodes::NodeName::derived("second").to_string();
 	sqlx::query("INSERT INTO node_names (name,tenant,created_at) VALUES ($1,'acme',now())")
