@@ -2156,19 +2156,6 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	sqlx::query("INSERT INTO conversations (id,tenant,thread_id,scratch_space_id,target,target_kind,created_by) SELECT $1,tenant,id,scratch_space_id,$2,'agent',created_by FROM threads WHERE id=$3")
 		.bind(Uuid::new_v4()).bind(format!("{ID}@{VERSION}")).bind(thread).execute(&mut *tx).await.unwrap();
 	tx.commit().await.unwrap();
-	for mode in ["manual", "bypass"] {
-		let (status, changed) =
-			t.d.as_person(
-				&t.alice,
-				"PUT",
-				&format!("/api/threads/{thread}/approval-mode"),
-				Some(&t.alice_context),
-				json!({"mode":mode}),
-			)
-			.await;
-		assert_eq!(status, 200, "switch to {mode}: {changed}");
-		assert_eq!(changed["mode"], mode);
-	}
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
 	let run = f.store.run(&scope, id).await.unwrap();
 	let context = ToolContext {
@@ -2224,6 +2211,19 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 				.await
 				.is_err()
 		);
+	}
+	for mode in ["manual", "bypass"] {
+		let (status, changed) =
+			t.d.as_person(
+				&t.alice,
+				"PUT",
+				&format!("/api/threads/{thread}/approval-mode"),
+				Some(&t.alice_context),
+				json!({"mode":mode}),
+			)
+			.await;
+		assert_eq!(status, 200, "switch to {mode}: {changed}");
+		assert_eq!(changed["mode"], mode);
 	}
 	t.finish().await;
 }
