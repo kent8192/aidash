@@ -234,6 +234,91 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 
 #[rstest]
 #[tokio::test]
+async fn task_model_picker_checks_the_receiving_nodes_current_agent_discovery_policy(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+) {
+	let fixture = Box::pin(execution).await;
+	let app = &fixture.app;
+	let (status, peer) = endpoint::browser_mapping(app, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Receiving Node"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{peer}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let node = aidash_domain::nodes::NodeName::parse(peer["name"].as_str().unwrap()).unwrap();
+	let mut agent = app
+		.runtime
+		.registry
+		.get(&tenant, "research", "1.0.0")
+		.await
+		.unwrap();
+	agent.version = "1.1.0".into();
+	agent.binding_normalization = None;
+	agent.config["model"] = Value::Null;
+	agent.config["bindings"] = json!([]);
+	app.runtime.registry.register(&tenant, agent).await.unwrap();
+	let target = aidash_domain::registry::EntityRef {
+		id: "research".into(),
+		version: "1.1.0".into(),
+	};
+	let mut policy = fixture.policy.clone();
+	policy["subjects"][aidash_domain::agent_subject(
+		peer["address"].as_str().unwrap(),
+		&target.id,
+		&target.version,
+	)] = json!({"kind":"agent","node":node});
+	deployment_administrator(
+		app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	aidash_server::authorization::Authorization {
+		pool: app.runtime.store.pool.clone(),
+	}
+	.set_catalog("acme", &node, &target, 0, true, "fixture")
+	.await
+	.unwrap();
+	let path = format!("/api/tasks/{}/remote-grants/models", fixture.task);
+	let input = json!({"node_id":peer["address"],"agent":target});
+	let list = assert_json(
+		fixture.subject.post(&path, &input, "json").await.unwrap(),
+		200,
+	);
+	let option = list
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["model"] == json!({"id":"model","version":"1.0.0"}))
+		.unwrap();
+	assert_eq!(option["openrouter_model_id"], "fixture");
+	assert!(option["name"].is_object());
+	assert!(option.get("pricing").is_some());
+
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"hide-receiving-node","effect":"deny","subjects":{"any":true},
+		"actions":["federation.discover"],"resources":{"kinds":["node"],"ids":[node]}
+	}));
+	deployment_administrator(
+		app,
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_json(
+		fixture.subject.post(&path, &input, "json").await.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn catalog_reads_distinguish_an_empty_node_from_another_tenants_node(
 	#[future]
 	#[from(execution_fixtures::execution)]
