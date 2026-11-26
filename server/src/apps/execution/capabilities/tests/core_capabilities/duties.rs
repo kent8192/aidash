@@ -2832,5 +2832,37 @@ async fn task_model_admission_refusals_and_duty_ticks_use_the_stored_selection(
 			.await
 			.unwrap();
 	assert_eq!(json!(task.task_model), selected);
+	finish_task(&c, task.id).await;
+	let edited = json!({"model":original,"reasoning_effort":"low"});
+	let (status, changed) = request(
+		&c.app,
+		&c.token,
+		"PATCH",
+		&format!("/api/duties/{duty}"),
+		json!({"task_model":edited}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	assert_eq!(changed["task_model"], edited);
+	let (status, started) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/duties/{duty}/run-now"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{started}");
+	let manual = serde_json::from_value(started["task_id"].clone()).unwrap();
+	assert_eq!(
+		json!(
+			c.f.store
+				.task(&TEST_FIXTURE, manual)
+				.await
+				.unwrap()
+				.task_model
+		),
+		edited
+	);
 	c.close().await;
 }

@@ -335,7 +335,16 @@ async fn authorized_mode(
 		configured,
 		task_model,
 	)
-	.await?;
+	.await
+	.map_err(|error| match error {
+		Error::Invalid(reason) if entry.config["model"].is_null() && task_model.is_some() => {
+			aidash_domain::TaskModelRefusal::TaskModelUnusable {
+				reasons: vec![reason],
+			}
+			.into()
+		}
+		other => other,
+	})?;
 	if snapshot.task_model.is_some() {
 		crate::bootstrap::registry_validation()
 			.with_provider_credentials(configured)

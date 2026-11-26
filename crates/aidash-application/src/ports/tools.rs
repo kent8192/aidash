@@ -264,6 +264,14 @@ pub trait ToolOperations: Send + Sync {
 		reason: &str,
 		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Value>;
+	/// Check the separately bound delegation before a combined create and assign hands on a Task.
+	async fn authorize_delegation(
+		&self,
+		_call: &aidash_domain::provider::ToolCall,
+		_contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,

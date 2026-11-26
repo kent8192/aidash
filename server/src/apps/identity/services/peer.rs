@@ -446,8 +446,12 @@ pub(crate) async fn task_models_for(
 			json!({"label": node.label, "default":node.default}),
 		);
 		access.require(&resource, "federation.discover").await?;
+		let entry = catalog::readable(&mut access, &agent).await?;
+		if entry.kind != "agent" {
+			return Err(crate::Error::Forbidden);
+		}
 		let entry = catalog::entry(&mut access, &agent, "agent.execute").await?;
-		if entry.kind != "agent" || !entry.config["model"].is_null() {
+		if !entry.config["model"].is_null() {
 			return Err(crate::Error::Forbidden);
 		}
 		access.subjects.push(aidash_domain::agent_subject(
@@ -490,6 +494,9 @@ pub(crate) async fn task_models_for(
 				Err(crate::Error::Invalid(_) | crate::Error::Plan(_)) => continue,
 				Err(e) => return Err(e),
 			}
+			if !aidash_domain::catalog::picker_id(&config.model_id) {
+				continue;
+			}
 			options.push(aidash_domain::federation::execution::TaskModelOption {
 				model,
 				name: entry.name,
@@ -512,11 +519,15 @@ pub(crate) async fn task_models_for(
 		let prices: std::collections::BTreeMap<_, _> = catalog
 			.models
 			.into_iter()
-			.map(|m| (m.id, m.pricing))
+			.map(|m| (m.id, (m.pricing, m.architecture.output_modalities)))
 			.collect();
-		for option in &mut options {
-			option.pricing = prices.get(&option.openrouter_model_id).cloned();
-		}
+		options.retain_mut(|option| {
+			let Some((price, output)) = prices.get(&option.openrouter_model_id) else {
+				return true;
+			};
+			option.pricing = Some(price.clone());
+			output.as_slice() == ["text"]
+		});
 	}
 	options.sort_by(|a, b| {
 		aidash_domain::catalog::picker_order(&a.openrouter_model_id)

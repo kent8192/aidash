@@ -292,6 +292,18 @@ impl ToolOperations for Operations {
 		}
 		Ok(json!(self.0.home.assign(id, policy, reason, draft).await?))
 	}
+	async fn authorize_delegation(
+		&self,
+		call: &aidash_domain::provider::ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()> {
+		self.0
+			.home
+			.tool_authority()
+			.ok_or(aidash_application::Error::Forbidden)?
+			.authorize_delegation(&self.0.run, call, contract)
+			.await
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,

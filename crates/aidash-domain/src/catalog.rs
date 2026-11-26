@@ -210,6 +210,16 @@ mod tests {
 
 pub mod carry_over;
 
+/// Batch, free, experimental and alias IDs do not identify a picker selection.
+pub fn picker_id(id: &str) -> bool {
+	!id.starts_with('~')
+		&& !id.contains("-exp")
+		&& !id
+			.split(':')
+			.skip(1)
+			.any(|variant| matches!(variant, "batch" | "free"))
+}
+
 /// Registered models use the same series and tier order on a receiving Node's picker.
 pub fn picker_order(id: &str) -> (usize, usize, std::cmp::Reverse<Vec<u32>>, &str) {
 	let (vendor, name) = id.split_once('/').unwrap_or(("", id));

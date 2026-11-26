@@ -2786,6 +2786,27 @@ impl WorkerAuthority {
 			.await
 	}
 
+	pub(crate) async fn authorize_delegation(
+		&self,
+		run: &Run,
+		call: &ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> aidash_application::Result<()> {
+		let snapshot = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let agent = AgentConfig::from_snapshot(snapshot)?;
+		aidash_application::authorization::tools::authorize(
+			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, run),
+			&run.metadata(),
+			&agent,
+			call,
+			contract,
+		)
+		.await
+	}
 	pub async fn delegate_selected(
 		&self,
 		f: &Federation,

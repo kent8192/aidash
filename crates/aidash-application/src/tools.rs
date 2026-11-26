@@ -647,21 +647,28 @@ impl Builtin {
 			)),
 			"task_create" => {
 				let assignee = input.get("assignee").cloned();
-				if assignee.is_some() {
+				let delegate = if assignee.is_some() {
 					let snapshot = ctx
 						.run
 						.context
 						.binding_snapshot
 						.as_deref()
 						.ok_or(Error::Forbidden)?;
-					if !snapshot.bindings.iter().any(|binding| {
-						binding.excluded_reason.is_none()
-							&& binding.definition.kind == "tool"
-							&& binding.definition.config["operation"] == "task_delegate"
-					}) {
-						return Err(Error::Forbidden);
-					}
-				}
+					Some(
+						snapshot
+							.bindings
+							.iter()
+							.find(|binding| {
+								binding.excluded_reason.is_none()
+									&& binding.alias.is_some() && binding.definition.config["provider"]
+									== "core.tasks@1" && binding.definition.config["operation"]
+									== "task_delegate"
+							})
+							.ok_or(Error::Forbidden)?,
+					)
+				} else {
+					None
+				};
 				let task_model = child_task_model(ctx.run, &input)?;
 				let mut input = input;
 				if let Some(object) = input.as_object_mut() {
@@ -676,8 +683,28 @@ impl Builtin {
 					task.parent_id = Some(ctx.run.task_id);
 				}
 				let created = ctx.operations.create_task(key, &task).await?;
-				if let Some(assignee) = assignee {
+				if let (Some(assignee), Some(binding)) = (assignee, delegate) {
 					let agent = serde_json::from_value(assignee["agent"].clone())?;
+					let mut arguments = json!({"task_id":created.id,"node_id":required(&assignee,"node_id")?,"agent":agent});
+					crate::registry::bindings::execution::validate_bound_input(
+						binding, &arguments,
+					)?;
+					binding.narrow.apply(&mut arguments)?;
+					let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+						serde_json::from_value(binding.definition.config.clone())?;
+					let mut contract = descriptor.declared_contract(binding.identity.clone())?;
+					contract.behavior.concurrency = contract
+						.behavior
+						.concurrency
+						.narrowed(binding.narrow.concurrency);
+					let call = aidash_domain::provider::ToolCall {
+						id: format!("{key}:delegate"),
+						name: binding.alias.clone().ok_or(Error::Forbidden)?,
+						arguments,
+					};
+					ctx.operations
+						.authorize_delegation(&call, &contract)
+						.await?;
 					let delegation = ctx
 						.operations
 						.delegate_with_key(

@@ -267,6 +267,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 		if matches!(
 			binding.binding.target.id.as_str(),
 			"aidash.workspace_read"
+				| "aidash.task_create"
+				| "aidash.task_delegate"
 				| "aidash.workspace_observe"
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
