@@ -699,7 +699,8 @@ pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
 		let thread: Uuid = row.get("id").map_err(err)?;
 		let tenant: String = row.get("tenant").map_err(err)?;
 		let space_id: Uuid = row.get("scratch_space_id").map_err(err)?;
-		let deleted_at: Option<chrono::DateTime<Utc>> = row.get("deleted_at").map_err(err)?;
+		let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
+			row.get("deleted_at").map_err(err)?;
 		let space = read(&mut *tx, &tenant, space_id)
 			.await?
 			.ok_or_else(|| Error::NotFound("Thread Scratch Space".into()))?;
