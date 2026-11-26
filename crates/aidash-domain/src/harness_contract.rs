@@ -193,7 +193,7 @@ Respect rejected approvals. Never claim an action or tool succeeded unless its r
 
 Wait for all your subtasks and integrate their results before finishing. Before finishing, check that the answer follows task-authorized formats and preserves all requirements and list items not changed by corrections.
 
-When finished, return final text without tool calls. This publishes the final deliverable and completes your task."#;
+When finished, return final text without tool calls. Your final text becomes the Completion Message. To attach Scratch Space files, return a JSON object containing text (the answer) and attachments (up to 256 relative file paths)."#;
 
 /// `structured@4`: `structured@3` with Instruction precedence stated (#1007,
 /// #1010). The only edits name Tenant instructions, Node instructions and a
@@ -225,7 +225,7 @@ Respect rejected approvals. Never claim an action or tool succeeded unless its r
 
 Wait for all your subtasks and integrate their results before finishing. Before finishing, check that the answer follows task-authorized formats and preserves all requirements and list items not changed by corrections.
 
-When finished, return final text without tool calls. This publishes the final deliverable and completes your task."#;
+When finished, return final text without tool calls. Your final text becomes the Completion Message. To attach Scratch Space files, return a JSON object containing text (the answer) and attachments (up to 256 relative file paths)."#;
 
 #[cfg(test)]
 mod tests;

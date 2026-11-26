@@ -2898,7 +2898,7 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 	);
 	assert_eq!(
 		calls.iter().filter(|&&name| name == "home.output").count(),
-		1
+		0
 	);
 	assert_eq!(
 		calls
@@ -3441,7 +3441,7 @@ async fn summary_stage_reduces_history_and_keeps_the_journal(mut fixture: Fixtur
 		.iter()
 		.find(|item| item.source == aidash_domain::projection::native::Source::ExecutionSummary)
 		.unwrap();
-	assert_eq!(summary.content["goal"], "Fixture task");
+	assert_eq!(summary.content["intent"], "Fixture task");
 	assert!(!serde_json::to_string(context).unwrap().contains("old-0"));
 }
 

@@ -648,6 +648,7 @@ impl<'a> Executor<'a> {
 		store: &dyn ExecutionStore,
 		run: &mut Run,
 		token: Uuid,
+		agent: &ExecutionAgent,
 		decision: unassigned::ChildrenDecision,
 		answer: Answer<'_>,
 	) -> Result<()> {
@@ -741,7 +742,13 @@ impl<'a> Executor<'a> {
 				}));
 			}
 		}
-		run.step += 1;
+		// A person-created Unassigned Task needs a further model turn after the
+		// person answers. At the limit, keep the last step for that turn.
+		if !matches!(&decision, Decision::AskAboutUnassigned(_))
+			|| run.step.saturating_add(1) < agent.max_steps
+		{
+			run.step += 1;
+		}
 		store.save_run(run, token, "execution.waiting").await?;
 		Ok(())
 	}
@@ -1565,6 +1572,9 @@ impl<'a> Executor<'a> {
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
+				if run.step >= agent.max_steps {
+					return Err(Error::Invalid("agent max_steps exceeded".into()));
+				}
 				let model_entry = self
 					.environment
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
@@ -1921,10 +1931,14 @@ impl<'a> Executor<'a> {
 				{
 					push_turn_paragraph(AUTO_MODE_INSTRUCTION);
 				}
-				if !run_message_catchup {
-					push_turn_paragraph("\nTo attach Scratch Space files to your Completion Message, end with a JSON object containing text (your final answer) and attachments (up to 256 relative file paths). Otherwise answer in plain text.");
+				// A Native step state is recorded whenever it changes (#942), so it
+				// carries no step counter; a notice at 80 % and 90 % of the
+				// limit replaces it.
+				let mut agent_state = json!({"phase":run.phase()});
+				if let Some(notice) = aidash_domain::projection::native::step_limit_notice(run.step, agent.max_steps) {
+					agent_state["step_limit"] = json!(notice);
 				}
-				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":{"phase":run.phase()}});
+				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":agent_state});
                 pinned.as_object_mut().expect("request snapshot").extend(snapshot_sources);
 				if let Some(deferred_read) = &thinking.deferred_thread_read {
 					pinned["deferred_thread_read"] = json!(deferred_read);
@@ -2957,7 +2971,7 @@ connection: None,
 						let decision = unassigned::decide_children(
 							&children,
 							&told_tasks(run),
-							false,
+							run.step.saturating_add(1) >= agent.max_steps,
 						);
 						// Tasks to abandon as the parent completes; the final answer
 						// below carries them to `complete`.
@@ -2976,6 +2990,7 @@ connection: None,
 									store,
 									run,
 									token,
+									&agent,
 									held,
 									answer,
 								)
@@ -3030,15 +3045,15 @@ connection: None,
 						{
 							if matches!(error, Error::Conflict(_) | Error::Domain(aidash_domain::Error::Conflict(_))) {
 								if home.task().await?.goal != judged_goal {
-         return self.restart_after_goal_edit(run, token).await;
-        }
-        // A child created or handed over since the check: the
+                                    return self.restart_after_goal_edit(run, token).await;
+                                }
+                                // A child created or handed over since the check: the
 								// same rules apply to what is there now.
 								let children = home.child_summary(run.task_id).await?;
 								let decision = unassigned::decide_children(
 									&children,
 									&told_tasks(run),
-									false,
+									run.step.saturating_add(1) >= agent.max_steps,
 								);
 								if !matches!(
 									decision,
@@ -3057,6 +3072,7 @@ connection: None,
 										store,
 										run,
 										token,
+										&agent,
 										decision,
 										answer,
 									)
