@@ -163,31 +163,6 @@ def hydrate():
     print(json.dumps({"accepted": True, "started_at": started_at}))
 
 
-def export():
-    # The execution container has stopped before this is called. A refusal
-    # (link, alias, quota, unsafe name) is printed as data and exits cleanly,
-    # so the runner fails only this operation; it never prints an empty list.
-    directory = str(Path(__file__).resolve().parent)
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
-    from working_export import collect
-
-    def open_file(root, relative):
-        parts = path_parts(relative)
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            for part in parts[:-1]:
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                os.close(fd)
-                fd = child
-            result = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-            return os.fdopen(result, "rb")
-        finally:
-            os.close(fd)
-
-    json.dump(collect(ROOTS["working"], int(sys.argv[2]), open_file), sys.stdout, separators=(",", ":"))
-
-
 def write_input():
     if REQUEST.exists():
         raise ValueError("execution already started")
@@ -391,8 +366,6 @@ if __name__ == "__main__":
         stage_journal(sys.argv[2], int(sys.argv[3]), sys.stdin.buffer.read(4194305))
     elif mode == "journal-commit":
         commit_journal(sys.argv[2], int(sys.argv[3]), sys.argv[4])
-    elif mode == "export":
-        export()
     elif mode == "write":
         write_input()
     elif mode == "read":

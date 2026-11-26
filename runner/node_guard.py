@@ -36,16 +36,6 @@ SENTRY_BINARIES = tuple(json.loads(os.environ.get('AIDASH_SENTRY_BINARIES',
 NAMESPACE = os.environ.get('AIDASH_SANDBOX_NAMESPACE', 'aidash-sandbox')
 
 
-def working_export():
-    # Shipped beside this file; isolated mode (-I) keeps the script directory
-    # off sys.path, so it is added explicitly.
-    directory = str(Path(__file__).resolve().parent)
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
-    import working_export as module
-    return module
-
-
 def command(*args, deadline=None):
     timeout = 15 if deadline is None else min(15, deadline - time.monotonic())
     if timeout <= 0:
@@ -677,7 +667,7 @@ def handle(request):
                 return read_cell_result(pod, request['operation_id'])
             except FileNotFoundError:
                 return {'status': 'running'}
-        if op not in ('export', 'read', 'logs') or state['status'] not in ('paused', 'stopped'):
+        if op not in ('read', 'logs') or state['status'] not in ('paused', 'stopped'):
             raise ValueError('verified frozen writer required')
         if op == 'logs':
             root = volume(pod, 'control-temp')
@@ -690,19 +680,14 @@ def handle(request):
             # complete capture from a collector that could not finish draining.
             return {'stdout':base64.b64encode(data).decode(), 'truncated':True}
         root = volume(pod, 'work')
-        if op == 'read':
-            offset = request['offset']
-            if type(offset) is not int or offset < 0:
-                raise ValueError('invalid offset')
-            with open_file(root, request['path']) as file:
-                file.seek(offset)
-                data = file.read(4194304)
-            return {'data': base64.b64encode(data).decode()}
-        maximum = request['working_bytes']
-        if type(maximum) is not int or not 0 <= maximum <= 1 << 30:
-            raise ValueError('working quota')
-        # A refusal is returned as data: the runner fails only this operation.
-        return working_export().collect(root, maximum, open_file)
+        offset = request['offset']
+        if type(offset) is not int or offset < 0:
+            raise ValueError('invalid offset')
+        with open_file(root, request['path']) as file:
+            file.seek(offset)
+            data = file.read(4194304)
+        return {'data': base64.b64encode(data).decode()}
+
 
 def migrate_legacy():
     if LEGACY_ROOT is None or LEGACY_ROOT == ROOT or not LEGACY_ROOT.is_dir():
