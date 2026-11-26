@@ -1,4 +1,5 @@
 use super::*;
+use aidash_domain::capabilities::sessions::Area;
 use async_trait::async_trait;
 use rstest::rstest;
 use std::collections::BTreeSet;
@@ -256,16 +257,9 @@ impl ThreadScope for Deletion {
 		self.call("mark_deleted");
 		Ok(())
 	}
-	async fn owned_areas(&mut self, _thread: Uuid, _offset: u64) -> Result<Vec<Area>> {
-		self.call("owned_areas");
-		Ok(vec![])
-	}
 	async fn delete_attachments(&mut self, _thread: Uuid) -> Result<()> {
 		self.call("delete_attachments");
 		Ok(())
-	}
-	async fn cancel_generation(&mut self, _area: &Area) -> Result<()> {
-		unreachable!("cancel_generation")
 	}
 	async fn stop_schedules(&mut self, _thread: Uuid) -> Result<()> {
 		self.call("stop_schedules");
@@ -283,7 +277,6 @@ impl ThreadScope for Deletion {
 fn request() -> DeleteThread {
 	DeleteThread {
 		idempotency_key: Uuid::from_u128(7),
-		files: vec![],
 	}
 }
 
@@ -306,7 +299,6 @@ async fn a_refused_deletion_touches_nothing_of_the_thread(
 	let side_effects = [
 		"lock_for_deletion",
 		"visible_thread",
-		"owned_areas",
 		"delete_attachments",
 		"stop_schedules",
 		"mark_deleted",

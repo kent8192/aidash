@@ -1,7 +1,7 @@
-//! Thread deletion extends the same cleanup transaction with ordered owned-area reads.
+//! Persistence and authority for Thread deletion.
 use super::cleanup::CleanupScope;
 use crate::Result;
-use aidash_domain::{capabilities::sessions::Area, policy::Resource};
+use aidash_domain::policy::Resource;
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -22,10 +22,8 @@ pub trait ThreadScope: CleanupScope + DeletionAuthority {
 	/// Mark the locked Thread deleted: every read and write of it refuses
 	/// from this transaction on.
 	async fn mark_deleted(&mut self, thread: Uuid) -> Result<()>;
-	async fn owned_areas(&mut self, thread: Uuid, offset: u64) -> Result<Vec<Area>>;
 	/// Remove the deleted Thread's attachments in the tombstone transaction.
 	async fn delete_attachments(&mut self, thread: Uuid) -> Result<()>;
-	async fn cancel_generation(&mut self, area: &Area) -> Result<()>;
 	/// Stop the Duties whose own Thread this is (#557, #1011).
 	async fn stop_schedules(&mut self, _thread: Uuid) -> Result<()> {
 		Ok(())

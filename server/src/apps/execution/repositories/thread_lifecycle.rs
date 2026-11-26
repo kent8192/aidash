@@ -1,21 +1,9 @@
 //! Native tombstones and thread locks retain the original ordered query expressions.
 use super::cleanup::Scope;
-use crate::apps::execution::capabilities::{
-	serializers::{
-		contracts::Area as NativeArea, thread_lifecycle::DeleteThread as NativeDeleteThread,
-	},
-	services::sessions,
-};
+use crate::apps::execution::capabilities::serializers::thread_lifecycle::DeleteThread as NativeDeleteThread;
 use crate::{Error as NativeError, Result as NativeResult};
-use aidash_application::{
-	Error, Result,
-	ports::capabilities::{cleanup::CleanupScope, thread_lifecycle::ThreadScope},
-};
-use aidash_domain::capabilities::{
-	cleanup::Choice,
-	sessions::Area,
-	thread_lifecycle::{DeleteThread, FileChoice},
-};
+use aidash_application::{Error, Result, ports::capabilities::thread_lifecycle::ThreadScope};
+use aidash_domain::capabilities::thread_lifecycle::DeleteThread;
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
@@ -56,8 +44,10 @@ pub(crate) async fn visible(
 	Ok(())
 }
 impl From<NativeDeleteThread> for DeleteThread {
-	fn from(v: NativeDeleteThread) -> Self {
-		Self {idempotency_key:v.idempotency_key,files:v.files.into_iter().map(|f|FileChoice {area_id:f.area_id,expected_revision:f.expected_revision,confirmation_id:f.confirmation_id,choice:match f.choice {crate::apps::execution::capabilities::serializers::cleanup::Choice::Keep=>Choice::Keep,crate::apps::execution::capabilities::serializers::cleanup::Choice::Recoverable=>Choice::Recoverable,crate::apps::execution::capabilities::serializers::cleanup::Choice::Irreversible=>Choice::Irreversible}}).collect()}
+	fn from(value: NativeDeleteThread) -> Self {
+		Self {
+			idempotency_key: value.idempotency_key,
+		}
 	}
 }
 #[async_trait]
@@ -99,32 +89,6 @@ impl ThreadScope for Scope<'_> {
 			.await?;
 		Ok(())
 	}
-	async fn owned_areas(&mut self, thread: Uuid, offset: u64) -> Result<Vec<Area>> {
-		let result: NativeResult<Vec<NativeArea>> = async {
-			let access = &mut *self.access;
-			Ok({
-				let query_bind_1 = thread;
-				let query_bind_3 = &access.identity.subject;
-				crate::database::native::query_as(
-					&sessions::select("core_areas")
-				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_1.to_owned())))
-				// Deleting a shared Thread never grants management of another
-				// subject's private files. Their areas remain available in settings.
-				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_3.to_owned())))
-				.order_by(Alias::new("id"), Order::Asc)
-				.limit(100)
-				.offset(offset)
-				.to_string(PostgresQueryBuilder),
-				)
-				.fetch_all(&mut **access.tx)
-				.await?
-			})
-		}
-		.await;
-		result
-			.map(|areas| areas.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
-	}
 	async fn delete_attachments(&mut self, thread: Uuid) -> Result<()> {
 		// Indexed images leave the Thread index with their attachments
 		// (#622 decision 11); the cleanup sweep removes their vectors.
@@ -165,9 +129,6 @@ impl ThreadScope for Scope<'_> {
 		)
 		.await?;
 		Ok(())
-	}
-	async fn cancel_generation(&mut self, area: &Area) -> Result<()> {
-		CleanupScope::cancel_runs(self, area).await
 	}
 	async fn stop_work(&mut self, thread: Uuid) -> Result<()> {
 		let store = self
