@@ -32,9 +32,9 @@ pub(crate) async fn require_in(
 	{
 		return Err(Error::Forbidden);
 	}
-	let admission: (bool, Value) = crate::database::native::query_as(
+	let cancelled: bool = crate::database::native::query_scalar(
 		&Query::select()
-			.columns([Alias::new("cancelled"), Alias::new("description")])
+			.column(Alias::new("cancelled"))
 			.from(Alias::new("authorization_remote_admissions"))
 			.and_where(Expr::col("id").eq(Expr::value(cached.id)))
 			.and_where(Expr::col("tenant").eq(tenant))
@@ -42,8 +42,7 @@ pub(crate) async fn require_in(
 			.and_where(Expr::col("source_node").eq(cached.home_node.as_str()))
 			.to_string(PostgresQueryBuilder),
 	)
-	.columns(&["cancelled", "description"])
-	.fetch_one(&mut *tx)
+	.scalar_one(&mut *tx)
 	.await?;
 	let captured: Option<String> = crate::database::native::query_scalar(
 		&Query::select()
@@ -57,7 +56,7 @@ pub(crate) async fn require_in(
 	)
 	.scalar_optional(&mut *tx)
 	.await?;
-	if !admission.0
+	if !cancelled
 		&& captured.is_none()
 		&& raw.metadata.control == RunControl::Active
 		&& !raw.metadata.phase.is_terminal()
@@ -74,15 +73,7 @@ pub(crate) async fn require_in(
 	)
 	.fetch_all(&mut *tx)
 	.await?;
-	let description: aidash_domain::federation::execution::Description =
-		serde_json::from_value(admission.1)?;
-	if aidash_domain::federation::execution::settlement::allows(
-		&raw,
-		&inputs,
-		&aidash_application::execution::result_artifact_name(&description.task.title),
-		operation,
-		data,
-	) {
+	if aidash_domain::federation::execution::settlement::allows(&raw, &inputs, operation, data) {
 		Ok(())
 	} else {
 		Err(Error::Forbidden)

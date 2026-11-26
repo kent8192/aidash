@@ -73,14 +73,6 @@ async fn force_claimed(f: &Federation, task: &Task) {
 		.unwrap();
 }
 
-fn artifact() -> ArtifactInput {
-	ArtifactInput {
-		kind: "text".into(),
-		name: "Result".into(),
-		content: json!("Done."),
-	}
-}
-
 fn owner_of(task: &Task) -> String {
 	task.owner.clone().unwrap()
 }
@@ -92,7 +84,12 @@ async fn complete(f: &Federation, parent: &Task, abandon: &[Uuid]) -> aidash_ser
 			parent.id,
 			&owner_of(parent),
 			"parent:complete",
-			&artifact(),
+			&aidash_domain::deliverable::Completion::new(
+				parent.id,
+				"parent:complete",
+				"Done.".into(),
+				None,
+			),
 			abandon,
 		)
 		.await
@@ -462,7 +459,14 @@ async fn a_finishing_run_tells_the_model_once_then_abandons_and_completes(
 		store.task(&ACME, child.id).await.unwrap().status,
 		TaskStatus::Abandoned
 	);
-	let artifacts = store.snapshot(&ACME, thread).await.unwrap().artifacts;
+	let artifacts = store
+		.snapshot(&ACME, thread)
+		.await
+		.unwrap()
+		.messages
+		.into_iter()
+		.filter(|message| message.completion.is_some())
+		.collect::<Vec<_>>();
 	assert_eq!(artifacts.len(), 1);
 	assert!(artifacts[0].content.as_str().unwrap().contains("Nobody's"));
 	cleanup(store, &url, &schema).await;

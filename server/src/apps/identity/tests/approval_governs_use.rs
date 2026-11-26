@@ -90,6 +90,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 				&aidash_server::domain::NewTask {
 					title: format!("Work {title}"),
 					description: "A Run in the upgrade".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -342,6 +343,7 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 				&aidash_server::domain::NewTask {
 					title: "Start".into(),
 					description: "Refused".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,

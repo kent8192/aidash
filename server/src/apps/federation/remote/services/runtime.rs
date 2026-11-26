@@ -675,16 +675,12 @@ impl Home {
 			let mut snapshot = ThreadSnapshot {
 				thread: self.command("snapshot_thread", json!({})).await?,
 				tasks: self.snapshot_collection("tasks").await?,
-				artifacts: self.snapshot_collection("artifacts").await?,
 				events: self.snapshot_collection("events").await?,
 				messages: self.snapshot_collection("messages").await?,
 				unconfirmed: vec![],
 			};
 			snapshot
 				.tasks
-				.sort_by_key(|item| (item.created_at, item.id));
-			snapshot
-				.artifacts
 				.sort_by_key(|item| (item.created_at, item.id));
 			snapshot.events.sort_by_key(|item| item.sequence);
 			snapshot
@@ -751,7 +747,7 @@ impl Home {
 			let observation = self.observation(offset, limit).await?;
 			for candidate in (1..=limit).rev() {
 				let mut output = observation.clone();
-				for name in ["tasks", "artifacts", "events", "messages"] {
+				for name in ["tasks", "events", "messages"] {
 					output[name]
 						.as_array_mut()
 						.ok_or_else(|| Error::External("invalid remote observation".into()))?
@@ -1000,12 +996,35 @@ impl Home {
 		// split fence-consumption operation to race on that peer.
 		self.transition(next).await
 	}
+	pub(crate) async fn record_goal_verdict(
+		&self,
+		verdict: &aidash_domain::goal::VerdictRecord,
+	) -> Result<aidash_domain::goal::VerdictRecord> {
+		if self.local() {
+			let scope = self.tenancy().await?;
+			let mut tx = self.federation.store.pool.begin(&scope).await?;
+			let recorded = crate::apps::workspaces::repositories::goals::record(
+				&mut *tx,
+				self.run.task_id,
+				verdict,
+			)
+			.await?;
+			tx.commit().await?;
+			Ok(recorded)
+		} else {
+			self.command("goal_verdict", json!({
+				"run_id": self.run.id,
+				"key": format!("{}:goal-verdict:{}:{}", self.run.id, verdict.response_epoch, crate::registry::digest(&json!(verdict.goal))),
+				"verdict": verdict
+			})).await
+		}
+	}
 	pub async fn complete(
 		&self,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 		abandon: &[Uuid],
-	) -> Result<Task> {
+	) -> Result<aidash_domain::deliverable::Completion> {
 		let scope = self.tenancy().await?;
 		if self.local() {
 			self.federation
@@ -1015,15 +1034,16 @@ impl Home {
 					self.run.task_id,
 					&self.owner(),
 					key,
-					artifact,
+					completion,
 					crate::store::Publication::by(self.run.id, self.authority.is_some()),
 					None,
 					abandon,
 				)
 				.await
+				.map(|(_, message)| message)
 		} else {
 			let through_seq = self.included_input_seq;
-			let mut data = json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"artifact":artifact});
+			let mut data = json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"completion":completion,"settlement_version":2});
 			// Absent when empty, so an ordinary completion keeps its shape.
 			if !abandon.is_empty() {
 				data["abandon"] = json!(abandon);
@@ -1053,25 +1073,6 @@ impl Home {
 				.command::<Value>("run_abandon_unassigned", json!({"key":key,"abandon":ids}))
 				.await?;
 			Ok(serde_json::from_value(result["abandoned"].clone())?)
-		}
-	}
-	pub async fn artifact(&self, key: &str, artifact: &ArtifactInput) -> Result<Artifact> {
-		let scope = self.tenancy().await?;
-		if self.local() {
-			self.federation
-				.store
-				.publish_artifact_from_run(
-					&scope,
-					self.run.task_id,
-					&self.owner(),
-					key,
-					artifact,
-					crate::store::Publication::by(self.run.id, self.authority.is_some()),
-				)
-				.await
-		} else {
-			self.command("artifact", json!({"key":key,"artifact":artifact}))
-				.await
 		}
 	}
 	pub async fn assign(
@@ -1131,6 +1132,33 @@ impl Home {
 			self.command("create_task", json!({"key":key,"task":input}))
 				.await
 		}
+	}
+	pub(crate) async fn set_child_goal(&self, key: &str, child: Uuid, goal: &str) -> Result<()> {
+		if !self.local() {
+			self.command::<Value>("child_goal", json!({"key":key,"child":child,"goal":goal}))
+				.await?;
+			return Ok(());
+		}
+		use crate::apps::workspaces::repositories::goals;
+		let scope = self.tenancy().await?;
+		let mut tx = self.federation.store.pool.begin(&scope).await?;
+		let task = goals::locked_task(&mut *tx, child).await?;
+		if task.parent_id != Some(self.run.task_id) || task.thread_id != self.run.thread_id {
+			return Err(Error::Forbidden);
+		}
+		goals::change(
+			&mut *tx,
+			&task,
+			&self.owner(),
+			goals::Change {
+				goal: Some(goal.to_owned()),
+				expected_revision: task.revision,
+				resume: false,
+			},
+		)
+		.await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn delegate(
 		&self,

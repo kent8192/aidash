@@ -377,11 +377,11 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.map(|m| m.name.clone())
 			.collect::<Vec<_>>()
 	};
-	assert_eq!(head("federation"), ["0030_threads"]);
+	assert_eq!(head("federation"), ["0033_completion_settlement_v2"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0163_scope_host_debit_state"]);
+	assert_eq!(head("execution"), ["0172_retire_completion_gate"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
-	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
+	assert_eq!(head("workspaces"), ["0071_completion_messages"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -659,14 +659,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0164_policy_probe")
+		.get_migration("execution", "0173_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0163_scope_host_debit_state".to_owned()
+			"0172_retire_completion_gate".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());

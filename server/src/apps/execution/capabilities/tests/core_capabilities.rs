@@ -1991,9 +1991,6 @@ fn provider_endpoint(
 #[path = "core_capabilities/deferred_exposure.rs"]
 mod deferred_exposure_tests;
 
-#[path = "core_capabilities/completion_gate.rs"]
-mod completion_gate_tests;
-
 #[path = "core_capabilities/journal_query.rs"]
 mod journal_query_tests;
 

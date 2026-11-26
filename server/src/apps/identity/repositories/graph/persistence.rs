@@ -5,7 +5,7 @@ use crate::authorization::access::Access;
 use crate::database::native::Transaction;
 use crate::{
 	Error, Result,
-	domain::{Artifact, Conversation, Event, Task, Thread},
+	domain::{Conversation, Event, Task, Thread},
 	federation::Federation,
 	registry::Entry,
 };
@@ -86,7 +86,7 @@ pub(crate) async fn candidates(
 	if kind == 1 && !kind_allowed("task", options) {
 		return Ok(vec![]);
 	}
-	if kind == 2 && !kind_allowed("artifact", options) {
+	if kind == 2 {
 		return Ok(vec![]);
 	}
 	if kind == 3 && !kind_allowed("run", options) {
@@ -107,7 +107,6 @@ pub(crate) async fn candidates(
 	let table = match kind {
 		0 => "threads",
 		1 => "tasks",
-		2 => "artifacts",
 		3 => "task_executions",
 		4 => "conversations",
 		_ => unreachable!(),
@@ -148,12 +147,6 @@ pub(crate) async fn candidates(
 			.await?
 			.into_iter()
 			.map(Candidate::Task)
-			.collect()),
-		2 => Ok(aidash_server::database::query_as::<Artifact>(&sql)
-			.fetch_all(conn)
-			.await?
-			.into_iter()
-			.map(Candidate::Artifact)
 			.collect()),
 		3 => Ok(aidash_server::database::query_as::<RunMetadata>(&sql)
 			.fetch_all(conn)
@@ -377,19 +370,6 @@ pub(crate) async fn graph_generation(
 		&tenant,
 	)
 	.await?;
-	let artifacts: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
-		&tenant_resources("artifacts", "thread_id", &tenant)
-			.expr(reinhardt::query::Func::max(
-				Expr::col((Alias::new("r"), Alias::new("created_at"))).into(),
-			))
-			.expr(reinhardt::query::Func::count(
-				Expr::col((Alias::new("r"), Alias::new("id"))).into(),
-			))
-			.to_string(PostgresQueryBuilder),
-	)
-	.columns(&["max", "count"])
-	.fetch_one(&mut *conn)
-	.await?;
 	let conversations: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
 		&tenant_resources("conversations", "thread_id", &tenant)
 			.expr(reinhardt::query::Func::max(
@@ -414,7 +394,7 @@ pub(crate) async fn graph_generation(
 	.await?;
 	Ok(crate::registry::digest(&json!({
 		"authority":authority_revision,"catalog":catalog,"threads":threads,
-		"tasks":tasks,"runs":runs,"artifacts":artifacts,"conversations":conversations,"events":events,
+		"tasks":tasks,"runs":runs,"conversations":conversations,"events":events,
 	})))
 }
 
@@ -484,7 +464,6 @@ pub(crate) async fn project_activity(
 		.cond_where(
 			Condition::any()
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("task.%"))
-				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("artifact.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("execution.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("conversation.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("message.%"))

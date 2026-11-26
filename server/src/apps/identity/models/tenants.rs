@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Tenant {
 	#[field(primary_key = true, field_type = "text")]
 	pub name: String,
+	#[field(null = true)]
+	pub goal_judge_model: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 	/// The Tenant label; absent only after purge or for Tenants that predate it.
 	#[field(field_type = "text", null = true)]
 	pub label: Option<String>,

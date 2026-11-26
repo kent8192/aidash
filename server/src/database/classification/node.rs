@@ -112,7 +112,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "duty_triggers"
 		| "duty_events"
 		| "duty_bookings"
-		| "artifacts"
 		| "messages"
 		| "conversations"
 		| "channel_attachments"

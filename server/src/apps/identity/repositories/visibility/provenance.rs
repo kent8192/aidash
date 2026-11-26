@@ -4,14 +4,12 @@ use crate::Result as NativeResult;
 use crate::apps::execution::generation::repositories::contracts::RequestAccess;
 use aidash_application::{
 	Result,
-	ports::authorization::visibility::{
-		provenance::{LocalOutputScope, OutputScope, ReadProvenanceScope, RecordedRead},
-		resources::ResourceEventScope,
+	ports::authorization::visibility::provenance::{
+		LocalOutputScope, OutputScope, ReadProvenanceScope, RecordedRead,
 	},
 };
 use aidash_domain::{
-	Artifact, Conversation, Message, RunMetadata, Task, generation::requests::Request,
-	registry::EntityRef,
+	Conversation, Message, RunMetadata, Task, generation::requests::Request, registry::EntityRef,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -86,15 +84,6 @@ impl ReadProvenanceScope for Reads<'_> {
 			.received_semantic_visible(run)
 			.await
 			.map_err(Into::into)
-	}
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		if let Some(row) = self.access.state_source_artifact(id, thread) {
-			return Ok(row);
-		}
-		if let Some(artifact) = self.access.read_lookups.artifact(id, thread) {
-			return Ok(artifact);
-		}
-		self.artifact(id, Some(thread)).await
 	}
 	fn first_visit(&mut self, run: Uuid) -> bool {
 		self.access.read_lookups.first_visit(run, false)
@@ -608,19 +597,6 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		crate::apps::workspaces::models::Task::read_in(self.access.tx.as_mut(), id, thread)
 			.await
 			.map_err(Into::into)
-	}
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		if let Some(artifact) = self.access.read_lookups.artifact(id, thread) {
-			return Ok(artifact);
-		}
-		crate::apps::workspaces::models::Artifact::read_in(
-			self.access.tx.as_mut(),
-			id,
-			thread,
-			false,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		if let Some(message) = self.access.read_lookups.message(id, thread) {

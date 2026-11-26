@@ -103,3 +103,22 @@ pub async fn task_abandon(
 ) -> ViewResult<Response> {
 	crate::http::json(service.task_abandon(actor, id, input).await)
 }
+
+#[get("/api/tasks/{id}/goal", name = "task-goal", auth = "protected")]
+pub async fn task_goal(
+	#[inject] service: Depends<CollaborationManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(service.task_goal(actor, id, None).await)
+}
+
+#[patch("/api/tasks/{id}/goal", name = "task-goal-change", auth = "protected")]
+pub async fn task_goal_change(
+	#[inject] service: Depends<CollaborationManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Json(change): Json<crate::apps::workspaces::repositories::goals::Change>,
+) -> ViewResult<Response> {
+	crate::http::json(service.task_goal(actor, id, Some(change)).await)
+}

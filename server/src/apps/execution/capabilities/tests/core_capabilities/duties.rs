@@ -148,11 +148,12 @@ async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 			task.id,
 			owner,
 			"duty-completion",
-			&aidash_server::domain::ArtifactInput {
-				kind: "text".into(),
-				name: "Digest".into(),
-				content: json!("No changes"),
-			},
+			&aidash_domain::deliverable::Completion::new(
+				task.id,
+				"duty-completion",
+				"No changes".into(),
+				None,
+			),
 		)
 		.await
 		.unwrap();

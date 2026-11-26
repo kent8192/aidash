@@ -16,10 +16,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 /// Each stored file's size, per table: a SQL expression over one row.
-const SOURCES: [(&str, &str); 3] = [
+const SOURCES: [(&str, &str); 2] = [
 	("core_blobs", "size"),
 	("channel_attachments", "size_bytes"),
-	("artifacts", "octet_length(content::text)"),
 ];
 
 #[derive(Deserialize)]

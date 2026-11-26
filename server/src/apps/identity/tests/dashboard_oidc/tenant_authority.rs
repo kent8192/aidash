@@ -1242,6 +1242,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 			&aidash_domain::NewTask {
 				title: "Confidential task".into(),
 				description: "Tenant content".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

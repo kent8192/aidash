@@ -67,7 +67,7 @@ mod controlled_context_composition {
 		let tool_rounds = fixture.state.tool_rounds;
 		let model_server = fixture.server;
 
-		use aidash_server::domain::{ArtifactInput, qualified_agent};
+		use aidash_server::domain::qualified_agent;
 		let (mut f, url, schema) = application_fixture.runtime.parts();
 		let app = application_fixture.application.clone();
 
@@ -176,16 +176,12 @@ mod controlled_context_composition {
 		worker.worker_once().await.unwrap();
 		let artifact = f
 			.store
-			.publish_artifact(
+			.message_record(
 				&TEST_FIXTURE,
-				task,
+				thread,
 				&owner,
-				"controlled-artifact",
-				&ArtifactInput {
-					kind: "text".into(),
-					name: "Car report".into(),
-					content: json!("A car has a steering wheel."),
-				},
+				"A car has a steering wheel.",
+				Some("controlled-artifact"),
 			)
 			.await
 			.unwrap();
@@ -1662,7 +1658,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 
 	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
-	use aidash_server::domain::{ArtifactInput, qualified_agent};
+	use aidash_server::domain::qualified_agent;
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let endpoint = embeddings.url.clone();
@@ -1689,20 +1685,16 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	.unwrap();
 	let artifact = f
 		.store
-		.publish_artifact(
+		.message_record(
 			&TEST_FIXTURE,
-			task,
+			thread,
 			&qualified_agent(
 				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 				"research",
 				"1.0.0",
 			),
-			"semantic-artifact",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "Car report".into(),
-				content: json!("A car has a steering wheel."),
-			},
+			"A car has a steering wheel.",
+			Some("semantic-artifact"),
 		)
 		.await
 		.unwrap();

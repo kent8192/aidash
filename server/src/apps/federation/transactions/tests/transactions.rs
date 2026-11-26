@@ -102,7 +102,10 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 				.snapshot(&TEST_FIXTURE, task.thread_id)
 				.await
 				.unwrap()
-				.artifacts
+				.messages
+				.into_iter()
+				.filter(|message| message.completion.is_some())
+				.collect::<Vec<_>>()
 				.is_empty()
 		);
 	} else {
@@ -146,9 +149,12 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap()
-			.artifacts;
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>();
 		assert_eq!(artifacts.len(), 1);
-		assert_eq!(artifacts[0].created_by, task.owner.unwrap());
+		assert_eq!(artifacts[0].sender, task.owner.unwrap());
 	}
 	cleanup(f, &url, &schema).await;
 }

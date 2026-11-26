@@ -432,12 +432,8 @@ pub async fn retained_storage_bytes_in(
 	for (table, field, function) in [
 		("core_objects", "size", false),
 		("channel_attachments", "size_bytes", false),
-		("artifacts", "content", true),
 	] {
 		let mut size = selectors::col(table, field);
-		if table == "artifacts" {
-			size = size.cast_as(Alias::new("text"));
-		}
 		if function {
 			size = SimpleExpr::FunctionCall("octet_length".into_iden(), vec![size]);
 		}

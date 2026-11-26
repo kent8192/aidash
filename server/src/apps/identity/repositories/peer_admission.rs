@@ -1232,12 +1232,23 @@ impl PeerAdmissionRepository for Repository<'_> {
 			require_home_ask(&mut *tx, id, &ask.call, &ask.key).await?;
 		} else if matches!(
 			action,
-			RemoteExecutionControl::Pause | RemoteExecutionControl::Resume
+			RemoteExecutionControl::Pause
+				| RemoteExecutionControl::Resume
+				| RemoteExecutionControl::ResumeGoal { .. }
 		) {
 			// A Home pause would overwrite the control source that protects the Safety Stop.
 			require_no_safety_stop(&mut *tx, id, LockType::NoKeyUpdate).await?;
 		}
-		let run = store.control_in(&mut tx, id, action.action()).await?;
+		let run = match action {
+			RemoteExecutionControl::ResumeGoal { message_id } => {
+				use crate::apps::workspaces::repositories::goals;
+				let raw = goals::locked_execution(&mut *tx, id)
+					.await?
+					.ok_or(crate::Error::Forbidden)?;
+				goals::resume(&mut *tx, raw.decode()?, *message_id).await?
+			}
+			_ => store.control_in(&mut tx, id, action.action()).await?,
+		};
 		tx.commit().await?;
 		Ok(run)
 	}

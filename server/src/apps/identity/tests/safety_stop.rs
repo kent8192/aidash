@@ -33,6 +33,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let new_task = |title: &str| aidash_server::domain::NewTask {
 		title: title.into(),
 		description: "A Run an administrator stops".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -196,6 +197,7 @@ async fn a_safety_stop_controls_three_levels_of_nested_subnodes(
 					&aidash_server::domain::NewTask {
 						title,
 						description: "A member of a nested Subnode".into(),
+						goal: None,
 						requirements: json!({}),
 						dependencies: vec![],
 						parent_id: None,

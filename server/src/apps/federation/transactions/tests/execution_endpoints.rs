@@ -8,7 +8,7 @@ use aidash_server::apps::{
 		states::{AtomicHistoryRole, AtomicParticipantPhase},
 	},
 	identity::models::{AuthorizationRunOutput, AuthorizationRunRead},
-	workspaces::models::{Artifact, Message, Task},
+	workspaces::models::{Message, Task},
 };
 use aidash_server::{
 	harness::Harness,
@@ -134,8 +134,11 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		.unwrap();
 	assert_eq!(prepared.phase, AtomicParticipantPhase::Prepared);
 	assert!(
-		Artifact::objects()
-			.filter(Artifact::field_task_id().eq(task.id))
+		Message::objects()
+			.filter(
+				Message::field_idempotency_key()
+					.eq(Some(format!("atomic:{}:task:{}", manifest.id, task.id)))
+			)
 			.all_with_db(&mut app.database.lease.handle())
 			.await
 			.unwrap()
@@ -210,8 +213,11 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 			"COMMITTED"
 		);
 	}
-	let artifacts = Artifact::objects()
-		.filter(Artifact::field_task_id().eq(task.id))
+	let artifacts = Message::objects()
+		.filter(
+			Message::field_idempotency_key()
+				.eq(Some(format!("atomic:{}:task:{}", manifest.id, task.id))),
+		)
 		.all_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();

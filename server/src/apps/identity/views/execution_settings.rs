@@ -41,3 +41,36 @@ pub async fn update(
 			.await,
 	)
 }
+
+#[get(
+	"/api/tenants/{tenant}/goal-judge-model",
+	name = "tenant-goal-judge-model",
+	auth = "protected"
+)]
+pub async fn judge_get(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::json(service.goal_judge_model(actor, origin, tenant, None).await)
+}
+
+#[put(
+	"/api/tenants/{tenant}/goal-judge-model",
+	name = "tenant-goal-judge-model-update",
+	auth = "protected"
+)]
+pub async fn judge_update(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Json(update): Json<super::super::serializers::execution_settings::GoalJudgeModel>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.goal_judge_model(actor, origin, tenant, Some(update))
+			.await,
+	)
+}

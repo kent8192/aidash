@@ -116,6 +116,7 @@ async fn a_write_waiting_for_a_deletion_is_refused_when_it_commits(
 						&NewTask {
 							title: "Late".into(),
 							description: "Must not land".into(),
+							goal: None,
 							requirements: json!({}),
 							dependencies: vec![],
 							parent_id: None,

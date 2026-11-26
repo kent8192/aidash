@@ -485,27 +485,6 @@ pub(crate) fn sources_in_reader<'a>(
 							return Err(Error::Conflict("memory message source changed".into()));
 						}
 					}
-					Evidence::Artifact {
-						id,
-						revision,
-						digest,
-					} => {
-						let mut disclosure = super::disclosure::Disclosure { lease };
-						let artifact = disclosure.artifact(id, thread).await?.ok_or_else(|| {
-							Error::Conflict("memory artifact source removed".into())
-						})?;
-						if disclosure.scoped() && !disclosure.artifact_visible(&artifact).await? {
-							return Err(Error::Forbidden);
-						}
-						// Current Artifact bodies are immutable version 1; no invented update version is accepted.
-						if revision != 1
-							|| aidash_domain::semantic::indexing::content_digest(
-								&serde_json::to_string(&artifact.content)?,
-							) != digest
-						{
-							return Err(Error::Conflict("memory artifact source changed".into()));
-						}
-					}
 					Evidence::Run {
 						id,
 						revision,

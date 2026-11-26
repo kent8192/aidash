@@ -34,8 +34,20 @@ fn snapshot(rows: usize) -> ThreadSnapshot {
 				created_at: now,
 			})
 			.collect(),
+		events: (0..rows)
+			.map(|sequence| Event {
+				sequence: sequence as i64,
+				id: Uuid::new_v4(),
+				node: None,
+				thread_id: Some(thread_id),
+				kind: "\0".repeat(128),
+				data: json!({}),
+				created_at: now,
+			})
+			.collect(),
 		messages: (0..rows)
 			.map(|_| Message {
+				completion: None,
 				id: Uuid::new_v4(),
 				thread_id,
 				sender: "\0".repeat(256),

@@ -6,8 +6,7 @@ mod endpoint_fixtures;
 mod native_database;
 
 use aidash_application::tenancy::TEST_FIXTURE;
-use aidash_server::apps::workspaces::models::states::ArtifactKind;
-use aidash_server::apps::workspaces::models::{Artifact, Message};
+use aidash_server::apps::workspaces::models::Message;
 use aidash_server::{
 	domain::{NewTask, Task, Thread},
 	federation::Home,
@@ -42,6 +41,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			&NewTask {
 				title: "Plan".into(),
 				description: "Coordinate specialists".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -182,6 +182,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 				&NewTask {
 					title: format!("Child {index}"),
 					description: "large child description ".repeat(2_500),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: Some(task.id),
@@ -236,7 +237,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		)
 		.await
 		.unwrap();
-	let (old_message, artifact_id) = f
+	let old_message = f
 		.store
 		.pool
 		.atomic(&TEST_FIXTURE, async |db| {
@@ -248,29 +249,13 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 				.get_with_db(db)
 				.await?
 				.id;
-			let artifact = Artifact::build()
-				.tenant("acme")
-				.thread(thread.id)
-				.task(task.id)
-				.kind(ArtifactKind::Text)
-				.name("review artifact")
-				.content(json!("record query regression").into())
-				.created_by("reviewer")
-				.idempotency_key("review-artifact")
-				.run_id(None)
-				.finish();
-			let artifact_id = Artifact::objects()
-				.create_with_conn(db, &artifact)
-				.await?
-				.id;
-			Ok((old_message, artifact_id))
+			Ok(old_message)
 		})
 		.await
 		.unwrap();
 
 	for (kind, id, expected) in [
 		("task", task.id, "Coordinate specialists"),
-		("artifact", artifact_id, "record query regression"),
 		("message", old_message, "old message"),
 		("event", old_event.id, "beyond the recent event snapshot"),
 	] {

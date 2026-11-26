@@ -43,6 +43,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 			&aidash_server::domain::NewTask {
 				title: "Work".into(),
 				description: "A Run whose owner stops it".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -451,6 +452,7 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 				&aidash_domain::NewTask {
 					title: "Child".into(),
 					description: "Child task".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: Some(w.task.id),

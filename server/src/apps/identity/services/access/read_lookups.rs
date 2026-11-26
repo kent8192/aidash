@@ -5,7 +5,7 @@
 //! another authority than the walk's, as a Remote Grant's producer does, lends
 //! its own passes for as long as it does.
 use super::Access;
-use crate::apps::workspaces::models::{Artifact, Conversation, Message, Task};
+use crate::apps::workspaces::models::{Conversation, Message, Task};
 use crate::{Result, domain};
 use aidash_application::ports::authorization::visibility::provenance::RecordedRead;
 use aidash_domain::{nodes::NodeName, registry::EntityRef};
@@ -51,7 +51,6 @@ impl<K: Ord + Clone, V: Clone> Loaded<K, V> {
 #[derive(Default)]
 pub(crate) struct ReadLookups {
 	tasks: Loaded<Recorded, domain::Task>,
-	artifacts: Loaded<Recorded, domain::Artifact>,
 	messages: Loaded<Recorded, domain::Message>,
 	conversations: Loaded<Recorded, domain::Conversation>,
 	attachments: Loaded<Recorded, Uuid>,
@@ -71,7 +70,6 @@ struct StateRows {
 	epoch: u64,
 	tasks: BTreeMap<Recorded, domain::Task>,
 	source_tasks: Loaded<Recorded, domain::Task>,
-	source_artifacts: Loaded<Recorded, domain::Artifact>,
 	source_messages: Loaded<Recorded, domain::Message>,
 	source_conversations: Loaded<Recorded, domain::Conversation>,
 	source_attachments: Loaded<Recorded, Uuid>,
@@ -262,9 +260,6 @@ impl ReadLookups {
 	}
 	pub(crate) fn task(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Task>> {
 		self.tasks.get(&(id, thread))
-	}
-	pub(crate) fn artifact(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Artifact>> {
-		self.artifacts.get(&(id, thread))
 	}
 	pub(crate) fn message(&self, id: Uuid, thread: Uuid) -> Option<Option<domain::Message>> {
 		self.messages.get(&(id, thread))
@@ -483,15 +478,6 @@ impl Access {
 	) -> Option<Option<domain::Task>> {
 		self.current_state_rows()?.source_tasks.get(&(id, thread))
 	}
-	pub(crate) fn state_source_artifact(
-		&mut self,
-		id: Uuid,
-		thread: Uuid,
-	) -> Option<Option<domain::Artifact>> {
-		self.current_state_rows()?
-			.source_artifacts
-			.get(&(id, thread))
-	}
 	pub(crate) fn state_source_message(
 		&mut self,
 		id: Uuid,
@@ -563,37 +549,6 @@ impl Access {
 		}
 		Ok(())
 	}
-	pub(crate) async fn prepare_state_artifacts(
-		&mut self,
-		artifacts: &[domain::Artifact],
-	) -> Result<()> {
-		if self.current_state_rows().is_none() || artifacts.is_empty() {
-			return Ok(());
-		}
-		self.prepare_state_threads(
-			&artifacts
-				.iter()
-				.map(|row| row.thread_id)
-				.collect::<Vec<_>>(),
-		)
-		.await?;
-		let reads: Vec<_> = artifacts
-			.iter()
-			.map(|row| (row.thread_id, "artifact".to_owned(), row.id))
-			.collect();
-		self.prepare_read_sources(&reads).await?;
-		let source_tasks = self.read_lookups.tasks.clone();
-		let source_artifacts = self.read_lookups.artifacts.clone();
-		let outputs = self.read_lookups.producers.clone();
-		let remote_outputs = self.read_lookups.grants.clone();
-		if let Some(rows) = self.read_lookups.state.as_mut() {
-			rows.source_tasks = source_tasks;
-			rows.source_artifacts = source_artifacts;
-			rows.outputs = outputs;
-			rows.remote_outputs = remote_outputs;
-		}
-		Ok(())
-	}
 	pub(crate) fn state_run(&mut self, id: Uuid, thread: Uuid) -> Option<domain::RunMetadata> {
 		self.current_state_rows()?.runs.get(&(id, thread)).cloned()
 	}
@@ -618,7 +573,6 @@ impl Access {
 			epoch: self.tx.transaction.as_ref().map_or(0, |tx| tx.lock_epoch()),
 			tasks: BTreeMap::new(),
 			source_tasks: Loaded::default(),
-			source_artifacts: Loaded::default(),
 			source_messages: Loaded::default(),
 			source_conversations: Loaded::default(),
 			source_attachments: Loaded::default(),
@@ -1291,7 +1245,6 @@ impl Access {
 			epoch: self.tx.transaction.as_ref().map_or(0, |tx| tx.lock_epoch()),
 			tasks: BTreeMap::new(),
 			source_tasks: Loaded::default(),
-			source_artifacts: Loaded::default(),
 			source_messages: Loaded::default(),
 			source_conversations: Loaded::default(),
 			source_attachments: Loaded::default(),
@@ -1376,7 +1329,6 @@ impl Access {
 		self.prepare_state_tasks(&tasks).await?;
 		self.prepare_read_sources(&sources).await?;
 		let source_tasks = self.read_lookups.tasks.clone();
-		let source_artifacts = self.read_lookups.artifacts.clone();
 		let source_messages = self.read_lookups.messages.clone();
 		let source_conversations = self.read_lookups.conversations.clone();
 		let source_attachments = self.read_lookups.attachments.clone();
@@ -1384,7 +1336,6 @@ impl Access {
 		let remote_outputs = self.read_lookups.grants.clone();
 		if let Some(rows) = self.read_lookups.state.as_mut() {
 			rows.source_tasks = source_tasks;
-			rows.source_artifacts = source_artifacts;
 			rows.source_messages = source_messages;
 			rows.source_conversations = source_conversations;
 			rows.source_attachments = source_attachments;
@@ -1404,7 +1355,6 @@ impl Access {
 				let key = (*id, *thread);
 				match kind.as_str() {
 					"task" => rows.source_tasks.get(&key).is_some(),
-					"artifact" => rows.source_artifacts.get(&key).is_some(),
 					"message" => rows.source_messages.get(&key).is_some(),
 					"conversation" => rows.source_conversations.get(&key).is_some(),
 					"attachment" => rows.source_attachments.get(&key).is_some(),
@@ -1444,27 +1394,11 @@ impl Access {
 					.insert((row.id, row.thread_id), row.message_id);
 			}
 		}
-		let mut tasks = of_kind("task");
-		let artifacts = of_kind("artifact");
-		let mut outputs: Vec<Output> = artifacts
+		let tasks = of_kind("task");
+		let mut outputs: Vec<Output> = tasks
 			.iter()
-			.map(|(id, thread)| (*thread, "artifact".to_owned(), *id))
+			.map(|(id, thread)| (*thread, "task".to_owned(), *id))
 			.collect();
-		let wanted = unasked(&mut self.read_lookups.artifacts, artifacts);
-		if !wanted.is_empty() {
-			for artifact in Artifact::read_many_in(&mut **self.tx, &wanted).await? {
-				tasks.push((artifact.task_id, artifact.thread_id));
-				self.read_lookups
-					.artifacts
-					.found
-					.insert((artifact.id, artifact.thread_id), artifact);
-			}
-		}
-		outputs.extend(
-			tasks
-				.iter()
-				.map(|(id, thread)| (*thread, "task".to_owned(), *id)),
-		);
 		let wanted = unasked(&mut self.read_lookups.tasks, tasks);
 		if !wanted.is_empty() {
 			for task in Task::read_many_in(&mut **self.tx, &wanted).await? {

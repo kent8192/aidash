@@ -1,7 +1,7 @@
 //! Selective writes on the caller's native transaction.
-use super::{Artifact, Task, Thread};
+use super::{Message, Task, Thread};
 use crate::apps::workspaces::serializers::entities::{
-	Artifact as ArtifactContract, ArtifactInput, Task as TaskContract, Thread as ThreadContract,
+	Message as MessageContract, Task as TaskContract, Thread as ThreadContract,
 };
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -11,7 +11,6 @@ use reinhardt::db::orm::{Model, QueryRow};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
-use serde_json::Value;
 use uuid::Uuid;
 
 impl Thread {
@@ -126,32 +125,19 @@ impl Task {
 	pub(crate) async fn complete(
 		tx: &mut dyn TransactionExecutor,
 		task: &TaskContract,
-		artifact: &ArtifactInput,
+		text: &str,
 		key: &str,
-	) -> Result<(TaskContract, ArtifactContract)> {
-		let tenant = crate::database::scope::parent_tenant(tx, "tasks", "id", task.id).await?;
-		let draft = Artifact::build()
-			.tenant(tenant)
-			.thread(task.thread_id)
-			.task(task.id)
-			.kind(serde_json::from_value(Value::String(
-				artifact.kind.clone(),
-			))?)
-			.name(&artifact.name)
-			.content(artifact.content.clone().into())
-			.created_by(
-				task.owner
-					.as_deref()
-					.ok_or_else(|| Error::Conflict("task has no owner".into()))?,
-			)
-			.idempotency_key(key)
-			// A transaction's completion is not a Run's publication.
-			.run_id(None)
-			.finish();
-		let artifact = Artifact::objects()
-			.insert_with_executor(tx, &draft)
-			.await
-			.map_err(FrameworkError::from)?;
+	) -> Result<(TaskContract, MessageContract)> {
+		if task.goal.is_some() {
+			return Err(Error::Conflict("Completion requires a Goal verdict".into()));
+		}
+		let sender = task
+			.owner
+			.as_deref()
+			.ok_or_else(|| Error::Conflict("task has no owner".into()))?;
+		let completion =
+			aidash_domain::deliverable::Completion::new(task.id, key, text.to_owned(), None);
+		let message = Message::append_completion(tx, task, sender, key, None, &completion).await?;
 		// Do not rewrite topology columns: graph writers take a separate lock.
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
@@ -167,7 +153,7 @@ impl Task {
 		let row = tx.fetch_one(&sql, convert_values(values)).await?;
 		Ok((
 			serde_json::from_value(QueryRow::from_backend_row(row).data)?,
-			artifact.into(),
+			message,
 		))
 	}
 }

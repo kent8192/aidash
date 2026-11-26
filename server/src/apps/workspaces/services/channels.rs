@@ -144,11 +144,11 @@ impl Channels {
 		.await;
 		lease.finish(result).await
 	}
-	pub async fn download(
+	pub(crate) async fn download(
 		&self,
 		thread: Uuid,
 		attachment: Uuid,
-	) -> Result<(ChannelAttachment, Vec<u8>)> {
+	) -> Result<(ChannelAttachment, attachments::Download)> {
 		let mut lease = Lease::begin(
 			&self.runtime.store,
 			self.actor.clone(),

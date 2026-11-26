@@ -56,3 +56,47 @@ impl TenantAdministrations {
 		self.finish(&administrator, result).await
 	}
 }
+
+impl TenantAdministrations {
+	pub(crate) async fn goal_judge_model(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		update: Option<super::super::serializers::execution_settings::GoalJudgeModel>,
+	) -> Result<super::super::serializers::execution_settings::GoalJudgeModel> {
+		use super::super::repositories::goal_judge;
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let result = self
+			.runtime
+			.store
+			.pool
+			.atomic(&administrator.scope()?, async |tx| {
+				if let Some(update) = update {
+					administrator.locked_for(tx, TENANT_UPDATE, true).await?;
+					goal_judge::set(tx, &tenant, update.model.as_ref()).await?;
+					let by = AdministrationActor::TenantAdministrator(administrator.clone());
+					by.record(
+						tx,
+						AdministrationEvent {
+							action: TENANT_UPDATE,
+							identity: None,
+							registration: None,
+							mapping: None,
+							tenant: Some(&tenant),
+							subject: None,
+							invitation: None,
+						},
+					)
+					.await?;
+				}
+				Ok(
+					super::super::serializers::execution_settings::GoalJudgeModel {
+						model: goal_judge::read(tx, &tenant).await?,
+					},
+				)
+			})
+			.await;
+		self.finish(&administrator, result).await
+	}
+}

@@ -356,6 +356,7 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -607,6 +608,7 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 			&NewTask {
 				title: "Task".into(),
 				description: "Work".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -1201,6 +1203,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&NewTask {
 				title: "Task".into(),
 				description: "Work".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -1336,6 +1339,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&NewTask {
 				title: "Other request task".into(),
 				description: "Work".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -1443,6 +1447,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&NewTask {
 				title: "Second task".into(),
 				description: "Work".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -1485,6 +1490,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&NewTask {
 				title: "Third task".into(),
 				description: "Work".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -1997,6 +2003,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -2076,6 +2083,7 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -2126,6 +2134,7 @@ async fn task_dependency_cycles_include_parent_edges(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -2199,6 +2208,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -2256,6 +2266,7 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,
@@ -2381,6 +2392,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,

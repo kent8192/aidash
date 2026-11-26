@@ -6,7 +6,7 @@ use aidash_application::{
 	Result,
 	ports::authorization::records::{ChildSummaryScope, ChildTaskRecord, ThreadRecordScope},
 };
-use aidash_domain::{Artifact, Event, Message, Task, Thread, ThreadSnapshot, policy::Resource};
+use aidash_domain::{Event, Message, Task, Thread, ThreadSnapshot, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
@@ -57,7 +57,6 @@ pub(crate) async fn in_creator_thread(
 	let table = match kind {
 		"thread" => "threads",
 		"task" => "tasks",
-		"artifact" => "artifacts",
 		"message" => "messages",
 		"event" => "events",
 		"attachment" => "channel_attachments",
@@ -114,11 +113,6 @@ impl ThreadRecordScope for Reads<'_> {
 	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		Box::pin(self.access.task_visible(row))
-			.await
-			.map_err(Into::into)
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		Box::pin(self.access.artifact_visible(row))
 			.await
 			.map_err(Into::into)
 	}
@@ -187,43 +181,6 @@ impl ThreadRecordScope for Reads<'_> {
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("tasks"))
-						.and_where(
-							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id")))
-										.eq(SimpleExpr::CustomWithExpr(
-											"(?)".to_owned(),
-											vec![Expr::value(query_bind_1.to_owned()).into()],
-										)),
-								)
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"thread_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_2.to_owned()).into()],
-									)),
-								),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **self.access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn artifact_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Artifact>> {
-		let result: NativeResult<Option<Artifact>> = async {
-			Ok({
-				let query_bind_1 = id;
-				let query_bind_2 = thread_id;
-				aidash_server::database::query_as(
-					&Query::select()
-						.column(ColumnRef::Asterisk)
-						.from(Alias::new("artifacts"))
 						.and_where(
 							Condition::all()
 								.add(

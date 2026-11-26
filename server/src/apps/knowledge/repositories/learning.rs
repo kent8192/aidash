@@ -307,23 +307,6 @@ async fn canonical_source(
 			};
 			Ok((proof, serde_json::to_value(row)?))
 		}
-		"artifact" => {
-			let row = disclosure
-				.artifact(id, bank.thread)
-				.await?
-				.ok_or(Error::Forbidden)?;
-			if disclosure.scoped() && !disclosure.artifact_visible(&row).await? {
-				return Err(Error::Forbidden);
-			}
-			let proof = Evidence::Artifact {
-				id,
-				revision: 1,
-				digest: aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(
-					&row.content,
-				)?),
-			};
-			Ok((proof, serde_json::to_value(row)?))
-		}
 		_ => Err(Error::Invalid(
 			"unsupported canonical Run output kind".into(),
 		)),

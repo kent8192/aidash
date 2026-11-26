@@ -804,6 +804,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
 				description: "Browser Deployment Administrator control".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

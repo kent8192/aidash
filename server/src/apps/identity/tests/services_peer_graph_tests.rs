@@ -45,7 +45,6 @@ fn source_rejects_cross_node_and_dangling_projection() {
 			version: Some("1.0.0".into()),
 			thread_id: None,
 			status: None,
-			goal_body: None,
 			at: None,
 		}],
 		edges: vec![],

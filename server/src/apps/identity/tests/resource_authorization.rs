@@ -10,7 +10,7 @@ use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{
-	domain::{ArtifactInput, NewTask, qualified_agent},
+	domain::{NewTask, qualified_agent},
 	harness::Harness,
 };
 use common::*;
@@ -35,6 +35,7 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 				&NewTask {
 					title: format!("Large child {index}"),
 					description: "bounded summary payload ".repeat(2_500),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: Some(parent_id),
@@ -141,20 +142,16 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	.unwrap();
 	let artifact = f
 		.store
-		.publish_artifact(
+		.message_record(
 			&TEST_FIXTURE,
-			task,
+			thread,
 			&qualified_agent(
 				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 				"research",
 				"1.0.0",
 			),
-			"resource-test-artifact",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "Private report".into(),
-				content: json!("private-artifact-content"),
-			},
+			"private-artifact-content",
+			Some("resource-test-artifact"),
 		)
 		.await
 		.unwrap();
@@ -349,20 +346,16 @@ async fn retained_snapshot_revocation(
 	worker.worker_once().await.unwrap();
 	let artifact = f
 		.store
-		.publish_artifact(
+		.message_record(
 			&TEST_FIXTURE,
-			task,
+			thread,
 			&qualified_agent(
 				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 				"research",
 				"1.0.0",
 			),
-			"source-revoke",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "Source".into(),
-				content: json!("private-artifact-content"),
-			},
+			"private-artifact-content",
+			Some("source-revoke"),
 		)
 		.await
 		.unwrap();
@@ -373,9 +366,9 @@ async fn retained_snapshot_revocation(
 		.unwrap();
 	for index in 0..25 {
 		f.store
-			.publish_artifact(
+			.message_record(
 				&TEST_FIXTURE,
-				task,
+				thread,
 				&qualified_agent(
 					&aidash_domain::nodes::NodeAddress::derived(
 						f.config.deployment.as_str(),
@@ -384,12 +377,8 @@ async fn retained_snapshot_revocation(
 					"research",
 					"1.0.0",
 				),
-				&format!("unrelated-source-{index}"),
-				&ArtifactInput {
-					kind: "text".into(),
-					name: format!("Unrelated source {index}"),
-					content: json!("unrelated"),
-				},
+				"unrelated",
+				Some(&format!("unrelated-source-{index}")),
 			)
 			.await
 			.unwrap();
@@ -815,20 +804,16 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	worker.worker_once().await.unwrap();
 	let artifact = f
 		.store
-		.publish_artifact(
+		.message_record(
 			&TEST_FIXTURE,
-			task,
+			thread,
 			&qualified_agent(
 				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 				"research",
 				"1.0.0",
 			),
 			"hidden-provider-source",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "Hidden".into(),
-				content: json!("hidden-provider-source"),
-			},
+			Some("hidden-provider-source"),
 		)
 		.await
 		.unwrap();
@@ -898,7 +883,10 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	assert_eq!(hidden, 0);
 	let snapshot = f.store.snapshot(&TEST_FIXTURE, thread).await.unwrap();
 	let output = snapshot
-		.artifacts
+		.messages
+		.into_iter()
+		.filter(|message| message.completion.is_some())
+		.collect::<Vec<_>>()
 		.iter()
 		.find(|a| a.content == json!("Visible work completed"))
 		.unwrap();

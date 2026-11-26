@@ -455,3 +455,59 @@ pub async fn abandon(
 use reinhardt::query::ColumnRef;
 
 use reinhardt::query::SimpleExpr;
+
+pub(crate) async fn task_goal(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	id: Uuid,
+	change: Option<crate::apps::workspaces::repositories::goals::Change>,
+) -> Result<crate::apps::workspaces::repositories::goals::Detail> {
+	use crate::apps::workspaces::repositories::goals;
+	let mut access = Access::begin(&f.store, identity).await?;
+	let changed = change.is_some();
+	let result = async {
+		let task = goals::locked_task(&mut **access.tx, id).await?;
+		let thread = access.thread(task.thread_id).await?;
+		access.context = thread.attributes.clone();
+		access.require(&thread, "thread.read").await?;
+		let resource = access.task_resource(&task).await?;
+		access.require(&resource, "task.read").await?;
+		if let Some(update) = change {
+			if update.resume
+				&& let Some(last) = goals::detail(&mut **access.tx, &task)
+					.await?
+					.verdicts
+					.last()
+			{
+				let run = access.resource("run", last.run_id, resource.attributes.clone());
+				access.require(&run, "run.control").await?;
+			}
+			goals::change(&mut **access.tx, &task, &identity.subject, update).await
+		} else {
+			goals::detail(&mut **access.tx, &task)
+				.await
+				.map(|detail| (detail, None))
+		}
+	}
+	.await;
+	let (detail, remote) = access.finish(result).await?;
+	if let Some(remote) = remote {
+		use aidash_domain::federation::execution::admission::RemoteExecutionControl;
+		aidash_application::authorization::home::control(
+			&crate::bootstrap::home_execution_repository(
+				f,
+				super::identity::Actor::Subject(identity.clone()),
+			),
+			id,
+			remote.grant_id,
+			RemoteExecutionControl::ResumeGoal {
+				message_id: remote.message_id,
+			},
+		)
+		.await?;
+	}
+	if changed {
+		f.notify.notify_waiters();
+	}
+	Ok(detail)
+}

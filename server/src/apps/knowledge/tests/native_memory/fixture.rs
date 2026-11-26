@@ -227,6 +227,7 @@ async fn setup_endpoint_policy_with_window(
 	store.keyless.permit_origin_of(endpoint).unwrap();
 	// Every row of a Tenant references its root record (ADR 0050).
 	let tenant = Tenant::build()
+		.goal_judge_model(None)
 		.name("acme".to_owned())
 		.label(Some("acme".to_owned()))
 		.personal(false)

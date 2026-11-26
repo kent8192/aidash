@@ -44,7 +44,7 @@ async fn composite_updates_preserve_uuid_storage_and_neighboring_keys(
 	let other_tenant = Uuid::new_v4();
 	let result: reinhardt::core::exception::Result<()> = lease.handle().atomic(async |tx| {
         OrmExecutor::execute(tx, "CREATE TEMP TABLE composite_boundary_repro (tenant_id uuid NOT NULL, kind text NOT NULL, entry_id text NOT NULL, body text NOT NULL, PRIMARY KEY (tenant_id, kind, entry_id)) ON COMMIT DROP", vec![]).await?;
-        for (tenant, key, kind, body) in [(id, "a", Kind::Task, "old-a"), (id, "b", Kind::Task, "old-b"), (id, "a", Kind::Artifact, "old-artifact"), (other_tenant, "a", Kind::Task, "other-tenant")] {
+        for (tenant, key, kind, body) in [(id, "a", Kind::Task, "old-a"), (id, "b", Kind::Task, "old-b"), (id, "a", Kind::Message, "old-artifact"), (other_tenant, "a", Kind::Task, "other-tenant")] {
             let row = Entry::build().tenant_key(tenant).kind(kind).entry_key(key).body(body).finish();
             assert_eq!(row.encode_database_fields().unwrap()["tenant_key"], DatabaseValue::Uuid(tenant));
             Entry::objects().create_with_conn(tx, &row).await?;
@@ -78,7 +78,7 @@ async fn composite_updates_preserve_uuid_storage_and_neighboring_keys(
             let expected = match (&row.kind, row.entry_key.as_str()) {
                 (Kind::Task, "a") => "new-a",
                 (Kind::Task, "b") => "old-b",
-                (Kind::Artifact, "a") => "old-artifact",
+                (Kind::Message, "a") => "old-artifact",
                 _ => panic!("unexpected row"),
             };
             assert_eq!(row.body, expected);

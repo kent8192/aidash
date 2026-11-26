@@ -130,8 +130,25 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::update, &["String"])?;
 	}
 	{
-		use super::execution_settings::{TenantExecutionSettings, TenantExecutionSettingsUpdate};
+		use super::execution_settings::{
+			GoalJudgeModel, TenantExecutionSettings, TenantExecutionSettingsUpdate,
+		};
 		use views::execution_settings as view;
+		contracts.path(document, view::judge_get, &["String"])?;
+		contracts.path(document, view::judge_update, &["String"])?;
+		contracts.request::<_, GoalJudgeModel>(document, view::judge_update)?;
+		contracts.response::<_, GoalJudgeModel>(
+			document,
+			view::judge_get,
+			200,
+			"application/json",
+		)?;
+		contracts.response::<_, GoalJudgeModel>(
+			document,
+			view::judge_update,
+			200,
+			"application/json",
+		)?;
 		contracts.response::<_, TenantExecutionSettings>(
 			document,
 			view::get,

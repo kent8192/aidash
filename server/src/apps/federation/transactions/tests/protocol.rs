@@ -415,6 +415,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 				&NewTask {
 					title: "Atomic task".into(),
 					description: "Finish with the remote execution".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -494,7 +495,10 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 			.snapshot(&TEST_FIXTURE, wa)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.is_empty()
 	);
 	pending_run(&b, run.id, json!([])).await;
@@ -605,9 +609,12 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 			.snapshot(&TEST_FIXTURE, wa)
 			.await
 			.unwrap()
-			.artifacts;
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>();
 	assert_eq!(artifacts.len(), 1);
-	assert_eq!(artifacts[0].created_by, owner);
+	assert_eq!(artifacts[0].sender, owner);
 }
 
 #[rstest]

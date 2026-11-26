@@ -469,6 +469,7 @@ async fn another_reader(store: &Store, thread: Uuid, run: Uuid) -> Uuid {
 			&aidash_domain::NewTask {
 				title: "Second reader".into(),
 				description: "Read the same shared Unit".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

@@ -687,6 +687,7 @@ fn admission_description(
 			title: "Fixture".into(),
 			description: "Fixture".into(),
 			status: aidash_domain::TaskStatus::Running,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "reader".into(),

@@ -5,7 +5,7 @@ use aidash_application::{
 	ports::authorization::state::{ThreadListingScope, ThreadStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
+	Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
 	policy::Resource,
 	registry::{Entry, Search},
 	run_state::RawRun,
@@ -164,15 +164,6 @@ impl ThreadStateScope for StateReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn artifact_candidates(&mut self, node: Option<&str>) -> Result<Vec<Artifact>> {
-		let q = self
-			.candidates("artifacts", node, "created_at")
-			.to_string(PostgresQueryBuilder);
-		aidash_server::database::query_as(&q)
-			.fetch_all(&mut **self.access.tx)
-			.await
-			.map_err(Into::into)
-	}
 	async fn run_candidates(&mut self, node: Option<&str>) -> Result<Vec<RawRun>> {
 		let q = self
 			.candidates("task_executions", node, "updated_at")
@@ -207,17 +198,8 @@ impl ThreadStateScope for StateReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn prepare_artifacts(&mut self, artifacts: &[Artifact]) -> Result<()> {
-		self.access
-			.prepare_state_artifacts(artifacts)
-			.await
-			.map_err(Into::into)
-	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		self.access.task_visible(row).await.map_err(Into::into)
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		self.access.artifact_visible(row).await.map_err(Into::into)
 	}
 	async fn prepare_runs(&mut self, runs: &[RunMetadata]) -> Result<()> {
 		self.access

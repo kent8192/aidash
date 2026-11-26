@@ -36,3 +36,9 @@ impl From<crate::apps::identity::repositories::execution_settings::Stored>
 		}
 	}
 }
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GoalJudgeModel {
+	pub model: Option<aidash_domain::registry::EntityRef>,
+}

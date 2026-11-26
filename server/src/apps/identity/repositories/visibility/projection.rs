@@ -6,7 +6,7 @@ use aidash_application::{
 	ports::authorization::{projection::ThreadProjection, visibility::RunVerdicts},
 };
 use aidash_domain::{
-	Artifact, Event, Message, Task, Thread, ThreadSnapshot, policy::Resource,
+	Event, Message, Task, Thread, ThreadSnapshot, policy::Resource,
 	provider::progress::MARKER_PREFIX,
 };
 use async_trait::async_trait;
@@ -75,11 +75,6 @@ pub(crate) fn event_scope(include_marketplace: bool, tenant: &str, threads: &[Uu
 impl ThreadProjection for Reads<'_> {
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		Box::pin(self.access.task_visible(row))
-			.await
-			.map_err(Into::into)
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		Box::pin(self.access.artifact_visible(row))
 			.await
 			.map_err(Into::into)
 	}
@@ -232,32 +227,6 @@ impl ThreadProjection for Reads<'_> {
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("tasks"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								)),
-						)
-						.order_by(Alias::new("created_at"), Order::Asc)
-						.order_by(Alias::new("id"), Order::Asc)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_all(&mut **self.access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn thread_artifacts(&mut self, id: Uuid) -> Result<Vec<Artifact>> {
-		let result: NativeResult<Vec<Artifact>> = async {
-			Ok({
-				let query_bind_1 = id;
-				aidash_server::database::query_as(
-					&Query::select()
-						.column(ColumnRef::Asterisk)
-						.from(Alias::new("artifacts"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 								.eq(SimpleExpr::CustomWithExpr(

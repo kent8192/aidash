@@ -611,7 +611,10 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.len(),
 		1
 	);

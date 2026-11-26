@@ -125,19 +125,39 @@ pub(crate) async fn describe(
 	.await
 	.map_err(Into::into)
 }
+pub(crate) enum Download {
+	Buffered(Vec<u8>),
+	Blob(aidash_application::ports::blob_store::BlobReader),
+}
+
 pub(crate) async fn download(
 	store: &Store,
 	lease: &mut Lease,
 	thread: Uuid,
 	id: Uuid,
-) -> Result<(ChannelAttachment, Vec<u8>)> {
-	aidash_application::threads::channels::download(
-		&mut crate::bootstrap::channel_scope(store, lease),
-		thread,
-		id,
-	)
-	.await
-	.map_err(Into::into)
+) -> Result<(ChannelAttachment, Download)> {
+	use aidash_application::threads::channels::{attachment_bytes, authorize_download};
+	let mut scope = crate::bootstrap::channel_scope(store, lease);
+	let (attachment, completion) = authorize_download(&mut scope, thread, id).await?;
+	if !completion {
+		let bytes = attachment_bytes(&mut scope, &attachment).await?;
+		return Ok((attachment.metadata(), Download::Buffered(bytes)));
+	}
+	let entry = crate::apps::execution::capabilities::contracts::FileEntry {
+		file_id: attachment.object_id.ok_or(crate::Error::Forbidden)?,
+		path: String::new(),
+		digest: attachment.sha256.clone(),
+		size: u64::try_from(attachment.size_bytes)
+			.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?,
+		media_type: attachment.media_type.clone(),
+		scope: crate::apps::execution::capabilities::contracts::FileScope::Working,
+		provenance: serde_json::Value::Null,
+	};
+	let reader = store
+		.capabilities
+		.verified(lease.access_mut(), &entry)
+		.await?;
+	Ok((attachment.metadata(), Download::Blob(reader)))
 }
 
 #[cfg(test)]

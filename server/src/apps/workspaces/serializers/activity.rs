@@ -28,6 +28,9 @@ impl From<MessageRecord> for Message {
 			thread_id,
 			sender: record.sender,
 			content: record.content,
+			completion: record
+				.completion
+				.and_then(|value| serde_json::from_value(value.into_inner()).ok()),
 			idempotency_key: record.idempotency_key,
 			created_at: record.created_at,
 			run_id: record.run_id,

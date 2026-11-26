@@ -435,7 +435,6 @@ pub const TABLES: &[Table] = &[
 	// the migration ledger
 	table("reinhardt", "reinhardt_migrations", DeploymentWide),
 	// workspaces
-	table("workspaces", "artifacts", TenantOwned),
 	table("workspaces", "channel_attachments", TenantOwned),
 	table("workspaces", "channel_message_context", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),

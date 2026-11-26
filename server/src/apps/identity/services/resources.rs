@@ -3,7 +3,7 @@ use super::{access::Access, policy::Resource};
 use crate::apps::identity::models::DecisionOwner;
 use crate::{
 	Result,
-	domain::{Artifact, Event, Message, RunMetadata, Task},
+	domain::{Event, Message, RunMetadata, Task},
 };
 use aidash_application::authorization::{
 	visibility::provenance::ReadBlock,
@@ -184,14 +184,6 @@ impl Access {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn artifact_visible(&mut self, artifact: &Artifact) -> Result<bool> {
-		aidash_application::authorization::visibility::resources::artifact_visible(
-			&mut crate::bootstrap::run_visibility_scope(self),
-			artifact,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	pub(crate) async fn output_visible(
 		&mut self,
 		thread: Uuid,
@@ -235,20 +227,6 @@ impl Access {
 			run.agent_id.clone()
 		};
 		Ok(self.resource("memory", id, attributes))
-	}
-
-	pub(crate) async fn artifact_creation_resource(
-		&mut self,
-		task: Uuid,
-		creator: &str,
-	) -> Result<Resource> {
-		aidash_application::authorization::visibility::resources::artifact_creation_resource(
-			&mut crate::bootstrap::run_visibility_scope(self),
-			task,
-			creator,
-		)
-		.await
-		.map_err(Into::into)
 	}
 
 	pub(crate) async fn message_visible(&mut self, message: &Message) -> Result<bool> {

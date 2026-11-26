@@ -293,6 +293,7 @@ pub(crate) async fn enqueue(
 				&NewTask {
 					title: input.title,
 					description: input.description,
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -582,6 +583,7 @@ pub(crate) async fn start_in_thread(
 			&NewTask {
 				title: input.title,
 				description: input.description,
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

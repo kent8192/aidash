@@ -10,9 +10,6 @@ pub enum AuthorizationRunReadResourceKind {
 	#[model_enum(value = "task")]
 	#[serde(rename = "task")]
 	Task,
-	#[model_enum(value = "artifact")]
-	#[serde(rename = "artifact")]
-	Artifact,
 	#[model_enum(value = "message")]
 	#[serde(rename = "message")]
 	Message,
