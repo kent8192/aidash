@@ -329,6 +329,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
+			transaction_seed_key: [7; 32],
 		},
 		store,
 		client: runtime_controls.client,

@@ -12,7 +12,11 @@ fn check(manifest: &Manifest) -> crate::Result<()> {
 fn manifest_encoding_and_digest_preserve_the_original_wire_bytes(manifest: Manifest) {
 	check(&manifest).unwrap();
 	assert_eq!(serde_json::to_string(&manifest).unwrap(), GOLDEN);
-	assert_eq!(manifest.digest().unwrap(), GOLDEN_DIGEST);
+	// Pins the sealed digest every participant agrees on (ADR 0146).
+	assert_eq!(
+		manifest.sealed_digest(&"5e".repeat(32)).unwrap(),
+		GOLDEN_DIGEST
+	);
 }
 #[rstest]
 fn local_participant_lookup_preserves_absence_as_a_distinct_authority_failure(manifest: Manifest) {
@@ -223,7 +227,7 @@ fn aborted_decisions_can_complete_without_publishing_visible_effects() {
 }
 const GOLDEN: &str = r#"{"id":"00000000-0000-0000-0000-000000000001","coordinator":"aidash://alpha/airy-hawk-2lu4as22","isolation":"serializable","deadline":"2030-01-01T00:00:00Z","participants":[{"node_id":"aidash://alpha/airy-hawk-2lu4as22","mutations":[{"kind":"thread_title","thread_id":"00000000-0000-0000-0000-000000000002","expected_revision":0,"title":"Count"}]}]}"#;
 // The Thread title mutation replaced `workspace_state` (#1008).
-const GOLDEN_DIGEST: &str = "5d57dd1243a3e67e858a68c5bdafb1268ca9573a9deeda8e978a21efa66d35b0";
+const GOLDEN_DIGEST: &str = "334cae3776b9645209f329138c8368a60282df667aa02d05be53122afb404e61";
 
 #[rstest]
 fn a_manifest_naming_two_nodes_of_one_deployment_is_refused(mut manifest: Manifest) {

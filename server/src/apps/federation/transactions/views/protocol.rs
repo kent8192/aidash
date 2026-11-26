@@ -1,7 +1,7 @@
 //! HTTP endpoints backed by native dependency injection.
-use crate::apps::federation::transactions::Manifest;
 use crate::apps::federation::transactions::serializers::authority::Preflight;
 use crate::apps::federation::transactions::services::protocol::Transactions;
+use crate::apps::federation::transactions::{Manifest, Share};
 use crate::apps::identity::services::http_auth::InboundCall;
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
@@ -73,9 +73,9 @@ pub async fn participants(#[inject] service: Depends<Transactions>) -> ViewResul
 pub async fn reserve(
 	#[inject] service: Depends<Transactions>,
 	#[inject] peer: InboundCall,
-	Json(manifest): Json<Manifest>,
+	Json(share): Json<Share>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.reserve(peer.0, manifest).await)
+	crate::http::json(service.reserve(peer.0, share).await)
 }
 
 #[post(
@@ -86,9 +86,9 @@ pub async fn reserve(
 pub async fn prepare(
 	#[inject] service: Depends<Transactions>,
 	#[inject] peer: InboundCall,
-	Json(manifest): Json<Manifest>,
+	Json(share): Json<Share>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.prepare(peer.0, manifest).await)
+	crate::http::json(service.prepare(peer.0, share).await)
 }
 
 #[post(
@@ -99,9 +99,9 @@ pub async fn prepare(
 pub async fn finish(
 	#[inject] service: Depends<Transactions>,
 	#[inject] peer: InboundCall,
-	Json(manifest): Json<Manifest>,
+	Json(share): Json<Share>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.finish(peer.0, manifest).await)
+	crate::http::json(service.finish(peer.0, share).await)
 }
 
 #[get(

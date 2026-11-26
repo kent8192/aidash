@@ -14,9 +14,10 @@ use aidash_application::{
 	},
 };
 use aidash_domain::transactions::{
-	CoordinatorTransition, Manifest,
-	authority::Status,
+	CoordinatorTransition,
+	authority::{Decision, Status},
 	coordination::{LocalStatus, ParticipantOperation, Vote},
+	share::Share,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -152,8 +153,8 @@ impl CoordinatorRepository for Repository {
 		Ok(Box::new(Batch { ids }))
 	}
 
-	async fn issue_authority(&self, manifest: &Manifest, node: &str) -> ApplicationResult<()> {
-		authority::issue(&self.runtime, manifest, node)
+	async fn issue_authority(&self, state: &Status, node: &str) -> ApplicationResult<()> {
+		authority::issue(&self.runtime, state, node)
 			.await
 			.map_err(Into::into)
 	}
@@ -181,15 +182,13 @@ pub(crate) struct Transport {
 
 #[async_trait]
 impl ParticipantTransport for Transport {
-	async fn decision(&self, manifest: &Manifest) -> ApplicationResult<Status> {
-		let own = transport::participant(&self.runtime, manifest)
-			.ok_or_else(|| aidash_application::Error::Forbidden)?;
-		transport::remote::<native::Status>(
+	async fn decision(&self, share: &Share) -> ApplicationResult<Decision> {
+		transport::remote::<native::Decision>(
 			&self.runtime,
-			transport::as_node(&self.runtime, own).await?,
-			&manifest.coordinator,
+			transport::as_node(&self.runtime, &share.part.node_id).await?,
+			&share.coordinator,
 			"GET",
-			&format!("/transactions/{}/decision", manifest.id),
+			&format!("/transactions/{}/decision", share.id),
 			None::<&()>,
 		)
 		.await
@@ -198,7 +197,7 @@ impl ParticipantTransport for Transport {
 
 	async fn send(
 		&self,
-		manifest: &Manifest,
+		share: &Share,
 		node: &str,
 		operation: ParticipantOperation,
 	) -> ApplicationResult<LocalStatus> {
@@ -207,27 +206,24 @@ impl ParticipantTransport for Transport {
 			{
 				match operation {
 					ParticipantOperation::Reserve => {
-						participant::reserve(&self.runtime, None, &manifest.coordinator, manifest)
-							.await
+						participant::reserve(&self.runtime, None, &share.coordinator, share).await
 					}
 					ParticipantOperation::Prepare => {
-						participant::prepare(&self.runtime, None, &manifest.coordinator, manifest)
-							.await
+						participant::prepare(&self.runtime, None, &share.coordinator, share).await
 					}
 					ParticipantOperation::Finish => {
-						participant::finish(&self.runtime, None, &manifest.coordinator, manifest)
-							.await
+						participant::finish(&self.runtime, None, &share.coordinator, share).await
 					}
 				}
 				.map_err(Into::into)
 			} else {
 				transport::remote(
 					&self.runtime,
-					transport::as_node(&self.runtime, &manifest.coordinator).await?,
+					transport::as_node(&self.runtime, &share.coordinator).await?,
 					node,
 					"POST",
 					&format!("/transactions/{}", operation.as_str()),
-					Some(manifest),
+					Some(share),
 				)
 				.await
 			};

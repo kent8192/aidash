@@ -515,6 +515,22 @@ pub async fn map_subject(
 	assert_eq!(status, 200, "{mapping}");
 }
 
+/// What the participant at `node` receives for `manifest` (ADR 0146): sealed
+/// with the seed the coordinator stored, or with a fixed seed when no
+/// coordinator admitted it.
+#[allow(dead_code)]
+pub async fn share(
+	coordinator: &Federation,
+	manifest: &aidash_server::transactions::Manifest,
+	node: &str,
+) -> aidash_server::transactions::Share {
+	let seed = aidash_server::transactions::coordinator::status(coordinator, manifest.id)
+		.await
+		.map(|status| status.seed)
+		.unwrap_or_else(|_| "5e".repeat(32));
+	manifest.share(&seed, node).unwrap()
+}
+
 /// Both fixture Deployments register the other's default Node, so each accepts
 /// and addresses the other. Both serve their routes.
 #[allow(dead_code)]
@@ -1192,6 +1208,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 				preview: None,
 				dashboard_origin: "http://localhost:3000".into(),
+				transaction_seed_key: [7; 32],
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),

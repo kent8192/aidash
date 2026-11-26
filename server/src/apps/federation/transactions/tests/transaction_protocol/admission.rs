@@ -81,7 +81,7 @@ async fn serve(node: &mut Node, app: reinhardt::ServerRouter) {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
+async fn an_invalid_deadline_is_refused_before_any_cross_deployment_preflight(
 	#[future(awt)] scoped_pair: ScopedPair,
 	#[values(-60, 7200)] seconds: i64,
 ) {
@@ -95,10 +95,10 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	} = scoped_pair;
 	manifest.deadline = Utc::now() + Duration::seconds(seconds);
 	let (status, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
-	assert_eq!(status, 403, "{body}");
+	assert_eq!(status, 400, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
 	// A Deployment Administrator owns no transactions: it is refused before the
-	// deadline is looked at, so it cannot step around the suspension (#484).
+	// deadline is looked at (#484).
 	let (status, body) = common::post(
 		&app_a,
 		&a.f.config.api_token,
@@ -108,32 +108,27 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	.await;
 	assert_eq!(status, 403, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
+	// The refused ID stays free: a corrected deadline submits it.
 	manifest.deadline = Utc::now() + Duration::minutes(5);
-	let (retry, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
-	assert_eq!(
-		retry, 403,
-		"correcting the deadline must not bypass suspension: {body}"
-	);
-	assert_no_transaction_state(&[&a, &b], manifest.id).await;
-	let (retry, body) = common::post(
+	let (status, body) = common::post(
 		&app_a,
 		&a.f.config.api_token,
 		"/api/transactions",
 		json!(manifest),
 	)
 	.await;
-	assert_eq!(
-		retry, 403,
-		"a Deployment Administrator cannot reuse the corrected ID either: {body}"
-	);
-	assert_no_transaction_state(&[&a, &b], manifest.id).await;
+	assert_eq!(status, 403, "{body}");
+	let (retry, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
+	assert_eq!(retry, 202, "{body}");
+	let state = complete(&a, manifest.id).await;
+	assert_eq!(state.decision.as_deref(), Some("COMMIT"));
 	a.cleanup().await;
 	b.cleanup().await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn suspended_submission_keeps_expired_existing_transactions_recoverable(
+async fn a_preflight_that_outlasts_the_deadline_aborts_and_stays_retryable(
 	#[future(awt)] scoped_pair: ScopedPair,
 ) {
 	let ScopedPair {
@@ -166,14 +161,9 @@ async fn suspended_submission_keeps_expired_existing_transactions_recoverable(
 		));
 	serve(&mut b, app).await;
 	let (status, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
-	assert_eq!(
-		status, 403,
-		"fresh scoped submission must be suspended: {body}"
-	);
-	assert_eq!(preflights.load(Ordering::SeqCst), 0);
-	assert_no_transaction_state(&[&a, &b], manifest.id).await;
-	// Existing durable scoped work remains recoverable after its deadline.
-	seed_existing_scoped_transaction(&a, &manifest, &[&a, &b]).await;
+	assert_eq!(status, 202, "{body}");
+	assert_eq!(preflights.load(Ordering::SeqCst), 1);
+	// The admitted transaction is recoverable after its deadline, and aborts.
 	let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
 	tokio::time::sleep(remaining + StdDuration::from_millis(50)).await;
 	assert!(Utc::now() > manifest.deadline);
@@ -228,46 +218,25 @@ async fn unavailable_peer_hides_only_its_rows(#[future(awt)] scoped_pair: Scoped
 	assert_eq!(ids, vec![json!(manifest.id), json!(remote_id)]);
 }
 
+/// Each Node submits sixteen transactions naming the other at once. Every
+/// submission preflights on the other Node while holding its own authority
+/// locks, so nested Federation calls must never wait on each other: each one
+/// settles within the bound, admitted or refused as retryable, and a refused
+/// one leaves nothing behind.
 #[rstest::rstest]
 #[tokio::test]
-async fn bidirectional_new_scoped_submissions_are_rejected_before_preflight(
+async fn bidirectional_new_scoped_submissions_settle_without_a_lock_cycle(
 	#[future(awt)] scoped_pair: ScopedPair,
-
-	fault_signals: FaultSignals,
 ) {
 	let ScopedPair {
-		mut a,
-		mut b,
+		a,
+		b,
 		app_a,
 		app_b,
 		token_a,
 		token_b,
 		manifest,
 	} = scoped_pair;
-	let gate = fault_signals.gate;
-	let arrived = fault_signals.active;
-	for node in [&mut a, &mut b] {
-		let gate = gate.clone();
-		let arrived = arrived.clone();
-		let app = aidash_server::routes()
-			.into_server()
-			.with_di_context(node.application.context.clone())
-			.with_middleware(ClosureMiddleware(
-				move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
-					let gate = gate.clone();
-					let arrived = arrived.clone();
-					async move {
-						if request.uri.path() == "/federation/v0.1/transactions/preflight" {
-							arrived.fetch_add(1, Ordering::SeqCst);
-							gate.acquire().await.unwrap().forget();
-						}
-						next.handle(request).await.unwrap()
-					}
-				},
-			));
-		serve(node, app).await;
-	}
-	let mut ids = Vec::new();
 	let mut requests = Vec::new();
 	for _ in 0..16 {
 		for (app, token, coordinator) in [
@@ -278,30 +247,28 @@ async fn bidirectional_new_scoped_submissions_are_rejected_before_preflight(
 			let token = token.clone();
 			let mut manifest = manifest.clone();
 			manifest.id = Uuid::new_v4();
-			ids.push(manifest.id);
 			manifest.coordinator = coordinator.to_owned();
 			requests.push(tokio::spawn(async move {
-				common::post(&app, &token, "/api/transactions", json!(manifest)).await
+				let id = manifest.id;
+				(
+					id,
+					common::post(&app, &token, "/api/transactions", json!(manifest)).await,
+				)
 			}));
 		}
 	}
 	let results = tokio::time::timeout(
-		StdDuration::from_secs(5),
+		StdDuration::from_secs(60),
 		futures_util::future::join_all(requests),
 	)
 	.await
-	.expect("both nodes must reject suspended submissions without peer I/O");
-	assert_eq!(
-		arrived.load(Ordering::SeqCst),
-		0,
-		"no remote preflight may be sent"
-	);
+	.expect("concurrent submissions in both directions must not wait on each other");
 	for result in results {
-		let (status, body) = result.unwrap();
-		assert_eq!(status, 403, "{body}");
-	}
-	for id in ids {
-		assert_no_transaction_state(&[&a, &b], id).await;
+		let (id, (status, body)) = result.unwrap();
+		assert!(matches!(status, 202 | 503), "{status}: {body}");
+		if status == 503 {
+			assert_no_transaction_state(&[&a, &b], id).await;
+		}
 	}
 	a.cleanup().await;
 	b.cleanup().await;
@@ -309,7 +276,7 @@ async fn bidirectional_new_scoped_submissions_are_rejected_before_preflight(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
+async fn multi_peer_new_scoped_submissions_preflight_every_peer_concurrently(
 	#[future(awt)] scoped_pair: ScopedPair,
 
 	#[future(awt)]
@@ -373,10 +340,13 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 		common::post(&app_a, &token_a, "/api/transactions", json!(manifest)),
 	)
 	.await;
-	let (status, body) = response.expect("suspension must reject without any peer preflight");
-	assert_eq!(status, 403, "{body}");
-	assert_eq!(preflights.load(Ordering::SeqCst), 0);
-	assert_no_transaction_state(&[&a, &b, &c], manifest.id).await;
+	// The barrier opens only when both peers' preflights are in flight.
+	let (status, body) = response.expect("peer preflights must run concurrently");
+	assert_eq!(status, 202, "{body}");
+	assert_eq!(preflights.load(Ordering::SeqCst), 2);
+	let state = complete(&a, manifest.id).await;
+	assert_eq!(state.decision.as_deref(), Some("COMMIT"));
+	assert_only_own_parts(&[&a, &b, &c], &manifest).await;
 	a.cleanup().await;
 	b.cleanup().await;
 	c.cleanup().await;

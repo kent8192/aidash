@@ -1,9 +1,10 @@
 //! Durable coordinator storage and participant communication capabilities.
 use crate::Result;
 use aidash_domain::transactions::{
-	CoordinatorTransition, Manifest,
-	authority::Status,
+	CoordinatorTransition,
+	authority::{Decision, Status},
 	coordination::{LocalStatus, ParticipantOperation, Vote},
+	share::Share,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -39,7 +40,7 @@ pub trait CoordinatorRepository: Send + Sync {
 	-> Result<()>;
 	async fn acquire_recovery(&self, id: Uuid) -> Result<Box<dyn RecoveryScope>>;
 	async fn recovery_batch(&self, aborted: bool) -> Result<Box<dyn RecoveryBatch>>;
-	async fn issue_authority(&self, manifest: &Manifest, node: &str) -> Result<()>;
+	async fn issue_authority(&self, state: &Status, node: &str) -> Result<()>;
 	async fn settle_authority(&self, id: Uuid, node: &str, phase: &str) -> Result<()>;
 	async fn scoped(&self, id: Uuid) -> Result<bool>;
 	async fn fault(&self, id: Uuid, point: &str) -> Result<()>;
@@ -47,10 +48,11 @@ pub trait CoordinatorRepository: Send + Sync {
 
 #[async_trait]
 pub trait ParticipantTransport: Send + Sync {
-	async fn decision(&self, manifest: &Manifest) -> Result<Status>;
+	/// The coordinator's decision for the participant holding `share`.
+	async fn decision(&self, share: &Share) -> Result<Decision>;
 	async fn send(
 		&self,
-		manifest: &Manifest,
+		share: &Share,
 		node: &str,
 		operation: ParticipantOperation,
 	) -> Result<LocalStatus>;

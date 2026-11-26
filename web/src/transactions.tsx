@@ -48,7 +48,10 @@ export function TransactionsPage({
 }) {
   const { t, locale } = useI18n();
   const nodeLabel = useNodeLabel();
-  const transactionLabel = (manifest: TransactionManifest) =>
+  // A participant's record holds its share, which has the same header (ADR 0146).
+  const transactionLabel = (
+    manifest: Pick<TransactionManifest, "coordinator" | "deadline">,
+  ) =>
     `${nodeLabel(manifest.coordinator)} · ${new Date(manifest.deadline).toLocaleString()}`;
   const client = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);

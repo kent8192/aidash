@@ -1612,6 +1612,7 @@ async fn account_suspension_resume_audits_a_repeated_owner_refusal_once(
 		tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 		preview: None,
 		dashboard_origin: String::new(),
+		transaction_seed_key: [7; 32],
 	};
 	let repository =
 		crate::apps::identity::repositories::dashboard::Repository(crate::federation::Federation {

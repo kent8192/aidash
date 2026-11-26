@@ -33,9 +33,9 @@ async fn peer_call(
 	target: &Node,
 	sender: &str,
 	path: &str,
-	manifest: &aidash_server::transactions::Manifest,
+	share: &aidash_server::transactions::Share,
 ) -> (u16, Value) {
-	let body = serde_json::to_vec(manifest).unwrap();
+	let body = serde_json::to_vec(share).unwrap();
 	let token = peering::token(
 		source.f.config.deployment_key.as_deref().unwrap(),
 		source.f.config.deployment.as_str(),
@@ -373,7 +373,14 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	// deliberately do not run the coordinator's vote persistence. This is the
 	// durable lost-before-acknowledgement schedule, not a process-kill claim.
 	let phase = if abort { "ABORTED" } else { "COMMITTED" };
-	let (status, reply) = peer_call(&a, &b, &a.address, "/transactions/finish", &manifest).await;
+	let (status, reply) = peer_call(
+		&a,
+		&b,
+		&a.address,
+		"/transactions/finish",
+		&share_for(&a.f, &manifest, &b.address).await,
+	)
+	.await;
 	assert_eq!(status, 200, "{reply}");
 	assert_eq!(reply["phase"], phase);
 	assert!(!a.status(manifest.id).await.complete);
@@ -418,7 +425,8 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	assert!(fixture_blob_path(storage_a.path(), kept_file_a).exists());
 	assert_eq!(trust_row(&a, &target_a, &b.address).await, original_a);
 	a.restart().await;
-	let body = serde_json::to_vec(&manifest).unwrap();
+	let own = share_for(&a.f, &manifest, &b.address).await;
+	let body = serde_json::to_vec(&own).unwrap();
 	let (next_a, finish_claims, retires_a) =
 		successor(&a, &b, "POST", "/transactions/finish", &body, 31).await;
 	// All negatives carry a valid successor proof after both catalog/audit rows
@@ -427,11 +435,13 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	fresh.id = Uuid::new_v4();
 	let mut forged = manifest.clone();
 	forged.deadline += Duration::seconds(1);
+	let fresh = share_for(&a.f, &fresh, &b.address).await;
+	let forged = share_for(&a.f, &forged, &b.address).await;
 	for (path, request, sender) in [
 		("/transactions/reserve", &fresh, a.address.as_str()),
 		("/transactions/prepare", &fresh, a.address.as_str()),
 		("/transactions/finish", &forged, a.address.as_str()),
-		("/transactions/finish", &manifest, keeper_a_address.as_str()),
+		("/transactions/finish", &own, keeper_a_address.as_str()),
 	] {
 		let bytes = serde_json::to_vec(request).unwrap();
 		let denied = FederationClaims {
@@ -519,9 +529,14 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	let admission = retired_admission(&a, &b, &finish_claims, &next_a, &body, after)
 		.await
 		.unwrap();
-	let terminal = participant::finish(&b.f, Some(&admission), &a.address, &manifest)
-		.await
-		.unwrap();
+	let terminal = participant::finish(
+		&b.f,
+		Some(&admission),
+		&a.address,
+		&share_for(&a.f, &manifest, &b.address).await,
+	)
+	.await
+	.unwrap();
 	assert_eq!(terminal.phase, phase);
 	retired_admission(&b, &a, &decision_claims, &next_b, &[], after)
 		.await
@@ -566,4 +581,18 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 		.unwrap();
 		assert_eq!(counts, (0, 1), "recovery never resurrects ordinary data");
 	}
+}
+
+/// What the participant at `node` receives (ADR 0146): sealed with the seed
+/// the coordinator stored, or with a fixed seed when none admitted it.
+async fn share_for(
+	coordinator: &aidash_server::federation::Federation,
+	manifest: &aidash_server::transactions::Manifest,
+	node: &str,
+) -> aidash_server::transactions::Share {
+	let seed = aidash_server::transactions::coordinator::status(coordinator, manifest.id)
+		.await
+		.map(|status| status.seed)
+		.unwrap_or_else(|_| "5e".repeat(32));
+	manifest.share(&seed, node).unwrap()
 }

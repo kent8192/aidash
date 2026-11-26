@@ -1,10 +1,10 @@
 //! Participant state, visibility barriers, and rollback-only mutation validation.
 use super::{AtomicHistory, AtomicParticipant};
-use crate::apps::federation::transactions::serializers::contracts::Manifest;
 use crate::apps::federation::transactions::services::states::AtomicParticipantPhase;
 use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_domain::transactions::share::Share;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
@@ -41,14 +41,15 @@ impl AtomicParticipant {
 
 	pub(crate) async fn insert(
 		tx: &mut dyn TransactionExecutor,
-		manifest: &Manifest,
+		share: &Share,
 		phase: AtomicParticipantPhase,
 	) -> Result<Self> {
+		// A participant stores only its own share (ADR 0146).
 		let row = Self::build()
-			.id(manifest.id)
-			.coordinator(&manifest.coordinator)
-			.digest(manifest.digest()?)
-			.manifest(json!(manifest).into())
+			.id(share.id)
+			.coordinator(&share.coordinator)
+			.digest(share.digest()?)
+			.manifest(json!(share).into())
 			.phase(phase)
 			.finish();
 		Ok(Self::objects()

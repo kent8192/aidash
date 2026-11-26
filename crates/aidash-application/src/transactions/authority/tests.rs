@@ -121,13 +121,12 @@ impl TransactionAuthorityScope for Scope {
 		}
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		let name = if action == "transaction.disclose" {
-			format!(
-				"{action}:{}:{}",
-				resource.kind,
-				resource.attributes["recipient_node"].as_str().unwrap()
-			)
-		} else if let Some(node) = resource.attributes["node_id"].as_str() {
+		// The policy denies disclosure, which no check may ask for (#1108).
+		if action == "transaction.disclose" {
+			self.calls.push(action.into());
+			return Err(Error::Forbidden);
+		}
+		let name = if let Some(node) = resource.attributes["node_id"].as_str() {
 			format!("{action}:{}:{node}", resource.kind)
 		} else {
 			action.into()
@@ -207,7 +206,7 @@ impl TransactionAuthorityScope for Scope {
 }
 #[rstest]
 #[tokio::test]
-async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_order(
+async fn all_origins_precede_mutation_checks_without_disclosure(
 	mut scope: Scope,
 	input: Preflight,
 ) {
@@ -230,20 +229,14 @@ async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_orde
 			"thread",
 			"thread.read",
 			"thread.update",
-			"transaction.disclose:thread:aidash://home/airy-hawk-2lu4as22",
-			"transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22",
 			"task",
 			"task_resource",
 			"task.complete",
 			"artifact_resource",
 			"artifact.create",
-			"transaction.disclose:task:aidash://home/airy-hawk-2lu4as22",
-			"transaction.disclose:task:aidash://peer/airy-hawk-2lu4as22",
 			"run",
 			"run.read",
-			"run.finish",
-			"transaction.disclose:run:aidash://home/airy-hawk-2lu4as22",
-			"transaction.disclose:run:aidash://peer/airy-hawk-2lu4as22"
+			"run.finish"
 		]
 	);
 	assert_eq!(scope.subjects, vec!["root", "agent"]);
@@ -280,7 +273,6 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 #[case::run("run")]
 #[case::inherit("inherit_local_run")]
 #[case::thread("thread.update")]
-#[case::disclosure("transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22")]
 #[case::artifact("artifact.create")]
 #[tokio::test]
 async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_identity(
@@ -373,8 +365,10 @@ async fn unknown_targets_fail_before_resource_reads(mut scope: Scope, mut input:
 	);
 	assert_eq!(scope.calls, vec!["transaction.prepare"]);
 }
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+
 #[rstest]
-fn preflight_discloses_only_identifiers_but_digests_the_full_manifest(input: Preflight) {
+fn preflight_discloses_only_identifiers_but_digests_the_sealed_manifest(input: Preflight) {
 	let manifest = Manifest {
 		id: input.id,
 		coordinator: input.coordinator.clone(),
@@ -396,17 +390,43 @@ fn preflight_discloses_only_identifiers_but_digests_the_full_manifest(input: Pre
 			],
 		}],
 	};
-	let preflight = request(&manifest, &input.origin, &manifest.coordinator).unwrap();
+	let preflight = sealed_request(&manifest, SEED, &input.origin, &manifest.coordinator).unwrap();
 	assert_eq!(
 		preflight.targets,
 		vec![input.targets[0].clone(), input.targets[2].clone()]
 	);
-	assert_eq!(preflight.digest, manifest.digest().unwrap());
+	assert_eq!(preflight.digest, manifest.sealed_digest(SEED).unwrap());
 	assert_eq!(preflight.origin, input.origin);
+	assert_eq!(
+		preflight,
+		request(
+			&manifest.share(SEED, &manifest.coordinator).unwrap(),
+			&input.origin
+		)
+		.unwrap()
+	);
 	assert!(matches!(
-		request(&manifest, &preflight.origin, "aidash://missing"),
+		sealed_request(&manifest, SEED, &preflight.origin, "aidash://missing"),
 		Err(Error::Forbidden)
 	));
+}
+
+/// A participant's preflight names every recipient but only its own targets.
+#[rstest]
+fn a_share_preflight_lists_every_recipient_and_only_its_own_targets(input: Preflight) {
+	let manifest = source_manifest(&input);
+	let peer = "aidash://peer/airy-hawk-2lu4as22";
+	let preflight = request(&manifest.share(SEED, peer).unwrap(), &input.origin).unwrap();
+	assert_eq!(preflight.recipients, input.recipients);
+	assert_eq!(
+		preflight.targets,
+		vec![Target {
+			kind: "thread".into(),
+			id: Uuid::from_u128(7),
+			task_id: None,
+		}]
+	);
+	assert_eq!(preflight.digest, manifest.sealed_digest(SEED).unwrap());
 }
 
 fn source_manifest(input: &Preflight) -> Manifest {
@@ -436,17 +456,16 @@ fn source_manifest(input: &Preflight) -> Manifest {
 	}
 }
 #[rstest]
-#[case::read("transaction.read", false)]
-#[case::submit("transaction.submit", true)]
+#[case::read("transaction.read")]
+#[case::submit("transaction.submit")]
 #[tokio::test]
-async fn remote_resources_require_source_permission_and_ordered_recipient_disclosure(
+async fn remote_resources_require_source_permission_without_disclosure(
 	mut scope: Scope,
 	input: Preflight,
 	#[case] action: &str,
-	#[case] disclosures: bool,
 ) {
 	let manifest = source_manifest(&input);
-	source_checks(&mut scope, &manifest, &input.origin, action)
+	source_checks(&mut scope, &manifest, SEED, &input.origin, action)
 		.await
 		.unwrap();
 	let qualified = format!("{action}:thread:aidash://peer/airy-hawk-2lu4as22");
@@ -455,25 +474,17 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 		.iter()
 		.position(|call| call == &qualified)
 		.unwrap();
-	let expected = if disclosures {
-		vec![
-			qualified,
-			"transaction.disclose:thread:aidash://home/airy-hawk-2lu4as22".into(),
-			"transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22".into(),
-		]
-	} else {
-		vec![qualified]
-	};
-	assert_eq!(scope.calls[start..], expected);
+	assert_eq!(scope.calls[start..], [qualified]);
+	assert!(!scope.calls.iter().any(|call| call.contains("disclose")));
 }
 #[rstest]
 #[tokio::test]
-async fn denied_source_permission_stops_remote_disclosure(mut scope: Scope, input: Preflight) {
+async fn denied_source_permission_stops_source_checks(mut scope: Scope, input: Preflight) {
 	let manifest = source_manifest(&input);
 	let failure = "transaction.submit:thread:aidash://peer/airy-hawk-2lu4as22";
 	scope.failure = Some(failure.into());
 	assert!(
-		matches!(source_checks(&mut scope,&manifest,&input.origin,"transaction.submit").await,Err(Error::External(message)) if message==format!("fault:{failure}"))
+		matches!(source_checks(&mut scope,&manifest,SEED,&input.origin,"transaction.submit").await,Err(Error::External(message)) if message==format!("fault:{failure}"))
 	);
 	assert_eq!(scope.calls.last().unwrap(), failure);
 }

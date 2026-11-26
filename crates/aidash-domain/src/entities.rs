@@ -313,7 +313,7 @@ pub struct Artifact {
 	pub run_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ArtifactInput {
 	pub kind: String,
 	pub name: String,

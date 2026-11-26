@@ -115,9 +115,14 @@ async fn recovery_successor_persists_for_a_closed_disabled_participant(
 			.visible
 	);
 	// A real terminal result whose coordinator has not recorded its final ACK.
-	let terminal = participant::finish(&b.f, None, &a.address, &manifest)
-		.await
-		.unwrap();
+	let terminal = participant::finish(
+		&b.f,
+		None,
+		&a.address,
+		&common::share(&a.f, &manifest, &b.address).await,
+	)
+	.await
+	.unwrap();
 	assert_eq!(terminal.phase, "COMMITTED");
 	assert!(
 		!coordinator::status(&a.f, manifest.id)
@@ -178,7 +183,8 @@ async fn recovery_successor_persists_for_a_closed_disabled_participant(
 	)
 	.await
 	.unwrap();
-	let body = serde_json::to_vec(&manifest).unwrap();
+	let own = common::share(&a.f, &manifest, &b.address).await;
+	let body = serde_json::to_vec(&own).unwrap();
 	let claims = FederationClaims {
 		iss: a.f.config.deployment.to_string(),
 		sub: a.address.clone(),
@@ -218,10 +224,12 @@ async fn recovery_successor_persists_for_a_closed_disabled_participant(
 		participant["mutations"][0]["expected_revision"] = json!(1);
 	}
 	let fresh: Manifest = serde_json::from_value(fresh_json).unwrap();
+	let fresh = common::share(&a.f, &fresh, &b.address).await;
+	let changed = common::share(&a.f, &changed, &b.address).await;
 	let other_address = other.to_string();
 	for (path, manifest, sender) in [
 		("/transactions/finish", &changed, a.address.as_str()),
-		("/transactions/finish", &manifest, other_address.as_str()),
+		("/transactions/finish", &own, other_address.as_str()),
 		("/transactions/reserve", &fresh, a.address.as_str()),
 		("/transactions/prepare", &fresh, a.address.as_str()),
 	] {
@@ -398,9 +406,14 @@ async fn recovery_successor_persists_for_a_closed_disabled_participant(
 		)
 		.await
 		.unwrap();
-		let terminal = participant::finish(&b.f, Some(&admitted), &a.address, &manifest)
-			.await
-			.unwrap();
+		let terminal = participant::finish(
+			&b.f,
+			Some(&admitted),
+			&a.address,
+			&common::share(&a.f, &manifest, &b.address).await,
+		)
+		.await
+		.unwrap();
 		assert_eq!(terminal.phase, "COMMITTED");
 		let old_token = FederationClaims {
 			kid: old.key_id().to_string(),

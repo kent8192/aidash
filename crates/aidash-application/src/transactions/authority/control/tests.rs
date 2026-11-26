@@ -47,11 +47,21 @@ fn manifest() -> Manifest {
 	}
 }
 
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+/// What the repository derives for any manifest.
+const DERIVED: &str = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1";
+const PEER: &str = "aidash://peer/airy-hawk-2lu4as22";
+
 fn status(manifest: &Manifest) -> Status {
+	sealed(manifest, SEED)
+}
+
+fn sealed(manifest: &Manifest, seed: &str) -> Status {
 	Status {
 		id: manifest.id,
-		digest: manifest.digest().unwrap(),
+		digest: manifest.sealed_digest(seed).unwrap(),
 		manifest: json!(manifest),
+		seed: seed.into(),
 		decision: None,
 		visible: false,
 		complete: false,
@@ -84,6 +94,12 @@ struct State {
 	pause_remote: bool,
 	/// The Tenant of each Node of this Deployment.
 	tenants: Vec<(String, String)>,
+	/// The seed a concurrent submission already sealed the manifest with.
+	sealed: Option<String>,
+	/// The seed each submission stored.
+	seeds: Vec<String>,
+	/// Each remote preflight sent.
+	preflights: Vec<(String, Preflight)>,
 }
 
 #[derive(Clone)]
@@ -115,6 +131,9 @@ impl Repository {
 				attempts: vec![],
 				pause_remote: false,
 				tenants: vec![("aidash://home/airy-hawk-2lu4as22".into(), "tenant".into())],
+				sealed: None,
+				seeds: vec![],
+				preflights: vec![],
 			})),
 			concurrent: Arc::new(AtomicUsize::new(0)),
 			peak: Arc::new(AtomicUsize::new(0)),
@@ -359,9 +378,14 @@ impl ControlScope for Control {
 
 #[async_trait]
 impl SubmissionScope for Submission {
-	async fn submit(&mut self, manifest: &Manifest, _: &Origin) -> Result<Status> {
+	async fn submit(&mut self, manifest: &Manifest, seed: &str, _: &Origin) -> Result<Status> {
 		self.repository.event("submit")?;
-		let stored = status(manifest);
+		let seed = {
+			let mut state = self.repository.state.lock().unwrap();
+			state.seeds.push(seed.into());
+			state.sealed.clone().unwrap_or_else(|| seed.into())
+		};
+		let stored = sealed(manifest, &seed);
 		self.status = Some(stored.clone());
 		Ok(stored)
 	}
@@ -460,6 +484,9 @@ impl AuthorityRepository for Repository {
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		manifest.validate::<Error>()
 	}
+	fn seed(&self, _: &Manifest) -> Result<String> {
+		Ok(DERIVED.into())
+	}
 	async fn origin(&self, _: Uuid) -> Result<Option<Origin>> {
 		Ok(self.state.lock().unwrap().origin.clone())
 	}
@@ -486,8 +513,13 @@ impl AuthorityRepository for Repository {
 			.unwrap_or_else(|| input.origin.clone());
 		Ok(Box::new(self.control(&origin)))
 	}
-	async fn remote_preflight(&self, node: &str, _: &Preflight) -> Result<()> {
+	async fn remote_preflight(&self, node: &str, input: &Preflight) -> Result<()> {
 		self.event(format!("preflight:{node}"))?;
+		self.state
+			.lock()
+			.unwrap()
+			.preflights
+			.push((node.into(), input.clone()));
 		let current = self.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
 		let _lease = RemoteLease(self.concurrent.clone());
 		self.peak.fetch_max(current, Ordering::SeqCst);
@@ -532,7 +564,7 @@ async fn submission_holds_admission_until_remote_preflight_then_commits_before_w
 		.await
 		.unwrap();
 	// Assert: no durable record or binding precedes successful remote admission.
-	assert_eq!(result, status(&manifest));
+	assert_eq!(result, sealed(&manifest, &result.seed));
 	let state = repository.state.lock().unwrap();
 	assert_eq!(state.status.as_ref(), Some(&result));
 	assert_eq!(state.binding.as_ref().unwrap().subjects, vec!["owner"]);
@@ -643,7 +675,7 @@ async fn preflight_reservation_is_immutable_and_denials_do_not_replace_it(
 	manifest: Manifest,
 ) {
 	let repository = Repository::new(origin.clone());
-	let input = request(&manifest, &origin, &repository.node).unwrap();
+	let input = sealed_request(&manifest, SEED, &origin, &repository.node).unwrap();
 	preflight(&repository, &manifest.coordinator, &input)
 		.await
 		.unwrap();
@@ -716,7 +748,7 @@ async fn issue_faults_preserve_only_committed_attempts(
 	let repository = Repository::new(origin);
 	repository.state.lock().unwrap().failure = Some(fault.into());
 	assert!(matches!(
-		issue(&repository, &manifest, "aidash://peer/airy-hawk-2lu4as22").await,
+		issue(&repository, &status(&manifest), PEER).await,
 		Err(Error::External(_))
 	));
 	let state = repository.state.lock().unwrap();
@@ -739,12 +771,11 @@ async fn deployment_administrator_recovery_does_not_invent_subject_authority(
 ) {
 	let repository = Repository::new(origin);
 	repository.state.lock().unwrap().origin = None;
-	issue(&repository, &manifest, "aidash://peer/airy-hawk-2lu4as22")
-		.await
-		.unwrap();
+	issue(&repository, &status(&manifest), PEER).await.unwrap();
 	assert_eq!(repository.log(), Vec::<String>::new());
+	let share = manifest.share(SEED, &manifest.coordinator).unwrap();
 	assert_eq!(
-		prepare_admission(&repository, &manifest.coordinator, &manifest)
+		prepare_admission(&repository, &manifest.coordinator, &share)
 			.await
 			.unwrap(),
 		None
@@ -755,7 +786,7 @@ async fn deployment_administrator_recovery_does_not_invent_subject_authority(
 		subject: "owner".into(),
 	});
 	assert!(matches!(
-		prepare_admission(&repository, &manifest.coordinator, &manifest).await,
+		prepare_admission(&repository, &manifest.coordinator, &share).await,
 		Err(Error::Forbidden)
 	));
 }
@@ -811,7 +842,7 @@ async fn admission_requires_the_reserved_subject_chain_and_exact_remote_proof(
 	let mut repository = Repository::new(origin.clone());
 	repository.node = "aidash://peer/airy-hawk-2lu4as22".into();
 	let bound = Binding {
-		request: request(&manifest, &origin, &repository.node).unwrap(),
+		request: sealed_request(&manifest, SEED, &origin, &repository.node).unwrap(),
 		local: origin.clone(),
 		subjects: vec!["owner".into()],
 	};
@@ -826,7 +857,8 @@ async fn admission_requires_the_reserved_subject_chain_and_exact_remote_proof(
 			state.proof = Some(proof);
 		}
 	}
-	let prepared = prepare_admission(&repository, &manifest.coordinator, &manifest)
+	let share = manifest.share(SEED, &repository.node).unwrap();
+	let prepared = prepare_admission(&repository, &manifest.coordinator, &share)
 		.await
 		.unwrap()
 		.unwrap();
@@ -852,7 +884,7 @@ async fn read_access_rejects_current_local_identity_changes_before_policy_checks
 	manifest: Manifest,
 ) {
 	let repository = Repository::new(origin.clone());
-	let input = request(&manifest, &origin, &repository.node).unwrap();
+	let input = sealed_request(&manifest, SEED, &origin, &repository.node).unwrap();
 	{
 		let mut state = repository.state.lock().unwrap();
 		state.binding = Some(Binding {
@@ -943,7 +975,7 @@ async fn live_trust_revocation_blocks_ticket_even_when_an_attempt_remains_pendin
 		ticket(&repository, manifest.id, "aidash://peer/airy-hawk-2lu4as22")
 			.await
 			.unwrap(),
-		request(&manifest, &origin, "aidash://peer/airy-hawk-2lu4as22").unwrap()
+		sealed_request(&manifest, SEED, &origin, PEER).unwrap()
 	);
 	assert_eq!(
 		&repository.log()[repository.log().len() - 2..],
@@ -1184,14 +1216,15 @@ async fn a_participant_admits_only_the_binding_made_for_its_own_targets(
 	let mut repository = Repository::new(origin.clone());
 	repository.node = "aidash://peer/airy-hawk-2lu4as22".into();
 	let binding = |node: &str| Binding {
-		request: request(&manifest, &origin, node).unwrap(),
+		request: sealed_request(&manifest, SEED, &origin, node).unwrap(),
 		local: origin.clone(),
 		subjects: vec!["owner".into()],
 	};
 
+	let own = manifest.share(SEED, &repository.node).unwrap();
 	repository.state.lock().unwrap().binding = Some(binding(&repository.node));
 	assert!(
-		prepare_admission(&repository, &manifest.coordinator, &manifest)
+		prepare_admission(&repository, &manifest.coordinator, &own)
 			.await
 			.unwrap()
 			.is_some()
@@ -1199,7 +1232,77 @@ async fn a_participant_admits_only_the_binding_made_for_its_own_targets(
 
 	repository.state.lock().unwrap().binding = Some(binding(&manifest.coordinator));
 	assert!(matches!(
-		prepare_admission(&repository, &manifest.coordinator, &manifest).await,
+		prepare_admission(&repository, &manifest.coordinator, &own).await,
 		Err(Error::Forbidden)
 	));
+}
+
+/// A share whose part is another Node's is refused even under a binding
+/// made for that share.
+#[rstest]
+#[tokio::test]
+async fn a_participant_refuses_a_share_whose_part_is_for_another_node(
+	origin: Origin,
+	manifest: Manifest,
+) {
+	let mut repository = Repository::new(origin.clone());
+	repository.node = PEER.into();
+	let other = manifest.share(SEED, &manifest.coordinator).unwrap();
+	repository.state.lock().unwrap().binding = Some(Binding {
+		request: request(&other, &origin).unwrap(),
+		local: origin.clone(),
+		subjects: vec!["owner".into()],
+	});
+	assert!(matches!(
+		prepare_admission(&repository, &manifest.coordinator, &other).await,
+		Err(Error::Forbidden)
+	));
+}
+
+/// Disclosure is no permission (#1108): a policy that denies it blocks
+/// neither submission nor its remote preflight.
+#[rstest]
+#[tokio::test]
+async fn a_policy_denying_disclosure_does_not_block_submission(origin: Origin, manifest: Manifest) {
+	let repository = Repository::new(origin.clone());
+	repository.state.lock().unwrap().denial = Some("require:transaction.disclose:thread".into());
+	submit(&repository, &principal(&origin), &manifest)
+		.await
+		.unwrap();
+	let log = repository.log();
+	assert!(!log.iter().any(|call| call.contains("transaction.disclose")));
+	assert!(log.iter().any(|call| call == "commit:submission"));
+}
+
+/// Every Node's preflight and the binding carry the stored seed's digest,
+/// and each Node's preflight names only its own targets.
+#[rstest]
+#[tokio::test]
+async fn submission_binds_and_preflights_under_the_stored_seed(
+	origin: Origin,
+	mut manifest: Manifest,
+) {
+	manifest.participants[1].mutations = vec![Mutation::ThreadTitle {
+		thread_id: Uuid::from_u128(5),
+		expected_revision: 0,
+		title: "Title".into(),
+	}];
+	let repository = Repository::new(origin.clone());
+	// A concurrent submission sealed the same manifest first.
+	repository.state.lock().unwrap().sealed = Some(SEED.into());
+	let result = submit(&repository, &principal(&origin), &manifest)
+		.await
+		.unwrap();
+	assert_eq!(result, status(&manifest));
+	let state = repository.state.lock().unwrap();
+	assert_eq!(state.seeds, [DERIVED]);
+	let digest = manifest.sealed_digest(SEED).unwrap();
+	assert_eq!(state.binding.as_ref().unwrap().request.digest, digest);
+	let [(node, preflight)] = state.preflights.as_slice() else {
+		panic!("one remote preflight: {:?}", state.preflights);
+	};
+	assert_eq!(node, PEER);
+	assert_eq!(preflight.digest, digest);
+	assert_eq!(preflight.targets.len(), 1);
+	assert_eq!(preflight.targets[0].id, Uuid::from_u128(5));
 }

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 36] {
+fn assets() -> [(&'static str, String); 37] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -99,6 +99,10 @@ fn assets() -> [(&'static str, String); 36] {
 		(
 			"identity/sql/backward/0083_data_protection_switches.sql",
 			crate::apps::identity::services::data_protection_backfill::backward(),
+		),
+		(
+			"federation/sql/forward/0031_transaction_parts.sql",
+			crate::apps::federation::services::transaction_journal_reset::forward(),
 		),
 		(
 			"identity/sql/forward/0085_remove_research_approvals.sql",
@@ -328,6 +332,13 @@ mod tests {
 				"identity",
 				"0085_remove_research_approvals",
 				"0085_remove_research_approvals",
+				false,
+			),
+			// The journal reset of #1107 before the coordinator seed column.
+			(
+				"federation",
+				"0031_transaction_parts",
+				"0031_transaction_parts",
 				false,
 			),
 			(

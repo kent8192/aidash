@@ -119,9 +119,14 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		assert!(outcome.complete, "{outcome:?}");
 		assert_eq!(outcome.decision.as_deref(), Some("COMMIT"), "{outcome:?}");
 		for _ in 0..2 {
-			participant::finish(&f, None, node(&f).await.as_str(), &manifest)
-				.await
-				.unwrap();
+			participant::finish(
+				&f,
+				None,
+				node(&f).await.as_str(),
+				&common::share(&f, &manifest, &node(&f).await).await,
+			)
+			.await
+			.unwrap();
 		}
 		assert_eq!(
 			f.store
@@ -344,15 +349,18 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 }
 
 #[rstest::rstest]
-#[case::transaction_action("transaction.submit")]
-#[case::underlying_action("thread.update")]
-#[case::manifest_disclosure("transaction.disclose")]
+#[case::transaction_action("transaction.submit", 403)]
+#[case::underlying_action("thread.update", 403)]
+// No `transaction.disclose` permission exists any more (ADR 0146): denying it
+// changes nothing.
+#[case::removed_disclosure_permission("transaction.disclose", 202)]
 #[tokio::test]
 async fn subject_transaction_requires_all_authority_before_persisting_a_manifest(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 	#[case] denied: &str,
+	#[case] expected: u16,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
@@ -375,7 +383,11 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"thread_title","thread_id":thread,"expected_revision":0,"title":"Committed"}]}]});
 	let (status, body) = common::post(&app, &token, "/api/transactions", manifest).await;
-	assert_eq!(status, 403, "{body}");
+	assert_eq!(status, expected, "{body}");
+	if expected == 202 {
+		cleanup(f, &url, &schema).await;
+		return;
+	}
 	assert!(matches!(
 		aidash_server::transactions::coordinator::status(&f, id).await,
 		Err(aidash_server::Error::NotFound(_))

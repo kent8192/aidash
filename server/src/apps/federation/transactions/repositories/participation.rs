@@ -18,8 +18,8 @@ use aidash_application::{
 use aidash_domain::{
 	provider::progress::ProgressOutcome,
 	transactions::{
-		Manifest,
 		coordination::{LocalStatus, ParticipantPhase},
+		share::Share,
 	},
 };
 use async_trait::async_trait;
@@ -30,28 +30,19 @@ use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
 
-/// The Node of this Deployment that `manifest` names. A transaction names at
-/// most one, and an inbound request was checked to be for exactly that Node.
-fn local_node(runtime: &Federation, manifest: &Manifest) -> String {
-	manifest
-		.participants
-		.iter()
-		.map(|participant| participant.node_id.as_str())
-		.find(|node| {
-			aidash_domain::nodes::same_deployment(node, runtime.config.deployment.as_str())
-		})
-		.unwrap_or_default()
-		.to_owned()
+/// The Node of this Deployment a share is for: a participant holds only its
+/// own part (ADR 0146), and an inbound request was checked to be for it.
+fn local_node(share: &Share) -> String {
+	share.part.node_id.clone()
 }
 
 /// Fresh participant work shares the policy lease with Node deletion. Durable
 /// finish/apply deliberately retains its original participant/decision authority.
 pub(crate) async fn require_live_participant_in(
 	tx: &mut dyn TransactionExecutor,
-	runtime: &Federation,
-	manifest: &Manifest,
+	share: &Share,
 ) -> crate::Result<()> {
-	let address = aidash_domain::nodes::NodeAddress::parse(&local_node(runtime, manifest))?;
+	let address = aidash_domain::nodes::NodeAddress::parse(&local_node(share))?;
 	let tenant = crate::apps::identity::repositories::node_registrations::name_tenant(
 		tx,
 		address.node.as_str(),
@@ -65,10 +56,7 @@ pub(crate) async fn require_live_participant_in(
 		address.node.as_str(),
 	)
 	.await?;
-	let participant = manifest
-		.local(&address.to_string())
-		.map_err(|_| Error::Forbidden)?;
-	for mutation in &participant.mutations {
+	for mutation in &share.part.mutations {
 		use crate::apps::execution::repositories::node_cancellations;
 		match mutation {
 			aidash_domain::transactions::Mutation::FinishRun { run_id, .. } => {
@@ -85,7 +73,7 @@ pub(crate) async fn require_live_participant_in(
 
 pub(crate) async fn require_live_participant(
 	runtime: &Federation,
-	manifest: &Manifest,
+	share: &Share,
 ) -> crate::Result<()> {
 	runtime
 		.store
@@ -94,7 +82,7 @@ pub(crate) async fn require_live_participant(
 			&aidash_application::tenancy::TenancyScope::Deployment(
 				aidash_application::tenancy::DeploymentScopeReason::AtomicParticipant,
 			),
-			async |tx| require_live_participant_in(tx, runtime, manifest).await,
+			async |tx| require_live_participant_in(tx, share).await,
 		)
 		.await
 }
@@ -125,7 +113,6 @@ impl Transaction {
 }
 
 struct Scope {
-	runtime: Federation,
 	transaction: Transaction,
 	/// Interruptions applied mutations wrote; recorded once the transaction commits.
 	interruptions: Vec<ProgressOutcome>,
@@ -185,17 +172,13 @@ impl ParticipantScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn insert(&mut self, manifest: &Manifest, next: ParticipantPhase) -> Result<LocalStatus> {
+	async fn insert(&mut self, share: &Share, next: ParticipantPhase) -> Result<LocalStatus> {
 		if matches!(next, ParticipantPhase::Reserved) {
-			require_live_participant_in(self.transaction.executor(), &self.runtime, manifest)
-				.await?;
+			require_live_participant_in(self.transaction.executor(), share).await?;
 		}
-		let node = local_node(&self.runtime, manifest);
-		let participant = manifest
-			.local(&node)
-			.map_err(|_| aidash_application::Error::Forbidden)?;
+		let node = local_node(share);
 		let tx = self.transaction.executor();
-		for mutation in &participant.mutations {
+		for mutation in &share.part.mutations {
 			let (kind, id) = match mutation {
 				aidash_domain::transactions::Mutation::ThreadTitle { thread_id, .. } => {
 					("thread", *thread_id)
@@ -207,7 +190,7 @@ impl ParticipantScope for Scope {
 			};
 			super::mutation::require_target_node(tx, &node, kind, id).await?;
 		}
-		AtomicParticipant::insert(tx, manifest, phase(next))
+		AtomicParticipant::insert(tx, share, phase(next))
 			.await
 			.map(status)
 			.map_err(Into::into)
@@ -229,18 +212,18 @@ impl ParticipantScope for Scope {
 		.await
 		.map_err(Into::into)
 	}
-	async fn validate_mutations(&mut self, manifest: &Manifest) -> Result<()> {
-		require_live_participant_in(self.transaction.executor(), &self.runtime, manifest).await?;
-		let node = local_node(&self.runtime, manifest);
+	async fn validate_mutations(&mut self, share: &Share) -> Result<()> {
+		require_live_participant_in(self.transaction.executor(), share).await?;
+		let node = local_node(share);
 		let tx = self.transaction.executor();
-		AtomicParticipant::mutation_context(tx, manifest.id).await?;
+		AtomicParticipant::mutation_context(tx, share.id).await?;
 		tx.savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
 			&mut crate::bootstrap::transaction_mutation_scope(tx, &node),
 			&node,
-			manifest,
+			share,
 		)
 		.await?;
 		self.transaction
@@ -254,13 +237,13 @@ impl ParticipantScope for Scope {
 			.map_err(Error::from)?;
 		Ok(())
 	}
-	async fn apply_mutations(&mut self, manifest: &Manifest) -> Result<()> {
-		let node = local_node(&self.runtime, manifest);
+	async fn apply_mutations(&mut self, share: &Share) -> Result<()> {
+		let node = local_node(share);
 		let tx = self.transaction.executor();
-		AtomicParticipant::mutation_context(tx, manifest.id).await?;
+		AtomicParticipant::mutation_context(tx, share.id).await?;
 		let mut scope = crate::bootstrap::transaction_mutation_scope(tx, &node);
 		let applied =
-			aidash_application::transactions::mutation::apply(&mut scope, &node, manifest).await;
+			aidash_application::transactions::mutation::apply(&mut scope, &node, share).await;
 		self.interruptions.extend(scope.1);
 		applied
 	}
@@ -319,7 +302,6 @@ impl ParticipantRepository for Repository {
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
 		let tx = AtomicParticipant::begin(&self.runtime.store.control_pool).await?;
 		Ok(Box::new(Scope {
-			runtime: self.runtime.clone(),
 			transaction: Transaction::Standalone(tx),
 			interruptions: Vec::new(),
 		}))
@@ -327,15 +309,14 @@ impl ParticipantRepository for Repository {
 	async fn admission(
 		&self,
 		caller: &str,
-		manifest: &Manifest,
+		share: &Share,
 	) -> Result<Option<Box<dyn ParticipantScope>>> {
 		let Some(access) =
-			authority::admission(&self.runtime, self.admitted.as_ref(), caller, manifest).await?
+			authority::admission(&self.runtime, self.admitted.as_ref(), caller, share).await?
 		else {
 			return Ok(None);
 		};
 		Ok(Some(Box::new(Scope {
-			runtime: self.runtime.clone(),
 			transaction: Transaction::Admitted(Box::new(access.into_native()?)),
 			interruptions: Vec::new(),
 		})))

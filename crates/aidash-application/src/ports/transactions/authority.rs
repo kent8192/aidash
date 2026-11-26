@@ -26,7 +26,8 @@ pub trait ControlScope: Send {
 
 #[async_trait]
 pub trait SubmissionScope: Send {
-	async fn submit(&mut self, manifest: &Manifest, origin: &Origin) -> Result<Status>;
+	/// Store a new manifest sealed with `seed`; an existing one keeps its own.
+	async fn submit(&mut self, manifest: &Manifest, seed: &str, origin: &Origin) -> Result<Status>;
 	async fn bind(&mut self, id: Uuid, binding: &Binding) -> Result<()>;
 	/// Arbitrate the immutable decision and its audit under this transaction's row lock.
 	async fn transition(
@@ -49,6 +50,9 @@ pub trait AuthorityRepository: Send + Sync {
 	/// The Tenant that holds `node`, when `node` is a Node of this Deployment.
 	async fn node_tenant(&self, node: &str) -> Result<Option<String>>;
 	fn validate(&self, manifest: &Manifest) -> Result<()>;
+	/// The seed that seals `manifest` (ADR 0146): the same for the same
+	/// manifest, so a resubmission matches the preflights already sent.
+	fn seed(&self, manifest: &Manifest) -> Result<String>;
 	async fn origin(&self, id: Uuid) -> Result<Option<Origin>>;
 	async fn binding(&self, id: Uuid) -> Result<Option<Binding>>;
 	async fn source(&self, origin: &Origin) -> Result<Box<dyn ControlScope>>;
