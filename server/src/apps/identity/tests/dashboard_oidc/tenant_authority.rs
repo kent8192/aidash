@@ -2314,12 +2314,12 @@ async fn configurator_approval_covers_agent_and_tool(
 	}
 	let input = json!({"node":t.node,"entry":{"id":"review-agent","version":"1.0.0"}});
 	let member = configurator_context(&t, &t.bob, &t.bob_context).await;
-	assert!(
-		tools["catalog_review_approve"]
-			.invoke(&member, input.clone(), "refused")
-			.await
-			.is_err()
-	);
+	let refused = tools["catalog_review_approve"]
+		.invoke(&member, input.clone(), "refused")
+		.await
+		.unwrap_err();
+	assert!(refused.to_string().contains("forbidden"), "{refused}");
+
 	let approved = tools["catalog_review_approve"]
 		.invoke(&context, input.clone(), "approve")
 		.await

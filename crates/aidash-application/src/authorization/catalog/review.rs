@@ -567,10 +567,9 @@ async fn review_item(
 		ReviewStatus::Approved
 			if !widen
 				&& unapproved_nodes.is_empty()
-				&& (!can_approve
-					|| approval
-						.as_ref()
-						.is_some_and(|a| a.scope == ApprovalScope::Deployment)) =>
+				&& approval
+					.as_ref()
+					.is_some_and(|a| a.scope == ApprovalScope::Deployment) =>
 		{
 			Some(ApprovalScope::Deployment)
 		}
