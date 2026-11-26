@@ -866,6 +866,9 @@ impl Builtin {
 			"duty_create" | "duty_list" | "duty_update" | "duty_delete" | "duty_notify" => {
 				ctx.operations.duty(key, self.name, input).await
 			}
+			op if aidash_domain::tool::configurator::TOOLS.contains(&op) => {
+				ctx.operations.configure(op, input).await
+			}
 			"node_create" | "node_delete" => ctx.operations.node(key, self.name, input).await,
 			_ => Err(Error::Invalid("unknown tool".into())),
 		}
@@ -1191,11 +1194,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 	];
 	entries
 		.into_iter()
+		.chain(configurator::builtins())
 		.map(|t| (t.name.to_owned(), t))
 		.collect()
 }
 
 pub mod agent_plugin;
+pub mod configurator;
 pub mod exposure;
 #[cfg(test)]
 mod tests;

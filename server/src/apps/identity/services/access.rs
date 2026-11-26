@@ -707,7 +707,9 @@ impl Access {
 			tx: AccessTransaction::new(tx),
 			identity: identity.clone(),
 			snapshot,
-			subjects: vec![identity.subject.clone()],
+			subjects: crate::apps::identity::services::configurator::current(identity)
+				.map(|c| c.subjects())
+				.unwrap_or_else(|| vec![identity.subject.clone()]),
 			delegated_subject: None,
 			durable_audit: false,
 			audit: true,

@@ -132,10 +132,9 @@ impl Authorization {
 		if deleted.is_some() {
 			return Err(Error::TenantDeleted);
 		}
-		Ok(Snapshot {
-			revision,
-			bundle: serde_json::from_value(document)?,
-		})
+		let mut bundle = serde_json::from_value(document)?;
+		crate::apps::identity::services::configurator::constrain(&mut bundle)?;
+		Ok(Snapshot { revision, bundle })
 	}
 
 	pub async fn snapshot(&self, tenant: &str) -> Result<Snapshot> {

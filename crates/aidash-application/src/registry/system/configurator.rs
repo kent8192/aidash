@@ -11,14 +11,24 @@ pub fn definitions(node: &str) -> crate::Result<[Entry; 2]> {
 		"name":{"en":"Tenant configuration guide"},"description":{"en":"Configure a Tenant for its administrator."},
 		"tags":["system"],"languages":[],"capabilities":[],"schema":{},
 		"config":{"instructions":include_str!("configuration-guide.md")}});
+	let mut bindings = vec![
+		json!({"kind":"skill","target":{"registry_deployment":node,"id":GUIDE,"version":VERSION}}),
+	];
+	for &operation in ["node_create", "setting_request"]
+		.iter()
+		.chain(aidash_domain::tool::configurator::TOOLS)
+	{
+		bindings.push(
+			json!({"kind":"tool","target":QualifiedRef::builtin(node,operation),"alias":operation}),
+		);
+	}
 	let agent = json!({"id":ID,"kind":"agent","version":VERSION,
 		"name":{"en":"Tenant Configurator","ja":"テナント設定エージェント"},
 		"description":{"en":"Configure this Tenant at its administrator's request."},
 		"tags":["system"],"languages":[],"capabilities":[],"schema":{},
 		// #1154 supplies the Task Model when this definition is admitted.
 		"config":{"schema_version":1,"instructions":"Follow the Tenant configuration guide.",
-			"bindings":[{"kind":"skill","target":{"registry_deployment":node,"id":GUIDE,"version":VERSION}},
-			{"kind":"tool","target":QualifiedRef::builtin(node,"node_create"),"alias":"node_create"}]}});
+			"bindings":bindings}});
 	Ok([
 		serde_json::from_value(guide)?,
 		serde_json::from_value(agent)?,

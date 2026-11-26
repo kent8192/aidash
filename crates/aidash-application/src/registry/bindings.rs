@@ -379,6 +379,14 @@ pub async fn resolve(
 					"mandatory tools retain their canonical aliases".into(),
 				));
 			}
+			if aidash_domain::tool::configurator::TOOLS.contains(&descriptor.operation.as_str())
+				&& (remote
+					|| agent.id != super::system::configurator::ID
+					|| agent.version != super::system::configurator::VERSION
+					|| agent.registry_deployment != descriptor.registry_deployment)
+			{
+				return Err(Error::Forbidden);
+			}
 			excluded_reason = memory_exclusion(origin, &descriptor.operation, memory_provider)?;
 			if remote && excluded_reason.is_none() {
 				excluded_reason = remote_exclusion(origin, &contract).map_err(|error| {

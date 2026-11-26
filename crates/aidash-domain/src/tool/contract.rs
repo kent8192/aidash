@@ -520,6 +520,7 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		// and node events act as that person too (#1012, #1013).
 		"mcp_stdio" | "duty_create" | "duty_update" | "duty_delete" | "duty_list"
 		| "duty_notify" | "node_create" | "node_delete" => ToolReach::Never,
+		op if super::configurator::TOOLS.contains(&op) => ToolReach::Never,
 		_ => return None,
 	})
 }
@@ -773,6 +774,15 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		// approval. Creating a Node copies the Tenant's Catalog Approvals and
 		// their Agent subjects into the policy, and deleting one fences its
 		// admissions, so both are Authority Changes the Run must not block.
+		"aidash_api_catalog" | "tenant_overview" => {
+			behavior.effect = ToolEffect::ReadOnly;
+			behavior.authority_change = true;
+		}
+		op if super::configurator::TOOLS.contains(&op) => {
+			behavior.effect = ToolEffect::Unsafe;
+			behavior.tool_call_approval = true;
+			behavior.authority_change = true;
+		}
 		"node_create" | "node_delete" => {
 			behavior.effect = ToolEffect::Unsafe;
 			behavior.tool_call_approval = true;
@@ -856,6 +866,32 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"duty_notify",
 	"node_create",
 	"node_delete",
+	"aidash_api",
+	"aidash_api_catalog",
+	"tenant_overview",
+	"node_update",
+	"member_invite",
+	"member_set_groups",
+	"registry_create",
+	"catalog_approve",
+	"provider_binding_set",
+	"budget_set",
+	"approval_mode_set",
+	"approval_rule_set",
+	"tenant_instructions_set",
+	"data_protection_set",
+	"tenant_secret_set",
+	"stint_start",
+	"marketplace_install",
+	"mcp_server_add",
+	"tool_add",
+	"agent_plugin_add",
+	"skill_add",
+	"reference_upload",
+	"duty_template_install",
+	"agent_create",
+	"generation_policy_set",
+	"node_registration",
 ];
 
 #[cfg(test)]
@@ -1067,16 +1103,21 @@ mod tests {
 		);
 		assert_eq!(
 			by_reach(ToolReach::Never),
-			sorted(vec![
-				"mcp_stdio",
-				"duty_create",
-				"duty_update",
-				"duty_delete",
-				"duty_list",
-				"duty_notify",
-				"node_create",
-				"node_delete"
-			])
+			sorted(
+				vec![
+					"mcp_stdio",
+					"duty_create",
+					"duty_update",
+					"duty_delete",
+					"duty_list",
+					"duty_notify",
+					"node_create",
+					"node_delete"
+				]
+				.into_iter()
+				.chain(crate::tool::configurator::TOOLS.iter().copied())
+				.collect()
+			)
 		);
 		// A pinned Workspace tool reaches what its Thread tool does (#1008).
 		for (current, former) in crate::tool::thread_tools::RENAMED {

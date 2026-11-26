@@ -173,6 +173,15 @@ impl Error {
 			matches!(&self, Self::TransactionPending) || self.has_database_code("55P03");
 		let run_message_pending = self.has_database_code("A3301");
 		let (status, message) = match &self {
+			Self::Invalid(s)
+				if matches!(
+					s.as_str(),
+					"tenant_configurator_administrator_required"
+						| "tenant_configurator_remote_grant_forbidden"
+				) =>
+			{
+				(StatusCode::FORBIDDEN, s.clone())
+			}
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
 			Self::ProjectionRetired(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::Conflict(s) => {
@@ -307,6 +316,15 @@ impl Error {
 			}
 		};
 		let mut envelope = match &self {
+			Self::Invalid(s)
+				if matches!(
+					s.as_str(),
+					"tenant_configurator_administrator_required"
+						| "tenant_configurator_remote_grant_forbidden"
+				) =>
+			{
+				json!({"error":s,"code":s})
+			}
 			Self::NodeUnreachable { node, after_effect } => {
 				json!({"error": message, "code": "node_unreachable", "node": node, "after_effect": after_effect})
 			}

@@ -11,6 +11,9 @@ const MAX_DEPTH: usize = 32;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyBundle {
+	/// Additional executor checked when a service evaluates its root person's action.
+	#[serde(skip)]
+	pub evaluation_chain: Option<(String, String)>,
 	pub tenant: String,
 	#[serde(default)]
 	pub subjects: BTreeMap<String, Subject>,
@@ -425,6 +428,17 @@ impl PolicyBundle {
 		}
 		if input.resource.tenant != self.tenant {
 			return Decision::denied("tenant_mismatch");
+		}
+		if let Some((root, executor)) = &self.evaluation_chain
+			&& root == &input.subject
+			&& executor != root
+		{
+			let mut agent_request = input.clone();
+			agent_request.subject = executor.clone();
+			let agent = self.evaluate(&agent_request);
+			if !agent.allowed {
+				return agent;
+			}
 		}
 		let mut decision = self.evaluate_subject(&input.subject, input);
 		if !decision.allowed {

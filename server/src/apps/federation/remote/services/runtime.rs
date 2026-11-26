@@ -1347,7 +1347,11 @@ mod review_tests;
 impl Injectable for Federation {
 	async fn inject(ctx: &InjectionContext) -> DiResult<Self> {
 		ctx.get_singleton::<Self>()
-			.map(|value| (*value).clone())
+			.map(|value| {
+				let mut runtime = (*value).clone();
+				runtime.store.http_services = std::sync::Arc::downgrade(ctx.singleton_scope());
+				runtime
+			})
 			.ok_or_else(|| DiError::NotFound("Aidash runtime".into()))
 	}
 }

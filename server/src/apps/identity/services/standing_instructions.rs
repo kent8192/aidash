@@ -1,6 +1,4 @@
-//! Tenant Instructions and Node Instructions (#1010). Only a person's browser
-//! session reaches these: `administrator` refuses Subject Credentials, so an
-//! Agent's chain never writes them, even when its root person could.
+//! Tenant and Node Instructions (#1010) are edited by the person or their local Tenant Configurator (ADR 0151).
 use super::tenant_administration::TenantAdministrations;
 use crate::apps::identity::{
 	models::{AdministrationActor, AdministrationEvent},

@@ -117,8 +117,9 @@ impl Invitations {
 		aidash_domain::policy::identifier(tenant)?;
 		match (actor, origin) {
 			(Actor::DeploymentAdministrator, origin) => Ok(Issuer::DeploymentAdministrator(origin)),
-			(Actor::Subject(identity), Some(origin)) => {
-				let mapping = origin.mapping_id.ok_or(Error::Forbidden)?;
+			(Actor::Subject(identity), origin) => {
+				let (identity_id, mapping) =
+					super::configurator::mapping(&identity, origin.as_ref())?;
 				if identity.tenant != tenant {
 					return Err(Error::Forbidden);
 				}
@@ -126,14 +127,13 @@ impl Invitations {
 				Ok(Issuer::TenantAdministrator(Arc::new(
 					TenantAdministrator::new(
 						identity,
-						origin.identity_id,
+						identity_id,
 						mapping,
 						self.runtime.config.deployment.to_string(),
 						self.runtime.config.dashboard_policy(),
 					)?,
 				)))
 			}
-			_ => Err(Error::Forbidden),
 		}
 	}
 

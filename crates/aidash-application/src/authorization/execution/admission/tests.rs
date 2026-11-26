@@ -490,3 +490,27 @@ async fn an_agent_without_the_default_never_looks_up_a_compaction_decider() {
 fn node() -> aidash_domain::nodes::NodeAddress {
 	"aidash://node/brave-otter-k3m9q2xa".parse().unwrap()
 }
+
+#[tokio::test]
+async fn configurator_rejects_a_mapped_member_before_claiming_the_task() {
+	use aidash_domain::identity::{tenancy, tenant_administration};
+	let mut scope = Scope::new();
+	scope.mapping = true;
+	scope.bundle = tenancy::initial_policy("tenant", true).unwrap();
+	tenant_administration::add_user_subject(
+		&mut scope.bundle,
+		"root",
+		&[tenancy::MEMBERS.to_owned()].into(),
+	)
+	.unwrap();
+	let mut agent = agent();
+	agent.id = crate::registry::system::configurator::ID.into();
+	let error = admit(&mut scope, Uuid::from_u128(1), None, &agent, false)
+		.await
+		.unwrap_err();
+	assert!(
+		matches!(error,Error::Invalid(ref code) if code=="tenant_configurator_administrator_required")
+	);
+	assert!(scope.grants.is_empty());
+	assert!(scope.claim_args.is_none());
+}

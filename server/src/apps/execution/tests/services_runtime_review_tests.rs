@@ -95,6 +95,7 @@ async fn interruption_store(
 		plan_connections_enabled: false,
 		provider_key_material_reader: None,
 		capability_issuer: None,
+		http_services: Default::default(),
 		in_process: Default::default(),
 		grant_peer_cache: Default::default(),
 		silent_nodes: Default::default(),

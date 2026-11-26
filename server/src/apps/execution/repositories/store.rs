@@ -138,6 +138,7 @@ pub struct Store {
 	/// What a running server binds so that a caller holding only this Store
 	/// reaches the other Nodes of its Deployment (#751). Empty in a process
 	/// that never built a `Federation`. Shared by every clone of this Store.
+	pub(crate) http_services: std::sync::Weak<reinhardt::SingletonScope>,
 	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
 	pub(crate) grant_peer_cache:
 		std::sync::Arc<aidash_application::authorization::source::grants::GrantPeerCache>,
@@ -579,6 +580,7 @@ impl Store {
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
+			http_services: Default::default(),
 			in_process: Default::default(),
 			grant_peer_cache: Default::default(),
 			silent_nodes: Default::default(),
@@ -729,6 +731,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			http_services: self.http_services.clone(),
 			in_process: self.in_process.clone(),
 			grant_peer_cache: self.grant_peer_cache.clone(),
 			silent_nodes: self.silent_nodes.clone(),
@@ -795,6 +798,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			http_services: self.http_services.clone(),
 			in_process: self.in_process.clone(),
 			grant_peer_cache: self.grant_peer_cache.clone(),
 			silent_nodes: self.silent_nodes.clone(),

@@ -165,6 +165,7 @@ pub async fn initialize_as(
 				.map(|preview| preview.domain.clone()),
 			config.preview.as_ref().map(|preview| preview.pod_port),
 		);
+	store.http_services = Arc::downgrade(context.singleton_scope());
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	configure_plan_connections(
 		&mut store,

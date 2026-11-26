@@ -7,6 +7,14 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 pub const CONFIGURATOR_ID: &str = "aidash.tenant-configurator";
+/// All release versions of the reserved Node-qualified subject are Run-only.
+pub fn is_configurator_subject(subject: &str) -> bool {
+	subject
+		.rsplit_once("/agents/")
+		.and_then(|(_, agent)| agent.split_once('@'))
+		.is_some_and(|(id, version)| id == CONFIGURATOR_ID && !version.is_empty())
+}
+
 /// A mapped person with Tenant administration actions, as in the settings overview.
 pub fn configurator_administrator(bundle: &PolicyBundle, person: &str, deployment: &str) -> bool {
 	bundle

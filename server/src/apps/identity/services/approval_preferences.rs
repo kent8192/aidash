@@ -713,10 +713,10 @@ impl ApprovalPreferences {
 	) -> Result<ApprovalDecider> {
 		input.validate()?;
 		identifier(&tenant)?;
-		let (Actor::Subject(identity), Some(origin)) = (actor, origin) else {
+		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
-		let mapping = origin.mapping_id.ok_or(Error::Forbidden)?;
+		let (identity_id, mapping) = super::configurator::mapping(&identity, origin.as_ref())?;
 		if identity.tenant != tenant {
 			return Err(Error::Forbidden);
 		}
@@ -758,7 +758,7 @@ impl ApprovalPreferences {
 			}
 			decider::save(tx, &tenant, input.expected_revision, target.as_ref()).await?;
 			AdministrationActor::Identity {
-				identity: origin.identity_id,
+				identity: identity_id,
 				mapping: Some(mapping),
 			}
 			.record(
@@ -782,10 +782,10 @@ impl ApprovalPreferences {
 
 	/// The caller's own session: a dashboard or desktop session of their Mapping.
 	async fn session(&self, actor: Actor, origin: Option<BrowserOrigin>) -> Result<Access> {
-		let (Actor::Subject(identity), Some(origin)) = (actor, origin) else {
+		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
-		origin.mapping_id.ok_or(Error::Forbidden)?;
+		super::configurator::mapping(&identity, origin.as_ref())?;
 		identity.check_binding(&self.runtime.store.pool).await?;
 		Access::begin(&self.runtime.store, &identity).await
 	}

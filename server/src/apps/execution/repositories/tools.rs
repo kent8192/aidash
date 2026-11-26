@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+mod configurator;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 fn operation_error(error: crate::Error) -> aidash_application::Error {
 	match error {
@@ -184,6 +185,11 @@ impl ToolOperations for Operations {
 		.map_err(Into::into)
 	}
 
+	async fn configure(&self, operation: &str, input: Value) -> Result<Value> {
+		configurator::execute(&self.0.home.federation, &self.0.run, operation, input)
+			.await
+			.map_err(operation_error)
+	}
 	async fn node(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
 		crate::apps::identity::services::nodes::agent_tool(
 			&self.0.home.federation,
