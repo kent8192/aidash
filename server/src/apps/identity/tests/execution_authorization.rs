@@ -9729,7 +9729,7 @@ async fn withdrawing_a_deployment_approval_reaches_every_node_unless_kept_to_one
 		assert_eq!(status, 201, "{node}");
 		node["name"].as_str().unwrap().parse().unwrap()
 	};
-	let model = async |node: &aidash_domain::nodes::NodeName| -> Option<Value> {
+	let tool = async |node: &aidash_domain::nodes::NodeName| -> Option<Value> {
 		let (status, catalog) = request(
 			&app,
 			&alice,
@@ -9743,13 +9743,13 @@ async fn withdrawing_a_deployment_approval_reaches_every_node_unless_kept_to_one
 			.as_array()
 			.unwrap()
 			.iter()
-			.find(|row| row["entry_id"] == "model" && row["entry_version"] == "1.0.0")
+			.find(|row| row["entry_id"] == "http" && row["entry_version"] == "1.0.0")
 			.cloned()
 	};
 	let withdraw = async |node: &aidash_domain::nodes::NodeName, scope: Option<&str>| {
-		let revision = model(node).await.unwrap()["revision"].clone();
+		let revision = tool(node).await.unwrap()["revision"].clone();
 		let mut body = json!({
-			"node": node, "entry": {"id": "model", "version": "1.0.0"},
+			"node": node, "entry": {"id": "http", "version": "1.0.0"},
 			"enabled": false, "expected_revision": revision,
 		});
 		if let Some(scope) = scope {
@@ -9771,29 +9771,29 @@ async fn withdrawing_a_deployment_approval_reaches_every_node_unless_kept_to_one
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"node": source, "entry": {"id": "model", "version": "1.0.0"}, "enabled": true,
+			"node": source, "entry": {"id": "http", "version": "1.0.0"}, "enabled": true,
 			"expected_revision": 1, "carry_over": false, "scope": "deployment",
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
 	let sibling = add_node("Sibling").await;
-	assert_eq!(model(&sibling).await.unwrap()["enabled"], true);
+	assert_eq!(tool(&sibling).await.unwrap()["enabled"], true);
 
 	// "This Node only" keeps the others and leaves the row out of new copies.
 	withdraw(&sibling, Some("node")).await;
-	assert_eq!(model(&sibling).await.unwrap()["enabled"], false);
-	assert_eq!(model(&source).await.unwrap()["enabled"], true);
+	assert_eq!(tool(&sibling).await.unwrap()["enabled"], false);
+	assert_eq!(tool(&source).await.unwrap()["enabled"], true);
 	let third = add_node("Third").await;
-	assert_eq!(model(&third).await.unwrap()["enabled"], true);
+	assert_eq!(tool(&third).await.unwrap()["enabled"], true);
 
 	// By default the withdrawal follows the approval's Deployment scope.
 	withdraw(&source, None).await;
-	assert_eq!(model(&source).await.unwrap()["enabled"], false);
-	assert_eq!(model(&third).await.unwrap()["enabled"], false);
+	assert_eq!(tool(&source).await.unwrap()["enabled"], false);
+	assert_eq!(tool(&third).await.unwrap()["enabled"], false);
 	let fourth = add_node("Fourth").await;
 	assert!(
-		model(&fourth)
+		tool(&fourth)
 			.await
 			.is_none_or(|row| row["enabled"] == false)
 	);
@@ -10363,7 +10363,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"node":node,"entry":{"id":"model","version":"1.0.0"},"enabled":true,
+			"node":node,"entry":{"id":"http","version":"1.0.0"},"enabled":true,
 			"expected_revision":1,"carry_over":false,"scope":"node"
 		}),
 	)
@@ -10378,7 +10378,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 	.await;
 	assert_eq!(status, 201, "{sibling}");
 	let other = sibling["name"].as_str().unwrap();
-	let decide_other = |revision| json!({"node":other,"entry":{"id":"model","version":"1.0.0"},"enabled":true,"expected_revision":revision,"carry_over":false,"scope":"node"});
+	let decide_other = |revision| json!({"node":other,"entry":{"id":"http","version":"1.0.0"},"enabled":true,"expected_revision":revision,"carry_over":false,"scope":"node"});
 	let (status, body) = request(
 		&app,
 		&token,
@@ -10392,7 +10392,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/authorization/acme/catalog/review?node={node}&entry=model@1.0.0"),
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=http@1.0.0"),
 		Value::Null,
 	)
 	.await;
@@ -10401,7 +10401,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		.as_array()
 		.unwrap()
 		.iter()
-		.find(|item| item["reference"]["id"] == "model")
+		.find(|item| item["reference"]["id"] == "http")
 		.unwrap()["expected_node_revisions"]
 		.clone();
 	assert_eq!(revisions[other], 1);
@@ -10420,7 +10420,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"node":node,"entry":{"id":"model","version":"1.0.0"},"enabled":true,
+			"node":node,"entry":{"id":"http","version":"1.0.0"},"enabled":true,
 			"expected_revision":2,"carry_over":true,"scope":"deployment","expected_node_revisions":revisions
 		}),
 	)

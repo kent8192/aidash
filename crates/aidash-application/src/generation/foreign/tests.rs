@@ -47,6 +47,7 @@ fn scope() -> Scope {
 		created_by: "root".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 7,
 		created_at: now,
@@ -83,6 +84,7 @@ fn scope() -> Scope {
 		source_subject: intent.source_subject.clone(),
 		task: task.clone(),
 		inspection: Inspection {
+			task_model: None,
 			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: Some(json!(intent)),
 			lineage: vec![],

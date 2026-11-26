@@ -71,7 +71,13 @@ async fn approved(
 		let expected = match usage.purpose {
 			Purpose::Embedding => spec.embedding.map(|value| value.provider),
 			Purpose::Inference | Purpose::Summary => {
-				Some(serde_json::from_value::<AgentConfig>(spec.template.config)?.model)
+				match serde_json::from_value::<AgentConfig>(spec.template.config)?.model {
+					Some(model) => Some(model),
+					None => scope
+						.task_model(job)
+						.await?
+						.map(|selection| selection.model),
+				}
 			}
 			Purpose::Memory => unreachable!("handled above"),
 		}

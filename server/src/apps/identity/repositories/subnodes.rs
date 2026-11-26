@@ -545,6 +545,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		title: &str,
 		request: &str,
 		journal_range: Option<aidash_domain::subnodes::JournalRange>,
+		task_model: Option<aidash_domain::TaskModel>,
 	) -> Result<Uuid> {
 		use aidash_application::ports::authorization::worker_tasks::WorkerTaskScope;
 		if let Some(range) = journal_range {
@@ -579,6 +580,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		// tasks_parent_thread requires a same-Thread parent. Provenance
 		// instead records the creator Run in authorization_task_origins.
 		let input = aidash_domain::NewTask {
+			task_model,
 			title: title.into(),
 			description: request.into(),
 			requirements: json!({}),

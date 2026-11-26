@@ -2683,6 +2683,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			&TEST_FIXTURE,
 			thread,
 			&NewTask {
+				task_model: None,
 				title: "Tokyo transport".into(),
 				description: "移動方法を確認する".into(),
 				requirements: json!({}),
@@ -3733,6 +3734,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			&TEST_FIXTURE,
 			thread,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Canonical learning".into(),
 				description: "Read complete results".into(),
 				requirements: json!({}),
@@ -5296,6 +5298,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 			&TEST_FIXTURE,
 			thread,
 			&NewTask {
+				task_model: None,
 				title: "Remember".into(),
 				description: "Remember something".into(),
 				requirements: json!({}),

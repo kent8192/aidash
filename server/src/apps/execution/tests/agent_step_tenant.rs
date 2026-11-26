@@ -129,6 +129,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 			&tenant,
 			thread.id,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Step inference".into(),
 				description: "Tenant authority fixture".into(),
 				requirements: serde_json::json!({}),

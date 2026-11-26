@@ -51,6 +51,8 @@ pub struct Task {
 	pub parent: ForeignKeyField<crate::apps::workspaces::models::Task>,
 	#[field(null = true)]
 	pub started_by_duty: Option<Uuid>,
+	#[field(null = true)]
+	pub task_model: Option<Json<aidash_domain::TaskModel>>,
 	#[field(default = 0)]
 	pub revision: i64,
 	#[field(field_type = "text", null = true)]

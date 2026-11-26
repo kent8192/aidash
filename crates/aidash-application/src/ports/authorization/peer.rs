@@ -53,6 +53,7 @@ pub trait PeerInspectionScope: Send {
 	async fn bindings(
 		&mut self,
 		entry: &Entry,
+		_selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let _ = entry;
 		Err(crate::Error::Invalid(

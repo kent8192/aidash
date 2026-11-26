@@ -70,7 +70,7 @@ pub(super) async fn approve(
 				pending.push(Approval {
 					expected_node_revisions: Default::default(),
 					carry_over,
-					scope: if carry_over {
+					scope: if carry_over || definition.kind == "model" {
 						aidash_domain::identity::catalog::ApprovalScope::Deployment
 					} else {
 						aidash_domain::identity::catalog::ApprovalScope::Node

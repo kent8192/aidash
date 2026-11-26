@@ -61,6 +61,7 @@ impl Catalog {
 					| "workspace_message"
 					| "memory_mutate"
 					| "subnode_task"
+					| "task_create" | "task_delegate"
 			) {
 				result.insert(entry(
 					&format!("aidash.{operation}"),
@@ -267,6 +268,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 		if matches!(
 			binding.binding.target.id.as_str(),
 			"aidash.workspace_read"
+				| "aidash.task_create"
+				| "aidash.task_delegate"
 				| "aidash.workspace_observe"
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
@@ -843,7 +846,7 @@ async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kin
 	let mut config = agent_config();
 	catalog.insert(agent_entry(&config));
 	let mut delegated = agent_config();
-	delegated.model = reference("delegated-model").local();
+	delegated.model = Some(reference("delegated-model").local());
 	catalog.insert(entry(
 		"delegate",
 		"agent",
@@ -916,7 +919,8 @@ async fn context_recovery_uses_the_agents_pinned_model() {
 		graph
 			.definitions
 			.iter()
-			.any(|item| item.identity.id == config.model.id && item.definition.kind == "model")
+			.any(|item| item.identity.id == config.model.as_ref().unwrap().id
+				&& item.definition.kind == "model")
 	);
 	assert!(
 		!graph
@@ -2771,4 +2775,87 @@ async fn binding_resolution_skips_a_removed_package_index() {
 			.iter()
 			.any(|binding| binding.definition.kind == "external_service")
 	);
+}
+
+#[tokio::test]
+async fn task_model_pins_the_run_without_changing_the_reviewed_agent() {
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	config.model = None;
+	let definition = agent_entry(&config);
+	let preview = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert!(
+		!preview
+			.definitions
+			.iter()
+			.any(|d| d.definition.kind == "model")
+	);
+	let selection = aidash_domain::TaskModel {
+		model: reference("model").local(),
+		reasoning_effort: Some(aidash_domain::model::ReasoningEffort::High),
+	};
+	let pinned = resolve_with_model(
+		&mut catalog,
+		&providers(),
+		reference("agent"),
+		&definition,
+		false,
+		Some(&selection),
+	)
+	.await
+	.unwrap();
+	let restored: BindingSnapshot = serde_json::from_value(json!(pinned)).unwrap();
+	assert_eq!(restored.inherited_model().unwrap(), selection);
+	assert_eq!(
+		aidash_domain::registry::AgentConfig::from_snapshot(&restored)
+			.unwrap()
+			.model,
+		Some(selection.model.clone())
+	);
+	assert!(
+		restored
+			.definitions
+			.iter()
+			.any(|d| d.identity == reference("model"))
+	);
+	assert!(
+		restored
+			.definitions
+			.iter()
+			.find(|d| d.identity == reference("agent"))
+			.unwrap()
+			.definition
+			.config["model"]
+			.is_null()
+	);
+	let other = aidash_domain::TaskModel {
+		model: reference("unused").local(),
+		..selection
+	};
+	let mut fixed = resolve_with_model(
+		&mut catalog,
+		&providers(),
+		reference("agent"),
+		&agent_entry(&agent_config()),
+		false,
+		Some(&other),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		fixed.inherited_model().unwrap().model,
+		reference("model").local()
+	);
+	assert!(fixed.task_model.is_none());
+	let model = fixed
+		.definitions
+		.iter_mut()
+		.find(|d| d.identity == reference("model"))
+		.unwrap();
+	model.definition.config["reasoning_effort"] = json!("minimal");
+	assert!(fixed.inherited_model().is_err());
+	let override_effort = Some(aidash_domain::model::ReasoningEffort::High);
+	let child = fixed.inherited_model_with_effort(override_effort).unwrap();
+	assert_eq!(child.model, reference("model").local());
+	assert_eq!(child.reasoning_effort, override_effort);
 }

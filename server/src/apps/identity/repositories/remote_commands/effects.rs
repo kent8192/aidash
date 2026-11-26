@@ -336,18 +336,30 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					let id = value.id;
 					(json!(value), Some(id))
 				}
-				Effect::Delegate { child, agent } => (
-					json!(
-						crate::authorization::execution::delegate_in(
-							self.runtime,
-							self.access,
-							child,
-							agent
-						)
-						.await?
-					),
-					None,
-				),
+				Effect::Delegate {
+					child,
+					agent,
+					task_model,
+				} => {
+					crate::authorization::execution::set_task_model(
+						self.access,
+						child,
+						task_model.as_ref(),
+					)
+					.await?;
+					(
+						json!(
+							crate::authorization::execution::delegate_in(
+								self.runtime,
+								self.access,
+								child,
+								agent
+							)
+							.await?
+						),
+						None,
+					)
+				}
 				Effect::Assign {
 					child,
 					policy,

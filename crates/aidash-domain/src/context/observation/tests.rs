@@ -28,6 +28,7 @@ fn snapshot(rows: usize) -> ThreadSnapshot {
 				created_by: "subject".into(),
 				dependencies: (0..MAX_LIMIT).map(|_| Uuid::new_v4()).collect(),
 				parent_id: None,
+				task_model: None,
 				started_by_duty: None,
 				revision: 1,
 				created_at: now,

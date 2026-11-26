@@ -354,6 +354,10 @@ async fn dispatch(
 					.await,
 			)
 		}
+		("POST", ["scoped", "task-models"]) => {
+			let input = input!(body, aidash_domain::registry::EntityRef);
+			respond(boxed(|| identity_peer::task_models_for(f, admitted, input)).await)
+		}
 		("POST", ["scoped", "discover"]) => {
 			let input = input!(body, DiscoveryInput);
 			respond(boxed(|| identity_peer::discover_for(f, admitted, input)).await)

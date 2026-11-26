@@ -116,6 +116,16 @@ pub async fn resolve(
 	agent_definition: &Entry,
 	remote: bool,
 ) -> Result<BindingSnapshot> {
+	resolve_with_model(catalog, providers, agent, agent_definition, remote, None).await
+}
+pub async fn resolve_with_model(
+	catalog: &mut dyn BindingCatalog,
+	providers: &dyn ProviderCatalog,
+	agent: QualifiedRef,
+	agent_definition: &Entry,
+	remote: bool,
+	task_model: Option<&aidash_domain::TaskModel>,
+) -> Result<BindingSnapshot> {
 	if agent_definition.id != agent.id
 		|| agent_definition.version != agent.version
 		|| agent_definition.kind != "agent"
@@ -156,8 +166,15 @@ pub async fn resolve(
 	let mut aliases = BTreeSet::new();
 	let mut source_skill_support = agent_plugins.iter().any(|plugin| !plugin.skills.is_empty());
 	let mut decision_hooks = BTreeSet::new();
-	{
-		let reference = &config.model;
+	let task_model = task_model.filter(|_| config.model.is_none());
+	if let Some(selection) = task_model {
+		selection.validate()?;
+	}
+	let model_ref = config
+		.model
+		.as_ref()
+		.or_else(|| task_model.map(|m| &m.model));
+	if let Some(reference) = model_ref {
 		let qualified = QualifiedRef {
 			registry_deployment: agent.registry_deployment.clone(),
 			id: reference.id.clone(),
@@ -353,17 +370,19 @@ pub async fn resolve(
 					)
 				})?;
 				tool.validate(parameters)?;
-				let model = definitions
-					.values()
-					.find(|entry| {
-						entry.kind == "model"
-							&& entry.id == config.model.id
-							&& entry.version == config.model.version
-					})
-					.ok_or_else(|| Error::Invalid("missing Agent model".into()))?;
-				let model: aidash_domain::model::ModelConfig =
-					aidash_domain::model::ModelConfig::from_stored(model.config.clone())?;
-				tool.eligible(&model)?;
+				if let Some(reference) = model_ref {
+					let model = definitions
+						.values()
+						.find(|entry| {
+							entry.kind == "model"
+								&& entry.id == reference.id
+								&& entry.version == reference.version
+						})
+						.ok_or_else(|| Error::Invalid("missing Agent model".into()))?;
+					let model: aidash_domain::model::ModelConfig =
+						aidash_domain::model::ModelConfig::from_stored(model.config.clone())?;
+					tool.eligible(&model)?;
+				}
 				// Mutable Tenant/delegation policy is reloaded at each send, never pinned here.
 			}
 			if let Some((provider, operation)) = &lifecycle
@@ -690,6 +709,7 @@ pub async fn resolve(
 		.map(|(identity, definition)| ResolvedDefinition::new(identity, definition))
 		.collect::<std::result::Result<Vec<_>, _>>()?;
 	let snapshot = BindingSnapshot {
+		task_model: task_model.cloned(),
 		schema_version: BINDING_SCHEMA,
 		agent,
 		remote,

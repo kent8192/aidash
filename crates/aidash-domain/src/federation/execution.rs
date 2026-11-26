@@ -174,6 +174,9 @@ pub struct Definition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inspection {
+	/// The Task selection attested by the receiver, also when the Agent fixes its own model.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
 	pub binding_snapshot: crate::registry::bindings::BindingSnapshot,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub generation: Option<serde_json::Value>,
@@ -191,10 +194,28 @@ fn zero(value: &u32) -> bool {
 	*value == 0
 }
 
+/// A registered model the receiving Node permits this requester and agent to use.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TaskModelOption {
+	pub model: EntityRef,
+	pub name: crate::registry::Localized,
+	pub openrouter_model_id: String,
+	pub pricing: Option<crate::catalog::Pricing>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskModelOptionsInput {
+	pub node_id: String,
+	pub agent: EntityRef,
+}
+
 /// Read-only selection preview. Grant preparation rechecks the current closure.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentInspectionInput {
+	#[serde(default)]
+	pub task_model: Option<crate::TaskModel>,
 	pub node_id: String,
 	pub agent: EntityRef,
 }
@@ -207,6 +228,8 @@ pub struct AgentMemoryRequirements {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareInput {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
 	/// Caller-supplied idempotency key. Reuse requires identical authority and definitions.
 	pub id: Uuid,
 	pub node_id: String,
@@ -281,7 +304,8 @@ impl Described {
 
 impl Inspection {
 	pub fn satisfies(&self, pinned: &Self) -> bool {
-		self.binding_snapshot == pinned.binding_snapshot
+		self.task_model == pinned.task_model
+			&& self.binding_snapshot == pinned.binding_snapshot
 			&& self.generation == pinned.generation
 			&& self.lineage == pinned.lineage
 			&& self.node_id == pinned.node_id

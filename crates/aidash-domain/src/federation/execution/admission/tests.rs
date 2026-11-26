@@ -15,6 +15,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 		created_by: "source-subject".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 7,
 		created_at: Utc::now(),

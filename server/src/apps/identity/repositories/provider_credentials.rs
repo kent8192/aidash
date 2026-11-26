@@ -258,7 +258,7 @@ pub(crate) fn selected_providers(
 				)
 			})
 	};
-	let mut definitions = vec![config.model];
+	let mut definitions: Vec<_> = config.model.into_iter().collect();
 	// Reference-image retrieval embeds each Run's query with Run-scoped credentials.
 	definitions.extend(config.reference_embedding);
 	let mut memories: Vec<_> = config.memory.into_iter().collect();
@@ -355,6 +355,135 @@ pub(crate) fn selected_providers(
 	})
 }
 
+async fn bound_credential_id(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	provider: &str,
+) -> crate::Result<Uuid> {
+	let bindings = BindingRecord::objects()
+		.filter(BindingRecord::field_tenant().eq(tenant))
+		.filter(BindingRecord::field_provider().eq(provider))
+		.all_with_executor(tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?;
+	bindings
+		.into_iter()
+		.next()
+		.and_then(|b| b.provider_credential_id)
+		.ok_or_else(|| crate::Error::Invalid("Provider Credential binding is missing".into()))
+}
+async fn require_credential(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	provider: &str,
+	credential_id: Uuid,
+) -> crate::Result<()> {
+	let rows = Record::objects()
+		.filter(Record::field_tenant().eq(tenant))
+		.filter(Record::field_id().eq(credential_id))
+		.all_with_executor(tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?;
+	let row = contract(rows.into_iter().next().ok_or_else(|| {
+		crate::Error::Invalid("bound Provider Credential is unavailable".into())
+	})?)?;
+	row.require_active()?;
+	if row.provider.id() != provider {
+		return Err(crate::Error::Invalid(
+			"bound Provider Credential provider does not match".into(),
+		));
+	}
+	Ok(())
+}
+
+/// Check the selected inference route before recording a Duty or offering it to a peer.
+pub(crate) async fn check_task_route(
+	tx: &mut dyn TransactionExecutor,
+	store: &crate::store::Store,
+	tenant: &str,
+	subject: &str,
+	model: &aidash_domain::model::ModelConfig,
+	effort: Option<aidash_domain::model::ReasoningEffort>,
+	remote: bool,
+) -> crate::Result<()> {
+	use aidash_domain::data_protection::Destination;
+	use aidash_domain::plan_connections::Failure;
+	let policy = super::data_protection::stored(tx, tenant)
+		.await?
+		.with_floor(store.data_protection_floor);
+	if let Some(provider) = &model.provider_credential {
+		policy.permits(Destination::OpenRouter)?;
+		if store.provider_credentials.is_none() {
+			return Err(crate::Error::Invalid(
+				"Secret Store is not configured".into(),
+			));
+		}
+		let id = bound_credential_id(tx, tenant, provider).await?;
+		require_credential(tx, tenant, provider, id).await?;
+		use aidash_domain::data_protection::Level::{SafetyRetention, ZeroDataRetention};
+		if effort.is_some() || matches!(policy.level, SafetyRetention | ZeroDataRetention) {
+			let source = crate::bootstrap::model_catalog(store.semantic_client.clone());
+			let catalog = crate::apps::execution::services::management::OPENROUTER_CATALOG
+				.get(source.as_ref(), chrono::Utc::now)
+				.await
+				.map_err(|_| {
+					crate::Error::Invalid("OpenRouter model capabilities are unavailable".into())
+				})?;
+			let metadata = catalog
+				.models
+				.iter()
+				.find(|entry| entry.id == model.model_id);
+			if matches!(policy.level, SafetyRetention | ZeroDataRetention)
+				&& !metadata
+					.and_then(|m| m.zero_data_retention)
+					.is_some_and(|routes| routes.meets(policy.level))
+			{
+				return Err(crate::Error::Invalid(
+					"OpenRouter has no verified route meeting this Tenant's Data Protection Level"
+						.into(),
+				));
+			}
+			if let Some(effort) = effort {
+				let allowed = metadata
+					.and_then(|m| m.reasoning.as_ref())
+					.and_then(|r| r.supported_efforts.as_ref());
+				if !allowed.is_some_and(|values| {
+					values
+						.iter()
+						.any(|v| serde_json::json!(effort) == v.as_str())
+				}) {
+					return Err(crate::Error::Invalid(
+						"OpenRouter does not list the selected reasoning effort for this model"
+							.into(),
+					));
+				}
+			}
+		}
+	} else if let Some(provider) = &model.plan_connection {
+		policy.permits(Destination::PlanConnection)?;
+		if remote {
+			return Err(crate::Error::Plan(Failure::NotAdmitted));
+		}
+		if !store.plan_connections_enabled || store.plan_connections.is_none() {
+			return Err(crate::Error::Invalid(
+				"Plan Connections are not enabled on this Deployment".into(),
+			));
+		}
+		let provider = aidash_domain::provider_credentials::Provider::plan(provider)?;
+		let held = super::plan_connections::held(tx, tenant, subject, provider)
+			.await?
+			.ok_or(crate::Error::Plan(Failure::NotConnected))?;
+		if !held.serves(&super::plan_connections::mapped_identities(tx, tenant, subject).await?) {
+			return Err(crate::Error::Plan(Failure::NotConnected));
+		}
+		held.require_usable(chrono::Utc::now())
+			.map_err(crate::Error::Plan)?;
+	} else {
+		policy.permits(store.keyless.data_protection_destination(&model.endpoint)?)?;
+	}
+	Ok(())
+}
+
 async fn admit_providers(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
@@ -397,35 +526,9 @@ async fn admit_providers(
 			}
 			pin.provider_credential_id
 		} else {
-			let bindings = BindingRecord::objects()
-				.filter(BindingRecord::field_tenant().eq(tenant))
-				.filter(BindingRecord::field_provider().eq(&provider))
-				.all_with_executor(tx)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)?;
-			bindings
-				.into_iter()
-				.next()
-				.and_then(|b| b.provider_credential_id)
-				.ok_or_else(|| {
-					crate::Error::Invalid("Provider Credential binding is missing".into())
-				})?
+			bound_credential_id(tx, tenant, &provider).await?
 		};
-		let rows = Record::objects()
-			.filter(Record::field_tenant().eq(tenant))
-			.filter(Record::field_id().eq(credential_id))
-			.all_with_executor(tx)
-			.await
-			.map_err(reinhardt::core::exception::Error::from)?;
-		let row = contract(rows.into_iter().next().ok_or_else(|| {
-			crate::Error::Invalid("bound Provider Credential is unavailable".into())
-		})?)?;
-		row.require_active()?;
-		if row.provider.id() != provider {
-			return Err(crate::Error::Invalid(
-				"bound Provider Credential provider does not match".into(),
-			));
-		}
+		require_credential(tx, tenant, &provider, credential_id).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("run_provider_credentials"))
 			.columns(
@@ -443,7 +546,7 @@ async fn admit_providers(
 				IntoValue::into_value(run),
 				IntoValue::into_value(tenant),
 				IntoValue::into_value(&provider),
-				IntoValue::into_value(row.id),
+				IntoValue::into_value(credential_id),
 			])
 			.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned())
 			.build(PostgresQueryBuilder);

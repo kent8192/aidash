@@ -18,6 +18,7 @@ fn script(source: &str) -> Script {
 
 fn definition() -> Definition {
 	Definition {
+		task_model: None,
 		title: "  GitHub CI duty ".into(),
 		mission: "Fix failing CI runs on main.\nKeep the build green.".into(),
 		procedure: "1. Read the failed job.\n2. Open a pull request.".into(),

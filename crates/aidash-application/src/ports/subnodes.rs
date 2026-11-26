@@ -75,6 +75,7 @@ pub trait ManageScope: Send {
 		title: &str,
 		request: &str,
 		journal_range: Option<aidash_domain::subnodes::JournalRange>,
+		task_model: Option<aidash_domain::TaskModel>,
 	) -> Result<Uuid>;
 	/// Marks dissolved and controls active member Runs using normal cancellation.
 	async fn dissolve(

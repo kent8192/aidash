@@ -354,6 +354,7 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 		.await
 		.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),
@@ -605,6 +606,7 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 			&ACME,
 			thread.id,
 			&NewTask {
+				task_model: None,
 				title: "Task".into(),
 				description: "Work".into(),
 				requirements: json!({}),
@@ -1199,6 +1201,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&ACME,
 			thread.id,
 			&NewTask {
+				task_model: None,
 				title: "Task".into(),
 				description: "Work".into(),
 				requirements: json!({}),
@@ -1334,6 +1337,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&ACME,
 			thread.id,
 			&NewTask {
+				task_model: None,
 				title: "Other request task".into(),
 				description: "Work".into(),
 				requirements: json!({}),
@@ -1441,6 +1445,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&ACME,
 			thread.id,
 			&NewTask {
+				task_model: None,
 				title: "Second task".into(),
 				description: "Work".into(),
 				requirements: json!({}),
@@ -1483,6 +1488,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			&ACME,
 			thread.id,
 			&NewTask {
+				task_model: None,
 				title: "Third task".into(),
 				description: "Work".into(),
 				requirements: json!({}),
@@ -1995,6 +2001,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	common::tenant_scope(&f.store, "acme").await;
 	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),
@@ -2074,6 +2081,7 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	common::tenant_scope(&f.store, "acme").await;
 	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),
@@ -2124,6 +2132,7 @@ async fn task_dependency_cycles_include_parent_edges(
 	common::tenant_scope(&f.store, "acme").await;
 	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),
@@ -2197,6 +2206,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	common::tenant_scope(&f.store, "acme").await;
 	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),
@@ -2254,6 +2264,7 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	common::tenant_scope(&f.store, "acme").await;
 	let thread = f.store.create_thread(&ACME, "alice", "Main").await.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),
@@ -2379,6 +2390,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 		.await
 		.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Work".into(),
 		requirements: json!({}),

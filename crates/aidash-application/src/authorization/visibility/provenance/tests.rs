@@ -1000,6 +1000,7 @@ fn task() -> Task {
 		created_by: "stored-task-author".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 0,
 		created_at: chrono::Utc::now(),

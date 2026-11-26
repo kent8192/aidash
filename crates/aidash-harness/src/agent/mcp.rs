@@ -474,7 +474,7 @@ impl Executor<'_> {
 					.catalog()
 					.get_for_run(run, &call.agent.model.id, &call.agent.model.version)
 					.await?;
-				let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
+				let model = super::run_model_config(run, model_entry.config)?;
 				let sample = SamplingRequest::parse(
 					&request.params,
 					limits.sampling_tokens.min(model.output_token_limit()),

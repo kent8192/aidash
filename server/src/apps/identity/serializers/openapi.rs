@@ -1169,6 +1169,27 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, PeerMappingInput>(document, views::peer_mappings::set)?;
 	contracts.path(document, views::peer_mappings::set, &["String"])?;
+	contracts.response::<_, Vec<aidash_domain::federation::execution::TaskModelOption>>(
+		document,
+		views::remote_grants::task_models,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, aidash_domain::federation::execution::TaskModelOptionsInput>(
+		document,
+		views::remote_grants::task_models,
+	)?;
+	contracts.path(document, views::remote_grants::task_models, &["Uuid"])?;
+	contracts.response::<_, Vec<aidash_domain::federation::execution::TaskModelOption>>(
+		document,
+		views::peer_mappings::discover_task_models,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, aidash_domain::registry::EntityRef>(
+		document,
+		views::peer_mappings::discover_task_models,
+	)?;
 	contracts.response::<_, aidash_domain::federation::execution::AgentMemoryRequirements>(
 		document,
 		views::remote_grants::agent_inspection,

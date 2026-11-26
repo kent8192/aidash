@@ -98,6 +98,7 @@ impl<'a> Executor<'a> {
 				Err(Error::AuthorityRefused(refusal))
 			}
 			// A swallowed denial could leave a note behind; never read it here.
+			Err(Error::TaskModel(reason)) => Ok(json!({"error": reason})),
 			Err(Error::NotFound(message)) => {
 				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call found nothing");
 				Ok(json!({"error":format!(
@@ -877,7 +878,7 @@ impl<'a> Executor<'a> {
 				&entry,
 			)?),
 		};
-		let model_cfg: ModelConfig = ModelConfig::from_stored(entry.config)?;
+		let model_cfg = run_model_config(run, entry.config)?;
 		let summary_window = model_cfg.context_window;
 		let max_tokens = max_tokens
 			.min(summary.max_tokens)
@@ -913,7 +914,9 @@ impl<'a> Executor<'a> {
 			summary_model.max_output_tokens = Some(request.max_output_tokens);
 			request
 		} else {
-			summary_model.reasoning_effort = Some(aidash_domain::model::ReasoningEffort::None);
+			summary_model.reasoning_effort = Some(
+				task_reasoning_effort(run).unwrap_or(aidash_domain::model::ReasoningEffort::None),
+			);
 			summary_model.max_output_tokens = Some(max_tokens);
 			loop {
 				if let Some(last) = plan.absorbed.last() {
@@ -1580,7 +1583,7 @@ impl<'a> Executor<'a> {
 					.environment
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
-				let model_cfg: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
+				let model_cfg = run_model_config(run,model_entry.config)?;
 				// Registration enforces the same pairing; never drop an opt-in
 				// silently or send breakpoints to another route (ADR 0019).
 				model_cfg.require_prompt_cache(agent.prompt_cache)?;
@@ -3472,7 +3475,7 @@ connection: None,
 				if matches!(selection, Some(aidash_domain::media::ModelMedia::WorkingImage(_))) {
 					let entry = self.environment.catalog()
 						.get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
-					let model: ModelConfig = ModelConfig::from_stored(entry.config)?;
+					let model = run_model_config(run,entry.config)?;
 					if !selection.as_ref().expect("image selection").supported_by(&model.modalities) {
 						selection = None;
 					}
@@ -3512,7 +3515,7 @@ connection: None,
 					// References. A withdrawn Source still stops the Run.
 					let headroom = self.environment.run_request_headroom(run).await?;
 					let model_entry = self.environment.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
-					let model: ModelConfig = ModelConfig::from_stored(model_entry.config)?;
+					let model = run_model_config(run,model_entry.config)?;
 					if let Some(adjusted) = aidash_application::execution::media::route_selected_renditions(&model, &selections, &parts)
 						&& adjusted != selections {
 						parts = tool_step!(*call, Box::pin(guard.model_media(&adjusted)), unfinished_key);
@@ -5042,4 +5045,21 @@ pub(crate) fn cited_versions(record: &serde_json::Value) -> Vec<String> {
 				.collect()
 		})
 		.unwrap_or_default()
+}
+
+fn task_reasoning_effort(run: &Run) -> Option<aidash_domain::model::ReasoningEffort> {
+	run.context
+		.binding_snapshot
+		.as_deref()?
+		.task_model
+		.as_ref()?
+		.reasoning_effort
+}
+
+fn run_model_config(run: &Run, config: serde_json::Value) -> Result<ModelConfig> {
+	let mut model = ModelConfig::from_stored(config)?;
+	if let Some(effort) = task_reasoning_effort(run) {
+		model.reasoning_effort = Some(effort);
+	}
+	Ok(model)
 }

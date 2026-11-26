@@ -16,6 +16,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 			&TEST_FIXTURE,
 			bank.thread,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Local Delivery".into(),
 				description: "Native Usage".into(),
 				requirements: json!({}),

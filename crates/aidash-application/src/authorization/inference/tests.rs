@@ -18,7 +18,7 @@ fn reference(key: &str) -> EntityRef {
 fn agent() -> AgentConfig {
 	let mut config: AgentConfig =
 		serde_json::from_value(crate::test_support::agent("fixture").config).unwrap();
-	config.model = reference("model");
+	config.model = Some(reference("model"));
 	config.core_capabilities = Default::default();
 	config.core_capabilities.files = true;
 	config.skills = vec![reference("first"), reference("second")];

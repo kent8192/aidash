@@ -7,7 +7,7 @@ use crate::{
 	registry::{Entry, Search},
 };
 use aidash_domain::federation::{PeerError, route::Sender};
-use aidash_domain::nodes::NodeName;
+use aidash_domain::nodes::{NodeAddress, NodeName};
 use futures_util::{StreamExt, stream};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -31,6 +31,17 @@ pub(crate) async fn discover_in(
 	node: Option<NodeName>,
 	search: &Search,
 ) -> Result<Discovery> {
+	discover_from(f, access, node, search, None).await
+}
+
+/// Limit a discovery check to one destination when authorizing a model picker.
+pub(crate) async fn discover_from(
+	f: &Federation,
+	access: &mut Access,
+	node: Option<NodeName>,
+	search: &Search,
+	target: Option<&NodeAddress>,
+) -> Result<Discovery> {
 	let mut query = search.clone();
 	query.kind = Some("agent".into());
 	let sender = Sender {
@@ -41,13 +52,17 @@ pub(crate) async fn discover_in(
 	// The agents found here are the sending Node's, and carry its address.
 	let sending = routes::sending_node(&mut *access.tx, &sender).await?;
 	access.use_node(sending.clone()).await?;
-	let own = f.config.deployment.node(sending).to_string();
-	let local = catalog::list_in(access, &query).await?;
+	let own = f.config.deployment.node(sending);
+	let local = if target.is_none_or(|target| target == &own) {
+		catalog::list_in(access, &query).await?
+	} else {
+		Vec::new()
+	};
 	let mut result = Discovery {
 		agents: local
 			.into_iter()
 			.map(|entity| DiscoveredAgent {
-				node_id: own.clone(),
+				node_id: own.to_string(),
 				entity,
 			})
 			.collect(),
@@ -55,7 +70,14 @@ pub(crate) async fn discover_in(
 	};
 	// Configuration changes wait for this admitted read: the routes are held
 	// with a shared lock until the authority transaction ends.
-	let routes = routes::all(&mut *access.tx, &f.config.deployment, &sender, true).await?;
+	let routes = match target {
+		Some(target) if target == &own => Vec::new(),
+		Some(target) => routes::route(&mut *access.tx, &f.config.deployment, &sender, target, true)
+			.await?
+			.into_iter()
+			.collect(),
+		None => routes::all(&mut *access.tx, &f.config.deployment, &sender, true).await?,
+	};
 	let mut targets = vec![];
 	// Nodes of the caller's own Tenant: their reads are decided by policy alone (#769).
 	let mut same_tenant = BTreeSet::new();

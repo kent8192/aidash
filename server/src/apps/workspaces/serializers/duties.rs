@@ -35,6 +35,7 @@ pub(crate) struct DutyView {
 	/// The checklist its Agent follows on every Task.
 	pub procedure: String,
 	pub agent: EntityRef,
+	pub task_model: Option<aidash_domain::TaskModel>,
 	/// When it wakes by the clock, if it does.
 	pub trigger: Option<Trigger>,
 	/// None follows the Requester's own default mode.
@@ -99,6 +100,7 @@ impl DutyView {
 			mission: definition.mission,
 			procedure: definition.procedure,
 			agent: definition.agent,
+			task_model: definition.task_model,
 			trigger: definition.trigger,
 			approval_mode: definition.approval_mode,
 			max_lateness_seconds: definition.max_lateness_seconds,

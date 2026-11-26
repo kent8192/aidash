@@ -1867,6 +1867,7 @@ fn fixture() -> Fixture {
 			created_by: "human".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 0,
 			created_at: now,
@@ -1999,6 +2000,24 @@ fn fixture() -> Fixture {
 		duty_script: Default::default(),
 	}));
 	Fixture { backend, run }
+}
+
+#[rstest]
+fn task_model_effort_reaches_the_provider_configuration(mut fixture: Fixture) {
+	use aidash_domain::model::ReasoningEffort;
+	let config = fixture.backend.entry("model").config;
+	let mut snapshot = DeferredSnapshot::default().snapshot();
+	snapshot.task_model = Some(aidash_domain::TaskModel {
+		model: reference("model").local(),
+		reasoning_effort: Some(ReasoningEffort::High),
+	});
+	fixture.run.context.binding_snapshot = Some(Box::new(snapshot));
+	assert_eq!(
+		run_model_config(&fixture.run, config)
+			.unwrap()
+			.reasoning_effort,
+		Some(ReasoningEffort::High)
+	);
 }
 
 #[rstest]
@@ -5204,6 +5223,7 @@ impl DeferredSnapshot {
 		});
 		self.define(&agent, "agent", "", config);
 		BindingSnapshot {
+			task_model: None,
 			schema_version: 1,
 			agent,
 			remote: false,

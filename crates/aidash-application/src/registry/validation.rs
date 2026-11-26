@@ -575,14 +575,15 @@ impl DefinitionValidation {
 	) -> Result<usize> {
 		snapshot.validate()?;
 		let config = AgentConfig::from_snapshot(snapshot)?;
+		let reference = config.required_model()?;
 		let model = snapshot
 			.definitions
 			.iter()
 			.find(|d| {
 				d.identity.registry_deployment == snapshot.agent.registry_deployment
-					&& d.identity.local() == config.model
+					&& d.identity.local() == *reference
 			})
-			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
+			.ok_or_else(|| Error::NotFound(reference.id.clone()))?;
 		let model = ModelConfig::from_stored(model.definition.config.clone())?;
 		let contract = aidash_domain::registry::execution_contract(
 			config.projection_version,

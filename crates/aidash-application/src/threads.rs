@@ -11,6 +11,7 @@ use aidash_domain::{
 use serde_json::json;
 
 pub struct ConversationRequest<'a> {
+	pub task_model: Option<aidash_domain::TaskModel>,
 	pub title: &'a str,
 	/// The person's request: the first message and the Root Task's description.
 	pub request: &'a str,
@@ -58,6 +59,7 @@ pub async fn conversation(
 		.create_task(
 			thread.id,
 			&NewTask {
+				task_model: input.task_model,
 				title: input.title.into(),
 				description: input.request.into(),
 				requirements: json!({}),

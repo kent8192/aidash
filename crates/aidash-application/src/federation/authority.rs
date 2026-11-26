@@ -108,6 +108,12 @@ impl Client {
 	}
 }
 fn classify_request(path: &str, reply: Reply) -> Result<Vec<u8>> {
+	if reply.status == 422
+		&& let Ok(body) = &reply.body
+		&& let Ok(refusal) = serde_json::from_slice::<aidash_domain::TaskModelRefusal>(body)
+	{
+		return Err(Error::TaskModel(refusal));
+	}
 	if path == "/scoped/execution/inspect" && (400..500).contains(&reply.status) {
 		use aidash_domain::federation::execution::{ReceiverRefusal, Refusal};
 

@@ -96,7 +96,9 @@ pub async fn prepare(
 		false,
 	)
 	.await?;
-	validation.bound_prompt_headroom(&snapshot, &context)?;
+	if !entry.config["model"].is_null() {
+		validation.bound_prompt_headroom(&snapshot, &context)?;
+	}
 	entry.binding_normalization = snapshot
 		.definitions
 		.iter()

@@ -38,7 +38,9 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 		"agent" => {
 			let mut c: crate::registry::bindings::AgentBindings =
 				serde_json::from_value(entry.config.clone())?;
-			bind(&mut c.model, bindings);
+			if let Some(model) = &mut c.model {
+				bind(model, bindings);
+			}
 			for bound in &mut c.bindings {
 				let mut local = bound.target.local();
 				if bind(&mut local, bindings) {

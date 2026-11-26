@@ -29,6 +29,11 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 	/// The address of the Home Node that issued the grant, known once the
 	/// task's Thread has been read in this scope.
 	fn home_address(&self) -> String;
+	async fn require_discoverable_agent(
+		&mut self,
+		receiver: &aidash_domain::nodes::NodeAddress,
+		agent: &aidash_domain::registry::EntityRef,
+	) -> Result<()>;
 	/// What the Home's Node Registration of `receiver` asks it to let this grant's
 	/// Runs use (ADR 0139), read now. `None` when the Home registers no such Node,
 	/// as for a receiver of the Home's own Tenant, whose Nodes need no registration.

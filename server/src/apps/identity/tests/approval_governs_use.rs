@@ -88,6 +88,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 				&acme,
 				thread.id,
 				&aidash_server::domain::NewTask {
+					task_model: None,
 					title: format!("Work {title}"),
 					description: "A Run in the upgrade".into(),
 					requirements: json!({}),
@@ -340,6 +341,7 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 				&acme,
 				thread.id,
 				&aidash_server::domain::NewTask {
+					task_model: None,
 					title: "Start".into(),
 					description: "Refused".into(),
 					requirements: json!({}),

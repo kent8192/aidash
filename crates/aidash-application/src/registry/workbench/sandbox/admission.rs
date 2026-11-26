@@ -176,7 +176,7 @@ async fn prepare(
 	let entry = scope.validate_content(&draft).await?;
 	let snapshot = scope.bindings(&draft, &entry).await?.for_workbench_test();
 	let config = AgentConfig::from_snapshot(&snapshot)?;
-	let model = scope.effective(&config.model).await?;
+	let model = scope.effective(config.required_model()?).await?;
 	let model_config: ModelConfig = ModelConfig::from_stored(model.config)?;
 	let limits = scope.limits(&draft.tenant).await?;
 	super::validate_limits(admission.repository, &limits)?;
@@ -322,9 +322,10 @@ async fn prepare(
 		));
 	}
 	let context_window = model_config.context_window;
-	let model_provider = admission
-		.models
-		.provider(&draft.tenant, &config.model, model_config)?;
+	let model_provider =
+		admission
+			.models
+			.provider(&draft.tenant, config.required_model()?, model_config)?;
 	let fixtures = serde_json::to_value(&input.fixtures)?;
 	if fixtures.to_string().len() > 65_536 {
 		return Err(Error::Invalid("test fixtures exceed 64 KiB".into()));

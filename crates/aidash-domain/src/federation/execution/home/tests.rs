@@ -38,6 +38,7 @@ fn task() -> crate::Task {
 		created_by: "requester".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 7,
 		created_at: chrono::TimeZone::timestamp_opt(&Utc, 1, 0).unwrap(),
@@ -99,6 +100,7 @@ fn reused_grant_rejects_each_changed_authority_dimension(#[case] changed: &str) 
 		_ => panic!("unknown dimension"),
 	}
 	let input = super::super::PrepareInput {
+		task_model: None,
 		id: expected.id,
 		node_id: expected.node_id.clone(),
 		agent: EntityRef {

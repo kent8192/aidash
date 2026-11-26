@@ -38,6 +38,8 @@ impl CredentialReason {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error(transparent)]
+	TaskModel(#[from] aidash_domain::TaskModelRefusal),
 	#[error("{}", .0.code())]
 	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("{0}")]
@@ -192,6 +194,7 @@ impl Error {
 				(StatusCode::CONFLICT, self.to_string())
 			}
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
+			Self::TaskModel(_) => (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized | Self::CredentialUnauthorized(_) => {
 				(StatusCode::UNAUTHORIZED, "unauthorized".into())
@@ -324,6 +327,11 @@ impl Error {
 				) =>
 			{
 				json!({"error":s,"code":s})
+			}
+			Self::TaskModel(reason) => {
+				let mut value = json!(reason);
+				value["error"] = json!(message);
+				value
 			}
 			Self::NodeUnreachable { node, after_effect } => {
 				json!({"error": message, "code": "node_unreachable", "node": node, "after_effect": after_effect})
@@ -554,6 +562,7 @@ impl From<aidash_application::Error> for Error {
 				outcome,
 			},
 			ApplicationError::NotFound(message) => Self::NotFound(message),
+			ApplicationError::TaskModel(reason) => Self::TaskModel(reason),
 			ApplicationError::Unprocessable(message) => Self::Unprocessable(message),
 			ApplicationError::FederationDisabled => Self::FederationDisabled,
 			ApplicationError::Refused(code) => Self::Refused(code),
@@ -654,6 +663,7 @@ impl From<Error> for aidash_application::Error {
 				outcome,
 			},
 			Error::NotFound(message) => Self::NotFound(message),
+			Error::TaskModel(reason) => Self::TaskModel(reason),
 			Error::Unprocessable(message) => Self::Unprocessable(message),
 			Error::FederationDisabled => Self::FederationDisabled,
 			Error::Forbidden => Self::Forbidden,

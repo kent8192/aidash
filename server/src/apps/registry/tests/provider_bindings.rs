@@ -280,6 +280,11 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		"aidash://node",
 	)
 	.unwrap()
+	.len() + aidash_application::registry::system::legacy_task_model_entries(
+		&validation,
+		"aidash://node",
+	)
+	.unwrap()
 	.len() + aidash_application::registry::system::legacy_file_entries(
 		&validation,
 		"aidash://node",
