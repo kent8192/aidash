@@ -18,10 +18,17 @@ ROUTE = re.compile(
     rf"^(/\S*)\s+({METHOD_PATTERN}(?:,\s*{METHOD_PATTERN})*)\s+(\S+)\s+(\S+)\s*$"
 )
 NODE_PATH = "/api/tenants/{tenant}/nodes/{node}"
+DRIVE_PATH = "/api/nodes/{node}/drive"
 REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
+    ("GET", DRIVE_PATH): ("drive-browse", "drive"),
+    ("POST", DRIVE_PATH): ("drive-update", "drive"),
+    ("GET", DRIVE_PATH + "/file"): ("drive-download", "drive"),
+    ("POST", DRIVE_PATH + "/uploads"): ("drive-upload-start", "drive"),
+    ("PUT", DRIVE_PATH + "/uploads/{id}/chunks"): ("drive-upload-part", "drive"),
+    ("POST", DRIVE_PATH + "/uploads/{id}/finish"): ("drive-upload-finish", "drive"),
     ("GET", "/api/registry/{id}/{version}/reference-revocations"): ("registry-source-revocations", "registry/management"),
     ("GET", "/api/tenants/{tenant}/invitation-approvals"): ("tenant-invitation-approvals", "tenant_administration"),
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),
