@@ -2832,7 +2832,7 @@ async fn task_model_pins_the_run_without_changing_the_reviewed_agent() {
 		model: reference("unused").local(),
 		..selection
 	};
-	let fixed = resolve_with_model(
+	let mut fixed = resolve_with_model(
 		&mut catalog,
 		&providers(),
 		reference("agent"),
@@ -2847,4 +2847,15 @@ async fn task_model_pins_the_run_without_changing_the_reviewed_agent() {
 		reference("model").local()
 	);
 	assert!(fixed.task_model.is_none());
+	let model = fixed
+		.definitions
+		.iter_mut()
+		.find(|d| d.identity == reference("model"))
+		.unwrap();
+	model.definition.config["reasoning_effort"] = json!("minimal");
+	assert!(fixed.inherited_model().is_err());
+	let override_effort = Some(aidash_domain::model::ReasoningEffort::High);
+	let child = fixed.inherited_model_with_effort(override_effort).unwrap();
+	assert_eq!(child.model, reference("model").local());
+	assert_eq!(child.reasoning_effort, override_effort);
 }

@@ -449,28 +449,23 @@ pub(crate) fn validate_arguments(schema: &Value, input: &Value) -> Result<()> {
 }
 
 fn child_task_model(run: &Run, input: &Value) -> Result<Option<aidash_domain::TaskModel>> {
-	let mut selection = match input.get("model") {
-		Some(reference) => Some(aidash_domain::TaskModel {
+	let effort = input
+		.get("reasoning_effort")
+		.map(|value| serde_json::from_value(value.clone()))
+		.transpose()?;
+	if let Some(reference) = input.get("model") {
+		let selection = aidash_domain::TaskModel {
 			model: serde_json::from_value(reference.clone())?,
-			reasoning_effort: None,
-		}),
-		None => run
-			.context
-			.binding_snapshot
-			.as_deref()
-			.map(|snapshot| snapshot.inherited_model())
-			.transpose()?,
-	};
-	if let Some(effort) = input.get("reasoning_effort") {
-		let model = selection
-			.as_mut()
-			.ok_or_else(|| Error::Invalid("reasoning effort requires a model".into()))?;
-		model.reasoning_effort = Some(serde_json::from_value(effort.clone())?);
-	}
-	if let Some(selection) = &selection {
+			reasoning_effort: effort,
+		};
 		selection.validate()?;
+		return Ok(Some(selection));
 	}
-	Ok(selection)
+	match run.context.binding_snapshot.as_deref() {
+		Some(snapshot) => Ok(Some(snapshot.inherited_model_with_effort(effort)?)),
+		None if effort.is_some() => Err(Error::Invalid("reasoning effort requires a model".into())),
+		None => Ok(None),
+	}
 }
 
 pub struct Builtin {

@@ -1056,19 +1056,29 @@ pub const WORKBENCH_SCHEDULE_EXCLUSION: &str = "Schedules are not offered in Wor
 impl BindingSnapshot {
 	/// The model a child Task inherits, including the configured effort of a fixed model.
 	pub fn inherited_model(&self) -> Result<crate::TaskModel> {
-		if let Some(selection) = &self.task_model {
-			return Ok(selection.clone());
-		}
-		let definition = self
-			.model_definition()
-			.ok_or_else(|| Error::Invalid("snapshot lacks model".into()))?;
-		let model = definition.identity.local();
-		let reasoning_effort =
-			serde_json::from_value(definition.definition.config["reasoning_effort"].clone())?;
-		let selection = crate::TaskModel {
-			model,
-			reasoning_effort,
+		self.inherited_model_with_effort(None)
+	}
+
+	/// Apply a child's explicit effort before checking which levels a Task permits.
+	pub fn inherited_model_with_effort(
+		&self,
+		effort: Option<crate::model::ReasoningEffort>,
+	) -> Result<crate::TaskModel> {
+		let mut selection = match &self.task_model {
+			Some(selection) => selection.clone(),
+			None => {
+				let definition = self
+					.model_definition()
+					.ok_or_else(|| Error::Invalid("snapshot lacks model".into()))?;
+				crate::TaskModel {
+					model: definition.identity.local(),
+					reasoning_effort: serde_json::from_value(
+						definition.definition.config["reasoning_effort"].clone(),
+					)?,
+				}
+			}
 		};
+		selection.reasoning_effort = effort.or(selection.reasoning_effort);
 		selection.validate()?;
 		Ok(selection)
 	}
