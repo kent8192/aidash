@@ -464,12 +464,6 @@ async fn answer_setting_locked(
 		return Err(Error::Forbidden);
 	}
 	let id = request.id;
-	if request.response.is_none() {
-		HumanRequestRecord::require_active_run(access.tx.as_mut(), run.id).await?;
-	}
-	let request = HumanRequestRecord::read_in(access.tx.as_mut(), id, true)
-		.await?
-		.ok_or(Error::Forbidden)?;
 	let form: Form = serde_json::from_str(&request.prompt)?;
 	let response = form.answer(&answer)?;
 	if let Some(existing) = &request.response {
@@ -480,17 +474,6 @@ async fn answer_setting_locked(
 		}
 		return Err(Error::Conflict("Setting Request already answered.".into()));
 	}
-	let run = access.run_for_interaction(request.run_id).await?;
-	if let RunState::Waiting(wait) = &run.state
-		&& wait.request_id() == Some(id)
-		&& wait.deadline().is_some_and(|end| end <= chrono::Utc::now())
-	{
-		return Err(Error::Conflict("The Answer Deadline has passed.".into()));
-	}
-	let saved = f
-		.store
-		.record_human_answer(access.tx.as_mut(), &run, id, response, &identity.subject)
-		.await?;
 	if let (Form::Secret { name, hosts, .. }, Action::Accept) = (form, answer.action) {
 		let secret = access.resource("secret", &name, json!({"name":name}));
 		access
@@ -507,6 +490,7 @@ async fn answer_setting_locked(
 		};
 		service
 			.put_setting(
+				id,
 				&identity.tenant,
 				&name,
 				hosts,
@@ -514,8 +498,20 @@ async fn answer_setting_locked(
 				&identity.subject,
 			)
 			.await?;
+		// The Secret metadata, answer and wake event committed together.
+		return HumanRequestRecord::read_in(access.tx.as_mut(), id, false)
+			.await?
+			.ok_or(Error::Forbidden);
 	}
-	Ok(saved)
+	HumanRequestRecord::lock_setting(access.tx.as_mut(), id, run.id).await?;
+	HumanRequestRecord::record_answer(
+		access.tx.as_mut(),
+		id,
+		response,
+		&identity.subject,
+		Some(run.thread_id),
+	)
+	.await
 }
 
 pub async fn abandon(

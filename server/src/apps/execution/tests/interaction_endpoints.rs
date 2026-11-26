@@ -892,4 +892,64 @@ async fn setting_request_writes_only_to_the_named_secret_and_records_the_receipt
 			.revision,
 		metadata.revision
 	);
+
+	let later = app
+		.runtime
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			aidash_domain::setting_requests::KIND,
+			&prompt.to_string(),
+			"declined-setting-fixture",
+		)
+		.await
+		.unwrap();
+	let declined = assert_json(
+		execution
+			.subject
+			.post(
+				&format!("/api/setting-requests/{}/answer", later.id),
+				&json!({"action":"decline"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(
+		declined["response"],
+		json!({"name":"fixture-key","outcome":"declined"})
+	);
+	// Simulate a writer that passed authorization just before the decline committed.
+	// It must never replace the pinned value or publish an additional saved receipt.
+	assert!(
+		service
+			.put_setting(
+				later.id,
+				"acme",
+				"fixture-key",
+				vec!["api.example.com".into()],
+				String::from("superseded answer").into(),
+				"alice",
+			)
+			.await
+			.is_err()
+	);
+	assert_eq!(
+		service
+			.resolve_value("acme", "fixture-key", "https://api.example.com/tool")
+			.await
+			.unwrap()
+			.expose_secret(),
+		value.as_str()
+	);
+	assert_eq!(
+		service
+			.get_owned("acme", None, "fixture-key")
+			.await
+			.unwrap()
+			.revision,
+		metadata.revision
+	);
 }

@@ -4321,28 +4321,17 @@ impl Store {
 		else {
 			return Ok(old);
 		};
-		self.record_human_answer(tx, &run, id, response, &actor)
-			.await
-	}
-	pub(crate) async fn record_human_answer(
-		&self,
-		tx: &mut dyn TransactionExecutor,
-		run: &Run,
-		id: Uuid,
-		response: Value,
-		actor: &str,
-	) -> Result<HumanRequest> {
-		let request = HumanRequestRecord::answer_locked(tx, id, response, actor).await?;
-		event_records::append_run(
+		HumanRequestRecord::record_answer(
 			tx,
-			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
-			"human.answered",
-			json!(request),
+			id,
+			response,
+			&actor,
+			run.is_local(self.deployment.as_str())
+				.then_some(run.thread_id),
 		)
-		.await?;
-		Ok(request)
+		.await
 	}
+
 	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub async fn invocation_start(
 		&self,
