@@ -6,8 +6,10 @@ per-transaction secret that seals every participant's part (ADR 0146, #1107).
 It first discards every atomic transaction journal (`atomic_*` rows, and the
 gate's transaction), because the former journals hold whole manifests and no
 seed. Aidash is undeployed, and new cross-Deployment submissions were refused
-while that shape was current. Deleting rows has no Reinhardt operation, so the
-deletion is a SQL asset; it is irreversible. `0032_transaction_parts_state`
+while that shape was current. Changing rows has no Reinhardt operation, so the
+gate update and the deletes are Reinhardt Query output from
+`federation::services::transaction_journal_reset`, checked by
+`migrationseeds`; they are irreversible. `0032_transaction_parts_state`
 records the model state.
 
 `federation/0028_run_only_tool_answers` (after `federation/0027_federation_tool_lists_state`)

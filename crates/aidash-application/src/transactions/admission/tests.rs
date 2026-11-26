@@ -410,3 +410,40 @@ async fn a_coordinator_that_is_no_node_of_this_deployment_is_refused(
 		);
 	}
 }
+
+/// A manifest at its own size limit still yields shares beyond it, because each
+/// share repeats the header and every seal. Admission refuses it rather than
+/// commit a transaction no participant could reserve.
+#[rstest]
+#[tokio::test]
+async fn a_manifest_whose_share_exceeds_the_limit_is_refused_before_admission(
+	mut manifest: Manifest,
+) {
+	use aidash_domain::transactions::MAX_JSON_BYTES;
+	let title = |manifest: &mut Manifest, len: usize| {
+		manifest.participants[0].mutations = vec![Mutation::ThreadTitle {
+			thread_id: Uuid::from_u128(2),
+			expected_revision: 0,
+			title: "a".repeat(len),
+		}];
+	};
+	title(&mut manifest, 1);
+	let base = serde_json::to_vec(&manifest).unwrap().len();
+	title(&mut manifest, 1 + MAX_JSON_BYTES - base);
+	assert_eq!(serde_json::to_vec(&manifest).unwrap().len(), MAX_JSON_BYTES);
+	crate::transactions::validate(&manifest).unwrap();
+	for seed in [Some(SEED), None] {
+		let mut adapter = Adapter::new();
+		let result = submit_in(&mut adapter, seed, &manifest, None).await;
+		assert!(
+			matches!(
+				&result,
+				Err(Error::Domain(aidash_domain::Error::Invalid(message)))
+					if message == "a share must stay within 512 KiB"
+			),
+			"{result:?}"
+		);
+		assert!(!adapter.log().contains(&"admit".to_owned()));
+		assert!(adapter.0.lock().unwrap().seeds.is_empty());
+	}
+}

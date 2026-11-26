@@ -89,6 +89,12 @@ pub async fn submit_in(
 			&derived
 		}
 	};
+	// A share repeats the header and every seal around one part, so a manifest
+	// within its own limit can still yield a share no participant accepts.
+	// Refuse it here rather than commit a transaction that can never finish.
+	for participant in &manifest.participants {
+		super::validate_share(&manifest.share(seed, &participant.node_id)?)?;
+	}
 	let stored = scope.admit(manifest, seed).await?;
 	if let Some(origin) = origin {
 		scope.bind_origin(manifest.id, origin).await?;

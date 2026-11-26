@@ -51,6 +51,11 @@ pub struct Manifest {
 	pub deadline: DateTime<Utc>,
 	pub participants: Vec<Participant>,
 }
+/// The most bytes a manifest, and each participant's share of it, may take
+/// as JSON. A share repeats the header and every seal, so a manifest within
+/// this bound can still produce a share beyond it; admission checks both.
+pub const MAX_JSON_BYTES: usize = 524_288;
+
 #[derive(Debug, thiserror::Error)]
 #[error("forbidden")]
 pub struct MissingParticipant;
@@ -76,7 +81,7 @@ impl Manifest {
 		for participant in &self.participants {
 			count += validate_mutations(&participant.mutations)?;
 		}
-		if count == 0 || serde_json::to_vec(self)?.len() > 524_288 {
+		if count == 0 || serde_json::to_vec(self)?.len() > MAX_JSON_BYTES {
 			return Err(Error::Invalid("transaction needs mutations, its coordinator as a participant, and a manifest within 512 KiB".into()).into());
 		}
 		Ok(())

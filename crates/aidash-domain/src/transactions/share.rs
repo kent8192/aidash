@@ -188,7 +188,7 @@ impl Share {
 		if *own != self.part.seal()? {
 			return Err(Error::Conflict("the part does not match its seal".into()));
 		}
-		if serde_json::to_vec(self)?.len() > 524_288 {
+		if serde_json::to_vec(self)?.len() > super::MAX_JSON_BYTES {
 			return Err(Error::Invalid("a share must stay within 512 KiB".into()));
 		}
 		Ok(())
