@@ -31,8 +31,13 @@ pub(crate) const SEMANTIC_INDEX_MANAGE: &str = "semantic.index.manage";
 
 /// Validate an index specification against this node's runtime composition.
 pub(crate) fn validate_index(store: &Store, spec: &IndexingSpec) -> Result<()> {
-	native::IndexSpec::from(spec.clone())
-		.validate_with(&crate::bootstrap::registry_validation_for(store))?;
+	let mut validation = crate::bootstrap::registry_validation_for(store);
+	if spec.embedding == aidash_application::embedding::default_embedding_config() {
+		// A new Tenant can create Threads before an administrator connects an
+		// OpenRouter account. Calls still require an available credential.
+		validation = validation.with_provider_credentials(true);
+	}
+	native::IndexSpec::from(spec.clone()).validate_with(&validation)?;
 	// An address literal is refused when configured, as before any call; a
 	// host name is checked again at each connection.
 	if spec.embedding.provider_credential.is_none()

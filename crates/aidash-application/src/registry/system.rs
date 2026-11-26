@@ -344,20 +344,7 @@ pub fn approval_decider() -> Result<Entry> {
 
 fn tenant_default_embedding() -> Result<Entry> {
 	let reference = crate::embedding::default_embedding();
-	let config = aidash_domain::semantic::EmbeddingConfig {
-		provider: "openrouter".into(),
-		endpoint: "https://openrouter.ai/api/v1".into(),
-		provider_credential: Some("openrouter".into()),
-		model: "google/gemini-embedding-2".into(),
-		model_version: reference.version.clone(),
-		dimensions: 3072,
-		inputs: [
-			aidash_domain::semantic::EmbeddingInputKind::Text,
-			aidash_domain::semantic::EmbeddingInputKind::Image,
-		]
-		.into_iter()
-		.collect(),
-	};
+	let config = crate::embedding::default_embedding_config();
 	config.validate_parameters()?;
 	Ok(Entry {
 		binding_normalization: None,

@@ -1,4 +1,5 @@
 //! The embedding definition used by the Tenant's active search indexes.
+use aidash_domain::semantic::{EmbeddingConfig, EmbeddingInputKind};
 use async_trait::async_trait;
 
 use crate::Result;
@@ -12,6 +13,20 @@ pub fn default_embedding() -> EmbeddingRef {
 	EmbeddingRef {
 		id: DEFAULT_EMBEDDING_ID.into(),
 		version: DEFAULT_EMBEDDING_VERSION.into(),
+	}
+}
+
+pub fn default_embedding_config() -> EmbeddingConfig {
+	EmbeddingConfig {
+		provider: "openrouter".into(),
+		endpoint: "https://openrouter.ai/api/v1".into(),
+		provider_credential: Some("openrouter".into()),
+		model: "google/gemini-embedding-2".into(),
+		model_version: DEFAULT_EMBEDDING_VERSION.into(),
+		dimensions: 3072,
+		inputs: [EmbeddingInputKind::Text, EmbeddingInputKind::Image]
+			.into_iter()
+			.collect(),
 	}
 }
 
