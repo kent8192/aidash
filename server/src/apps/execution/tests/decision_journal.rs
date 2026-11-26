@@ -2,7 +2,7 @@
 //! charged attempts are recovered and never charged twice, and approval
 //! evidence is committed under the Run's lease.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 
 use aidash_application::{

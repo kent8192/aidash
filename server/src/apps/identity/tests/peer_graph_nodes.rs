@@ -1,7 +1,7 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use common::upstream_fixtures;
 use futures_util::FutureExt;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 
 use aidash_server::{federation::Federation, registry::Registry};

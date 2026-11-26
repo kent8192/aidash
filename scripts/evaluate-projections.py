@@ -51,8 +51,8 @@ def report_command(args):
             raise campaign.CampaignRefusal("post hoc analysis configuration accepts notes only; freeze settings before dispatch")
         config.update(override)
     candidate = args.candidate if plan["phase"] == "pilot" else plan["candidate"]
-    if candidate not in (None, "ordered", "native"):
-        raise campaign.CampaignRefusal("candidate must be Ordered or Native")
+    if candidate not in (None, "native"):
+        raise campaign.CampaignRefusal("candidate must be Native")
     config.update(candidate=candidate, phase=plan["phase"], plan_sha256=plan["plan_sha256"],
                   confirmation_frozen=plan["phase"] != "pilot", experiments={}, cost_bounds={},
                   cost_bounds_enforced=False, independent_blocks=False)
@@ -195,14 +195,14 @@ def main(argv=None):
                         help="predispatch approved execution manifest for derived statistical cost bounds")
     report.add_argument("--retained-evidence", action="append", type=Path, default=[],
                         help="descriptor with frozen phase plan, route results and matching exports")
-    report.add_argument("--candidate", choices=("ordered", "native"))
+    report.add_argument("--candidate", choices=("native",))
     report.add_argument("--explicit-cache", choices=("off", "explicit"), default="off")
     report.add_argument("--output", type=Path, required=True)
     report.add_argument("--markdown", type=Path, required=True)
     freeze = commands.add_parser("freeze", help="freeze candidate/sample size using pilot evidence only")
     freeze.add_argument("--plan", type=Path, required=True)
     freeze.add_argument("--pilot-analysis", type=Path, required=True)
-    freeze.add_argument("--candidate", choices=("ordered", "native"), required=True)
+    freeze.add_argument("--candidate", choices=("native",), required=True)
     freeze.add_argument("--output", type=Path, required=True)
     deployment = commands.add_parser("deployment-plan", help="freeze fresh trials with the intended deployment estimator")
     deployment.add_argument("--plan", type=Path, required=True)
@@ -222,7 +222,13 @@ def main(argv=None):
             campaign.write_json(args.output, frozen, exclusive=True)
             print(f"Deployment confirmation frozen: {args.output}; paid execution still requires admission.")
             return 0
-        campaign.run_phase(campaign.read_json(args.plan), campaign.read_json(args.execution_manifest),
+        plan = campaign.validate_plan(campaign.read_json(args.plan))
+        if any(trial["label"] not in ("native", "native-explicit")
+               for route in plan["routes"].values() for trial in route["trials"]):
+            raise campaign.CampaignRefusal(
+                "this plan contains retired projections and can only be used to report retained evidence"
+            )
+        campaign.run_phase(plan, campaign.read_json(args.execution_manifest),
                            state_path=args.state, corpus_path=args.corpus, output_dir=args.output_dir)
         return 0
     except (campaign.CampaignRefusal, evaluation.GuardRefusal, evaluation.CorpusError, ValueError,

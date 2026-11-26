@@ -756,7 +756,7 @@ impl crate::store::Store {
 		let closed = close_orphans(tx.as_mut(), self.deployment.as_str()).await?;
 		tx.commit().await?;
 		record_interruptions(&closed);
-		Ok(closed.len())
+		Ok(closed.len() + super::model_calls::recover_auxiliary(self).await?)
 	}
 
 	/// One bounded retention pass. Returns the number of attempts pruned.

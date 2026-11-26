@@ -4,7 +4,7 @@ Decided on 2026-11-21 (#1068). The tabechao benchmark on PR #1014 ran every Agen
 
 ## Decisions
 
-- **Native is the only Projection Version.** Legacy and Ordered are removed, and so is the `legacy@1` Harness Contract. The model definition field `projection_versions` is removed: every model is called Native, and a Keyless model must support OpenAI-compatible tool calls to be registered.
+- **Native is the only Projection Version.** Legacy and Ordered are removed, and so is the `legacy@1` Harness Contract. The model definition field `projection_versions` is removed. Every model is called Native. Operators must choose Keyless models that support OpenAI-compatible tool calls. Registration validates the declared configuration locally.
 - **Omitted now means Native.** A stored Agent definition or Binding snapshot without `projection_version` or `harness_contract` keeps its bytes and is read as Native with the current structured contract. A Run whose snapshot pins Legacy or Ordered fails at its next step with a typed error; it is not converted. Aidash is undeployed, so no other migration is made.
 - **A Model Call is one model request made for a purpose other than a step of a Run:** a compaction summary, a memory role, a Workbench test or an MCP sampling. A media check is a local validation, not a model request, and is not a Model Call. It is sent in the Native form (system and user messages), never in a Run's projection, and it carries no Projection Version.
 - **Every Inference Attempt has exactly one owner: a Stint or a Model Call.** A retry is a new Inference Attempt of the same owner. A Model Call made during a Run belongs to the Stint awake at the time and counts against that Run's Budgets; one made outside a Run belongs to its Tenant and Node.

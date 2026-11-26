@@ -158,6 +158,7 @@ pub async fn register(
 	}
 	scope.authorize(&registration.entry).await?;
 	let preview_source = registration.source.id.clone();
+	super::validation::check_registration_pins(&registration.entry)?;
 	let mut input: aidash_domain::registry::bindings::AgentBindings =
 		serde_json::from_value(registration.entry.config.clone())?;
 	input.bindings.retain(|b| b.target.id != preview_source);

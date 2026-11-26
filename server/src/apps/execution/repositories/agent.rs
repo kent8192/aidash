@@ -286,11 +286,14 @@ impl ExecutionStore for RunStore {
 	async fn calibration_samples(
 		&self,
 		upstream_model: &str,
-		projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
-		Store::calibration_samples(&self.store, upstream_model, projection_version)
-			.await
-			.map_err(Into::into)
+		Store::calibration_samples(
+			&self.store,
+			upstream_model,
+			aidash_domain::projection::ProjectionVersion::Native.number(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		Store::save_run(&self.store, &self.scope, run, token, event)
@@ -959,10 +962,9 @@ impl ExecutionAuthority for Authority<'_> {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
-		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		self.guard
-			.human_message_media(&self.federation.store, messages, model, projection)
+			.human_message_media(&self.federation.store, messages, model)
 			.await
 			.map_err(Into::into)
 	}

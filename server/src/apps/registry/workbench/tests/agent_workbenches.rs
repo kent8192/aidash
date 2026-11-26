@@ -3,7 +3,7 @@ use common::upstream_fixtures as upstream;
 use reinhardt::ServerRouter as Router;
 use rstest::fixture;
 use upstream::reply;
-#[path = "../../../execution/tests/support/legacy.rs"]
+#[path = "../../../execution/tests/support/fixtures.rs"]
 mod common;
 use common::{cleanup, request};
 use serde_json::{Value, json};

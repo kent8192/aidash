@@ -354,7 +354,7 @@ def main(argv=None):
     parser.add_argument("--corpus", default=str(CORPUS))
     parser.add_argument("--case", action="append", help="Only these case ids")
     parser.add_argument("--arm", action="append", choices=ARMS, help="Only these arms")
-    parser.add_argument("--projection-version", default="native", choices=("legacy", "ordered", "native"))
+    parser.add_argument("--projection-version", default="native", choices=("native",))
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--run-timeout", type=float, default=300.0)
     parser.add_argument("--output", required=True)

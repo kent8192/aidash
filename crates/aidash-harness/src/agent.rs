@@ -837,7 +837,7 @@ impl<'a> Executor<'a> {
 		harness_contract: aidash_domain::harness_contract::HarnessContract,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
-		retry_truncated: bool,
+		retry_key: Option<&str>,
 		cache_breakpoints: bool,
 	) -> Result<()> {
 		use aidash_application::context::{
@@ -978,6 +978,14 @@ impl<'a> Executor<'a> {
 		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
+		let retry_truncated = retry_key.is_none();
+		let retry_key = retry_key.map(str::to_owned).unwrap_or_else(|| {
+			format!(
+				"{}:{}:{}:{}",
+				summarizer.definition_digest, first.seq, last.seq, model_call.request_digest
+			)
+		});
+		let model_call = model_call.with_retry_key(&retry_key);
 		// The candidate carries the previous summary's sources as well.
 		// A continued request shows the summarizer everything it renders, so
 		// the summary depends on all of it, not only what it folds.
@@ -1200,7 +1208,7 @@ impl<'a> Executor<'a> {
 							harness_contract,
 							plan,
 							tools,
-							false,
+							Some(&retry_key),
 							cache_breakpoints,
 						))
 						.await;
@@ -1621,7 +1629,7 @@ impl<'a> Executor<'a> {
 						&& !run.context.estimate.demoted =>
 					{
 						let samples = store
-							.calibration_samples(&model_cfg.model_id, ProjectionVersion::Native.number())
+							.calibration_samples(&model_cfg.model_id)
 							.await?;
 						let snapshot = EstimateSnapshot::choose(
 							run.step,
@@ -1974,7 +1982,6 @@ impl<'a> Executor<'a> {
 				}
 				let media = Box::pin(resolve_model_input_media(
 					self.environment,
-					ProjectionVersion::Native,
 					guard,
 					if run_message_catchup {
 						&[]
@@ -2021,7 +2028,6 @@ impl<'a> Executor<'a> {
 				let context_window = window.saturating_sub(
 					aidash_domain::provider::ModelRequest::content_parts_reservation(
 						&media.parts,
-						ProjectionVersion::Native,
 						input_format,
 					)?,
 				);
@@ -2293,7 +2299,7 @@ impl<'a> Executor<'a> {
                         // request fit (ADR 0125): a failed summary is dropped and
                         // the step goes on with the projection it already has.
                         let forced = plan.pruned.offload_reads.summary_pending && plan.before_tokens <= fitting.budget.window;
-                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true, explicit_cache)).await {
+                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, None, explicit_cache)).await {
                             // Every exit of `summarize` settles its attempt first.
                             Err(Error::Context(_) | Error::ContextOverflow) if forced => {
                                 run.context.offload_reads.release();
@@ -3519,7 +3525,7 @@ connection: None,
 						selections = adjusted;
 					}
 					tool_step!(*call, async {
-						check_model_media_headroom(headroom, parts, &model, ProjectionVersion::Native)
+						check_model_media_headroom(headroom, parts, &model)
 					}, unfinished_key);
 					let progress = run.state.tool_mut()?;
 					progress.deferred_selected_media = selections[..deferred_count].to_vec();
@@ -4276,7 +4282,6 @@ async fn prepare_tool_result(
 }
 async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
-	projection: ProjectionVersion,
 	guard: Option<&dyn ExecutionAuthority>,
 	selections: &[ModelMedia],
 	messages: &[(i64, Uuid, usize)],
@@ -4304,7 +4309,7 @@ async fn resolve_model_input_media(
 	} else {
 		guard
 			.ok_or(Error::Forbidden)?
-			.human_message_media(messages, model, projection)
+			.human_message_media(messages, model)
 			.await?
 	};
 	let batch_headroom = human
@@ -4322,7 +4327,6 @@ async fn resolve_model_input_media(
 		batch_headroom,
 		human.through_seq.is_some(),
 		model,
-		projection,
 	);
 	if !model.has_current_media_route_for_parts(&parts) {
 		return Err(Error::MediaRouteUnavailable {

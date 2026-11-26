@@ -9,7 +9,7 @@ use upstream_fixtures::{async_upstream, reply};
 #[path = "../../tests/support/worker_process.rs"]
 mod worker_process;
 use worker_process::WorkerProcess;
-#[path = "../../tests/support/legacy.rs"]
+#[path = "../../tests/support/fixtures.rs"]
 mod common;
 
 use aidash_server::{federation::Federation, harness::Harness, semantic};

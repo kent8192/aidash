@@ -1225,3 +1225,134 @@ async fn a_late_completion_of_an_abandoned_attempt_still_reaches_the_budget_ledg
 	assert_eq!(usage_row(&store, stale.attempt).await.0, "unknown");
 	assert_eq!(ledger(&store).await, (70_000, 0));
 }
+
+#[rstest::rstest]
+#[case(
+	aidash_domain::model_call::Purpose::CompactionSummary,
+	UsagePurpose::Summary
+)]
+#[case(aidash_domain::model_call::Purpose::McpSampling, UsagePurpose::Main)]
+#[tokio::test]
+async fn retried_model_calls_record_late_usage_once_under_the_original_owner(
+	#[future(awt)]
+	#[from(store)]
+	fixture: StoreFixture,
+	#[case] purpose: aidash_domain::model_call::Purpose,
+	#[case] lane: UsagePurpose,
+) {
+	use aidash_application::ports::execution::ExecutionStore;
+	use aidash_domain::model_call::{Dispatch, Outcome};
+	let (store, _, _) = fixture.parts();
+	let worker = Uuid::new_v4();
+	let run = leased_run(&store, worker).await;
+	let call = Dispatch::new(purpose, &Default::default())
+		.unwrap()
+		.with_retry_key("original-request");
+	let first = UsageDispatch {
+		model_call: Some(call.clone()),
+		purpose: lane,
+		..dispatch(worker)
+	};
+	if lane == UsagePurpose::Summary {
+		prepare_summary_usage(&store, &run, worker, &first).await;
+	}
+	store
+		.record_usage_dispatch(&ACME, &run, worker, &first)
+		.await
+		.unwrap();
+
+	// Complete the initial recovery scan while the original lease is live.
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("task_executions"))
+			.value_expr(
+				Alias::new("lease_until"),
+				Expr::value(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH),
+			)
+			.and_where(Expr::col("id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+
+	let replacement = Uuid::new_v4();
+	let recovered = common::lease_entered_run(&store, replacement).await;
+	assert_eq!(recovered.id, run.id);
+	assert!(recovered.recovery.lease_recoveries > run.recovery.lease_recoveries);
+	assert_eq!(usage_row(&store, first.attempt).await.0, "unknown");
+
+	let retry = UsageDispatch {
+		model_call: Some(call),
+		purpose: lane,
+		..dispatch(replacement)
+	};
+	if lane == UsagePurpose::Summary {
+		prepare_summary_usage(&store, &recovered, replacement, &retry).await;
+	}
+	store
+		.record_usage_dispatch(&ACME, &recovered, replacement, &retry)
+		.await
+		.unwrap();
+	let late = UsageOutcome::Completed(ReportedUsage {
+		input_tokens: Some(5),
+		cost: Some(ProviderCost {
+			nanocredits: 70_000,
+			upstream_nanocredits: None,
+		}),
+		..Default::default()
+	});
+	let scoped = store.for_run((*ACME).clone());
+	for _ in 0..2 {
+		scoped
+			.complete_model_call(&run, first.attempt, &late, Outcome::Accepted)
+			.await
+			.unwrap();
+	}
+	let call_query = Query::select()
+		.columns(["outcome", "usage"])
+		.from("model_calls")
+		.and_where(Expr::col("id").eq(Expr::value(first.attempt)))
+		.to_string(PostgresQueryBuilder);
+	let active: (Option<String>, serde_json::Value) = sqlx::query_as(&call_query)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		(active.0, &active.1["input_tokens"]),
+		(None, &json!(5)),
+		"a late attempt supplies facts without closing the retry"
+	);
+	assert_eq!(ledger(&store).await, (70_000, 0));
+	let accepted = UsageOutcome::Completed(ReportedUsage {
+		input_tokens: Some(10),
+		cost: Some(ProviderCost {
+			nanocredits: 30_000,
+			upstream_nanocredits: None,
+		}),
+		..Default::default()
+	});
+	scoped
+		.complete_model_call(&recovered, retry.attempt, &accepted, Outcome::Accepted)
+		.await
+		.unwrap();
+	let attempts: Vec<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column("model_call_id")
+			.from("inference_usage")
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(attempts, [first.attempt, first.attempt]);
+	let accepted: (String, serde_json::Value) = sqlx::query_as(&call_query)
+		.fetch_one(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(accepted.0, "accepted");
+	assert_eq!(accepted.1["input_tokens"], json!(15));
+	assert_eq!(ledger(&store).await, (100_000, 0));
+}

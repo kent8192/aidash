@@ -108,6 +108,19 @@ impl Client {
 	}
 }
 fn classify_request(path: &str, reply: Reply) -> Result<Vec<u8>> {
+	if reply.status == 409
+		&& path.starts_with("/scoped/execution/")
+		&& reply
+			.body
+			.as_ref()
+			.ok()
+			.and_then(|body| serde_json::from_slice::<Value>(body).ok())
+			.is_some_and(|envelope| envelope["code"] == "projection_retired")
+	{
+		return Err(Error::ProjectionRetired(
+			"the receiver's execution pin has been retired".into(),
+		));
+	}
 	if path == "/scoped/execution/inspect" && (400..500).contains(&reply.status) {
 		use aidash_domain::federation::execution::{ReceiverRefusal, Refusal};
 

@@ -6,7 +6,7 @@ use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::test::fixtures::http_client;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use upstream_fixtures::{reply, upstream};
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 use aidash_server::{
 	config::Config,
@@ -271,6 +271,65 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn task_claim_returns_a_retired_projection_conflict_without_claiming(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+	let (federation, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = common::bootstrap(&federation, &app, "http://localhost:1").await;
+	let store = &federation.store;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut agent = federation
+		.registry
+		.get(&tenant, "research", "1.0.0")
+		.await
+		.unwrap();
+	agent.config["projection_version"] = json!("legacy");
+	let metadata = serde_json::to_value(agent).unwrap();
+	let updated = sqlx::query(
+		&Query::update()
+			.table(Alias::new("registry"))
+			.value(Alias::new("metadata"), metadata)
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("id").eq("research"))
+			.and_where(Expr::col("version").eq("1.0.0"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(updated.rows_affected(), 1);
+
+	let (status, result) = common::post(
+		&app,
+		&token,
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{result}");
+	assert_eq!(result["code"], "projection_retired");
+	assert!(
+		result["error"]
+			.as_str()
+			.unwrap()
+			.contains("PROJECTION_RETIRED")
+	);
+	assert_eq!(
+		store.task(&ACME, task).await.unwrap().status,
+		TaskStatus::Open
+	);
+	assert!(store.runs(&ACME).await.unwrap().is_empty());
+	drop(app);
+	common::cleanup(federation, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[case::old_projection("projection_version", "legacy")]
 #[case::ordered_projection("projection_version", "ordered")]
 #[case::old_contract("harness_contract", "legacy@1")]
@@ -330,10 +389,46 @@ async fn a_run_with_a_retired_pin_fails_at_the_next_worker_step(
 	.unwrap();
 	assert_eq!(updated.rows_affected(), 1);
 	snapshot.validate().unwrap();
+	// Persist provider history and its journal while the historical pin is in
+	// effect, as an upgraded worker would find it after a restart.
+	let previous = aidash_domain::context::ContextEvent::Assistant {
+		epoch: 1,
+		text: "Earlier provider turn".into(),
+		calls: vec![],
+		provider_activity: vec![],
+		reasoning: None,
+	};
+	leased.context.push(previous.clone());
 	store
 		.save_run(&ACME, &leased, token, "execution.fixture")
 		.await
 		.unwrap();
+	let before = store.run(&ACME, run.id).await.unwrap();
+	assert_eq!(before.context.journal.head, 1);
+	let saved_history: serde_json::Value = sqlx::query_scalar(
+		&Query::select()
+			.column("event")
+			.from("run_context_events")
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("seq").eq(1))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(saved_history, serde_json::to_value(previous).unwrap());
+	let app = common::application(federation.clone()).await;
+	let actor = common::tenant_token(&store, "acme").await;
+	let (status, refused) = common::post(
+		&app,
+		&actor,
+		&format!("/api/executions/{}/message", run.id),
+		json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":[Uuid::new_v4()]}),
+	)
+	.await;
+	assert_eq!(status, 409, "{refused}");
+	assert_eq!(refused["code"], "projection_retired");
+	drop(app);
 	let harness = aidash_server::harness::Harness { federation };
 	assert!(harness.worker_once().await.unwrap());
 	let failed = store.run(&ACME, run.id).await.unwrap();
@@ -343,6 +438,19 @@ async fn a_run_with_a_retired_pin_fails_at_the_next_worker_step(
 		"{failed:?}"
 	);
 	assert!(failed.recovery.retry.is_none());
+	let usage: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column("attempt_id")
+			.from("inference_usage")
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(usage, None);
+
 	for _ in 0..3 {
 		if store.run(&ACME, run.id).await.unwrap().phase() == RunPhase::Failed {
 			break;
