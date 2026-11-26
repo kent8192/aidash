@@ -353,7 +353,7 @@ pub(crate) async fn configurator_thread(
 	let (sql, values) = Query::select()
 		.expr(Expr::value(1))
 		.from(Alias::new("conversations"))
-		.and_where(Expr::col("thread_id").eq(thread))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 		.and_where(Expr::col("tenant").eq(tenant))
 		.and_where(Expr::col("created_by").eq(subject))
 		.and_where(Expr::col("target_kind").eq("agent"))
