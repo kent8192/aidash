@@ -212,7 +212,7 @@ export function TransactionComposer({
                           kind,
                           task_id: "",
                           expected_revision: 0,
-                          artifact: { name: "", kind: "text", content: "" },
+                          text: "",
                         });
                       else if (kind === "finish_run")
                         setMutation({
@@ -343,46 +343,21 @@ export function TransactionComposer({
                           : "Unable to load tasks."}
                       </p>
                     )}
-                    <Field label={t("name")}>
-                      <Input
-                        required
-                        value={mutation.artifact.name}
-                        onChange={(event) =>
-                          setMutation({
-                            ...mutation,
-                            artifact: {
-                              ...mutation.artifact,
-                              name: event.target.value,
-                            },
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label={t("kind")}>
-                      <Input
-                        required
-                        value={mutation.artifact.kind}
-                        onChange={(event) =>
-                          setMutation({
-                            ...mutation,
-                            artifact: {
-                              ...mutation.artifact,
-                              kind: event.target.value,
-                            },
-                          })
-                        }
-                      />
-                    </Field>
-                    <JsonInput
-                      label={t("artifact")}
-                      value={mutation.artifact.content}
-                      change={(content) =>
-                        setMutation({
-                          ...mutation,
-                          artifact: { ...mutation.artifact, content },
-                        })
+                    <Field
+                      label={
+                        locale === "ja-JP"
+                          ? "完了メッセージ"
+                          : "Completion Message"
                       }
-                    />
+                    >
+                      <Textarea
+                        required
+                        value={mutation.text}
+                        onChange={(event) =>
+                          setMutation({ ...mutation, text: event.target.value })
+                        }
+                      />
+                    </Field>
                   </>
                 )}
                 {mutation.kind === "finish_run" && (
@@ -549,54 +524,5 @@ export function TransactionComposer({
         {t("transactionAddParticipant")}
       </Button>
     </>
-  );
-}
-function JsonInput({
-  value,
-  change,
-  label,
-  objectOnly = false,
-}: {
-  value: unknown;
-  change: (value: unknown) => void;
-  label: string;
-  objectOnly?: boolean;
-}) {
-  const [draft, setDraft] = useState(JSON.stringify(value, null, 2));
-  const { t } = useI18n();
-  const committed = useRef(value);
-  const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (value !== committed.current) {
-      committed.current = value;
-      input.current?.setCustomValidity("");
-      setDraft(JSON.stringify(value, null, 2));
-    }
-  }, [value]);
-  return (
-    <Field label={label}>
-      <Textarea
-        ref={input}
-        className="min-h-20 font-mono text-xs"
-        required
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          try {
-            const parsed: unknown = JSON.parse(event.target.value);
-            if (
-              objectOnly &&
-              (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-            )
-              throw new Error("object required");
-            event.target.setCustomValidity("");
-            committed.current = parsed;
-            change(parsed);
-          } catch {
-            event.target.setCustomValidity(t("jsonHint"));
-          }
-        }}
-      />
-    </Field>
   );
 }

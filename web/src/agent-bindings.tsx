@@ -77,7 +77,7 @@ export const defaults = [
   "task_create",
   "task_delegate",
   "agent_discover",
-  "artifact_publish",
+  "deliverable_note",
   "workspace_message",
   "memory_mutate",
   "memory_recall",

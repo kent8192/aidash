@@ -22,7 +22,7 @@ const steps = [1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440, 2880, 10080];
 function tickTone(kind: string) {
   if (/fail|block|error|denied/i.test(kind)) return "bg-destructive";
   if (/waiting|human|approval|question/i.test(kind)) return "bg-warning";
-  if (/artifact|completed/i.test(kind)) return "bg-success";
+  if (/completed/i.test(kind)) return "bg-success";
   if (/^run\./.test(kind)) return "bg-brand-mark";
   return "bg-edge-strong";
 }

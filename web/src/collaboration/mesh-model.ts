@@ -13,7 +13,6 @@ export const meshKinds = [
   "run",
   "agent",
   "tool",
-  "artifact",
   "cluster",
   "remote",
   "model",
@@ -300,24 +299,6 @@ export function buildMeshGraph(
       statusSet.add(id);
     }
   }
-  for (const artifact of data.artifacts.filter((a) =>
-    threadIds.has(a.thread_id),
-  )) {
-    const id = resource(
-      "artifact",
-      artifact.id,
-      artifact.name,
-      artifact.thread_id,
-    );
-    edge(
-      resourceKey(nodeId, "task", artifact.task_id),
-      id,
-      "produces",
-      "activity",
-    );
-    const author = principal(artifact.created_by);
-    if (author) edge(author, id, "produces", "activity");
-  }
   for (const c of data.conversations.filter((c) =>
     threadIds.has(c.thread_id),
   )) {
@@ -360,7 +341,6 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "agent",
     "cluster",
     "task",
-    "artifact",
     "remote",
   ],
   knowledge: [
@@ -369,13 +349,12 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "task",
     "agent",
     "cluster",
-    "artifact",
     "tool",
     "model",
     "skill",
     "remote",
   ],
-  execution: ["human", "task", "run", "agent", "artifact", "remote"],
+  execution: ["human", "task", "run", "agent", "remote"],
   topology: ["remote", "cluster", "agent", "tool"],
 };
 export function filterMeshGraph(
@@ -468,7 +447,6 @@ export function filterMeshGraph(
       "agent",
       "task",
       "run",
-      "artifact",
       "conversation",
       "human",
       "cluster",
@@ -606,13 +584,6 @@ export function meshPositions(
     };
     agents.sort((a, b) => taskOrder(a) - taskOrder(b));
     lane(agents, 170, agentsY, 4, 270, 140);
-    lane(
-      nodes.filter((n) => n.kind === "artifact"),
-      270,
-      agentsY + Math.max(1, Math.ceil(agents.length / 4)) * 155,
-      4,
-      220,
-    );
     return Object.fromEntries(
       Object.entries(result).map(([id, point]) => [
         id,
@@ -768,13 +739,6 @@ export function meshPositions(
     115,
   );
   lane(
-    nodes.filter((n) => n.kind === "artifact"),
-    365,
-    Math.max(groupY, agentTop + 150) + 20,
-    4,
-    215,
-  );
-  lane(
     nodes.filter((n) => n.kind === "model" || n.kind === "skill"),
     110,
     Math.max(groupY, agentTop + 150) + 60,
@@ -863,7 +827,6 @@ export function nodeEvents(
       return (
         (typeof payload.task_id === "string" && tasks.has(payload.task_id)) ||
         (typeof payload.run_id === "string" && runIds.has(payload.run_id)) ||
-        (node.kind === "artifact" && payload.artifact_id === node.resourceId) ||
         (node.kind === "conversation" &&
           payload.conversation_id === node.resourceId)
       );
@@ -876,7 +839,6 @@ export function nodeEvents(
 export function eventReferences(event: MeshEvent): {
   task_id?: string;
   run_id?: string;
-  artifact_id?: string;
   conversation_id?: string;
 } {
   const record = (value: unknown): Record<string, unknown> =>
@@ -895,13 +857,6 @@ export function eventReferences(event: MeshEvent): {
     run_id:
       text(data.run_id) ??
       (event.kind.startsWith("execution.") ? text(data.id) : undefined),
-    artifact_id:
-      text(data.artifact_id) ??
-      (event.kind === "task.completed"
-        ? text(record(data.artifact).id)
-        : event.kind.startsWith("artifact.")
-          ? text(data.id)
-          : undefined),
     conversation_id: event.kind.startsWith("conversation.")
       ? (text(record(data.conversation).id) ?? text(data.id))
       : undefined,

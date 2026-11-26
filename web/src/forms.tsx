@@ -164,7 +164,7 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
     ["agent", "cluster"].includes(e.kind),
   );
   const form = useForm({
-    defaultValues: { title: "", request: "", target: "" },
+    defaultValues: { title: "", request: "", goal: "", target: "" },
     onSubmit: async ({ value }) => {
       const target = targets.find(
         (e) => `${e.id}@${e.version}` === value.target,
@@ -174,6 +174,7 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
         await submit(() =>
           threadCreate({
             ...value,
+            goal: value.goal.trim() || undefined,
             target: ref(value.target),
             target_kind: target.kind,
             node: where.node,
@@ -213,6 +214,18 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
               onChange={(e) => f.handleChange(e.target.value)}
               placeholder={t("requestPlaceholder")}
               rows={5}
+            />
+          </Field>
+        )}
+      </form.Field>
+      <form.Field name="goal">
+        {(field) => (
+          <Field label={t("taskGoal")}>
+            <Textarea
+              value={field.state.value}
+              onChange={(event) => field.handleChange(event.target.value)}
+              maxLength={4000}
+              rows={3}
             />
           </Field>
         )}
@@ -338,6 +351,7 @@ export function TaskForm({
           taskCreate(String(d.get("thread")), {
             title: String(d.get("title")),
             description: String(d.get("description")),
+            goal: String(d.get("goal") ?? "").trim() || undefined,
             requirements,
             dependencies: d.getAll("dependencies").map(String),
             parent_id: parent || null,
@@ -416,6 +430,9 @@ export function TaskForm({
             : "Unable to load tasks."}
         </p>
       )}
+      <Field label={t("taskGoal")}>
+        <Textarea name="goal" maxLength={4000} rows={3} />
+      </Field>
       <Field label={t("requirements")}>
         <Textarea
           name="requirements"

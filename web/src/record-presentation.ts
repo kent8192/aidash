@@ -35,7 +35,6 @@ const references = new Set([
   "request_id",
   "transaction_id",
   "message_id",
-  "artifact_id",
   "attachment_id",
   "parent_id",
   "node_id",

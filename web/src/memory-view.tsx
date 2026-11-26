@@ -23,7 +23,6 @@ const names: Record<string, [string, string]> = {
   verification: ["Verification", "検証状態"],
   publication: ["Publication", "公開記録"],
   message: ["Message", "メッセージ"],
-  artifact: ["Artifact", "成果物"],
   run: ["Run", "Run"],
   calls: ["Model calls", "モデル呼び出し数"],
   disclosure_current: ["Disclosure current", "公開権限が有効"],
@@ -407,7 +406,7 @@ export function MemoryRecord({
     typeof value.kind === "string" &&
     typeof value.id === "string" &&
     typeof value.revision === "number" &&
-    ["unit", "run", "artifact", "message", "publication"].includes(value.kind)
+    ["unit", "run", "message", "publication"].includes(value.kind)
   )
     return <EvidenceView value={value as Evidence} units={units} />;
   if (typeof value.id === "string" && typeof value.version === "string")

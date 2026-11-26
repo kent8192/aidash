@@ -1555,7 +1555,7 @@ def render():
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
         if route["name"] == "state":
-            checks += 'const c=res.getBody().next_cursors;for(const key of ["threads","tasks","runs","artifacts","human_requests","conversations"])expect(c[key]).to.equal(null);'
+            checks += 'const c=res.getBody().next_cursors;for(const key of ["threads","tasks","runs","human_requests","conversations"])expect(c[key]).to.equal(null);'
         if route["name"] in {"human-requests", "thread-list"}:
             checks += 'expect(res.getBody().items).to.be.an("array");'
         if route["name"] == "file_recipient_list":

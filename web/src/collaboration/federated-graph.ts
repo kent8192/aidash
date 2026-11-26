@@ -23,7 +23,6 @@ export type GraphNode = {
   version: string | null;
   thread_id: string | null;
   status: string | null;
-  goal_body: string | null;
   at: string | null;
 };
 export type GraphActivity = { kind: string; at: string; reference: string };
@@ -136,7 +135,7 @@ export function validateGraphPage(page: GraphPage, peer: string): boolean {
         page.unconfirmed.some(
           (item) =>
             item.node !== peer ||
-            !["task", "run", "artifact"].includes(item.kind) ||
+            !["task", "run"].includes(item.kind) ||
             typeof item.thread_id !== "string" ||
             !item.thread_id ||
             !Number.isSafeInteger(item.count) ||
@@ -169,13 +168,7 @@ export function validateGraphPage(page: GraphPage, peer: string): boolean {
             id: node.resource_id,
             version: node.version,
           });
-    if (
-      node.id !== expected ||
-      ids.has(node.id) ||
-      (node.goal_body !== null &&
-        (node.kind !== "goal" || typeof node.goal_body !== "string"))
-    )
-      return false;
+    if (node.id !== expected || ids.has(node.id)) return false;
     ids.add(node.id);
   }
   for (const edge of page.edges) {

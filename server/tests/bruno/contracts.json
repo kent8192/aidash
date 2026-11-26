@@ -865,28 +865,6 @@
                     "type": "string"
                   },
                   "kind": {
-                    "enum": ["artifact"],
-                    "type": "string"
-                  },
-                  "revision": {
-                    "format": "int64",
-                    "type": "integer"
-                  }
-                },
-                "required": ["kind", "id", "revision", "digest"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "digest": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "kind": {
                     "enum": ["run"],
                     "type": "string"
                   },
@@ -1444,6 +1422,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -3504,9 +3486,6 @@
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "goal_body": {
-                "type": ["string", "null"]
-              },
               "id": {
                 "type": "string"
               },
@@ -3545,7 +3524,6 @@
               "version",
               "thread_id",
               "status",
-              "goal_body",
               "at"
             ],
             "type": "object"
@@ -3633,7 +3611,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -3700,9 +3677,6 @@
                 "format": "date-time",
                 "type": ["string", "null"]
               },
-              "goal_body": {
-                "type": ["string", "null"]
-              },
               "id": {
                 "type": "string"
               },
@@ -3741,7 +3715,6 @@
               "version",
               "thread_id",
               "status",
-              "goal_body",
               "at"
             ],
             "type": "object"
@@ -3829,7 +3802,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -12293,6 +12265,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -12377,7 +12353,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -12516,6 +12491,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -12640,56 +12619,6 @@
     "responses": {
       "200": {
         "definitions": {
-          "Artifact": {
-            "properties": {
-              "content": {},
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "created_by": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "idempotency_key": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "run_id": {
-                "description": "The Run that published this Artifact on this Node. Only the Run's own\npublication writes it; Artifacts that people or other Nodes deliver have\nnone.",
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "thread_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "thread_id",
-              "task_id",
-              "kind",
-              "name",
-              "content",
-              "created_by",
-              "idempotency_key",
-              "created_at"
-            ],
-            "type": "object"
-          },
           "Event": {
             "properties": {
               "created_at": {
@@ -12762,6 +12691,16 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "completion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CompletionDetails"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -12827,6 +12766,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -12887,7 +12830,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -12939,12 +12881,6 @@
           },
           "ThreadSnapshot": {
             "properties": {
-              "artifacts": {
-                "items": {
-                  "$ref": "#/components/schemas/Artifact"
-                },
-                "type": "array"
-              },
               "events": {
                 "items": {
                   "$ref": "#/components/schemas/Event"
@@ -12978,12 +12914,116 @@
             "required": [
               "thread",
               "tasks",
-              "artifacts",
               "events",
               "messages",
               "unconfirmed"
             ],
             "type": "object"
+          },
+          "CompletionDetails": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "verdict": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Judgment"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "deliverable": {
+                "$ref": "#/components/schemas/Deliverable"
+              }
+            },
+            "required": ["task_id", "verdict", "attachments", "deliverable"]
+          },
+          "Judgment": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": false
+          },
+          "Deliverable": {
+            "type": "object",
+            "properties": {
+              "drive_versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DriveVersionRef"
+                }
+              },
+              "outside_versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OutsideVersion"
+                }
+              }
+            },
+            "required": ["drive_versions", "outside_versions"],
+            "additionalProperties": false
+          },
+          "OutsideVersion": {
+            "type": "object",
+            "properties": {
+              "system": {
+                "type": "string"
+              },
+              "item": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "url": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["system", "item", "version"],
+            "additionalProperties": false
+          },
+          "Verdict": {
+            "type": "string",
+            "enum": ["met", "not_yet", "impossible"]
+          },
+          "DriveVersionRef": {
+            "type": "object",
+            "properties": {
+              "drive_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["drive_id", "version", "paths"]
           }
         },
         "schema": {
@@ -13115,6 +13155,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -13240,6 +13284,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -13420,6 +13468,16 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "completion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CompletionDetails"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -13431,6 +13489,111 @@
               "created_at"
             ],
             "type": "object"
+          },
+          "CompletionDetails": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "verdict": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Judgment"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "deliverable": {
+                "$ref": "#/components/schemas/Deliverable"
+              }
+            },
+            "required": ["task_id", "verdict", "attachments", "deliverable"]
+          },
+          "Judgment": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": false
+          },
+          "Deliverable": {
+            "type": "object",
+            "properties": {
+              "drive_versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DriveVersionRef"
+                }
+              },
+              "outside_versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OutsideVersion"
+                }
+              }
+            },
+            "required": ["drive_versions", "outside_versions"],
+            "additionalProperties": false
+          },
+          "OutsideVersion": {
+            "type": "object",
+            "properties": {
+              "system": {
+                "type": "string"
+              },
+              "item": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "url": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["system", "item", "version"],
+            "additionalProperties": false
+          },
+          "Verdict": {
+            "type": "string",
+            "enum": ["met", "not_yet", "impossible"]
+          },
+          "DriveVersionRef": {
+            "type": "object",
+            "properties": {
+              "drive_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["drive_id", "version", "paths"]
           }
         },
         "schema": {
@@ -13605,6 +13768,16 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "completion": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CompletionDetails"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -13646,7 +13819,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -13654,6 +13826,111 @@
               "memory_unit"
             ],
             "type": "string"
+          },
+          "CompletionDetails": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "verdict": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Judgment"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "deliverable": {
+                "$ref": "#/components/schemas/Deliverable"
+              }
+            },
+            "required": ["task_id", "verdict", "attachments", "deliverable"]
+          },
+          "Judgment": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": false
+          },
+          "Deliverable": {
+            "type": "object",
+            "properties": {
+              "drive_versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DriveVersionRef"
+                }
+              },
+              "outside_versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OutsideVersion"
+                }
+              }
+            },
+            "required": ["drive_versions", "outside_versions"],
+            "additionalProperties": false
+          },
+          "OutsideVersion": {
+            "type": "object",
+            "properties": {
+              "system": {
+                "type": "string"
+              },
+              "item": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "url": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["system", "item", "version"],
+            "additionalProperties": false
+          },
+          "Verdict": {
+            "type": "string",
+            "enum": ["met", "not_yet", "impossible"]
+          },
+          "DriveVersionRef": {
+            "type": "object",
+            "properties": {
+              "drive_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["drive_id", "version", "paths"]
           }
         },
         "schema": {
@@ -24786,28 +25063,6 @@
                     "type": "string"
                   },
                   "kind": {
-                    "enum": ["artifact"],
-                    "type": "string"
-                  },
-                  "revision": {
-                    "format": "int64",
-                    "type": "integer"
-                  }
-                },
-                "required": ["kind", "id", "revision", "digest"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "digest": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "kind": {
                     "enum": ["run"],
                     "type": "string"
                   },
@@ -25623,7 +25878,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -25940,7 +26194,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -26103,19 +26356,6 @@
     "responses": {
       "202": {
         "definitions": {
-          "ArtifactInput": {
-            "properties": {
-              "content": {},
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": ["kind", "name", "content"],
-            "type": "object"
-          },
           "AtomicTransaction": {
             "properties": {
               "complete": {
@@ -26222,9 +26462,6 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "artifact": {
-                    "$ref": "#/components/schemas/ArtifactInput"
-                  },
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
@@ -26236,14 +26473,12 @@
                   "task_id": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "task_id",
-                  "expected_revision",
-                  "artifact"
-                ],
+                "required": ["kind", "task_id", "expected_revision", "text"],
                 "type": "object"
               },
               {
@@ -26305,19 +26540,6 @@
     "responses": {
       "200": {
         "definitions": {
-          "ArtifactInput": {
-            "properties": {
-              "content": {},
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": ["kind", "name", "content"],
-            "type": "object"
-          },
           "AtomicTransaction": {
             "properties": {
               "complete": {
@@ -26424,9 +26646,6 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "artifact": {
-                    "$ref": "#/components/schemas/ArtifactInput"
-                  },
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
@@ -26438,14 +26657,12 @@
                   "task_id": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "task_id",
-                  "expected_revision",
-                  "artifact"
-                ],
+                "required": ["kind", "task_id", "expected_revision", "text"],
                 "type": "object"
               },
               {
@@ -26510,19 +26727,6 @@
     "responses": {
       "200": {
         "definitions": {
-          "ArtifactInput": {
-            "properties": {
-              "content": {},
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": ["kind", "name", "content"],
-            "type": "object"
-          },
           "AtomicTransaction": {
             "properties": {
               "complete": {
@@ -26684,9 +26888,6 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "artifact": {
-                    "$ref": "#/components/schemas/ArtifactInput"
-                  },
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
@@ -26698,14 +26899,12 @@
                   "task_id": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "task_id",
-                  "expected_revision",
-                  "artifact"
-                ],
+                "required": ["kind", "task_id", "expected_revision", "text"],
                 "type": "object"
               },
               {
@@ -26779,19 +26978,6 @@
     "responses": {
       "200": {
         "definitions": {
-          "ArtifactInput": {
-            "properties": {
-              "content": {},
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": ["kind", "name", "content"],
-            "type": "object"
-          },
           "AtomicTransaction": {
             "properties": {
               "complete": {
@@ -26898,9 +27084,6 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "artifact": {
-                    "$ref": "#/components/schemas/ArtifactInput"
-                  },
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
@@ -26912,14 +27095,12 @@
                   "task_id": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "task_id",
-                  "expected_revision",
-                  "artifact"
-                ],
+                "required": ["kind", "task_id", "expected_revision", "text"],
                 "type": "object"
               },
               {
@@ -26981,19 +27162,6 @@
     "responses": {
       "200": {
         "definitions": {
-          "ArtifactInput": {
-            "properties": {
-              "content": {},
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": ["kind", "name", "content"],
-            "type": "object"
-          },
           "TransactionIsolation": {
             "enum": ["serializable"],
             "type": "string"
@@ -27059,9 +27227,6 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "artifact": {
-                    "$ref": "#/components/schemas/ArtifactInput"
-                  },
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
@@ -27073,14 +27238,12 @@
                   "task_id": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "task_id",
-                  "expected_revision",
-                  "artifact"
-                ],
+                "required": ["kind", "task_id", "expected_revision", "text"],
                 "type": "object"
               },
               {
@@ -30744,56 +30907,6 @@
               }
             ]
           },
-          "Artifact": {
-            "properties": {
-              "content": {},
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "created_by": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "idempotency_key": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "run_id": {
-                "description": "The Run that published this Artifact on this Node. Only the Run's own\npublication writes it; Artifacts that people or other Nodes deliver have\nnone.",
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "thread_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "thread_id",
-              "task_id",
-              "kind",
-              "name",
-              "content",
-              "created_by",
-              "idempotency_key",
-              "created_at"
-            ],
-            "type": "object"
-          },
           "Binding3": {
             "additionalProperties": false,
             "properties": {
@@ -31741,9 +31854,6 @@
           },
           "NextCursors": {
             "properties": {
-              "artifacts": {
-                "type": ["string", "null"]
-              },
               "conversations": {
                 "type": ["string", "null"]
               },
@@ -31764,7 +31874,6 @@
               "threads",
               "tasks",
               "runs",
-              "artifacts",
               "human_requests",
               "conversations"
             ],
@@ -32375,12 +32484,6 @@
               "access": {
                 "$ref": "#/components/schemas/AccessProfile"
               },
-              "artifacts": {
-                "items": {
-                  "$ref": "#/components/schemas/Artifact"
-                },
-                "type": "array"
-              },
               "conversations": {
                 "items": {
                   "$ref": "#/components/schemas/Conversation"
@@ -32453,7 +32556,6 @@
               "human_requests",
               "conversations",
               "events",
-              "artifacts",
               "unconfirmed",
               "next_cursors"
             ],
@@ -32513,6 +32615,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -33392,7 +33498,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -33773,6 +33878,10 @@
                 "description": "The Duty that started this Task automatically, if any.",
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"],
+                "maxLength": 4000
               }
             },
             "required": [
@@ -35176,28 +35285,6 @@
                   },
                   "kind": {
                     "enum": ["message"],
-                    "type": "string"
-                  },
-                  "revision": {
-                    "format": "int64",
-                    "type": "integer"
-                  }
-                },
-                "required": ["kind", "id", "revision", "digest"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "digest": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "kind": {
-                    "enum": ["artifact"],
                     "type": "string"
                   },
                   "revision": {
@@ -38375,7 +38462,8 @@
               "compaction_summary",
               "memory_role",
               "workbench_test",
-              "mcp_sampling"
+              "mcp_sampling",
+              "goal_judge"
             ],
             "type": "string"
           },
@@ -39057,7 +39145,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -39480,28 +39567,6 @@
                   },
                   "kind": {
                     "enum": ["message"],
-                    "type": "string"
-                  },
-                  "revision": {
-                    "format": "int64",
-                    "type": "integer"
-                  }
-                },
-                "required": ["kind", "id", "revision", "digest"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "digest": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "kind": {
-                    "enum": ["artifact"],
                     "type": "string"
                   },
                   "revision": {
@@ -40478,28 +40543,6 @@
                     "type": "string"
                   },
                   "kind": {
-                    "enum": ["artifact"],
-                    "type": "string"
-                  },
-                  "revision": {
-                    "format": "int64",
-                    "type": "integer"
-                  }
-                },
-                "required": ["kind", "id", "revision", "digest"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "digest": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "kind": {
                     "enum": ["run"],
                     "type": "string"
                   },
@@ -40708,7 +40751,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -40903,28 +40945,6 @@
                   },
                   "kind": {
                     "enum": ["message"],
-                    "type": "string"
-                  },
-                  "revision": {
-                    "format": "int64",
-                    "type": "integer"
-                  }
-                },
-                "required": ["kind", "id", "revision", "digest"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "digest": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "kind": {
-                    "enum": ["artifact"],
                     "type": "string"
                   },
                   "revision": {
@@ -42402,7 +42422,8 @@
               "compaction_summary",
               "memory_role",
               "workbench_test",
-              "mcp_sampling"
+              "mcp_sampling",
+              "goal_judge"
             ],
             "type": "string"
           },
@@ -52545,7 +52566,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -52733,7 +52753,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -57006,7 +57025,6 @@
             "enum": [
               "task",
               "run",
-              "artifact",
               "event",
               "message",
               "human_request",
@@ -57782,6 +57800,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -58198,6 +58219,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -58611,6 +58635,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -59196,6 +59223,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -59737,6 +59767,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -60150,6 +60183,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -60563,6 +60599,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -60976,6 +61015,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -63109,6 +63151,9 @@
                   }
                 ],
                 "description": "The script that polls an outside service on its own interval."
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": ["title", "mission", "procedure", "triggers"],
@@ -63521,6 +63566,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -64041,6 +64089,9 @@
               "thread_deleted": {
                 "description": "Its own Thread was deleted: its Requester's next edit or resume opens\na new one, without the old Thread's memory (#991, ADR 0145).",
                 "type": "boolean"
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -64496,6 +64547,9 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "goal": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -64665,5 +64719,345 @@
     },
     "source": "server/src/apps/workspaces/views/duties.rs",
     "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "task-goal",
+    "path": "/api/tasks/{id}/goal",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "TaskGoalDetail": {
+            "type": "object",
+            "properties": {
+              "goal": {
+                "type": ["string", "null"]
+              },
+              "edits": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Edit"
+                }
+              },
+              "verdicts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VerdictRecord"
+                }
+              }
+            },
+            "required": ["goal", "edits", "verdicts"]
+          },
+          "VerdictRecord": {
+            "type": "object",
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "response_epoch": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "goal": {
+                "type": "string"
+              },
+              "judgment": {
+                "$ref": "#/components/schemas/Judgment"
+              },
+              "model": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "cost_nanocredits": {
+                "type": ["integer", "null"],
+                "format": "int64"
+              },
+              "judged_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "run_id",
+              "response_epoch",
+              "goal",
+              "judgment",
+              "model",
+              "cost_nanocredits",
+              "judged_at"
+            ]
+          },
+          "Judgment": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": false
+          },
+          "Edit": {
+            "type": "object",
+            "properties": {
+              "goal": {
+                "type": ["string", "null"]
+              },
+              "edited_by": {
+                "type": "string"
+              },
+              "edited_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": ["goal", "edited_by", "edited_at"]
+          },
+          "EntityRef": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"]
+          },
+          "Verdict": {
+            "type": "string",
+            "enum": ["met", "not_yet", "impossible"]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/TaskGoalDetail"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/management.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "PATCH",
+    "name": "task-goal-change",
+    "path": "/api/tasks/{id}/goal",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "TaskGoalDetail": {
+            "type": "object",
+            "properties": {
+              "goal": {
+                "type": ["string", "null"]
+              },
+              "edits": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Edit"
+                }
+              },
+              "verdicts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VerdictRecord"
+                }
+              }
+            },
+            "required": ["goal", "edits", "verdicts"]
+          },
+          "VerdictRecord": {
+            "type": "object",
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "response_epoch": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "goal": {
+                "type": "string"
+              },
+              "judgment": {
+                "$ref": "#/components/schemas/Judgment"
+              },
+              "model": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "cost_nanocredits": {
+                "type": ["integer", "null"],
+                "format": "int64"
+              },
+              "judged_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "run_id",
+              "response_epoch",
+              "goal",
+              "judgment",
+              "model",
+              "cost_nanocredits",
+              "judged_at"
+            ]
+          },
+          "Judgment": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": false
+          },
+          "Edit": {
+            "type": "object",
+            "properties": {
+              "goal": {
+                "type": ["string", "null"]
+              },
+              "edited_by": {
+                "type": "string"
+              },
+              "edited_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": ["goal", "edited_by", "edited_at"]
+          },
+          "EntityRef": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"]
+          },
+          "Verdict": {
+            "type": "string",
+            "enum": ["met", "not_yet", "impossible"]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/TaskGoalDetail"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/management.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-goal-judge-model",
+    "path": "/api/tenants/{tenant}/goal-judge-model",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "GoalJudgeModel": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EntityRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "EntityRef": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/GoalJudgeModel"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/execution_settings.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "tenant-goal-judge-model-update",
+    "path": "/api/tenants/{tenant}/goal-judge-model",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "GoalJudgeModel": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EntityRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "EntityRef": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/GoalJudgeModel"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/execution_settings.rs",
+    "uuid_parameters": []
   }
 ]

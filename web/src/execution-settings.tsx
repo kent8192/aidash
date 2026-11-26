@@ -5,6 +5,8 @@ import { Input } from "./components/ui/input";
 import {
   tenantExecutionSettings,
   tenantExecutionSettingsUpdate,
+  tenantGoalJudgeModel,
+  tenantGoalJudgeModelUpdate,
 } from "./generated/aidash";
 import { Alert, Hint, Loading } from "./components/patterns";
 import { ApiError } from "./transport";
@@ -94,6 +96,95 @@ export function ExecutionSettings({
           )}
         </form>
       )}
+      <GoalJudgeSettings tenant={tenant} canUpdate={canUpdate} />
     </Panel>
+  );
+}
+
+function GoalJudgeSettings({
+  tenant,
+  canUpdate,
+}: {
+  tenant: string;
+  canUpdate: boolean;
+}) {
+  const { locale, t } = useI18n();
+  const ja = locale === "ja-JP";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const path = encodeURIComponent(tenant);
+  const settings = useQuery({
+    queryKey: ["goal-judge-model", tenant],
+    queryFn: () => tenantGoalJudgeModel(path),
+    retry: false,
+  });
+  const model = settings.data?.model;
+  if (settings.isPending) return <Loading />;
+  if (settings.isError)
+    return (
+      <Alert retry={() => void settings.refetch()}>
+        {settings.error.message}
+      </Alert>
+    );
+  return (
+    <form
+      key={model ? `${model.id}@${model.version}` : "default"}
+      className="mt-4 grid gap-3 border-t border-border pt-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canUpdate || busy) return;
+        const values = new FormData(event.currentTarget);
+        const id = String(values.get("model") ?? "").trim();
+        const version = String(values.get("version") ?? "").trim();
+        if (Boolean(id) !== Boolean(version)) {
+          setError(
+            ja
+              ? "モデル ID とバージョンを両方入力してください。"
+              : "Enter both a model ID and a version.",
+          );
+          return;
+        }
+        setBusy(true);
+        setError("");
+        void tenantGoalJudgeModelUpdate(path, {
+          model: id && version ? { id, version } : null,
+        })
+          .then(() => settings.refetch())
+          .catch((reason: unknown) =>
+            setError(reason instanceof Error ? reason.message : String(reason)),
+          )
+          .finally(() => setBusy(false));
+      }}
+    >
+      <Hint>
+        {ja
+          ? "未設定の場合、タスクを実行する Agent と同じモデルで判定します。"
+          : "Leaving both fields empty uses the working Agent’s model for Goal judgments."}
+      </Hint>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label={ja ? "ゴール判定モデル ID" : "Goal judge model ID"}>
+          <Input
+            name="model"
+            defaultValue={model?.id ?? ""}
+            readOnly={!canUpdate}
+            disabled={busy}
+          />
+        </Field>
+        <Field label={ja ? "モデルのバージョン" : "Model version"}>
+          <Input
+            name="version"
+            defaultValue={model?.version ?? ""}
+            readOnly={!canUpdate}
+            disabled={busy}
+          />
+        </Field>
+      </div>
+      {error && <Alert>{error}</Alert>}
+      {canUpdate && (
+        <Button className="justify-self-end" disabled={busy}>
+          {t("save")}
+        </Button>
+      )}
+    </form>
   );
 }

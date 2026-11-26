@@ -65,6 +65,7 @@ export type Duty = {
   mission: string;
   /** The checklist its Agent follows on every Task. */
   procedure: string;
+  goal?: string | null;
   agent: { id: string; version: string };
   /** When it wakes by the clock, if it does. */
   trigger: Trigger | null;
@@ -143,6 +144,7 @@ export type DutyForm = {
   title: string;
   mission: string;
   procedure: string;
+  goal: string;
   agentId: string;
   agentVersion: string;
   /** "none" for a Duty that wakes only on its other triggers. */
@@ -182,6 +184,7 @@ export function emptyForm(timeZone: string): DutyForm {
     title: "",
     mission: "",
     procedure: "",
+    goal: "",
     agentId: "",
     agentVersion: "",
     timing: "cron",
@@ -206,6 +209,7 @@ export function formOf(duty: Duty): DutyForm {
     title: duty.title,
     mission: duty.mission,
     procedure: duty.procedure,
+    goal: duty.goal ?? "",
     agentId: duty.agent.id,
     agentVersion: duty.agent.version,
     timing: duty.trigger?.kind ?? "none",
@@ -302,6 +306,7 @@ export function definitionOf(form: DutyForm) {
     title: form.title.trim(),
     mission: form.mission,
     procedure: form.procedure,
+    ...(form.goal?.trim() ? { goal: form.goal.trim() } : {}),
     agent: { id: form.agentId.trim(), version: form.agentVersion.trim() },
     ...(timeTrigger(form) ? { trigger: timeTrigger(form) } : {}),
     ...(form.approvalMode === "default"
@@ -348,6 +353,9 @@ export function patchOf(form: DutyForm, original?: Duty) {
     title: definition.title,
     mission: definition.mission,
     procedure: definition.procedure,
+    ...(form.goal?.trim() === (original?.goal ?? "")
+      ? {}
+      : { goal: form.goal?.trim() ?? "" }),
     agent: definition.agent,
     trigger: sameInterval
       ? original.trigger

@@ -1716,11 +1716,9 @@ function ContentMetadata({
                 });
               }}
             >
-              {["unit", "message", "artifact", "run", "publication"].map(
-                (kind) => (
-                  <option key={kind}>{kind}</option>
-                ),
-              )}
+              {["unit", "message", "run", "publication"].map((kind) => (
+                <option key={kind}>{kind}</option>
+              ))}
             </NativeSelect>
           </Field>
           <Field label={label("Source ID", "出典ID")}>
