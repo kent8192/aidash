@@ -1,127 +1,33 @@
-//! One Thread index requires compatible embeddings for every declared bank.
+//! The Registry installs built-in memory implicitly and refuses explicit pins.
 use super::*;
 
 #[rstest]
-#[case("thread_same", true)]
-#[case("thread_foreign", true)]
-#[case("thread_version", true)]
-#[case("same", true)]
-#[case("participant_same", true)]
-#[case("participant_foreign", true)]
-#[case("participant_foreign", false)]
-#[case("same", false)]
-#[case("dimensions", true)]
-#[case("dimensions", false)]
-#[case("model", true)]
-#[case("model", false)]
-#[case("model_version", true)]
-#[case("endpoint", true)]
+#[case::custom("custom-memory")]
+#[case::built_in("aidash.memory")]
 #[tokio::test]
-async fn agent_memory_sources_require_the_same_embedding_configuration(
+async fn registry_rejects_explicit_agent_memory_bindings(
 	validation: DefinitionValidation,
-	#[case] changed: &str,
-	#[case] private: bool,
+	#[case] target: &str,
 ) {
 	let mut scope = Scope::default();
 	scope.put_builtins("aidash://home");
-	scope.put(definition("rrf", "reranker", json!({"provider":"rrf"})));
-	scope.put(definition(
-		"tokens",
-		"tokenizer",
-		json!({"provider":"utf8_upper_bound"}),
-	));
-	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
 	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","context_window":32768,"modalities":["text"],"cost":{}})));
-	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","model":"text","model_version":"1","dimensions":3});
-	let mut other = embedding.clone();
-	if !changed.starts_with("participant_") && !changed.starts_with("thread_") && changed != "same"
-	{
-		other[changed] = match changed {
-			"dimensions" => json!(4),
-			"endpoint" => json!("https://other.example.test"),
-			_ => json!("different"),
-		};
-	}
-	scope.put(definition("embedding-a", "embedding", embedding));
-	scope.put(definition("embedding-b", "embedding", other));
-	let zero = json!({"input_per_million":0,"output_per_million":0});
-	for (name, role) in [("memory-a", "embedding-a"), ("memory-b", "embedding-b")] {
-		let policy = json!({"engine":"hindsight_rust","policy":{
-            "extraction":reference("model"),"derivation":reference("model"),"reflection":reference("model"),"embedding":reference(role),"reranker":reference("rrf"),"tokenizer":reference("tokens"),
-            "prices":{"extraction":zero,"derivation":zero,"reflection":zero,"embedding":zero,"reranker":zero},
-            "retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
-            "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
-            "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
-		scope.put(definition(name, "memory", policy));
-		scope.put(definition(
-			&format!("source-{name}"),
-			"source",
-			json!({"scope":if changed.starts_with("participant_") {"participant"} else {"thread"},"memory":reference(name),"max_tokens":512}),
-		));
-	}
-	if changed.starts_with("thread_") {
-		let mut source = scope.entries["source-memory-b@1.0.0"].clone();
-		source.config["memory"] = match changed {
-			"thread_same" => reference("memory-a"),
-			"thread_version" => json!({"id":"memory-a","version":"1.0.1"}),
-			_ => reference("memory-b"),
-		};
-		scope.put(source);
-		let mut provider = scope.entries["memory-a@1.0.0"].clone();
-		provider.version = "1.0.1".into();
-		scope.put(provider);
-	}
-	let source_ids = if changed.starts_with("thread_") || !private {
-		vec!["source-memory-a", "source-memory-b"]
-	} else {
-		vec![if changed == "participant_same" {
-			"source-memory-a"
-		} else {
-			"source-memory-b"
-		}]
-	};
-	let mut bindings = source_ids
-		.into_iter()
-		.map(|id| crate::test_support::binding("source", "aidash://home", id))
-		.collect::<Vec<_>>();
-	if private {
-		bindings.push(crate::test_support::binding(
-			"memory",
-			"aidash://home",
-			"memory-a",
-		));
-	}
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"model":reference("model"),"instructions":"Use current memory","bindings":bindings,"remove_default":["file_search","file_read"]}),
+		json!({
+			"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Use current memory",
+			"bindings":[crate::test_support::binding("memory", "aidash://home", target)],
+		}),
 	);
-	let result = register_definition(&mut scope, &validation, &agent, "aidash://home").await;
-	if !private {
-		let expected = if changed.starts_with("participant_") {
-			"participant Sources require the Agent's exact primary memory provider"
-		} else {
-			"thread Sources require one exact memory provider version"
-		};
-		assert!(matches!(result, Err(Error::Invalid(message)) if message == expected));
-		assert!(!scope.entries.contains_key("agent@1.0.0"));
-	} else if changed == "thread_foreign" || changed == "thread_version" {
-		assert!(
-			matches!(result, Err(Error::Invalid(message)) if message == "thread Sources require one exact memory provider version")
-		);
-		assert!(!scope.entries.contains_key("agent@1.0.0"));
-	} else if changed == "same" || changed == "participant_same" || changed == "thread_same" {
-		assert!(result.unwrap());
-		assert!(scope.entries.contains_key("agent@1.0.0"));
-	} else if changed == "participant_foreign" {
-		assert!(
-			matches!(result, Err(Error::Invalid(message)) if message == "participant Sources require the Agent's exact primary memory provider")
-		);
-		assert!(!scope.entries.contains_key("agent@1.0.0"));
-	} else {
-		assert!(
-			matches!(result, Err(Error::Invalid(message)) if message == "an Agent's memory providers require compatible embedding configurations")
-		);
-		assert!(!scope.entries.contains_key("agent@1.0.0"));
-	}
+	let error = register_definition(&mut scope, &validation, &agent, "aidash://home")
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("memory and approval judging are built in")
+	);
+	assert!(!scope.entries.contains_key("agent@1.0.0"));
 }

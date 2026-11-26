@@ -42,7 +42,7 @@ async fn registration_rejects_retired_agent_pins(
 		.unwrap_err();
 	let message = error.to_string();
 	assert!(
-		message.contains(version) && message.contains("retired"),
+		message.contains(version) && message.contains("unknown variant"),
 		"{message}"
 	);
 	assert!(!scope.entries.contains_key("agent@1.0.0"));
@@ -50,22 +50,22 @@ async fn registration_rejects_retired_agent_pins(
 
 #[rstest]
 #[tokio::test]
-async fn new_agents_can_reference_stored_models_with_retired_fields(
-	validation: DefinitionValidation,
-) {
+async fn new_agents_require_canonical_model_configuration(validation: DefinitionValidation) {
 	let mut config = model_config();
 	config["projection_versions"] = json!(["legacy", "ordered"]);
 	let model = definition("model", "model", config.clone());
 	let mut scope = scope_with(config.clone());
 	let agent = definition("agent", "agent", agent_config(None));
-	register_definition(&mut scope, &validation, &agent, NODE)
+	let error = register_definition(&mut scope, &validation, &agent, NODE)
 		.await
-		.unwrap();
-	assert_eq!(scope.entries["model@1.0.0"].config, config);
-	assert_eq!(
-		scope.entries["agent@1.0.0"].config["projection_version"],
-		json!("native")
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("unknown field `projection_versions`")
 	);
+	assert!(!scope.entries.contains_key("agent@1.0.0"));
+	assert_eq!(scope.entries["model@1.0.0"].config, config);
 	let error = register_definition(&mut Scope::default(), &validation, &model, NODE)
 		.await
 		.unwrap_err();
@@ -283,8 +283,7 @@ async fn registration_rejects_removed_harness_contracts(
 		.unwrap_err();
 	// Assert: the version no longer decodes.
 	assert!(
-		error.to_string().contains("harness_contract")
-			|| error.to_string().contains("untagged enum"),
+		error.to_string().contains("unknown variant") && error.to_string().contains(contract),
 		"{error:?}"
 	);
 	assert!(!scope.entries.contains_key("agent@1.0.0"));

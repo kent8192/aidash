@@ -865,26 +865,15 @@ fn rejects_invalid_metadata() {
 	assert!(validate(&e).is_err());
 }
 #[rstest::rstest]
-fn unknown_requirements_and_invalid_clusters_are_rejected() {
+fn unknown_search_requirements_are_rejected() {
 	for value in [
 		json!({"capabilty":"web.search"}),
 		json!({"capabilities":["web.search"]}),
 	] {
 		assert!(serde_json::from_value::<Search>(value).is_err());
 	}
-	let mut e = entry();
-	e.kind = "cluster".into();
-	for config in [
-		json!({}),
-		json!({"coordinator":"research"}),
-		json!({"coordinator":{"id":"research","version":"latest"}}),
-	] {
-		e.config = config;
-		assert!(validate(&e).is_err());
-	}
-	e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
-	validate(&e).unwrap();
 }
+
 #[rstest::rstest]
 fn installation_overrides_cannot_clear_a_personal_agent_knowledge_digest() {
 	let mut config = json!({"knowledge_digest":"immutable-digest"});
@@ -1173,11 +1162,20 @@ fn wire_api_is_refused_without_a_provider_credential(
 	}
 }
 
-#[test]
-fn removed_decider_hook_is_reported_as_invalid_registration() {
-	let mut entry = crate::registry::system::approval_decider().unwrap();
-	entry.config["hook"] = json!("compaction");
+#[rstest]
+#[case("node")]
+#[case("cluster")]
+#[case("memory")]
+#[case("reranker")]
+#[case("tokenizer")]
+#[case("decider")]
+fn retired_registry_kinds_are_refused(#[case] kind: &str) {
+	let mut entry = entry();
+	entry.kind = kind.into();
+	let error = validation().validate_in(&entry, true).unwrap_err();
 	assert!(
-		matches!(validation().validate_in(&entry, true), Err(Error::Invalid(message)) if message.contains("invalid Decider config") && message.contains("compaction"))
+		error
+			.to_string()
+			.contains(&format!("unsupported Registry kind {kind}"))
 	);
 }
