@@ -1,8 +1,5 @@
 //! Drive background jobs share the worker lifetime and resume from persisted rows.
-use super::{
-	index, repository as db,
-	tools::{self, MAINTENANCE},
-};
+use super::{index, jobs, repository as db, tools::MAINTENANCE};
 use crate::{Error, Result, store::Store};
 use aidash_application::{drive::Change, tenancy::TenancyScope};
 use chrono::Utc;
@@ -17,7 +14,7 @@ pub(crate) async fn run(
 ) -> Result<()> {
 	let mut sweep_at = tokio::time::Instant::now();
 	while !*stopping.borrow() {
-		if let Err(error) = tools::tick(&store).await {
+		if let Err(error) = jobs::tick(&store).await {
 			tracing::warn!(%error, "Drive publication sweep failed");
 		}
 		if let Err(error) = index::tick(&store).await {

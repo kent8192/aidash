@@ -235,7 +235,7 @@ async fn scratch_capacity(
 	}
 	let spaces: Vec<_> = spaces.into_iter().map(|space| space.id).collect();
 	let query = db::select("scratch_space_settings", &grant.tenant)
-		.and_where(db::col("space_id").is_in(spaces.iter().copied()))
+		.and_where(db::col("space_id").is_in(spaces.iter().copied().map(Expr::value)))
 		.to_owned();
 	let space = db::rows::<Settings>(access.tx.as_mut(), &query).await?;
 	Ok((

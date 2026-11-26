@@ -1,30 +1,12 @@
 //! Agent Drive operations derive their scope from admitted executions.
-use super::{index, repository as db, transfer};
+use super::{index, jobs, repository as db, transfer};
 use crate::apps::execution::capabilities::serializers::contracts::{Representation, SearchMode};
 use crate::{Error, Result, authorization::access::Access, store::Store};
-use aidash_application::{
-	drive::Change,
-	ports::capabilities::{
-		execution_pod::{
-			ExecutionPodError, ExecutionPodErrorCode, FileManifestRequest, FileReadRequest,
-			ManifestFile,
-		},
-		pod_operations::PodContext,
-	},
-	tenancy::{DeploymentScopeReason, TenancyScope},
-};
-use aidash_domain::{
-	Run, RunMetadata,
-	capabilities::files::FileSelector,
-	drive::{self, IndexSelection, Publish, PublishBase},
-	nodes::NodeName,
-};
-use base64::{Engine, engine::general_purpose::STANDARD};
-use futures_util::StreamExt;
-use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::query::{Alias, Expr, ExprTrait, LockType, Order, Query, SimpleExpr};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_domain::{Run, nodes::NodeName};
+use reinhardt::query::{Alias, Expr, ExprTrait, Order};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::AsyncReadExt;
@@ -49,28 +31,6 @@ pub struct Status {
 	pub job_id: Uuid,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Plan {
-	node: String,
-	base: PublishBase,
-	changes: Vec<Change>,
-	files: Vec<ManifestFile>,
-	requester: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Job {
-	id: Uuid,
-	tenant: String,
-	drive_id: Uuid,
-	run_id: Uuid,
-	task_id: Uuid,
-	author: String,
-	plan: Plan,
-	state: String,
-	result: Option<String>,
-}
-
 pub(crate) async fn invoke(
 	store: &Store,
 	mut access: Access,
@@ -84,7 +44,7 @@ pub(crate) async fn invoke(
 	}
 	if name == "drive_publish" {
 		let input = serde_json::from_value(input)?;
-		return publish(store, access, run, input, key).await;
+		return jobs::publish(store, access, run, input, key).await;
 	}
 	let result = match name {
 		"drive_search" => {
@@ -99,7 +59,10 @@ pub(crate) async fn invoke(
 		}
 		"file_read" => read(store, &mut access, run, input).await,
 		"file_search" => files(store, &mut access, run, input).await,
-		"drive_publish_status" => status(&mut access, run, serde_json::from_value(input)?).await,
+		"drive_publish_status" => {
+			let input: Status = serde_json::from_value(input)?;
+			jobs::status(&mut access, run, input.job_id).await
+		}
 		_ => Err(Error::Invalid("unknown Drive operation".into())),
 	};
 	access.finish(result).await
@@ -317,4 +280,22 @@ pub(crate) async fn model_file(
 	let mut bytes = Vec::new();
 	reader.read_to_end(&mut bytes).await?;
 	Ok((file.path, file.media_type, bytes))
+}
+
+fn simple_glob(pattern: &str) -> Result<regex::Regex> {
+	if pattern.len() > 1024 {
+		return Err(Error::Invalid("Drive glob exceeds 1024 bytes".into()));
+	}
+	let mut regex = String::from("^");
+	let mut chars = pattern.chars().peekable();
+	while let Some(ch) = chars.next() {
+		match ch {
+			'*' if chars.next_if_eq(&'*').is_some() => regex.push_str(".*"),
+			'*' => regex.push_str("[^/]*"),
+			'?' => regex.push_str("[^/]"),
+			ch => regex.push_str(&regex::escape(&ch.to_string())),
+		}
+	}
+	regex.push('$');
+	regex::Regex::new(&regex).map_err(|error| Error::Invalid(error.to_string()))
 }

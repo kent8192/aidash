@@ -12,7 +12,7 @@ use reinhardt::db::{
 	orm::{QueryRow, execution::convert_values},
 };
 use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait, IntoValue, LockType, Order, PostgresQueryBuilder, Query,
+	Alias, Condition, Expr, ExprTrait, IntoValue, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SelectStatement, SimpleExpr, Value,
 };
 use schemars::JsonSchema;
@@ -153,15 +153,15 @@ pub(super) async fn by_node(
 ) -> Result<Drive> {
 	use super::models::DrivesRow;
 	use reinhardt::db::orm::Model;
-	let mut query = DrivesRow::objects()
+	let query = DrivesRow::objects()
 		.filter(DrivesRow::field_tenant().eq(tenant.to_owned()))
 		.filter(DrivesRow::field_node().eq(node.as_str().to_owned()));
-	if lock {
-		query = query.select_for_update();
-	}
-	let row = query
-		.all_with_executor(tx)
-		.await
+	let rows = if lock {
+		query.select_for_update().all_with_executor(tx).await
+	} else {
+		query.all_with_executor(tx).await
+	};
+	let row = rows
 		.map_err(reinhardt::core::exception::Error::from)?
 		.pop()
 		.ok_or_else(|| Error::NotFound("Drive not found".into()))?;
