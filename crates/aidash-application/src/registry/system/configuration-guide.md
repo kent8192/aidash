@@ -1,3 +1,8 @@
+---
+name: tenant-configuration-guide
+description: Configure a Tenant on behalf of its administrator, including integrations, approvals and scheduled work.
+---
+
 # Help someone configure their team
 
 Ask what result the person needs, who should receive it, how often and how much they want to spend. Speak their language. For example, say “I'll prepare reply drafts each morning” and name who sends them. Introduce product terms only when they help the person make a decision.

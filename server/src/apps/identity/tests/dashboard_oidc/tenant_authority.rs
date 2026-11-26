@@ -2090,3 +2090,116 @@ async fn budgets_are_set_by_their_people_in_a_browser(
 		.await;
 	assert_eq!(status, 204);
 }
+
+/// Exercise the worker boundary after admission, using its persisted grant
+/// and browser mapping. The test does not require inference or a provider key.
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_typed_tools_act_through_the_root_mapping(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_application::registry::system::configurator::{ID, VERSION};
+	use aidash_server::{
+		federation::{Federation, Home},
+		tool::{ToolContext, builtins},
+	};
+	use reinhardt::Injectable;
+	let t = Team::new(runtime).await;
+	let f = Federation::inject(&t.d.app.context).await.unwrap();
+	let (status, thread) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			"/api/threads",
+			Some(&t.alice_context),
+			json!({"title":"Tenant configuration"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{thread}");
+	let thread: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+	let (status, task) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			&format!("/api/threads/{thread}/tasks"),
+			Some(&t.alice_context),
+			json!({"title":"Configuration","description":"Change team settings"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{task}");
+	let task: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+	let id = Uuid::new_v4();
+	let home = format!("{}/{}", f.config.deployment, t.node);
+	let executor = aidash_domain::agent_subject(&home, ID, VERSION);
+	let mapping: Uuid = Team::mapping(&t.alice_context).parse().unwrap();
+	let mut tx = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT set_config('aidash.input_ledger_worker','true',true)")
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO task_executions (id,task_id,thread_id,home_node,node,agent_id,agent_version,phase,control,context,pending,tenant) VALUES ($1,$2,$3,$4,$5,$6,$7,'TOOL_CALL','ACTIVE',$8,$9,$10)")
+        .bind(id).bind(task).bind(thread).bind(home).bind(&t.node).bind(ID).bind(VERSION)
+        .bind(common::context(json!({}))).bind(common::tool_pending(json!({}))).bind(&t.tenant).execute(&mut *tx).await.unwrap();
+	sqlx::query("INSERT INTO authorization_execution (run_id,task_id,thread_id,tenant,credential_id,root_subject,subject_chain) SELECT $1,$2,$3,tenant,credential_id,subject,ARRAY[subject,$4] FROM dashboard_mappings WHERE id=$5")
+        .bind(id).bind(task).bind(thread).bind(executor).bind(mapping).execute(&mut *tx).await.unwrap();
+	sqlx::query("INSERT INTO dashboard_execution_origins (run_id,tenant,identity_id,mapping_id) SELECT $1,tenant,identity_id,id FROM dashboard_mappings WHERE id=$2")
+        .bind(id).bind(mapping).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
+	let run = f.store.run(&scope, id).await.unwrap();
+	let context = ToolContext {
+		home: Home::new(f.clone(), run.clone()),
+		store: f.store.clone(),
+		run,
+		scope,
+	};
+	let tools = builtins();
+	let updated = tools["tenant_instructions_set"]
+		.invoke(
+			&context,
+			json!({"text":"Prepare drafts only.","expected_revision":0}),
+			"instructions",
+		)
+		.await
+		.unwrap();
+	assert_eq!(updated["revision"], 1);
+	assert!(
+		updated["updated_by"]
+			.as_str()
+			.unwrap()
+			.contains(&thread.to_string())
+	);
+	let protection = tools["data_protection_set"]
+		.invoke(
+			&context,
+			json!({"level":"no_training","forbid_keyless_endpoints":true}),
+			"protection",
+		)
+		.await
+		.unwrap();
+	assert_eq!(protection["policy"]["forbid_keyless_endpoints"], true);
+	let (status, read) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&format!("/api/tenants/{}/instructions", t.tenant),
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{read}");
+	assert_eq!(read["text"], "Prepare drafts only.");
+	for path in [
+		format!("/api/tenants/{}/purge", t.tenant),
+		format!("/api/tenants/{}/nodes/{}/purge", t.tenant, t.node),
+		"/api/dashboard/registrations".into(),
+	] {
+		assert!(
+			tools["aidash_api"]
+				.invoke(&context, json!({"method":"POST","path":path}), "refused")
+				.await
+				.is_err()
+		);
+	}
+	t.finish().await;
+}

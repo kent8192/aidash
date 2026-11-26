@@ -614,3 +614,24 @@ fn configurator_instructions_changes_require_both_the_administrator_and_its_agen
 		assert_eq!(decision.allowed, allowed, "{person} / {executor}");
 	}
 }
+
+#[test]
+fn configurator_guide_can_be_loaded_as_a_run_skill() {
+	let [guide, agent] = super::configurator::definitions(NODE).unwrap();
+	let attachment = aidash_domain::capabilities::skills::imported(
+		guide.id.clone(),
+		guide.config["instructions"].as_str().unwrap().into(),
+		vec![],
+	)
+	.unwrap();
+	assert_eq!(
+		aidash_domain::capabilities::skills::validate(&attachment)
+			.unwrap()
+			.name,
+		"tenant-configuration-guide"
+	);
+	assert_eq!(agent.config["bindings"][0]["target"]["id"], guide.id);
+	assert!(agent.config.get("model").is_none());
+	assert!(is_builtin(&agent));
+	assert!(is_builtin(&guide));
+}
