@@ -4,6 +4,7 @@ UPDATE "registry" SET "metadata" = jsonb_set(metadata, '{config}', (metadata->'c
 ALTER TABLE public.registry ENABLE TRIGGER marketplace_registry_fence;
 UPDATE "task_executions" SET "context" = context - 'completion' WHERE context ? 'completion';
 UPDATE "task_executions" SET "context" = jsonb_set(context, '{execution_summary,content}', (context #> '{execution_summary,content}') - 'goal' || jsonb_build_object('intent', context #> '{execution_summary,content,goal}')) WHERE context #> '{execution_summary,content,goal}' IS NOT NULL;
+UPDATE "core_operations" SET "state" = 'cancelled' WHERE "kind" = 'verification' AND "state" IN ('prepared', 'submitted', 'running', 'cancelling');
 DELETE FROM "authorization_run_reads" WHERE "resource_kind" = 'artifact';
 DELETE FROM "semantic_entries" WHERE source->>'kind' = 'artifact';
 DELETE FROM "events" WHERE "kind" = 'artifact.published';

@@ -34,6 +34,12 @@ pub(crate) fn execution() -> String {
 			"context #> '{execution_summary,content,goal}' IS NOT NULL",
 		))
 		.to_string(PostgresQueryBuilder);
+	let checks = Query::update()
+		.table(Alias::new("core_operations"))
+		.value_expr(Alias::new("state"), Expr::value("cancelled"))
+		.and_where(Expr::col("kind").eq("verification"))
+		.and_where(Expr::col("state").is_in(["prepared", "submitted", "running", "cancelling"]))
+		.to_string(PostgresQueryBuilder);
 	let reads = Query::delete()
 		.from_table(Alias::new("authorization_run_reads"))
 		.and_where(Expr::col("resource_kind").eq("artifact"))
@@ -50,7 +56,7 @@ pub(crate) fn execution() -> String {
 		"{SCOPE}ALTER TABLE public.registry DISABLE TRIGGER marketplace_registry_fence;\n\
 		 {registry};\n\
 		 ALTER TABLE public.registry ENABLE TRIGGER marketplace_registry_fence;\n\
-		 {context};\n{summary};\n{reads};\n{index};\n{events};\n"
+		 {context};\n{summary};\n{checks};\n{reads};\n{index};\n{events};\n"
 	)
 }
 

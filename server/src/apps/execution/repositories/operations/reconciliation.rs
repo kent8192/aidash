@@ -157,7 +157,7 @@ impl OperationReconciliationScope for Scope<'_> {
 			.context
 			.binding_snapshot
 			.as_ref()?
-			.operation(aidash_domain::capabilities::operations::capability_of(kind))
+			.operation(kind)
 			.ok()?
 			.narrow
 			.limits
