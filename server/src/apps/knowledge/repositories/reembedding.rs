@@ -11,7 +11,6 @@ use crate::{
 			},
 			serializers::contracts::{Entry, Index},
 		},
-		registry::models::Definition,
 		workspaces::models::Thread,
 	},
 	database::native::{self, Transaction},
@@ -73,19 +72,10 @@ async fn rebuild(store: &Store, tenant: &str) -> Result<()> {
 	};
 	// Throttle repeated failure and leave a durable request after a worker crash.
 	embedding_settings::defer(store, tenant, settings.revision).await?;
-	// CONTRACT(#1019): The Drive worker must stage the opted-in files and
-	// publish its ready generations alongside the Thread generations below.
-	if embedding_settings::drive_files(&mut *tx, tenant).await? != 0 {
+	if !embedding_settings::drive_reembedding_ready(&mut *tx, tenant, target).await? {
 		return Ok(());
 	}
-	let definition = Definition::read_of(&mut *tx, tenant, &target.id, &target.version).await?;
-	if definition.kind != "embedding" {
-		return Err(Error::Invalid(
-			"pending definition is not an embedding model".into(),
-		));
-	}
-	let embedding: aidash_domain::semantic::EmbeddingConfig =
-		serde_json::from_value(definition.config)?;
+	let embedding = embedding_settings::embedding_config(&mut *tx, tenant, target).await?;
 	let indexes = tenant_indexes(&mut *tx, tenant).await?;
 	let mut prepared = Vec::with_capacity(indexes.len());
 	for index in indexes {
@@ -98,7 +88,7 @@ async fn rebuild(store: &Store, tenant: &str) -> Result<()> {
 	embedding_settings::lock_tenant(&mut *tx, tenant, LockType::Update).await?;
 	let current = embedding_settings::read(&mut *tx, tenant).await?;
 	if current.revision != settings.revision
-		|| embedding_settings::drive_files(&mut *tx, tenant).await? != 0
+		|| !embedding_settings::drive_reembedding_ready(&mut *tx, tenant, target).await?
 	{
 		return Ok(());
 	}
@@ -126,6 +116,7 @@ async fn tenant_indexes(tx: &mut dyn TransactionExecutor, tenant: &str) -> Resul
 		.column(ColumnRef::Asterisk)
 		.from(Alias::new("semantic_indexes"))
 		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(embedding_settings::live_thread("semantic_indexes"))
 		.order_by(Alias::new("thread_id"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	Ok(native::query_as(&sql).fetch_all(tx).await?)
@@ -168,7 +159,7 @@ async fn stage(
 		.column(ColumnRef::Asterisk)
 		.from(Alias::new("semantic_entries"))
 		.and_where(Expr::col("tenant").eq(index.tenant.as_str()))
-		.and_where(Expr::col("thread_id").eq(index.thread_id))
+		.and_where(Expr::col("thread_id").eq(Expr::value(index.thread_id)))
 		.and_where(Expr::col("deleted").eq(false))
 		.order_by(Alias::new("id"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
@@ -285,7 +276,7 @@ async fn publish(tx: &mut dyn TransactionExecutor, plan: Generation) -> Result<(
 			.value_expr(Alias::new("next_attempt"), Expr::cust("clock_timestamp()"))
 			.value_expr(Alias::new("updated_at"), Expr::cust("clock_timestamp()"))
 			.value_expr(Alias::new("last_error"), Expr::null())
-			.and_where(Expr::col("id").eq(entry.id))
+			.and_where(Expr::col("id").eq(Expr::value(entry.id)))
 			.to_string(PostgresQueryBuilder);
 		native::query(&sql).execute(&mut *tx).await?;
 		SemanticPoint::schedule(tx, &entry, &plan.collection).await?;
@@ -293,7 +284,7 @@ async fn publish(tx: &mut dyn TransactionExecutor, plan: Generation) -> Result<(
 			let sql = Query::update()
 				.table(Alias::new("semantic_points"))
 				.value_expr(Alias::new("content_digest"), Expr::value(digest))
-				.and_where(Expr::col("id").eq(id))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder);
 			native::query(&sql).execute(&mut *tx).await?;
 		}

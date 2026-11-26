@@ -792,9 +792,9 @@ pub(super) async fn reembed(
 	let sql = Query::select()
 		.column(Alias::new("authority"))
 		.from(Alias::new("semantic_entries"))
-		.and_where(Expr::col("id").eq(entry.id))
+		.and_where(Expr::col("id").eq(Expr::value(entry.id)))
 		.and_where(Expr::col("revision").eq(entry.revision))
-		.and_where(Expr::col("point_id").eq(entry.point_id))
+		.and_where(Expr::col("point_id").eq(Expr::value(entry.point_id)))
 		.and_where(Expr::col("deleted").eq(false))
 		.to_string(PostgresQueryBuilder);
 	let tenancy = TenancyScope::tenant(tenant)?;

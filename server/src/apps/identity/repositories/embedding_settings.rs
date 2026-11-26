@@ -1,5 +1,8 @@
 use crate::{Error, Result, database::native};
-use aidash_application::embedding::{EmbeddingRef, EmbeddingSettingsPort, default_embedding};
+use aidash_application::embedding::{
+	EmbeddingRef, EmbeddingSettingsPort, default_embedding, tenant_embedding,
+};
+use aidash_domain::semantic::EmbeddingConfig;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, Func, LockType, OnConflict, PostgresQueryBuilder, Query,
@@ -116,13 +119,31 @@ async fn count(tx: &mut dyn TransactionExecutor, table: &'static str, tenant: &s
 	query
 		.expr(Func::count(Expr::col("thread_id").into()))
 		.from(Alias::new(table))
-		.and_where(Expr::col("tenant").eq(tenant));
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(live_thread(table));
 	if table == "semantic_entries" {
 		query.and_where(Expr::col("deleted").eq(false));
 	}
 	Ok(native::query_scalar(&query.to_string(PostgresQueryBuilder))
 		.scalar_one(tx)
 		.await?)
+}
+
+pub(crate) fn live_thread(index_table: &'static str) -> reinhardt::query::SimpleExpr {
+	Expr::exists(
+		Query::select()
+			.expr(Expr::value(1))
+			.from(Alias::new("threads"))
+			.and_where(
+				Expr::col((Alias::new("threads"), Alias::new("id"))).eq(Expr::col((
+					Alias::new(index_table),
+					Alias::new("thread_id"),
+				))),
+			)
+			.and_where(Expr::col("deleted_at").is_null())
+			.to_owned(),
+	)
+	.into()
 }
 
 pub(crate) async fn lock_tenant(
@@ -143,19 +164,55 @@ pub(crate) async fn lock_tenant(
 	Ok(())
 }
 
-pub(crate) async fn drive_files(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<i64> {
+pub(crate) async fn lock_active_config(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> Result<EmbeddingConfig> {
+	lock_tenant(tx, tenant, LockType::KeyShare).await?;
+	let reference = tenant_embedding(
+		&EmbeddingSettings(tokio::sync::Mutex::new(&mut *tx)),
+		tenant,
+	)
+	.await?;
+	embedding_config(tx, tenant, &reference).await
+}
+
+pub(crate) async fn embedding_config(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	reference: &EmbeddingRef,
+) -> Result<EmbeddingConfig> {
+	let entry = crate::apps::registry::models::Definition::read_of(
+		tx,
+		tenant,
+		&reference.id,
+		&reference.version,
+	)
+	.await?;
+	if entry.kind != "embedding" {
+		return Err(Error::Invalid(
+			"choose a registered embedding definition".into(),
+		));
+	}
+	Ok(serde_json::from_value(entry.config)?)
+}
+
+async fn drive_entries_exist(tx: &mut dyn TransactionExecutor) -> Result<bool> {
 	// Worker C creates the Drive tables. Until that migration is present,
 	// this branch has no Drive inventory.
-	let exists: bool = native::query_scalar(
+	Ok(native::query_scalar(
 		&Query::select()
 			.expr(Expr::cust(
 				"to_regclass('public.drive_entries') IS NOT NULL",
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&mut *tx)
-	.await?;
-	if !exists {
+	.scalar_one(tx)
+	.await?)
+}
+
+async fn drive_files(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<i64> {
+	if !drive_entries_exist(tx).await? {
 		return Ok(0);
 	}
 	let sql = Query::select()
@@ -164,6 +221,48 @@ pub(crate) async fn drive_files(tx: &mut dyn TransactionExecutor, tenant: &str) 
 		.and_where(Expr::col("tenant").eq(tenant))
 		.and_where(Expr::col("indexed").eq(true))
 		.and_where(Expr::col("removed_in_version").is_null())
+		.to_string(PostgresQueryBuilder);
+	Ok(native::query_scalar(&sql).scalar_one(tx).await?)
+}
+
+pub(crate) async fn drive_reembedding_ready(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	pending: &EmbeddingRef,
+) -> Result<bool> {
+	if !drive_entries_exist(tx).await? {
+		return Ok(true);
+	}
+	// CONTRACT(#1019): On integration, replace this readiness query with
+	// apps::drives::index::reembedding_ready. Both use Worker's C's persisted
+	// generation key and ignore entries whose first indexing is not yet ready.
+	let entry = |column| Expr::col((Alias::new("drive_entries"), Alias::new(column)));
+	let published = Query::select()
+		.expr(Expr::value(1))
+		.from(Alias::new("drive_index_requests"))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("drive_id").eq(entry("drive_id")))
+		.and_where(Expr::col("version").eq(entry("added_in_version")))
+		.and_where(Expr::col("state").eq("ready"))
+		.to_owned();
+	let replacement = Query::select()
+		.expr(Expr::value(1))
+		.from(Alias::new("drive_passages"))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("digest").eq(entry("digest")))
+		.and_where(Expr::col("embedding_key").eq(format!("{}@{}", pending.id, pending.version)))
+		.to_owned();
+	let missing = Query::select()
+		.expr(Expr::value(1))
+		.from(Alias::new("drive_entries"))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("indexed").eq(true))
+		.and_where(Expr::col("removed_in_version").is_null())
+		.and_where(Expr::exists(published))
+		.and_where(Expr::not_exists(replacement))
+		.to_owned();
+	let sql = Query::select()
+		.expr(Expr::not_exists(missing))
 		.to_string(PostgresQueryBuilder);
 	Ok(native::query_scalar(&sql).scalar_one(tx).await?)
 }
@@ -180,18 +279,7 @@ pub(crate) async fn change(
 			"embedding settings revision changed".into(),
 		));
 	}
-	let entry = crate::apps::registry::models::Definition::read_of(
-		tx,
-		tenant,
-		&update.embedding.id,
-		&update.embedding.version,
-	)
-	.await?;
-	if entry.kind != "embedding" {
-		return Err(Error::Invalid(
-			"choose a registered embedding definition".into(),
-		));
-	}
+	embedding_config(tx, tenant, &update.embedding).await?;
 	let thread_indexes = count(tx, "semantic_indexes", tenant).await?;
 	let drive_files = drive_files(tx, tenant).await?;
 	if !update.confirm {
