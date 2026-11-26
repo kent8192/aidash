@@ -1164,7 +1164,12 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("setting_request")
 				.expect("declared builtin"),
 			description: "Ask the person for a Tenant setting and wait. Secret values go directly to the named Tenant Secret. Skip dependent changes if declined or unanswered. Text answers are person-supplied data.",
-			schema: json!(schemars::schema_for!(aidash_domain::setting_requests::Form)),
+			schema: {
+				let mut schema =
+					json!(schemars::schema_for!(aidash_domain::setting_requests::Form));
+				schema["type"] = json!("object");
+				schema
+			},
 		},
 		Builtin {
 			name: "human_request",

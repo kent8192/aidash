@@ -314,15 +314,16 @@ export function OperationsDialog({
               (request &&
               request.response === null &&
               (!d.node || d.node === data.node.id) ? (
-                request.kind === "SETTING_REQUEST" &&
-                data.access.kind === "subject" ? (
-                  <SettingRequest
-                    key={request.id}
-                    request={request}
-                    tenant={data.access.tenant}
-                    subject={data.access.subject}
-                    submit={submit}
-                  />
+                request.kind === "SETTING_REQUEST" ? (
+                  data.access.kind === "subject" && (
+                    <SettingRequest
+                      key={request.id}
+                      request={request}
+                      tenant={data.access.tenant}
+                      subject={data.access.subject}
+                      submit={submit}
+                    />
+                  )
                 ) : request.kind === "MCP_ELICITATION" ? (
                   <ElicitationForm request={request} submit={submit} />
                 ) : (

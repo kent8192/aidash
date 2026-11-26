@@ -303,3 +303,30 @@ async fn a_question_stays_open_until_its_deadline(mut fixture: Fixture) {
 	assert_eq!(answer_by(&fixture.run), Some(by));
 	assert_eq!(last_write(&fixture).0, "execution.waiting");
 }
+
+#[rstest]
+#[tokio::test]
+async fn setting_request_deadline_resumes_with_only_the_secret_name_and_outcome(
+	mut fixture: Fixture,
+) {
+	let id = Uuid::from_u128(0x1155);
+	journal(&fixture, id, aidash_domain::setting_requests::KIND, None);
+	fixture
+		.backend
+		.0
+		.human
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.prompt =
+		json!({"kind":"secret","name":"mail-key","label":"API key","hosts":["api.example.com"]})
+			.to_string();
+	waits(&mut fixture, id, Some(Utc::now() - Duration::seconds(1)));
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(
+		heard(&fixture.run),
+		json!({"name":"mail-key","outcome":"unanswered"})
+	);
+}
