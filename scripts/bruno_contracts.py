@@ -915,6 +915,32 @@ def render():
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
                     path=uri, body="{", headers=SUBJECT, node_unchanged=True)
             continue
+        if path.startswith("/api/nodes/{node}/drive"):
+            uri = path.replace("{node}", "{{tenant_node}}")
+            name = route["name"]
+            if name == "drive-download":
+                uri += "?path=bruno-missing-file.txt"
+            if name == "drive-upload-part":
+                uri += "?number=0"
+            valid_body = {
+                "drive-update": {"action": "close", "closed": True},
+                "drive-upload-start": {"path": "bruno.txt", "size": 0, "base_version": "new", "index": True},
+            }.get(name)
+            body = json.dumps(valid_body) if valid_body is not None else None
+            add(endpoint, "Anonymous request is rejected", 401, path=uri, body=body)
+            add(endpoint, "Deployment Administrator cannot access a Node Drive", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body)
+            if name == "drive-browse":
+                add(endpoint, "Tenant member can browse an open Drive", 200, path=uri,
+                    headers=SUBJECT, checks='expect(res.getBody().files).to.be.an("array");expect(res.getBody().drive.node).to.equal(bru.getEnvVar("tenant_node"));')
+            elif name in {"drive-download", "drive-upload-part", "drive-upload-finish"}:
+                add(endpoint, "Unknown file or upload returns not found", 404, path=uri,
+                    headers=SUBJECT, body="bruno" if name == "drive-upload-part" else None,
+                    media="application/octet-stream")
+            else:
+                add(endpoint, "Mutation requires its typed Drive input", 422, path=uri,
+                    headers=SUBJECT, body="{}")
+            continue
         if endpoint == "POST /hooks/duties/{trigger}":
             # A webhook authenticates by the HMAC signature of its body, not a
             # session (#1011): a missing or wrong signature and an unknown
