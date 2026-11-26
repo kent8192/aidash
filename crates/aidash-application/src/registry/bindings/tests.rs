@@ -271,6 +271,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.task_create"
+				| "aidash.task_delegate"
 				| "aidash.file_read"
 				| "aidash.file_search"
 				| "aidash.workspace_wait"

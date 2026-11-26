@@ -136,8 +136,8 @@ fn workspace_attachment_tools_keep_original_declarations_immutable() {
 		let new = current.iter().find(|entry| entry.id == legacy.id).unwrap();
 		assert_eq!(
 			new.version,
-			if legacy.id == "aidash.workspace_observe" {
-				"1.0.1"
+			if legacy.id == "aidash.workspace_read" {
+				"1.2.0"
 			} else {
 				"1.1.0"
 			}

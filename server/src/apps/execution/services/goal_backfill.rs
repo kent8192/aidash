@@ -6,14 +6,28 @@ use reinhardt::query::{
 const SCOPE: &str = "SET LOCAL aidash.scope = 'deployment';\n";
 
 pub(crate) fn execution() -> String {
+	let config = "(metadata->'config') - 'completion'";
+	let remove_default = format!(
+		"CASE WHEN jsonb_typeof(metadata #> '{{config,remove_default}}') = 'array' THEN \
+         jsonb_set({config}, '{{remove_default}}', (metadata #> '{{config,remove_default}}') - 'artifact_publish') \
+         ELSE {config} END"
+	);
+	let bindings = format!(
+		"CASE WHEN jsonb_typeof(metadata #> '{{config,bindings}}') = 'array' THEN \
+         jsonb_set({remove_default}, '{{bindings}}', COALESCE((SELECT jsonb_agg(binding ORDER BY position) \
+         FROM jsonb_array_elements(metadata #> '{{config,bindings}}') WITH ORDINALITY AS b(binding, position) \
+         WHERE binding #>> '{{target,id}}' IS DISTINCT FROM 'aidash.artifact_publish'), '[]'::jsonb)) \
+         ELSE {remove_default} END"
+	);
 	let registry = Query::update()
 		.table(Alias::new("registry"))
 		.value_expr(
 			Alias::new("metadata"),
-			Expr::cust("jsonb_set(metadata, '{config}', (metadata->'config') - 'completion')"),
+			Expr::cust(format!(
+				"jsonb_set(metadata - 'binding_normalization', '{{config}}', {bindings})"
+			)),
 		)
 		.and_where(Expr::col("kind").eq("agent"))
-		.and_where(Expr::cust("metadata->'config' ? 'completion'"))
 		.to_string(PostgresQueryBuilder);
 	let context = Query::update()
 		.table(Alias::new("task_executions"))
