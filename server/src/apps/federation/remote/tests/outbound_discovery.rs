@@ -234,7 +234,7 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 
 #[rstest]
 #[tokio::test]
-async fn task_model_picker_checks_the_receiving_nodes_current_agent_discovery_policy(
+async fn task_model_picker_and_grant_acceptance_recheck_receiver_authority(
 	#[future]
 	#[from(execution_fixtures::execution)]
 	execution: execution_fixtures::ExecutionFixture,
@@ -300,6 +300,44 @@ async fn task_model_picker_checks_the_receiving_nodes_current_agent_discovery_po
 	assert_eq!(option["openrouter_model_id"], "fixture");
 	assert!(option["name"].is_object());
 	assert!(option.get("pricing").is_some());
+
+	let grants = format!("/api/tasks/{}/remote-grants", fixture.task);
+	let grant = uuid::Uuid::new_v4();
+	let selected = json!({"model":option["model"],"reasoning_effort":"high"});
+	let prepared = assert_json(
+		fixture
+			.subject
+			.post(
+				&grants,
+				&json!({
+					"id":grant,"node_id":peer["address"],"agent":target,"ttl_seconds":300,
+					"semantic":{"mode":"disabled"},"task_model":selected
+				}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(prepared["id"], json!(grant));
+	let model: aidash_domain::registry::EntityRef =
+		serde_json::from_value(option["model"].clone()).unwrap();
+	aidash_server::authorization::Authorization {
+		pool: app.runtime.store.pool.clone(),
+	}
+	.set_catalog("acme", &node, &model, 1, false, "fixture")
+	.await
+	.unwrap();
+	let refused = assert_json(
+		fixture
+			.subject
+			.post(&format!("{grants}/{grant}/activate"), &json!({}), "json")
+			.await
+			.unwrap(),
+		422,
+	);
+	assert_eq!(refused["code"], "task_model_not_approved");
+	assert_eq!(refused["model"], option["model"]);
 
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"hide-receiving-node","effect":"deny","subjects":{"any":true},
