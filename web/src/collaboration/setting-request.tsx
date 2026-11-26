@@ -99,7 +99,7 @@ export function SettingRequest({
               settingLabel={
                 ja ? `${form.label}と接続` : `Connect to ${form.label}`
               }
-              onConnected={() => answer("done")}
+              onDecision={answer}
             />
           ) : (
             <Button
@@ -128,6 +128,9 @@ export function SettingRequest({
           )}
           {form.kind === "oauth" && form.target.type === "tool" && (
             <Hint>{form.target.resource}</Hint>
+          )}
+          {form.kind === "payment" && form.target.type === "agent_plugin" && (
+            <strong>{form.target.listing}</strong>
           )}
           {form.kind === "payment" && (
             <Hint>
@@ -209,15 +212,17 @@ export function SettingRequest({
           )}
           {form.kind === "text" &&
             form.fields.map((field) => (
-              <Field key={field.name} label={field.label}>
-                <Input name={field.name} />
+              <div key={field.name}>
+                <Field label={field.label}>
+                  <Input name={field.name} />
+                </Field>
                 {field.constraint?.type === "number" && (
                   <span>
                     {field.constraint.min}–{field.constraint.max}{" "}
                     {field.constraint.unit}
                   </span>
                 )}
-              </Field>
+              </div>
             ))}
           <Button type="submit" disabled={busy}>
             {ja ? "送信" : "Submit"}

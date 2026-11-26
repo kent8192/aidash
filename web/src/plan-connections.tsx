@@ -115,12 +115,12 @@ export function PlanConnectionsPage({
   tenant,
   subject,
   settingLabel,
-  onConnected,
+  onDecision,
 }: {
   tenant: string;
   subject: string;
   settingLabel?: string;
-  onConnected?: () => Promise<unknown>;
+  onDecision?: (action: "done" | "decline") => Promise<unknown>;
 }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
@@ -215,7 +215,8 @@ export function PlanConnectionsPage({
       );
       await status.refetch();
       if (result.outcome === "connected" || result.outcome === "reconnected")
-        await onConnected?.();
+        await onDecision?.("done");
+      else if (result.outcome === "denied") await onDecision?.("decline");
     } catch {
       if (holds(flow))
         setError(
