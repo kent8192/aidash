@@ -22,6 +22,9 @@ pub(crate) mod memory_receipts;
 pub(crate) mod memory_scope;
 pub(crate) mod mutations;
 pub(crate) mod native_memory;
+#[cfg(test)]
+#[path = "tests/native_memory/own_journal_lock.rs"]
+mod own_journal_lock_tests;
 pub mod postgres_vector;
 pub(crate) mod publications;
 pub(crate) mod receiver_caches;
