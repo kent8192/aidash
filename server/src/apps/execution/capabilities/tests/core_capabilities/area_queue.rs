@@ -1,6 +1,4 @@
-//! Every Task of a Thread for one Agent and person shares a Working Area
-//! (#1008, ADR 0140); a Task asleep in it does not hold back the next one
-//! (amendment of 2026-11-20).
+//! Duty runs use the Node Scratch Space even while another Run is waiting.
 use super::*;
 use aidash_server::apps::workspaces::services::duties::pass;
 use aidash_server::domain::{ReadyState, RecoveryState, ResumeState, RunState, WaitingState};
@@ -15,9 +13,7 @@ async fn execution(c: &CoreFixture, task: Uuid) -> Uuid {
 		.unwrap()
 }
 
-/// A Duty's Task asleep in `task_wait`, waiting for CI, does not hold back
-/// the Duty's next Task in the same Thread, Agent and Requester's Area: the
-/// next one is leased and runs.
+/// A Duty's next Run can be leased while the preceding Run waits for a Task.
 #[rstest::rstest]
 #[tokio::test]
 async fn a_duty_task_asleep_on_task_wait_does_not_hold_back_the_next(
@@ -87,19 +83,21 @@ async fn a_duty_task_asleep_on_task_wait_does_not_hold_back_the_next(
 		serde_json::from_value(second["task_id"].clone()).unwrap(),
 	)
 	.await;
-	// Assert: both executions are in one Area, the sleeping one holds no
-	// place in its queue, and the next one is leased.
-	let places: Vec<(Uuid, bool)> = sqlx::query_as(
-		"SELECT area_id, asleep FROM core_runs WHERE run_id = $1 OR run_id = $2 ORDER BY sequence",
+	// Assert: both Runs use this Node's default Scratch Space.
+	let spaces: Vec<(Uuid, bool)> = sqlx::query_as(
+		"SELECT s.id, s.is_default FROM task_executions r
+		 JOIN threads t ON t.id = r.thread_id AND t.tenant = r.tenant
+		 JOIN scratch_spaces s ON s.id = t.scratch_space_id AND s.tenant = t.tenant
+		 WHERE r.id IN ($1, $2)",
 	)
 	.bind(asleep)
 	.bind(next)
 	.fetch_all(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	assert_eq!(places.len(), 2, "{places:?}");
-	assert_eq!(places[0].0, places[1].0, "one Area: {places:?}");
-	assert_eq!((places[0].1, places[1].1), (true, false), "{places:?}");
+	assert_eq!(spaces.len(), 2, "{spaces:?}");
+	assert_eq!(spaces[0], spaces[1]);
+	assert!(spaces[0].1);
 	let mut leased = vec![];
 	for _ in 0..8 {
 		let Some(run) = c.f.store.lease_run(Uuid::new_v4(), 30).await.unwrap() else {
