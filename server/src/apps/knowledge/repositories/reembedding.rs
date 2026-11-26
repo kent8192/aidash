@@ -42,14 +42,21 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 		.scalar_all(store.pool.in_scope(&scope))
 		.await?;
 	for tenant in tenants {
-		if let Err(error) = Box::pin(rebuild(store, &tenant)).await {
+		if let Err(error) = rebuild(store, &tenant).await {
 			tracing::warn!(%tenant, %error, "tenant re-embedding is pending");
 		}
 	}
 	Ok(())
 }
 
-async fn rebuild(store: &Store, tenant: &str) -> Result<()> {
+fn rebuild<'a>(
+	store: &'a Store,
+	tenant: &'a str,
+) -> futures_util::future::BoxFuture<'a, Result<()>> {
+	Box::pin(rebuild_tenant(store, tenant))
+}
+
+async fn rebuild_tenant(store: &Store, tenant: &str) -> Result<()> {
 	let scope = TenancyScope::tenant(tenant)?;
 	let mut tx = store.pool.begin(&scope).await?;
 	let lock = SimpleExpr::FunctionCall(
@@ -82,7 +89,7 @@ async fn rebuild(store: &Store, tenant: &str) -> Result<()> {
 		let mut spec: IndexingSpec = serde_json::from_value(index.spec.clone())?;
 		spec.embedding = embedding.clone();
 		crate::apps::knowledge::repositories::mutations::validate_index(store, &spec)?;
-		prepared.push(Box::pin(stage(store, &mut tx, index, spec)).await?);
+		prepared.push(stage(store, &mut tx, index, spec).await?);
 	}
 
 	embedding_settings::lock_tenant(&mut *tx, tenant, LockType::Update).await?;
@@ -171,7 +178,7 @@ async fn stage(
 		if spec.enabled
 			&& entry.state == "READY"
 			&& let Some((data, content_digest)) =
-				Box::pin(reembed(store, &index.tenant, &entry, &spec)).await?
+				reembed(store, &index.tenant, &entry, &spec).await?
 		{
 			if data.len() != spec.embedding.dimensions {
 				return Err(Error::Invalid(

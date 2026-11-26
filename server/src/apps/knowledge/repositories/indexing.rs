@@ -783,7 +783,16 @@ impl SemanticCleanupSession for Cleanup {
 }
 
 /// Prepare a replacement for a Ready source without changing its live point.
-pub(super) async fn reembed(
+pub(super) fn reembed<'a>(
+	store: &'a Store,
+	tenant: &'a str,
+	entry: &'a Entry,
+	spec: &'a IndexingSpec,
+) -> futures_util::future::BoxFuture<'a, crate::Result<Option<(Vec<f32>, String)>>> {
+	Box::pin(reembed_source(store, tenant, entry, spec))
+}
+
+async fn reembed_source(
 	store: &Store,
 	tenant: &str,
 	entry: &Entry,
