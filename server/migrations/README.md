@@ -1131,3 +1131,5 @@ physical `scope` default is retained for existing write paths.
 `workspaces/0066_deleted_duty_flow_ancestry` adds the database-only `tasks.deleted_duty_parent_id`. Deleting an Agent-created Duty copies its creating Task ID to the Tasks that outlive it. Flow traversal follows that link across Threads in both directions. Reversing the typed operations removes the preserved links and their index.
 
 `workspaces/0067_task_duty_start` adds the optional `tasks.started_by_duty` field (#990). It records the Duty that started the Task automatically and remains available after the Duty is deleted. The Query-backed migration assets recover provenance from existing automatic ticks and script Tasks and copy it into their stored Task events. Reversal removes the event field and drops the column.
+
+`registry/0083_setting_request_descriptor` admits the Tenant Configurator's `core.human@1` Setting Request descriptor under the Human Request descriptor rules. Its reversible SQL updates the PostgreSQL validation function, whose body has no typed Reinhardt operation.
