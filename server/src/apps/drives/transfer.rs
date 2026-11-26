@@ -294,3 +294,34 @@ pub(super) async fn open(
 		.await?
 		.ok_or_else(|| Error::NotFound("Drive file bytes not found".into()))
 }
+
+/// An HTTP single range, normalized to the BlobStore's exclusive end.
+pub(super) fn byte_range(value: &str, size: u64) -> Option<std::ops::Range<u64>> {
+	let (start, end) = value.strip_prefix("bytes=")?.split_once('-')?;
+	if start.is_empty() {
+		let suffix = end.parse::<u64>().ok()?;
+		return (size > 0 && suffix > 0).then(|| size.saturating_sub(suffix)..size);
+	}
+	let start = start.parse::<u64>().ok()?;
+	let end = if end.is_empty() {
+		size
+	} else {
+		end.parse::<u64>().ok()?.saturating_add(1).min(size)
+	};
+	(start < end).then_some(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::byte_range;
+
+	#[test]
+	fn resumable_downloads_use_http_inclusive_end_and_clip_to_file_size() {
+		assert_eq!(byte_range("bytes=8-9", 12), Some(8..10));
+		assert_eq!(byte_range("bytes=10-99", 12), Some(10..12));
+		assert_eq!(byte_range("bytes=8-", 12), Some(8..12));
+		assert_eq!(byte_range("bytes=-4", 12), Some(8..12));
+		assert_eq!(byte_range("bytes=12-", 12), None);
+		assert_eq!(byte_range("bytes=8-7", 12), None);
+	}
+}

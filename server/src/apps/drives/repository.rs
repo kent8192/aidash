@@ -631,12 +631,12 @@ pub(crate) async fn published_versions(
 	Ok(publications)
 }
 
-pub(super) async fn producer_readable(
-	access: &mut Access,
+pub(super) async fn producer_run(
+	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	drive: Uuid,
 	version: i64,
-) -> Result<bool> {
+) -> Result<Option<Uuid>> {
 	#[derive(Deserialize)]
 	struct Producer {
 		run_id: Option<Uuid>,
@@ -645,8 +645,19 @@ pub(super) async fn producer_readable(
 		.and_where(col("drive_id").eq(Expr::value(drive)))
 		.and_where(col("version").eq(Expr::value(version)))
 		.to_owned();
-	let row = rows::<Producer>(access.tx.as_mut(), &query).await?.pop();
-	match row.and_then(|row| row.run_id) {
+	Ok(rows::<Producer>(tx, &query)
+		.await?
+		.pop()
+		.and_then(|row| row.run_id))
+}
+
+pub(super) async fn producer_readable(
+	access: &mut Access,
+	tenant: &str,
+	drive: Uuid,
+	version: i64,
+) -> Result<bool> {
+	match producer_run(access.tx.as_mut(), tenant, drive, version).await? {
 		Some(run) => access.run_reads_visible(run).await,
 		None => Ok(true),
 	}

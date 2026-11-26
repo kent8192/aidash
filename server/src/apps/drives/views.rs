@@ -127,10 +127,18 @@ async fn browse_inner(
 		let mut meter = db::select("drive_entries", &grant.tenant);
 		meter.and_where(db::col("drive_id").eq(Expr::value(drive.id)));
 		db::readable(&mut meter, &grant);
+		let mut visible = BTreeMap::new();
 		let mut digests = BTreeSet::new();
 		let mut drive_bytes = 0_u64;
 		for entry in db::rows::<db::Entry>(access.tx.as_mut(), &meter).await? {
-			if digests.insert(entry.file.digest) {
+			let version = entry.file.added_in_version;
+			if !visible.contains_key(&version) {
+				visible.insert(
+					version,
+					db::producer_readable(&mut access, &grant.tenant, drive.id, version).await?,
+				);
+			}
+			if visible[&version] && digests.insert(entry.file.digest) {
 				drive_bytes = drive_bytes.saturating_add(entry.file.size as u64);
 			}
 		}
@@ -159,7 +167,14 @@ async fn browse_inner(
 		} else {
 			None
 		};
-		let versions = db::versions(access.tx.as_mut(), &drive, &grant, 100).await?;
+		files.retain(|file| visible.get(&file.added_in_version) == Some(&true));
+		let mut versions = db::versions(access.tx.as_mut(), &drive, &grant, 100).await?;
+		let mut permitted_versions = Vec::with_capacity(versions.len());
+		for version in versions.drain(..) {
+			if db::producer_readable(&mut access, &grant.tenant, drive.id, version.version).await? {
+				permitted_versions.push(version);
+			}
+		}
 		let mut trash = db::select("drive_trash", &grant.tenant);
 		trash
 			.and_where(db::col("drive_id").eq(Expr::value(drive.id)))
@@ -167,7 +182,12 @@ async fn browse_inner(
 			.order_by(Alias::new("expires_at"), Order::Asc)
 			.limit(200);
 		db::readable(&mut trash, &grant);
-		let trash = db::rows(access.tx.as_mut(), &trash).await?;
+		let mut visible_trash = Vec::new();
+		for entry in db::rows::<Trash>(access.tx.as_mut(), &trash).await? {
+			if db::source_visible(&mut access, entry.entry_id).await? {
+				visible_trash.push(entry);
+			}
+		}
 		let index_confirmations =
 			index::confirmations(access.tx.as_mut(), drive.id, &grant).await?;
 		let (scratch_capacity_bytes, scratch_spaces) =
@@ -177,8 +197,8 @@ async fn browse_inner(
 				drive,
 				files,
 				next_after,
-				versions,
-				trash,
+				versions: permitted_versions,
+				trash: visible_trash,
 				drive_bytes,
 				scratch_capacity_bytes,
 				scratch_bytes: None,
@@ -256,17 +276,36 @@ pub async fn download(
 	#[inject] actor: Actor,
 	Path(node): Path<String>,
 	Query(input): Query<Download>,
+	request: Request,
 ) -> ViewResult<Response> {
 	let result = async {
 		let mut access = subject(&f, actor).await?;
 		let result = async {
 			let (drive, grant) = db::drive(&mut access, &NodeName::parse(&node)?, false).await?;
 			let entry = db::file(&mut access, &drive, &grant, &input.path, input.version).await?;
-			let reader = transfer::open(&f.store, &grant, &entry, None).await?;
-			Ok((entry, reader))
+			let size = entry.file.size as u64;
+			let range = request.headers.get("range").map(|header| {
+				header
+					.to_str()
+					.ok()
+					.and_then(|value| transfer::byte_range(value, size))
+			});
+			if range == Some(None) {
+				return Ok(Err(size));
+			}
+			let range = range.flatten();
+			let reader = transfer::open(&f.store, &grant, &entry, range.clone()).await?;
+			Ok(Ok((entry, reader, range)))
 		}
 		.await;
-		let (entry, reader) = access.finish(result).await?;
+		let (entry, reader, range) = match access.finish(result).await? {
+			Ok(value) => value,
+			Err(size) => {
+				return Ok(Response::new(::http::StatusCode::RANGE_NOT_SATISFIABLE)
+					.with_header("Content-Range", &format!("bytes */{size}"))
+					.with_header("Cache-Control", "private, no-store"));
+			}
+		};
 		let stream = futures_util::stream::try_unfold(reader, |mut reader| async move {
 			let mut data = vec![0; 128 * 1024];
 			let count = reader
@@ -281,16 +320,36 @@ pub async fn download(
 			.bytes()
 			.map(|byte| format!("%{byte:02X}"))
 			.collect();
-		Ok(Response::ok()
+		let mut response = Response::ok();
+		let (length, content_range) = if let Some(range) = range {
+			response = Response::new(::http::StatusCode::PARTIAL_CONTENT);
+			(
+				range.end - range.start,
+				Some(format!(
+					"bytes {}-{}/{}",
+					range.start,
+					range.end - 1,
+					entry.file.size
+				)),
+			)
+		} else {
+			(entry.file.size as u64, None)
+		};
+		response = response
 			.with_stream(stream)
 			.with_header("Content-Type", "application/octet-stream")
 			.with_header(
 				"Content-Disposition",
 				&format!("attachment; filename*=UTF-8''{filename}"),
 			)
-			.with_header("Content-Length", &entry.file.size.to_string())
+			.with_header("Content-Length", &length.to_string())
+			.with_header("Accept-Ranges", "bytes")
 			.with_header("Cache-Control", "private, no-store")
-			.with_header("X-Content-Type-Options", "nosniff"))
+			.with_header("X-Content-Type-Options", "nosniff");
+		if let Some(value) = content_range {
+			response = response.with_header("Content-Range", &value);
+		}
+		Ok(response)
 	}
 	.await;
 	crate::http::response(result)
@@ -321,7 +380,7 @@ async fn mutate(access: &mut Access, node: &NodeName, input: Mutation) -> Result
 		return move_drive(access, node, &NodeName::parse(&destination)?, confirm).await;
 	}
 	let (drive, grant) = db::drive(access, node, true).await?;
-	let (path, base_version, change, restored) = match input {
+	let (path, base_version, change, restored, producer) = match input {
 		Mutation::Close { closed } => {
 			if !grant.administrator {
 				return Err(Error::Forbidden);
@@ -343,7 +402,13 @@ async fn mutate(access: &mut Access, node: &NodeName, input: Mutation) -> Result
 		Mutation::Trash { path, base_version } => {
 			let path = drive::path(&path)?.to_owned();
 			db::file(access, &drive, &grant, &path, None).await?;
-			(path.clone(), base_version, Change::Trash { path }, None)
+			(
+				path.clone(),
+				base_version,
+				Change::Trash { path },
+				None,
+				None,
+			)
 		}
 		Mutation::Restore { id, base_version } => {
 			let mut query = db::select("drive_trash", &grant.tenant);
@@ -363,6 +428,16 @@ async fn mutate(access: &mut Access, node: &NodeName, input: Mutation) -> Result
 				.await?
 				.pop()
 				.ok_or_else(|| Error::NotFound("trash entry not found".into()))?;
+			if !db::source_visible(access, entry.id).await? {
+				return Err(Error::Forbidden);
+			}
+			let producer = db::producer_run(
+				access.tx.as_mut(),
+				&grant.tenant,
+				drive.id,
+				entry.file.added_in_version,
+			)
+			.await?;
 			let File {
 				path,
 				digest,
@@ -381,6 +456,7 @@ async fn mutate(access: &mut Access, node: &NodeName, input: Mutation) -> Result
 					index: entry.indexed,
 				},
 				Some(id),
+				producer,
 			)
 		}
 		Mutation::Move { .. } => unreachable!(),
@@ -389,7 +465,7 @@ async fn mutate(access: &mut Access, node: &NodeName, input: Mutation) -> Result
 		author: &grant.person,
 		requester: &grant.person,
 		task_id: None,
-		run_id: None,
+		run_id: producer,
 		operation_id: None,
 	};
 	let result = db::publish(
@@ -588,6 +664,24 @@ pub(crate) fn openapi(
 	contracts.path(document, download, &["String"])?;
 	contracts.query::<_, Download>(document, download)?;
 	contracts.binary_response(document, download, 200, "application/octet-stream")?;
+	contracts.request_header::<_, String>(document, download, "Range")?;
+	contracts.binary_response(document, download, 206, "application/octet-stream")?;
+	contracts.response_header::<_, String>(
+		document,
+		download,
+		206,
+		"Content-Range",
+		"Inclusive returned byte interval and file size",
+	)?;
+	contracts.empty(document, download, 416)?;
+	contracts.response_header::<_, String>(
+		document,
+		download,
+		416,
+		"Content-Range",
+		"File size when the requested range is unavailable",
+	)?;
+
 	contracts.path(document, mutation, &["String"])?;
 	contracts.request::<_, Mutation>(document, mutation)?;
 	contracts.response::<_, MutationResult>(document, mutation, 200, json)?;

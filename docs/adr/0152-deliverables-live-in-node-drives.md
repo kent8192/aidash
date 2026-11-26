@@ -1,8 +1,6 @@
-# 0152. Deliverables live in Node Drives
+# Deliverables live in Node Drives
 
-- Status: Accepted
-- Date: 2026-11-26
-- Issues: [#1019](https://github.com/kent8192/aidash/issues/1019), [#1020](https://github.com/kent8192/aidash/issues/1020), [#1023](https://github.com/kent8192/aidash/issues/1023)
+Decided on 2026-11-26 in the [#1019](https://github.com/kent8192/aidash/issues/1019) grilling. The Drive contract is in [#1020](https://github.com/kent8192/aidash/issues/1020), and the Artifact and Working Area removals are in [#1023](https://github.com/kent8192/aidash/issues/1023).
 
 ## Context
 

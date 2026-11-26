@@ -87,27 +87,6 @@ async fn retain_tenant(
 	struct Upload {
 		id: Uuid,
 	}
-	let uploads = db::select("drive_uploads", tenant)
-		.and_where(db::col("expires_at").lte(Expr::value(now)))
-		.limit(256)
-		.lock(LockType::Update)
-		.to_owned();
-	for upload in db::rows::<Upload>(tx, &uploads).await? {
-		db::delete(
-			tx,
-			"drive_upload_parts",
-			tenant,
-			db::col("upload_id").eq(Expr::value(upload.id)),
-		)
-		.await?;
-		db::delete(
-			tx,
-			"drive_uploads",
-			tenant,
-			db::col("id").eq(Expr::value(upload.id)),
-		)
-		.await?;
-	}
 	let drives = db::rows::<db::Drive>(tx, &db::select("drives", tenant)).await?;
 	for drive in drives {
 		let query = db::select("drives", tenant)
@@ -157,6 +136,73 @@ async fn retain_tenant(
 			)
 			.await?;
 		}
+		let historical = db::select("drive_entries", tenant)
+			.and_where(db::col("drive_id").eq(Expr::value(drive.id)))
+			.and_where(db::col("path").like("private/%"))
+			.and_where(db::col("removed_in_version").is_not_null())
+			.and_where(db::col("owner_departed_at").is_null())
+			.to_owned();
+		for entry in db::rows::<db::Entry>(tx, &historical).await? {
+			let owner = aidash_domain::drive::private_owner(&entry.file.path).unwrap_or_default();
+			if snapshot
+				.bundle
+				.subjects
+				.get(owner)
+				.is_some_and(|subject| subject.enabled && subject.kind == SubjectKind::User)
+			{
+				continue;
+			}
+			#[derive(Deserialize)]
+			struct TrashId {
+				id: Uuid,
+			}
+			let expires = now + chrono::Duration::days(aidash_domain::drive::TRASH_DAYS);
+			let query = db::select("drive_trash", tenant)
+				.and_where(db::col("entry_id").eq(Expr::value(entry.id)))
+				.to_owned();
+			if let Some(trash) = db::rows::<TrashId>(tx, &query).await?.pop() {
+				db::update(
+					tx,
+					"drive_trash",
+					tenant,
+					trash.id,
+					[("expires_at", Expr::value(expires).into())],
+				)
+				.await?;
+			} else if let Some(removed) = entry.removed_in_version {
+				db::insert(
+					tx,
+					"drive_trash",
+					[
+						"id",
+						"tenant",
+						"drive_id",
+						"path",
+						"entry_id",
+						"removed_in_version",
+						"expires_at",
+					],
+					[
+						Uuid::new_v4().into(),
+						tenant.into(),
+						drive.id.into(),
+						entry.file.path.into(),
+						entry.id.into(),
+						removed.into(),
+						expires.into(),
+					],
+				)
+				.await?;
+			}
+			db::update(
+				tx,
+				"drive_entries",
+				tenant,
+				entry.id,
+				[("owner_departed_at", Expr::value(now).into())],
+			)
+			.await?;
+		}
 		let query = db::select("drive_trash", tenant)
 			.and_where(db::col("drive_id").eq(Expr::value(drive.id)))
 			.and_where(db::col("expires_at").lte(Expr::value(now)))
@@ -197,6 +243,27 @@ async fn retain_tenant(
 				.await?;
 			}
 		}
+	}
+	let uploads = db::select("drive_uploads", tenant)
+		.and_where(db::col("expires_at").lte(Expr::value(now)))
+		.limit(256)
+		.lock(LockType::Update)
+		.to_owned();
+	for upload in db::rows::<Upload>(tx, &uploads).await? {
+		db::delete(
+			tx,
+			"drive_upload_parts",
+			tenant,
+			db::col("upload_id").eq(Expr::value(upload.id)),
+		)
+		.await?;
+		db::delete(
+			tx,
+			"drive_uploads",
+			tenant,
+			db::col("id").eq(Expr::value(upload.id)),
+		)
+		.await?;
 	}
 	Ok(())
 }

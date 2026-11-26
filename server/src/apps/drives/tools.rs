@@ -69,18 +69,17 @@ pub(crate) async fn invoke(
 }
 
 async fn read(store: &Store, access: &mut Access, run: &Run, input: Value) -> Result<Value> {
-	use crate::apps::execution::capabilities::serializers::contracts::ToolFileRead;
-	let input: ToolFileRead = serde_json::from_value(input)?;
-	let location = input
-		.drive
-		.ok_or_else(|| Error::Invalid("Drive file required".into()))?;
-	if input.path.is_some()
-		|| input.file_id.is_some()
-		|| input.area_id.is_some()
-		|| input.thread_id.is_some()
-	{
-		return Err(Error::Invalid("provide one file location".into()));
+	#[derive(Deserialize)]
+	#[serde(deny_unknown_fields)]
+	struct Input {
+		drive: aidash_domain::drive::FileLocation,
+		representation: Option<Representation>,
+		offset: Option<usize>,
+		max_bytes: Option<usize>,
+		expected_digest: Option<String>,
 	}
+	let input: Input = serde_json::from_value(input)?;
+	let location = input.drive;
 	let (drive, grant) = db::drive(access, &NodeName::parse(&location.node)?, false).await?;
 	let entry = db::file(access, &drive, &grant, &location.path, location.version).await?;
 	if input

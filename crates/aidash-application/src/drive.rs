@@ -78,7 +78,8 @@ pub fn passages(text: &str) -> impl Iterator<Item = Passage<'_>> {
 		let body = &text[offsets[start]..offsets[end]];
 		let end_line = start_line
 			+ body
-				.trim_end_matches('\n')
+				.strip_suffix('\n')
+				.unwrap_or(body)
 				.bytes()
 				.filter(|byte| *byte == b'\n')
 				.count();
@@ -95,4 +96,28 @@ pub fn passages(text: &str) -> impl Iterator<Item = Passage<'_>> {
 		start = next;
 		Some(passage)
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::passages;
+
+	#[test]
+	fn overlapping_passages_preserve_unicode_and_original_line_numbers() {
+		let text = format!(
+			"{}\n{}\n{}",
+			"α".repeat(999),
+			"β".repeat(999),
+			"γ".repeat(300)
+		);
+		let result: Vec<_> = passages(&text).collect();
+		assert_eq!(result.len(), 2);
+		assert_eq!((result[0].start_line, result[0].end_line), (1, 2));
+		assert_eq!((result[1].start_line, result[1].end_line), (2, 3));
+		assert_eq!(result[0].text.chars().count(), 2000);
+		assert_eq!(
+			result[0].text.chars().skip(1800).collect::<String>(),
+			result[1].text.chars().take(200).collect::<String>()
+		);
+	}
 }

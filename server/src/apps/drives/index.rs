@@ -35,21 +35,7 @@ impl EmbeddingSettingsPort for Settings<'_> {
 		tenant: &str,
 	) -> aidash_application::Result<Option<EmbeddingRef>> {
 		let mut tx = self.0.lock().await;
-		#[derive(Deserialize)]
-		struct State {
-			available: bool,
-		}
-		let exists = Query::select()
-			.expr_as(
-				Expr::cust("to_regclass('public.tenant_embedding_settings') IS NOT NULL"),
-				Alias::new("available"),
-			)
-			.to_owned();
-		if !db::rows::<State>(&mut **tx, &exists)
-			.await?
-			.iter()
-			.any(|state| state.available)
-		{
+		if !settings_table_exists(&mut **tx).await? {
 			return Ok(None);
 		}
 		#[derive(Deserialize)]
@@ -65,11 +51,40 @@ impl EmbeddingSettingsPort for Settings<'_> {
 	}
 }
 
+async fn settings_table_exists(tx: &mut dyn TransactionExecutor) -> Result<bool> {
+	#[derive(Deserialize)]
+	struct State {
+		available: bool,
+	}
+	let query = Query::select()
+		.expr_as(
+			Expr::cust("to_regclass('public.tenant_embedding_settings') IS NOT NULL"),
+			Alias::new("available"),
+		)
+		.to_owned();
+	Ok(db::rows::<State>(tx, &query)
+		.await?
+		.iter()
+		.any(|state| state.available))
+}
+
+fn embedding_key(reference: &EmbeddingRef) -> String {
+	format!("{}@{}", reference.id, reference.version)
+}
+
 async fn config(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 ) -> Result<(String, EmbeddingConfig)> {
 	let reference = tenant_embedding(&Settings(tokio::sync::Mutex::new(tx)), tenant).await?;
+	config_for_reference(tx, tenant, &reference).await
+}
+
+async fn config_for_reference(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	reference: &EmbeddingRef,
+) -> Result<(String, EmbeddingConfig)> {
 	let entry = crate::apps::registry::models::Definition::read_of(
 		tx,
 		tenant,
@@ -81,7 +96,7 @@ async fn config(
 		return Err(Error::Invalid("invalid Tenant embedding".into()));
 	}
 	Ok((
-		format!("{}@{}", reference.id, reference.version),
+		embedding_key(reference),
 		serde_json::from_value(entry.config)?,
 	))
 }
@@ -157,13 +172,24 @@ pub(super) async fn tick(store: &Store) -> Result<()> {
 			tracing::warn!(request = %request.id, %error, "Drive indexing will retry");
 		}
 	}
-	Ok(())
+	rebuild_pending(store).await
 }
 
 async fn process(store: &Store, pending: &Pending) -> Result<()> {
 	let tenant = &pending.tenant;
 	let scope = TenancyScope::tenant(tenant)?;
 	let mut tx = store.pool.begin(&scope).await?;
+	// Serialize the active generation with Tenant embedding promotion.
+	let tenant_fence = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("tenants"))
+		.and_where(db::col("name").eq(Expr::value(tenant)))
+		.lock(LockType::Share)
+		.to_owned();
+	let (sql, values) = tenant_fence.build(PostgresQueryBuilder);
+	tx.as_mut()
+		.fetch_optional(&sql, reinhardt::db::orm::execution::convert_values(values))
+		.await?;
 	let request = db::select("drive_index_requests", tenant)
 		.and_where(db::col("id").eq(Expr::value(pending.id)))
 		.and_where(db::col("state").eq(Expr::value(&pending.state)))
@@ -194,13 +220,17 @@ async fn process(store: &Store, pending: &Pending) -> Result<()> {
 		}
 	}
 	// Use a conservative input-token upper estimate (one per byte for text,
-	// including passage overlap) at the deployment's embedding estimate rate.
+	// including passage overlap) and the built-in memory embedding rate.
 	let tokens = missing
 		.iter()
 		.filter(|entry| supported(&entry.file.media_type, &entry.file.path))
 		.map(|entry| (entry.file.size as u64).saturating_mul(2))
 		.fold(0, u64::saturating_add);
-	let estimate = tokens.div_ceil(10);
+	let rate = aidash_domain::memory::Rate {
+		input_per_million: 1_000_000,
+		output_per_million: 0,
+	};
+	let estimate = rate.charge(tokens, 0)?;
 	if pending.state == "pending" && estimate > CONFIRM_MICROS {
 		db::update(
 			tx.as_mut(),
@@ -219,17 +249,38 @@ async fn process(store: &Store, pending: &Pending) -> Result<()> {
 		tx.commit().await?;
 		return Ok(());
 	}
+	populate(store, tx.as_mut(), tenant, &key, &embedding, missing).await?;
+	db::update(
+		tx.as_mut(),
+		"drive_index_requests",
+		tenant,
+		pending.id,
+		[("state", Expr::value("ready").into())],
+	)
+	.await?;
+	tx.commit().await?;
+	Ok(())
+}
+
+async fn populate(
+	store: &Store,
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	key: &str,
+	embedding: &EmbeddingConfig,
+	missing: Vec<db::Entry>,
+) -> Result<()> {
 	let transport = crate::bootstrap::admitted_semantic_transport(
 		store,
 		None,
-		tenant.clone(),
+		tenant.to_owned(),
 		Some(MaintenancePurpose::MemoryIndexing),
 	);
 	for entry in missing {
 		let file = &entry.file;
-		let bodies = extract(store, tenant, file, &embedding).await?;
+		let bodies = extract(store, tenant, file, embedding).await?;
 		if bodies.is_empty() {
-			record(tx.as_mut(), tenant, &file.digest, &key, 0, None, vec![]).await?;
+			record(tx, tenant, &file.digest, key, 0, None, vec![]).await?;
 		}
 		for (ordinal, body) in bodies.iter().enumerate() {
 			let input = match body {
@@ -239,12 +290,12 @@ async fn process(store: &Store, pending: &Pending) -> Result<()> {
 					bytes,
 				},
 			};
-			let vector = transport.embed(&embedding, input).await?.vector;
+			let vector = transport.embed(embedding, input).await?.vector;
 			record(
-				tx.as_mut(),
+				tx,
 				tenant,
 				&file.digest,
-				&key,
+				key,
 				ordinal as i64,
 				Some(body),
 				vector,
@@ -252,14 +303,98 @@ async fn process(store: &Store, pending: &Pending) -> Result<()> {
 			.await?;
 		}
 	}
-	db::update(
-		tx.as_mut(),
-		"drive_index_requests",
-		tenant,
-		pending.id,
-		[("state", Expr::value("ready").into())],
+	Ok(())
+}
+
+fn entries_for_pending(tenant: &str, key: &str, limit: u64) -> reinhardt::query::SelectStatement {
+	let entry = |name: &str| Expr::col((Alias::new("drive_entries"), Alias::new(name)));
+	let ready = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("drive_index_requests"))
+		.and_where(db::col("tenant").eq(Expr::value(tenant)))
+		.and_where(db::col("drive_id").eq(entry("drive_id")))
+		.and_where(db::col("version").eq(entry("added_in_version")))
+		.and_where(db::col("state").eq(Expr::value("ready")))
+		.to_owned();
+	let exists = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("drive_passages"))
+		.and_where(db::col("tenant").eq(Expr::value(tenant)))
+		.and_where(db::col("digest").eq(entry("digest")))
+		.and_where(db::col("embedding_key").eq(Expr::value(key)))
+		.to_owned();
+	db::select("drive_entries", tenant)
+		.and_where(db::col("removed_in_version").is_null())
+		.and_where(db::col("indexed").eq(true))
+		.and_where(Expr::exists(ready))
+		.and_where(Expr::not_exists(exists))
+		.distinct_on([Alias::new("digest")])
+		.order_by(Alias::new("digest"), Order::Asc)
+		.limit(limit)
+		.to_owned()
+}
+
+/// CONTRACT(#1019): Worker A's generation coordinator must require this
+/// readiness before promoting its pending embedding for all indexes.
+#[allow(dead_code)]
+pub(crate) async fn reembedding_ready(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	pending: &EmbeddingRef,
+) -> Result<bool> {
+	Ok(
+		db::rows::<db::Entry>(tx, &entries_for_pending(tenant, &embedding_key(pending), 1))
+			.await?
+			.is_empty(),
 	)
-	.await?;
+}
+
+async fn rebuild_pending(store: &Store) -> Result<()> {
+	#[derive(Deserialize)]
+	struct Generation {
+		tenant: String,
+		pending: EmbeddingRef,
+	}
+	let mut tx = store.pool.begin(&MAINTENANCE).await?;
+	if !settings_table_exists(tx.as_mut()).await? {
+		return Ok(());
+	}
+	let query = Query::select()
+		.columns(["tenant", "pending"].map(Alias::new))
+		.from(Alias::new("tenant_embedding_settings"))
+		.and_where(db::col("pending").is_not_null())
+		.to_owned();
+	let generations = db::rows::<Generation>(tx.as_mut(), &query).await?;
+	tx.commit().await?;
+	for generation in generations {
+		let result = rebuild_generation(store, &generation.tenant, &generation.pending).await;
+		if let Err(error) = result {
+			tracing::warn!(tenant = %generation.tenant, %error, "Drive re-embedding will retry");
+		}
+	}
+	Ok(())
+}
+
+async fn rebuild_generation(store: &Store, tenant: &str, reference: &EmbeddingRef) -> Result<()> {
+	let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
+	let settings = db::select("tenant_embedding_settings", tenant)
+		.lock(LockType::Update)
+		.to_owned();
+	#[derive(Deserialize)]
+	struct PendingSetting {
+		pending: Option<EmbeddingRef>,
+	}
+	let current = db::rows::<PendingSetting>(tx.as_mut(), &settings)
+		.await?
+		.pop()
+		.and_then(|row| row.pending);
+	if current.as_ref() != Some(reference) {
+		return Ok(());
+	}
+	let (key, embedding) = config_for_reference(tx.as_mut(), tenant, reference).await?;
+	let missing =
+		db::rows::<db::Entry>(tx.as_mut(), &entries_for_pending(tenant, &key, 16)).await?;
+	populate(store, tx.as_mut(), tenant, &key, &embedding, missing).await?;
 	tx.commit().await?;
 	Ok(())
 }
@@ -505,13 +640,9 @@ pub(super) async fn search(
 	access: &mut crate::authorization::access::Access,
 	run: &aidash_domain::Run,
 	input: Search,
-	semantic: bool,
 ) -> Result<serde_json::Value> {
 	let limit = input.limit.unwrap_or(20);
-	if input.query.len() > 4096
-		|| semantic && input.query.trim().is_empty()
-		|| !(1..=100).contains(&limit)
-	{
+	if input.query.len() > 4096 || input.query.trim().is_empty() || !(1..=100).contains(&limit) {
 		return Err(Error::Invalid("invalid Drive search query or limit".into()));
 	}
 	let tenant = access.identity.tenant.clone();
@@ -520,29 +651,25 @@ pub(super) async fn search(
 		query.and_where(db::col("node").eq(Expr::value(node)));
 	}
 	let drives = db::rows::<db::Drive>(access.tx.as_mut(), &query).await?;
-	let embedding = if semantic {
+	let embedding = {
 		// Name and path search remains available if no model is configured yet.
 		match config(access.tx.as_mut(), &tenant).await {
 			Ok((key, config)) => {
-				let provider = crate::bootstrap::admitted_semantic_transport(
+				let mut lease = crate::semantic::service::Lease::Inherited(access);
+				let vector = crate::semantic::service::embed(
 					store,
-					Some(run.id),
-					tenant.clone(),
-					None,
-				);
-				Some((
-					key,
-					provider
-						.embed(&config, EmbeddingInput::Text(&input.query))
-						.await?
-						.vector,
-				))
+					&mut lease,
+					run.thread_id,
+					&config,
+					&input.query,
+					aidash_domain::generation::embedding::Origin::Query(Some(run.id)),
+				)
+				.await?;
+				Some((key, vector))
 			}
 			Err(Error::NotFound(_)) => None,
 			Err(error) => return Err(error),
 		}
-	} else {
-		None
 	};
 	let query_lower = input.query.to_lowercase();
 	let mut hits = Vec::new();
@@ -555,9 +682,21 @@ pub(super) async fn search(
 		};
 		let mut query = db::snapshot(&drive, &tenant, drive.head)?;
 		db::readable(&mut query, &grant);
-		if semantic {
-			query.and_where(db::col("indexed").eq(true));
+		{
+			let entry = |name: &str| Expr::col((Alias::new("drive_entries"), Alias::new(name)));
+			let approved = Query::select()
+				.expr(Expr::value(1_i32))
+				.from(Alias::new("drive_index_requests"))
+				.and_where(db::col("tenant").eq(Expr::value(&tenant)))
+				.and_where(db::col("drive_id").eq(entry("drive_id")))
+				.and_where(db::col("version").eq(entry("added_in_version")))
+				.and_where(db::col("state").eq(Expr::value("ready")))
+				.to_owned();
+			query
+				.and_where(db::col("indexed").eq(true))
+				.and_where(Expr::exists(approved));
 		}
+
 		let mut readable = std::collections::BTreeMap::new();
 		for entry in db::rows::<db::Entry>(access.tx.as_mut(), &query).await? {
 			let file = entry.file;

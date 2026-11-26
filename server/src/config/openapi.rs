@@ -199,6 +199,25 @@ impl Contracts {
 			.insert(status.to_string(), RefOr::T(response));
 		Ok(())
 	}
+	pub fn request_header<E: EndpointInfo, T: JsonSchema>(
+		&mut self,
+		document: &mut OpenApiSchema,
+		_endpoint: impl FnOnce() -> E,
+		name: &str,
+	) -> Result<()> {
+		let schema = self.schema::<T>(false)?;
+		let parameter = ParameterBuilder::new()
+			.name(name)
+			.parameter_in(ParameterLocation::Header)
+			.required(Required::False)
+			.schema(Some(schema))
+			.build();
+		self.operation::<E>(document)?
+			.parameters
+			.get_or_insert_with(Vec::new)
+			.push(parameter);
+		Ok(())
+	}
 	pub fn response_header<E: EndpointInfo, T: JsonSchema>(
 		&mut self,
 		document: &mut OpenApiSchema,

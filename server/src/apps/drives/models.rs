@@ -68,6 +68,8 @@ pub struct DriveEntriesRow {
 	pub removed_in_version: Option<i64>,
 	#[field]
 	pub indexed: bool,
+	#[field(null = true)]
+	pub owner_departed_at: Option<DateTime<Utc>>,
 }
 
 #[model(app_label = "execution", table_name = "drive_trash")]

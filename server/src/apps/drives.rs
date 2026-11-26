@@ -1,5 +1,5 @@
 //! Versioned Node Drives.
-mod index;
+pub(crate) mod index;
 mod jobs;
 pub(crate) mod maintenance;
 pub mod models;

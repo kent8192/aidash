@@ -239,3 +239,22 @@ def test_a_sync_manifest_of_a_deleted_path_lists_nothing(tmp_path):
         service.manifest(request)
     assert service.manifest(dict(request, missing_ok=True)) == {
         'files': [], 'skipped_symlinks': [], 'truncated': False}
+
+
+def test_manifest_resume_keeps_nested_files_when_the_cursor_file_is_removed(tmp_path):
+    service = FileService(tmp_path, tmp_path / 'receipts')
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    (tmp_path / 'root.txt').write_bytes(b'root')
+    (tmp_path / 'a' / 'nested.txt').write_bytes(b'nested')
+    (tmp_path / 'b' / 'nested.txt').write_bytes(b'last')
+    request = {'root': '.', 'ignore_files': [], 'exclude': [], 'include': [],
+               'max_files': 1, 'after': ''}
+    first = service.manifest(request)
+    assert first['truncated']
+    assert [file['path'] for file in first['files']] == ['root.txt']
+
+    (tmp_path / 'root.txt').unlink()
+    second = service.manifest({**request, 'max_files': 10, 'after': 'root.txt'})
+    assert not second['truncated']
+    assert [file['path'] for file in second['files']] == ['a/nested.txt', 'b/nested.txt']
