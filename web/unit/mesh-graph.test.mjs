@@ -69,44 +69,47 @@ test("projects explicit thread, task hierarchy, dependencies, tools, artifacts a
     ),
   );
 });
-test("resolves stored agent and cluster conversation targets in both related perspectives", () => {
+test("resolves the stored agent conversation target in both related perspectives", () => {
   const s = scene();
   const conversation = s.data.conversations[0];
-  for (const [kind, target] of [
-    ["agent", "planner@1.0.0"],
-    ["cluster", "local-cluster@1.0.0"],
-  ]) {
-    conversation.target_kind = kind;
-    conversation.target = target;
-    const graph = project(s);
-    const targetNode = graph.nodes.find(
-      (n) => n.kind === kind && n.entity?.id === target.split("@")[0],
-    );
-    const conversationNode = node(graph, conversation.id);
-    assert.ok(targetNode);
+  conversation.target_kind = "agent";
+  conversation.target = "planner@1.0.0";
+  const graph = project(s);
+  const target = node(graph, "planner");
+  const conversationNode = node(graph, conversation.id);
+  const participates = (e) =>
+    e.source === target.id &&
+    e.target === conversationNode.id &&
+    e.relation === "participates";
+  assert.ok(graph.edges.some(participates));
+  for (const mode of ["collaboration", "knowledge"]) {
+    const filtered = visible(graph, { mode });
     assert.ok(
-      graph.edges.some(
-        (e) =>
-          e.source === targetNode.id &&
-          e.target === conversationNode.id &&
-          e.relation === "participates",
-      ),
+      filtered.nodes.some((n) => n.id === target.id),
+      mode,
     );
-    for (const mode of ["collaboration", "knowledge"]) {
-      const filtered = visible(graph, { mode });
-      assert.ok(
-        filtered.nodes.some((n) => n.id === targetNode.id),
-        mode,
-      );
-      assert.ok(
-        filtered.edges.some(
-          (e) => e.source === targetNode.id && e.target === conversationNode.id,
-        ),
-        mode,
-      );
-    }
+    assert.ok(filtered.edges.some(participates), mode);
   }
 });
+
+test("a Node target does not create a Registry Agent participation edge", () => {
+  const s = scene();
+  const conversation = s.data.conversations[0];
+  conversation.target_kind = "node";
+  conversation.target = "planner@1.0.0";
+  const graph = project(s);
+  const target = node(graph, "planner");
+  const conversationNode = node(graph, conversation.id);
+  assert.ok(
+    !graph.edges.some(
+      (e) =>
+        e.source === target.id &&
+        e.target === conversationNode.id &&
+        e.relation === "participates",
+    ),
+  );
+});
+
 test("node budget keeps thread activity alongside a large registry", () => {
   const s = scene();
   const tool = s.data.registry.find((e) => e.kind === "tool");

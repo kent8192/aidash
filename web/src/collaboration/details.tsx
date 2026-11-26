@@ -208,7 +208,6 @@ export function OperationsDialog({
                   assign: "delegate",
                   generate: "generationAssign",
                   entity: "register",
-                  cluster: "register",
                   registrationCarry: "register",
                 } as Record<string, string>
               )[d.kind] ?? d.kind,
