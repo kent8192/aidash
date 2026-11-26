@@ -278,12 +278,11 @@ async fn database_validates_media_route_members_for_models(
 fn dashboard_model() -> Value {
 	json!({"id":"","version":"1.0.0","kind":"model",
 		"name":{"en":"Dashboard fixture"},"description":{"en":"Persistence test"},
-		"capabilities":[],"languages":["ja","en"],"tags":[],"skills":[],"schema":{},
+		"capabilities":[],"languages":["ja","en"],"tags":[],"schema":{},
 		"config":{"provider":"openrouter","model_id":"vendor/model",
 			"endpoint":"https://openrouter.ai/api/v1",
 			"reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,
-			"modalities":["text"],"media_routes":[],"cost":{},
-			"request_estimator":"calibrated"}})
+			"modalities":["text"],"media_routes":[],"cost":{}}})
 }
 
 #[rstest]
@@ -369,7 +368,7 @@ async fn database_rejects_malformed_projection_measurement_options(
 
 #[rstest]
 #[tokio::test]
-async fn request_estimators_persist_through_the_registry_api(
+async fn removed_request_estimators_are_refused_by_the_registry_api(
 	#[future] endpoint: EndpointFixture,
 	dashboard_model: Value,
 ) {
@@ -383,21 +382,19 @@ async fn request_estimators_persist_through_the_registry_api(
 		entry["id"] = json!(id);
 		entry["config"]["request_estimator"] = json!(estimator);
 		// Act
-		let created = assert_json(
+		assert_json(
 			registrar
 				.post("/api/registry", &entry, "json")
 				.await
 				.unwrap(),
-			200,
+			400,
 		);
 		let saved = Definition::objects()
 			.filter(Definition::field_id().eq(id))
-			.get_with_db(&mut connection)
+			.all_with_db(&mut connection)
 			.await
 			.unwrap();
-		// Assert
-		assert_eq!(created["config"], entry["config"]);
-		assert_eq!(saved.metadata.0["config"], entry["config"]);
+		assert!(saved.is_empty());
 	}
 }
 
@@ -438,7 +435,7 @@ async fn database_limits_request_estimators_to_known_values(
 fn agent_on(id: &str, model: &str, version: &str) -> Value {
 	json!({"id":id,"version":"1.0.0","kind":"agent",
 		"name":{"en":"Projection fixture"},"description":{"en":"Persistence test"},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},
+		"config":{"model":{"id":model,"version":"1.0.0"},
 			"instructions":"Use the pinned projection","bindings":[],"remove_default":[],
 			"projection_version":version}})
 }

@@ -7,7 +7,7 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		version: "1.0.0".into(),
 	};
 	let removed = aidash_domain::registry::bindings::DEFAULT_TOOLS.to_vec();
-	let entry: crate::registry::Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Fixture","schema_version":1,"bindings":[],"remove_default":removed}})).unwrap();
+	let entry: crate::registry::Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":removed}})).unwrap();
 	let model: crate::registry::Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"Fixture"},"config":{}})).unwrap();
 	use aidash_domain::registry::bindings::{
 		BindingOrigin, BindingSnapshot, QualifiedRef, ResolvedBinding, ResolvedDefinition,

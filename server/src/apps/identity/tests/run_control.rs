@@ -613,7 +613,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 		)
 		.await
 		.unwrap();
-	let npm = json!({"id":"core.npm","version":"1.0.0","kind":"external_service","name":{"en":"npm"},"description":{"en":"Package index"},"capabilities":[],"tags":["system"],"languages":[],"skills":[],"schema":{},"config":{"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}});
+	let npm = json!({"id":"core.npm","version":"1.0.0","kind":"external_service","name":{"en":"npm"},"description":{"en":"Package index"},"capabilities":[],"tags":["system"],"languages":[],"schema":{},"config":{"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}});
 	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','core.npm','1.0.0','external_service',$1)")
 		.bind(&npm)
 		.execute(f.store.pool.fixture_driver())

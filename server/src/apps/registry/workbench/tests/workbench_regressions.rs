@@ -202,7 +202,7 @@ fn workbench(
 		}
 		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
 		let token = common::subject_credential(&f.store, "acme", "alice").await;
-		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"max_steps":8}}})).await;
+		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}}})).await;
 		assert_eq!(status, 200, "draft: {draft}");
 		Workbench {
 			_fixture: application_fixture,
@@ -702,31 +702,15 @@ async fn agent_rejects_removed_cluster_field(#[future(awt)] workbench: Workbench
 
 #[rstest::rstest]
 #[tokio::test]
-async fn coordinator_can_be_registered_before_multiple_clusters(
+async fn registered_agents_cannot_be_wrapped_in_retired_clusters(
 	#[future(awt)] workbench: Workbench,
 ) {
 	let wb = workbench;
 	let coordinator = wb.register().await;
 	for id in ["fixture-cluster-one", "fixture-cluster-two"] {
 		let (status, body) = request(&wb.app, &wb.token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":"cluster","name":{"en":id},"description":{"en":"Fixture"},"config":{"coordinator":{"id":coordinator["entry"]["id"],"version":"1.0.0"}}})).await;
-		assert_eq!(status, 200, "{body}");
+		assert_eq!(status, 400, "{body}");
 	}
-	wb.cleanup().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn cluster_rejects_coordinator_without_coordination_tools(
-	#[future(awt)] workbench: Workbench,
-) {
-	let wb = workbench;
-	let mut entry = wb.draft["entry"].clone();
-	entry["config"]["remove_default"] = json!(["task_create", "task_delegate", "agent_discover"]);
-	let (status, agent) = request(&wb.app, &wb.token, "POST", "/api/registry", entry).await;
-	assert_eq!(status, 200, "{agent}");
-	let (status, body) = request(&wb.app, &wb.token, "POST", "/api/registry", json!({"id":"fixture-cluster","version":"1.0.0","kind":"cluster","name":{"en":"Cluster"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":agent["id"],"version":"1.0.0"}}})).await;
-	assert_eq!(status, 400, "{body}");
-	assert!(body.to_string().contains("task_create"), "{body}");
 	wb.cleanup().await;
 }
 

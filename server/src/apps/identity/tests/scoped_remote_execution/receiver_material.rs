@@ -109,7 +109,6 @@ async fn receiver_agent(p: &Pair) -> aidash_domain::registry::Entry {
 			.unwrap();
 	entry.id = "receiver-research".into();
 	entry.binding_normalization = None;
-	entry.config["max_steps"] = json!(200);
 	entry.config["remove_default"] = json!([]);
 	entry
 }

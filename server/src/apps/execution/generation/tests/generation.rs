@@ -3266,7 +3266,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 	let model = json!({
 		"id":"large-output-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Large output model"},"description":{"en":"Budget fixture"},
-		"capabilities":[],"languages":["en"],"tags":[],"skills":[],
+		"capabilities":[],"languages":["en"],"tags":[],
 		"schema":{"type":"object"},
 		"config":{"provider":"openrouter","model_id":"google/gemini-3.8-flash",
 			"endpoint":"https://openrouter.ai/api/v1","context_window":1048576,"max_output_tokens":65536,
