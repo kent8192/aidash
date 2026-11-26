@@ -63,6 +63,11 @@ impl Tool for CoreTool {
 				_ => {}
 			}
 		}
+		if crate::apps::drives::tools::handles(self.name, &input) {
+			return authority
+				.drive_tool(&ctx.store, &ctx.run, self.name, input, key)
+				.await;
+		}
 		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)
 			&& aidash_domain::tool::concurrency::shares_every_resource(self.name, &input);
 		authority

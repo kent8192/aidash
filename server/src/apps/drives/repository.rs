@@ -651,16 +651,18 @@ pub(super) async fn producer_run(
 		.and_then(|row| row.run_id))
 }
 
-pub(super) async fn producer_readable(
-	access: &mut Access,
-	tenant: &str,
+pub(super) fn producer_readable<'a>(
+	access: &'a mut Access,
+	tenant: &'a str,
 	drive: Uuid,
 	version: i64,
-) -> Result<bool> {
-	match producer_run(access.tx.as_mut(), tenant, drive, version).await? {
-		Some(run) => access.run_reads_visible(run).await,
-		None => Ok(true),
-	}
+) -> futures_util::future::BoxFuture<'a, Result<bool>> {
+	Box::pin(async move {
+		match producer_run(access.tx.as_mut(), tenant, drive, version).await? {
+			Some(run) => access.run_reads_visible(run).await,
+			None => Ok(true),
+		}
+	})
 }
 
 /// The current reader's authority is checked again for every recorded entry.

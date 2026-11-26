@@ -464,114 +464,119 @@ async fn mark_failed(store: &Store, tenant: &str, id: Uuid, error: &Error) -> Re
 	Ok(())
 }
 
-async fn process(store: &Store, job: Job) -> Result<Option<db::Publication>> {
-	let scope = TenancyScope::tenant(&job.tenant)?;
-	let mut lock = store.control_pool.begin(&scope).await?;
-	#[derive(Deserialize)]
-	struct Lock {
-		acquired: bool,
-	}
-	let query = Query::select()
-		.expr_as(
-			SimpleExpr::CustomWithExpr(
-				"pg_try_advisory_xact_lock(hashtextextended(?, 0))".into(),
-				vec![Expr::value(format!("drive-job:{}", job.id)).into()],
-			),
-			Alias::new("acquired"),
-		)
-		.to_owned();
-	if !db::rows::<Lock>(lock.as_mut(), &query)
-		.await?
-		.iter()
-		.any(|lock| lock.acquired)
-	{
-		return Ok(None);
-	}
-	let Some(job) = load(lock.as_mut(), &job.tenant, job.id)
-		.await?
-		.filter(|job| job.state == "pending")
-	else {
-		return Ok(None);
-	};
-	let run = store.run(&scope, job.run_id).await?;
-	let mut access = recheck(store, &run).await?;
-	let node = publishing_node(&mut access, &run.metadata()).await?;
-	if node.as_str() != job.plan.node || access.identity.subject != job.author {
-		return access.finish(Err(Error::Forbidden)).await;
-	}
-	let (drive, grant) = db::drive(&mut access, &node, false).await?;
-	if drive.id != job.drive_id || !grant.may_request_work {
-		return access.finish(Err(Error::Forbidden)).await;
-	}
-	let context = pod(store, &mut access, &run.metadata()).await?;
-	access.finish(Ok(())).await?;
-	let mut digests = BTreeSet::new();
-	let files: Vec<_> = job
-		.plan
-		.files
-		.iter()
-		.filter(|file| digests.insert(file.sha256.clone()))
-		.collect();
-	// Each upload may also borrow a reservation and a BlobStore commit
-	// connection. Keep the shared pool available for completion and cleanup.
-	for batch in files.chunks(8) {
-		let mut uploads = FuturesUnordered::new();
-		for file in batch {
-			uploads.push(stage(store, &scope, &job, &context, file));
+fn process(
+	store: &Store,
+	job: Job,
+) -> futures_util::future::BoxFuture<'_, Result<Option<db::Publication>>> {
+	Box::pin(async move {
+		let scope = TenancyScope::tenant(&job.tenant)?;
+		let mut lock = store.control_pool.begin(&scope).await?;
+		#[derive(Deserialize)]
+		struct Lock {
+			acquired: bool,
 		}
-		while let Some(result) = uploads.next().await {
-			result?;
-		}
-	}
-	let mut access = recheck(store, &run).await?;
-	let current_node = publishing_node(&mut access, &run.metadata()).await?;
-	let (drive, grant) = db::drive(&mut access, &current_node, true).await?;
-	let result = async {
-		if drive.id != job.drive_id || grant.person != job.author {
-			return Err(Error::Forbidden);
-		}
-		let result = db::publish(
-			access.tx.as_mut(),
-			&drive,
-			&grant,
-			&job.plan.base,
-			job.plan.changes,
-			db::Provenance {
-				author: &job.author,
-				requester: &job.plan.requester,
-				task_id: Some(job.task_id),
-				run_id: Some(job.run_id),
-				operation_id: Some(job.id),
-			},
-		)
-		.await?;
-		db::update(
-			access.tx.as_mut(),
-			"drive_jobs",
-			&job.tenant,
-			job.id,
-			[
-				("state", Expr::value("finished").into()),
-				(
-					"result",
-					Expr::value(serde_json::to_string(&result)?).into(),
+		let query = Query::select()
+			.expr_as(
+				SimpleExpr::CustomWithExpr(
+					"pg_try_advisory_xact_lock(hashtextextended(?, 0))".into(),
+					vec![Expr::value(format!("drive-job:{}", job.id)).into()],
 				),
-			],
-		)
-		.await?;
-		db::delete(
-			access.tx.as_mut(),
-			"drive_job_blobs",
-			&job.tenant,
-			db::col("job_id").eq(Expr::value(job.id)),
-		)
-		.await?;
-		Ok(Some(result))
-	}
-	.await;
-	let result = access.finish(result).await?;
-	lock.commit().await?;
-	Ok(result)
+				Alias::new("acquired"),
+			)
+			.to_owned();
+		if !db::rows::<Lock>(lock.as_mut(), &query)
+			.await?
+			.iter()
+			.any(|lock| lock.acquired)
+		{
+			return Ok(None);
+		}
+		let Some(job) = load(lock.as_mut(), &job.tenant, job.id)
+			.await?
+			.filter(|job| job.state == "pending")
+		else {
+			return Ok(None);
+		};
+		let run = store.run(&scope, job.run_id).await?;
+		let mut access = recheck(store, &run).await?;
+		let node = publishing_node(&mut access, &run.metadata()).await?;
+		if node.as_str() != job.plan.node || access.identity.subject != job.author {
+			return access.finish(Err(Error::Forbidden)).await;
+		}
+		let (drive, grant) = db::drive(&mut access, &node, false).await?;
+		if drive.id != job.drive_id || !grant.may_request_work {
+			return access.finish(Err(Error::Forbidden)).await;
+		}
+		let context = pod(store, &mut access, &run.metadata()).await?;
+		access.finish(Ok(())).await?;
+		let mut digests = BTreeSet::new();
+		let files: Vec<_> = job
+			.plan
+			.files
+			.iter()
+			.filter(|file| digests.insert(file.sha256.clone()))
+			.collect();
+		// Each upload may also borrow a reservation and a BlobStore commit
+		// connection. Keep the shared pool available for completion and cleanup.
+		for batch in files.chunks(8) {
+			let mut uploads = FuturesUnordered::new();
+			for file in batch {
+				uploads.push(stage(store, &scope, &job, &context, file));
+			}
+			while let Some(result) = uploads.next().await {
+				result?;
+			}
+		}
+		let mut access = recheck(store, &run).await?;
+		let current_node = publishing_node(&mut access, &run.metadata()).await?;
+		let (drive, grant) = db::drive(&mut access, &current_node, true).await?;
+		let result = async {
+			if drive.id != job.drive_id || grant.person != job.author {
+				return Err(Error::Forbidden);
+			}
+			let result = db::publish(
+				access.tx.as_mut(),
+				&drive,
+				&grant,
+				&job.plan.base,
+				job.plan.changes,
+				db::Provenance {
+					author: &job.author,
+					requester: &job.plan.requester,
+					task_id: Some(job.task_id),
+					run_id: Some(job.run_id),
+					operation_id: Some(job.id),
+				},
+			)
+			.await?;
+			db::update(
+				access.tx.as_mut(),
+				"drive_jobs",
+				&job.tenant,
+				job.id,
+				[
+					("state", Expr::value("finished").into()),
+					(
+						"result",
+						Expr::value(serde_json::to_string(&result)?).into(),
+					),
+				],
+			)
+			.await?;
+			db::delete(
+				access.tx.as_mut(),
+				"drive_job_blobs",
+				&job.tenant,
+				db::col("job_id").eq(Expr::value(job.id)),
+			)
+			.await?;
+			Ok(Some(result))
+		}
+		.await;
+		let result = access.finish(result).await?;
+		lock.commit().await?;
+		Ok(result)
+	})
 }
 
 async fn stage(
