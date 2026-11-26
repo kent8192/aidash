@@ -432,8 +432,15 @@ export async function setup(
       remove_default: [],
     };
   }
-  if (options.taskModelAgent)
+  if (options.taskModelAgent) {
     data.registry[0].config = { ...data.registry[0].config, model: null };
+    data.registry[1].config = {
+      ...data.registry[1].config,
+      provider_credential: "openrouter",
+      model_id: "anthropic/claude-sonnet-5.5",
+      reasoning_effort: "high",
+    };
+  }
   if (options.coreVersion)
     data.registry.push({ ...data.registry[0], version: "1.1.0" });
   if (options.extraGraphAgent) {

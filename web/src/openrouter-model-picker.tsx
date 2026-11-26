@@ -2,7 +2,7 @@ import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Alert, Disclosure, Hint, pairClass } from "./components/patterns";
-import { Fragment, useId, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
 import type { CatalogModel } from "./generated/models";
@@ -96,19 +96,20 @@ export function OpenRouterModelPicker({
   tenant,
   entries = [],
   onChoice,
-  initial,
+  value,
 }: {
   onNameChange?: (name: string) => void;
   /** Only a Tenant Administrator can read the level; others see no refusals. */
   tenant?: string;
   entries?: Entry[];
   onChoice?: (choice: ModelChoice | undefined) => void;
-  initial?: ModelChoice;
+  value?: ModelChoice;
 }) {
   const { t, locale, local } = useI18n();
   const listId = useId();
   const [search, setSearch] = useState("");
-  const [choice, setChoice] = useState<ModelChoice | undefined>(initial);
+  const [localChoice, setLocalChoice] = useState<ModelChoice>();
+  const choice = onChoice ? value : localChoice;
   const selectedId = choice?.catalog?.id ?? choice?.entry?.id ?? "";
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -127,7 +128,7 @@ export function OpenRouterModelPicker({
       ),
     retry: false,
   });
-  const level = protection.data?.effective.level;
+  const level = protection.data?.effective?.level;
   const models = catalog.data?.models ?? [];
   const ja = locale === "ja-JP";
   const { all, shortcuts } = catalogSections(models);
@@ -160,7 +161,10 @@ export function OpenRouterModelPicker({
       m.entry.id === choice?.entry?.id &&
       m.entry.version === choice?.entry?.version,
   );
-  const selected = choice?.catalog ?? selectedEntry?.catalog;
+  const selected =
+    selectedEntry?.catalog ??
+    models.find((m) => m.id === choice?.catalog?.id) ??
+    choice?.catalog;
   const effortLevels = allowedEfforts(selected);
   const lookup = (m: CatalogModel) => ({
     id: m.id,
@@ -186,17 +190,31 @@ export function OpenRouterModelPicker({
       )
       .map((m, i) => ({ ...m, heading: i === 0 ? section.label : undefined })),
   );
-  const update = (next: ModelChoice | undefined) => {
-    setChoice(next);
-    onChoice?.(next);
-    onNameChange?.(
-      next?.catalog
-        ? (next.catalog.id + "-" + (next.effort ?? "none"))
-            .toLowerCase()
-            .replace(/[^a-z0-9._-]+/g, "-")
-        : "",
-    );
-  };
+  const update = useCallback(
+    (next: ModelChoice | undefined) => {
+      if (onChoice) onChoice(next);
+      else setLocalChoice(next);
+      onNameChange?.(
+        next?.catalog
+          ? (next.catalog.id + "-" + (next.effort ?? "none"))
+              .toLowerCase()
+              .replace(/[^a-z0-9._-]+/g, "-")
+          : "",
+      );
+    },
+    [onChoice, onNameChange],
+  );
+  const refused = zdrRefusal(selected?.zero_data_retention, level);
+  const effectiveEffort = defaultEffort(
+    effortLevels,
+    choice?.effort ?? selectedEntry?.entry.config.reasoning_effort,
+  );
+  useEffect(() => {
+    if (!choice || !onChoice) return;
+    if (refused) onChoice(undefined);
+    else if (selected && effectiveEffort !== choice.effort)
+      onChoice({ ...choice, effort: effectiveEffort });
+  }, [choice, onChoice, effectiveEffort, refused, selected]);
   const choose = (item: (typeof matches)[number]) => {
     if (zdrRefusal(item.catalog?.zero_data_retention, level)) return;
     const allowed = allowedEfforts(item.catalog);
@@ -300,9 +318,7 @@ export function OpenRouterModelPicker({
                   >
                     <span className="truncate text-[13px] font-medium text-foreground">
                       {model.name}
-                      {model.entry && !model.catalog
-                        ? " · " + model.entry.version
-                        : ""}
+                      {model.entry ? " · " + model.entry.version : ""}
                     </span>
                     <span className="truncate font-mono text-[11px] text-muted-foreground">
                       {model.id}
@@ -349,7 +365,7 @@ export function OpenRouterModelPicker({
       <Hint>{t("modelZdr")}</Hint>
       <ReasoningSlider
         levels={effortLevels}
-        value={choice?.effort}
+        value={effectiveEffort}
         onChange={(effort) => choice && update({ ...choice, effort })}
       />
       {!onChoice && (
@@ -385,7 +401,11 @@ export function OpenRouterModelPicker({
             </NativeSelect>
           </Field>
           <Hint>{t("modelTokenEncodingHelp")}</Hint>
-          <input type="hidden" name="model_id" value={selected?.id ?? ""} />
+          <input
+            type="hidden"
+            name="model_id"
+            value={refused ? "" : (selected?.id ?? "")}
+          />
           <input
             type="hidden"
             name="modalities"

@@ -4005,6 +4005,77 @@ test("a remote decline holder sees only the paused call and cannot send a senten
   expect(errors).toEqual([]);
 });
 
+test("editing a Duty keeps its registered model and can override its default effort", async ({
+  page,
+}) => {
+  const { deleteThread } = await setup(page, {
+    subject: true,
+    taskModelAgent: true,
+  });
+  for (const thread of fixture().threads) deleteThread(thread.id);
+  const agent = { id: "researcher", version: "1.0.0" };
+  const model = { id: "model", version: "1.0.0" };
+  const duty = {
+    id: "weekly-report",
+    title: "Weekly report",
+    mission: "Compare",
+    procedure: "Read the notes",
+    agent,
+    task_model: { model },
+    trigger: null,
+    status: "active",
+    requester: "alice",
+    mine: true,
+    may_edit: true,
+    may_manage: true,
+    max_lateness_seconds: 3600,
+    pause_after_failures: 3,
+  };
+  await page.route("**/api/duties?scope=mine", (route) =>
+    route.fulfill({ json: [duty] }),
+  );
+  await page.route("**/api/providers/openrouter/models", (route) =>
+    route.fulfill({
+      json: {
+        models: [
+          {
+            id: "anthropic/claude-sonnet-5.5",
+            name: "Sonnet",
+            supported_parameters: ["reasoning_effort"],
+            architecture: {
+              output_modalities: ["text"],
+              input_modalities: ["text"],
+            },
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/duties/weekly-report", (route) =>
+    route.fulfill({ json: {} }),
+  );
+  await page.goto("/collaboration");
+  const list = page.getByRole("region", { name: "Duties", exact: true });
+  await list.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(list.getByRole("slider")).toHaveAttribute(
+    "aria-valuetext",
+    "high",
+  );
+  await expect(
+    list.getByRole("combobox", { name: "Provider model ID" }),
+  ).toHaveValue(/Evidence model/);
+  await list.getByRole("slider").press("End");
+  const posted = page.waitForRequest(
+    (r) =>
+      r.method() === "PATCH" && r.url().endsWith("/api/duties/weekly-report"),
+  );
+  await list.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await posted).postDataJSON()).toMatchObject({
+    agent,
+    task_model: { model, reasoning_effort: "max" },
+  });
+});
+
 test("a successor can edit the Duty immediately when takeover succeeds and resume is refused", async ({
   page,
 }) => {

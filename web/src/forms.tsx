@@ -1110,7 +1110,11 @@ export function AssignForm({
               agent.entity.version,
             ]) === (d.get("agent") ?? selected),
         );
-        if (!a || inspectionBlocked || !remoteModel.ready || !taskModel.ready)
+        if (
+          !a ||
+          (!request.current &&
+            (inspectionBlocked || !remoteModel.ready || !taskModel.ready))
+        )
           return;
         setGrantBusy(true);
         void submit(async () => {
@@ -1280,9 +1284,8 @@ export function AssignForm({
         className="justify-self-end"
         disabled={
           grantBusy ||
-          inspectionBlocked ||
-          !remoteModel.ready ||
-          !taskModel.ready
+          (!grantPending &&
+            (inspectionBlocked || !remoteModel.ready || !taskModel.ready))
         }
       >
         {grantPending

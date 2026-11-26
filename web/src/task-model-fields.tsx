@@ -230,7 +230,7 @@ export function useTaskModel(
       key={identity + generation}
       tenant={tenant}
       entries={data.registry}
-      initial={choice}
+      value={choice}
       onChoice={(choice) => setPicked({ identity, choice })}
     />
   );
