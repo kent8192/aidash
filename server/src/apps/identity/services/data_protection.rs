@@ -4,7 +4,7 @@ use crate::apps::identity::{
 	models::{AdministrationActor, AdministrationEvent},
 	oidc::BrowserOrigin,
 	repositories::data_protection as repository,
-	serializers::data_protection::{Impact, Settings},
+	serializers::data_protection::{Impact, Settings, Update},
 };
 use crate::{Error, Result, authorization::identity::Actor};
 use aidash_domain::{
@@ -18,16 +18,17 @@ impl TenantAdministrations {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
-		update: Option<DataProtection>,
+		update: Option<Update>,
 	) -> Result<Settings> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let floor = self.runtime.store.data_protection_floor;
-		if let Some(policy) = update {
+		if let Some(Update { policy, .. }) = &update {
 			policy.validate()?;
 			if policy.level < floor {
-				return Err(Error::Invalid(
-					"Data Protection Level is below the Deployment floor".into(),
-				));
+				return Err(Error::Invalid(format!(
+					"Data Protection Level {:?} is below the Deployment floor {floor:?}",
+					policy.level
+				)));
 			}
 		}
 		let result = self
@@ -46,7 +47,16 @@ impl TenantAdministrations {
 						update.is_some(),
 					)
 					.await?;
-				if let Some(policy) = update {
+				let revision = repository::revision(tx, &tenant).await?;
+				let writing = update.is_some();
+				if let Some(Update {
+					policy,
+					expected_revision,
+				}) = update
+				{
+					if expected_revision.is_some_and(|expected| expected != revision) {
+						return Err(Error::Conflict("data_protection_revision_changed".into()));
+					}
 					let by = AdministrationActor::TenantAdministrator(administrator.clone());
 					repository::save(tx, &tenant, policy, &by.decision_actor()).await?;
 					by.record(
@@ -65,6 +75,7 @@ impl TenantAdministrations {
 				}
 				let policy = repository::stored(tx, &tenant).await?;
 				Ok(Settings {
+					revision: revision + u64::from(writing),
 					policy,
 					effective: policy.with_floor(floor),
 					deployment_floor: floor,

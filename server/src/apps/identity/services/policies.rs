@@ -132,6 +132,7 @@ async fn request_review_for(
 	access.set_node(node.clone());
 	let mut scope = ReviewScope {
 		access,
+		live_nodes: None,
 		include_node_revisions: false,
 		node: deployment.node(node.clone()),
 		validation: crate::bootstrap::registry_validation_for(store),
@@ -791,6 +792,7 @@ impl PolicyAdministration {
 			let root = review_entry(&query.entry)?;
 			let mut scope = ReviewScope {
 				access: &mut access,
+				live_nodes: None,
 				include_node_revisions: true,
 				node: f.config.deployment.node(node),
 				validation: crate::bootstrap::registry_validation_for(&f.store),
@@ -874,6 +876,7 @@ impl PolicyAdministration {
 			let current = {
 				let mut scope = ReviewScope {
 					access: &mut access,
+					live_nodes: None,
 					include_node_revisions: false,
 					node: node_address.clone(),
 					validation: crate::bootstrap::registry_validation_for(&f.store),
@@ -1130,6 +1133,7 @@ impl PolicyAdministration {
 			let after = {
 				let mut scope = ReviewScope {
 					access: &mut access,
+					live_nodes: None,
 					include_node_revisions: false,
 					node: node_address.clone(),
 					validation: crate::bootstrap::registry_validation_for(&f.store),

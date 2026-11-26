@@ -69,7 +69,17 @@ impl CatalogRestriction {
 
 /// Where an approver's Catalog Approval applies on this Deployment.
 #[derive(
-	Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+	Debug,
+	Clone,
+	Copy,
+	Default,
+	PartialEq,
+	Eq,
+	PartialOrd,
+	Ord,
+	Serialize,
+	Deserialize,
+	schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalScope {

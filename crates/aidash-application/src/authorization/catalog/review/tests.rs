@@ -12,6 +12,7 @@ struct Fixture {
 	installed: BTreeMap<(String, String), InstalledRevision>,
 	unreadable: BTreeSet<(String, String)>,
 	cannot_approve: BTreeSet<(String, String)>,
+	node_only: BTreeSet<String>,
 	provider_missing: BTreeSet<(String, String)>,
 	slot_missing: BTreeSet<(String, String)>,
 	groups: BTreeMap<String, BTreeSet<String>>,
@@ -77,6 +78,7 @@ impl Fixture {
 			installed: BTreeMap::new(),
 			unreadable: BTreeSet::new(),
 			cannot_approve: BTreeSet::new(),
+			node_only: BTreeSet::new(),
 			provider_missing: BTreeSet::new(),
 			slot_missing: BTreeSet::new(),
 			groups: BTreeMap::new(),
@@ -157,6 +159,9 @@ impl ApprovalReviewScope for Fixture {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
+	}
+	async fn can_approve_everywhere(&mut self, entry: &Entry) -> Result<bool> {
+		Ok(!self.node_only.contains(&entry.id) && self.can_approve(entry).await?)
 	}
 	async fn can_approve(&mut self, entry: &Entry) -> Result<bool> {
 		Ok(!self
@@ -433,6 +438,36 @@ async fn provider_and_slot_blockers_are_reported_before_approval_readiness() {
 	assert_eq!(status("remote"), ReviewStatus::ProviderUnavailable);
 	assert_eq!(status("slot"), ReviewStatus::SecretOrConnectionMissing);
 	assert_eq!(status("model"), ReviewStatus::Approvable);
+	assert_eq!(item(&review, "writer").available_scope, None);
+	assert_eq!(
+		item(&review, "model").available_scope,
+		Some(ApprovalScope::Deployment)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn review_limits_a_parent_to_the_scope_of_each_dependency() {
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[("tool", "limited")]),
+		tool("limited", "sandboxed"),
+		entry("model", "model", json!({})),
+	]);
+	fixture.node_only.insert("limited".into());
+	let root = reference("writer");
+	let scoped = review(&mut fixture, &root).await.unwrap();
+	assert_eq!(
+		item(&scoped, "writer").available_scope,
+		Some(ApprovalScope::Node)
+	);
+	fixture.node_only.insert("model".into());
+	let blocked = review(&mut fixture, &root).await.unwrap();
+	assert_eq!(item(&blocked, "writer").available_scope, None);
+	assert_eq!(item(&blocked, "model").available_scope, None);
+	assert_eq!(
+		item(&blocked, "limited").available_scope,
+		Some(ApprovalScope::Node)
+	);
 }
 
 #[rstest]

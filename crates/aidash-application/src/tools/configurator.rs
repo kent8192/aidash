@@ -31,6 +31,11 @@ pub fn route(name: &str) -> Option<Route> {
 			"/api/registry",
 			"Register an immutable definition. For a tool or MCP server supply its tool definition.",
 		),
+		"catalog_review_approve" => (
+			"POST",
+			"/api/authorization/{tenant}/catalog/review",
+			"Review and approve an exact Registry version, its dependencies and Marketplace installations. Report remaining blockers.",
+		),
 		"catalog_approve" => (
 			"POST",
 			"/api/authorization/{tenant}/catalog",
@@ -64,7 +69,7 @@ pub fn route(name: &str) -> Option<Route> {
 		"data_protection_set" => (
 			"PUT",
 			"/api/tenants/{tenant}/data-protection",
-			"Set the Tenant data protection policy.",
+			"Preview and set the Tenant data protection level. Omitted switches retain their current values.",
 		),
 		"tenant_secret_set" => (
 			"PUT",
@@ -152,9 +157,14 @@ fn inputs(name: &str) -> Value {
 			vec!["subject", "groups", "expected_policy_revision"],
 		),
 		"data_protection_set" => {
-			return json!(schemars::schema_for!(
-				aidash_domain::data_protection::DataProtection
-			));
+			let boolean = json!({"type":"boolean"});
+			let level = schemas.subschema_for::<aidash_domain::data_protection::Level>();
+			let policy = schemas.subschema_for::<aidash_domain::data_protection::DataProtection>();
+			(
+				json!({"level": level,"allow_keyless_endpoints":boolean,"allow_plan_connections":boolean,
+				"forbid_keyless_endpoints":boolean,"forbid_plan_connections":boolean,"policy":policy}),
+				vec![],
+			)
 		}
 		"stint_start" => (
 			json!({"agent":string,"thread":string,"idempotency_key":string,"agent_version":string,"title":string,"description":string,"task_model":object,"read_pages":strings}),
@@ -178,6 +188,10 @@ fn inputs(name: &str) -> Value {
 		"registry_create" | "tool_add" | "mcp_server_add" => {
 			return json!(schemars::schema_for!(aidash_domain::registry::Entry));
 		}
+		"catalog_review_approve" => (
+			json!({"node":string,"entry":schemas.subschema_for::<aidash_domain::registry::EntityRef>(),"scope":{"enum":["node","deployment"]},"root_groups":strings}),
+			vec!["node", "entry"],
+		),
 		"catalog_approve" => (
 			json!({"node":string,"entry":{"type":"object","properties":{"id":string,"version":string},"required":["id","version"]},"expected_revision":integer,"scope":{"enum":["node","deployment"]},"enabled":{"type":"boolean"},"groups":strings,"restriction":object,"expected_node_revisions":object,"carry_over":{"type":"boolean"},"provider_warning_acknowledged":{"type":"boolean"}}),
 			vec!["node", "entry", "expected_revision", "scope"],

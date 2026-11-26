@@ -43,6 +43,7 @@ pub(crate) struct CatalogQuery {
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogReviewQuery {
 	pub(crate) node: aidash_domain::nodes::NodeName,
+	#[serde(alias = "root")]
 	pub(crate) entry: String,
 }
 

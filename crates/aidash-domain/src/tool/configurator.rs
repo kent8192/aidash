@@ -8,6 +8,7 @@ pub const TOOLS: &[&str] = &[
 	"member_set_groups",
 	"registry_create",
 	"catalog_approve",
+	"catalog_review_approve",
 	"provider_binding_set",
 	"budget_set",
 	"approval_mode_set",

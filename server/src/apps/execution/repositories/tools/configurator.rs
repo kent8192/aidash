@@ -1,4 +1,6 @@
 //! Dispatch the built-in agent's calls through the Deployment's own routes.
+mod data_protection;
+mod review;
 use crate::{
 	Error, Result, apps::identity::services::configurator::Caller, federation::Federation,
 };
@@ -412,6 +414,8 @@ pub(super) async fn execute(f: &Federation, run: &Run, name: &str, input: Value)
 		}
 		"aidash_api_catalog" => catalog(api.caller.tenant(), input["query"].as_str().unwrap_or("")),
 		"tenant_overview" => api.overview(run).await,
+		"data_protection_set" => api.set_data_protection(input).await,
+		"catalog_review_approve" => api.review_approve(serde_json::from_value(input)?).await,
 		_ => api.typed(name, input).await,
 	}
 }

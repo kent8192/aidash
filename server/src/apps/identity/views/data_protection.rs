@@ -2,7 +2,7 @@
 use super::super::{oidc::BrowserOrigin, services::tenant_administration::TenantAdministrations};
 use crate::{authorization::identity::Actor, http::json::Json};
 use aidash_domain::data_protection::DataProtection;
-use reinhardt::{Depends, Path, Response, get, http::ViewResult, post, put};
+use reinhardt::{Depends, Path, Query, Response, get, http::ViewResult, post, put};
 
 #[get(
 	"/api/tenants/{tenant}/data-protection",
@@ -27,7 +27,7 @@ pub async fn update_policy(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
-	Json(policy): Json<DataProtection>,
+	Json(policy): Json<super::super::serializers::data_protection::Update>,
 ) -> ViewResult<Response> {
 	crate::http::json(
 		service
@@ -46,6 +46,25 @@ pub async fn impact(
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Json(policy): Json<DataProtection>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.data_protection_impact(actor, origin, tenant, policy)
+			.await,
+	)
+}
+
+#[get(
+	"/api/tenants/{tenant}/data-protection/impact",
+	name = "tenant-data-protection-impact-preview",
+	auth = "protected"
+)]
+pub async fn impact_preview(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Query(policy): Query<DataProtection>,
 ) -> ViewResult<Response> {
 	crate::http::json(
 		service

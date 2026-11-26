@@ -12,7 +12,7 @@ use crate::{
 	registry::system,
 };
 use aidash_domain::{
-	identity::catalog::{CatalogRestriction, validate_revision},
+	identity::catalog::{ApprovalScope, CatalogRestriction, validate_revision},
 	nodes::NodeName,
 	registry::{EntityRef, Entry, Localized, rules::digest},
 };
@@ -74,6 +74,10 @@ pub struct ReviewItem {
 	pub approved: bool,
 	/// Whether this principal can decide it with the visible review information.
 	pub can_approve: bool,
+	/// Widest scope the caller can make usable, including this item's dependencies.
+	/// Absent when a prerequisite or this version cannot be made ready.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub available_scope: Option<ApprovalScope>,
 	/// The current Catalog Approval revision, `0` when none exists.
 	pub expected_revision: i64,
 	pub expected_node_revisions: BTreeMap<String, i64>,
@@ -374,6 +378,7 @@ pub async fn review(
 			},
 			approved: false,
 			can_approve: false,
+			available_scope: None,
 			expected_revision: 0,
 			expected_node_revisions: BTreeMap::new(),
 			unapproved_nodes: Vec::new(),
@@ -385,6 +390,46 @@ pub async fn review(
 			installation: None,
 		});
 	}
+	// A partial submission can approve independent branches. A dependent may
+	// only be approved where all of its prerequisites are (or can become) ready.
+	let mut limits: BTreeMap<_, _> = entries
+		.iter()
+		.filter(|(_, e)| system::is_builtin(e))
+		.map(|(key, _)| (key.clone(), Some(ApprovalScope::Deployment)))
+		.collect();
+	for item in &items {
+		limits.insert(
+			(item.reference.id.clone(), item.reference.version.clone()),
+			item.available_scope,
+		);
+	}
+	loop {
+		let mut changed = false;
+		for (key, dependencies) in &edges {
+			let Some(Some(scope)) = limits.get(key).copied() else {
+				continue;
+			};
+			let limit = dependencies
+				.iter()
+				.try_fold(scope, |limit, dep| {
+					Some(limit.min(limits.get(dep).copied().flatten()?))
+				})
+				.filter(|limit| {
+					*limit == ApprovalScope::Deployment || entries[key].kind != "model"
+				});
+			if limit != Some(scope) {
+				limits.insert(key.clone(), limit);
+				changed = true;
+			}
+		}
+		if !changed {
+			break;
+		}
+	}
+	for item in &mut items {
+		item.available_scope = limits[&(item.reference.id.clone(), item.reference.version.clone())];
+	}
+
 	items.sort_by(|left, right| {
 		let left_root = left.reference == *root;
 		let right_root = right.reference == *root;
@@ -511,6 +556,40 @@ async fn review_item(
 			false,
 		)
 	};
+	let available_scope = match status {
+		ReviewStatus::Approved if installed.is_some() => {
+			if widen && !can_approve {
+				None
+			} else {
+				approval.as_ref().map(|a| a.scope)
+			}
+		}
+		ReviewStatus::Approved
+			if !widen
+				&& unapproved_nodes.is_empty()
+				&& (!can_approve
+					|| approval
+						.as_ref()
+						.is_some_and(|a| a.scope == ApprovalScope::Deployment)) =>
+		{
+			Some(ApprovalScope::Deployment)
+		}
+		ReviewStatus::Approved
+		| ReviewStatus::Approvable
+		| ReviewStatus::NeedsMarketplaceActivation
+			if can_approve =>
+		{
+			if scope.can_approve_everywhere(entry).await? {
+				Some(ApprovalScope::Deployment)
+			} else if entry.kind == "model" {
+				None
+			} else {
+				Some(ApprovalScope::Node)
+			}
+		}
+		ReviewStatus::Approved if !widen => Some(ApprovalScope::Node),
+		_ => None,
+	};
 	let previous = if approved {
 		None
 	} else {
@@ -543,6 +622,7 @@ async fn review_item(
 		),
 		digest: Some(digest(&serde_json::to_value(entry)?)),
 		status,
+		available_scope,
 		approved,
 		can_approve,
 		expected_revision,
@@ -628,7 +708,8 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 				// Approving it again Deployment-wide approves it on the Nodes
 				// that lack it, which the items using it may need there.
 				let spreads = scope == aidash_domain::identity::catalog::ApprovalScope::Deployment
-					&& !reviewed.unapproved_nodes.is_empty();
+					&& (reviewed.scope == Some(ApprovalScope::Node)
+						|| !reviewed.unapproved_nodes.is_empty());
 				if !spreads
 					&& (item.restriction.is_none() || item.restriction == reviewed.restriction)
 				{

@@ -18,6 +18,7 @@ pub(crate) struct ReviewScope<'a> {
 	pub(crate) node: NodeAddress,
 	pub(crate) validation: aidash_application::registry::DefinitionValidation,
 	pub(crate) include_node_revisions: bool,
+	pub(crate) live_nodes: Option<Vec<aidash_domain::nodes::NodeName>>,
 }
 
 #[async_trait]
@@ -214,6 +215,29 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			)
 			.await
 			.map_err(Into::into)
+	}
+	async fn can_approve_everywhere(&mut self, entry: &Entry) -> Result<bool> {
+		if self.live_nodes.is_none() {
+			let tenant = self.tenant().to_owned();
+			self.live_nodes = Some(
+				super::nodes::list_live(&mut **self.access.tx.native_mut(), &tenant)
+					.await?
+					.into_iter()
+					.map(|n| n.name)
+					.filter(|n| n != &self.node.node)
+					.collect(),
+			);
+		}
+		let nodes = self.live_nodes.clone().unwrap_or_default();
+		for other in nodes {
+			self.access.set_node(other);
+			let allowed = self.can_approve(entry).await;
+			self.access.set_node(self.node.node.clone());
+			if !allowed? {
+				return Ok(false);
+			}
+		}
+		Ok(true)
 	}
 	async fn provider_available(&mut self, entry: &Entry) -> Result<bool> {
 		Ok(self.validation.provider_available(entry).is_ok())
