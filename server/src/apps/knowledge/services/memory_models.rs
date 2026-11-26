@@ -915,27 +915,25 @@ impl Models {
 		purpose: MaintenancePurpose,
 	) -> Result<Produced<T>> {
 		let config: ModelConfig =
-			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?;
+			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?
+				.for_memory_role();
 		let input = instruction
 			.len()
 			.checked_add(serde_json::to_string(&context)?.len())
 			.ok_or_else(|| Error::Invalid("memory input overflow".into()))?;
-		let output = config
-			.max_output_tokens
-			.ok_or_else(|| Error::Invalid("memory role requires an explicit output limit".into()))?
-			as usize;
-		let output = output.min(allowance.tokens.saturating_sub(input));
+		let output =
+			(config.output_token_limit() as usize).min(allowance.tokens.saturating_sub(input));
 		if output == 0 {
 			return Err(Error::Invalid(
 				"memory model input leaves no response allowance".into(),
 			));
 		}
-		let request = ModelRequest {
+		let mut request = ModelRequest {
 			provider_tools: vec![],
 			instructions: instruction.into(),
 			context: ModelContext::native_data(&context),
 			tools: vec![],
-			max_output_tokens: output as u32,
+			max_output_tokens: 0,
 			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
@@ -947,7 +945,7 @@ impl Models {
 			input_format: InputFormat::for_model(&config),
 			estimate: Default::default(),
 		};
-		request.ensure_fits(config.context_window)?;
+		let output = request.fit_output(config.context_window, output)?;
 		let charge = rate.charge(input as u64, output as u64)?;
 
 		self.require_origins(Some(reference)).await?;
