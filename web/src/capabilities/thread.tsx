@@ -1,5 +1,4 @@
 import { ProviderToolActivity } from "../provider-tools";
-import { Input } from "../components/ui/input";
 import {
   Alert,
   Group,
@@ -8,14 +7,6 @@ import {
   Pre,
   inlineFormClass,
 } from "../components/patterns";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
 import { NativeSelect } from "../components/ui/native-select";
 import { Textarea } from "../components/ui/textarea";
 import { Button } from "../components/ui/button";
@@ -28,26 +19,16 @@ import {
 import { apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
 import type { State } from "../types";
-import { discoveryQuery, useNodes } from "../nodes";
-import {
-  post,
-  saveFile,
-  type Area,
-  type CoreFile,
-  type Operation,
-} from "./client";
+import { post, type Area, type Operation } from "./client";
 import {
   ApprovalCardView,
   CapabilityApprovals,
   useThreadApprovalList,
 } from "./approvals";
 import { usePendingApprovalInbox } from "./inbox";
-import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
-import { useFilePreview } from "./file-preview-pane";
 import { LivePreviewPanel } from "./live-preview";
-import { TransferHistory } from "./transfers";
 import { registryDeployment } from "../node-selection";
 import { UrlIntentPicker } from "../url-intent-picker";
 import {
@@ -56,18 +37,10 @@ import {
   urlIntents,
 } from "../url-intents";
 import type { ApprovalCard as Approval, RunDetails } from "../generated/models";
-import { semanticEntries } from "../generated/aidash";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
   last_agent_version: string | null;
-  queue: { run_id: string; phase: string; control: string; sequence: number }[];
-};
-type Recipient = {
-  node_id: string;
-  agent_id: string;
-  agent_version: string;
-  thread_id: string;
 };
 function OperationCard({
   run,
@@ -187,84 +160,27 @@ function OperationCard({
     </article>
   );
 }
-function FileOperations({
+function ScratchOperations({
   area,
   run,
-  data,
   refresh,
   inlineIds,
 }: {
   area: Area;
   run: string;
-  data: State;
   refresh: () => Promise<unknown>;
   inlineIds: ReadonlySet<string>;
 }) {
-  const { locale, t } = useI18n();
+  const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const client = useQueryClient();
-  const filePreview = useFilePreview();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const imageIndex = useQuery({
-    queryKey: ["semantic", area.thread_id, "entries"],
-    // Shares its cache entry with the Thread's semantic index view, so it
-    // reads the same shape.
-    queryFn: async () => {
-      const list = await semanticEntries(area.thread_id);
-      return { items: list.entries, unconfirmed: list.unconfirmed };
-    },
-    enabled: area.manifest.some(
-      (file) =>
-        file.scope === "working" && file.media_type.startsWith("image/"),
-    ),
-    refetchInterval: 2000,
-    retry: false,
-  });
-  const [read, setRead] = useState<{
-    content?: string;
-    next_offset?: number;
-    file?: CoreFile;
-  }>();
-  const [selected, setSelected] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
-  const [scope, setScope] = useState("working");
-  const [mode, setMode] = useState("literal");
-  const [search, setSearch] = useState<{
-    matches?: { path: string; location: { line: number }; snippet: string }[];
-    unavailable?: { file_id: string; error: string }[];
-    next_cursor?: string;
-  }>();
   const [code, setCode] = useState("");
   const [kind, setKind] = useState("python");
   const [session, setSession] = useState<string>();
   const [reset, setReset] = useState<Operation>();
   const [patch, setPatch] = useState("");
-  const [patchPreview, setPatchPreview] = useState<{
-    revision: number;
-    preconditions: Record<string, string | null>;
-  }>();
-  const { selected: currentNode, nodes } = useNodes();
-  const sourceNode = data.runs.find((item) => item.id === run)?.node;
-  const sendingNode =
-    nodes.find((node) => node.name === sourceNode) ?? currentNode;
-  const discovery = useQuery({
-    ...discoveryQuery(sendingNode),
-    enabled: !!sendingNode && selected.length > 0,
-  });
-  const sourceAddress = sourceNode
-    ? `${data.deployment.id}/${sourceNode}`
-    : data.node.id;
-  const shareNodes = [
-    ...new Set([
-      data.node.id,
-      ...nodes.map((node) => node.address),
-      ...(discovery.data?.agents.map((agent) => agent.node_id) ?? []),
-    ]),
-  ];
-  const [shareNode, setShareNode] = useState(data.node.id);
-  const [recipient, setRecipient] = useState("");
-  const [transfer, setTransfer] = useState<Operation>();
   const pending = useRef<{ signature: string; key: string } | undefined>(
     undefined,
   );
@@ -302,47 +218,6 @@ function FileOperations({
     refetchInterval: 2000,
     retry: false,
   });
-  const recipients = useInfiniteQuery({
-    queryKey: ["core-recipients", run, shareNode],
-    initialPageParam: "",
-    queryFn: ({ pageParam, signal }) =>
-      apiFetch<{
-        items: (Recipient & { thread_id?: string })[];
-        next_cursor: string | null;
-      }>(
-        `/api/file-recipients?node_id=${encodeURIComponent(shareNode)}&run_id=${encodeURIComponent(run)}${pageParam ? `&cursor=${pageParam}` : ""}`,
-        { signal },
-      ),
-    getNextPageParam: (page) => page.next_cursor ?? undefined,
-    enabled: selected.length > 0,
-    retry: false,
-  });
-  const transferQuery = useQuery({
-    queryKey: ["core-transfer", transfer?.operation_id],
-    queryFn: () =>
-      apiFetch<Operation>(`/api/file-transfers/${transfer!.operation_id}`),
-    enabled: !!transfer && !transfer.receipt && shareNode !== sourceAddress,
-    refetchInterval: (q) =>
-      ["pending", "transferring", "committing"].includes(
-        q.state.data?.status ?? transfer?.status ?? "",
-      )
-        ? 1500
-        : false,
-    retry: false,
-  });
-  const files = area.manifest;
-  const readFile = async (file: CoreFile, offset = 0) => {
-    const result = await post<{ content: string; next_offset?: number }>(
-      `/executions/${run}/files/read`,
-      {
-        file_id: file.file_id,
-        representation: "text",
-        expected_digest: file.digest,
-        offset,
-      },
-    );
-    setRead({ ...result, file });
-  };
   const runCode = async (expected_session_id?: string) => {
     const result = await mutate<Operation>(`/executions/${run}/${kind}`, {
       expected_revision: area.revision,
@@ -358,366 +233,6 @@ function FileOperations({
   };
   return (
     <>
-      <details className={panelClass} open>
-        <summary>
-          {ja ? "作業ファイル" : "Working files"} · {area.revision}
-        </summary>
-        <div className={inlineFormClass}>
-          <NativeSelect
-            aria-label={ja ? "検索対象" : "Search scope"}
-            value={scope}
-            onChange={(e) => setScope(e.target.value)}
-          >
-            {["working", "references", "received"].map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </NativeSelect>
-          <NativeSelect
-            aria-label={ja ? "検索方法" : "Search mode"}
-            value={mode}
-            onChange={(e) => setMode(e.target.value)}
-          >
-            {["literal", "regex", "path"].map((v) => (
-              <option key={v}>{v}</option>
-            ))}
-          </NativeSelect>
-          <Input
-            aria-label={ja ? "検索語" : "Search query"}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              void act(async () =>
-                setSearch(
-                  await post(`/executions/${run}/files/search`, {
-                    query,
-                    mode,
-                    scope,
-                  }),
-                ),
-              )
-            }
-          >
-            {ja ? "検索" : "Search"}
-          </Button>
-        </div>
-        {search && (
-          <div>
-            {search.matches?.map((m, i) => (
-              <p key={i}>
-                {m.path}:{m.location.line} {m.snippet}
-              </p>
-            ))}
-            {search.unavailable?.map((file) => (
-              <p key={file.file_id}>
-                {
-                  area.manifest.find((entry) => entry.file_id === file.file_id)
-                    ?.path
-                }
-                {ja
-                  ? "：テキストとして検索できません。原本をダウンロードしてください。"
-                  : ": Text search unavailable. Download the original file."}
-              </p>
-            ))}
-            {search.next_cursor && (
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() =>
-                  void act(async () =>
-                    setSearch(
-                      await post(`/executions/${run}/files/search`, {
-                        query,
-                        mode,
-                        scope,
-                        cursor: search.next_cursor,
-                      }),
-                    ),
-                  )
-                }
-              >
-                {ja ? "検索の続き" : "More matches"}
-              </Button>
-            )}
-          </div>
-        )}
-        <div className="max-h-[340px] overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{ja ? "選択" : "Select"}</TableHead>
-                <TableHead>{ja ? "ファイル" : "File"}</TableHead>
-                <TableHead>{ja ? "操作" : "Actions"}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {files.map((f) => (
-                <TableRow key={f.file_id}>
-                  <TableCell>
-                    <input
-                      aria-label={`${ja ? "共有対象" : "Share"}: ${f.path}`}
-                      type="checkbox"
-                      checked={selected.includes(f.file_id)}
-                      onChange={(e) =>
-                        setSelected((ids) =>
-                          e.target.checked
-                            ? [...ids, f.file_id]
-                            : ids.filter((id) => id !== f.file_id),
-                        )
-                      }
-                    />
-                  </TableCell>
-                  <TableCell className="[overflow-wrap:anywhere]">
-                    {f.path}
-                    <Hint>
-                      {f.scope} · {f.size} bytes
-                    </Hint>
-                    {imageIndex.data?.items
-                      .filter((entry) => {
-                        const source = entry.source as {
-                          kind?: string;
-                          area_id?: string;
-                          generation?: number;
-                          file_id?: string;
-                        } | null;
-                        return (
-                          !entry.deleted &&
-                          source?.kind === "working_image" &&
-                          source.area_id === area.id &&
-                          source.generation === area.generation &&
-                          source.file_id === f.file_id
-                        );
-                      })
-                      .map((entry) => (
-                        <Hint key={entry.id}>
-                          {entry.state}
-                          {entry.state === "UNSUPPORTED" && entry.last_error
-                            ? ` · ${t(({ modality: "semanticImageModality", too_large: "semanticImageTooLarge", limit: "semanticImageLimit" } as Record<string, string>)[entry.last_error] ?? entry.last_error)}`
-                            : ""}
-                        </Hint>
-                      ))}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() =>
-                        filePreview.open({
-                          area: area.id,
-                          file: f,
-                          files: area.manifest,
-                          revision: area.revision,
-                        })
-                      }
-                    >
-                      {t("filePreviewAction")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() => void act(() => readFile(f))}
-                    >
-                      {ja ? "読む" : "Read"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() =>
-                        void act(() =>
-                          saveFile(
-                            `/working-areas/${area.id}/files/${f.file_id}/download`,
-                          ),
-                        )
-                      }
-                    >
-                      {ja ? "保存" : "Download"}
-                    </Button>
-                    {f.scope !== "working" && (
-                      <Button
-                        variant="outline"
-                        type="button"
-                        onClick={() =>
-                          void act(() =>
-                            mutate(`/executions/${run}/files/materialize`, {
-                              expected_revision: area.revision,
-                              path: `copies/${f.path}`,
-                              source: {
-                                kind: "file",
-                                file_id: f.file_id,
-                                expected_digest: f.digest,
-                              },
-                            }),
-                          )
-                        }
-                      >
-                        {ja ? "作業用にコピー" : "Copy to working files"}
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        {read && (
-          <>
-            <Pre>{read.content}</Pre>
-            {read.next_offset != null && read.file && (
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() =>
-                  void act(() => readFile(read.file!, read.next_offset))
-                }
-              >
-                {ja ? "本文の続き" : "Read more"}
-              </Button>
-            )}
-          </>
-        )}
-        {selected.length > 0 && (
-          <Group
-            nested
-            legend={ja ? "選択ファイルを共有" : "Share selected files"}
-          >
-            <Field label={ja ? "ノード" : "Node"}>
-              <NativeSelect
-                value={shareNode}
-                onChange={(e) => {
-                  setShareNode(e.target.value);
-                  setRecipient("");
-                }}
-              >
-                {shareNodes.map((node) => (
-                  <option key={node} value={node}>
-                    {node === data.node.id
-                      ? ja
-                        ? "このノード"
-                        : "This node"
-                      : node}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
-            {recipients.isError && <Alert>{recipients.error.message}</Alert>}
-            <Field
-              label={
-                ja
-                  ? "受信 Agent・バージョン・スレッド"
-                  : "Recipient Agent, version and thread"
-              }
-            >
-              <NativeSelect
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-              >
-                <option value="">
-                  {ja ? "受信先を選択" : "Choose a recipient"}
-                </option>
-                {recipients.data?.pages
-                  .flatMap((p) => p.items)
-                  .filter(
-                    (r) =>
-                      shareNode !== sourceAddress ||
-                      (r.thread_id === area.thread_id &&
-                        r.agent_id !== area.agent_id),
-                  )
-                  .map((r, i) => (
-                    <option
-                      key={i}
-                      value={JSON.stringify({
-                        node_id: r.node_id,
-                        agent_id: r.agent_id,
-                        agent_version: r.agent_version,
-                        thread_id: r.thread_id,
-                      })}
-                    >
-                      {r.agent_id}@{r.agent_version} · {r.thread_id}
-                    </option>
-                  ))}
-              </NativeSelect>
-            </Field>
-            {recipients.hasNextPage && (
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() => void recipients.fetchNextPage()}
-              >
-                {ja ? "共有先をさらに表示" : "More recipients"}
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              type="button"
-              disabled={!recipient || busy}
-              onClick={() =>
-                void act(async () =>
-                  setTransfer(
-                    await mutate(`/executions/${run}/files/share`, {
-                      expected_revision: area.revision,
-                      files: files
-                        .filter((f) => selected.includes(f.file_id))
-                        .map((f) => ({
-                          file_id: f.file_id,
-                          expected_digest: f.digest,
-                        })),
-                      recipient: JSON.parse(recipient),
-                    }),
-                  ),
-                )
-              }
-            >
-              {ja ? "この内容を送信" : "Send this snapshot"}
-            </Button>
-          </Group>
-        )}
-        {transfer && (
-          <article>
-            <Hint role="status">
-              {ja ? "転送" : "Transfer"}:{" "}
-              {transferQuery.data?.status ?? transfer.status}
-            </Hint>
-            {(transferQuery.data?.receipt ?? transfer.receipt) ? (
-              <p>
-                {ja
-                  ? "受信先での保存を確認しました。"
-                  : "Recipient storage confirmed."}
-              </p>
-            ) : (
-              <p>
-                {ja ? "受領確認はまだありません。" : "No durable receipt yet."}
-              </p>
-            )}
-            {transferQuery.isError && (
-              <Alert>{transferQuery.error.message}</Alert>
-            )}
-            {!transfer.receipt && shareNode !== sourceAddress && (
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() =>
-                  void act(async () => {
-                    setTransfer(
-                      await post(
-                        `/file-transfers/${transfer.operation_id}/reconcile`,
-                      ),
-                    );
-                    await transferQuery.refetch();
-                  })
-                }
-              >
-                {ja ? "同じ転送を照会・再開" : "Reconcile this transfer"}
-              </Button>
-            )}
-          </article>
-        )}
-      </details>
       <details className={panelClass}>
         <summary>Shell · Python</summary>
         <Field label={ja ? "実行する言語" : "Runtime"}>
@@ -792,7 +307,6 @@ function FileOperations({
             value={patch}
             onChange={(e) => {
               setPatch(e.target.value);
-              setPatchPreview(undefined);
             }}
             spellCheck={false}
           />
@@ -800,69 +314,15 @@ function FileOperations({
         <Button
           variant="outline"
           type="button"
-          disabled={!patch.trim()}
-          onClick={() => {
-            const paths = [
-              ...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm),
-            ].map((m) => m[1]);
-            setPatchPreview({
-              revision: area.revision,
-              preconditions: Object.fromEntries(
-                paths.map((path) => [
-                  path,
-                  files.find((f) => f.scope === "working" && f.path === path)
-                    ?.digest ?? null,
-                ]),
-              ),
-            });
-          }}
+          disabled={busy || !patch.trim()}
+          onClick={() =>
+            void act(() => mutate(`/executions/${run}/patch`, { patch }))
+          }
         >
-          {ja ? "対象と変更を確認" : "Review affected files"}
+          {ja ? "パッチを適用" : "Apply patch"}
         </Button>
-        {patchPreview && (
-          <>
-            <p>
-              {ja ? "適用対象の版" : "Expected revision"}:{" "}
-              {patchPreview.revision}
-            </p>
-            <Pre>{patch}</Pre>
-            <ul className="grid gap-1 text-xs">
-              {Object.entries(patchPreview.preconditions).map(
-                ([path, digest]) => (
-                  <li key={path}>
-                    {path}
-                    <Hint>{digest ?? (ja ? "新規ファイル" : "New file")}</Hint>
-                  </li>
-                ),
-              )}
-            </ul>
-            <Button
-              variant="outline"
-              type="button"
-              disabled={busy || patchPreview.revision !== area.revision}
-              onClick={() =>
-                void act(() =>
-                  mutate(`/executions/${run}/patch`, {
-                    expected_revision: patchPreview.revision,
-                    preconditions: patchPreview.preconditions,
-                    patch,
-                  }),
-                )
-              }
-            >
-              {ja ? "この変更を適用" : "Apply these changes"}
-            </Button>
-          </>
-        )}
       </details>
       <SkillFiles run={run} />
-      <TransferHistory area={area.id} />
-      <OutboundFiles
-        run={run}
-        area={area.id}
-        revision={area.revision}
-        files={area.manifest}
-      />
       <CapabilityApprovals area={area.id} inlineIds={inlineIds} />
       {error && <Alert>{error}</Alert>}
     </>
@@ -979,7 +439,7 @@ export function ThreadCapabilities({
     setRequested(pages);
     setReadPages([]);
   };
-  const availableAgents = agents.filter((e) => !area || e.id === area.agent_id);
+  const availableAgents = agents;
   const effectiveAgent = availableAgents.some(
     (e) => `${e.id}@${e.version}` === agent,
   )
@@ -1037,7 +497,6 @@ export function ThreadCapabilities({
   const steerReadsSelection = selectedPages.every((page) =>
     steered.includes(page),
   );
-  if (!area && agents.length === 0 && !query.isError) return null;
   return (
     <section className={panelClass}>
       <h3>{ja ? "Agent の作業" : "Agent work"}</h3>
@@ -1067,7 +526,7 @@ export function ThreadCapabilities({
         </Field>
       }
       {(query.data?.items.length ?? 0) > 1 && (
-        <Field label={ja ? "作業領域" : "Working area"}>
+        <Field label={ja ? "Agent の作業履歴" : "Agent work history"}>
           <NativeSelect
             value={area?.id}
             onChange={(e) => setSelected(e.target.value)}
@@ -1112,17 +571,7 @@ export function ThreadCapabilities({
           disabled={busy || !prompt.trim() || !target || !queueReadsSelection}
           onClick={() =>
             void act(async () => {
-              if (area) {
-                const version =
-                  target?.id === area.agent_id ? target.version : undefined;
-                if (!version)
-                  throw new Error("Select an available Agent version");
-                await enqueueRun(`/working-areas/${area.id}/queue`, {
-                  agent_version: version,
-                  title: prompt.slice(0, 80),
-                  description: prompt,
-                });
-              } else if (target)
+              if (target)
                 await enqueueRun(
                   `/threads/${thread}/agents/${encodeURIComponent(target.id)}/executions`,
                   {
@@ -1134,13 +583,7 @@ export function ThreadCapabilities({
             })
           }
         >
-          {area
-            ? ja
-              ? "次の Run に送る"
-              : "Queue next Run"
-            : ja
-              ? "作業を開始"
-              : "Start work"}
+          {ja ? "作業を開始" : "Start work"}
         </Button>
         {area && session.data?.active_run_id && (
           <>
@@ -1197,195 +640,109 @@ export function ThreadCapabilities({
         )}
       </div>
       {session.isError && <Alert>{session.error.message}</Alert>}
-      {session.data && (
-        <ol>
-          {session.data.queue.map((r) => (
-            <li key={r.run_id}>
-              #{r.sequence} · {r.phase} · {r.control}
-              {r.run_id === session.data.active_run_id
-                ? ` · ${ja ? "実行対象" : "Active"}`
-                : ""}
-            </li>
-          ))}
-        </ol>
-      )}
       {area && active && <LivePreviewPanel run={active} />}
       {area && active && (
-        <FileOperations
+        <ScratchOperations
           key={`${area.id}:${active}`}
           area={area}
           run={active}
-          data={data}
           refresh={refresh}
           inlineIds={inlineIds}
         />
       )}
-      <ThreadDeletion
-        thread={thread}
-        areas={query.data?.items ?? []}
-        loaded={query.isSuccess}
-        onDeleted={onDeleted}
-      />
+      <ThreadScratchActions thread={thread} onDeleted={onDeleted} />
       <ProviderToolActivity
         context={shownRun.isError ? undefined : shownRun.data?.context}
         journal={
           shownRun.isError ? undefined : shownRun.data?.provider_tool_activity
         }
       />
-      {session.data?.last_run_id &&
-        !session.data?.active_run_id &&
-        area?.state === "active" && (
-          <Notice tone="warning">
-            {ja
-              ? "作業が終了しました。ファイルは保持されています。設定で復元可能な整理を選べます。"
-              : "Work has ended. Files are retained; recoverable cleanup is available in settings."}{" "}
-            <a
-              href={`/settings?view=workingFiles&channel=${encodeURIComponent(thread)}`}
-            >
-              {ja ? "作業ファイルの設定" : "Working file settings"}
-            </a>
-          </Notice>
-        )}
       {error && <Alert>{error}</Alert>}
     </section>
   );
 }
 
-function ThreadDeletion({
+function ThreadScratchActions({
   thread,
-  areas,
-  loaded,
   onDeleted,
 }: {
   thread: string;
-  areas: Area[];
-  loaded: boolean;
   onDeleted: () => void;
 }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const [choice, setChoice] = useState("keep");
-  const [confirmations, setConfirmations] =
-    useState<Record<string, { confirmation_id: string; revision: number }>>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const confirmed =
-    areas.length > 0 &&
-    areas.every((a) => confirmations?.[a.id]?.revision === a.revision);
+  const [clearing, setClearing] = useState(false);
+  const deleteKey = useRef<string | undefined>(undefined);
+  const clear = async () => {
+    if (
+      !window.confirm(
+        ja
+          ? "このスレッドの作業フォルダーを消去しますか？"
+          : "Clear this Thread’s Scratch folder?",
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/threads/${thread}/scratch/clear`);
+      setClearing(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    if (
+      !window.confirm(
+        ja
+          ? "このスレッドと作業フォルダーを削除しますか？"
+          : "Delete this Thread and its Scratch folder?",
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      deleteKey.current ??= crypto.randomUUID();
+      await post(`/threads/${thread}/delete`, {
+        idempotency_key: deleteKey.current,
+      });
+      onDeleted();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <details className={panelClass}>
-      <summary>{ja ? "このスレッドを削除" : "Delete this thread"}</summary>
-      {!loaded && (
-        <Hint role="status">
-          {ja
-            ? "すべての作業領域を取得してから削除できます。"
-            : "Deletion is available after all working areas have loaded."}
-        </Hint>
-      )}
-      <p>
-        {ja
-          ? "スレッドが消える前に、作業ファイルの扱いを選んでください。残したファイルは設定から管理できます。"
-          : "Choose what happens to working files before the thread disappears. Retained files remain in settings."}
-      </p>
-      <ul className="grid gap-1 text-xs">
-        {areas.map((a) => (
-          <li key={a.id}>
-            {a.agent_id} ·{" "}
-            {a.manifest.filter((f) => f.scope !== "references").length}{" "}
-            {ja ? "ファイル" : "files"} ·{" "}
-            {a.manifest
-              .filter((f) => f.scope !== "references")
-              .reduce((n, f) => n + f.size, 0)}{" "}
-            bytes
-          </li>
-        ))}
-      </ul>
-      <Field label={ja ? "ファイルの扱い" : "File retention"}>
-        <NativeSelect
-          value={choice}
-          onChange={(e) => {
-            setChoice(e.target.value);
-            setConfirmations(undefined);
-          }}
-        >
-          <option value="keep">{ja ? "ファイルを残す" : "Keep files"}</option>
-          <option value="recoverable">
-            {ja ? "復元可能な整理" : "Recoverable cleanup"}
-          </option>
-          <option value="irreversible">
-            {ja ? "復元できない削除" : "Irreversible deletion"}
-          </option>
-        </NativeSelect>
-      </Field>
-      {choice === "irreversible" && !confirmed && areas.length > 0 ? (
+      <summary>{ja ? "スレッドの管理" : "Manage Thread"}</summary>
+      <div className={inlineFormClass}>
         <Button
           variant="outline"
           type="button"
-          disabled={busy || !loaded}
-          onClick={async () => {
-            setBusy(true);
-            setError("");
-            try {
-              const values: NonNullable<typeof confirmations> = {};
-              for (const area of areas)
-                values[area.id] = await post(
-                  `/working-areas/${area.id}/deletion-confirmation`,
-                  { expected_revision: area.revision },
-                );
-              setConfirmations(values);
-            } catch (e) {
-              setError(String(e));
-            } finally {
-              setBusy(false);
-            }
-          }}
+          disabled={busy}
+          onClick={() => void clear()}
         >
-          {ja ? "完全削除の対象を確認" : "Review irreversible deletion"}
+          {ja ? "作業フォルダーを消去" : "Clear Scratch folder"}
         </Button>
-      ) : (
-        <>
-          <Notice tone="warning">
-            {choice === "irreversible"
-              ? ja
-                ? "上記の作業ファイルは復元できなくなります。"
-                : "The working files above will no longer be recoverable."
-              : ja
-                ? "このスレッドを閉じて削除します。"
-                : "This thread will be closed and deleted."}
-          </Notice>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy || !loaded}
-            onClick={async () => {
-              setBusy(true);
-              setError("");
-              try {
-                await post(`/threads/${thread}/delete`, {
-                  idempotency_key: crypto.randomUUID(),
-                  files: areas.map((a) => ({
-                    area_id: a.id,
-                    expected_revision: a.revision,
-                    choice,
-                    confirmation_id:
-                      choice === "irreversible"
-                        ? confirmations?.[a.id]?.confirmation_id
-                        : null,
-                  })),
-                });
-                onDeleted();
-              } catch (e) {
-                setError(String(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {ja
-              ? "この選択でスレッドを削除"
-              : "Delete thread with these choices"}
-          </Button>
-        </>
+        <Button
+          variant="outline"
+          type="button"
+          disabled={busy}
+          onClick={() => void remove()}
+        >
+          {ja ? "スレッドを削除" : "Delete Thread"}
+        </Button>
+      </div>
+      {clearing && (
+        <Hint role="status">
+          {ja ? "消去をリクエストしました。" : "Folder wipe requested."}
+        </Hint>
       )}
       {error && <Alert>{error}</Alert>}
     </details>
