@@ -1,9 +1,8 @@
 /**
  * Resolves a Markdown image reference against the file that contains it. The
- * caller supplies a path relative to the Working Area revision (no leading
- * slash), or null when the reference would leave that revision.
+ * result is relative to the root, or null if the reference would leave it.
  */
-export function resolveWorkingAreaPath(
+export function resolveRelativeFilePath(
   fromPath: string,
   reference: string,
 ): string | null {

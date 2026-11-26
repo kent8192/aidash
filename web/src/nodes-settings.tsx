@@ -28,6 +28,7 @@ import {
   tenantNodesCreate,
 } from "./generated/aidash";
 import { useNodes } from "./nodes";
+import { NodeDrive } from "./drive";
 import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 import {
   changedRegistration,
@@ -176,6 +177,12 @@ export function NodesPage({ data }: { data: State }) {
           canUpdate={can("node.update")}
           canDelete={can("node.delete")}
           offering={data.offering}
+        />
+      )}
+      {selected && (
+        <NodeDrive
+          key={`drive-${tenant}-${selected.name}`}
+          node={selected.name}
         />
       )}
       {selected && (
