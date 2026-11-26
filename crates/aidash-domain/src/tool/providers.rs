@@ -215,6 +215,7 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "live_preview_start"
 				| "live_preview_stop"
 				| "drive_publish"
+				| "drive_publish_status"
 				| "file_save"
 				| "file_remove"
 				| "file_copy"

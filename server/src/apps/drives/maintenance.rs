@@ -255,7 +255,13 @@ async fn retain_tenant(
 			Alias::new("digest"),
 		))))
 		.to_owned();
-	db::delete(tx, "drive_passages", tenant, Expr::not_exists(referenced)).await?;
+	db::delete(
+		tx,
+		"drive_passages",
+		tenant,
+		Expr::not_exists(referenced).into(),
+	)
+	.await?;
 	let uploads = db::select("drive_uploads", tenant)
 		.and_where(db::col("expires_at").lte(Expr::value(now)))
 		.limit(256)

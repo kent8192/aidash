@@ -219,19 +219,14 @@ async fn process(store: &Store, pending: &Pending) -> Result<()> {
 			missing.push(entry);
 		}
 	}
-	// Use a conservative input-token upper estimate (one per byte for text,
-	// including passage overlap) and the built-in memory embedding rate.
-	let tokens = missing
-		.iter()
-		.filter(|entry| supported(&entry.file.media_type, &entry.file.path))
-		.map(|entry| (entry.file.size as u64).saturating_mul(2))
-		.fold(0, u64::saturating_add);
-	let rate = aidash_domain::memory::Rate {
-		input_per_million: 1_000_000,
-		output_per_million: 0,
+	// Apply the built-in memory rate to what the provider will actually see.
+	// Compressed documents can yield far more input tokens than their blob size.
+	let estimate = if pending.state == "pending" {
+		estimate_indexing(store, tenant, &embedding, &missing).await?
+	} else {
+		0
 	};
-	let estimate = rate.charge(tokens, 0)?;
-	if pending.state == "pending" && estimate > CONFIRM_MICROS {
+	if estimate > CONFIRM_MICROS {
 		db::update(
 			tx.as_mut(),
 			"drive_index_requests",
@@ -262,6 +257,26 @@ async fn process(store: &Store, pending: &Pending) -> Result<()> {
 	Ok(())
 }
 
+async fn estimate_indexing(
+	store: &Store,
+	tenant: &str,
+	embedding: &EmbeddingConfig,
+	entries: &[db::Entry],
+) -> Result<u64> {
+	let mut tokens = 0_u64;
+	for entry in entries {
+		for body in extract(store, tenant, &entry.file, embedding).await? {
+			let input = body.input(&entry.file.media_type);
+			tokens = tokens.saturating_add(input.reservation_amount()? as u64);
+		}
+	}
+	let rate = aidash_domain::memory::Rate {
+		input_per_million: 1_000_000,
+		output_per_million: 0,
+	};
+	Ok(rate.charge(tokens, 0)?)
+}
+
 async fn populate(
 	store: &Store,
 	tx: &mut dyn TransactionExecutor,
@@ -283,13 +298,7 @@ async fn populate(
 			record(tx, tenant, &file.digest, key, 0, None, vec![]).await?;
 		}
 		for (ordinal, body) in bodies.iter().enumerate() {
-			let input = match body {
-				Content::Text { text, .. } => EmbeddingInput::Text(text),
-				Content::Image(bytes) => EmbeddingInput::Image {
-					media_type: &file.media_type,
-					bytes,
-				},
-			};
+			let input = body.input(&file.media_type);
 			let vector = transport.embed(embedding, input).await?.vector;
 			record(
 				tx,
@@ -424,6 +433,15 @@ async fn passages(
 enum Content {
 	Text { text: String, start: i64, end: i64 },
 	Image(Vec<u8>),
+}
+
+impl Content {
+	fn input<'a>(&'a self, media_type: &'a str) -> EmbeddingInput<'a> {
+		match self {
+			Self::Text { text, .. } => EmbeddingInput::Text(text),
+			Self::Image(bytes) => EmbeddingInput::Image { media_type, bytes },
+		}
+	}
 }
 
 async fn record(

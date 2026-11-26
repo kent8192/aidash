@@ -48,14 +48,7 @@ pub(crate) async fn invoke(
 	}
 	let result = match name {
 		"drive_search" => {
-			index::search(
-				store,
-				&mut access,
-				run,
-				serde_json::from_value(input)?,
-				true,
-			)
-			.await
+			index::search(store, &mut access, run, serde_json::from_value(input)?).await
 		}
 		"file_read" => read(store, &mut access, run, input).await,
 		"file_search" => files(store, &mut access, run, input).await,

@@ -40,6 +40,7 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"skill_load",
 	"skill_read",
 	"file_search",
+	"drive_search",
 	"file_read",
 	"task_create",
 	"task_delegate",
@@ -673,7 +674,7 @@ impl QualifiedRef {
 			id: format!("aidash.{operation}"),
 			version: if matches!(
 				operation,
-				"workspace_read"
+				"file_read" | "file_search" | "workspace_read"
 					| "workspace_search"
 					| "workspace_message"
 					| "memory_mutate"
@@ -684,10 +685,7 @@ impl QualifiedRef {
 					| "workspace_wait"
 			) {
 				"1.1.0"
-			} else if matches!(
-				operation,
-				"workspace_observe" | "file_read" | "file_search" | "attachment_copy"
-			) {
+			} else if matches!(operation, "workspace_observe" | "attachment_copy") {
 				"1.0.1"
 			} else {
 				"1.0.0"

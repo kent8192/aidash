@@ -158,7 +158,6 @@ impl CoreToolCatalog for Contracts {
 			"file_search",
 			"file_read",
 			"drive_search",
-			"drive_publish_status",
 		]
 		.into_iter()
 		.chain(
