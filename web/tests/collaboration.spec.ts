@@ -4050,3 +4050,46 @@ test("Setting Request completes on the matching provider authorization return", 
     )
     .toEqual({ action: "done" });
 });
+
+test("Setting Request keeps a Japanese node purge pending until the person's operation succeeds", async ({
+  page,
+}) => {
+  const { submissions } = await setup(page, {
+    subject: true,
+    locale: "ja-JP",
+    setting: {
+      kind: "purge",
+      label: "古いノード",
+      target: { type: "node", node: "old-node" },
+    },
+  });
+  let calls = 0;
+  await page.route("**/api/tenants/acme/nodes/old-node/purge", (route) => {
+    calls++;
+    return calls === 1
+      ? route.fulfill({
+          status: 409,
+          json: { error: { message: "まだ削除されていません。" } },
+        })
+      : route.fulfill({ json: {} });
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "古いノード" }).click();
+  const dialog = page.getByRole("dialog");
+  const purge = dialog.getByRole("button", { name: "完全に消去する" });
+  await expect(purge).toHaveAttribute("data-variant", "destructive");
+  await expect(dialog.getByRole("button", { name: "あとで" })).toBeEnabled();
+  expect(calls).toBe(0);
+  await purge.click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "まだ削除されていません。",
+  );
+  expect(
+    submissions.filter((item) => item.path.endsWith("/answer")),
+  ).toHaveLength(0);
+  await purge.click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find((item) => item.path.endsWith("/answer"))?.body,
+  ).toEqual({ action: "done", language: "ja" });
+});
