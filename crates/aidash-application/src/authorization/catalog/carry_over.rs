@@ -117,13 +117,21 @@ pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<Carr
 	}
 	let partial = decided.iter().any(|(_, result)| !result.carried);
 	let mut results = Vec::new();
-	for (source, result) in decided {
+	for (source, mut result) in decided {
+		if entry.kind == "model" && partial && result.carried {
+			result
+				.changed
+				.push("Model approval requires consent on every Node".into());
+			result.carried = false;
+		}
 		if let Some(source) = source.filter(|_| result.carried) {
-			let scope_of_copy = if source.scope == ApprovalScope::Deployment && !partial {
-				ApprovalScope::Deployment
-			} else {
-				ApprovalScope::Node
-			};
+			let scope_of_copy =
+				if (entry.kind == "model" || source.scope == ApprovalScope::Deployment) && !partial
+				{
+					ApprovalScope::Deployment
+				} else {
+					ApprovalScope::Node
+				};
 			scope
 				.write_carried(&result.node, &source, entry, scope_of_copy)
 				.await?;

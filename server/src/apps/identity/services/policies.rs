@@ -199,6 +199,18 @@ async fn approve_scoped(
 ) -> Result<Vec<Binding>> {
 	use aidash_domain::identity::catalog::ApprovalScope;
 	let tenant = access.identity.tenant.clone();
+	let mut resolved = approvals.to_vec();
+	for item in &mut resolved {
+		let entry = crate::apps::identity::repositories::catalog_approvals::definition(
+			&mut access.tx,
+			&item.entry,
+		)
+		.await?;
+		if entry.kind == "model" {
+			item.scope = ApprovalScope::Deployment;
+		}
+	}
+	let approvals = resolved.as_slice();
 	let all_nodes = approvals
 		.iter()
 		.any(|item| item.scope == ApprovalScope::Deployment);
