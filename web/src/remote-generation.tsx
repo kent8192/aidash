@@ -1,3 +1,4 @@
+import { useRemoteTaskModel, taskModelError } from "./task-model-fields";
 import { Button } from "./components/ui/button";
 import { useRef, useState } from "react";
 import type {
@@ -16,6 +17,8 @@ import {
   HomeNativeMemoryFields,
   nativeMemoryRequest,
 } from "./remote-native-memory";
+
+type Prepared = RemoteGenerationPrepared & { task_model_required?: boolean };
 
 function reference(value: string): EntityRef {
   const at = value.lastIndexOf("@");
@@ -36,9 +39,7 @@ export function RemoteGenerationAssignForm({
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const [draft, setDraft] = useState<RemoteGenerationInput | null>(null);
-  const [prepared, setPrepared] = useState<RemoteGenerationPrepared | null>(
-    null,
-  );
+  const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const grant = useRef<{ binding: string; id: string } | null>(null);
@@ -47,20 +48,25 @@ export function RemoteGenerationAssignForm({
   const terminalPrepared =
     prepared &&
     !["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(prepared.status);
+  const remoteModel = useRemoteTaskModel(
+    task,
+    prepared?.node_id,
+    prepared?.agent,
+    prepared?.prepared && !terminalPrepared
+      ? (prepared.task_model_required ?? "inspect")
+      : false,
+  );
   const prepare = async (input: RemoteGenerationInput) => {
     setDraft(input);
     setBusy(true);
     setError("");
     try {
       setPrepared(
-        await apiFetch<RemoteGenerationPrepared>(
-          `/api/tasks/${task}/remote-generation`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(input),
-          },
-        ),
+        await apiFetch<Prepared>(`/api/tasks/${task}/remote-generation`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }),
       );
     } catch (cause) {
       setPrepared(null);
@@ -233,12 +239,14 @@ export function RemoteGenerationAssignForm({
           className="grid min-w-0 gap-3 border-t border-border pt-3"
           onSubmit={(event) => {
             event.preventDefault();
+            if (!remoteModel.ready && !grant.current) return;
             const fields = new FormData(event.currentTarget);
             setBusy(true);
             void submit(async () => {
               const input = grant.current
                 ? JSON.parse(grant.current.binding)
                 : {
+                    ...remoteModel.payload,
                     node_id: prepared.node_id,
                     agent: prepared.agent,
                     ttl_seconds: Number(fields.get("lifetime")),
@@ -280,7 +288,7 @@ export function RemoteGenerationAssignForm({
                   grant.current = null;
                   setGrantPending(false);
                 }
-                throw cause;
+                throw taskModelError(cause, ja);
               }
             }).finally(() => setBusy(false));
           }}
@@ -311,6 +319,7 @@ export function RemoteGenerationAssignForm({
                 required
               />
             </Field>
+            {remoteModel.fields}
             <Check
               checked={memory}
               onChange={(event) => setMemory(event.target.checked)}
@@ -350,7 +359,7 @@ export function RemoteGenerationAssignForm({
             </Hint>
           )}
           <div className="flex justify-end">
-            <Button disabled={busy}>
+            <Button disabled={busy || (!grantPending && !remoteModel.ready)}>
               {grantPending
                 ? ja
                   ? "同じ実行許可を再試行"

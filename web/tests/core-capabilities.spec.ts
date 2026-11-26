@@ -1143,6 +1143,129 @@ test("thread run retries reuse an ambiguous idempotency key and changed prompts 
   expect(errors).toEqual([]);
 });
 
+test("a Thread registers a chosen Task Model, approves it and retries the same start", async ({
+  page,
+}) => {
+  await setup(page, {
+    subject: true,
+    coreCapabilities: true,
+    taskModelAgent: true,
+  });
+  const reference = { id: "registered-gpt", version: "1.0.0" };
+  let approved = false;
+  const starts: Record<string, unknown>[] = [];
+  const registrations: Record<string, unknown>[] = [];
+  await page.route("**/api/working-areas*", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.route("**/api/providers/openrouter/models", (route) =>
+    route.fulfill({
+      json: {
+        models: [
+          {
+            id: "openai/gpt-6.2-sol",
+            name: "GPT Sol",
+            supported_parameters: ["reasoning_effort"],
+            context_length: 16000,
+            top_provider: { max_completion_tokens: 1000 },
+            pricing: { prompt: "0.000001", completion: "0.000002" },
+            architecture: {
+              input_modalities: ["text"],
+              output_modalities: ["text"],
+            },
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/registry", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    registrations.push(route.request().postDataJSON().config);
+    return route.fulfill({ json: reference });
+  });
+  await page.route("**/api/threads/*/agents/*/executions", (route) => {
+    starts.push(route.request().postDataJSON());
+    return approved
+      ? route.fulfill({ json: {} })
+      : route.fulfill({
+          status: 409,
+          json: {
+            code: "task_model_not_approved",
+            model: reference,
+            can_approve: true,
+          },
+        });
+  });
+  await page.route("**/catalog/review**", (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON().items[0]).toMatchObject({
+        reference,
+        scope: "deployment",
+      });
+      approved = true;
+      return route.fulfill({ json: {} });
+    }
+    return route.fulfill({
+      json: {
+        root: reference,
+        node: "home",
+        hidden: 0,
+        closure_digest: "digest",
+        ready: approved,
+        items: [
+          {
+            reference,
+            kind: "model",
+            name: { en: "GPT Sol" },
+            description: { en: "Model" },
+            consumers: [],
+            digest: "model-digest",
+            status: approved ? "approved" : "approvable",
+            approved,
+            can_approve: true,
+            expected_revision: 0,
+            widen: false,
+            restriction: null,
+            proposed_restriction: null,
+          },
+        ],
+      },
+    });
+  });
+  await openThread(page);
+  await page.getByLabel("Agent to run").selectOption("researcher@1.0.0");
+  const start = page.getByRole("button", { name: "Start work", exact: true });
+  await page.getByLabel("Next instruction").fill("Investigate this request");
+  await expect(start).toBeDisabled();
+  await page.getByRole("combobox", { name: /model ID/i }).fill("GPT Sol");
+  await page
+    .getByRole("option", { name: /GPT Sol/ })
+    .first()
+    .click();
+  await expect(page.getByRole("slider")).toHaveAttribute(
+    "aria-valuetext",
+    "medium",
+  );
+  await page.getByRole("slider").press("End");
+  await start.click();
+  const review = page.getByRole("dialog");
+  await expect(
+    review.getByLabel("Approval scope").locator("option"),
+  ).toHaveCount(1);
+  await review.getByRole("button", { name: /Approve selected/ }).click();
+  await expect.poll(() => starts.length).toBe(2);
+  expect(starts[0]).toMatchObject({
+    task_model: { model: reference, reasoning_effort: "max" },
+  });
+  expect(starts[1]).toEqual(starts[0]);
+  expect(registrations).toHaveLength(1);
+  expect(registrations[0]).toMatchObject({
+    provider_credential: "openrouter",
+    model_id: "openai/gpt-6.2-sol",
+  });
+  await expect(review).toHaveCount(0);
+});
+
 test("steering retries reuse an ambiguous key and changed prompts get a new key", async ({
   page,
 }) => {

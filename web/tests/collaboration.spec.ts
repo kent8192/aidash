@@ -379,6 +379,18 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       let unavailable = false;
       let activationAttempts = 0;
       let cancellations = 0;
+      await page.route("**/api/providers/openrouter/models", (route) =>
+        route.fulfill({
+          json: {
+            models: [
+              {
+                id: "openai/gpt-6.2-sol",
+                supported_parameters: ["reasoning_effort"],
+              },
+            ],
+          },
+        }),
+      );
       await page.route("**/api/generation/acme/policies", (route) =>
         route.fulfill({ json: [] }),
       );
@@ -394,6 +406,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             });
           return route.fulfill({
             json: {
+              task_model_required: failure === "transport",
               intent_id: body.id,
               node_id: body.node_id,
               request_id: "receiver-request",
@@ -402,6 +415,22 @@ for (const locale of ["en-US", "ja-JP"] as const) {
               status: approved ? "QUEUED" : "PENDING_APPROVAL",
               expires_at: new Date(Date.now() + 3600000).toISOString(),
             },
+          });
+        }
+        if (path.endsWith("/remote-grants/models")) {
+          expect(route.request().postDataJSON()).toEqual({
+            node_id: "aidash://remote",
+            agent: { id: "prepared-agent", version: "1.0.0" },
+          });
+          return route.fulfill({
+            json: [
+              {
+                model: { id: "receiver-model", version: "1.0.0" },
+                openrouter_model_id: "openai/gpt-6.2-sol",
+                name: { en: "Receiver Sol" },
+                pricing: { prompt: "0.000001", completion: "0.000002" },
+              },
+            ],
           });
         }
         if (path.endsWith("/cancel")) {
@@ -554,6 +583,18 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       await expect(form).toContainText(
         ja ? "私有記憶を空で開始" : "empty private memory",
       );
+      if (failure === "transport") {
+        const remote = form.getByLabel(ja ? "モデル" : "Model", {
+          exact: true,
+        });
+        await remote.selectOption(
+          JSON.stringify({ id: "receiver-model", version: "1.0.0" }),
+        );
+        await expect(form.getByRole("slider")).toHaveAttribute(
+          "aria-valuetext",
+          "medium",
+        );
+      }
       const activate = form.getByRole("button", {
         name: ja ? "許可して実行" : "Authorize and execute",
         exact: true,
@@ -580,6 +621,12 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       await expect(dialog).toHaveCount(0);
       expect(activationAttempts).toBe(failure === "create" ? 1 : 2);
       expect(grants).toHaveLength(2);
+      if (failure === "transport")
+        expect(grants[0].task_model).toEqual({
+          model: { id: "receiver-model", version: "1.0.0" },
+          reasoning_effort: "medium",
+        });
+      else expect(grants[0]).not.toHaveProperty("task_model");
       if (failure === "transport") expect(grants[1]).toEqual(grants[0]);
       expect(grants[0]).toMatchObject({
         node_id: "aidash://remote",
@@ -981,6 +1028,77 @@ test("new request opens a Thread with the Japanese request contract", async ({
   expect(errors).toEqual([]);
 });
 
+test("a requester sends a model approval request and keeps the new Thread pending", async ({
+  page,
+}) => {
+  await setup(page, { subject: true, locale: "ja-JP", taskModelAgent: true });
+  const model = { id: "model", version: "1.0.0" };
+  const starts: unknown[] = [];
+  const requests: unknown[] = [];
+  await page.route("**/api/providers/openrouter/models", (route) =>
+    route.fulfill({ json: { models: [] } }),
+  );
+  await page.route("**/api/threads", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    starts.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 422,
+      json: { code: "task_model_not_approved", model, can_approve: false },
+    });
+  });
+  await page.route("**/catalog/review?**", (route) =>
+    route.fulfill({
+      json: {
+        root: model,
+        hidden: 0,
+        ready: false,
+        closure_digest: "digest",
+        items: [
+          {
+            reference: model,
+            kind: "model",
+            name: { en: "Evidence model" },
+            description: { en: "Research" },
+            consumers: [],
+            status: "approvable",
+            approved: false,
+            can_approve: false,
+            expected_revision: 0,
+            widen: false,
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/catalog/requests", (route) => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ json: {} });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
+  const form = page.getByRole("dialog");
+  await form.getByLabel("タイトル", { exact: true }).fill("調査");
+  await form.getByLabel("依頼", { exact: true }).fill("見積もりを比較");
+  await form.getByLabel("コーディネーター").selectOption("researcher@1.0.0");
+  await form
+    .getByRole("combobox", { name: "プロバイダーのモデルID" })
+    .fill("Evidence");
+  await form.getByRole("option", { name: /Evidence model/ }).click();
+  await form.getByRole("button", { name: "依頼する", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "承認依頼を送る" });
+  const send = dialog.getByRole("button", { name: "承認依頼を送る" });
+  await expect(send).toBeDisabled();
+  await dialog
+    .getByPlaceholder("この定義が必要な理由")
+    .fill("資料の調査に使います");
+  await send.click();
+  await expect(dialog).toContainText("依頼を送信しました");
+  expect(requests).toEqual([
+    { node: defaultNode.name, root: model, reason: "資料の調査に使います" },
+  ]);
+  expect(starts).toHaveLength(1);
+  expect(starts[0]).toMatchObject({ task_model: { model } });
+});
 test("failed message keeps its draft and idempotency key on retry", async ({
   page,
 }) => {
@@ -3885,6 +4003,77 @@ test("a remote decline holder sees only the paused call and cannot send a senten
     .click();
   await expect.poll(() => declines).toEqual([{ call: call.call }]);
   expect(errors).toEqual([]);
+});
+
+test("editing a Duty keeps its registered model and can override its default effort", async ({
+  page,
+}) => {
+  const { deleteThread } = await setup(page, {
+    subject: true,
+    taskModelAgent: true,
+  });
+  for (const thread of fixture().threads) deleteThread(thread.id);
+  const agent = { id: "researcher", version: "1.0.0" };
+  const model = { id: "model", version: "1.0.0" };
+  const duty = {
+    id: "weekly-report",
+    title: "Weekly report",
+    mission: "Compare",
+    procedure: "Read the notes",
+    agent,
+    task_model: { model },
+    trigger: null,
+    status: "active",
+    requester: "alice",
+    mine: true,
+    may_edit: true,
+    may_manage: true,
+    max_lateness_seconds: 3600,
+    pause_after_failures: 3,
+  };
+  await page.route("**/api/duties?scope=mine", (route) =>
+    route.fulfill({ json: [duty] }),
+  );
+  await page.route("**/api/providers/openrouter/models", (route) =>
+    route.fulfill({
+      json: {
+        models: [
+          {
+            id: "anthropic/claude-sonnet-5.5",
+            name: "Sonnet",
+            supported_parameters: ["reasoning_effort"],
+            architecture: {
+              output_modalities: ["text"],
+              input_modalities: ["text"],
+            },
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/duties/weekly-report", (route) =>
+    route.fulfill({ json: {} }),
+  );
+  await page.goto("/collaboration");
+  const list = page.getByRole("region", { name: "Duties", exact: true });
+  await list.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(list.getByRole("slider")).toHaveAttribute(
+    "aria-valuetext",
+    "high",
+  );
+  await expect(
+    list.getByRole("combobox", { name: "Provider model ID" }),
+  ).toHaveValue(/Evidence model/);
+  await list.getByRole("slider").press("End");
+  const posted = page.waitForRequest(
+    (r) =>
+      r.method() === "PATCH" && r.url().endsWith("/api/duties/weekly-report"),
+  );
+  await list.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await posted).postDataJSON()).toMatchObject({
+    agent,
+    task_model: { model, reasoning_effort: "max" },
+  });
 });
 
 test("a successor can edit the Duty immediately when takeover succeeds and resume is refused", async ({

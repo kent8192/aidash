@@ -9,12 +9,14 @@ export function CatalogCarryOptions({
   scope,
   setScope,
   disabled,
+  deploymentOnly = false,
 }: {
   carry: boolean;
   setCarry: (value: boolean) => void;
   scope: ApprovalScope;
   setScope: (value: ApprovalScope) => void;
   disabled: boolean;
+  deploymentOnly?: boolean;
 }) {
   const { locale } = useI18n();
   const japanese = locale === "ja-JP";
@@ -42,9 +44,11 @@ export function CatalogCarryOptions({
               ? "この Deployment のすべての Node"
               : "Every Node on this Deployment"}
           </option>
-          <option value="node">
-            {japanese ? "この Node のみ" : "This Node only"}
-          </option>
+          {!deploymentOnly && (
+            <option value="node">
+              {japanese ? "この Node のみ" : "This Node only"}
+            </option>
+          )}
         </select>
       </label>
     </fieldset>

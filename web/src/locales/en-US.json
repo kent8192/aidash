@@ -536,6 +536,7 @@
   "saved": "Saved.",
   "modelLoadError": "Could not load models. Please retry.",
   "modelCatalogHelp": "Choose a model supporting text input/output and tool calling with a published output limit. The registered limit is the model maximum.",
+  "taskStartModel": "Picked at each Task start",
   "modelChoose": "Select a model from the list.",
   "modelPricing": "Indicative price per million tokens (USD, input / output):",
   "modelMaxOutputTokens": "Maximum output tokens",

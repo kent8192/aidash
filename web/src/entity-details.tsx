@@ -111,6 +111,11 @@ export function EntityDetails({
           </span>
         </div>
         <ModelSource entry={current} />
+        {current.kind === "agent" && current.config?.model === null && (
+          <Hint>
+            {t("model")}: {t("taskStartModel")}
+          </Hint>
+        )}
         {local(current.description) && (
           <Hint>{local(current.description)}</Hint>
         )}

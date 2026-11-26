@@ -101,7 +101,7 @@ function usePolicyPresentation(policies: readonly GenerationPolicy[]) {
   };
 }
 type AgentFields = {
-  model?: EntityRef;
+  model?: EntityRef | null;
   schema_version?: number;
   bindings?: Binding[];
   remove_default?: string[];
@@ -535,7 +535,7 @@ function PolicyEditor({
         schema: initial?.template.schema ?? {},
         config: {
           ...initial?.template.config,
-          model: entityRef(model),
+          model: model ? entityRef(model) : null,
           instructions: text("instructions"),
           schema_version: 1,
           ...bindings,
@@ -664,11 +664,10 @@ function PolicyEditor({
         <div className="grid gap-1.5">
           <Field label={t("model")}>
             <NativeSelect
-              required
               value={model}
               onChange={(event) => setModel(event.target.value)}
             >
-              <option value="">{t("choose")}</option>
+              <option value="">{t("taskStartModel")}</option>
               {models.map((entry) => (
                 <option key={key(entry)} value={key(entry)}>
                   {entityLabel(entry)}
@@ -939,7 +938,7 @@ function PolicyEditor({
       </section>
       {error && <Alert>{error}</Alert>}
       <div className="flex justify-end border-t border-border pt-4">
-        <Button disabled={!models.length && !model}>{t("save")}</Button>
+        <Button>{t("save")}</Button>
       </div>
     </form>
   );
@@ -1032,7 +1031,10 @@ function RequestDetail({
               <span className="font-mono">{request.agent_version}</span>
             </>,
           ],
-          [t("model"), config.model && entryLabel(config.model)],
+          [
+            t("model"),
+            config.model ? entryLabel(config.model) : t("taskStartModel"),
+          ],
           [
             t("tools"),
             config.bindings

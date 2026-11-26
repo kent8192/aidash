@@ -899,7 +899,10 @@ export function Channel({
                 value="schedules"
                 className="flex min-h-0 flex-1 flex-col overflow-y-auto"
               >
-                <DutiesPanel scope={{ kind: "thread", thread: thread.id }} />
+                <DutiesPanel
+                  data={data}
+                  scope={{ kind: "thread", thread: thread.id }}
+                />
               </TabsContent>
             </aside>
           </Tabs>
