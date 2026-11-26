@@ -191,6 +191,7 @@ pub async fn remove_member(
 	scope.remove_member(&subnode, agent).await
 }
 
+#[allow(clippy::too_many_arguments)] // The Subnode Task carries its request, journal range and Task Model.
 pub async fn task(
 	scope: &mut dyn crate::ports::subnodes::ManageScope,
 	run: &RunMetadata,

@@ -451,12 +451,12 @@ async fn answer_setting_locked(
 	answer: aidash_domain::setting_requests::Answer,
 ) -> Result<HumanRequest> {
 	use aidash_domain::setting_requests::{self, Action, Form};
-	if !access
+	if access
 		.snapshot
 		.bundle
 		.subjects
 		.get(&identity.subject)
-		.is_some_and(|subject| subject.kind == aidash_domain::policy::SubjectKind::User)
+		.is_none_or(|subject| subject.kind != aidash_domain::policy::SubjectKind::User)
 		|| request.kind != setting_requests::KIND
 		|| !setting_requests::is_tenant_configurator(&run.agent_id)
 		|| !run.is_local(f.store.deployment.as_str())

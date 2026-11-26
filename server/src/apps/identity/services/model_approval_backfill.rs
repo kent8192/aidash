@@ -35,7 +35,7 @@ pub(crate) fn forward() -> String {
 		Expr::exists(deleted).not()
 	};
 	let source = Query::select()
-		.distinct_on(["tenant", "entry_id", "entry_version"].map(|f| approval(f)))
+		.distinct_on(["tenant", "entry_id", "entry_version"].map(&approval))
 		.columns(fields.map(approval))
 		.from(Alias::new("authorization_catalog"))
 		.inner_join(

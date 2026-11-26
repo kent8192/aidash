@@ -222,18 +222,18 @@ pub fn picker_id(id: &str) -> bool {
 			.any(|variant| matches!(variant, "batch" | "free"))
 }
 
-/// Registered models use the same series and tier order on a receiving Node's picker.
-pub fn picker_order(
-	id: &str,
-	created: Option<i64>,
-) -> (
+/// Sort key of [`picker_order`]: series, generation, tier, version, release date, id.
+pub type PickerKey<'a> = (
 	usize,
 	std::cmp::Reverse<u32>,
 	usize,
 	std::cmp::Reverse<Vec<u32>>,
 	std::cmp::Reverse<i64>,
-	&str,
-) {
+	&'a str,
+);
+
+/// Registered models use the same series and tier order on a receiving Node's picker.
+pub fn picker_order(id: &str, created: Option<i64>) -> PickerKey<'_> {
 	let (vendor, name) = id.split_once('/').unwrap_or(("", id));
 	let numbers = name
 		.split(|c: char| !c.is_ascii_digit())

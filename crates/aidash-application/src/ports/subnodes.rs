@@ -67,6 +67,7 @@ pub trait ManageScope: Send {
 	async fn remove_member(&mut self, subnode: &Subnode, agent: &EntityRef) -> Result<()>;
 	/// Inserts the task in the Subnode Thread and admits its leader with the
 	/// creating Run's subject chain in the same transaction. Reuses `key`.
+	#[allow(clippy::too_many_arguments)] // The Subnode Task carries its request, journal range and Task Model.
 	async fn task(
 		&mut self,
 		subnode: &Subnode,
