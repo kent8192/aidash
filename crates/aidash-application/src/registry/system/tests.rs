@@ -586,6 +586,21 @@ fn configurator_instructions_changes_require_both_the_administrator_and_its_agen
 	let node = aidash_domain::nodes::NodeAddress::derived("aidash://local", "home");
 	let groups = [tenancy::MEMBERS.to_owned()].into();
 	admin::add_user_subject(&mut bundle, "member", &groups).unwrap();
+	let mut node_settings = bundle.policies[0].clone();
+	node_settings.id = "member-node-settings".into();
+	node_settings.subjects.groups = groups.clone();
+	node_settings.actions = [admin::NODE_UPDATE.to_owned()].into();
+	bundle.policies.push(node_settings);
+	assert!(admin::configurator_administrator(
+		&bundle,
+		tenancy::OWNER,
+		"aidash://local"
+	));
+	assert!(!admin::configurator_administrator(
+		&bundle,
+		"member",
+		"aidash://local"
+	));
 	let ordinary = aidash_domain::qualified_agent(&node, "ordinary", "1.0.0");
 	admin::add_agent_subject(&mut bundle, &ordinary, &node.node, &groups).unwrap();
 	assert!(super::configurator::install_subject(&mut bundle, &node));

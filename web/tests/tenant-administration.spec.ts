@@ -1365,7 +1365,7 @@ for (const peerEdit of [true, false]) {
   });
 }
 
-for (const role of ["administrator", "member"] as const) {
+for (const role of ["administrator", "member", "node administrator"] as const) {
   test(`Tenant Configurator entry points for ${role}`, async ({ page }) => {
     await setup(page, { configuratorRole: role, locale: "en-US" });
     await page.goto("/settings?view=node");

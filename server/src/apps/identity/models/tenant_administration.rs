@@ -687,6 +687,11 @@ impl TenantAdministrator {
 				None
 			};
 			Ok(TenantAdministration {
+				can_start_configurator: rules::configurator_administrator(
+					&snapshot.bundle,
+					&self.identity.subject,
+					&self.node_id,
+				),
 				model_call_usage,
 				label,
 				tenant: self.tenant().to_owned(),

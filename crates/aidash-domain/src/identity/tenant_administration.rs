@@ -15,13 +15,13 @@ pub fn is_configurator_subject(subject: &str) -> bool {
 		.is_some_and(|(id, version)| id == CONFIGURATOR_ID && !version.is_empty())
 }
 
-/// A mapped person with Tenant administration actions, as in the settings overview.
+/// The mapped person must hold the Tenant administration permissions (ADRs 0021, 0026).
 pub fn configurator_administrator(bundle: &PolicyBundle, person: &str, deployment: &str) -> bool {
 	bundle
 		.subjects
 		.get(person)
 		.is_some_and(|s| s.kind == SubjectKind::User)
-		&& ACTIONS.iter().any(|action| {
+		&& ADMINISTRATION_ACTIONS.iter().all(|action| {
 			bundle
 				.evaluate(&crate::policy::Evaluation {
 					subject: person.into(),
@@ -29,7 +29,11 @@ pub fn configurator_administrator(bundle: &PolicyBundle, person: &str, deploymen
 					resource: crate::policy::Resource {
 						tenant: bundle.tenant.clone(),
 						kind: resource_kind(action).into(),
-						id: COLLECTION.into(),
+						id: if *action == super::tenancy::TENANT_DELETE {
+							bundle.tenant.clone()
+						} else {
+							COLLECTION.into()
+						},
 						attributes: json!({}),
 					},
 					environment: json!({"node_id":deployment,"transport":"api"}),

@@ -276,7 +276,7 @@ export async function setup(
     nativeMemoryDisabled?: boolean;
     remoteNativeCollision?: boolean;
     tenantActions?: string[];
-    configuratorRole?: "administrator" | "member";
+    configuratorRole?: "administrator" | "member" | "node administrator";
     /** When the Run waiting for the question continues without an answer. */
     answerBy?: string;
     elicitation?: { message: string; schema: Record<string, unknown> };
@@ -621,8 +621,8 @@ export async function setup(
           label: null,
           actions: options.tenantActions ?? ["registry.create"],
           assignable_groups: [],
-          policy_revision:
-            options.configuratorRole === "administrator" ? 1 : null,
+          policy_revision: options.configuratorRole === "member" ? null : 1,
+          can_start_configurator: options.configuratorRole === "administrator",
         },
       });
     if (path === "/api/registry/versions")
