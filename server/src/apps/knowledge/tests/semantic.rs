@@ -12,8 +12,6 @@ use common::request;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-#[path = "semantic/source_selection.rs"]
-mod source_selection;
 
 struct ControlledContext {
 	_fixture: common::ApplicationFixture,
@@ -24,7 +22,6 @@ struct ControlledContext {
 	/// The Task owner's token.
 	token: String,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-	selector_calls: Arc<Mutex<Vec<Value>>>,
 	/// Tool-call responses before the model stops, for Runs that need several inferences.
 	tool_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 	model_server: reinhardt::test::fixtures::server::TestServerGuard,
@@ -39,11 +36,8 @@ mod controlled_context_composition {
 	use super::*;
 	#[rstest::fixture]
 	pub(super) async fn controlled_context(
-		#[default(true)] memory: bool,
 		#[default(true)] workspace_retrieval: bool,
 		#[default(false)] degrade: bool,
-		#[default(false)] on_demand_memory: bool,
-		#[default(None)] selection: Option<source_selection::SelectionCase>,
 		#[from(common::runtime)] _runtime: common::RuntimeFuture,
 		#[future(awt)]
 		#[from(common::native_application)]
@@ -63,52 +57,28 @@ mod controlled_context_composition {
 		embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	) -> ControlledContext {
 		let captured = fixture.state.captured;
-		let selector_calls = fixture.state.selector_calls;
 		let tool_rounds = fixture.state.tool_rounds;
 		let model_server = fixture.server;
 
 		use aidash_server::domain::{ArtifactInput, qualified_agent};
-		let (mut f, url, schema) = application_fixture.runtime.parts();
+		let (f, url, schema) = application_fixture.runtime.parts();
 		let app = application_fixture.application.clone();
 
 		let endpoint = model_server.url.clone();
 		let (mut policy, token, task) =
 			common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-		if let Some(selection) = selection {
-			source_selection::configure_selector(&mut f, &app, &token, &endpoint, selection).await;
-		}
 		let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 		let mut agent = f.registry.get(&acme, "research", "1.0.0").await.unwrap();
 		agent.version = "1.0.1".into();
 		agent.binding_normalization = None;
 		let mut bindings = vec![];
-		for (enabled, id, kind, adapter) in [
-			(memory, "context-memory", "memory", "semantic_memory"),
-			(
-				workspace_retrieval,
-				"context-thread",
-				"source",
-				"workspace_retrieval",
-			),
-		] {
-			if !enabled {
-				continue;
-			}
-			let mut source = json!({"adapter":adapter});
-			// `degrade` is the default since ADR 0129; `false` asks for the
-			// Outage Wait explicitly.
-			if adapter == "workspace_retrieval" {
-				source["on_unavailable"] = json!(if degrade { "degrade" } else { "pause" });
-			}
-			let mut entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
-			if on_demand_memory && adapter == "semantic_memory" {
-				entry["config"]["context_source"] = json!({"provider":"aidash.native-context/1","operation":"semantic_memory","tools":{"read":[],"write":[],"detail":null},"pin":{"policy":"on_demand"},"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1","disclosure":{"previews":false,"query":false},"required_home":false});
-			}
-			if adapter == "workspace_retrieval"
-				&& let Some(selection) = selection
-			{
-				entry["config"]["context_source"] = source_selection::declaration(&f, selection);
-			}
+		if workspace_retrieval {
+			let id = "context-thread";
+			let kind = "source";
+			// Degrade is the default since ADR 0129. This fixture also drives
+			// the explicit Outage Wait policy.
+			let on_unavailable = if degrade { "degrade" } else { "pause" };
+			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":on_unavailable}}});
 			f.registry
 				.register(&acme, serde_json::from_value(entry).unwrap())
 				.await
@@ -120,9 +90,6 @@ mod controlled_context_composition {
 				200
 			);
 			bindings.push(json!({"kind":kind,"target":{"registry_deployment":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
-		}
-		if selection.is_some() {
-			bindings.push(json!({"kind":"decider","target":{"registry_deployment":f.config.deployment,"id":"context-selector","version":"1.0.0"},"narrow":{}}));
 		}
 		agent.config["bindings"] = json!(bindings);
 		f.registry.register(&acme, agent).await.unwrap();
@@ -226,7 +193,6 @@ mod controlled_context_composition {
 			schema,
 			token,
 			captured,
-			selector_calls,
 			tool_rounds,
 			model_server,
 			embedding_server,
@@ -237,16 +203,13 @@ mod controlled_context_composition {
 use controlled_context_composition::controlled_context;
 
 #[rstest::rstest]
-#[case(false, false)]
-#[case(false, true)]
-#[case(true, false)]
-#[case(true, true)]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
-async fn automatic_semantic_context_respects_each_agent_behavior_control(
-	#[case] memory: bool,
+async fn automatic_semantic_context_respects_the_thread_retrieval_source(
 	#[case] workspace_retrieval: bool,
 	#[future(awt)]
-	#[with(memory, workspace_retrieval)]
+	#[with(workspace_retrieval)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -259,7 +222,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		fixture.f.store.runs(&TEST_FIXTURE).await.unwrap()[0]
 	);
 	let semantic = &contexts[0]["snapshot"]["semantic_memory"]["thread"];
-	if !memory && !workspace_retrieval {
+	if !workspace_retrieval {
 		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
 	} else {
 		let mut kinds: Vec<_> = semantic["matches"]
@@ -269,15 +232,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 			.map(|m| m["source"]["kind"].as_str().unwrap())
 			.collect();
 		kinds.sort();
-		let mut expected = Vec::new();
-		if memory {
-			expected.push("memory");
-		}
-		if workspace_retrieval {
-			expected.extend(["artifact", "message"]);
-		}
-		expected.sort();
-		assert_eq!(kinds, expected, "semantic: {semantic}");
+		assert_eq!(kinds, ["artifact", "message"], "semantic: {semantic}");
 	}
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
@@ -290,7 +245,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 #[tokio::test]
 async fn on_demand_memory_does_not_leak_through_an_always_thread_source(
 	#[future(awt)]
-	#[with(true, true, false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -340,7 +295,7 @@ enum Unavailable {
 async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_every_cause(
 	#[case] unavailable: Unavailable,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
@@ -473,7 +428,7 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_provider_recovers(
 	#[case] pending_entry: bool,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
@@ -667,7 +622,7 @@ fn request_semantic_memory(fixture: &ControlledContext, request: usize) -> Value
 async fn local_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
 	#[case] pending_entry: bool,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::TaskStatus;
@@ -816,7 +771,7 @@ async fn local_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
 async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 	#[case] embedding_outage: bool,
 	#[future(awt)]
-	#[with(false, true, true)]
+	#[with(true, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -915,7 +870,7 @@ async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 #[tokio::test]
 async fn a_skipped_thread_read_keeps_the_durable_outage(
 	#[future(awt)]
-	#[with(false, true, true)]
+	#[with(true, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -990,7 +945,7 @@ async fn local_semantic_key_rejection_and_contract_violation_pause_without_retry
 	#[case] fault: Fault,
 	#[case] reason: &str,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::TaskStatus;
@@ -1993,14 +1948,12 @@ fn isolated_application(
 #[derive(Clone)]
 struct ControlledContextState {
 	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-	selector_calls: Arc<Mutex<Vec<Value>>>,
 	tool_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 #[fixture]
 fn controlled_context_state() -> ControlledContextState {
 	ControlledContextState {
 		captured: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-		selector_calls: Default::default(),
 		tool_rounds: Default::default(),
 	}
 }
@@ -2011,12 +1964,7 @@ fn controlled_context_router(
 	let captured = state.captured.clone();
 	let received = captured.clone();
 	let tool_rounds = state.tool_rounds.clone();
-	let selector_calls = state.selector_calls.clone();
 	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
-.route("/systemone", http::Method::POST, reply(move |request: reinhardt::Request| {
-	let calls = selector_calls.clone();
-	async move { source_selection::answer(request.json::<Value>().unwrap(), &calls) }
-}))
 .route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
 			let received = received.clone();
 			let tool_rounds = tool_rounds.clone();

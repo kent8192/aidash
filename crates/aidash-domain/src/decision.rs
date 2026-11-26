@@ -44,11 +44,13 @@ pub const STATE_READ: &str = "decision.state.read";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Hook {
+	#[schemars(skip)]
 	ContextSelection,
 	/// Whether a pending Tool call may run without a person approving it
 	/// (the Auto Approval Mode, ADR 0077).
 	Approval,
 	/// Independent typed human-approval observer (ADR 0085).
+	#[schemars(skip)]
 	ApprovalObservation,
 }
 impl Hook {

@@ -27,6 +27,7 @@ pub enum PinPolicy {
 	#[default]
 	Always,
 	OnDemand,
+	#[schemars(skip)]
 	Scored {
 		mode: Mode,
 		decider: QualifiedRef,
