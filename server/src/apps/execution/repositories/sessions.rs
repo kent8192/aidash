@@ -221,7 +221,6 @@ fn queue_rows(area: Uuid, generation: i64) -> reinhardt::query::SelectStatement 
 		.and_where(
 			Expr::col((Alias::new("q"), Alias::new("generation"))).eq(Expr::value(generation)),
 		)
-		.and_where(Expr::col((Alias::new("q"), Alias::new("asleep"))).eq(Expr::value(false)))
 		.and_where(
 			Expr::col((Alias::new("r"), Alias::new("phase"))).is_not_in([
 				"COMPLETED",
@@ -380,11 +379,7 @@ impl SessionScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	/// The execution whose files the Area shows: the head of its queue once
-	/// it has initialized, and until then the last execution that left the
-	/// queue, by ending or falling asleep. An execution that slept and woke
-	/// re-enters at the tail (#1008, ADR 0140), so it does not displace the
-	/// head that ran meanwhile.
+	/// The legacy file manifest's displaying Run.
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
@@ -422,18 +417,11 @@ impl SessionScope for Scope<'_> {
 				.and_where(
 					Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(Expr::value(true)),
 				)
-				.cond_where(
-					reinhardt::query::Condition::any()
-						.add(
-							Expr::col((Alias::new("q"), Alias::new("asleep")))
-								.eq(Expr::value(true)),
-						)
-						.add(Expr::col((Alias::new("r"), Alias::new("phase"))).is_in([
-							"COMPLETED",
-							"FAILED",
-							"CANCELLED",
-						])),
-				)
+				.and_where(Expr::col((Alias::new("r"), Alias::new("phase"))).is_in([
+					"COMPLETED",
+					"FAILED",
+					"CANCELLED",
+				]))
 				.order_by((Alias::new("q"), Alias::new("sequence")), Order::Desc)
 				.limit(1)
 				.to_string(PostgresQueryBuilder);

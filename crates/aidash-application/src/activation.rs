@@ -76,9 +76,6 @@ pub async fn due(
 	if m.control == RunControl::Cancelled {
 		return Ok(Some(now));
 	}
-	if !scope.unblocked(m.id).await? {
-		return Ok(None);
-	}
 	let Ok((state, recovery)) = aidash_domain::run_state::decode(m.phase, raw.pending.clone())
 	else {
 		return Ok(Some(now));
@@ -306,10 +303,6 @@ pub async fn lease(
 			// charged when their Isolated Step acquired the gate, so a Run that
 			// only waited behind another Isolated Step is not charged again.
 			run.recovery.lease_recoveries = run.recovery.lease_recoveries.max(1);
-		}
-		// A cancellation is finished regardless of the queue, as `due` lets it.
-		if !cancelled && !scope.rejoin(m.id).await? {
-			continue;
 		}
 		if let Some(claimed) = scope.lease(&run, token, seconds, node).await? {
 			if claimed.recovery.lease_recoveries > 0 {
