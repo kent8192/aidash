@@ -15,15 +15,16 @@ fn router(chat: Arc<AtomicUsize>) -> Arc<Router> {
 					let input = request.json::<serde_json::Value>().unwrap();
 					let chat = chat.clone();
 					async move {
-						chat.fetch_add(1, Ordering::SeqCst);
+						let call = chat.fetch_add(1, Ordering::SeqCst);
 						let context: serde_json::Value = serde_json::from_str(
 							input["messages"][1]["content"].as_str().unwrap(),
 						)
 						.unwrap();
 						let unit = &context["context"][0];
 						let step = json!({"step":"answer","reflection":{"text":"Tokyo's subway is useful.","evidence":[{"kind":"unit","bank":unit["bank"],"id":unit["id"],"revision":unit["revision"]}]}});
+						let content = if call == 1 { "incomplete".to_owned() } else { step.to_string() };
 						reinhardt::Response::ok()
-							.with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":step.to_string()}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.0002}}))
+							.with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":content}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.0002}}))
 							.unwrap()
 					}
 				}),
@@ -87,7 +88,7 @@ fn reflect(bank: &Bank) -> memory::Operation {
 #[tokio::test]
 async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 	#[future] database: DatabaseFixture,
-	bounds: Bounds,
+	mut bounds: Bounds,
 	#[from(chat_calls)] chat: Arc<AtomicUsize>,
 	#[from(budget_router)]
 	#[with(chat.clone())]
@@ -98,6 +99,8 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 	server: reinhardt::test::fixtures::server::TestServerGuard,
 ) {
 	// Arrange: one indexed Unit, then a Tenant Budget at its Hard Limit.
+	// The second operation exercises two physical reflection attempts.
+	bounds.max_model_tokens = 32_768;
 	let retries = bounds.max_retries;
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
@@ -225,6 +228,85 @@ async fn a_hard_limit_stops_a_memory_reflection_and_its_cost_reaches_the_ledger(
 			200_000
 		)]
 	);
+
+	// A provider can report usage before producing an unusable memory result.
+	let retry = reflect(&bank);
+	let first = memory::operate(&store, &administrator(&store).await, retry.clone()).await;
+	assert!(first.is_err(), "the scripted response is incomplete");
+	let pool = store.pool.fixture_driver();
+	let call: Uuid = sqlx::query_scalar(
+		&Query::select()
+			.column(("inference_usage", "model_call_id"))
+			.from("memory_model_attempts")
+			.inner_join(
+				"inference_usage",
+				Expr::col(("inference_usage", "attempt_id"))
+					.equals(("memory_model_attempts", "id")),
+			)
+			.and_where(
+				Expr::col(("memory_model_attempts", "operation_id"))
+					.eq(Expr::value(retry.operation_id)),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	// Represent a first request encoded for a different transport. The durable
+	// memory replay identity and logical request are the same on the next attempt.
+	let first_digest = format!("sha256:{}", "1".repeat(64));
+	sqlx::query(
+		&Query::update()
+			.table("model_calls")
+			.value("request_digest", first_digest.clone())
+			.and_where(Expr::col("id").eq(Expr::value(call)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table("memory_model_attempts")
+			.value(
+				"created_at",
+				chrono::Utc::now() - chrono::TimeDelta::hours(1),
+			)
+			.and_where(Expr::col("operation_id").eq(Expr::value(retry.operation_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	let reflected = memory::operate(&store, &administrator(&store).await, retry)
+		.await
+		.unwrap();
+	assert!(matches!(reflected, memory::Outcome::Reflection(_)));
+	assert_eq!(chat.load(Ordering::SeqCst), 3);
+	let physical: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col("attempt_id").into(),
+			))
+			.from("inference_usage")
+			.and_where(Expr::col("model_call_id").eq(Expr::value(call)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(physical, 2);
+	let digest: String = sqlx::query_scalar(
+		&Query::select()
+			.column("request_digest")
+			.from("model_calls")
+			.and_where(Expr::col("id").eq(Expr::value(call)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(digest, first_digest);
 
 	drop(server);
 }

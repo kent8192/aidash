@@ -75,7 +75,7 @@ async fn new_agents_can_reference_stored_models_with_retired_fields(
 	assert!(
 		error
 			.to_string()
-			.contains("unknown field `projection_versions`"),
+			.contains("projection_versions has been removed"),
 		"{error}"
 	);
 }
@@ -272,28 +272,28 @@ async fn registration_accepts_structured_harness_contracts_on_native(
 
 /// `structured@1` and `structured@2` lost the #532 comparison and were removed.
 #[rstest]
-#[case::structured1("structured@1")]
-#[case::structured2("structured@2")]
+#[case::structured1("harness_contract", "structured@1", "structured@3, structured@4")]
+#[case::structured2("harness_contract", "structured@2", "structured@3, structured@4")]
+#[case::unknown_harness("harness_contract", "future@1", "structured@3, structured@4")]
+#[case::unknown_projection("projection_version", "future", "native")]
 #[tokio::test]
-async fn registration_rejects_removed_harness_contracts(
+async fn registration_names_the_supported_values_for_removed_or_unknown_pins(
 	validation: DefinitionValidation,
-	#[case] contract: &str,
+	#[case] field: &str,
+	#[case] version: &str,
+	#[case] allowed: &str,
 ) {
 	// Arrange
 	let mut scope = scope_with(model_config());
 	let mut config = agent_config(Some("native"));
-	config["harness_contract"] = json!(contract);
+	config[field] = json!(version);
 	let agent = definition("agent", "agent", config);
 	// Act
 	let error = register_definition(&mut scope, &validation, &agent, NODE)
 		.await
 		.unwrap_err();
-	// Assert: the version no longer decodes.
-	assert!(
-		error.to_string().contains("harness_contract")
-			|| error.to_string().contains("untagged enum"),
-		"{error:?}"
-	);
+	assert!(matches!(error, Error::Invalid(message)
+		if message.contains(field) && message.contains(version) && message.contains(allowed)));
 	assert!(!scope.entries.contains_key("agent@1.0.0"));
 }
 

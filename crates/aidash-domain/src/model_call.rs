@@ -18,6 +18,13 @@ pub enum Purpose {
 }
 
 impl Purpose {
+	pub const ALL: [Self; 4] = [
+		Self::CompactionSummary,
+		Self::MemoryRole,
+		Self::WorkbenchTest,
+		Self::McpSampling,
+	];
+
 	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::CompactionSummary => "compaction_summary",
@@ -73,6 +80,7 @@ pub struct ModelCall {
 pub struct Dispatch {
 	pub purpose: Purpose,
 	pub request_digest: String,
+	pub retry_key: Option<String>,
 }
 
 impl Dispatch {
@@ -86,7 +94,14 @@ impl Dispatch {
 		Ok(Self {
 			purpose,
 			request_digest: digest(&body),
+			retry_key: None,
 		})
+	}
+
+	/// Identify an individual journaled request across worker leases.
+	pub fn with_retry_key(mut self, key: &str) -> Self {
+		self.retry_key = Some(digest(&json!(key)));
+		self
 	}
 }
 

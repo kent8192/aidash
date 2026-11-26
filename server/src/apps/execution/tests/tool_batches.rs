@@ -2,7 +2,7 @@
 //! registry contract for batching settings, and model-driven batches of real
 //! core file reads.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 use aidash_application::ports::execution::ToolSlots;
 use aidash_application::tenancy::TEST_FIXTURE;

@@ -131,7 +131,9 @@ impl Transport for Wire {
 				})
 				.flatten(),
 			policy_busy: outcome.policy_busy,
-			body: if (200..300).contains(&outcome.status) {
+			body: if (200..300).contains(&outcome.status)
+				|| (outcome.status == 409 && path.starts_with("/scoped/execution/"))
+			{
 				serde_json::to_vec(&outcome.body).map_err(Into::into)
 			} else {
 				Ok(Vec::new())

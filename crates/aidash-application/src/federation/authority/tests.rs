@@ -448,3 +448,19 @@ fn an_unclassified_inspection_refusal_never_uses_peer_text(
 		)))
 	));
 }
+
+#[rstest]
+#[case("/scoped/execution/inspect")]
+#[case("/scoped/execution/activations")]
+fn remote_retirement_keeps_its_type_and_discards_peer_text(#[case] path: &str) {
+	let mut response = reply(409);
+	response.body = Ok(serde_json::to_vec(&json!({
+		"code": "projection_retired",
+		"error": "private receiver text"
+	}))
+	.unwrap());
+	assert!(
+		matches!(classify_request(path, response), Err(Error::ProjectionRetired(message))
+		if message == "the receiver's execution pin has been retired")
+	);
+}

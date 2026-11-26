@@ -7,7 +7,7 @@ use std::sync::{
 	atomic::{AtomicUsize, Ordering},
 };
 use upstream_fixtures::{async_upstream, reply};
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_server::{
 	domain::{ArtifactInput, NewTask, qualified_agent},

@@ -33424,6 +33424,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -38156,6 +38160,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -52577,6 +52585,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -57038,6 +57050,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],

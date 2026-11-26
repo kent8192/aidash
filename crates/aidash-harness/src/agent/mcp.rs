@@ -660,7 +660,8 @@ impl Executor<'_> {
 		let model_call = aidash_domain::model_call::Dispatch::new(
 			aidash_domain::model_call::Purpose::McpSampling,
 			&request,
-		)?;
+		)?
+		.with_retry_key(key);
 		let provider = self.environment.provider(model.clone())?;
 		let attempt = InferenceAttemptId::new();
 		let input_reservation = request

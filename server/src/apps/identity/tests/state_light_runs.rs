@@ -2,7 +2,7 @@
 //! Run lists expose aggregates, while the detail endpoint retains context.
 use serde_json::{Value, json};
 use uuid::Uuid;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 
 #[rstest::rstest]

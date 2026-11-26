@@ -4,7 +4,7 @@ use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use upstream_fixtures::reply;
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 #[path = "worker_activation/review.rs"]
 mod review;

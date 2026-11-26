@@ -529,6 +529,7 @@ async fn operate_staged_in(
 		model_run,
 	)
 	.await?;
+	models.work_run = run;
 	models.cycle = cycle;
 	let engine = aidash_application::memory::Engine {
 		provider: &input.provider,

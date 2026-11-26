@@ -36,13 +36,18 @@ The request uses Native model input. The record contains the model version, a
 SHA-256 digest of its canonical input, the outcome, reported usage and cost,
 and the start and end times. Prompt and response contents are excluded from the record.
 
-An awake execution's Stint owns its Model Calls. Other work belongs to its
-Tenant and Node. Workbench tests use the Tenant's default Node. Memory retries
-of the same request have separate Usage Records under the original Model
-Call. MCP sampling keeps its Run Budget attribution. Media admission checks
-validate proposed requests locally without invoking a provider.
+The awake Stint owns the Model Calls its work triggers. Background memory work
+belongs to the Tenant and the Thread's Node, even when it reads a Run as evidence.
+Workbench tests use the Tenant's default Node. Retries of memory roles,
+compaction summaries and MCP sampling have separate Usage Records under the
+original Model Call. In-Run Model Calls count against the Run's Budgets.
 
-`GET /api/executions/{id}` returns each Stint with its `model_calls` array.
+Recovery closes unfinished auxiliary Model Calls as failed after their provider
+deadline. A late provider report still adds usage and cost once.
+
+`GET /api/executions/{id}` applies its inspection offset to Stints and Model Calls.
+Each page includes up to 100 Stints and 100 Model Calls. It also includes the
+owning Stint for each Model Call whose owner falls outside the Stint page.
 `GET /api/tenants/{tenant}/administration` returns `model_call_usage` by
 purpose for callers who can manage the Tenant's Budgets. The same totals
 appear in the Tenant's Budgets panel.

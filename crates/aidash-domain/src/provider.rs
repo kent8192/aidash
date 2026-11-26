@@ -355,7 +355,6 @@ impl ModelRequest {
 	/// provider-side media token allowance.
 	pub fn content_parts_reservation(
 		parts: &[ContentPart],
-		_version: crate::projection::ProjectionVersion,
 		input_format: InputFormat,
 	) -> Result<usize> {
 		if parts.is_empty() {

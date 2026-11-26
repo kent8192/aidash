@@ -307,6 +307,7 @@ impl Error {
 			}
 		};
 		let mut envelope = match &self {
+			Self::ProjectionRetired(_) => json!({"error": message, "code": "projection_retired"}),
 			Self::NodeUnreachable { node, after_effect } => {
 				json!({"error": message, "code": "node_unreachable", "node": node, "after_effect": after_effect})
 			}

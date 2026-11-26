@@ -14,7 +14,7 @@ use std::{
 	time::Duration,
 };
 use upstream_fixtures::{async_upstream, reply};
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_domain::nodes::{NodeAddress, NodeName};
 use aidash_server::{

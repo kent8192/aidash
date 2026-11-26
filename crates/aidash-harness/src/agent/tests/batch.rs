@@ -1012,7 +1012,6 @@ impl ExecutionAuthority for Bench {
 		&self,
 		_messages: &[(i64, Uuid, usize)],
 		_model: &ModelConfig,
-		_projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		unexpected("ExecutionAuthority.human_message_media")
 	}

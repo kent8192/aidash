@@ -274,7 +274,9 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 	let (mut scope, description, corpus_digest) =
 		match described_lease(repository, &stored.node, &run.home_node, grant).await {
 			Ok(value) => value,
-			Err(error @ Error::NodeUnreachable { .. }) => return Err(error),
+			Err(error @ (Error::NodeUnreachable { .. } | Error::ProjectionRetired(_))) => {
+				return Err(error);
+			}
 			Err(error) => {
 				let description: Description =
 					serde_json::from_value(repository.description(run.id).await?)?;
