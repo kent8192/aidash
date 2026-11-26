@@ -61,6 +61,7 @@ impl Catalog {
 					| "workspace_message"
 					| "memory_mutate"
 					| "subnode_task"
+					| "task_create" | "task_delegate"
 			) {
 				result.insert(entry(
 					&format!("aidash.{operation}"),
