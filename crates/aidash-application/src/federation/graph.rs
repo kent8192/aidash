@@ -83,26 +83,18 @@ async fn linked_candidates(
 			}
 			if relation_allowed("participates", options)
 				&& kind_allowed(&conversation.target_kind, options)
-				&& matches!(conversation.target_kind.as_str(), "agent" | "cluster")
+				&& conversation.target_kind == "agent"
 				&& let Some((id, version)) = conversation.target.rsplit_once('@')
 			{
 				registry.push((conversation.target_kind.clone(), id.into(), version.into()));
 			}
 		}
 		Candidate::Registry(entry) => {
-			if entry.kind == "cluster"
-				&& relation_allowed("coordinates", options)
-				&& kind_allowed("agent", options)
-				&& let Some((id, version)) = registry_ref(&entry.config["coordinator"])
-			{
-				registry.push(("agent".into(), id.into(), version.into()));
-			}
 			if entry.kind == "agent" {
 				for (kind, field, relation) in [
 					("tool", "tools", "tool"),
 					("model", "model", "model"),
 					("skill", "skills", "skill"),
-					("cluster", "cluster", "member"),
 				] {
 					if !kind_allowed(kind, options) || !relation_allowed(relation, options) {
 						continue;

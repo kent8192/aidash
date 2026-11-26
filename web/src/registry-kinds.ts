@@ -7,14 +7,8 @@ export const registryKindOrder = [
   "external_service",
   "bundle",
   "skill",
-  "memory",
   "source",
-  "cluster",
-  "decider",
   "embedding",
-  "reranker",
-  "tokenizer",
-  "node",
 ];
 
 function rank(kind: string): number {

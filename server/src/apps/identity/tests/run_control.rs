@@ -68,12 +68,12 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		(
 			"agent",
 			"fixture-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
 		),
 		(
 			"agent",
 			LISTED,
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Listed","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Listed","bindings":[],"remove_default":[]}),
 		),
 	] {
 		registered.push(
@@ -630,7 +630,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 		(
 			"agent",
 			"npm-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Install packages","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Install packages","bindings":[],"remove_default":[]}),
 		),
 	] {
 		registered.push(

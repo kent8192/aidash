@@ -158,10 +158,6 @@ impl RunGuardScope for Scope {
 		self.record("visible")?;
 		Ok(self.visible)
 	}
-	async fn cluster_targets(&mut self, _: Uuid) -> Result<Vec<String>> {
-		self.record("clusters")?;
-		Ok(self.clusters.clone())
-	}
 	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
 		self.record("task_read")?;
 		Ok(Task {

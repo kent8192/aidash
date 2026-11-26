@@ -26,7 +26,7 @@ fn spec() -> Spec {
 	serde_json::from_value(json!({
         "enabled": true,
         "template": {"id":"template", "version":"1.0.0", "kind":"agent", "name":{"en":"Template"}, "description":{"en":""},
-            "config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Do useful work."}},
+            "config":{"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Do useful work."}},
         "permissions":{"roles":["role"], "groups":["group"], "attributes":{"team":"research"}},
         "limits":{"max_agents":5, "max_concurrent":2, "max_depth":2, "token_budget":1000000, "tokens_per_agent":500000, "lifetime_seconds":600},
         "approval_required":true

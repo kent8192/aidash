@@ -63,7 +63,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	let (f, url, schema) = runtime.parts();
 	let pool = f.store.pool.fixture_driver().clone();
 	let agent = |parallelism: Option<Value>, narrow: Value| {
-		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test",
+		let mut config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test",
 			"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":narrow}]});
 		if let Some(parallelism) = parallelism {
 			config["tool_parallelism"] = parallelism;

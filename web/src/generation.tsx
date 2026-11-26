@@ -101,11 +101,9 @@ function usePolicyPresentation(policies: readonly GenerationPolicy[]) {
 }
 type AgentFields = {
   model?: EntityRef;
-  schema_version?: number;
   bindings?: Binding[];
   remove_default?: string[];
   instructions?: string;
-  max_steps?: number;
 };
 
 export function GenerationPage({ data }: { data: State }) {
@@ -530,13 +528,11 @@ function PolicyEditor({
         capabilities: split(text("capabilities")),
         languages: split(text("languages")),
         tags: initial?.template.tags ?? [],
-        skills: initial?.template.skills ?? [],
         schema: initial?.template.schema ?? {},
         config: {
           ...initial?.template.config,
           model: entityRef(model),
           instructions: text("instructions"),
-          schema_version: 1,
           ...bindings,
         },
       };

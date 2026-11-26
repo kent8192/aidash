@@ -471,12 +471,7 @@ impl Store {
 		&self,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<()> {
-		let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
-		aidash_domain::registry::execution_contract(
-			agent.projection_version,
-			agent.harness_contract,
-		)
-		.map_err(Error::Invalid)?;
+		crate::registry::AgentConfig::from_snapshot(snapshot)?;
 		if self.cache_salt.is_none() {
 			return Err(Error::Invalid(
 				"this node has no Cache Salt Key for Native Runs".into(),

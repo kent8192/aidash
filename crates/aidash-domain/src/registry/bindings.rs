@@ -22,14 +22,8 @@ const HISTORICAL_DEFAULT_SETS: u8 = 8;
 /// Default file tools whose builtin moved to 1.0.1 with the Execution Pod
 /// (#745). Every historical default set bound them at 1.0.0.
 const POD_FILE_TOOLS: &[&str] = &["file_read", "file_search", "attachment_copy"];
-/// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
+/// Maximum Tool Parallelism for a Run.
 pub const MAX_TOOL_PARALLELISM: u8 = 64;
-fn sequential_tools() -> u8 {
-	1
-}
-fn is_sequential_tools(value: &u8) -> bool {
-	*value == 1
-}
 pub const REQUIRED_TOOLS: &[&str] = &["thread_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"connection_request",
@@ -117,10 +111,6 @@ pub fn definition_references(
 				};
 				result.push((normalized.binding.target, kind.into()));
 			}
-		}
-		"cluster" => {
-			let config: super::ClusterConfig = serde_json::from_value(entry.config.clone())?;
-			result.push((local(&config.coordinator), "agent".into()));
 		}
 		"bundle" => {
 			let config: BundleConfig = serde_json::from_value(entry.config.clone())?;
@@ -220,7 +210,6 @@ pub fn reference_kind_matches(expected: &str, actual: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentBindings {
-	pub schema_version: u8,
 	pub model: EntityRef,
 	/// Exact immutable embedding definition for private reference images.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,31 +220,17 @@ pub struct AgentBindings {
 	pub bindings: Vec<Binding>,
 	#[serde(default)]
 	pub remove_default: Vec<String>,
-	#[serde(default = "super::max_steps")]
-	pub max_steps: i32,
-	/// Opt-in Context Policy; absent keeps the legacy prune-only behavior.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub context_policy: Option<crate::context::policy::ContextPolicy>,
-	/// The Run Tool Parallelism ceiling, fixed with the Run's Binding snapshot.
-	/// Omitted at one so definitions written before this field keep their digest.
-	#[serde(
-		default = "sequential_tools",
-		skip_serializing_if = "is_sequential_tools"
-	)]
-	pub tool_parallelism: u8,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub exposure: Option<ExposurePolicy>,
 	/// Projection Version this Agent version's Runs render with (ADR 0015).
 	/// Omitted means Native and is not serialized, so existing definitions,
 	/// their digests and Binding snapshots stay byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	#[schemars(with = "Option<crate::projection::ProjectionVersion>")]
-	pub projection_version: Option<crate::projection::ProjectionPin>,
+	pub projection_version: Option<crate::projection::ProjectionVersion>,
 	/// Harness Contract this Agent version's Runs render with (#531). Omitted
 	/// means `structured@4` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	#[schemars(with = "Option<crate::harness_contract::HarnessContract>")]
-	pub harness_contract: Option<crate::harness_contract::HarnessContractPin>,
+	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
 	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -281,7 +256,7 @@ impl AgentBindings {
 			.iter()
 			.any(|plugin| !plugin.skills.is_empty())
 	}
-	/// The resolved Exposure policy; absent means `legacy@1`.
+	/// The resolved Exposure policy; omitted uses immediate exposure.
 	pub fn exposure_policy(&self) -> ExposurePolicy {
 		self.exposure.unwrap_or_default()
 	}
@@ -289,10 +264,7 @@ impl AgentBindings {
 		let policy = self.exposure_policy();
 		policy.validate()?;
 		let defaults = policy.default_tools();
-		if self.schema_version != BINDING_SCHEMA
-			|| !(1..=1000).contains(&self.max_steps)
-			|| !(1..=MAX_TOOL_PARALLELISM).contains(&self.tool_parallelism)
-			|| self.bindings.len() > MAX_BINDINGS
+		if self.bindings.len() > MAX_BINDINGS
 			|| self.instructions.trim().is_empty()
 				&& !self.has_plugin_skills()
 				&& !self
@@ -313,6 +285,11 @@ impl AgentBindings {
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
 			binding.validate()?;
+			if matches!(binding.kind, BindingKind::Memory | BindingKind::Decider) {
+				return Err(Error::Invalid(
+					"memory and approval judging are built in".into(),
+				));
+			}
 			if binding.exposure.is_some()
 				&& (!policy.is_deferred()
 					|| !matches!(
@@ -337,9 +314,6 @@ impl AgentBindings {
 			return Err(Error::Invalid(
 				"bound Skills require Skill support tools".into(),
 			));
-		}
-		if let Some(policy) = &self.context_policy {
-			policy.validate()?;
 		}
 		if let Some(policy) = &self.completion {
 			policy.validate()?;
@@ -380,9 +354,6 @@ impl AgentBindings {
 			&self.agent_plugins,
 			self.exposure_policy().is_deferred(),
 		)
-	}
-	fn has_memory_binding(&self) -> bool {
-		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		self.normalize_mode(node, 0)
@@ -513,9 +484,7 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
-		if !self.has_memory_binding() {
-			result.push(memory_defaults::binding(node));
-		}
+		result.push(memory_defaults::binding(node));
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),

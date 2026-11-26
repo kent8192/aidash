@@ -956,7 +956,7 @@ async fn thread_embedding_credential_is_pinned_with_environment_model_admission(
 		(
 			"agent",
 			"environment-agent",
-			json!({"schema_version":1,"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read"]}),
+			json!({"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read"]}),
 		),
 	] {
 		f.runtime.registry.register(&aidash_domain::tenancy::TenantName::new("beta").unwrap(), serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();
@@ -1204,7 +1204,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	let draft = assert_json(actor.post("/api/workbench/drafts", &json!({
 		"tenant":"beta","owner":"actor","entry":{
 			"id":"","version":"1.0.0","kind":"agent","name":{"en":"Tenant sandbox"},"description":{"en":"Tenant sandbox"},
-			"config":{"schema_version":1,"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}
+			"config":{"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}
 		}
 	}), "json").await.unwrap(),200);
 	// Leave enough fixture headroom for the built-in catalog so this request
@@ -1240,7 +1240,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		json!([]),
 		"rejection must precede sandbox session admission"
 	);
-	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-agent","version":"1.0.0","kind":"agent","name":{"en":"Tenant agent"},"description":{"en":"Tenant agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission"}})).unwrap();
+	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-agent","version":"1.0.0","kind":"agent","name":{"en":"Tenant agent"},"description":{"en":"Tenant agent"},"config":{"bindings":[],"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission"}})).unwrap();
 	struct Lookup<'a>(&'a aidash_server::registry::Registry);
 	#[async_trait]
 	impl aidash_application::ports::registry::DefinitionLookup for Lookup<'_> {

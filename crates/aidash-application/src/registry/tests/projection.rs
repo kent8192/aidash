@@ -1,9 +1,6 @@
 //! Native defaults and retirement at Registry admission.
 use super::*;
-use aidash_domain::{
-	harness_contract::HarnessContract,
-	registry::{bindings::AgentBindings, execution_contract},
-};
+use aidash_domain::{harness_contract::HarnessContract, registry::bindings::AgentBindings};
 
 const NODE: &str = "aidash://test";
 
@@ -12,7 +9,7 @@ fn model_config() -> Value {
 }
 
 fn agent_config(version: Option<&str>) -> Value {
-	let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[]});
+	let mut config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[]});
 	if let Some(version) = version {
 		config["projection_version"] = json!(version);
 	}
@@ -81,7 +78,7 @@ async fn new_agents_can_reference_stored_models_with_retired_fields(
 }
 
 /// Current serializations with no Projection Version selected.
-const LEGACY_AGENT: &str = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[],"max_steps":64}"#;
+const LEGACY_AGENT: &str = r#"{"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[]}"#;
 const LEGACY_MODEL: &str = r#"{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
 
 #[rstest]
@@ -110,11 +107,7 @@ fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_native(
 		digest(&serde_json::from_str(LEGACY_MODEL).unwrap())
 	);
 	assert_eq!(
-		execution_contract(
-			agent_bindings.projection_version,
-			agent_bindings.harness_contract
-		)
-		.unwrap(),
+		agent_bindings.harness_contract.unwrap_or_default(),
 		HarnessContract::Structured4
 	);
 }
@@ -216,14 +209,14 @@ fn model_definitions_admit_explicit_cache_mode_only_for_allowlisted_slugs(
 /// A Token Encoding is named from the closed list and never checked against
 /// the slug, which Keyless endpoints choose freely (ADR 0017).
 #[rstest]
-#[case::bytes(json!("bytes"), true)]
-#[case::calibrated(json!("calibrated"), true)]
-#[case::o200k_base(json!({"tokenized": "o200k_base"}), true)]
-#[case::encoding_unrelated_to_the_slug(json!({"tokenized": "gemma4"}), true)]
+#[case::bytes(json!("bytes"), false)]
+#[case::calibrated(json!("calibrated"), false)]
+#[case::o200k_base(json!({"tokenized": "o200k_base"}), false)]
+#[case::encoding_unrelated_to_the_slug(json!({"tokenized": "gemma4"}), false)]
 #[case::unlisted_encoding(json!({"tokenized": "cl100k_base"}), false)]
 #[case::no_encoding(json!("tokenized"), false)]
 #[case::exact(json!("exact"), false)]
-fn model_definitions_name_only_listed_token_encodings(
+fn model_definitions_reject_request_estimator_overrides(
 	validation: DefinitionValidation,
 	#[case] estimator: Value,
 	#[case] accepted: bool,
@@ -265,7 +258,7 @@ async fn registration_accepts_structured_harness_contracts_on_native(
 	let stored: AgentBindings =
 		serde_json::from_value(scope.entries["agent@1.0.0"].config.clone()).unwrap();
 	assert_eq!(
-		execution_contract(stored.projection_version, stored.harness_contract).unwrap(),
+		stored.harness_contract.unwrap_or_default(),
 		HarnessContract::Structured3
 	);
 }

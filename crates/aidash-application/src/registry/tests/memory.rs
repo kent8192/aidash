@@ -94,7 +94,7 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"schema_version":1,"model":reference("model"),"instructions":"Use current memory","bindings":bindings,"remove_default":["file_search","file_read"]}),
+		json!({"model":reference("model"),"instructions":"Use current memory","bindings":bindings,"remove_default":["file_search","file_read"]}),
 	);
 	let result = register_definition(&mut scope, &validation, &agent, "aidash://home").await;
 	if !private {

@@ -1,8 +1,6 @@
 //! Request Estimates pinned per Run step (ADR 0017, #179, #276).
 use super::*;
-use aidash_domain::provider::estimate::{
-	Calibration, CalibrationSample, EstimateSnapshot, EstimateState, TokenEncoding,
-};
+use aidash_domain::provider::estimate::{CalibrationSample, EstimateSnapshot, EstimateState};
 
 /// Twenty samples at a quarter token per byte: enough to calibrate.
 fn warm(ratio_denominator: u64) -> Vec<CalibrationSample> {
@@ -16,17 +14,7 @@ fn warm(ratio_denominator: u64) -> Vec<CalibrationSample> {
 }
 
 fn calibrated(fixture: &mut Fixture, samples: Vec<CalibrationSample>) {
-	estimating(fixture, json!("calibrated"), samples);
-}
-
-fn tokenized(fixture: &mut Fixture, samples: Vec<CalibrationSample>) {
-	estimating(fixture, json!({"tokenized": "o200k_base"}), samples);
-}
-
-fn estimating(fixture: &mut Fixture, estimator: Value, samples: Vec<CalibrationSample>) {
-	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.request_estimator = Some(estimator);
-	*state.calibration.lock().unwrap() = samples;
+	*fixture.backend.0.calibration.lock().unwrap() = samples;
 }
 
 fn dispatches(fixture: &Fixture) -> Vec<UsageDispatch> {
@@ -37,9 +25,6 @@ fn dispatches(fixture: &Fixture) -> Vec<UsageDispatch> {
 #[rstest]
 #[tokio::test]
 async fn default_estimator_uses_bytes_below_calibration_threshold(mut fixture: Fixture) {
-	Arc::get_mut(&mut fixture.backend.0)
-		.unwrap()
-		.request_estimator = None;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	advance_sources(&mut fixture).await.unwrap();
 	assert_eq!(count(&fixture, "calibration.samples"), 1);
@@ -126,7 +111,6 @@ async fn a_cold_key_pins_the_conservative_snapshot(mut fixture: Fixture) {
 
 #[rstest]
 #[case::calibrated(calibrated as fn(&mut Fixture, Vec<CalibrationSample>), "calibrated")]
-#[case::tokenized(tokenized as fn(&mut Fixture, Vec<CalibrationSample>), "tokenized")]
 #[tokio::test]
 async fn an_overflow_after_a_scaled_estimate_demotes_the_run(
 	mut fixture: Fixture,
@@ -262,48 +246,9 @@ async fn calibration_never_moves_the_stable_prefix_or_the_semantic_budget() {
 
 #[rstest]
 #[tokio::test]
-async fn a_tokenized_model_counts_its_request_and_calibrates_only_its_quotas(mut fixture: Fixture) {
-	// Arrange
-	tokenized(&mut fixture, warm(4));
-	fixture.run.state = RunState::Thinking(ThinkingState::default());
-	// Act
-	advance_sources(&mut fixture).await.unwrap();
-	// Assert: the encoding and the quota ratio are pinned before dispatch.
-	let calls = calls(&fixture);
-	assert!(position(&calls, "calibration.samples") < position(&calls, "save"));
-	assert_eq!(events(&fixture)[0], "execution.estimate_pinned");
-	let snapshot = EstimateSnapshot::tokenized(
-		0,
-		TokenEncoding::O200kBase,
-		Some(Calibration {
-			ratio_ppm: 250_000,
-			samples: 20,
-		}),
-	);
-	assert_eq!(fixture.run.context.estimate.snapshot, Some(snapshot));
-	let request = fixture.backend.0.requests.lock().unwrap()[0].clone();
-	assert_eq!(request.estimate, snapshot);
-	let bytes = request.byte_estimate();
-	let counted = bytes.tokenized.expect("the request is counted");
-	let [dispatch] = dispatches(&fixture).try_into().unwrap();
-	assert_eq!(dispatch.estimate.estimator, "tokenized");
-	assert_eq!(dispatch.estimate.confidence, EstimateConfidence::Tokenized);
-	assert_eq!(dispatch.estimate.ratio_ppm, Some(250_000));
-	assert_eq!(dispatch.estimate.byte_basis, bytes.basis as u64);
-	assert_eq!(
-		dispatch.estimate.tokens,
-		(counted + bytes.media + bytes.output + bytes.framing) as u64
-	);
-	assert!(dispatch.estimate.tokens < bytes.total() as u64);
-	// The fixture reports fewer input tokens than estimated.
-	assert!(!fixture.run.context.estimate.demoted);
-}
-
-#[rstest]
-#[tokio::test]
 async fn a_resumed_step_whose_encoding_is_gone_runs_on_bytes(mut fixture: Fixture) {
 	// Arrange: an older worker pinned an encoding this binary no longer lists.
-	tokenized(&mut fixture, warm(4));
+	calibrated(&mut fixture, warm(4));
 	let retired: EstimateSnapshot = serde_json::from_value(json!({
 		"step": 0,
 		"estimator": {"id":"tokenized","version":1,"encoding":"cl100k_base","encoding_version":1,"margin_permille":100}
@@ -335,7 +280,6 @@ async fn a_resumed_step_whose_encoding_is_gone_runs_on_bytes(mut fixture: Fixtur
 
 #[rstest]
 #[case::calibrated(calibrated as fn(&mut Fixture, Vec<CalibrationSample>), "calibrated")]
-#[case::tokenized(tokenized as fn(&mut Fixture, Vec<CalibrationSample>), "tokenized")]
 #[tokio::test]
 async fn more_reported_input_than_estimated_demotes_the_run_from_the_next_step(
 	mut fixture: Fixture,

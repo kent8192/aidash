@@ -37,7 +37,7 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 			"release".to_owned()
 		]
 	);
-	agent.allow_task_creation = Some(false);
+	agent.operations.remove("task_create");
 	let before = repository.calls();
 	assert!(matches!(
 		super::authorize(&repository, &run, &agent, &input, &contract).await,
@@ -288,7 +288,7 @@ fn agent() -> AgentConfig {
 		serde_json::from_value(crate::test_support::agent("producer").config).unwrap();
 	// Resource adapter flags are an internal view derived by native admission.
 	config.memory = Some(reference());
-	config.allow_memory_write = Some(true);
+	config.operations.insert("memory_mutate".into());
 	config.tools = vec![reference()];
 	config.skills = vec![reference()];
 	config
@@ -312,7 +312,6 @@ fn entry() -> Entry {
 		capabilities: vec![],
 		tags: vec![],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: json!({"transport":"native","operation":"fixture"}),
 	}
@@ -606,10 +605,11 @@ async fn disabled_local_tool_flags_precede_acquiring_authority(
 	mut agent: AgentConfig,
 	#[case] name: &str,
 ) {
-	agent.allow_task_creation = Some(false);
-	agent.allow_task_delegation = Some(false);
-	agent.allow_memory_write = Some(false);
-	agent.allow_workspace_retrieval = Some(false);
+	agent.operations.remove("task_create");
+	agent.operations.remove("task_delegate");
+	agent.operations.remove("task_assign");
+	agent.operations.remove("memory_mutate");
+	agent.operations.remove("thread_read");
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call(name, json!({}))).await,
 		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
@@ -628,7 +628,7 @@ async fn remote_refresh_precedes_even_a_disabled_tool_flag(
 ) {
 	repository.remote = true;
 	repository.active = active;
-	agent.allow_task_creation = Some(false);
+	agent.operations.remove("task_create");
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("task_create", json!({}))).await,
 		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
@@ -787,7 +787,8 @@ async fn agent_plugins_check_delegation_flag_and_home_before_target_catalog(
 ) {
 	repository.catalog.config = json!({"transport":"agent","node_id":if disabled{run.home_node.as_str()}else{"aidash://other"},"agent":{"id":"target","version":"1"}});
 	if disabled {
-		agent.allow_task_delegation = Some(false);
+		agent.operations.remove("task_delegate");
+		agent.operations.remove("task_assign");
 	}
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("plugin_0", json!({}))).await,
@@ -978,7 +979,8 @@ async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	mut agent: AgentConfig,
 ) {
 	repository.remote = true;
-	agent.allow_task_delegation = Some(false);
+	agent.operations.remove("task_delegate");
+	agent.operations.remove("task_assign");
 	let result = authorize(
 		&repository,
 		&run,
@@ -1587,7 +1589,7 @@ fn asset_snapshot(repository: &mut Repository, run: &RunMetadata) -> String {
 	let agent_entry = definition(
 		&agent,
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1"},"instructions":"Work.","bindings":[],"exposure":{"version":"deferred@1"}}),
+		json!({"model":{"id":"model","version":"1"},"instructions":"Work.","bindings":[],"exposure":{"version":"deferred@1"}}),
 	);
 	let snapshot = BindingSnapshot {
 		schema_version: 1,

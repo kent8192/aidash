@@ -35,7 +35,7 @@ async fn seed_executor(f: &aidash_server::federation::Federation) {
 	f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), serde_json::from_value(json!({
 		"id":"executor","version":"1.0.0","kind":"agent",
 		"name":{"en":"Executor"},"description":{"en":"Run codec fixture"},
-		"config":{"schema_version":1,"model":{"id":"test-model","version":"1.0.0"},"instructions":"Test persisted state","bindings":[],"remove_default":[]}
+		"config":{"model":{"id":"test-model","version":"1.0.0"},"instructions":"Test persisted state","bindings":[],"remove_default":[]}
 	})).unwrap()).await.unwrap();
 }
 

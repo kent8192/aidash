@@ -136,7 +136,6 @@ fn owners_cannot_declare_research_node_providers() {
 		capabilities: vec![],
 		tags: vec![],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: serde_json::to_value(
 			aidash_domain::tool::providers::research_descriptor(

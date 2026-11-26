@@ -176,19 +176,6 @@ pub async fn authorize(
 	if !scope.run_visible(run).await? {
 		return Err(Error::Forbidden);
 	}
-	// A conversation keeps its approved cluster even when its coordinator omits that cluster.
-	for cluster in scope.cluster_targets(run.thread_id).await? {
-		let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
-		scope
-			.catalog(
-				&EntityRef {
-					id: id.into(),
-					version: version.into(),
-				},
-				"cluster.execute",
-			)
-			.await?;
-	}
 	let task = scope.task_read(run.task_id).await?;
 	let resource = scope.task_resource(&task).await?;
 	scope.require(&resource, "task.execute").await?;

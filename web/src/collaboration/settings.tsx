@@ -9,7 +9,6 @@ import {
   Container,
   KeyRound,
   Library,
-  Network,
   Plus,
   Search,
   Server,
@@ -85,7 +84,6 @@ const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   nodes: Waypoints,
   agents: Bot,
   registry: Library,
-  clusters: Network,
   deployment: Container,
   providerCredentials: KeyRound,
   planConnections: KeyRound,
@@ -490,7 +488,7 @@ function TenantRegistry({
   focus,
 }: {
   data: State;
-  section: "agents" | "registry" | "clusters";
+  section: "agents" | "registry";
   open: (selection: Selection) => void;
   /** `<id>@<version>` of a version a link asks to see, such as the Tenant's
    *  approval Decider whose Catalog Approval Auto needs. */
@@ -508,9 +506,7 @@ function TenantRegistry({
   }, [focus, versions.data, open]);
   if (versions.isError) return <Alert>{t("catalogRegistryUnavailable")}</Alert>;
   if (!versions.data) return <Loading />;
-  const kind = { agents: "agent", clusters: "cluster", registry: null }[
-    section
-  ];
+  const kind = section === "agents" ? "agent" : null;
   return (
     <EntryList
       versions={versions.data.filter(
@@ -519,12 +515,7 @@ function TenantRegistry({
       open={open}
       action={
         can("registry.create") && (
-          <Button
-            type="button"
-            onClick={() =>
-              open({ kind: section === "clusters" ? "cluster" : "entity" })
-            }
-          >
+          <Button type="button" onClick={() => open({ kind: "entity" })}>
             <Plus aria-hidden />
             {t("register")}
           </Button>
@@ -634,9 +625,7 @@ export function Configuration({
               offering={data.offering}
             />
           )}
-          {(section === "agents" ||
-            section === "registry" ||
-            section === "clusters") &&
+          {(section === "agents" || section === "registry") &&
             (deploymentAdministrator ? (
               <Notice role="status">{t("catalogTenantDefinitions")}</Notice>
             ) : (

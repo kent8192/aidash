@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Opening a Thread (#1008, ADR 0140). With a `target`, the `request` is
-/// a person's request to that Agent or cluster: it becomes the first message
-/// and the description of the Root Task delegated to the target. Without a
+/// a person's request to that Agent or Node: it becomes the first message
+/// and the description of the Root Task, delegated when the target is an Agent. Without a
 /// target the Thread opens empty, and a `request` is refused.
 #[derive(Deserialize, Serialize, JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +22,7 @@ pub(crate) struct ThreadInput {
 	#[serde(default)]
 	pub(crate) target: Option<EntityRef>,
 	#[serde(default)]
-	pub(crate) target_kind: Option<String>,
+	pub(crate) target_kind: Option<aidash_domain::threads::ThreadTargetKind>,
 	/// The Node the Thread belongs to. The Tenant's default Node when absent.
 	#[serde(default)]
 	pub(crate) node: Option<aidash_domain::nodes::NodeName>,

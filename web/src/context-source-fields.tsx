@@ -25,7 +25,6 @@ export function ContextSourceFields({
   const [enabled, setEnabled] = useState(false);
   const [pin, setPin] = useState("always");
   const [required, setRequired] = useState(false);
-  const [mode, setMode] = useState("shadow");
   const operation =
     adapter === "native_memory"
       ? "semantic_memory"
@@ -42,13 +41,7 @@ export function ContextSourceFields({
     });
   const options = (kind: string) =>
     entries
-      .filter(
-        (entry) =>
-          entry.kind === kind &&
-          (kind !== "decider" ||
-            (entry.config?.mode === mode &&
-              entry.config?.hook === "context_selection")),
-      )
+      .filter((entry) => entry.kind === kind)
       .map((entry) => (
         <option key={ref(entry)} value={ref(entry)}>
           {entityLabel({ ...entry, name: entry.name ?? {} })} · {entry.id}@
@@ -112,13 +105,12 @@ export function ContextSourceFields({
               <option value="on_demand" disabled={required}>
                 OnDemand
               </option>
-              <option value="scored">Scored</option>
             </NativeSelect>
           </Field>
           <Hint>
             {ja
-              ? "Always は境界ごとの上限付き寄与です。OnDemand は宣言した読み取りツールから取得します。Scored は候補ごとの Noul 判断を使います。"
-              : "Always contributes bounded context at each boundary. OnDemand uses declared read tools. Scored asks candidate-bound Noul keep questions."}
+              ? "Always は境界ごとの上限付き寄与です。OnDemand は宣言した読み取りツールから取得します。"
+              : "Always contributes bounded context at each boundary. OnDemand uses declared read tools."}
           </Hint>
           <Check
             name="source_required_home"
@@ -126,7 +118,6 @@ export function ContextSourceFields({
             onChange={(event) => {
               setRequired(event.target.checked);
               if (event.target.checked) {
-                setMode("shadow");
                 if (pin === "on_demand") setPin("always");
               }
             }}
@@ -136,48 +127,9 @@ export function ContextSourceFields({
           {required && (
             <Hint>
               {ja
-                ? "必須 Home は Always と受領証を維持します。Shadow で観測できますが、Scored Enforce では除外できません。"
-                : "Required-Home retains Always delivery and mandatory receipts. Shadow may observe it; Scored Enforce cannot remove it."}
+                ? "必須 Home は Always と受領証を維持します。"
+                : "Required-Home retains Always delivery and mandatory receipts."}
             </Hint>
-          )}
-          {pin === "scored" && (
-            <>
-              <Field label={ja ? "選択の動作" : "Selection mode"}>
-                <NativeSelect
-                  name="source_mode"
-                  value={mode}
-                  onChange={(event) => setMode(event.target.value)}
-                >
-                  <option value="shadow">Shadow</option>
-                  <option value="enforce" disabled={required}>
-                    Enforce
-                  </option>
-                </NativeSelect>
-              </Field>
-              <Field
-                label={ja ? "正確な選択 Decider" : "Exact selection Decider"}
-              >
-                <NativeSelect name="source_decider" required defaultValue="">
-                  <option value="">{ja ? "選択" : "Select"}</option>
-                  {options("decider")}
-                </NativeSelect>
-              </Field>
-              <Hint>
-                {ja
-                  ? "正確なバージョンの Catalog Approval と開示権限が必要です。Shadow はリクエストを変えません。Enforce は未承認・利用不可・予算超過・開示不可のとき理由付きで一時停止します。Always へ切り替わりません。"
-                  : "The exact version needs Catalog Approval and disclosure authority. Shadow preserves the request. Enforce pauses on unapproved, unavailable, exhausted or forbidden disclosure outcomes; it never falls back to Always."}
-              </Hint>
-              <Check name="source_disclose_previews" required>
-                {ja
-                  ? "認可済み候補の上限付きプレビューの開示を宣言"
-                  : "Declare disclosure of bounded authorized candidate previews"}
-              </Check>
-              <Check name="source_disclose_query" required>
-                {ja
-                  ? "宣言したクエリー素材の開示を宣言"
-                  : "Declare disclosure of the query material"}
-              </Check>
-            </>
           )}
           <div className={pairClass}>
             <Field label={ja ? "変動の単位" : "Volatility"}>

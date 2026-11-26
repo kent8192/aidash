@@ -38,7 +38,7 @@ fn agent(model: &str, tools: &[&str]) -> Entry {
 	entry(
 		json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},
 		"description":{"en":"Fixture"},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":bindings,"remove_default":[]}}),
+		"config":{"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":bindings,"remove_default":[]}}),
 	)
 }
 fn model() -> Entry {

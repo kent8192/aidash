@@ -22,30 +22,12 @@ pub enum DefinitionKind {
 	#[model_enum(value = "skill")]
 	#[serde(rename = "skill")]
 	Skill,
-	#[model_enum(value = "cluster")]
-	#[serde(rename = "cluster")]
-	Cluster,
-	#[model_enum(value = "node")]
-	#[serde(rename = "node")]
-	Node,
-	#[model_enum(value = "decider")]
-	#[serde(rename = "decider")]
-	Decider,
 	#[model_enum(value = "embedding")]
 	#[serde(rename = "embedding")]
 	Embedding,
-	#[model_enum(value = "memory")]
-	#[serde(rename = "memory")]
-	Memory,
 	#[model_enum(value = "source")]
 	#[serde(rename = "source")]
 	Source,
-	#[model_enum(value = "reranker")]
-	#[serde(rename = "reranker")]
-	Reranker,
-	#[model_enum(value = "tokenizer")]
-	#[serde(rename = "tokenizer")]
-	Tokenizer,
 	#[model_enum(value = "external_service")]
 	#[serde(rename = "external_service")]
 	ExternalService,
@@ -69,6 +51,19 @@ pub enum RegistryAgentResourceRefRequiredKind {
 // Reinhardt #6456: use the declared storage codec for composite identity metadata.
 // Remove these implementations when ModelEnum composite identities are generated
 // by the framework from DatabaseField without separate PkValue/Display bounds.
+impl DefinitionKind {
+	pub const ALL: [Self; 8] = [
+		Self::Agent,
+		Self::Model,
+		Self::Tool,
+		Self::Bundle,
+		Self::Skill,
+		Self::Embedding,
+		Self::Source,
+		Self::ExternalService,
+	];
+}
+
 impl From<&RegistryAgentResourceRefRequiredKind> for reinhardt::db::orm::composite_pk::PkValue {
 	fn from(value: &RegistryAgentResourceRefRequiredKind) -> Self {
 		Self::String(

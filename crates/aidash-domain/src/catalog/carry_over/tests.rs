@@ -98,7 +98,7 @@ fn tool_consent_detects_host_secret_scopes_and_new_read_only() {
 fn agent_dependency_versions_do_not_change_consent_but_identifiers_do() {
 	let old = entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first"}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first"}),
 	);
 	let mut new = old.clone();
 	new.config["model"]["version"] = json!("2.0.0");
@@ -166,7 +166,7 @@ fn decider_host_and_retention_expansion_require_approval() {
 fn agent_default_switch_requires_approval() {
 	let old = entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first"}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first"}),
 	);
 	let mut new = old.clone();
 	new.config["remove_default"] = json!(["task_create"]);
@@ -181,7 +181,7 @@ fn agent_default_switch_requires_approval() {
 fn agent_plugin_addition_requires_approval_and_removal_does_not() {
 	let old = entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first"}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first"}),
 	);
 	let mut new = old.clone();
 	new.config["agent_plugins"] = json!([{ "digest": format!("sha256:{}", "a".repeat(64)), "name":"plugin", "source":"https://github.com/example/plugin", "skills":[], "servers":{}, "findings":[] }]);
@@ -230,7 +230,7 @@ fn agent_plugin_settings_can_narrow_but_not_add_tools_or_read_only_declarations(
 	);
 	let mut old = entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","agent_plugins":[plugin],"agent_plugin_settings":{"example":{"docs":{"tools":["search","read"]}}}}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first","agent_plugins":[plugin],"agent_plugin_settings":{"example":{"docs":{"tools":["search","read"]}}}}),
 	);
 	let mut new = old.clone();
 	new.config["agent_plugin_settings"]["example"]["docs"]["tools"] = json!(["search"]);
@@ -253,7 +253,7 @@ fn agent_plugin_settings_can_narrow_but_not_add_tools_or_read_only_declarations(
 fn restored_default_capabilities_and_allow_flags_change_consent() {
 	let old = entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","remove_default":["file_search","file_read","task_create"]}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first","remove_default":["file_search","file_read","task_create"]}),
 	);
 	let mut new = old.clone();
 	new.config["remove_default"] = json!([]);
@@ -323,7 +323,7 @@ fn agent_binding(
 fn agent_with(bindings: serde_json::Value) -> Entry {
 	entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","bindings":bindings}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first","bindings":bindings}),
 	)
 }
 

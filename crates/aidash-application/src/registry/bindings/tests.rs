@@ -27,7 +27,6 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 		capabilities: vec![],
 		tags: vec![],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({"type":"object"}),
 		config,
 	}
@@ -155,10 +154,8 @@ impl ProviderCatalog for Providers {
 	}
 }
 fn agent_config() -> AgentBindings {
-	serde_json::from_value(
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test"}),
-	)
-	.unwrap()
+	serde_json::from_value(json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test"}))
+		.unwrap()
 }
 fn agent_entry(config: &AgentBindings) -> Entry {
 	entry("agent", "agent", serde_json::to_value(config).unwrap())
@@ -907,9 +904,7 @@ async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kin
 #[tokio::test]
 async fn context_recovery_uses_the_agents_pinned_model() {
 	let mut catalog = Catalog::new();
-	let mut config = agent_config();
-	config.context_policy =
-		Some(serde_json::from_value(json!({"version":"context-recovery/1","summary":{}})).unwrap());
+	let config = agent_config();
 	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
 	graph.validate().unwrap();
 	assert!(
@@ -1980,8 +1975,8 @@ fn native_memory_binding_preserves_removed_read_operations() {
 		crate::test_support::native_memory_entries(),
 	);
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
-	assert_eq!(settings.memory.unwrap().id, "native");
-	assert_eq!(settings.allow_cross_conversation_memory, Some(false));
+	assert_eq!(settings.memory.as_ref().unwrap().id, "native");
+	assert!(!aidash_domain::tool::contract::AgentFlag::MemoryRead.permitted(&settings));
 	assert!(admitted.operation("memory_recall").is_err());
 	assert!(admitted.operation("memory_reflect").is_err());
 }

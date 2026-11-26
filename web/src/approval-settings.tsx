@@ -29,7 +29,6 @@ import type {
   ApprovalRuleView,
   RuleEffect,
 } from "./generated/models";
-import { CatalogApprovalLink } from "./approval-decider";
 import {
   approvalPreferencesKey,
   useApprovalDecider,
@@ -155,12 +154,6 @@ function ModeOption({
           </span>
         </span>
       </label>
-      {reason === "decider_unapproved" && decider && (
-        <CatalogApprovalLink
-          reference={decider}
-          className="ml-9 w-fit text-xs text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-        />
-      )}
     </div>
   );
 }

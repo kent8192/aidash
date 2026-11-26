@@ -119,7 +119,11 @@ impl ConversationScope for NativeConversation<'_> {
 		let conversation: ConversationRecord = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = thread_id;
-			let query_bind_3 = format!("{}@{}", target.id, target.version);
+			let query_bind_3 = if target_kind == "node" {
+				target.id.clone()
+			} else {
+				format!("{}@{}", target.id, target.version)
+			};
 			let query_bind_4 = target_kind;
 			let query_bind_5 = &self.access.identity.subject;
 			aidash_server::database::query_as(

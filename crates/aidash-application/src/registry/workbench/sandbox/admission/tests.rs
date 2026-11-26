@@ -155,7 +155,7 @@ fn agent() -> Entry {
 	entry(
 		"agent",
 		"agent",
-		json!({"schema_version":1,"model":reference("model"),"instructions":"private instructions","bindings":(0..3).map(|i| crate::test_support::binding("tool","aidash://fixture",&format!("tool_{i}"))).collect::<Vec<_>>(),"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"max_steps":5}),
+		json!({"model":reference("model"),"instructions":"private instructions","bindings":(0..3).map(|i| crate::test_support::binding("tool","aidash://fixture",&format!("tool_{i}"))).collect::<Vec<_>>(),"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS}),
 	)
 }
 fn draft() -> Draft {

@@ -168,8 +168,7 @@ export function OperationsDialog({
   const continues = request ? continuesAt(request) : null;
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
-  const unavailable =
-    isDeploymentAdministrator && (d.kind === "entity" || d.kind === "cluster");
+  const unavailable = isDeploymentAdministrator && d.kind === "entity";
   const execution = ["thread", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
@@ -270,12 +269,8 @@ export function OperationsDialog({
             {d.kind === "task" && (
               <TaskForm data={data} thread={d.thread?.id} submit={submit} />
             )}
-            {(d.kind === "entity" || d.kind === "cluster") && (
-              <EntityForm
-                data={data}
-                submit={submit}
-                initial={d.kind === "cluster" ? "cluster" : "agent"}
-              />
+            {d.kind === "entity" && (
+              <EntityForm data={data} submit={submit} initial="agent" />
             )}
             {d.kind === "assign" && task && (
               <AssignForm

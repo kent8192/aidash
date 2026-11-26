@@ -32,9 +32,9 @@ pub enum ConversationTargetKind {
 	#[model_enum(value = "agent")]
 	#[serde(rename = "agent")]
 	Agent,
-	#[model_enum(value = "cluster")]
-	#[serde(rename = "cluster")]
-	Cluster,
+	#[model_enum(value = "node")]
+	#[serde(rename = "node")]
+	Node,
 }
 
 #[derive(

@@ -88,9 +88,6 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"instructions",
 			"bindings",
 			"remove_default",
-			"cluster",
-			"max_steps",
-			"tool_parallelism",
 			"exposure",
 		],
 		"model" => &[
@@ -106,8 +103,7 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"streaming",
 			"stream_stall_timeout_secs",
 		],
-		"cluster" => &["coordinator"],
-		"bundle" | "memory" | "source" | "external_service" => &[],
+		"bundle" | "source" | "external_service" => &[],
 		"skill" => &["instructions"],
 		// ToolConfig uses a tagged, deny_unknown_fields contract. The merged
 		// effective configuration is validated by Registry before any write.
@@ -122,16 +118,38 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 	Ok(())
 }
 
+/// Public Registry kinds that may be registered and listed.
+pub const REGISTRY_KINDS: &[&str] = &[
+	"agent",
+	"model",
+	"tool",
+	"skill",
+	"embedding",
+	"bundle",
+	"source",
+	"external_service",
+];
+
+pub fn registry_kind(kind: &str) -> bool {
+	REGISTRY_KINDS.contains(&kind)
+}
+
 pub fn validate_metadata(e: &Entry, local: bool) -> Result<()> {
 	if local && e.installation.is_some() {
 		return Err(Error::Invalid(
 			"installed definitions require the Marketplace revision API".into(),
 		));
 	}
+	if !registry_kind(&e.kind) && !super::bindings::memory_defaults::definitions()?.contains(e) {
+		return Err(Error::Invalid(format!(
+			"unsupported Registry kind {}",
+			e.kind
+		)));
+	}
 	let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
-            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","decider","embedding","bundle","memory","source","reranker","tokenizer","external_service"]},
+            "version":{"type":"string"}, "kind":{"type":"string"},
             "name":{"type":"object","minProperties":1,"additionalProperties":{"type":"string","minLength":1}},
             "description":{"type":"object","minProperties":1,"additionalProperties":{"type":"string"}},
             "capabilities":{"type":"array","items":{"type":"string"},"uniqueItems":true},

@@ -270,7 +270,7 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 			"agent",
 			"research",
 			json!({
-				"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+				"model":{"id":"model","version":"1.0.0"},
 				"instructions":"Use the docs server","bindings":[],
 				"remove_default":["file_search","file_read"],
 				"agent_plugins":[reference],

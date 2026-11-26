@@ -151,14 +151,9 @@ pub fn new_draft_defaults(entry: &mut Entry) -> Result<()> {
 		.config
 		.as_object_mut()
 		.ok_or_else(|| Error::Invalid("agent config must be an object".into()))?;
-	config.entry("schema_version").or_insert(json!(1));
 	config.entry("bindings").or_insert(json!([]));
 	config.entry("remove_default").or_insert(json!([]));
-	let input: super::bindings::AgentBindings =
-		serde_json::from_value(Value::Object(config.clone()))?;
-	if input.schema_version != 1 {
-		return Err(Error::Invalid("unsupported Agent schema version".into()));
-	}
+	let _: super::bindings::AgentBindings = serde_json::from_value(Value::Object(config.clone()))?;
 	Ok(())
 }
 /// A share remains usable only for the exact acknowledged private document set.

@@ -118,7 +118,7 @@ async fn reference_embedding_failure_precedes_all_registration_writes() {
 	let entry = definition(
 		"",
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
 	);
 	let registration = personal::PersonalRegistration {
 		entry,
@@ -141,7 +141,7 @@ async fn malformed_reference_set_is_refused_before_any_embedding() {
 	let entry = definition(
 		"",
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
 	);
 	let registration = personal::PersonalRegistration {
 		entry,
@@ -168,7 +168,7 @@ async fn reference_images_are_embedded_before_the_private_index_is_written(
 	let mut entry = definition(
 		"",
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"embed","version":"1.0.0"}}),
 	);
 	let documents =
 		json!([{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]);
@@ -345,7 +345,7 @@ async fn registration_rejects_wrong_reference_kind_before_any_write(
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"execute"}),
+		json!({"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"execute"}),
 	);
 	let error = register_definition(&mut scope, &validation, &agent, "aidash://home")
 		.await
@@ -664,7 +664,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 	let entry = definition(
 		"",
 		"agent",
-		json!({"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Use the private evidence"}),
+		json!({"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Use the private evidence"}),
 	);
 	let draft = personal::validate_input(
 		entry,
@@ -848,7 +848,7 @@ fn bundled_skill_files_have_bounded_safe_paths_and_are_listed_on_demand() {
 fn skills_only_agents_do_not_need_custom_prompts() {
 	let mut e = entry();
 	e.kind = "agent".into();
-	e.config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"bindings":[crate::test_support::binding("skill","aidash://home","research")],"remove_default":[]});
+	e.config = json!({"model":{"id":"model","version":"1.0.0"},"bindings":[crate::test_support::binding("skill","aidash://home","research")],"remove_default":[]});
 	assert!(validate(&e).is_ok());
 	e.config["bindings"] = json!([]);
 	assert!(validate(&e).is_err());

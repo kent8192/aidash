@@ -184,7 +184,7 @@ fn world() -> World {
 			agent: entry(
 				"agent",
 				"agent",
-				json!({"schema_version":1,"bindings":[],"remove_default":[],"model":reference("model"),"instructions":"Work"}),
+				json!({"bindings":[],"remove_default":[],"model":reference("model"),"instructions":"Work"}),
 			),
 			definitions: [model.clone()]
 				.into_iter()

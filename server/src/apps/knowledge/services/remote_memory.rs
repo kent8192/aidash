@@ -104,7 +104,7 @@ pub(crate) async fn bind(
 	)
 	.await?;
 	if config.memory.as_ref() != Some(&selection.provider)
-		|| config.allow_cross_conversation_memory == Some(false)
+		|| !aidash_domain::tool::contract::AgentFlag::MemoryRead.permitted(&config)
 	{
 		return Err(Error::Conflict(
 			"selected Home logical Agent does not enable this memory provider".into(),

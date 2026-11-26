@@ -30,7 +30,7 @@ fn draft() -> Draft {
 }
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request."}})).unwrap()
 }
 struct Repository {
 	definitions: Vec<Entry>,
@@ -311,7 +311,7 @@ async fn create_authorizes_enabled_owner_before_insert(draft: Draft, mut entry: 
 	.await
 	.unwrap();
 	assert_eq!(saved.entry["id"], saved.id.to_string());
-	assert_eq!(saved.entry["config"]["schema_version"], json!(1));
+	assert!(saved.entry["config"].get("schema_version").is_none());
 	assert_eq!(
 		repository.logs(),
 		[

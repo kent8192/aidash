@@ -66,7 +66,7 @@ impl From<Conversation> for aidash_domain::Conversation {
 			target: record.target,
 			target_kind: match record.target_kind {
 				ConversationTargetKind::Agent => "agent",
-				ConversationTargetKind::Cluster => "cluster",
+				ConversationTargetKind::Node => "node",
 			}
 			.into(),
 			created_at: record.created_at,

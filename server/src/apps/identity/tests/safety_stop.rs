@@ -52,7 +52,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		(
 			"agent",
 			"fixture-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
 		),
 	] {
 		agent = Some(

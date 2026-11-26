@@ -144,7 +144,7 @@ impl PermissionScope for Scope<'_> {
 			}
 		};
 		let config = if entry.id == "agent" {
-			json!({"schema_version":1,"instructions":"Fixture","model":reference("model"),"bindings":[crate::test_support::binding("skill","aidash://local","skill"),crate::test_support::binding("tool","aidash://local","tool")],"remove_default":[]})
+			json!({"instructions":"Fixture","model":reference("model"),"bindings":[crate::test_support::binding("skill","aidash://local","skill"),crate::test_support::binding("tool","aidash://local","tool")],"remove_default":[]})
 		} else {
 			json!({"fixture": entry.id})
 		};

@@ -18,7 +18,8 @@ pub fn requirements(
 		aidash_domain::federation::execution::AgentMemoryRequirements {
 			native_required: agent.memory.as_ref().is_some_and(|memory| {
 				memory.id != aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
-			}) && agent.allow_cross_conversation_memory != Some(false),
+			}) && aidash_domain::tool::contract::AgentFlag::MemoryRead
+				.permitted(&agent),
 			memory_available: inspection.semantic_memory == VERSION
 				&& (agent.semantic_memory || agent.thread_context),
 		},

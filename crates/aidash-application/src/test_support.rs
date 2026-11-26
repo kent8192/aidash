@@ -25,7 +25,7 @@ pub(crate) fn agent(id: &str) -> Entry {
 	entry(
 		id,
 		"agent",
-		json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Do the task.","bindings":[],"remove_default":[]}),
+		json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Do the task.","bindings":[],"remove_default":[]}),
 	)
 }
 pub(crate) const PLUGIN_SOURCE: &str =

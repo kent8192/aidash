@@ -64,7 +64,7 @@ pub(crate) async fn retrieve(
 	// Built-in Memory recalls once at Run start, never per step (#852).
 	if agent.memory.as_ref().is_none_or(|memory| {
 		memory.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
-	}) || agent.allow_cross_conversation_memory == Some(false)
+	}) || !aidash_domain::tool::contract::AgentFlag::MemoryRead.permitted(&agent)
 	{
 		return Ok(Context::status(bounded_status("disabled", budget)?));
 	}

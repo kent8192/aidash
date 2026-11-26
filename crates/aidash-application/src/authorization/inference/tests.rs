@@ -24,7 +24,7 @@ fn agent() -> AgentConfig {
 	config.skills = vec![reference("first"), reference("second")];
 	config.conversation_memory = true;
 	config.memory = Some(reference("memory"));
-	config.allow_cross_conversation_memory = Some(true);
+	config.operations.insert("memory_recall".into());
 	config
 }
 

@@ -107,8 +107,8 @@ impl GraphOptions {
 					"thread"
 						| "goal" | "task" | "run"
 						| "artifact" | "conversation"
-						| "agent" | "cluster"
-						| "tool" | "model" | "skill"
+						| "agent" | "tool" | "model"
+						| "skill"
 				)
 			}) || self.relations.iter().any(|relation| {
 			!matches!(
@@ -147,11 +147,11 @@ pub fn kind_allowed(kind: &str, options: &GraphOptions) -> bool {
 		return false;
 	}
 	match options.mode.as_str() {
-		"topology" => matches!(kind, "agent" | "cluster" | "tool"),
+		"topology" => matches!(kind, "agent" | "tool"),
 		"execution" => matches!(kind, "goal" | "task" | "run" | "agent" | "artifact"),
 		"collaboration" => matches!(
 			kind,
-			"thread" | "goal" | "conversation" | "task" | "agent" | "cluster" | "artifact"
+			"thread" | "goal" | "conversation" | "task" | "agent" | "artifact"
 		),
 		"knowledge" => kind != "run",
 		_ => true,
@@ -253,7 +253,7 @@ pub fn build_edges(
 					"contains",
 					"configuration",
 				);
-				if matches!(conversation.target_kind.as_str(), "agent" | "cluster")
+				if conversation.target_kind == "agent"
 					&& let Some((target, version)) = conversation.target.rsplit_once('@')
 				{
 					add(
@@ -266,22 +266,11 @@ pub fn build_edges(
 			}
 			Candidate::Registry(entry) => {
 				let id = entity_key(node, &entry.kind, &entry.id, &entry.version);
-				if entry.kind == "cluster"
-					&& let Some((target, version)) = registry_ref(&entry.config["coordinator"])
-				{
-					add(
-						id.clone(),
-						entity_key(node, "agent", target, version),
-						"coordinates",
-						"configuration",
-					);
-				}
 				if entry.kind == "agent" {
 					for (kind, field, relation) in [
 						("tool", "tools", "tool"),
 						("model", "model", "model"),
 						("skill", "skills", "skill"),
-						("cluster", "cluster", "member"),
 					] {
 						let value = &entry.config[field];
 						let refs = value
@@ -466,10 +455,7 @@ pub fn valid_remote_page(page: &GraphPage, node_id: &str, options: &GraphOptions
 	}
 	let mut ids = BTreeSet::new();
 	for node in &page.nodes {
-		let registry = matches!(
-			node.kind.as_str(),
-			"agent" | "cluster" | "tool" | "model" | "skill"
-		);
+		let registry = matches!(node.kind.as_str(), "agent" | "tool" | "model" | "skill");
 		if node.node_id != node_id
 			|| !kind_allowed(&node.kind, options)
 			|| node.resource_id.as_deref().is_none_or(str::is_empty)

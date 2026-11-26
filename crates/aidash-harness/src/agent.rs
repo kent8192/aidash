@@ -648,7 +648,6 @@ impl<'a> Executor<'a> {
 		store: &dyn ExecutionStore,
 		run: &mut Run,
 		token: Uuid,
-		agent: &ExecutionAgent,
 		decision: unassigned::ChildrenDecision,
 		answer: Answer<'_>,
 	) -> Result<()> {
@@ -742,13 +741,7 @@ impl<'a> Executor<'a> {
 				}));
 			}
 		}
-		// A person-created Unassigned Task needs a further model turn after the
-		// person answers. At the limit, keep the last step for that turn.
-		if !matches!(&decision, Decision::AskAboutUnassigned(_))
-			|| run.step.saturating_add(1) < agent.max_steps
-		{
-			run.step += 1;
-		}
+		run.step += 1;
 		store.save_run(run, token, "execution.waiting").await?;
 		Ok(())
 	}
@@ -1573,9 +1566,6 @@ impl<'a> Executor<'a> {
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
-				if run.step >= agent.max_steps {
-					return Err(Error::Invalid("agent max_steps exceeded".into()));
-				}
 				let model_entry = self
 					.environment
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
@@ -1617,15 +1607,14 @@ impl<'a> Executor<'a> {
 						run.context.estimate.snapshot = Some(snapshot);
 						snapshot
 					}
-					None if model_cfg.request_estimator() != RequestEstimator::Bytes
-						&& !run.context.estimate.demoted =>
+					None if !run.context.estimate.demoted =>
 					{
 						let samples = store
 							.calibration_samples(&model_cfg.model_id, ProjectionVersion::Native.number())
 							.await?;
 						let snapshot = EstimateSnapshot::choose(
 							run.step,
-							model_cfg.request_estimator(),
+							RequestEstimator::Calibrated,
 							false,
 							&samples,
 						);
@@ -1932,13 +1921,7 @@ impl<'a> Executor<'a> {
 				{
 					push_turn_paragraph(AUTO_MODE_INSTRUCTION);
 				}
-				// A Native step state is recorded whenever it changes (#942), so it
-				// carries no step counter; a notice at 80 % and 90 % of the
-				// limit replaces it.
-				let mut agent_state = json!({"phase":run.phase()});
-				if let Some(notice) = aidash_domain::projection::native::step_limit_notice(run.step, agent.max_steps) {
-					agent_state["step_limit"] = json!(notice);
-				}
+				let agent_state = json!({"phase":run.phase()});
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":agent_state});
                 pinned.as_object_mut().expect("request snapshot").extend(snapshot_sources);
 				if let Some(deferred_read) = &thinking.deferred_thread_read {
@@ -2945,11 +2928,9 @@ connection: None,
 							return Ok(());
 						}
 						let children = home.child_summary(run.task_id).await?;
-						let no_step_left = run.step.saturating_add(1) >= agent.max_steps;
 						let decision = unassigned::decide_children(
 							&children,
 							&told_tasks(run),
-							no_step_left,
 						);
 						// Tasks to abandon as the parent completes; the final answer
 						// below carries them to `complete`.
@@ -2968,7 +2949,6 @@ connection: None,
 									store,
 									run,
 									token,
-									&agent,
 									held,
 									answer,
 								)
@@ -3037,7 +3017,6 @@ connection: None,
 								let decision = unassigned::decide_children(
 									&children,
 									&told_tasks(run),
-									run.step.saturating_add(1) >= agent.max_steps,
 								);
 								if !matches!(
 									decision,
@@ -3057,7 +3036,6 @@ connection: None,
 										store,
 										run,
 										token,
-										&agent,
 										decision,
 										answer,
 									)
@@ -3801,7 +3779,7 @@ connection: None,
 							if children.is_none() { children = Some(home.child_summary(run.task_id).await?); }
 							if let Some(summary) = &children
 								&& matches!(
-									unassigned::decide_children(summary, &told_tasks(run), false),
+									unassigned::decide_children(summary, &told_tasks(run)),
 									unassigned::ChildrenDecision::Wait
 								)
 							{

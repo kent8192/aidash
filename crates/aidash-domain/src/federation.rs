@@ -31,7 +31,6 @@ pub struct AgentCard {
 	pub capabilities: Vec<String>,
 	pub tags: Vec<String>,
 	pub languages: Vec<String>,
-	pub skills: Vec<String>,
 	/// The id of the model the Agent runs on, when its configuration names one.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub model: Option<String>,
@@ -48,7 +47,6 @@ impl From<&Entry> for AgentCard {
 			capabilities: entry.capabilities.clone(),
 			tags: entry.tags.clone(),
 			languages: entry.languages.clone(),
-			skills: entry.skills.clone(),
 			model: entry
 				.config
 				.pointer("/model/id")

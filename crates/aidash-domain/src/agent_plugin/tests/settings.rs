@@ -28,7 +28,6 @@ fn plugin() -> AgentPluginRef {
 
 fn agent(settings: PluginSettings, deferred: bool) -> AgentBindings {
 	let mut agent: AgentBindings = serde_json::from_value(json!({
-		"schema_version": 1,
 		"model": {"id": "model", "version": "1.0.0"},
 		"instructions": "Work on the Task.",
 	}))

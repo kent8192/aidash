@@ -205,26 +205,12 @@ async fn a_task_created_after_the_notice_gets_its_own_notice(mut fixture: Fixtur
 
 #[rstest]
 #[tokio::test]
-async fn with_no_step_left_there_is_no_notice_and_the_run_still_completes(mut fixture: Fixture) {
-	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
-	// The fixture Agent allows 64 steps.
-	fixture.run.step = 63;
+async fn asking_a_person_about_unassigned_work_resumes_the_run(mut fixture: Fixture) {
+	set_children(&fixture, children(1, false, vec![task(1, false, false)]));
 	answer(&mut fixture.run, "All done.");
 	advance_sources(&mut fixture).await.unwrap();
-	assert_eq!(fixture.run.phase(), RunPhase::Completed);
-	assert!(told(&fixture).is_empty());
-	assert_eq!(
-		*fixture.backend.0.completed_abandoning.lock().unwrap(),
-		[vec![Uuid::from_u128(1)]]
-	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn asking_a_person_at_the_step_limit_leaves_room_to_resume(mut fixture: Fixture) {
-	set_children(&fixture, children(1, false, vec![task(1, false, false)]));
-	fixture.run.step = 63;
-	answer(&mut fixture.run, "All done.");
+	fixture.run = last_write(&fixture).1;
+	answer(&mut fixture.run, "The Task still needs a person.");
 	advance_sources(&mut fixture).await.unwrap();
 	let (_, saved) = last_write(&fixture);
 	assert!(matches!(saved.state, RunState::Waiting(_)));

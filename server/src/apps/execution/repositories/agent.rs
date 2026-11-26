@@ -1440,18 +1440,10 @@ impl ExecutionEnvironment for Environment<'_> {
 			reference_files: config.reference_attachments.len(),
 			tools: config.tools,
 			skills: config.skills,
-			// Runs have no step limit (#1009, ADR 0141); an Agent definition's
-			// `max_steps` is accepted for stored definitions and ignored.
-			max_steps: i32::MAX,
-			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
-			context_policy: config.context_policy,
-			tool_parallelism: usize::from(config.tool_parallelism),
-			harness_contract: aidash_domain::registry::execution_contract(
-				config.projection_version,
-				config.harness_contract,
-			)
-			.map_err(aidash_application::Error::ProjectionRetired)?,
+			context_policy: None,
+			tool_parallelism: usize::from(aidash_domain::registry::bindings::MAX_TOOL_PARALLELISM),
+			harness_contract: config.harness_contract.unwrap_or_default(),
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
 			completion: config.completion,
 		})

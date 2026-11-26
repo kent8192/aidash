@@ -841,7 +841,7 @@ async fn bootstrap_with_policy(
 		(
 			"agent",
 			"research",
-			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
 	];
 	if read_only_tool {

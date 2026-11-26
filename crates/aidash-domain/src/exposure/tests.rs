@@ -165,7 +165,6 @@ impl Run {
 			"agent",
 			"",
 			json!({
-				"schema_version": 1,
 				"model": {"id": "model", "version": "1.0.0"},
 				"instructions": "Work.",
 				"bindings": self.agent,

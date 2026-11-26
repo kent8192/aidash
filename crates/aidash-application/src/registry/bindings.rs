@@ -193,7 +193,15 @@ pub async fn resolve(
 		let entry = match definitions.get(target) {
 			Some(entry) => entry.clone(),
 			None => {
-				let entry = catalog.definition(target).await?;
+				let entry = if let Some(builtin) =
+					aidash_domain::registry::bindings::memory_defaults::definition(
+						&target.id,
+						&target.version,
+					)? {
+					builtin
+				} else {
+					catalog.definition(target).await?
+				};
 				definitions.insert(target.clone(), entry.clone());
 				entry
 			}
@@ -745,7 +753,6 @@ pub fn component_action(kind: &str) -> &'static str {
 		"tool" => "tool.invoke",
 		"skill" => "skill.use",
 		"cluster" => "cluster.execute",
-		"decider" => "decision.invoke",
 		"memory" | "source" => "registry.read",
 		_ => "registry.read",
 	}
