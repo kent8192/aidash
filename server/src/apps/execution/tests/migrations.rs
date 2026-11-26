@@ -379,6 +379,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0093_registry_kind_state"]);
+	assert_eq!(head("identity"), ["0122_tenant_embedding_settings_guard"]);
 	assert_eq!(head("execution"), ["0163_scope_host_debit_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
@@ -393,7 +394,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		138
+		139
 	);
 	let tables = migrations
 		.iter()
@@ -434,6 +435,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						|| matches!(
 							(migration.app_label.as_str(), migration.name.as_str()),
 							("registry", "0054_remove_agent_cluster")
+								| ("registry", "0090_prune_definition_fields")
+								| ("registry", "0091_thread_target_kinds")
 								| ("execution", "0089_remove_agent_cluster")
 						),
 					"{}.{}",

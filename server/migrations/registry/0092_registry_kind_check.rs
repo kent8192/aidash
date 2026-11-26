@@ -9,6 +9,6 @@ pub(super) fn migration() -> Migration {
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0092_registry_kind_check.sql").into(),
-			reverse_sql: None,
+			reverse_sql: Some(include_str!("sql/backward/0092_registry_kind_check.sql").into()),
 		})
 }

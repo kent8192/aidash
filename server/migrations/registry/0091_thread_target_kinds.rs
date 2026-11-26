@@ -1,5 +1,7 @@
 // reinhardt-migration-source: 1
 // PostgreSQL NOT VALID constraint DDL has no typed migration operation.
+// CONTRACT(#1019): The integration workspaces migration must update the
+// logical ConversationTargetKind enum constraint to the Agent/Node domain.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
