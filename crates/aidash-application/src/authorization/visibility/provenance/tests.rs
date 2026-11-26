@@ -88,7 +88,6 @@ impl ResourceVisibilityScope for Scope {
 		let key = match action {
 			"thread.events" => "thread.events",
 			"task.read" => "task.read",
-			"artifact.read" => "artifact.read",
 			"message.read" => "message.read",
 			"conversation.read" => "conversation.read",
 			_ => panic!("unexpected action"),
@@ -373,7 +372,6 @@ fn semantic_output_fixture(mut scope: Scope, kind: &str) -> Scope {
 }
 
 #[rstest]
-#[case("artifact")]
 #[case("message")]
 #[tokio::test]
 async fn changed_semantic_source_producer_retains_invalidation(scope: Scope, #[case] kind: &str) {
@@ -724,7 +722,6 @@ async fn denied_nested_run_stops_before_reading_its_journal_or_later_sources(mut
 }
 #[rstest]
 #[case("task")]
-#[case("artifact")]
 #[case("message")]
 #[case("run")]
 #[case("conversation")]
@@ -752,7 +749,6 @@ async fn source_lookups_retain_the_exact_journal_thread_and_missing_rows_fail_cl
 #[rstest]
 #[case("workspace_events", "thread.events")]
 #[case("task", "task.read")]
-#[case("artifact", "artifact.read")]
 #[case("message", "message.read")]
 #[case("run", "base")]
 #[case("conversation", "conversation.read")]
@@ -851,7 +847,6 @@ async fn journal_and_catalog_failures_are_preserved_without_becoming_denial_or_s
 }
 #[rstest]
 #[case("task")]
-#[case("artifact")]
 #[case("message")]
 #[case("run")]
 #[case("conversation")]

@@ -1210,7 +1210,7 @@ async fn malformed_delegate_agent_keeps_the_json_error(
 }
 #[rstest]
 #[tokio::test]
-async fn artifact_creation_uses_the_last_subject_in_the_delegation_chain(
+async fn outside_version_checks_the_task_resource(
 	repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1225,33 +1225,13 @@ async fn artifact_creation_uses_the_last_subject_in_the_delegation_chain(
 	.unwrap();
 	assert_eq!(
 		repository.decisions()[1].0.attributes,
-		json!({"created_by":"delegated"})
+		json!({"creator":"saved creator","revision":7})
 	);
-	assert!(repository.calls().contains(&"artifact:delegated".into()));
+	assert_eq!(repository.decisions()[1].1, "task.complete");
 }
 #[rstest]
 #[tokio::test]
-async fn local_artifact_creation_requires_a_nonempty_subject_chain(
-	mut repository: Repository,
-	run: RunMetadata,
-	agent: AgentConfig,
-) {
-	repository.subjects.clear();
-	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call("deliverable_note", json!({}))
-		)
-		.await,
-		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::Policy
-	));
-	assert_eq!(repository.decisions().len(), 1);
-}
-#[rstest]
-#[tokio::test]
-async fn remote_artifact_authority_uses_qualified_id_and_current_context(
+async fn remote_outside_version_uses_the_qualified_task_and_current_context(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1269,15 +1249,10 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 	let decision = &repository.decisions()[1];
 	assert_eq!(
 		decision.0.id,
-		format!("aidash://home/artifacts/{}", run.task_id)
+		format!("aidash://home/tasks/{}", run.task_id)
 	);
 	assert_eq!(decision.0.attributes, repository.context);
-	assert!(
-		!repository
-			.calls()
-			.iter()
-			.any(|name| name.starts_with("artifact:"))
-	);
+	assert!(!repository.calls().iter().any(|name| name == "task:local"));
 }
 #[rstest]
 #[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]

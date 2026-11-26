@@ -271,7 +271,7 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 		[(
 			Uuid::from_u128(6),
 			scope.task.thread_id,
-			"artifact".into(),
+			"message".into(),
 			Uuid::from_u128(8)
 		)]
 	);
@@ -287,15 +287,13 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 			"event"
 		]
 	);
-	let mut task = json!(scope.task);
-	task["revision"] = json!(4);
-	task["status"] = json!("COMPLETED");
+
 	assert_eq!(
 		scope.events,
 		[(
 			Some(scope.task.thread_id),
 			"task.completed".into(),
-			json!({"task":task,"artifact":{"id":Uuid::from_u128(8),"thread_id":scope.task.thread_id,"task_id":scope.task.id,"kind":"text","name":"Answer","content":"Done","created_by":scope.task.owner,"idempotency_key":key,"created_at":scope.task.created_at}})
+			json!({"task_id":scope.task.id,"message_id":Uuid::from_u128(8)})
 		)]
 	);
 }

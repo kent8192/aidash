@@ -231,8 +231,6 @@ async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_orde
 			"task",
 			"task_resource",
 			"task.complete",
-			"artifact_resource",
-			"artifact.create",
 			"transaction.disclose:task:aidash://home/airy-hawk-2lu4as22",
 			"transaction.disclose:task:aidash://peer/airy-hawk-2lu4as22",
 			"run",
@@ -277,7 +275,7 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 #[case::inherit("inherit_local_run")]
 #[case::thread("thread.update")]
 #[case::disclosure("transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22")]
-#[case::artifact("artifact.create")]
+#[case::completion("task.complete")]
 #[tokio::test]
 async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_identity(
 	mut scope: Scope,

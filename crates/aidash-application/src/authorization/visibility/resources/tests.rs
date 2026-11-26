@@ -112,7 +112,6 @@ impl ResourceVisibilityScope for Scope {
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		let name = match action {
 			"task.read" => "task.read",
-			"artifact.read" => "artifact.read",
 			"message.read" => "message.read",
 			"human.read" => "human.read",
 			_ => panic!("unexpected policy action"),
@@ -344,7 +343,7 @@ async fn task_event_identifier_precedence_preserves_legacy_envelopes(
 
 #[rstest]
 #[case("task.created",json!({}))]
-#[case("artifact.created",json!({"id":"bad"}))]
+#[case("task.completed",json!({"task_id":"bad","message_id":Uuid::from_u128(4)}))]
 #[case("message.thread_opened",json!({"sender":"x","content":"x"}))]
 #[case("message.thread_opened",json!({"id":false}))]
 #[tokio::test]
@@ -441,7 +440,6 @@ async fn explicit_message_event_ids_do_not_fall_back_to_same_content_rows(mut sc
 
 #[rstest]
 #[case("event_task", "task.created")]
-#[case("artifact", "artifact.created")]
 #[case("messages_id", "message.created")]
 #[case("messages_legacy", "message.created")]
 #[tokio::test]
@@ -465,7 +463,7 @@ async fn event_membership_errors_stop_disclosure(
 
 #[rstest]
 #[case::message("message.created", json!({"id":Uuid::from_u128(4),"run_id":Uuid::from_u128(9)}))]
-#[case::artifact("artifact.published", json!({"id":Uuid::from_u128(3),"run_id":Uuid::from_u128(9)}))]
+#[case::completion("task.completed", json!({"task_id":Uuid::from_u128(1),"message_id":Uuid::from_u128(4),"run_id":Uuid::from_u128(9)}))]
 #[tokio::test]
 async fn a_publishing_run_in_an_output_event_never_hands_its_disclosure_to_that_run(
 	mut scope: Scope,
