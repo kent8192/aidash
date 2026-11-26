@@ -70,6 +70,7 @@ export function ThreadDashboard({
         >
           {access ? (
             <DutiesPanel
+              data={data}
               key={`${data.node.id}:${access.tenant}:${access.subject}`}
               scope={{ kind: "mine" }}
               administrator={can("duty.administer")}

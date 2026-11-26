@@ -1,11 +1,23 @@
 // Issue #1154. Tier order is a product decision, independent of price.
 const series = [
-  { prefix: "anthropic/claude-", tiers: ["fable", "opus", "sonnet", "haiku"] },
-  { prefix: "openai/gpt-", tiers: ["astra", "sol", "terra", "luna"] },
-  { prefix: "google/gemini-", tiers: ["neon", "carbon", "argon", "hydrogen"] },
-  { prefix: "deepseek/", tiers: ["pro", "flash"] },
-  { prefix: "moonshotai/kimi-", tiers: ["pro", "base"] },
-  { prefix: "meta/muse-", tiers: ["wonder", "spark"] },
+  {
+    name: "Claude",
+    prefix: /^anthropic\/claude-/,
+    tiers: ["fable", "opus", "sonnet", "haiku"],
+  },
+  {
+    name: "ChatGPT",
+    prefix: /^openai\/gpt-/,
+    tiers: ["astra", "sol", "terra", "luna"],
+  },
+  {
+    name: "Gemini",
+    prefix: /^google\/gemini-(?=\d)/,
+    tiers: ["neon", "carbon", "argon", "hydrogen"],
+  },
+  { name: "DeepSeek", prefix: /^deepseek\//, tiers: ["pro", "flash"] },
+  { name: "Kimi", prefix: /^moonshotai\/kimi-/, tiers: [] }, // K3+, by version and release date
+  { name: "Muse", prefix: /^meta\/muse-/, tiers: ["wonder", "spark"] },
 ];
 
 type Model = {
@@ -16,21 +28,28 @@ type Model = {
 const numeric = new Intl.Collator("en", { numeric: true });
 
 function rank(id: string) {
-  const index = series.findIndex((s) => id.startsWith(s.prefix));
+  const index = series.findIndex((rule) => rule.prefix.test(id));
   const rule = series[index];
-  const slug = rule ? id.slice(rule.prefix.length) : id;
+  const name = rule?.name;
+  const slug = rule ? id.replace(rule.prefix, "") : id;
   const version =
-    (index === 3
+    (name === "DeepSeek"
       ? slug.match(/(?:^|-)v(\d+(?:\.\d+)*)/)
       : slug.match(/(\d+(?:\.\d+)*)/))?.[1] ?? "0";
-  let tier = rule?.tiers.findIndex((t) => slug.split("-").includes(t)) ?? -1;
-  if (index === 4 && /^k\d+(?:\.\d+)*$/.test(slug)) tier = 1;
-  if (index === 5 && !/^(wonder|spark-\d+(?:\.\d+)*)$/.test(slug)) tier = -1;
+  const tierIndex =
+    rule?.tiers.findIndex((t) => slug.split("-").includes(t)) ?? -1;
+  let shortcut = tierIndex >= 0 ? rule.tiers[tierIndex] : undefined;
+  if (name === "Kimi")
+    shortcut = slug.replace(/^k\d+(?:\.\d+)*-?/, "") || "base";
+  if (name === "Muse" && !/^(wonder|spark-\d+(?:\.\d+)*)$/.test(slug))
+    shortcut = undefined;
   return {
     index: index < 0 ? series.length : index,
+    name,
     version,
     major: Number(version.split(".")[0]),
-    tier: tier < 0 ? Infinity : tier,
+    tierIndex,
+    shortcut,
   };
 }
 
@@ -38,7 +57,7 @@ export function eligibleModel(model: Model) {
   const { id, architecture } = model;
   return (
     !/(?:^~|:(?:batch|free)$|-exp(?:-|:|$))/.test(id) &&
-    !(id.startsWith("openai/gpt-") && /-pro(?:$|:)/.test(id)) &&
+    !(id.startsWith("openai/gpt-") && /-pro(?:$|:|-)/.test(id)) &&
     !(
       id.startsWith("moonshotai/kimi-") &&
       !/^moonshotai\/kimi-k(?:[3-9]|\d{2,})(?:\.|-|$)/.test(id)
@@ -50,23 +69,22 @@ export function eligibleModel(model: Model) {
 }
 
 export function compareModels(a: Model, b: Model) {
-  const x = rank(a.id),
-    y = rank(b.id);
+  const x = rank(a.id);
+  const y = rank(b.id);
+  if (x.index !== y.index) return x.index - y.index;
+  if (!x.name) return numeric.compare(a.id, b.id);
   const versions = numeric.compare(y.version, x.version);
-  return (
-    x.index - y.index ||
-    (x.index === series.length ? numeric.compare(a.id, b.id) : 0) ||
-    Number(!Number.isFinite(x.tier)) - Number(!Number.isFinite(y.tier)) ||
-    (x.index === 3 || x.index === 4
+  const releases =
+    (b.created ?? 0) - (a.created ?? 0) || numeric.compare(b.id, a.id);
+  if (x.name === "Kimi") return versions || releases;
+  if (!!x.shortcut !== !!y.shortcut) return x.shortcut ? -1 : 1;
+  const generation =
+    x.name === "DeepSeek"
       ? versions
-      : x.index === 5
+      : x.name === "Muse"
         ? 0
-        : y.major - x.major) ||
-    x.tier - y.tier ||
-    versions ||
-    (b.created ?? 0) - (a.created ?? 0) ||
-    numeric.compare(b.id, a.id)
-  );
+        : y.major - x.major;
+  return generation || x.tierIndex - y.tierIndex || versions || releases;
 }
 
 export function catalogSections<T extends Model>(models: T[]) {
@@ -78,10 +96,10 @@ export function catalogSections<T extends Model>(models: T[]) {
   }
   const seen = new Set<string>();
   const shortcuts = all.filter((model) => {
-    const { index, major, tier } = rank(model.id);
-    if (!Number.isFinite(tier) || (index !== 5 && major !== newest.get(index)))
+    const { index, major, shortcut, name } = rank(model.id);
+    if (!shortcut || (name !== "Muse" && major !== newest.get(index)))
       return false;
-    const key = index + "/" + tier;
+    const key = index + "/" + shortcut;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

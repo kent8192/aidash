@@ -83,7 +83,7 @@ export type AgentEntry = {
   skills: string[];
   schema: Record<string, unknown>;
   config: {
-    model: Ref;
+    model: Ref | null;
     instructions: string;
     schema_version: number;
     bindings: Binding[];
@@ -291,8 +291,6 @@ const text = {
     dependencies: "依存関係",
     permission:
       "要求する能力と実効権限は別です。登録だけでは実行権限は付与されません。",
-    noModels:
-      "利用可能なモデルがありません。管理者にモデル登録と参照権限を依頼してください。",
     noDrafts: "閲覧できる下書きはありません。",
     setup:
       "テスト環境はまだ構成されていません。管理者が安全なテスト接続を設定する必要があります。",
@@ -302,7 +300,7 @@ const text = {
     policyContext:
       "実効権限は対象のテナント・主体・スレッドを指定した時点で判定されます。",
     threads: "この版を使用したスレッド",
-    noModel: "モデル未選択",
+    noModel: "Task を始めるたびに選択",
     source: "接続中のNode",
     registered: "Registryに登録しました。Marketplace公開や実行許可は別です。",
     refresh: "再読み込み",
@@ -360,8 +358,6 @@ const text = {
     dependencies: "Dependencies",
     permission:
       "Requested capabilities and effective permissions differ. Registration does not grant execution.",
-    noModels:
-      "No available model. Ask an administrator to register a model and grant reference access.",
     noDrafts: "No drafts are visible to this identity.",
     setup:
       "The test environment is not configured. An administrator must provide a safe test connection.",
@@ -372,7 +368,7 @@ const text = {
     policyContext:
       "Effective permissions require a specific tenant, subject and thread at observation time.",
     threads: "Threads using this version",
-    noModel: "No model selected",
+    noModel: "Picked at each Task start",
     source: "Connected node",
     registered:
       "Registered in the Registry. Marketplace publication and execution grants are separate.",
@@ -469,7 +465,8 @@ function label(
     "—"
   );
 }
-function refKey(ref: Ref): string {
+function refKey(ref: Ref | null): string {
+  if (!ref) return "";
   return `${ref.id}@${ref.version}`;
 }
 function newEntry(model?: Ref): AgentEntry {
@@ -485,7 +482,7 @@ function newEntry(model?: Ref): AgentEntry {
     skills: [],
     schema: {},
     config: {
-      model: model ?? { id: "", version: "" },
+      model: model ? { id: model.id, version: model.version } : null,
       instructions: "",
       schema_version: 1,
       bindings: [],
@@ -971,10 +968,6 @@ export function Workbench({
     setMessage("");
   };
   const create = async () => {
-    if (!models.length) {
-      setError(t.noModels);
-      return;
-    }
     setBusy(true);
     setError("");
     try {
@@ -1998,23 +1991,26 @@ export function Workbench({
                     (item) =>
                       `${item.id}@${item.version}` === event.target.value,
                   );
-                  if (model)
-                    value.config.model = {
-                      id: model.id,
-                      version: model.version,
-                    };
+                  value.config.model = model
+                    ? {
+                        id: model.id,
+                        version: model.version,
+                      }
+                    : null;
                 })
               }
             >
-              {!models.some(
-                (model) => refKey(model) === refKey(editing.config.model),
-              ) && (
-                <option value={refKey(editing.config.model)} disabled>
-                  {editing.config.model.id
-                    ? `${refKey(editing.config.model)} · ${ja ? "利用不可" : "Unavailable"}`
-                    : t.noModel}
-                </option>
-              )}
+              <option value="">{t.noModel}</option>
+              {editing.config.model &&
+                !models.some(
+                  (model) => refKey(model) === refKey(editing.config.model),
+                ) && (
+                  <option value={refKey(editing.config.model)} disabled>
+                    {editing.config.model.id
+                      ? `${refKey(editing.config.model)} · ${ja ? "利用不可" : "Unavailable"}`
+                      : t.noModel}
+                  </option>
+                )}
               {models.map((model) => (
                 <option
                   key={`${model.id}@${model.version}`}
@@ -2380,7 +2376,7 @@ export function Workbench({
       )}
       <InspectorSection title={t.dependencies}>
         <ul className="grid gap-2">
-          {editing?.config.model.id && (
+          {editing?.config.model?.id && (
             <li className="flex items-start gap-2">
               <Blocks aria-hidden className="mt-0.5 size-3.5 text-faint" />
               <span className="grid min-w-0">
@@ -2414,7 +2410,7 @@ export function Workbench({
             </li>
           ))}
         </ul>
-        {!editing?.config.model.id && <Hint>{t.noModel}</Hint>}
+        {!editing?.config.model?.id && <Hint>{t.noModel}</Hint>}
       </InspectorSection>
       <InspectorSection title={ja ? "要求する能力" : "Requested capabilities"}>
         {editing?.capabilities.length ? (
@@ -2850,7 +2846,7 @@ export function Workbench({
               [t.profile, editing ? label(editing, locale) : "—"],
               [
                 t.model,
-                editing?.config.model.id
+                editing?.config.model?.id
                   ? referenceName(editing.config.model)
                   : t.noModel,
               ],
@@ -3531,7 +3527,7 @@ export function Workbench({
           <Button
             variant="outline"
             type="button"
-            disabled={busy || !models.length}
+            disabled={busy}
             onClick={() => void create()}
           >
             <Plus aria-hidden />
@@ -3579,15 +3575,6 @@ export function Workbench({
           </Button>
         </div>
         {notices}
-        {!models.length && (
-          <Notice
-            role="status"
-            tone="warning"
-            className="shrink-0 rounded-none border-x-0 border-t-0 px-4 md:px-6"
-          >
-            {t.noModels}
-          </Notice>
-        )}
         {loading ? (
           <FormSkeleton label={t.loading} />
         ) : !current ? (

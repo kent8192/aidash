@@ -189,8 +189,11 @@ test("searches and selects a model without credential input", async ({
   await expect(
     dialog.getByText(/Tenant のデータ保護レベルで決まります/),
   ).toBeVisible();
-  const effort = dialog.getByLabel("Reasoning Effort");
+  const effort = dialog.getByLabel("推論強度");
   await expect(effort).toHaveAttribute("aria-valuetext", "low");
+  await expect(
+    dialog.getByRole("button", { name: "medium", exact: true }),
+  ).toBeDisabled();
   await effort.press("End");
   await expect(effort).toHaveAttribute("aria-valuetext", "high");
   const submitted = page.waitForRequest(
@@ -303,7 +306,7 @@ test("clears reasoning settings when selecting an unsupported model", async ({
   });
   await picker.fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
-  await dialog.getByRole("slider", { name: "Reasoning Effort" }).press("End");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("End");
   await picker.fill("other/model");
   await dialog.getByRole("option", { name: /Other Model/ }).click();
   await expect(dialog.getByRole("slider")).toHaveCount(0);
@@ -325,7 +328,7 @@ test("model names follow provider, model and effort until manually edited", asyn
   await picker.fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
   await expect(name).toHaveValue("vendor-fixture-model-low");
-  await dialog.getByRole("slider", { name: "Reasoning Effort" }).press("End");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("End");
   await expect(name).toHaveValue("vendor-fixture-model-high");
   await dialog.getByLabel("説明").fill("Auto-named model");
   const posted = page.waitForRequest(
@@ -351,11 +354,11 @@ test("manual model names survive model and effort changes", async ({
   });
   await picker.fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
-  await dialog.getByRole("slider", { name: "Reasoning Effort" }).press("End");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("End");
   await expect(name).toHaveValue("My research model");
   await name.fill("");
   await expect(name).toHaveValue("vendor-fixture-model-high");
-  await dialog.getByRole("slider", { name: "Reasoning Effort" }).press("Home");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("Home");
   await expect(name).toHaveValue("vendor-fixture-model-low");
 });
 

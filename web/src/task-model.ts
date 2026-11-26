@@ -14,11 +14,19 @@ export type ModelChoice = {
 };
 
 export function allowedEfforts(
-  model?: Pick<CatalogModel, "supported_parameters" | "reasoning">,
+  model?: Partial<Pick<CatalogModel, "supported_parameters" | "reasoning">>,
 ) {
   if (!model?.supported_parameters?.includes("reasoning_effort")) return [];
   const supported = model.reasoning?.supported_efforts;
   return efforts.filter((e) => !supported || supported.includes(e));
+}
+
+export function defaultEffort(levels: Effort[], preferred: unknown) {
+  return (
+    levels.find((e) => e === preferred) ??
+    levels.find((e) => e === "medium") ??
+    levels[0]
+  );
 }
 
 export function perMillion(price?: string) {
@@ -27,26 +35,38 @@ export function perMillion(price?: string) {
   return Number.isFinite(value) && value >= 0 ? value * 1_000_000 : null;
 }
 
-export function catalogConfig(m: CatalogModel) {
+export function modelDefinitionConfig(
+  source: string,
+  model: {
+    model_id: string;
+    endpoint: string;
+    reasoning_effort: string | null;
+    context_window: number;
+    max_output_tokens: number;
+    modalities: unknown;
+    media_routes: unknown;
+    cost: unknown;
+  },
+  wireApi = "",
+  cacheMode = "",
+  encoding = "",
+) {
   return {
-    provider: "openrouter",
-    provider_credential: "openrouter",
-    model_id: m.id,
-    endpoint: "https://openrouter.ai/api/v1",
-    reasoning_effort: null,
-    context_window: m.context_length,
-    max_output_tokens: m.top_provider?.max_completion_tokens ?? 0,
-    modalities: m.architecture.input_modalities,
-    media_routes: [],
-    request_estimator: "calibrated",
-    cost: {
-      input_per_million: perMillion(m.pricing.prompt),
-      output_per_million: perMillion(m.pricing.completion),
-      currency: "USD",
-    },
+    ...model,
+    provider: source === "keyless" ? "openrouter" : source,
+    ...(source === "chatgpt"
+      ? { plan_connection: "chatgpt", streaming: true }
+      : {}),
+    ...(source === "openrouter"
+      ? {
+          provider_credential: "openrouter",
+          ...(wireApi === "responses" ? { wire_api: "responses" } : {}),
+          ...(cacheMode ? { cache_mode: cacheMode } : {}),
+        }
+      : {}),
+    request_estimator: encoding ? { tokenized: encoding } : "calibrated",
   };
 }
-
 export async function resolveChoice(choice: ModelChoice): Promise<TaskModel> {
   let ref = choice.entry;
   if (!ref) {
@@ -58,7 +78,20 @@ export async function resolveChoice(choice: ModelChoice): Promise<TaskModel> {
         version: "1.0.0",
         name: { en: m.name },
         description: { en: m.id },
-        config: catalogConfig(m),
+        config: modelDefinitionConfig("openrouter", {
+          model_id: m.id,
+          endpoint: "https://openrouter.ai/api/v1",
+          reasoning_effort: choice.effort ?? null,
+          context_window: m.context_length,
+          max_output_tokens: m.top_provider?.max_completion_tokens ?? 0,
+          modalities: m.architecture.input_modalities,
+          media_routes: [],
+          cost: {
+            input_per_million: perMillion(m.pricing.prompt),
+            output_per_million: perMillion(m.pricing.completion),
+            currency: "USD",
+          },
+        }),
         tags: [],
         languages: [],
         capabilities: [],
@@ -80,20 +113,19 @@ export function needsTaskModel(agent?: Pick<Entry, "kind" | "config">) {
 }
 
 // Adapter for the receiver's discovery-scoped model list. Replace with the generated client.
-export type RemoteModel = Pick<
-  CatalogModel,
-  "id" | "name" | "pricing" | "supported_parameters" | "reasoning"
-> & {
+type RemoteModel = {
   model: EntityRef;
+  name: Entry["name"];
+  openrouter_model_id: string;
+  pricing?: CatalogModel["pricing"] | null;
   reasoning_effort?: Effort;
-  created?: number;
 };
 export function receivingModels(
   task: string,
   node_id: string,
   agent: EntityRef,
 ) {
-  return apiFetch<{ task_model_required: boolean; models: RemoteModel[] }>(
+  return apiFetch<RemoteModel[]>(
     `/api/tasks/${encodeURIComponent(task)}/remote-grants/models`,
     {
       method: "POST",

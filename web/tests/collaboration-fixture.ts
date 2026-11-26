@@ -261,6 +261,7 @@ export async function setup(
     failFirstUpload?: boolean;
     coreCapabilities?: boolean;
     coreVersion?: boolean;
+    taskModelAgent?: boolean;
     runMediaRoutes?: string[][];
     invalidRun?: boolean;
     semanticPause?: string;
@@ -431,6 +432,8 @@ export async function setup(
       remove_default: [],
     };
   }
+  if (options.taskModelAgent)
+    data.registry[0].config = { ...data.registry[0].config, model: null };
   if (options.coreVersion)
     data.registry.push({ ...data.registry[0], version: "1.1.0" });
   if (options.extraGraphAgent) {

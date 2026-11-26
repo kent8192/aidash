@@ -8,6 +8,8 @@ import { openrouterModels } from "./generated/aidash";
 import type { CatalogModel } from "./generated/models";
 import {
   allowedEfforts,
+  defaultEffort,
+  efforts,
   perMillion,
   type Effort,
   type ModelChoice,
@@ -51,12 +53,13 @@ export function ReasoningSlider({
 }) {
   const { locale } = useI18n();
   if (!levels.length) return null;
+  const label = locale === "ja-JP" ? "推論強度" : "Reasoning Effort";
   return (
     <>
-      <Field label="Reasoning Effort">
+      <Field label={label}>
         <input
           type="range"
-          aria-label="Reasoning Effort"
+          aria-label={label}
           aria-valuetext={value}
           min={0}
           max={levels.length - 1}
@@ -64,7 +67,20 @@ export function ReasoningSlider({
           onChange={(e) => onChange(levels[Number(e.target.value)])}
         />
       </Field>
-      <span>{value}</span>
+      <div className="flex justify-between gap-1">
+        {efforts.map((effort) => (
+          <button
+            type="button"
+            key={effort}
+            disabled={!levels.includes(effort)}
+            aria-pressed={value === effort}
+            className="text-xs text-muted-foreground aria-pressed:font-semibold aria-pressed:text-foreground disabled:opacity-40"
+            onClick={() => onChange(effort)}
+          >
+            {effort}
+          </button>
+        ))}
+      </div>
       <Hint>
         {locale === "ja-JP"
           ? "強くするほど丁寧に考えますが、遅く・高くなります"
@@ -89,7 +105,7 @@ export function OpenRouterModelPicker({
   onChoice?: (choice: ModelChoice | undefined) => void;
   initial?: ModelChoice;
 }) {
-  const { t, locale } = useI18n();
+  const { t, locale, local } = useI18n();
   const listId = useId();
   const [search, setSearch] = useState("");
   const [choice, setChoice] = useState<ModelChoice | undefined>(initial);
@@ -118,8 +134,8 @@ export function OpenRouterModelPicker({
   const registered = entries
     .filter((e) => e.kind === "model")
     .flatMap((entry) => {
-      const id = String(entry.config.model_id ?? entry.id);
-      const routed = entry.config.provider_credential === "openrouter";
+      const id = String(entry.config?.model_id ?? entry.id);
+      const routed = entry.config?.provider_credential === "openrouter";
       const catalog = routed ? models.find((m) => m.id === id) : undefined;
       if (
         (!onChoice && (!routed || !catalog)) ||
@@ -129,8 +145,11 @@ export function OpenRouterModelPicker({
       return [
         {
           id,
-          name: entry.name[ja ? "ja" : "en"] || entry.name.en || entry.id,
+          name: local(entry.name) || entry.id,
           catalog,
+          created: (
+            catalog as (CatalogModel & { created?: number }) | undefined
+          )?.created,
           entry,
         },
       ];
@@ -182,10 +201,7 @@ export function OpenRouterModelPicker({
     if (zdrRefusal(item.catalog?.zero_data_retention, level)) return;
     const allowed = allowedEfforts(item.catalog);
     const preferred = item.entry?.config.reasoning_effort;
-    const effort =
-      allowed.find((e) => e === preferred) ??
-      allowed.find((e) => e === "medium") ??
-      allowed[0];
+    const effort = defaultEffort(allowed, preferred);
     update({
       catalog: item.catalog,
       entry: item.entry,
@@ -284,6 +300,9 @@ export function OpenRouterModelPicker({
                   >
                     <span className="truncate text-[13px] font-medium text-foreground">
                       {model.name}
+                      {model.entry && !model.catalog
+                        ? " · " + model.entry.version
+                        : ""}
                     </span>
                     <span className="truncate font-mono text-[11px] text-muted-foreground">
                       {model.id}

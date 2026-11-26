@@ -264,7 +264,12 @@ export function TrustOverview({
                 [
                   text("Model", "モデル"),
                   <span className="font-mono text-xs">
-                    {title(agent.config.model)}
+                    {agent.config.model
+                      ? title(agent.config.model)
+                      : text(
+                          "Picked at each Task start",
+                          "Task を始めるたびに選択",
+                        )}
                   </span>,
                 ],
                 [

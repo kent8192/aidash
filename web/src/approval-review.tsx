@@ -1,3 +1,4 @@
+import { registryGet } from "./generated/aidash";
 import {
   CatalogCarryOptions,
   type ApprovalScope,
@@ -176,6 +177,27 @@ function RequestState({
 }
 
 /** The server-driven Approval Review for one root on one Node. */
+function AgentTaskModelNote({ item }: { item: ReviewItem }) {
+  const { t } = useI18n();
+  const model = (item as ReviewItem & { model?: unknown }).model;
+  const entry = useQuery({
+    queryKey: ["registry-entry", item.reference.id, item.reference.version],
+    queryFn: () =>
+      registryGet(
+        encodeURIComponent(item.reference.id),
+        encodeURIComponent(item.reference.version),
+      ),
+    enabled: model === undefined,
+    retry: false,
+  });
+  return model === null ||
+    (model === undefined && entry.data?.config?.model === null) ? (
+    <Hint>
+      {t("model")}: {t("taskStartModel")}
+    </Hint>
+  ) : null;
+}
+
 export function ApprovalReviewPanel({
   tenant,
   node,
@@ -188,6 +210,7 @@ export function ApprovalReviewPanel({
   subject,
   onClose,
   onChanged,
+  onApproved,
 }: {
   tenant: string;
   node: string;
@@ -201,6 +224,7 @@ export function ApprovalReviewPanel({
   initialScope?: ApprovalScope;
   subject?: string;
   onClose?: () => void;
+  onApproved?: () => void;
   onChanged?: () => void | Promise<void>;
 }) {
   const { t, local, locale } = useI18n();
@@ -256,9 +280,12 @@ export function ApprovalReviewPanel({
   const displayedCarry = carryOptionsEdited
     ? carryOver
     : (rootPreferences?.carry_over ?? carryOver);
-  const displayedScope = carryOptionsEdited
-    ? approvalScope
-    : (rootPreferences?.scope ?? approvalScope);
+  const modelRoot = rootPreferences?.kind === "model";
+  const displayedScope = modelRoot
+    ? "deployment"
+    : carryOptionsEdited
+      ? approvalScope
+      : (rootPreferences?.scope ?? approvalScope);
   const selected =
     current === undefined
       ? []
@@ -298,10 +325,11 @@ export function ApprovalReviewPanel({
     (canApproveAny || submittable(current, selected, edits));
   const askAnother = current !== undefined && needsAnotherApprover(current);
   const reload = async () => {
-    await review.refetch();
+    const refreshed = await review.refetch();
     await mine.refetch();
     await client.invalidateQueries({ queryKey: ["registry-versions"] });
     await onChanged?.();
+    return refreshed.data?.ready;
   };
   const submit = async () => {
     if (busy || !current) return;
@@ -350,7 +378,7 @@ export function ApprovalReviewPanel({
             ? { expected_node_revisions: revisions }
             : {}),
           carry_over: displayedCarry,
-          scope: displayedScope,
+          scope: item?.kind === "model" ? "deployment" : displayedScope,
         };
       };
       await authorizationSubmitCatalogReview(tenant, {
@@ -402,7 +430,7 @@ export function ApprovalReviewPanel({
           Object.entries(edits).filter(([key]) => !submitted.has(key)),
         ),
       );
-      await reload();
+      if (await reload()) onApproved?.();
       setMessage(t("approvalReviewSubmitted"));
     } catch (error) {
       if (
@@ -561,6 +589,7 @@ export function ApprovalReviewPanel({
                     {local(item.name) || item.reference.id}
                   </span>
                 )}
+                {item.kind === "agent" && <AgentTaskModelNote item={item} />}
                 <Badge value={item.kind} tone="neutral" />
                 <span className="font-mono text-[11px] text-muted-foreground">
                   {item.reference.id}@{item.reference.version}
@@ -711,6 +740,7 @@ export function ApprovalReviewPanel({
             setCarryOptionsEdited(true);
             setCarryOver(value);
           }}
+          deploymentOnly={modelRoot}
           scope={displayedScope}
           setScope={(value) => {
             if (!carryOptionsEdited) setCarryOver(displayedCarry);
