@@ -377,6 +377,7 @@ impl crate::ports::subnodes::ManageScope for Management {
 		_: &str,
 		_: &str,
 		_: Option<subnodes::JournalRange>,
+		_: Option<aidash_domain::TaskModel>,
 	) -> Result<Uuid> {
 		self.effects.push("task");
 		Ok(Uuid::from_u128(6))
@@ -407,7 +408,10 @@ async fn management_requires_creator_or_member_and_preserves_leader() {
 	let mut outsider = member.clone();
 	outsider.agent_id = "outsider".into();
 	assert!(matches!(
-		task(&mut scope, &member, id, "key", "title", "request", None).await,
+		task(
+			&mut scope, &member, id, "key", "title", "request", None, None
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	assert!(matches!(
@@ -419,9 +423,18 @@ async fn management_requires_creator_or_member_and_preserves_leader() {
 		Err(Error::Refused(_))
 	));
 	assert!(scope.effects.is_empty());
-	task(&mut scope, &run(), id, "key", "title", "request", None)
-		.await
-		.unwrap();
+	task(
+		&mut scope,
+		&run(),
+		id,
+		"key",
+		"title",
+		"request",
+		None,
+		None,
+	)
+	.await
+	.unwrap();
 	message(&mut scope, &member, id, "key", "text")
 		.await
 		.unwrap();

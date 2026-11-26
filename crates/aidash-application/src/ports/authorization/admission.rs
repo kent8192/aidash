@@ -28,6 +28,7 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	async fn check_pinned_installation(&mut self, entry: &Entry) -> Result<()>;
 	async fn bindings(
 		&mut self,
+		_task_model: Option<&aidash_domain::TaskModel>,
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let _ = entry;

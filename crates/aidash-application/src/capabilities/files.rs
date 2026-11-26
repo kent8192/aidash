@@ -635,14 +635,10 @@ async fn legacy(
 					.find(|file| file.file_id == selection.file_id)
 					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 				ContentPart::modality_for_media_type(&file.media_type)?;
-				let agent = scope
-					.effective(&EntityRef {
-						id: run.agent_id.clone(),
-						version: run.agent_version.clone(),
-					})
+				let agent = AgentConfig::from_snapshot(scope.binding_snapshot()?)?;
+				let entry = scope
+					.entry(agent.required_model()?, "registry.read")
 					.await?;
-				let agent: AgentConfig = serde_json::from_value(agent.config)?;
-				let entry = scope.entry(&agent.model, "registry.read").await?;
 				let effective = scope
 					.effective(&EntityRef {
 						id: entry.id,

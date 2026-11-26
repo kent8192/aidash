@@ -362,6 +362,12 @@ impl GrantScope for Scope {
 		let result: NativeResult<u64> = async {
 			let identity = self.access.identity.clone();
 			let access = &mut *self.access;
+			crate::authorization::execution::set_task_model(
+				access,
+				task.id,
+				input.task_model.as_ref(),
+			)
+			.await?;
 			Ok({
 				let query_bind_1 = input.id;
 				let query_bind_2 = task.id;

@@ -29,7 +29,7 @@ impl Fixture {
             task: Task {
                 id: Uuid::from_u128(3), thread_id: Uuid::from_u128(1), title:"Title".into(), description:"Goal".into(),
                 status:TaskStatus::Open, requirements:json!({}), owner:None, created_by:"subject:fixture".into(),
-                dependencies:vec![], parent_id:None, started_by_duty:None, revision:0, created_at:chrono::Utc::now(),
+                dependencies:vec![], parent_id:None, task_model: None, started_by_duty:None, revision:0, created_at:chrono::Utc::now(),
             },
         }
 	}
@@ -164,6 +164,7 @@ impl ConversationScope for Fixture {
 }
 fn request<'a>(reference: &'a EntityRef, kind: &'a str) -> ConversationRequest<'a> {
 	ConversationRequest {
+		task_model: None,
 		title: "Title",
 		request: "Goal",
 		target: reference,

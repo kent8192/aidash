@@ -133,6 +133,7 @@ impl ToolOperations for Operations {
 		id: Uuid,
 		node: &str,
 		agent: &EntityRef,
+		_selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<Value> {
 		self.record("task.delegate");
 		assert_eq!(id, self.task.id);
@@ -591,6 +592,7 @@ fn fixture() -> Fixture {
 		created_by: "fixture".into(),
 		dependencies: vec![],
 		parent_id: Some(run.task_id),
+		task_model: None,
 		started_by_duty: None,
 		revision: 0,
 		created_at: now,

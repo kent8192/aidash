@@ -135,7 +135,9 @@ pub async fn validate_references(
 			false,
 		)
 		.await?;
-		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
+		if !entry.config["model"].is_null() {
+			validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
+		}
 	}
 	let memory_references = match entry.kind.as_str() {
 		"memory" | "source" if entry.config.get("schema_version").is_some() => vec![],
@@ -397,6 +399,9 @@ pub async fn apply_definition_defaults(scope: &mut dyn DefinitionLookup, entry: 
 			entry.config["cache_mode"] = json!("explicit");
 		}
 		return;
+	}
+	if entry.config.get("model").is_none() && !stored_omits("model") {
+		entry.config["model"] = Value::Null;
 	}
 	let model = entry.config.get("model").and_then(|model| {
 		Some((

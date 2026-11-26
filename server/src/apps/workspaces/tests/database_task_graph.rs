@@ -8,6 +8,7 @@ use serde_json::json;
 #[fixture]
 fn task() -> NewTask {
 	NewTask {
+		task_model: None,
 		title: "Task".into(),
 		description: "Graph test".into(),
 		requirements: json!({}),

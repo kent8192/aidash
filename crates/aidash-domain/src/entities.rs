@@ -184,8 +184,49 @@ pub struct Thread {
 	pub created_at: DateTime<Utc>,
 }
 
+/// Structured admission refusals shared by local starts and federation.
+#[derive(
+	Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, thiserror::Error,
+)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum TaskModelRefusal {
+	#[error("This agent needs a Task Model")]
+	TaskModelRequired,
+	#[error("The selected model is not registered")]
+	TaskModelNotRegistered,
+	#[error("The selected model needs Catalog Approval")]
+	TaskModelNotApproved {
+		model: crate::registry::EntityRef,
+		can_approve: bool,
+	},
+	#[error("The selected model cannot be used: {reasons:?}")]
+	TaskModelUnusable { reasons: Vec<String> },
+}
+
+/// The exact model and optional reasoning effort selected for a Task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskModel {
+	pub model: crate::registry::EntityRef,
+	pub reasoning_effort: Option<crate::model::ReasoningEffort>,
+}
+
+impl TaskModel {
+	pub fn validate(&self) -> crate::Result<()> {
+		use crate::model::ReasoningEffort::{Minimal, None};
+		if matches!(self.reasoning_effort, Some(None | Minimal)) {
+			return Err(crate::Error::Invalid(
+				"Task Model reasoning effort must be at least low".into(),
+			));
+		}
+		Ok(())
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Task {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<TaskModel>,
 	pub id: Uuid,
 	pub thread_id: Uuid,
 	pub title: String,
@@ -286,6 +327,8 @@ impl ChildTaskSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewTask {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<TaskModel>,
 	pub title: String,
 	pub description: String,
 	#[serde(default = "empty_object")]
@@ -513,4 +556,32 @@ pub fn required_json<'de, D: serde::Deserializer<'de>>(
 	deserializer: D,
 ) -> std::result::Result<Value, D::Error> {
 	Value::deserialize(deserializer)
+}
+
+#[cfg(test)]
+mod task_model_tests {
+	use super::*;
+	#[test]
+	fn task_model_effort_range_includes_unspecified_and_excludes_none_and_minimal() {
+		use crate::model::ReasoningEffort::*;
+		for (effort, valid) in [
+			(Option::None, true),
+			(Some(None), false),
+			(Some(Minimal), false),
+			(Some(Low), true),
+			(Some(Medium), true),
+			(Some(High), true),
+			(Some(Xhigh), true),
+			(Some(Max), true),
+		] {
+			let choice = TaskModel {
+				model: crate::registry::EntityRef {
+					id: "reasoner".into(),
+					version: "1.0.0".into(),
+				},
+				reasoning_effort: effort,
+			};
+			assert_eq!(choice.validate().is_ok(), valid, "{choice:?}");
+		}
+	}
 }

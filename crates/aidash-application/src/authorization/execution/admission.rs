@@ -46,8 +46,9 @@ pub async fn admit(
 	}
 	scope.check_pinned_installation(&entry).await?;
 	scope.require(&task_resource, "task.execute").await?;
-	let snapshot = scope.bindings(&entry).await?;
+	let snapshot = scope.bindings(task.task_model.as_ref(), &entry).await?;
 	let config = AgentConfig::from_snapshot(&snapshot)?;
+	config.required_model()?;
 	// The existing thread/tombstone lock precedes claim's event lock.
 	let thread = scope.prepare_thread(&task, &config, &agent.id).await?;
 	let claimed = scope

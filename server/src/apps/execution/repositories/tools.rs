@@ -71,7 +71,7 @@ pub(crate) fn run_model(run: &aidash_domain::Run) -> Result<aidash_domain::model
 		.definitions
 		.iter()
 		.find(|entry| {
-			entry.identity.local() == agent.model
+			Some(entry.identity.local()) == agent.model
 				&& entry.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or(aidash_application::Error::Forbidden)?;
@@ -298,9 +298,13 @@ impl ToolOperations for Operations {
 		id: Uuid,
 		node: &str,
 		agent: &EntityRef,
+		selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<Value> {
 		Ok(json!(
-			self.0.home.delegate_with_key(key, id, node, agent).await?
+			self.0
+				.home
+				.delegate_selected(key, id, node, agent, selection)
+				.await?
 		))
 	}
 	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact> {

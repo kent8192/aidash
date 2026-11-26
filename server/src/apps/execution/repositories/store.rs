@@ -1293,6 +1293,7 @@ impl Store {
 						reinhardt::query::Alias::new("creation_key"),
 						reinhardt::query::Alias::new("duty_id"),
 						reinhardt::query::Alias::new("started_by_duty"),
+						reinhardt::query::Alias::new("task_model"),
 						reinhardt::query::Alias::new("tenant"),
 					])
 					.from_subquery(
@@ -1335,6 +1336,13 @@ impl Store {
 							))
 							.expr(Expr::value(duty_id))
 							.expr(Expr::value(started_by_duty))
+							.expr(Expr::value(
+								input
+									.task_model
+									.as_ref()
+									.map(serde_json::to_value)
+									.transpose()?,
+							))
 							.expr(crate::database::scope::tenant_of(
 								"threads",
 								"id",
@@ -1385,6 +1393,7 @@ impl Store {
 					|| t.requirements != input.requirements
 					|| t.dependencies != input.dependencies
 					|| t.parent_id != input.parent_id
+					|| t.task_model != input.task_model
 					|| t.started_by_duty != started_by_duty
 					|| t.created_by != creator
 				{
@@ -1462,16 +1471,18 @@ impl Store {
 			let snapshot = if let Some(snapshot) = admitted {
 				snapshot.clone()
 			} else {
-				crate::apps::registry::repositories::bindings::snapshot(
+				crate::apps::registry::repositories::bindings::snapshot_mode(
 					tx,
 					self.deployment.as_str(),
 					agent,
 					false,
+					true,
 					self.provider_credentials.is_some(),
+					claimed.task_model.as_ref(),
 				)
 				.await?
 			};
-			snapshot.validate()?;
+			aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?.required_model()?;
 			self.require_run_projection(&snapshot)?;
 			let tenant: String = crate::database::native::query_scalar(
 				&Query::select()

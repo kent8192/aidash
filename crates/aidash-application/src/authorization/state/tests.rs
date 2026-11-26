@@ -33,6 +33,7 @@ fn task(value: u128) -> Task {
 		created_by: "saved-author".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 1,
 		created_at: Utc::now(),

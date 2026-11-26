@@ -692,12 +692,14 @@ fn admission_description(
 			created_by: "reader".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 1,
 			created_at: now,
 		},
 		inspection: Inspection {
 			binding_snapshot: BindingSnapshot {
+				task_model: None,
 				schema_version: 1,
 				agent: QualifiedRef {
 					registry_deployment: HOME_DEPLOYMENT.into(),

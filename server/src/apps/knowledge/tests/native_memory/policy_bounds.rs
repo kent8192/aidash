@@ -1173,6 +1173,7 @@ pub(super) async fn recorded_run(
 			&TEST_FIXTURE,
 			bank.thread,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Large provenance Run".into(),
 				description: "Read the admitted graph".into(),
 				requirements: json!({}),

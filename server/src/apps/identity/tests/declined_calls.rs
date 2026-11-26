@@ -41,6 +41,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 			&acme,
 			thread.id,
 			&aidash_server::domain::NewTask {
+				task_model: None,
 				title: "Work".into(),
 				description: "A Run whose owner stops it".into(),
 				requirements: json!({}),
@@ -449,6 +450,7 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 				&scope,
 				w.task.thread_id,
 				&aidash_domain::NewTask {
+					task_model: None,
 					title: "Child".into(),
 					description: "Child task".into(),
 					requirements: json!({}),

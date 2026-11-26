@@ -50,6 +50,7 @@ pub enum Effect<'a> {
 		task: &'a NewTask,
 	},
 	Delegate {
+		task_model: Option<aidash_domain::TaskModel>,
 		child: Uuid,
 		agent: &'a EntityRef,
 	},

@@ -86,13 +86,15 @@ pub(crate) async fn delegate(
 	task: Uuid,
 	node: &str,
 	agent: &EntityRef,
+	selection: Option<&aidash_domain::TaskModel>,
 ) -> Result<crate::federation::Delegation> {
-	aidash_application::authorization::home::delegate(
+	aidash_application::authorization::home::delegate_with_model(
 		&crate::bootstrap::home_execution_repository(f, Actor::Subject(identity.clone())),
 		task,
 		node,
 		agent,
 		false,
+		selection,
 	)
 	.await
 	.map_err(Into::into)

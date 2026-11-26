@@ -17,6 +17,7 @@ fn task() -> Task {
 		created_by: "stored-task-author".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 0,
 		created_at: chrono::Utc::now(),
@@ -386,6 +387,7 @@ async fn direct_task_reads_hide_missing_denied_and_tainted_tasks(
 #[tokio::test]
 async fn related_tasks_must_be_readable_and_in_the_same_thread(mut scope: Scope) {
 	let input = NewTask {
+		task_model: None,
 		title: String::new(),
 		description: String::new(),
 		requirements: json!({}),

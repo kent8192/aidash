@@ -1867,6 +1867,7 @@ fn fixture() -> Fixture {
 			created_by: "human".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 0,
 			created_at: now,
@@ -5204,6 +5205,7 @@ impl DeferredSnapshot {
 		});
 		self.define(&agent, "agent", "", config);
 		BindingSnapshot {
+			task_model: None,
 			schema_version: 1,
 			agent,
 			remote: false,

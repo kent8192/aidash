@@ -34,6 +34,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 				&scope,
 				thread.id,
 				&NewTask {
+					task_model: None,
 					title: home.into(),
 					description: "Journal fixture".into(),
 					requirements: json!({}),

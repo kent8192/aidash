@@ -68,7 +68,7 @@ pub async fn media_routes(scope: &dyn Definitions, run: &RunMetadata) -> Result<
 		.definitions
 		.iter()
 		.find(|d| {
-			d.identity.local() == agent.model
+			Some(d.identity.local()) == agent.model
 				&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or(crate::Error::Forbidden)?

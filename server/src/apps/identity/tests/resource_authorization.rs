@@ -33,6 +33,7 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 				&TEST_FIXTURE,
 				parent.thread_id,
 				&NewTask {
+					task_model: None,
 					title: format!("Large child {index}"),
 					description: "bounded summary payload ".repeat(2_500),
 					requirements: json!({}),

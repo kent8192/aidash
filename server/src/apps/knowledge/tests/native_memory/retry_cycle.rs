@@ -270,6 +270,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			&TEST_FIXTURE,
 			thread,
 			&NewTask {
+				task_model: None,
 				title: "Tokyo transport".into(),
 				description: "Find the way around".into(),
 				requirements: json!({}),

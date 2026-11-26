@@ -67,7 +67,7 @@ async fn fetch_inspection<R: GrantRepository>(
 	identity: &ExecutionPrincipal,
 	input: &InspectInput,
 ) -> Result<Inspection> {
-	let inspection = repository
+	let inspection: Inspection = repository
 		.source_request(
 			home,
 			node,
@@ -83,6 +83,14 @@ async fn fetch_inspection<R: GrantRepository>(
 		&input.agent,
 		&input.requirements,
 	)?;
+	if inspection.agent.config["model"].is_null()
+		&& (input.task_model.is_none()
+			|| inspection.binding_snapshot.task_model != input.task_model)
+	{
+		return Err(Error::Conflict(
+			"receiver did not pin the requested Task Model".into(),
+		));
+	}
 	Ok(inspection)
 }
 
@@ -124,8 +132,14 @@ async fn inspect_new_grant<R: GrantRepository>(
 		other => other,
 	}
 }
-fn inspection_input(task: Uuid, agent: &EntityRef, requirements: Search) -> InspectInput {
+fn inspection_input(
+	task: Uuid,
+	task_model: Option<aidash_domain::TaskModel>,
+	agent: &EntityRef,
+	requirements: Search,
+) -> InspectInput {
 	InspectInput {
+		task_model,
 		tool_request: None,
 		task_id: Some(task),
 		agent: agent.clone(),
@@ -145,6 +159,37 @@ async fn require_remote_delegation<S: GrantScope>(
 		return Err(Error::RemoteExecutionRefused(Refusal::SubnodeDelegation));
 	}
 	Ok(())
+}
+
+pub async fn task_models<R: GrantRepository>(
+	repository: &R,
+	task_id: Uuid,
+	input: aidash_domain::federation::execution::TaskModelOptionsInput,
+) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
+	let identity = repository.source_identity().ok_or(Error::Forbidden)?;
+	NodeAddress::parse(&input.node_id)?;
+	let mut scope = repository.source_begin().await?;
+	let result = async {
+		scope.inherit_task_origin(task_id).await?;
+		let task = scope.task_read(task_id).await?;
+		let thread = scope.thread(task.thread_id).await?;
+		scope.source_context(thread.attributes.clone());
+		let resource = scope.task_resource(&task).await?;
+		scope.require(&resource, "task.delegate").await?;
+		require_remote_delegation(&mut scope, task.thread_id, &input.node_id).await?;
+		inspection_route(&mut scope, &input.node_id).await?;
+		repository
+			.source_request(
+				&scope.home_address(),
+				&input.node_id,
+				"/scoped/task-models",
+				&json!(input.agent),
+				&identity,
+			)
+			.await
+	}
+	.await;
+	finish(scope, result).await
 }
 
 /// Inspect under the same task, subject chain and peer authority as preparation,
@@ -187,7 +232,12 @@ pub async fn agent_inspection<R: GrantRepository>(
 		scope.require(&resource, "task.delegate").await?;
 		scope.require(&resource, "task.execute").await?;
 		let requirements: Search = serde_json::from_value(task.requirements.clone())?;
-		let request = inspection_input(task.id, &input.agent, requirements);
+		let request = inspection_input(
+			task.id,
+			input.task_model.or(task.task_model.clone()),
+			&input.agent,
+			requirements,
+		);
 		let inspection = inspect_new_grant(repository, &mut scope, &input.node_id, request).await?;
 		scope.append_subject(executor);
 		crate::generation::foreign::check_preparation(&task, inspection.generation.as_ref())?;
@@ -224,7 +274,7 @@ pub async fn prepare<R: GrantRepository>(
   scope.require(&resource,"task.delegate").await?;
   scope.require(&resource,"task.execute").await?;
   let requirements:Search=serde_json::from_value(task.requirements.clone())?;
-  let request=inspection_input(task.id,&input.agent,requirements);
+  let request=inspection_input(task.id,input.task_model.clone().or(task.task_model.clone()),&input.agent,requirements);
   let inspection=inspect_new_grant(repository,&mut scope,&input.node_id,request).await?;
   scope.append_subject(executor);
   crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
@@ -462,6 +512,13 @@ async fn description_pass<R: GrantRepository>(
 			return Err(Error::Forbidden);
 		}
 		let binding = scope.binding(current.id).await?;
+		if inspection.binding_snapshot.task_model.is_some()
+			&& task.task_model != inspection.binding_snapshot.task_model
+		{
+			return Err(Error::Conflict(
+				"Task Model changed after the Remote Grant was prepared".into(),
+			));
+		}
 		let admitted = current
 			.admitted_task(&task, binding.as_ref())?
 			.ok_or(Error::Forbidden)?;
@@ -486,7 +543,12 @@ async fn description_pass<R: GrantRepository>(
 				revision,
 				home,
 				identity: scope.identity(),
-				input: inspection_input(task.id, &agent, requirements),
+				input: inspection_input(
+					task.id,
+					inspection.binding_snapshot.task_model.clone(),
+					&agent,
+					requirements,
+				),
 			})));
 		};
 		if !fresh.current() {

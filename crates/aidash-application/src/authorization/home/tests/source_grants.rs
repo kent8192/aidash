@@ -440,6 +440,7 @@ fn receiver() -> String {
 }
 fn input() -> PrepareInput {
 	PrepareInput {
+		task_model: None,
 		id: Uuid::from_u128(4),
 		node_id: receiver(),
 		agent: EntityRef {
@@ -655,6 +656,7 @@ async fn selection_inspection_checks_assignment_authority_without_creating_a_gra
 	let repository = SourceRepository::new();
 	let input = input();
 	let preview = aidash_domain::federation::execution::AgentInspectionInput {
+		task_model: None,
 		node_id: input.node_id,
 		agent: input.agent,
 	};

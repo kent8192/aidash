@@ -165,6 +165,8 @@ impl Halt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
 	pub title: String,
 	/// What the Duty is for; every Task it starts is asked this.
 	pub mission: String,
@@ -206,6 +208,9 @@ fn default_pause_after_failures() -> i32 {
 
 impl Definition {
 	pub fn validate(&self, now: DateTime<Utc>) -> Result<()> {
+		if let Some(model) = &self.task_model {
+			model.validate()?;
+		}
 		let title = self.title.trim();
 		if title.is_empty()
 			|| title.chars().count() > TITLE_MAX
@@ -404,6 +409,8 @@ impl Duty {
 #[serde(deny_unknown_fields)]
 pub struct Patch {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub title: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub mission: Option<String>,
@@ -487,6 +494,9 @@ impl Patch {
 		}
 		if let Some(procedure) = &self.procedure {
 			next.procedure = procedure.clone();
+		}
+		if let Some(model) = &self.task_model {
+			next.task_model = Some(model.clone());
 		}
 		if let Some(agent) = &self.agent {
 			next.agent = agent.clone();

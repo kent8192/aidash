@@ -35,6 +35,8 @@ pub struct DutyRecord {
 	pub agent_id: String,
 	#[field(field_type = "text")]
 	pub agent_version: String,
+	#[field(null = true)]
+	pub task_model: Option<Json<aidash_domain::TaskModel>>,
 	/// The time trigger; None for a Duty that wakes only otherwise.
 	#[field(null = true)]
 	pub trigger: Option<Json<Value>>,

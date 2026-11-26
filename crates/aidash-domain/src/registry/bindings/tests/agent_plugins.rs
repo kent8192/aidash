@@ -150,6 +150,7 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 	}
 	definitions.push(ResolvedDefinition::new(qualified("agent"), root).unwrap());
 	BindingSnapshot {
+		task_model: None,
 		schema_version: BINDING_SCHEMA,
 		agent: qualified("agent"),
 		remote: false,

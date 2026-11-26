@@ -1071,6 +1071,7 @@ async fn trust_run_backlog(
 					&TEST_FIXTURE,
 					thread,
 					&aidash_server::domain::NewTask {
+						task_model: None,
 						title: "History".into(),
 						description: "Fixture".into(),
 						requirements: json!({}),

@@ -270,6 +270,7 @@ pub trait ToolOperations: Send + Sync {
 		id: Uuid,
 		node: &str,
 		agent: &EntityRef,
+		_selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<Value>;
 	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact>;
 	async fn message(&self, key: &str, content: &str) -> Result<()>;

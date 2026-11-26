@@ -279,6 +279,13 @@ impl PeerMappings {
 	) -> Result<Vec<Entry>> {
 		discover_for(self.runtime.clone(), admitted, input).await
 	}
+	pub(crate) async fn discover_task_models(
+		&self,
+		admitted: Admitted,
+		agent: aidash_domain::registry::EntityRef,
+	) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
+		task_models_for(self.runtime.clone(), admitted, agent).await
+	}
 	pub(crate) async fn discover_tools(
 		&self,
 		admitted: Admitted,
@@ -417,6 +424,108 @@ async fn hide_blocked_tools(
 		kept.push(binding);
 	}
 	entry.config["bindings"] = serde_json::Value::Array(kept);
+}
+
+/// Read models under the same Node discovery and agent execution permissions as its card.
+pub(crate) async fn task_models_for(
+	f: Federation,
+	admitted: Admitted,
+	agent: aidash_domain::registry::EntityRef,
+) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
+	let mut access = access(&f, &admitted).await?;
+	let result = async {
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			admitted.receiver.node.as_str(),
+		)
+		.await?;
+		let resource = access.resource(
+			"node",
+			node.name.as_str(),
+			json!({"label": node.label, "default":node.default}),
+		);
+		access.require(&resource, "federation.discover").await?;
+		let entry = catalog::entry(&mut access, &agent, "agent.execute").await?;
+		if entry.kind != "agent" || !entry.config["model"].is_null() {
+			return Err(crate::Error::Forbidden);
+		}
+		access.subjects.push(aidash_domain::agent_subject(
+			&admitted.receiver.to_string(),
+			&agent.id,
+			&agent.version,
+		));
+		let mut options = Vec::new();
+		for entry in catalog::list_in(
+			&mut access,
+			&Search {
+				kind: Some("model".into()),
+				..Default::default()
+			},
+		)
+		.await?
+		{
+			let model = aidash_domain::registry::EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			match catalog::entry(&mut access, &model, "model.infer").await {
+				Ok(_) => (),
+				Err(crate::Error::Forbidden | crate::Error::AuthorityRefused(_)) => continue,
+				Err(e) => return Err(e),
+			}
+			let config = aidash_domain::model::ModelConfig::from_stored(entry.config)?;
+			match crate::apps::identity::repositories::provider_credentials::check_task_route(
+				&mut *access.tx,
+				&f.store,
+				&access.identity.tenant,
+				&access.identity.subject,
+				&config,
+				None,
+				true,
+			)
+			.await
+			{
+				Ok(()) => (),
+				Err(crate::Error::Invalid(_) | crate::Error::Plan(_)) => continue,
+				Err(e) => return Err(e),
+			}
+			options.push(aidash_domain::federation::execution::TaskModelOption {
+				model,
+				name: entry.name,
+				openrouter_model_id: config.model_id,
+				pricing: None,
+			});
+		}
+		Ok(options)
+	}
+	.await;
+	let mut options = access.finish(result).await?;
+	if !options.is_empty()
+		&& let Ok(catalog) = crate::apps::execution::services::management::OPENROUTER_CATALOG
+			.get(
+				crate::bootstrap::model_catalog(f.client.clone()).as_ref(),
+				chrono::Utc::now,
+			)
+			.await
+	{
+		let prices: std::collections::BTreeMap<_, _> = catalog
+			.models
+			.into_iter()
+			.map(|m| (m.id, m.pricing))
+			.collect();
+		for option in &mut options {
+			option.pricing = prices.get(&option.openrouter_model_id).cloned();
+		}
+	}
+	options.sort_by(|a, b| {
+		aidash_domain::catalog::picker_order(&a.openrouter_model_id)
+			.cmp(&aidash_domain::catalog::picker_order(
+				&b.openrouter_model_id,
+			))
+			.then_with(|| (&a.model.id, &a.model.version).cmp(&(&b.model.id, &b.model.version)))
+	});
+	Ok(options)
 }
 
 /// The tools this Node offers `admitted.sender` to request (ADR 0139): every tool whose Reach

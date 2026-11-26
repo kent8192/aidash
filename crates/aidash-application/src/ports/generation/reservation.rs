@@ -21,6 +21,7 @@ pub trait GenerationUsageAuthority: Send {
 	/// Retain the current policy share lock and full specification decoding.
 	async fn policy_enabled(&mut self, job: &Request) -> Result<bool>;
 	async fn pinned_policy(&mut self, job: &Request) -> Result<Value>;
+	async fn task_model(&mut self, job: &Request) -> Result<Option<aidash_domain::TaskModel>>;
 	fn catalog(&mut self) -> &mut dyn CatalogScope;
 	fn remote_resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

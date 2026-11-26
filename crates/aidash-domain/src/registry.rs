@@ -137,7 +137,7 @@ pub struct AgentConfig {
 	pub schema_version: u8,
 	pub bindings: Vec<bindings::Binding>,
 	pub remove_default: Vec<String>,
-	pub model: EntityRef,
+	pub model: Option<EntityRef>,
 	pub reference_embedding: Option<EntityRef>,
 	pub instructions: String,
 	pub max_steps: i32,

@@ -1034,6 +1034,7 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 			&TEST_FIXTURE,
 			run.thread_id,
 			&aidash_server::domain::NewTask {
+				task_model: None,
 				title: "Nobody's".into(),
 				description: "Never delegated".into(),
 				requirements: json!({}),

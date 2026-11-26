@@ -336,6 +336,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(peer_mappings::discover)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(peer_mappings::discover_tools)
+ .endpoint(peer_mappings::discover_task_models)
+ .endpoint(remote_grants::task_models)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(remote_grants::agent_inspection)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())

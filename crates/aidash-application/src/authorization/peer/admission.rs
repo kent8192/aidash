@@ -79,6 +79,7 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		scope.context()["source_task_id"] = json!(description.task.id);
 		scope.context()["source_task_revision"] = json!(description.task.revision);
 		let mut input = InspectInput {
+			task_model: description.inspection.binding_snapshot.task_model.clone(),
 			tool_request: None,
 			task_id: Some(description.task.id),
 			agent: EntityRef {

@@ -2730,3 +2730,107 @@ async fn a_hard_limit_on_a_duty_stops_the_duty_its_agent_set_up(
 	assert_eq!(events[0]["reason"], format!("budget: {budget}"));
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn task_model_admission_refusals_and_duty_ticks_use_the_stored_selection(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = capability_fixture.await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut agent =
+		c.f.registry
+			.get(&tenant, "research", "1.1.0")
+			.await
+			.unwrap();
+	let original = agent.config["model"].clone();
+	let model: aidash_domain::registry::EntityRef =
+		serde_json::from_value(original.clone()).unwrap();
+	let mut pending =
+		c.f.registry
+			.get(&tenant, &model.id, &model.version)
+			.await
+			.unwrap();
+	pending.id = "task-model-awaiting-approval".into();
+	c.f.registry.register(&tenant, pending).await.unwrap();
+	agent.version = "1.2.0".into();
+	agent.config["model"] = Value::Null;
+	agent.binding_normalization = None;
+	let node = aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme");
+	c.policy["subjects"]
+		[aidash_server::domain::qualified_agent(&node, &agent.id, &agent.version)] =
+		json!({"kind":"agent","node":node.node});
+	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	c.f.registry.register(&tenant, agent).await.unwrap();
+	let target = json!({"id":"research","version":"1.2.0"});
+	let (status, body) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":node.node,"entry":target,"enabled":true,"expected_revision":0,"scope":"node"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let start = |selection: Value| json!({"title":"Task Model test","request":"Summarize.","target_kind":"agent","target":target,"task_model":selection});
+	let pending = json!({"id":"task-model-awaiting-approval","version":model.version});
+	for (selection, code) in [
+		(Value::Null, "task_model_required"),
+		(
+			json!({"model":{"id":"unknown-task-model","version":"1.0.0"}}),
+			"task_model_not_registered",
+		),
+		(json!({"model":pending}), "task_model_not_approved"),
+		(
+			json!({"model":original,"reasoning_effort":"minimal"}),
+			"task_model_unusable",
+		),
+	] {
+		let (status, body) =
+			request(&c.app, &c.token, "POST", "/api/threads", start(selection)).await;
+		assert_eq!(status, 422, "{body}");
+		assert_eq!(body["code"], code);
+		if code == "task_model_not_approved" {
+			assert_eq!(body["model"], pending);
+			assert_eq!(body["can_approve"], true);
+		}
+		if code == "task_model_unusable" {
+			assert!(!body["reasons"].as_array().unwrap().is_empty());
+		}
+	}
+	let selected = json!({"model":original,"reasoning_effort":"high"});
+	let (status, created) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/threads",
+		start(selected.clone()),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	assert_eq!(created["task"]["task_model"], selected);
+	let id: Uuid = serde_json::from_value(created["task"]["id"].clone()).unwrap();
+	let selected_on_run: Value = sqlx::query_scalar(
+		"SELECT context->'binding_snapshot'->'task_model' FROM task_executions WHERE task_id=$1",
+	)
+	.bind(id)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(selected_on_run, selected);
+	let mut input = definition("Scheduled Task Model", 3600);
+	input["agent"] = target;
+	input["task_model"] = selected.clone();
+	let registered = register(&c, thread(&c).await, input).await;
+	let duty: Uuid = serde_json::from_value(registered["id"].clone()).unwrap();
+	make_due(&c, duty).await;
+	let result = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(result.started.len(), 1, "{result:?}");
+	let task =
+		c.f.store
+			.task(&TEST_FIXTURE, ticks(&c, duty).await[0].2.unwrap())
+			.await
+			.unwrap();
+	assert_eq!(json!(task.task_model), selected);
+	c.close().await;
+}

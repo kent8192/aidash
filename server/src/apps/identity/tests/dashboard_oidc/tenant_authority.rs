@@ -1240,6 +1240,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 			&scope,
 			thread.id,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Confidential task".into(),
 				description: "Tenant content".into(),
 				requirements: json!({}),

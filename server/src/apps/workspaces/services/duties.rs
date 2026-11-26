@@ -194,9 +194,24 @@ impl DutyScope for Adapter<'_> {
 		}
 		Ok(true)
 	}
-	async fn require_agent(&mut self, agent: &EntityRef) -> aidash_application::Result<()> {
-		crate::apps::identity::services::catalog::entry(self.access, agent, "agent.execute")
-			.await?;
+	async fn require_agent(
+		&mut self,
+		agent: &EntityRef,
+		selection: Option<&aidash_domain::TaskModel>,
+	) -> aidash_application::Result<()> {
+		let entry =
+			crate::apps::identity::services::catalog::entry(self.access, agent, "agent.execute")
+				.await?;
+		let caller = self.access.subjects.clone();
+		crate::apps::registry::repositories::bindings::check_task_model(
+			self.store,
+			false,
+			self.access,
+			&entry,
+			selection,
+			&caller,
+		)
+		.await?;
 		use reinhardt::query::QueryStatementBuilder as _;
 		// A generated agent staffs only the Duties of the person whose chain
 		// generated it, while it is live (#1012 decision 49); anyone else
@@ -725,6 +740,7 @@ pub(crate) async fn start_with(
 		(thread, definition.agent.id.clone()),
 		crate::apps::execution::capabilities::serializers::contracts::Enqueue {
 			idempotency_key: tick_key(duty.id, key.0, &format!("{}:run", key.1)),
+			task_model: definition.task_model.clone(),
 			agent_version: definition.agent.version.clone(),
 			title,
 			description,
@@ -1437,7 +1453,8 @@ pub async fn agent_tool(
 				let input: tool::Create =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
 				let definition = Definition {
-					title: input.title,
+ task_model: input.task_model,
+ title: input.title,
 					mission: input.mission,
 					procedure: input.procedure.unwrap_or_default(),
 					agent: input.agent.unwrap_or_else(|| EntityRef {
@@ -1481,7 +1498,8 @@ pub async fn agent_tool(
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
 				own(&scope.load(input.duty_id).await?)?;
 				let patch = Patch {
-					title: input.title,
+ task_model: input.task_model,
+ title: input.title,
 					mission: input.mission,
 					procedure: input.procedure,
 					agent: input.agent,

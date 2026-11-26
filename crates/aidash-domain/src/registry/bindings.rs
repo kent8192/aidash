@@ -99,7 +99,12 @@ pub fn definition_references(
 		"agent" => {
 			let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
-			result.push((local(&config.model), "model".into()));
+			result.extend(
+				config
+					.model
+					.iter()
+					.map(|model| (local(model), "model".into())),
+			);
 			if let Some(embedding) = &config.reference_embedding {
 				result.push((local(embedding), "embedding".into()));
 			}
@@ -221,7 +226,7 @@ pub fn reference_kind_matches(expected: &str, actual: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct AgentBindings {
 	pub schema_version: u8,
-	pub model: EntityRef,
+	pub model: Option<EntityRef>,
 	/// Exact immutable embedding definition for private reference images.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub reference_embedding: Option<EntityRef>,
@@ -397,7 +402,8 @@ impl AgentBindings {
 	/// `subnode_task` at the 1.0.0 they had before they moved to 1.1.0.
 	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
-		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
+		let previous_task_models = mode >= 2 * HISTORICAL_DEFAULT_SETS;
+		let previous_builtin_versions = (mode / HISTORICAL_DEFAULT_SETS) % 2 == 1;
 		let mode = mode % HISTORICAL_DEFAULT_SETS;
 		let workspace_tools = mode != 0;
 		let previous_file_tools = mode != 0 && mode != 7;
@@ -454,7 +460,17 @@ impl AgentBindings {
 			} else if mode == 2 && *operation == "workspace_read" {
 				target.version = "1.0.1".into();
 			}
+			if previous_task_models
+				&& matches!(
+					*operation,
+					"task_create" | "task_delegate" | "duty_create" | "duty_update"
+				) {
+				target.version = "1.0.0".into();
+			}
 			let pinned: &[&str] = match *operation {
+				"task_create" | "task_delegate" | "duty_create" | "duty_update" => {
+					&["1.0.0", "1.1.0"]
+				}
 				"workspace_read" if matches!(mode, 0 | 3 | 4 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
 				"workspace_message" if matches!(mode, 0 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
 				"workspace_search" if matches!(mode, 0 | 5) => &["1.0.0", "1.1.0"],
@@ -567,7 +583,7 @@ impl Entry {
 					.normalize_mode(node, mode)
 					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
 			};
-			if !(0..2 * HISTORICAL_DEFAULT_SETS).any(matches) {
+			if !(0..4 * HISTORICAL_DEFAULT_SETS).any(matches) {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
@@ -671,13 +687,15 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if matches!(
+			version: if operation == "subnode_task" {
+				"1.2.0"
+			} else if matches!(
 				operation,
 				"workspace_read"
 					| "workspace_search"
 					| "workspace_message"
 					| "memory_mutate"
-					| "subnode_task"
+					| "task_create" | "task_delegate" | "duty_create" | "duty_update"
 					// Gained `draft` for free-form generation (#1012).
 					| "task_assign"
 					// Gained `on_trigger` and a 30-day wait (#1011).
@@ -1019,6 +1037,8 @@ pub struct ResolvedBinding {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BindingSnapshot {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
 	pub schema_version: u8,
 	pub agent: QualifiedRef,
 	/// Admission placement determines which implicit defaults must remain excluded.
@@ -1034,6 +1054,38 @@ pub struct BindingSnapshot {
 pub const WORKBENCH_SCHEDULE_EXCLUSION: &str = "Schedules are not offered in Workbench tests";
 
 impl BindingSnapshot {
+	/// The model a child Task inherits, including the configured effort of a fixed model.
+	pub fn inherited_model(&self) -> Result<crate::TaskModel> {
+		if let Some(selection) = &self.task_model {
+			return Ok(selection.clone());
+		}
+		let definition = self
+			.model_definition()
+			.ok_or_else(|| Error::Invalid("snapshot lacks model".into()))?;
+		let model = definition.identity.local();
+		let reasoning_effort =
+			serde_json::from_value(definition.definition.config["reasoning_effort"].clone())?;
+		let selection = crate::TaskModel {
+			model,
+			reasoning_effort,
+		};
+		selection.validate()?;
+		Ok(selection)
+	}
+
+	fn model_definition(&self) -> Option<&ResolvedDefinition> {
+		let agent = self.definitions.iter().find(|d| d.identity == self.agent)?;
+		let model = match &self.task_model {
+			Some(selected) => selected.model.clone(),
+			None => serde_json::from_value(agent.definition.config.get("model")?.clone()).ok()?,
+		};
+		self.definitions.iter().find(|d| {
+			d.definition.kind == "model"
+				&& d.identity.registry_deployment == self.agent.registry_deployment
+				&& d.identity.local() == model
+		})
+	}
+
 	/// The Bindings a Workbench test offers. A sandboxed test cannot register a
 	/// real Schedule, and the four Schedule tools would take about a quarter of
 	/// the default test token limit, so the test excludes them (#557). Both the
@@ -1073,24 +1125,7 @@ impl BindingSnapshot {
 	/// 0053): it declares image input and holds a current media route for the
 	/// PNG a viewed page is delivered as.
 	pub fn model_reads_page_images(&self) -> bool {
-		let Some(model) = self
-			.definitions
-			.iter()
-			.find(|definition| definition.identity == self.agent)
-			.map(|agent| &agent.definition.config["model"])
-		else {
-			return false;
-		};
-		let (Some(id), Some(version)) = (model["id"].as_str(), model["version"].as_str()) else {
-			return false;
-		};
-		self.definitions
-			.iter()
-			.find(|definition| {
-				definition.definition.kind == "model"
-					&& definition.identity.id == id
-					&& definition.identity.version == version
-			})
+		self.model_definition()
 			.and_then(|model| {
 				crate::model::ModelConfig::from_stored(model.definition.config.clone()).ok()
 			})
@@ -1259,14 +1294,27 @@ impl BindingSnapshot {
 			));
 		}
 		let policy = config.exposure_policy();
-		let model = QualifiedRef {
-			registry_deployment: self.agent.registry_deployment.clone(),
-			id: config.model.id,
-			version: config.model.version,
-		};
-		if definitions
-			.get(&model)
-			.is_none_or(|entry| entry.definition.kind != "model")
+		if let Some(task_model) = &self.task_model {
+			task_model.validate()?;
+			if config.model.is_some() {
+				return Err(Error::Invalid(
+					"fixed-model snapshot contains a Task Model".into(),
+				));
+			}
+		}
+		let model = config
+			.model
+			.as_ref()
+			.or_else(|| self.task_model.as_ref().map(|selection| &selection.model))
+			.map(|reference| QualifiedRef {
+				registry_deployment: self.agent.registry_deployment.clone(),
+				id: reference.id.clone(),
+				version: reference.version.clone(),
+			});
+		if let Some(model) = &model
+			&& definitions
+				.get(model)
+				.is_none_or(|entry| entry.definition.kind != "model")
 		{
 			return Err(Error::Invalid(
 				"snapshot lacks its exact model definition".into(),
@@ -1296,11 +1344,13 @@ impl BindingSnapshot {
 					tool.validate(binding.narrow.provider_tool.as_ref().ok_or_else(|| {
 						Error::Invalid("Provider tool snapshot lacks pinned parameters".into())
 					})?)?;
-					let model_config: crate::model::ModelConfig =
-						crate::model::ModelConfig::from_stored(
-							definitions[&model].definition.config.clone(),
-						)?;
-					tool.eligible(&model_config)?;
+					if let Some(model) = &model {
+						let model_config: crate::model::ModelConfig =
+							crate::model::ModelConfig::from_stored(
+								definitions[model].definition.config.clone(),
+							)?;
+						tool.eligible(&model_config)?;
+					}
 				} else if binding.narrow.provider_tool.is_some() {
 					return Err(Error::Invalid(
 						"Provider tool parameters require a Provider tool".into(),

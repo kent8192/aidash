@@ -91,6 +91,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			&scope,
 			thread.id,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Private task".into(),
 				description: "Deleted Tenant data".into(),
 				requirements: json!({}),

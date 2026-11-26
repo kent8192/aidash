@@ -209,3 +209,48 @@ mod tests {
 }
 
 pub mod carry_over;
+
+/// Registered models use the same series and tier order on a receiving Node's picker.
+pub fn picker_order(id: &str) -> (usize, usize, std::cmp::Reverse<Vec<u32>>, &str) {
+	let (vendor, name) = id.split_once('/').unwrap_or(("", id));
+	let numbers = name
+		.split(|c: char| !c.is_ascii_digit())
+		.filter_map(|n| n.parse().ok())
+		.collect::<Vec<u32>>();
+	let (series, tiers): (_, &[&str]) = match vendor {
+		"anthropic" if name.starts_with("claude-") => (0, &["fable", "opus", "sonnet", "haiku"]),
+		"openai" if name.starts_with("gpt-") && !name.split('-').any(|s| s == "pro") => {
+			(1, &["astra", "sol", "terra", "luna"])
+		}
+		"google" if name.starts_with("gemini-") => (2, &["neon", "carbon", "argon", "hydrogen"]),
+		"deepseek" => (3, &["v", "pro", "flash"]),
+		"moonshotai" if name.starts_with("kimi-k") && numbers.first().is_some_and(|n| *n >= 3) => {
+			(4, &[])
+		}
+		_ if matches!(name, "muse-wonder" | "muse-spark")
+			|| name
+				.strip_prefix("muse-spark-")
+				.is_some_and(|n| n.parse::<u32>().is_ok()) =>
+		{
+			(5, &["wonder", "spark"])
+		}
+		_ => (6, &[]),
+	};
+	let tier = tiers
+		.iter()
+		.position(|tier| {
+			name.split('-').any(|s| {
+				s == *tier
+					|| (*tier == "v"
+						&& s.strip_prefix('v')
+							.is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit())))
+			})
+		})
+		.unwrap_or(tiers.len());
+	(
+		series,
+		tier,
+		std::cmp::Reverse(if series == 6 { vec![] } else { numbers }),
+		id,
+	)
+}

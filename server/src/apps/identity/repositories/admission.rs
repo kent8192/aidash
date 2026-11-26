@@ -436,9 +436,21 @@ impl ExecutionAdmissionSession for Admission<'_> {
 	}
 	async fn bindings(
 		&mut self,
+		task_model: Option<&aidash_domain::TaskModel>,
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let caller = self.access.subjects[..self.access.subjects.len().saturating_sub(1)].to_vec();
+		crate::apps::registry::repositories::bindings::check_task_model(
+			&self.f.store,
+			false,
+			self.access,
+			entry,
+			task_model,
+			&caller,
+		)
+		.await?;
 		crate::apps::registry::repositories::bindings::authorized(
+			task_model,
 			self.access,
 			entry,
 			false,
