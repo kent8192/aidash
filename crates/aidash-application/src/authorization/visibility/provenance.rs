@@ -252,6 +252,7 @@ async fn source_invalidity(
 	classify_outputs: bool,
 ) -> Result<Option<Failure>> {
 	let visible = match kind {
+		"drive_file" => scope.drive_source_visible(id).await?,
 		"workspace_events" => {
 			let resource = scope.thread(thread).await?;
 			scope.decide(&resource, "thread.events").await?

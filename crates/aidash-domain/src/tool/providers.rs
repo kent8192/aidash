@@ -78,6 +78,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 			"core.exposure@1"
 		}
 		"file_search" | "file_read" | "apply_patch" | "attachment_copy" => "core.files@1",
+		"drive_publish" | "drive_publish_status" | "drive_search" => "core.drives@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
 		"journal_search" | "journal_read" | "journal_query" => "core.journal@1",
@@ -187,6 +188,7 @@ pub fn requires_runner(operation: &str) -> bool {
 			| "python_cancel"
 			| "live_preview_start"
 			| "live_preview_stop"
+			| "drive_publish"
 			| "file_save"
 			| "file_remove"
 			| "file_copy"
@@ -212,6 +214,7 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "file_share"
 				| "live_preview_start"
 				| "live_preview_stop"
+				| "drive_publish"
 				| "file_save"
 				| "file_remove"
 				| "file_copy"

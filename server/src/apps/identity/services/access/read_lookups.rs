@@ -299,6 +299,12 @@ struct StateSource {
 	resource_id: Uuid,
 }
 #[derive(Deserialize)]
+struct StateDriveSource {
+	run_id: Uuid,
+	thread_id: Uuid,
+	entry_id: Uuid,
+}
+#[derive(Deserialize)]
 struct StateRegistryRead {
 	run_id: Uuid,
 	entry_id: String,
@@ -380,6 +386,7 @@ enum StateBatchRow {
 	Definition(StateDefinition),
 	Human(domain::HumanRequest),
 	Source(StateSource),
+	DriveSource(StateDriveSource),
 	Registry(StateRegistryRead),
 	Remote(StateRemoteRead),
 	Snapshot(StateSnapshot),
@@ -1043,6 +1050,7 @@ impl Access {
 		}
 		for (table, kind, id_column) in [
 			("authorization_run_reads", "source", "run_id"),
+			("drive_run_reads", "drive_source", "run_id"),
 			("authorization_run_registry_reads", "registry", "run_id"),
 			("authorization_run_remote_reads", "remote", "run_id"),
 			("task_executions", "snapshot", "id"),
@@ -1178,6 +1186,12 @@ impl Access {
 				StateBatchRow::Definition(row) => early_rows.push(row),
 				StateBatchRow::Human(row) => humans.push(row),
 				StateBatchRow::Source(row) => sources.push(row),
+				StateBatchRow::DriveSource(row) => sources.push(StateSource {
+					run_id: row.run_id,
+					thread_id: row.thread_id,
+					resource_kind: "drive_file".into(),
+					resource_id: row.entry_id,
+				}),
 				StateBatchRow::Registry(row) => registry.push(row),
 				StateBatchRow::Remote(row) => remote.push(row),
 				StateBatchRow::Snapshot(row) => snapshots.push(row),

@@ -22,6 +22,7 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	// Execution Pod groups (#745): their own groups, so adding them changes no
 	// existing group's definitions.
 	("scratch_files", &["file_save", "file_remove", "file_copy"]),
+	("drive_publication", &["drive_publish"]),
 	(
 		"background_processes",
 		&["process_list", "process_log", "process_stop"],

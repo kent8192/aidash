@@ -129,6 +129,20 @@ pub struct ScratchSave {
 	pub sync: bool,
 	pub expected_revision: Option<i64>,
 }
+/// File selection shared by Scratch exports and Drive publication.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileSelector {
+	pub paths: Vec<String>,
+	#[serde(default = "default_ignore_files")]
+	pub ignore_files: Vec<String>,
+	#[serde(default)]
+	pub exclude: Vec<String>,
+	#[serde(default)]
+	pub include: Vec<String>,
+	#[serde(default)]
+	pub sync: bool,
+}
 pub fn default_ignore_files() -> Vec<String> {
 	vec![".gitignore".into()]
 }

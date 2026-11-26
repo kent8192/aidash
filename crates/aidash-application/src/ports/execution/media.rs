@@ -47,6 +47,13 @@ pub trait SelectedMediaScope: Send {
 	) -> Result<Option<aidash_domain::media::SelectedFile>> {
 		Ok(None)
 	}
+	async fn drive_file(
+		&mut self,
+		_selection: &aidash_domain::media::DriveFileSelection,
+		_remaining: u64,
+	) -> Result<(String, String, Vec<u8>)> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>>;
 	/// Resolve a Thread Attachment under current message authority, or None if deleted.
 	async fn thread_attachment(

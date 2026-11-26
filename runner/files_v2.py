@@ -239,6 +239,7 @@ class FileService:
         fd = open_dir(self.root, prefix)
         try:
             for directory, dirs, files, current in os.fwalk('.', dir_fd=fd, follow_symlinks=False):
+                dirs.sort()
                 rel = [] if directory == '.' else directory[2:].split('/')
                 for name in sorted(dirs + files):
                     try:
@@ -249,6 +250,11 @@ class FileService:
                     yield path, current, name, info
         finally:
             os.close(fd)
+
+    def usage(self, _request):
+        # The Scratch Space lives on its own persistent volume.
+        stats = os.statvfs(self.root)
+        return {'bytes': (stats.f_blocks - stats.f_bfree) * stats.f_frsize}
 
     def search(self, request):
         import codecs
@@ -366,33 +372,53 @@ class FileService:
                 if result:
                     return True
             return False
-        entries, skipped = [], []
-        for path, fd, name, info in self._walk(root):
-            if stat.S_ISLNK(info.st_mode):
-                skipped.append(path)
-                continue
-            if not stat.S_ISREG(info.st_mode):
-                continue
-            included = any(pattern_matches(path, item) for item in include)
-            if not included and ('.git' in path.split('/') or any(pattern_matches(path, item) for item in exclude)
-                                 or ignored(path)):
-                continue
-            if len(entries) == limit:
-                return {'files': entries, 'skipped_symlinks': sorted(skipped), 'truncated': True}
-            try:
-                with os.fdopen(open_file(fd, name), 'rb') as file:
-                    digest = hashlib.sha256()
-                    size = 0
-                    while True:
-                        data = file.read(131072)
-                        if not data:
-                            break
-                        size += len(data)
-                        digest.update(data)
-            except (FileNotFoundError, InvalidPath):
-                continue
-            entries.append({'path': path, 'size': size, 'sha256': digest.hexdigest()})
-        return {'files': entries, 'skipped_symlinks': sorted(skipped), 'truncated': False}
+        from concurrent.futures import ThreadPoolExecutor
+
+        def hash_file(path, file):
+            with file:
+                digest = hashlib.sha256()
+                size = 0
+                while data := file.read(131072):
+                    size += len(data)
+                    digest.update(data)
+            return {'path': path, 'size': size, 'sha256': digest.hexdigest()}
+
+        def order(path):
+            components = path.split('/')
+            return components[:-1], components[-1]
+
+        after = request.get('after')
+        if after:
+            parts(after)
+        entries, skipped, batch = [], [], []
+        truncated = False
+        with ThreadPoolExecutor(max_workers=100 if after is not None else 1) as executor:
+            for path, fd, name, info in self._walk(root):
+                if after and order(path) <= order(after):
+                    continue
+                if stat.S_ISLNK(info.st_mode):
+                    if len(skipped) < limit:
+                        skipped.append(path)
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                included = any(pattern_matches(path, item) for item in include)
+                if not included and ('.git' in path.split('/') or any(pattern_matches(path, item) for item in exclude)
+                                     or ignored(path)):
+                    continue
+                if len(entries) + len(batch) == limit:
+                    truncated = True
+                    break
+                try:
+                    file = os.fdopen(open_file(fd, name), 'rb')
+                except (FileNotFoundError, InvalidPath):
+                    continue
+                batch.append(executor.submit(hash_file, path, file))
+                if len(batch) == 100:
+                    entries.extend(future.result() for future in batch)
+                    batch.clear()
+            entries.extend(future.result() for future in batch)
+        return {'files': entries, 'skipped_symlinks': sorted(skipped), 'truncated': truncated}
 
     def patch(self, request):
         import fcntl

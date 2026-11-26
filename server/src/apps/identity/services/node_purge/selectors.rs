@@ -53,6 +53,9 @@ impl Owners<'_> {
 			ScratchSpace => ("scratch_spaces", "id"),
 			Record => ("core_records", "id"),
 			Duty => ("duties", "id"),
+			Drive => ("drives", "id"),
+			DriveUpload => ("drive_uploads", "id"),
+			DriveJob => ("drive_jobs", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(

@@ -1744,7 +1744,7 @@ class Handler(BaseHTTPRequestHandler):
                 '/v2/commands/submit', '/v2/commands/result', '/v2/commands/refuse', '/v2/commands/stop',
                 '/v2/runs/cancel', '/v2/runs/stop', '/v2/runs/stop_sessions',
                 '/v2/background/ended', '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
-                '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
+                '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch', '/v2/files/usage',
                 '/v2/previews/start', '/v2/previews/stop',
                 '/v2/mcp/start', '/v2/mcp/call', '/v2/mcp/stop', '/v2/mcp/stop_run',
                 '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):

@@ -349,7 +349,14 @@ async fn prune_revisions(store: &Store) -> NativeResult<()> {
 fn unreferenced_blobs_query() -> reinhardt::query::SelectStatement {
 	let mut query = Query::select();
 	query.from(Alias::new("core_blobs"));
-	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
+	for table in [
+		"core_objects",
+		"core_blob_references",
+		"core_blob_uploads",
+		"drive_entries",
+		"drive_upload_parts",
+		"drive_job_blobs",
+	] {
 		query.and_where(Expr::not_exists(
 			Query::select()
 				.expr(Expr::value(1))
@@ -469,7 +476,14 @@ pub(crate) async fn reclaim_blob(
 		});
 	};
 	let mut referenced = false;
-	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
+	for table in [
+		"core_objects",
+		"core_blob_references",
+		"core_blob_uploads",
+		"drive_entries",
+		"drive_upload_parts",
+		"drive_job_blobs",
+	] {
 		let id: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))

@@ -223,6 +223,18 @@ impl ToolBehavior {
 		{
 			return None;
 		}
+		if self.yields_model_media
+			&& !input["drive"].is_null()
+			&& input["representation"] == "model_input"
+			&& output["status"] == "completed"
+			&& input["expected_digest"] == output["selection"]["expected_digest"]
+		{
+			return serde_json::from_value::<crate::media::DriveFileSelection>(
+				output["selection"].clone(),
+			)
+			.ok()
+			.map(ModelMedia::DriveFile);
+		}
 		if input["kind"] == "file"
 			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
@@ -518,8 +530,17 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		// An Agent Plugin's stdio MCP server is never remote (ADR 0100), a Duty acts as one
 		// person of its own Tenant (ADR 0134), which a remote Run cannot be, and Node tools
 		// and node events act as that person too (#1012, #1013).
-		"mcp_stdio" | "duty_create" | "duty_update" | "duty_delete" | "duty_list"
-		| "duty_notify" | "node_create" | "node_delete" => ToolReach::Never,
+		"mcp_stdio"
+		| "duty_create"
+		| "duty_update"
+		| "duty_delete"
+		| "duty_list"
+		| "duty_notify"
+		| "node_create"
+		| "node_delete"
+		| "drive_publish"
+		| "drive_search"
+		| "drive_publish_status" => ToolReach::Never,
 		_ => return None,
 	})
 }
@@ -695,6 +716,15 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.concurrency = Concurrency::SharedRead;
 			contract.disclosure = DisclosureBoundary::Local;
 		}
+		"drive_search" | "drive_publish_status" => {
+			auth.core = Some(CorePermission::Files);
+			behavior.effect = ToolEffect::ReadOnly;
+			contract.disclosure = DisclosureBoundary::Local;
+		}
+		"drive_publish" => {
+			auth.core = Some(CorePermission::Files);
+			contract.disclosure = DisclosureBoundary::Local;
+		}
 		"file_read" | "file_search" => {
 			auth.core = Some(CorePermission::Files);
 			behavior.effect = ToolEffect::ReadOnly;
@@ -819,6 +849,9 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"skill_asset_read",
 	"file_read",
 	"file_search",
+	"drive_search",
+	"drive_publish",
+	"drive_publish_status",
 	"subnode_create",
 	"subnode_task",
 	"subnode_add_member",
@@ -1075,7 +1108,10 @@ mod tests {
 				"duty_list",
 				"duty_notify",
 				"node_create",
-				"node_delete"
+				"node_delete",
+				"drive_publish",
+				"drive_search",
+				"drive_publish_status"
 			])
 		);
 		// A pinned Workspace tool reaches what its Thread tool does (#1008).

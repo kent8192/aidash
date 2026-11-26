@@ -2579,7 +2579,7 @@ print(json.dumps(r))'''
     def file_operation(self, operation, request):
         import json
         from control import scratch_resource_name
-        if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+        if operation not in ('read', 'search', 'write', 'manifest', 'patch', 'usage'):
             raise ValueError('invalid file operation')
         scratch = request['scratch_space_id']
         name = scratch_resource_name(scratch)

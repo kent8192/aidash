@@ -28,6 +28,7 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain(SUBNODE_TOOLS.iter().copied())
 		.chain(JOURNAL_TOOLS.iter().copied())
 		.chain(NODE_TOOLS.iter().copied())
+		.chain(["drive_search", "drive_publish", "drive_publish_status"])
 		.chain(NOTIFY_TOOLS.iter().copied())
 		// The Workspace tools the Thread tools replace (#1008): saved Agent
 		// versions pin them, so they stay declared with their original bytes.

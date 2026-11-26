@@ -18,3 +18,4 @@ pub mod marketplace;
 pub use marketplace::MarketplaceConfig;
 pub mod operations;
 pub use operations::OperationsConfig;
+pub mod drives;

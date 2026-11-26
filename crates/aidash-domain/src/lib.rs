@@ -9,6 +9,7 @@ pub mod context;
 pub mod data_protection;
 pub mod decision;
 pub mod deployment;
+pub mod drive;
 pub mod duties;
 pub mod entities;
 pub mod exposure;

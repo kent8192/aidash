@@ -1362,6 +1362,9 @@ impl WorkerAuthority {
 		key: &str,
 		shared_read: bool,
 	) -> Result<Value> {
+		if crate::apps::drives::tools::handles(name, &input) {
+			return Box::pin(self.drive_tool(store, run, name, input, key)).await;
+		}
 		if matches!(name, "live_preview_start" | "live_preview_stop") {
 			return self.live_preview_tool(store, run, name, input).await;
 		}
@@ -1380,6 +1383,48 @@ impl WorkerAuthority {
 			)),
 			Err(error) => blocked(key, error),
 		}
+	}
+
+	async fn drive_tool(
+		&self,
+		store: &Store,
+		run: &Run,
+		name: &str,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		if !run.is_local(store.deployment.as_str()) {
+			return Err(Error::Forbidden);
+		}
+		let mut outer = self.access.write().await;
+		let was_active = outer.tx.is_active();
+		if !was_active {
+			self.refresh_pod_file_authority(&mut outer, store, run)
+				.await?;
+		}
+		let result = if name == "drive_publish" {
+			let identity = outer.identity.clone();
+			outer.suspend().await?;
+			let fresh = access_for_run(store, &run.metadata(), false)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if fresh.identity.subject != identity.subject
+				|| fresh.identity.tenant != identity.tenant
+			{
+				return Err(Error::Forbidden);
+			}
+			crate::apps::drives::tools::invoke(store, fresh, run, name, input, key).await
+		} else {
+			let access = Access::under_lease(&outer).await?;
+			crate::apps::drives::tools::invoke(store, access, run, name, input, key).await
+		};
+		if was_active && !outer.tx.is_active() {
+			self.refresh_pod_file_authority(&mut outer, store, run)
+				.await?;
+		} else if !was_active && outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		result.or_else(|error| blocked(key, error))
 	}
 
 	fn core_tool_wire(result: aidash_domain::capabilities::files::Envelope) -> Result<Value> {

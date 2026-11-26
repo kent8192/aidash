@@ -3,9 +3,23 @@ use super::views::{channels, duties, duty_events, management, scratch};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 
+use crate::apps::drives::views as drives;
+
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(drives::browse)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::download)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::mutation)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::upload_start)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::upload_part)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::upload_finish)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::thread_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::create)
