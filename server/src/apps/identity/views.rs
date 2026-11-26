@@ -55,3 +55,5 @@ pub(crate) mod org_chart;
 pub(crate) mod standing_instructions;
 
 pub mod oauth_connections;
+
+pub(crate) mod embedding_settings;

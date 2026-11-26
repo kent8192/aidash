@@ -1,11 +1,14 @@
 //! Conversation writes retain the same access transaction and audit context.
-use crate::apps::identity::models::AuthorizationThread;
 use crate::apps::workspaces::models::Conversation as ConversationRecord;
-use crate::semantic::{native_memory, repositories::bindings, service::Lease};
+use crate::apps::{
+	identity::repositories::embedding_settings::{EmbeddingSettings, lock_tenant},
+	registry::models::Definition,
+};
 use crate::{
 	authorization::{access::Access, catalog, execution, policy::Resource},
 	federation::Federation,
 };
+use aidash_application::embedding::tenant_embedding;
 use aidash_application::{
 	Result,
 	ports::threads::{ConversationScope, MemoryEmbedding},
@@ -27,7 +30,6 @@ pub(crate) struct NativeConversation<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) access: &'a mut Access,
 	thread: Option<Resource>,
-	thread_id: Option<Uuid>,
 }
 impl<'a> NativeConversation<'a> {
 	pub(crate) fn new(federation: &'a Federation, access: &'a mut Access) -> Self {
@@ -35,7 +37,6 @@ impl<'a> NativeConversation<'a> {
 			federation,
 			access,
 			thread: None,
-			thread_id: None,
 		}
 	}
 }
@@ -62,7 +63,7 @@ impl ConversationScope for NativeConversation<'_> {
 		let resource = self.access.thread(thread).await?;
 		self.access.context = resource.attributes.clone();
 		self.thread = Some(resource);
-		self.thread_id = Some(thread);
+
 		Ok(())
 	}
 	async fn require_thread(&mut self, action: &str) -> Result<()> {
@@ -234,35 +235,39 @@ impl ConversationScope for NativeConversation<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	/// The same resolution a local claim makes before it pins the memory bank.
-	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
-		let thread = self
-			.thread_id
-			.expect("thread context initialized by conversation use case");
-		let entry = catalog::entry(self.access, agent, "registry.read").await?;
-		let tenant = AuthorizationThread::tenant_in(&mut **self.access.tx, thread)
-			.await?
-			.ok_or(aidash_application::Error::Forbidden)?;
-		// The agent's dependencies are used by the agent, so resolve them with
-		// the subject chain the claim builds: the executing agent appended
-		// after whoever starts the conversation. Restore the chain and the
-		// approvals cached under it before any check made for the person.
-		let node = self.access.thread_node(thread).await?;
-		let subject = aidash_domain::qualified_agent(
-			&self.federation.config.deployment.node(node),
-			&agent.id,
-			&agent.version,
-		);
-		let mut subjects = self.access.subjects.clone();
-		subjects.push(subject);
-		let subjects = std::mem::replace(&mut self.access.subjects, subjects);
-		let approved = std::mem::take(&mut self.access.approved_catalog);
-		let deployment = self.federation.store.deployment.as_str();
-		let resolved = memory_embedding_of(self.access, &tenant, &entry, deployment).await;
-		self.access.subjects = subjects;
-		self.access.approved_catalog = approved;
-		resolved
+	async fn memory_embedding(&mut self, _agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
+		let tenant = self.access.identity.tenant.clone();
+		lock_tenant(
+			&mut **self.access.tx,
+			&tenant,
+			reinhardt::query::LockType::KeyShare,
+		)
+		.await?;
+		let reference = {
+			let settings = EmbeddingSettings(tokio::sync::Mutex::new(&mut **self.access.tx));
+			tenant_embedding(&settings, &tenant).await?
+		};
+		let entry = Definition::read_of(
+			&mut **self.access.tx,
+			&tenant,
+			&reference.id,
+			&reference.version,
+		)
+		.await?;
+		if entry.kind != "embedding" {
+			return Err(aidash_application::Error::Invalid(
+				"invalid Tenant embedding".into(),
+			));
+		}
+		Ok(Some(MemoryEmbedding {
+			provider: aidash_domain::registry::bindings::memory_defaults::reference(
+				self.federation.store.deployment.as_str(),
+			)
+			.local(),
+			embedding: serde_json::from_value(entry.config)?,
+		}))
 	}
+
 	async fn create_memory_index(
 		&mut self,
 		conversation: &Conversation,
@@ -316,28 +321,4 @@ impl ConversationScope for NativeConversation<'_> {
 			.fetch_one(&mut **self.access.tx)
 			.await?)
 	}
-}
-
-/// The memory provider `entry` binds and its policy's embedding, resolved with
-/// the subject chain already on `access`.
-async fn memory_embedding_of(
-	access: &mut Access,
-	tenant: &str,
-	entry: &Entry,
-	deployment: &str,
-) -> Result<Option<MemoryEmbedding>> {
-	let mut lease = Lease::Inherited(access);
-	let config = bindings::configuration(&mut lease, tenant, entry, deployment).await?;
-	let Some(provider) = config.memory else {
-		return Ok(None);
-	};
-	let policy = native_memory::policy(&mut lease, tenant, &provider).await?;
-	let Some(role) = &policy.embedding else {
-		return Ok(None);
-	};
-	let embedding = native_memory::definition(&mut lease, tenant, role, "embedding").await?;
-	Ok(Some(MemoryEmbedding {
-		provider,
-		embedding: serde_json::from_value(embedding.config)?,
-	}))
 }

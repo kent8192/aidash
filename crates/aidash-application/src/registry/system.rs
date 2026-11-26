@@ -251,7 +251,7 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 /// Catalog Approval before anything may use it.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut declared = entries(validation, node)?;
-
+	declared.push(tenant_default_embedding()?);
 	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
 	declared.extend(aidash_domain::registry::bindings::memory_defaults::definitions()?);
 	Ok(declared)
@@ -342,6 +342,43 @@ pub fn approval_decider() -> Result<Entry> {
 	})
 }
 
+fn tenant_default_embedding() -> Result<Entry> {
+	let reference = crate::embedding::default_embedding();
+	let config = aidash_domain::semantic::EmbeddingConfig {
+		provider: "openrouter".into(),
+		endpoint: "https://openrouter.ai/api/v1".into(),
+		provider_credential: Some("openrouter".into()),
+		model: "google/gemini-embedding-2".into(),
+		model_version: reference.version.clone(),
+		dimensions: 3072,
+		inputs: [
+			aidash_domain::semantic::EmbeddingInputKind::Text,
+			aidash_domain::semantic::EmbeddingInputKind::Image,
+		]
+		.into_iter()
+		.collect(),
+	};
+	config.validate_parameters()?;
+	Ok(Entry {
+		binding_normalization: None,
+		installation: None,
+		id: reference.id,
+		version: reference.version,
+		kind: "embedding".into(),
+		name: [("en".into(), "Default embedding".into())].into(),
+		description: [(
+			"en".into(),
+			"Default model for Tenant search indexes".into(),
+		)]
+		.into(),
+		capabilities: vec![],
+		tags: vec!["system".into()],
+		languages: vec![],
+		schema: json!({}),
+		config: serde_json::to_value(config)?,
+	})
+}
+
 /// Writes every built-in definition into the scope's Tenant: the ordinary
 /// built-ins, the approval Decider, and the Sandboxed and research groups the
 /// Deployment offers, which the Tenant approves before use. The caller owns one
@@ -360,6 +397,7 @@ pub async fn seed(
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
+		.chain([tenant_default_embedding()?])
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.collect();
 	for entry in dependencies_first(entries, node) {

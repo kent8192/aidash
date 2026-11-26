@@ -2,6 +2,7 @@ import { DataProtectionSettings } from "./data-protection";
 import { StandingInstructionsSettings } from "./standing-instructions";
 import { BudgetSettings } from "./budgets";
 import { OrgChartPanel } from "./org-chart";
+import { TenantEmbeddingSettings } from "./tenant-embedding-settings";
 import { ExecutionSettings } from "./execution-settings";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
@@ -59,6 +60,9 @@ export function TenantAccess({
         tenant={tenant}
         canUpdate={can("tenant.update")}
       />
+      {can("tenant.update") && (
+        <TenantEmbeddingSettings key={tenant} tenant={tenant} />
+      )}
       {can("policy.read") && (
         <DataProtectionSettings
           key={tenant}

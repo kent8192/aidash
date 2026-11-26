@@ -123,3 +123,6 @@ pub mod oauth_connections;
 
 mod remote_connection_calls;
 pub use remote_connection_calls::RemoteConnectionCall;
+
+mod tenant_embedding_settings;
+pub use tenant_embedding_settings::TenantEmbeddingSettings;

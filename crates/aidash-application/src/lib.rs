@@ -8,6 +8,7 @@ pub mod context;
 pub mod decision;
 pub mod deployment;
 pub mod duties;
+pub mod embedding;
 pub mod execution;
 pub mod federation;
 pub mod flows;

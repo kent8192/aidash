@@ -385,6 +385,12 @@ impl RuntimeTasks {
 			"semantic worker",
 			runtime_task(crate::semantic::worker::run(worker_runtime.clone())),
 		);
+		tasks.spawn_service(
+			"tenant re-embedding",
+			runtime_task(crate::semantic::worker::run_reembedding(
+				worker_runtime.store.clone(),
+			)),
+		);
 		if event_streams.is_some() {
 			tasks.spawn_service("event bus", runtime_task(EventBus::run(federation.clone())));
 		}

@@ -66,3 +66,5 @@ pub(crate) mod scratch_policy_backfill;
 pub(crate) mod thread_policy_backfill;
 
 pub(crate) mod catalog_mail;
+
+mod embedding_settings;

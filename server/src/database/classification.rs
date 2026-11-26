@@ -343,6 +343,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_data_protection", TenantOwned),
 	table("identity", "tenant_instructions", TenantOwned),
 	table("identity", "tenant_execution_settings", TenantOwned),
+	table("identity", "tenant_embedding_settings", TenantOwned),
 	table("identity", "budgets", TenantOwned),
 	table("identity", "budget_notices", TenantOwned),
 	table("identity", "budget_spend", TenantOwned),

@@ -378,7 +378,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
-	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
+	assert_eq!(head("registry"), ["0093_registry_kind_state"]);
 	assert_eq!(head("execution"), ["0163_scope_host_debit_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
