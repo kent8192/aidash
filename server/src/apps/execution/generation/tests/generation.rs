@@ -3003,7 +3003,8 @@ async fn node_deletion_settles_generation_once_after_restore(
 	assert_eq!(status, 200, "{body}");
 	// A live sibling uses the same Tenant policy; deleting the target may
 	// release only its allocation and must not disable the sibling executor.
-	for id in ["model", "http", "research"] {
+	// Model approval was copied when the sibling Node was created.
+	for id in ["http", "research"] {
 		aidash_server::authorization::Authorization {
 			pool: f.store.pool.clone(),
 		}

@@ -168,7 +168,8 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: app.runtime.store.pool.clone(),
 	};
-	for id in ["model", "http", "research"] {
+	// Model approval was copied when the sibling Node was created.
+	for id in ["http", "research"] {
 		authorization
 			.set_catalog(
 				"acme",
@@ -281,7 +282,8 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: app.runtime.store.pool.clone(),
 	};
-	for id in ["model", "http", "research"] {
+	// Model approval was copied when the sibling Node was created.
+	for id in ["http", "research"] {
 		authorization
 			.set_catalog(
 				"acme",

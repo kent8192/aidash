@@ -2755,6 +2755,7 @@ async fn task_model_admission_refusals_and_duty_ticks_use_the_stored_selection(
 	c.f.registry.register(&tenant, pending).await.unwrap();
 	agent.version = "1.2.0".into();
 	agent.config["model"] = Value::Null;
+	agent.config["context_policy"] = json!({"version":"context-recovery/1","summary":{}});
 	agent.binding_normalization = None;
 	let node = aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme");
 	c.policy["subjects"]
