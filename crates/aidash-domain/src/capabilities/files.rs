@@ -31,11 +31,6 @@ pub enum Representation {
 #[serde(deny_unknown_fields)]
 pub struct FileRead {
 	pub file_id: Uuid,
-	/// Select an Area in a Subnode Thread created by this Run. A call saved in
-	/// a Run's `pending` before #1008 names it `workspace_id`.
-	#[serde(alias = "workspace_id")]
-	pub thread_id: Option<Uuid>,
-	pub area_id: Option<Uuid>,
 	pub representation: Representation,
 	pub offset: Option<usize>,
 	pub max_bytes: Option<usize>,
@@ -95,6 +90,8 @@ pub enum ScratchScope {
 #[serde(deny_unknown_fields)]
 pub struct ScratchRead {
 	pub path: String,
+	pub representation: Option<Representation>,
+	pub expected_digest: Option<String>,
 	pub offset: Option<u64>,
 	pub max_bytes: Option<usize>,
 }

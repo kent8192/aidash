@@ -17,10 +17,7 @@ use crate::{
 	federation::Federation,
 	store::Store,
 };
-use aidash_application::{
-	Error as AppError,
-	duties::{self as app, DutyScope, Listing, Origin},
-};
+use aidash_application::duties::{self as app, DutyScope, Listing, Origin};
 use aidash_domain::{
 	approval_rules::{ApprovalMode, MODE_RESOURCE},
 	duties::{self, Claim, Definition, Duty, Halt, Patch, Tick, TickStatus},

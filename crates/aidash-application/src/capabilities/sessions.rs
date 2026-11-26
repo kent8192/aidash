@@ -2,9 +2,8 @@
 use crate::{Error, Result, ports::capabilities::sessions::SessionScope};
 use aidash_domain::{
 	RunMetadata, Task,
-	capabilities::{
-		operations::available,
-		sessions::{Area, REMOTE_HOME, SessionStatus, received_scope_matches, reusable_context},
+	capabilities::sessions::{
+		Area, REMOTE_HOME, SessionStatus, received_scope_matches, reusable_context,
 	},
 	federation::execution::admission::RunQueued,
 	registry::AgentConfig,
@@ -146,7 +145,7 @@ pub async fn prepare_admission(
 	scope: &mut dyn SessionScope,
 	task: &Task,
 	config: &AgentConfig,
-	agent_id: &str,
+	_agent_id: &str,
 ) -> Result<Option<Uuid>> {
 	if !config.core_capabilities.enabled() {
 		return Ok(None);
@@ -155,28 +154,6 @@ pub async fn prepare_admission(
 		return Err(Error::Conflict(
 			"CAPABILITIES_DISABLED: enable the Node's execution profile before admitting core work"
 				.into(),
-		));
-	}
-	// The Working Area is keyed on (home Node, Thread, Agent, owner)
-	// (#1008, ADR 0140): every Task of a Thread shares it.
-	let mut ancestor = task.parent_id;
-	for _ in 0..64 {
-		let Some(id) = ancestor else {
-			break;
-		};
-		let parent = scope.task(id).await?;
-		for parent_area in scope.parent_areas(id).await? {
-			if parent_area.agent_id == agent_id && parent_area.owner == scope.principal() {
-				return Err(Error::Conflict(
-					"SESSION_DEPENDENCY_CYCLE: child would wait behind its parent".into(),
-				));
-			}
-		}
-		ancestor = parent.parent_id;
-	}
-	if ancestor.is_some() {
-		return Err(Error::Conflict(
-			"SESSION_DEPENDENCY_CYCLE: ancestor limit exceeded".into(),
 		));
 	}
 	scope.lock_thread(task.thread_id).await?;
@@ -197,28 +174,8 @@ pub async fn admit(
 	let mut area = scope.ensure_area(task, agent_id).await?;
 	area.require_kind(false)?;
 	authorize(scope, &area, "file.read").await?;
-	if !matches!(area.state.as_str(), "active" | "running") {
-		return Err(Error::Conflict(
-			"AREA_UNAVAILABLE: restore or recreate the area before starting work".into(),
-		));
-	}
-	let queue = status(scope, &area).await?.queue;
-	if queue.len() >= 100 {
-		return Err(Error::QueueLimit);
-	}
-	let initialized = area.state == "active" && queue.is_empty();
-	if initialized {
-		scope.pin(run_id, &mut area, config).await?;
-	}
-	scope.enqueue(run_id, &area, initialized).await?;
-	scope
-		.event(
-			task.thread_id,
-			"capability.queued",
-			json!({"area_id":area.id,"run_id":run_id,"sequence":area.next_sequence}),
-		)
-		.await?;
-	Ok(())
+	scope.pin(run_id, &mut area, config).await?;
+	scope.enqueue(run_id, &area, true).await
 }
 pub enum Initialization {
 	Ready,
@@ -239,11 +196,6 @@ pub async fn initialize(
 		return Ok(Initialization::Ready);
 	}
 	let mut area = for_run(scope, run).await?;
-	let head = scope.queue(&area).await?.first().map(|entry| entry.run_id);
-	if head != Some(run.id) {
-		return Ok(Initialization::Queued(None));
-	}
-	available(&area.state)?;
 	// Recheck after acquiring the area lock so simultaneous callers pin only once.
 	if !scope.initialized_locked(run.id).await? {
 		scope.pin(run.id, &mut area, config).await?;
@@ -251,11 +203,7 @@ pub async fn initialize(
 	}
 	Ok(Initialization::Ready)
 }
-/// A receiving Node's Working Area for a Run executing here for another Home (ADR 0139): the Area
-/// per Home Thread, Agent and Home person (#1008), kept for follow-up Runs, with the Agent
-/// version's Reference set pinned into it as for a local Run. The Run is queued behind the Runs
-/// that preceded it in the Area, exactly as a local Run is; a Run entered again finds itself
-/// initialized and does nothing.
+/// Bind the Run on its receiving Node once.
 pub async fn initialize_remote(
 	scope: &mut dyn SessionScope,
 	run: &RunMetadata,
@@ -274,38 +222,14 @@ pub async fn initialize_remote(
 			}
 			area.require_kind(true)?;
 			authorize(scope, &area, "file.read").await?;
-			if !matches!(area.state.as_str(), "active" | "running") {
-				return Err(Error::Conflict(
-					"AREA_UNAVAILABLE: restore or recreate the area before starting work".into(),
-				));
-			}
-			let runs_ahead = scope.queue(&area).await?.len();
-			if runs_ahead >= 100 {
-				return Err(Error::QueueLimit);
-			}
-			let initialized = area.state == "active" && runs_ahead == 0;
-			if initialized {
-				scope.pin(run.id, &mut area, config).await?;
-			}
-			let queued_at = chrono::Utc::now();
-			scope.enqueue(run.id, &area, initialized).await?;
-			if runs_ahead > 0 {
-				return Ok(Initialization::Queued(Some(RunQueued {
-					task_id: run.task_id,
-					run_id: run.id,
-					runs_ahead,
-					queued_at,
-				})));
-			}
+			scope.pin(run.id, &mut area, config).await?;
+			scope.enqueue(run.id, &area, true).await?;
 		}
 	}
 	initialize(scope, run, config).await
 }
 pub async fn status(scope: &mut dyn SessionScope, area: &Area) -> Result<SessionStatus> {
 	let rows = scope.queue(area).await?;
-	if rows.len() > 100 {
-		return Err(Error::QueueLimit);
-	}
 	let last = scope.last(area).await?;
 	Ok(SessionStatus {
 		area_id: area.id,

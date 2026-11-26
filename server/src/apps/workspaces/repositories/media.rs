@@ -378,14 +378,17 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
-		// A Run without its own Working Area can still open authorized
-		// Thread image matches; it simply has no own Files to select.
-		let Some(area) = sessions::current_own_area(access, self.run).await? else {
-			self.files = Vec::new();
-			return Ok(Vec::new());
+		use aidash_application::{
+			capabilities::files, ports::capabilities::files::FileScopePort as _,
 		};
-		sessions::authorize(access, &area, "file.read").await?;
-		let files = service::files(&area)?;
+		let mut scope = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run));
+		let config = files::settings(&mut scope, &self.run.metadata()).await?;
+		let files: Vec<FileEntry> = scope
+			.bound_references(&config)
+			.await?
+			.into_iter()
+			.map(Into::into)
+			.collect();
 		let selected = files
 			.iter()
 			.map(|file| SelectedFile {
@@ -478,6 +481,41 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		};
 		self.files.push(file);
 		Ok(Some(selected))
+	}
+	async fn scratch_image(
+		&mut self,
+		selection: &aidash_domain::media::ScratchImageSelection,
+		max_bytes: u64,
+	) -> Result<(String, Vec<u8>)> {
+		if self.lease.is_none() {
+			self.lease = Some(self.access.clone().write_owned().await);
+		}
+		let access = self
+			.lease
+			.as_mut()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let pod = crate::apps::execution::repositories::operations::pods::tool_context(
+			self.store,
+			access,
+			&self.run.metadata(),
+		)
+		.await?
+		.ok_or_else(|| aidash_application::Error::NotFound("Execution Pod".into()))?;
+		let (digest, bytes) = aidash_application::capabilities::pod::files::read_snapshot(
+			&pod,
+			&selection.scratch_path,
+			max_bytes,
+		)
+		.await?;
+		if digest != selection.expected_digest {
+			return Err(aidash_application::Error::Conflict("FILE_CHANGED".into()));
+		}
+		let media_type = aidash_domain::provider::detect_image(&bytes).ok_or_else(|| {
+			aidash_application::Error::Invalid(
+				"Scratch Space file must be a supported image".into(),
+			)
+		})?;
+		Ok((media_type.to_owned(), bytes))
 	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>> {
 		let access = self

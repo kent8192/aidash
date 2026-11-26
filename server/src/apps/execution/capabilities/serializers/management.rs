@@ -194,7 +194,6 @@ pub struct OperationPage {
 pub struct DeletedThread {
 	pub thread_id: Uuid,
 	pub state: String,
-	pub file_operations: Vec<super::cleanup::CleanupResult>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

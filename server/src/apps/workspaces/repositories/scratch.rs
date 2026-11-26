@@ -730,6 +730,70 @@ pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
 	Ok(())
 }
 
+/// Return a conservative set of the subjects who may see the destination.
+/// None means a remote reader cannot be checked against a Tenant-local source.
+pub(crate) async fn copy_audience(
+	access: &mut Access,
+	space: &ScratchSpace,
+) -> Result<Option<BTreeSet<String>>> {
+	if !space.is_default {
+		let mut readers = space.members.clone();
+		readers.insert(space.creator.clone());
+		return Ok(Some(readers));
+	}
+	let tenant = access.identity.tenant.clone();
+	let node = space.node.as_str().to_owned();
+	let remote_mappings = Query::select()
+		.expr(Expr::val(1))
+		.from(Alias::new("authorization_peer_mappings"))
+		.and_where(Expr::col("tenant").eq(tenant.clone()))
+		.and_where(Expr::col("node").eq(node.clone()))
+		.and_where(Expr::col("enabled").eq(true))
+		.to_owned();
+	let remote_admissions = Query::select()
+		.expr(Expr::val(1))
+		.from(Alias::new("authorization_remote_admissions"))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("node").eq(node))
+		.and_where(Expr::col("credential_id").ne(Expr::value(Uuid::nil())))
+		.and_where(Expr::col("cancelled").eq(false))
+		.to_owned();
+	let has_remote_reader = Query::select()
+		.expr(Expr::exists(remote_mappings).or(Expr::exists(remote_admissions)))
+		.to_string(PostgresQueryBuilder);
+	if crate::database::native::query_scalar::<bool>(&has_remote_reader)
+		.scalar_one(&mut **access.tx)
+		.await?
+	{
+		return Ok(None);
+	}
+	let resource = access.node_resource(&space.node).await?;
+	// A condition that fails in this request may allow another request on
+	// this Node. Overestimate the allowed audience before reading sources.
+	let mut potential = access.snapshot.bundle.clone();
+	potential
+		.policies
+		.retain(|p| p.effect == aidash_domain::policy::Effect::Allow);
+	for policy in &mut potential.policies {
+		policy.condition = None;
+	}
+	use aidash_domain::identity::tenant_administration::{NODE_ADMINISTER, NODE_USE};
+	Ok(Some(
+		potential
+			.subjects
+			.keys()
+			.filter(|subject| {
+				[NODE_USE, NODE_ADMINISTER].iter().any(|action| {
+					potential
+						.evaluate(&access.evaluation(subject, &resource, action))
+						.allowed
+				})
+			})
+			.cloned()
+			.collect(),
+	))
+}
+
 /// Inputs that depend on Deployment configuration, the Registry, and the
 /// Execution Pod lifecycle. Implementations retain the caller's Access transaction.
 #[async_trait::async_trait]

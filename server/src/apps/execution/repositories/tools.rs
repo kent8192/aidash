@@ -445,25 +445,6 @@ impl ToolOperations for Operations {
 			.await
 			.map_err(Into::into)
 	}
-	async fn thread_image(
-		&self,
-		selection: &aidash_domain::media::WorkingImageSelection,
-		representation: &str,
-	) -> Result<Value> {
-		let ctx = &self.0;
-		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		let authority = ctx
-			.home
-			.authority
-			.as_ref()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		authority
-			.thread_image(&ctx.store, &ctx.run, selection, representation)
-			.await
-			.map_err(Into::into)
-	}
 	async fn thread_search(&self, input: Value) -> Result<Value> {
 		let ctx = &self.0;
 		if !ctx.run.is_local(ctx.store.deployment.as_str()) {

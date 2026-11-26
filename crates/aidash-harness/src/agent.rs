@@ -3469,7 +3469,7 @@ connection: None,
 					}
 				};
 				let mut selection = contract.behavior.model_media_selection(&call.arguments, &output);
-				if matches!(selection, Some(aidash_domain::media::ModelMedia::WorkingImage(_))) {
+				if matches!(selection, Some(aidash_domain::media::ModelMedia::ScratchImage(_))) {
 					let entry = self.environment.catalog()
 						.get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
 					let model: ModelConfig = ModelConfig::from_stored(entry.config)?;

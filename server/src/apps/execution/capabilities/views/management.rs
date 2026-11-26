@@ -54,7 +54,7 @@ pub async fn file_read(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Json(input): Json<FileRead>,
+	Json(input): Json<ToolFileRead>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
@@ -71,7 +71,7 @@ pub async fn file_search(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Json(input): Json<FileSearch>,
+	Json(input): Json<ToolFileSearch>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());

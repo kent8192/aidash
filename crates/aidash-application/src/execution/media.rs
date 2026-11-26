@@ -305,7 +305,7 @@ pub async fn selected(
 	let files = if selections.is_empty()
 		|| selections
 			.iter()
-			.any(|selection| matches!(selection, ModelMedia::File(_) | ModelMedia::WorkingImage(_)))
+			.any(|selection| matches!(selection, ModelMedia::File(_)))
 	{
 		scope.current_files().await?
 	} else {
@@ -347,32 +347,20 @@ pub async fn selected(
 					scope.read(file.file_id).await?,
 				)
 			}
-			ModelMedia::WorkingImage(selection) => {
-				let file = scope
-					.thread_image(
-						selection.area_id,
-						selection.generation,
-						selection.file_id,
-						&selection.path,
-					)
-					.await?
-					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
-				if file.digest != selection.expected_digest {
-					return Err(Error::Conflict("FILE_CHANGED".into()));
-				}
-				if !file.media_type.starts_with("image/") {
-					return Err(Error::Invalid("selected File is not an image".into()));
-				}
-				total = total.saturating_add(file.size);
+			ModelMedia::ScratchImage(selection) => {
+				let (media_type, bytes) = scope
+					.scratch_image(selection, (8 * 1024 * 1024_u64).saturating_sub(total))
+					.await?;
+				total = total.saturating_add(bytes.len() as u64);
 				if total > 8 * 1024 * 1024 {
 					return Err(Error::Invalid(
 						"model media input exceeds byte limit".into(),
 					));
 				}
 				(
-					format!("Selected file: {}", file.path),
-					file.media_type,
-					scope.read(file.file_id).await?,
+					format!("Selected Scratch Space image: {}", selection.scratch_path),
+					media_type,
+					bytes,
 				)
 			}
 			ModelMedia::ThreadAttachment(selection) => {

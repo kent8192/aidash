@@ -4,5 +4,5 @@ pub use crate::apps::execution::capabilities::serializers::contracts::{
 	MaterializeSource, OperationInput, OperationResult, OutboundResult, Patch, PatchResult,
 	ReadResult, Representation, RuntimeResult, SearchMatch, SearchMode, SearchResult,
 	SearchUnavailable, SessionRun, SessionStatus, ShareResult, Shell, SkillInventoryEntry,
-	SkillListResult, SkillReadResult, Steer, Steered,
+	SkillListResult, SkillReadResult, Steer, Steered, ToolFileRead, ToolFileSearch,
 };

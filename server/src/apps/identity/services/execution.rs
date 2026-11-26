@@ -460,35 +460,17 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
-		// An image query names a File version in the Run's own Working Area, or
-		// a Thread Attachment by the selection `workspace_read` returned (#622).
-		let (image, attachment) = if input.get("image").is_some_and(|value| !value.is_null()) {
-			if let Ok(selected) = serde_json::from_value::<
-				aidash_domain::media::WorkingImageSelection,
-			>(input["image"].clone())
-			{
-				let query = aidash_domain::semantic::retrieval::ImageQuery {
-					run_id: run.id,
-					area_id: selected.area_id,
-					generation: selected.generation,
-					file_id: selected.file_id,
-					path: selected.path,
-					expected_digest: selected.expected_digest,
-				};
-				(Some(query), None)
-			} else {
-				let selected: aidash_domain::media::ThreadAttachmentSelection =
-					serde_json::from_value(input["image"].clone())?;
-				let query = aidash_domain::semantic::retrieval::AttachmentImageQuery {
-					run_id: run.id,
-					message_id: selected.message_id,
-					attachment_id: selected.attachment_id,
-					expected_digest: selected.expected_digest,
-				};
-				(None, Some(query))
-			}
+		let attachment = if let Some(selection) = input.get("image").filter(|v| !v.is_null()) {
+			let selection: aidash_domain::media::ThreadAttachmentSelection =
+				serde_json::from_value(selection.clone())?;
+			Some(aidash_domain::semantic::retrieval::AttachmentImageQuery {
+				run_id: run.id,
+				message_id: selection.message_id,
+				attachment_id: selection.attachment_id,
+				expected_digest: selection.expected_digest,
+			})
 		} else {
-			(None, None)
+			None
 		};
 		let mut lease = crate::semantic::service::Lease::Inherited(access);
 		lease.durable();
@@ -537,7 +519,7 @@ impl WorkerAuthority {
 		}
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
-			image: image.clone(),
+			image: None,
 			attachment: attachment.clone(),
 			agent: None,
 			metadata: json!({}),
@@ -583,9 +565,7 @@ impl WorkerAuthority {
 				Option<aidash_application::ports::semantic::IndexImage>,
 			> {
 				let mut scope = crate::bootstrap::semantic_retrieval_scope(store, lease);
-				Ok(if let Some(image) = &image {
-					Some(scope.query_image(run.thread_id, image, max_bytes).await?)
-				} else if let Some(attachment) = &attachment {
+				Ok(if let Some(attachment) = &attachment {
 					if !scope.attachment_seen(attachment).await? {
 						return Err(
 							aidash_application::semantic::retrieval::attachment_not_seen().into(),
@@ -640,62 +620,6 @@ impl WorkerAuthority {
 		aidash_domain::unconfirmed::for_tool(&mut result);
 		Ok(result)
 	}
-	pub(crate) async fn thread_image(
-		&self,
-		store: &Store,
-		run: &Run,
-		selection: &aidash_domain::media::WorkingImageSelection,
-		representation: &str,
-	) -> Result<Value> {
-		use crate::apps::execution::capabilities::{contracts::FileScope, service, sessions};
-		let mut access = self.access.write().await;
-		// `load` authorizes `file.read` on the selected Area itself.
-		sessions::current_own_area(&mut access, run).await?;
-		let area = sessions::load(&mut access, selection.area_id).await?;
-		if area.thread_id != run.thread_id || area.generation != selection.generation {
-			return Err(Error::Forbidden);
-		}
-		let file = service::files(&area)?
-			.into_iter()
-			.find(|file| {
-				file.file_id == selection.file_id
-					&& file.path == selection.path
-					&& matches!(file.scope, FileScope::Working | FileScope::Received)
-			})
-			.ok_or(Error::Forbidden)?;
-		if !file.media_type.starts_with("image/") {
-			return Err(Error::Invalid("selected File is not an image".into()));
-		}
-		let representation = match representation {
-			"metadata" => aidash_domain::capabilities::files::Representation::Metadata,
-			// The model's modalities are checked after the tool returns. Read only
-			// metadata here; the existing selected-media path applies model-input
-			// limits before opening bytes for an image-capable model.
-			"model_input" => aidash_domain::capabilities::files::Representation::Metadata,
-			_ => return Err(Error::Invalid("invalid File representation".into())),
-		};
-		let mut scope = crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
-		let result = aidash_application::capabilities::files::read(
-			&mut scope,
-			&(&area).into(),
-			aidash_domain::capabilities::files::FileRead {
-				file_id: selection.file_id,
-				thread_id: None,
-				area_id: None,
-				representation,
-				offset: None,
-				max_bytes: None,
-				expected_digest: Some(selection.expected_digest.clone()),
-			},
-		)
-		.await?;
-		let mut metadata = result["metadata"].clone();
-		metadata["name"] = json!(file.path.rsplit('/').next().unwrap_or(&file.path));
-		Ok(
-			json!({"status":"completed","metadata":metadata,"digest":result["digest"],"truncated":false}),
-		)
-	}
-
 	/// The Envelope an Agent reads for a call whose effect needed no transaction of its own.
 	async fn shaped(
 		&self,
@@ -1219,14 +1143,9 @@ impl WorkerAuthority {
 				let space = scratch::read(&mut **access.tx, &tenant, space_id)
 					.await?
 					.ok_or(Error::Forbidden)?;
-				// CONTRACT(#1019): the remote audience of a Node is not represented
-				// by its Tenant's subject list. Until there is a complete proof of
-				// the shared audience, Attachment copies require a named space.
-				if space.is_default {
+				let Some(readers) = scratch::copy_audience(access, &space).await? else {
 					return Ok(copy_would_disclose());
-				}
-				let mut readers = space.members;
-				readers.insert(space.creator);
+				};
 				for subject in readers {
 					if !access
 						.snapshot
@@ -1258,12 +1177,18 @@ impl WorkerAuthority {
 						Err(error) => return Err(error),
 					}
 				}
-				let filename = input["path"]
-					.as_str()
-					.or_else(|| record["attachment"]["filename"].as_str())
-					.ok_or_else(|| Error::Invalid("attachment filename is required".into()))?;
-				validate_path(filename)?;
-				let path = format!("threads/{}/{filename}", run.thread_id);
+				let path = match input["path"].as_str() {
+					Some(path) => path.to_owned(),
+					None => {
+						let filename =
+							record["attachment"]["filename"].as_str().ok_or_else(|| {
+								Error::Invalid("attachment filename is required".into())
+							})?;
+						validate_path(filename)?;
+						format!("threads/{}/{filename}", run.thread_id)
+					}
+				};
+				validate_path(&path)?;
 				let digest = crate::registry::digest(&json!([
 					"attachment_copy",
 					run.id,
@@ -1653,15 +1578,15 @@ impl WorkerAuthority {
 				}
 				// The preview runs in the Execution Pod as a Background process of
 				// the Run, outside this transaction (#745).
-				crate::apps::execution::repositories::operations::pods::tool_context(
-					store,
-					&mut access,
-					&run.metadata(),
-				)
-				.await?
-				.ok_or_else(|| {
-					Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into())
-				})
+				use crate::apps::execution::repositories::operations::pods;
+				let metadata = run.metadata();
+				let pod = pods::tool_context(store, &mut access, &metadata)
+					.await?
+					.ok_or_else(|| {
+						Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into())
+					})?;
+				let directory = pods::working_directory(&mut access, &metadata).await?;
+				Ok((pod, directory))
 			}
 			.await;
 			access.finish(result).await
@@ -1692,13 +1617,14 @@ impl WorkerAuthority {
 				access.finish(result).await?;
 			}
 		}
-		let pod = accepted?;
+		let (pod, working_directory) = accepted?;
 		let dispatched = match aidash_application::capabilities::pod::previews::start(
 			&pod,
 			pending.id,
 			run.id,
 			&input.command,
 			pending.port,
+			working_directory,
 		)
 		.await
 		{

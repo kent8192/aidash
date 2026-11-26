@@ -116,7 +116,6 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		approvals::Outbound,
 		contracts::*,
 		python::Python,
-		sharing::Share,
 		skills::{SkillList, SkillLoad, SkillRead},
 	};
 	use crate::apps::execution::capabilities::serializers::contracts as pod;
@@ -128,7 +127,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"file_read",
-			"Read authorized text or metadata. Give file_id for a Reference file, or path for a file relative to the Scratch Space root (text only, continue with next_offset). Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			"Read authorized text or metadata. Give file_id for a Reference file, or path for a file relative to the Scratch Space root. Continue text reads with next_offset. Use model_input to select a Scratch Space image, or use it with the exact digest of a Reference file.",
 			schema::<pod::ToolFileRead>(),
 		),
 		(
@@ -183,17 +182,17 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"apply_patch",
-			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Apply a Codex add/update/delete patch to paths relative to the Scratch Space root.",
 			schema::<Patch>(),
 		),
 		(
 			"live_preview_start",
-			"Start this Run's Live preview: a long-lived Web server from the current Working Area revision. 'port' must be the Deployment's preview Pod port (preview.pod_port); any other port is refused. Waits up to 120 s for the port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
+			"Start this Run's Live preview: a long-lived Web server in the Task’s Scratch folder. 'port' must be the Deployment's preview Pod port (preview.pod_port); any other port is refused. Waits up to 120 s for the port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
 			schema::<LivePreviewStart>(),
 		),
 		(
 			"live_preview_stop",
-			"Stop this Run's Live preview and release the File versions it kept.",
+			"Stop this Run's Live preview.",
 			schema::<LivePreviewStop>(),
 		),
 		(

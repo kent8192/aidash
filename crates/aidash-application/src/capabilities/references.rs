@@ -333,20 +333,18 @@ pub async fn revoke(scope: &mut dyn ReferenceScope, id: Uuid, revision: i64) -> 
 /// already established that this person may run that version, whose Sources are
 /// approved, so neither the uploader nor a `reference.read` grant is asked for
 /// here (ADR 0114). Only a revoked or removed file stops it.
-pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result<()> {
+pub async fn bound_files(
+	scope: &mut dyn ReferenceScope,
+	config: &AgentConfig,
+) -> Result<Vec<FileEntry>> {
 	let limits = scope.limits()?;
-	let mut mounts = scope.mounts()?;
 	if config.reference_attachments.len() > limits.reference_files
 		|| (!config.reference_attachments.is_empty() && !config.core_capabilities.files)
 	{
 		return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 	}
-	let mut files = serde_json::from_value::<Vec<FileEntry>>(mounts.manifest.clone())?;
+	let mut files = Vec::new();
 	let mut text = 0;
-	let old = mounts.manifest.clone();
-	// A new Agent version replaces its Reference set. Existing working copies
-	// keep their conservative disclosure constraints; detaching is not declassification.
-	files.retain(|file| !file.is_reference_file());
 	let ids = config
 		.reference_attachments
 		.iter()
@@ -362,33 +360,18 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 		.map(|record| (record.id, record))
 		.collect::<std::collections::BTreeMap<_, _>>();
 	for attachment in &config.reference_attachments {
-		let record = records
+		let Some(record) = records
 			.get(&attachment.reference_id)
-			.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
-			.ok_or_else(|| {
-				Error::NotFound(format!("reference unavailable: {}", attachment.path))
-			})?;
-		if record.state != "ready" {
-			return Err(Error::Conflict("REFERENCE_NOT_READY".into()));
-		}
+			.filter(|record| record.state == "ready")
+		else {
+			continue;
+		};
 		let mut original: FileEntry = serde_json::from_value(record.data["original"].clone())?;
 		if original.size > limits.reference_bytes {
 			return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 		}
 		if original.digest != attachment.digest {
 			return Err(Error::Conflict("REFERENCE_CHANGED".into()));
-		}
-		// Blocks export from this Area. Unlike a copy's `reference` constraint it
-		// never locks the Area: a revoked file only stops the Runs that still bind it.
-		let constraint = json!({"kind":"reference_bound","id":record.id});
-		if !mounts
-			.constraints
-			.as_array()
-			.ok_or(Error::Forbidden)?
-			.contains(&constraint)
-		{
-			mounts.constraints.as_array_mut().unwrap().push(constraint);
-			scope.set_constraints(mounts.constraints.clone())?;
 		}
 		text += lifecycle::text_bytes(&record.data);
 		let path = format!("{REFERENCE_SET_ROOT}/{}", attachment.path);
@@ -407,16 +390,7 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 	if aidash_domain::capabilities::operations::has_input_path_collision(&files) {
 		return Err(Error::Invalid("REFERENCE_PATH_COLLISION".into()));
 	}
-	// Reconciliation reorders the manifest, which alone is not a new revision.
-	let ordered = |mut files: Vec<FileEntry>| {
-		files.sort_by_key(|file| file.file_id);
-		json!(files)
-	};
-	if ordered(files.clone()) != ordered(serde_json::from_value(old)?) {
-		scope.set_manifest(json!(files))?;
-		scope.publish().await?;
-	}
-	Ok(())
+	Ok(files)
 }
 pub async fn drive(repository: &dyn ReferenceRepository, id: Uuid) -> Result<()> {
 	let snapshot = repository.snapshot(id).await?;

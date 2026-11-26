@@ -139,9 +139,6 @@ pub fn core_call(operation: &str, input: &Value, ceilings: ReadCeilings) -> Opti
 	match operation {
 		"file_read" => {
 			let read = FileRead::deserialize(input).ok()?;
-			if read.thread_id.is_some() || read.area_id.is_some() {
-				return None;
-			}
 			let output_bytes = match read.representation {
 				Representation::Text => read
 					.max_bytes

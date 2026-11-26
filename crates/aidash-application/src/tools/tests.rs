@@ -175,16 +175,7 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: read_record_chunk")
 	}
-	async fn thread_image(
-		&self,
-		selection: &aidash_domain::media::WorkingImageSelection,
-		representation: &str,
-	) -> Result<Value> {
-		self.record("thread.image");
-		Ok(
-			json!({"status":"completed","metadata":{"file_id":selection.file_id,"path":selection.path,"digest":selection.expected_digest,"media_type":"image/png","size":12},"representation":representation}),
-		)
-	}
+
 	async fn thread_search(&self, input: Value) -> Result<Value> {
 		self.record("thread.search");
 		self.inputs.lock().unwrap().push(("search".into(), input));
@@ -619,31 +610,6 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 }
 
 #[rstest]
-#[tokio::test]
-async fn thread_read_selects_an_image_by_its_exact_file_version(fixture: Fixture) {
-	let tool = builtins().remove("workspace_read").unwrap();
-	let input = json!({"kind":"file","id":Uuid::from_u128(10),"area_id":Uuid::from_u128(9),"generation":3,"path":"chart.png","expected_digest":"file-digest","representation":"model_input"});
-	let result = tool
-		.invoke(
-			&ToolContext {
-				operations: &fixture.operations,
-				run: &fixture.run,
-			},
-			input.clone(),
-			"key",
-		)
-		.await
-		.unwrap();
-	assert_eq!(result["metadata"]["file_id"], input["id"]);
-	assert!(matches!(
-		tool.contract()
-			.behavior
-			.model_media_selection(&input, &result),
-		Some(aidash_domain::media::ModelMedia::WorkingImage(_))
-	));
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.image"]);
-}
-
 #[rstest]
 #[tokio::test]
 async fn thread_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {

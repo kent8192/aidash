@@ -612,6 +612,20 @@ impl FileScopePort for Scope<'_> {
 		result.map_err(Into::into)
 	}
 
+	async fn bound_references(
+		&mut self,
+		config: &aidash_domain::registry::AgentConfig,
+	) -> Result<Vec<MountedFile>> {
+		let store = self.store.ok_or_else(missing)?;
+		crate::apps::execution::capabilities::services::references::bound_files(
+			store,
+			self.access,
+			config,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	async fn unusable_references(
 		&mut self,
 		ids: &[Uuid],

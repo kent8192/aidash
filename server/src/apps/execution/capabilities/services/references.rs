@@ -1,5 +1,5 @@
 //! Native reference DTO conversion delegates every workflow to application scopes.
-use super::{contracts::Area, records::Record};
+use super::records::Record;
 pub use crate::apps::execution::capabilities::serializers::references::{
 	Batch, BatchResult, Chunk, Reference, Upload,
 };
@@ -86,14 +86,13 @@ pub(crate) async fn revoke(access: &mut Access, id: Uuid, revision: i64) -> Resu
 		.await
 		.map_err(Into::into)
 }
-pub(crate) async fn pin(
+pub(crate) async fn bound_files(
 	store: &Store,
 	access: &mut Access,
-	area: &mut Area,
 	config: &AgentConfig,
-) -> Result<()> {
-	let mut scope = crate::bootstrap::reference_scope(Some(store), access, Some(area));
-	aidash_application::capabilities::references::pin(&mut scope, config)
+) -> Result<Vec<aidash_domain::capabilities::operations::MountedFile>> {
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	aidash_application::capabilities::references::bound_files(&mut scope, config)
 		.await
 		.map_err(Into::into)
 }

@@ -752,51 +752,7 @@ impl SelectedMediaScope for FileScope {
 }
 
 #[rstest]
-#[tokio::test]
-async fn a_thread_match_opens_through_the_existing_model_media_reader(mut file_scope: FileScope) {
-	let file = file_scope.files[0].clone();
-	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
-		area_id: id(20),
-		generation: 3,
-		file_id: file.file_id,
-		path: file.path.clone(),
-		expected_digest: file.digest.clone(),
-	});
-	let output = selected(&mut file_scope, &[selection]).await.unwrap();
-	assert_eq!(
-		parts(&output),
-		vec![
-			json!({"text":"Selected file: inputs/saved.png"}),
-			json!({"image":"image/png","bytes":image().content})
-		]
-	);
-	assert_eq!(
-		file_scope.calls,
-		vec![
-			("snapshot", Uuid::nil()),
-			("thread_image", id(20)),
-			("read", id(1))
-		]
-	);
-}
-
 #[rstest]
-#[tokio::test]
-async fn a_stale_thread_image_never_reads_bytes(mut file_scope: FileScope) {
-	let file = file_scope.files[0].clone();
-	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
-		area_id: id(20),
-		generation: 2,
-		file_id: file.file_id,
-		path: file.path.clone(),
-		expected_digest: file.digest.clone(),
-	});
-	assert!(matches!(
-		selected(&mut file_scope, &[selection]).await,
-		Err(Error::NotFound(_))
-	));
-	assert!(!file_scope.calls.iter().any(|(call, _)| *call == "read"));
-}
 #[rstest]
 #[tokio::test]
 async fn selected_files_preserve_input_order_duplicates_labels_and_bytes(

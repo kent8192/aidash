@@ -710,34 +710,9 @@ impl Builtin {
 						.attachment(id, input["representation"] == "model_input")
 						.await;
 				}
-				if kind == "file" {
-					if input.get("offset").is_some() || input.get("max_chars").is_some() {
-						return Err(Error::Invalid(
-							"file reads do not accept text ranges".into(),
-						));
-					}
-					let selection: aidash_domain::media::WorkingImageSelection =
-						serde_json::from_value(
-							json!({"file_id":id,"area_id":input["area_id"],"generation":input["generation"],"path":input["path"],"expected_digest":input["expected_digest"]}),
-						)?;
-					let representation = input["representation"].as_str().unwrap_or("metadata");
-					return ctx
-						.operations
-						.thread_image(&selection, representation)
-						.await;
-				}
-				if [
-					"area_id",
-					"generation",
-					"path",
-					"expected_digest",
-					"representation",
-				]
-				.iter()
-				.any(|field| input.get(*field).is_some())
-				{
+				if input.get("representation").is_some() {
 					return Err(Error::Invalid(
-						"File selection fields require kind=file".into(),
+						"representation requires kind=attachment".into(),
 					));
 				}
 				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
@@ -768,17 +743,13 @@ impl Builtin {
 					));
 				}
 				if has_image
-					&& serde_json::from_value::<aidash_domain::media::WorkingImageSelection>(
+					&& serde_json::from_value::<aidash_domain::media::ThreadAttachmentSelection>(
 						input["image"].clone(),
 					)
-					.is_err() && serde_json::from_value::<
-					aidash_domain::media::ThreadAttachmentSelection,
-				>(input["image"].clone())
-				.is_err()
+					.is_err()
 				{
 					return Err(Error::Invalid(
-						"image must name a Working Area File version or a selected Thread Attachment"
-							.into(),
+						"image must name a selected Thread Attachment".into(),
 					));
 				}
 				ctx.operations.thread_search(input).await
@@ -996,7 +967,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_message",
 			contract: aidash_domain::tool::builtin_contract("workspace_message")
 				.expect("declared builtin"),
-			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
+			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight Scratch Space files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
 			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string},"image_descriptions":{"type":"object","maxProperties":8,"additionalProperties":{"type":"string","minLength":1,"maxLength":aidash_domain::semantic::indexing::MAX_IMAGE_DESCRIPTION_CHARS}}},"additionalProperties":false}),
 		},
 		Builtin {
@@ -1010,21 +981,21 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to copy an attachment into the Thread folder in its Scratch Space. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file","attachment"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
+			description: "Read an accessible workspace record or Thread Attachment. Use representation=model_input to select an attachment for the next inference; use attachment_copy to copy an attachment into the Thread folder in its Scratch Space. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_search",
 			contract: aidash_domain::tool::builtin_contract("workspace_search")
 				.expect("declared builtin"),
-			description: "Search the Workspace index by text, or by an image you have seen: a File version in your own Working Area (area_id, generation, file_id, path, expected_digest), or a Thread Attachment you selected with workspace_read (pass the selection it returned). Image matches are pointers, never images: a Working Area match names its File version, and a Thread Attachment match names its message and attachment with the message text and Image Description. Open a match with workspace_read.",
-			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"attachment_id":{"type":"string"},"message_id":{"type":"string"},"wav":{"type":"boolean"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
+			description: "Search the Workspace index by text, or by an image from a Thread Attachment you selected with workspace_read (pass the selection it returned). An image match names its message and attachment and includes the message text and Image Description. Open a match with workspace_read.",
+			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["expected_digest"],"properties":{"attachment_id":{"type":"string"},"message_id":{"type":"string"},"wav":{"type":"boolean"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "attachment_copy",
 			contract: aidash_domain::tool::builtin_contract("attachment_copy")
 				.expect("declared builtin"),
-			description: "Copy a Thread Attachment into the Thread folder of its Scratch Space if all members can read the source. Path is relative to the Thread folder and defaults to the attachment filename.",
+			description: "Copy a Thread Attachment into the Scratch Space if all readers can read the source. Provide a path relative to the Scratch Space root, or omit the path to use the attachment filename in the Thread folder.",
 			schema: json!({"type":"object","required":["id","idempotency_key"],"properties":{"id":string,"path":string,"idempotency_key":string},"additionalProperties":false}),
 		},
 		Builtin {
@@ -1040,7 +1011,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "thread_message",
 			contract: aidash_domain::tool::builtin_contract("thread_message")
 				.expect("declared builtin"),
-			description: "Send a message to the people and other agents in this Thread. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
+			description: "Send a message to the people and other agents in this Thread. Optionally attach snapshots of up to eight Scratch Space files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
 			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string},"image_descriptions":{"type":"object","maxProperties":8,"additionalProperties":{"type":"string","minLength":1,"maxLength":aidash_domain::semantic::indexing::MAX_IMAGE_DESCRIPTION_CHARS}}},"additionalProperties":false}),
 		},
 		Builtin {
@@ -1054,15 +1025,15 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "thread_read",
 			contract: aidash_domain::tool::builtin_contract("thread_read")
 				.expect("declared builtin"),
-			description: "Read an accessible record of this Thread or a Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to copy an attachment into the Thread folder in its Scratch Space. To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread. Text records return bounded chunks with next_offset.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["thread","task","artifact","message","event","file","attachment"]},"id":string,"thread_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
+			description: "Read an accessible record of this Thread or a Thread Attachment. Use representation=model_input to select an attachment for the next inference; use attachment_copy to copy an attachment into the Thread folder in its Scratch Space. To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread. Text records return bounded chunks with next_offset.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["thread","task","artifact","message","event","attachment"]},"id":string,"thread_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "thread_search",
 			contract: aidash_domain::tool::builtin_contract("thread_search")
 				.expect("declared builtin"),
-			description: "Search the Thread index by text, or by an image you have seen: a File version in your own Working Area (area_id, generation, file_id, path, expected_digest), or a Thread Attachment you selected with thread_read (pass the selection it returned). Image matches are pointers, never images: a Working Area match names its File version, and a Thread Attachment match names its message and attachment with the message text and Image Description. Open a match with thread_read.",
-			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"attachment_id":{"type":"string"},"message_id":{"type":"string"},"wav":{"type":"boolean"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
+			description: "Search the Thread index by text, or by an image from a Thread Attachment you selected with thread_read (pass the selection it returned). An image match names its message and attachment and includes the message text and Image Description. Open a match with thread_read.",
+			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["expected_digest"],"properties":{"attachment_id":{"type":"string"},"message_id":{"type":"string"},"wav":{"type":"boolean"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_wait",

@@ -399,11 +399,6 @@ pub struct LivePreviewStop {}
 #[serde(deny_unknown_fields)]
 pub struct Patch {
 	pub idempotency_key: Uuid,
-	#[validate(range(min = 0))]
-	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
-	pub expected_revision: i64,
-	/// Every changed path must have a SHA-256 digest, or null to require absence.
-	pub preconditions: std::collections::BTreeMap<String, Option<String>>,
 	pub patch: String,
 }
 
@@ -456,7 +451,7 @@ pub struct OperationResult {
 use uuid::Uuid;
 
 /// Read a Reference file by `file_id` or a Scratch Space file by `path`.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileRead {
 	/// A Reference file. Leave it out to read `path`.
@@ -478,10 +473,11 @@ pub enum ToolFileScope {
 }
 
 /// `file_search` as Agents call it (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileSearch {
 	/// May be empty in `path` mode, which then lists every path in the scope.
+	#[validate(length(max = 1024))]
 	pub query: String,
 	pub mode: SearchMode,
 	pub scope: ToolFileScope,

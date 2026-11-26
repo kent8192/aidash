@@ -141,7 +141,7 @@ pub(crate) async fn file_read(
 	f: Federation,
 	actor: Actor,
 	id: Uuid,
-	input: FileRead,
+	input: ToolFileRead,
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "file_read", json!(input)).await
 }
@@ -149,7 +149,7 @@ pub(crate) async fn file_search(
 	f: Federation,
 	actor: Actor,
 	id: Uuid,
-	input: FileSearch,
+	input: ToolFileSearch,
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "file_search", json!(input)).await
 }

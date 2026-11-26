@@ -217,29 +217,28 @@ impl ToolBehavior {
 		input: &Value,
 		output: &Value,
 	) -> Option<crate::media::ModelMedia> {
-		use crate::media::{ModelFileSelection, ModelMedia, WorkingImageSelection};
+		use crate::media::{ModelFileSelection, ModelMedia, ScratchImageSelection};
 		if !(self.yields_model_media
 			|| self.fitting == Some(ResultFitting::ThreadRecord) && input["kind"] == "attachment")
 		{
 			return None;
 		}
-		if input["kind"] == "file"
+		if self.yields_model_media
 			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
-			&& output["metadata"]["file_id"] == input["id"]
-			&& output["metadata"]["digest"] == input["expected_digest"]
-			&& output["metadata"]["path"] == input["path"]
+			&& !input["path"].is_null()
+			&& output["metadata"]["scratch_path"] == input["path"]
 		{
-			return serde_json::from_value::<WorkingImageSelection>(serde_json::json!({
-				"file_id": input["id"], "area_id": input["area_id"], "generation": input["generation"],
-				"path": input["path"], "expected_digest": input["expected_digest"],
-			}))
-			.ok()
-			.map(ModelMedia::WorkingImage);
+			return serde_json::from_value::<ScratchImageSelection>(output["selection"].clone())
+				.ok()
+				.filter(|selection| {
+					input["path"] == selection.scratch_path
+						&& output["metadata"]["digest"] == selection.expected_digest
+						&& (input["expected_digest"].is_null()
+							|| input["expected_digest"] == selection.expected_digest)
+				})
+				.map(ModelMedia::ScratchImage);
 		}
-		// `workspace_read` also yields model media for Working Area images, so an
-		// attachment input (no `file_id`) must fall through to its own branch
-		// instead of matching null against null here.
 		if self.yields_model_media
 			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
@@ -1343,18 +1342,19 @@ mod tests {
 		assert_eq!(current.pinned(&old.digest().unwrap()).unwrap(), Some(old));
 	}
 	#[test]
-	fn thread_image_selection_requires_the_exact_returned_file_version() {
-		let behavior = builtin_contract("workspace_read").unwrap().behavior;
-		let id = uuid::Uuid::from_u128(1);
-		let area = uuid::Uuid::from_u128(2);
-		let input = serde_json::json!({"kind":"file", "representation":"model_input", "id":id, "area_id":area, "generation":3, "path":"chart.png", "expected_digest":"abc"});
-		let mut output = serde_json::json!({"status":"completed", "metadata":{"file_id":id, "path":"chart.png", "digest":"abc"}});
+	fn scratch_image_selection_preserves_the_read_path_and_digest() {
+		let behavior = builtin_contract("file_read").unwrap().behavior;
+		let input = serde_json::json!({"representation":"model_input", "path":"shared/chart.png", "expected_digest":"abc"});
+		let mut output = serde_json::json!({
+			"status":"completed",
+			"metadata":{"scratch_path":"shared/chart.png", "digest":"abc"},
+			"selection":{"scratch_path":"shared/chart.png", "expected_digest":"abc"},
+		});
 		assert!(matches!(
 			behavior.model_media_selection(&input, &output),
-			Some(crate::media::ModelMedia::WorkingImage(_))
+			Some(crate::media::ModelMedia::ScratchImage(_))
 		));
-		assert!(behavior.fitting_for(&input).is_none());
-		output["metadata"]["path"] = serde_json::json!("other.png");
+		output["selection"]["scratch_path"] = serde_json::json!("other.png");
 		assert!(behavior.model_media_selection(&input, &output).is_none());
 	}
 	#[test]

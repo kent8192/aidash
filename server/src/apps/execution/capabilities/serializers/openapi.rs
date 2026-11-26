@@ -42,7 +42,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts
-		.request::<_, crate::apps::execution::capabilities::serializers::contracts::FileRead>(
+		.request::<_, crate::apps::execution::capabilities::serializers::contracts::ToolFileRead>(
 			document,
 			views::management::file_read,
 		)?;
@@ -55,7 +55,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts
-		.request::<_, crate::apps::execution::capabilities::serializers::contracts::FileSearch>(
+		.request::<_, crate::apps::execution::capabilities::serializers::contracts::ToolFileSearch>(
 			document,
 			views::management::file_search,
 		)?;
@@ -111,19 +111,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		)?;
 	contracts.path(document, views::management::shell_cancel, &["Uuid"])?;
 	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::management::MaterializedFile>(
-			document,
-			views::management::materialize,
-			200,
-			"application/json",
-		)?;
-	contracts
-		.request::<_, crate::apps::execution::capabilities::serializers::contracts::Materialize>(
-			document,
-			views::management::materialize,
-		)?;
-	contracts.path(document, views::management::materialize, &["Uuid"])?;
-	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::contracts::SessionStatus>(
 			document,
 			views::management::session,
@@ -131,18 +118,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts.path(document, views::management::session, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::contracts::SessionStatus>(
-			document,
-			views::management::enqueue,
-			200,
-			"application/json",
-		)?;
-	contracts.request::<_, crate::apps::execution::capabilities::serializers::contracts::Enqueue>(
-		document,
-		views::management::enqueue,
-	)?;
-	contracts.path(document, views::management::enqueue, &["Uuid"])?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::contracts::Steered>(
 			document,
@@ -202,18 +177,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::skill_read,
 	)?;
 	contracts.path(document, views::management::skill_read, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::contracts::Envelope>(
-			document,
-			views::management::file_share,
-			200,
-			"application/json",
-		)?;
-	contracts.request::<_, crate::apps::execution::capabilities::serializers::sharing::Share>(
-		document,
-		views::management::file_share,
-	)?;
-	contracts.path(document, views::management::file_share, &["Uuid"])?;
 	contracts.response::<_, crate::apps::execution::capabilities::serializers::contracts::Area>(
 		document,
 		views::management::thread_run,
@@ -525,113 +488,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			views::live_previews::set_preview_limits,
 			200,
 			"application/json",
-		)?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::ManagementPage>(
-			document,
-			views::management::managed_areas,
-			200,
-			"application/json",
-		)?;
-	contracts.query::<_, crate::apps::execution::capabilities::serializers::endpoints::Page>(
-		document,
-		views::management::managed_areas,
-	)?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::CleanupResult>(
-			document,
-			views::management::cleanup,
-			200,
-			"application/json",
-		)?;
-	contracts.request::<_, crate::apps::execution::capabilities::serializers::cleanup::Cleanup>(
-		document,
-		views::management::cleanup,
-	)?;
-	contracts.path(document, views::management::cleanup, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::CleanupResult>(
-			document,
-			views::management::cleanup_status,
-			200,
-			"application/json",
-		)?;
-	contracts.path(document, views::management::cleanup_status, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::cleanup::CleanupResult>(
-			document,
-			views::management::cleanup_reconcile,
-			200,
-			"application/json",
-		)?;
-	contracts.path(document, views::management::cleanup_reconcile, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::management::DeletionConfirmation>(
-			document,
-			views::management::deletion_confirmation,
-			200,
-			"application/json",
-		)?;
-	contracts
-		.request::<_, crate::apps::execution::capabilities::serializers::endpoints::ExpectedRevision>(
-			document,
-			views::management::deletion_confirmation,
-		)?;
-	contracts.path(
-		document,
-		views::management::deletion_confirmation,
-		&["Uuid"],
-	)?;
-	contracts.response::<_, crate::apps::execution::capabilities::serializers::contracts::Area>(
-		document,
-		views::management::restore,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, crate::apps::execution::capabilities::serializers::cleanup::Restore>(
-		document,
-		views::management::restore,
-	)?;
-	contracts.path(document, views::management::restore, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::management::TransferStatus>(
-			document,
-			views::management::transfer_status,
-			200,
-			"application/json",
-		)?;
-	contracts.path(document, views::management::transfer_status, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::management::TransferPage>(
-			document,
-			views::management::transfer_history,
-			200,
-			"application/json",
-		)?;
-	contracts.path(document, views::management::transfer_history, &["Uuid"])?;
-	contracts.query::<_, crate::apps::execution::capabilities::serializers::endpoints::Page>(
-		document,
-		views::management::transfer_history,
-	)?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::management::TransferStatus>(
-			document,
-			views::management::transfer_reconcile,
-			200,
-			"application/json",
-		)?;
-	contracts.path(document, views::management::transfer_reconcile, &["Uuid"])?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::management::RecipientPage>(
-			document,
-			views::management::transfer_recipients,
-			200,
-			"application/json",
-		)?;
-	contracts
-		.query::<_, crate::apps::execution::capabilities::serializers::endpoints::RecipientQuery>(
-			document,
-			views::management::transfer_recipients,
 		)?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::management::OperationPage>(

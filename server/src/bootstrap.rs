@@ -506,24 +506,12 @@ impl RuntimeTasks {
 			tasks.spawn_service("capabilities.references", async move {
 				capability_background_jobs(&jobs).references(stopping).await
 			});
-			let (jobs, stopping) = (store.clone(), receiver.clone());
-			tasks.spawn_service("capabilities.cleanup", async move {
-				capability_background_jobs(&jobs).cleanup(stopping).await
-			});
 			let (jobs, stopping) = (store, receiver.clone());
 			tasks.spawn_service("capabilities.reclamation", async move {
 				capability_background_jobs(&jobs)
 					.reclamation(stopping)
 					.await
 			});
-			let transfers = federation.for_runtime_workers().await?;
-			let stopping = receiver.clone();
-			tasks.spawn_service(
-				"capability transfer",
-				runtime_task(async move {
-					crate::capabilities::transfer::run(transfers, stopping).await
-				}),
-			);
 		}
 		if federation.config.dashboard_session().is_some() {
 			tasks.spawn_service(

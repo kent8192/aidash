@@ -1,7 +1,7 @@
 //! Session queries retain row locks, queue order, advisory locks and one caller transaction.
 use crate::apps::execution::capabilities::{
 	serializers::contracts::{Area as NativeArea, SessionRun as NativeSessionRun},
-	services::{references, skills, thread_lifecycle},
+	services::{skills, thread_lifecycle},
 };
 use crate::{
 	Error as NativeError, Result as NativeResult, authorization::access::Access, domain::Task,
@@ -681,14 +681,10 @@ impl SessionScope for Scope<'_> {
 		let store = self
 			.store
 			.ok_or_else(|| Error::External("session repository scope invariant".into()))?;
-		let mut native: NativeArea = area.clone().into();
-		let result: NativeResult<()> = async {
-			references::pin(store, self.access, &mut native, config).await?;
-			skills::pin(store, self.access, run_id, &native, config).await
-		}
-		.await;
-		*area = native.into();
-		result.map_err(Into::into)
+		let native: NativeArea = area.clone().into();
+		skills::pin(store, self.access, run_id, &native, config)
+			.await
+			.map_err(Into::into)
 	}
 	async fn enqueue(&mut self, run_id: Uuid, area: &Area, initialized: bool) -> Result<()> {
 		super::node_cancellations::require_area_open(&mut **self.access.tx, area.id).await?;
