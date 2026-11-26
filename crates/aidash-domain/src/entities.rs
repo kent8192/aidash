@@ -208,7 +208,18 @@ pub enum TaskModelRefusal {
 #[serde(deny_unknown_fields)]
 pub struct TaskModel {
 	pub model: crate::registry::EntityRef,
+	#[serde(default)]
+	#[schemars(schema_with = "task_reasoning_effort_schema")]
 	pub reasoning_effort: Option<crate::model::ReasoningEffort>,
+}
+
+// Deserialize the provider's full enum so admission can return a structured
+// refusal, while generated clients offer only levels a Task can actually select.
+fn task_reasoning_effort_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+	schemars::json_schema!({
+		"type": ["string", "null"],
+		"enum": ["low", "medium", "high", "xhigh", "max", null]
+	})
 }
 
 impl TaskModel {
