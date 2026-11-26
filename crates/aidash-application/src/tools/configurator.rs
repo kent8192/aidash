@@ -120,6 +120,18 @@ fn inputs(name: &str) -> Value {
 	let integer = json!({"type":"integer"});
 	let strings = json!({"type":"array","items":string});
 	let object = json!({"type":"object"});
+	let mut schemas = schemars::SchemaGenerator::default();
+	let approval = || {
+		json!({
+			"type":"object",
+			"properties":{"node":string,"scope":{"enum":["node","deployment"]},
+				"expected_revision":integer,"expected_node_revisions":{"type":"object","additionalProperties":integer},
+				"carry_over":{"type":"boolean"},"provider_warning_acknowledged":{"type":"boolean"},
+				"groups":strings,"restriction":{"type":"object","properties":{"groups":strings,"subjects":strings}}},
+			"required":["node","scope","expected_revision"],
+			"additionalProperties":false
+		})
+	};
 	let (fields, required) = match name {
 		"aidash_api" => (
 			json!({"method":{"enum":["GET","POST","PUT","PATCH","DELETE"]},"path":string,"body":{}}),
@@ -175,7 +187,7 @@ fn inputs(name: &str) -> Value {
 			vec!["provider", "provider_credential_id", "expected_revision"],
 		),
 		"budget_set" => (
-			json!({"budget":string,"definition":{"type":"object","properties":{"scope":{},"period":{},"soft_limit_nanocredits":integer,"hard_limit_nanocredits":integer},"required":["scope"]},"expected_revision":integer}),
+			json!({"budget":string,"definition":schemas.subschema_for::<aidash_domain::budgets::Definition>(),"expected_revision":integer}),
 			vec!["definition"],
 		),
 		"approval_mode_set" => (
@@ -199,28 +211,33 @@ fn inputs(name: &str) -> Value {
 			vec![],
 		),
 		"agent_create" => (
-			json!({"draft":object,"approval":object}),
+			json!({"draft":schemas.subschema_for::<aidash_domain::registry::workbench::CreateDraft>(),"approval":approval()}),
 			vec!["draft", "approval"],
 		),
 		"skill_add" => (
-			json!({"draft":object,"approval":object,"skill":object,"skill_approval":object,"source":{"type":"object","properties":{"url":string,"skill_path":string},"required":["url"]}}),
+			json!({"draft":schemas.subschema_for::<aidash_domain::registry::workbench::CreateDraft>(),"approval":approval(),"skill":schemas.subschema_for::<aidash_domain::registry::Entry>(),"skill_approval":approval(),"source":{"type":"object","properties":{"url":string,"skill_path":string},"required":["url"]}}),
 			vec!["draft", "approval", "skill", "skill_approval"],
 		),
 		"agent_plugin_add" => (
-			json!({"draft":object,"approval":object,"plugin":object,"source":{"type":"object","properties":{"url":string,"plugin_path":string},"required":["url"]}}),
+			json!({"draft":schemas.subschema_for::<aidash_domain::registry::workbench::CreateDraft>(),"approval":approval(),"plugin":schemas.subschema_for::<aidash_domain::agent_plugin::AgentPluginRef>(),"source":{"type":"object","properties":{"url":string,"plugin_path":string},"required":["url"]}}),
 			vec!["draft", "approval"],
 		),
 		"node_registration" => (
-			json!({"node":string,"registration":object,"peer_mapping":object}),
+			json!({"node":string,"registration":schemas.subschema_for::<aidash_domain::nodes::registration::RegistrationInput>(),"peer_mapping":schemas.subschema_for::<aidash_domain::identity::peer_mapping::PeerMappingInput>()}),
 			vec!["node"],
 		),
 		"generation_policy_set" => (
-			json!({"id":string,"expected_revision":integer,"spec":object}),
+			json!({"id":string,"expected_revision":integer,"spec":schemas.subschema_for::<aidash_domain::generation::policy::Spec>()}),
 			vec!["id", "expected_revision", "spec"],
 		),
 		_ => unreachable!("undeclared Configurator operation"),
 	};
-	json!({"type":"object","properties":fields,"required":required,"additionalProperties":false})
+	let mut input = json!({"type":"object","properties":fields,"required":required,"additionalProperties":false});
+	let definitions = schemas.take_definitions(true);
+	if !definitions.is_empty() {
+		input["$defs"] = Value::Object(definitions);
+	}
+	input
 }
 
 pub(super) fn builtins() -> impl Iterator<Item = Builtin> {

@@ -425,7 +425,20 @@ fn catalog(tenant: &str, query: &str) -> Result<Value> {
 				truncated = true;
 				break;
 			}
-			matches.push(json!({"method":verb,"path":path,"operation":op["operationId"],"parameters":op["parameters"],"request":expand(doc,&op["requestBody"]["content"]["application/json"]["schema"],0),"response":expand(doc,&op["responses"]["200"]["content"]["application/json"]["schema"],0)}));
+			let successful = op["responses"]
+				.as_object()
+				.and_then(|responses| responses.iter().find(|(status, _)| status.starts_with('2')));
+			let response = successful
+				.map(|(_, value)| expand(doc, &value["content"]["application/json"]["schema"], 0));
+			matches.push(json!({
+				"method": verb,
+				"path": path,
+				"operation": op["operationId"],
+				"parameters": op["parameters"],
+				"request": expand(doc, &op["requestBody"]["content"]["application/json"]["schema"], 0),
+				"status": successful.map(|(status, _)| status),
+				"response": response,
+			}));
 		}
 		if truncated {
 			break;
