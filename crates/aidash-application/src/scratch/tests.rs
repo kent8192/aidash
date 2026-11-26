@@ -26,6 +26,21 @@ impl ScratchScope for Memory {
 	fn person(&self) -> &str {
 		&self.person
 	}
+	async fn default_space(&mut self, node: &NodeName) -> Result<ScratchSpaceId> {
+		self.spaces
+			.values()
+			.find(|space| space.is_default && &space.node == node)
+			.map(|space| space.id)
+			.ok_or_else(|| Error::NotFound("Node Scratch Space".into()))
+	}
+	async fn require_node_admin(&mut self, _: &NodeName) -> Result<()> {
+		if self.person == "alice" {
+			Ok(())
+		} else {
+			Err(Error::Forbidden)
+		}
+	}
+
 	async fn require_node_use(&mut self, _: &NodeName, person: &str) -> Result<()> {
 		self.node_people.push(person.to_owned());
 		if self.deny_node {
@@ -150,6 +165,7 @@ async fn reads_do_not_lock_but_settings_updates_do() {
 
 fn space(now: DateTime<Utc>) -> ScratchSpace {
 	ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		name: "Project".into(),
@@ -240,7 +256,7 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 }
 
 #[tokio::test]
-async fn expired_space_can_be_cleared_or_deleted_by_a_member() {
+async fn only_the_named_space_creator_can_clear_or_delete() {
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 	let mut scope = Memory {
 		person: "alice".into(),
@@ -251,15 +267,24 @@ async fn expired_space_can_be_cleared_or_deleted_by_a_member() {
 	create(&mut scope, &space).await.unwrap();
 	add_member(&mut scope, id, now, "bob").await.unwrap();
 	scope.person = "bob".into();
-	let expired = now + Duration::days(15);
-	clear(&mut scope, id, expired).await.unwrap();
-	assert!(read(&mut scope, id, expired).await.is_ok());
+	let later = now + Duration::days(15);
+	assert!(matches!(
+		clear(&mut scope, id, later).await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		delete(&mut scope, id, later).await,
+		Err(Error::Forbidden)
+	));
+	scope.person = "alice".into();
+	clear(&mut scope, id, later).await.unwrap();
+	assert!(read(&mut scope, id, later).await.is_ok());
 	assert_eq!(scope.cleared, vec![id]);
-	delete(&mut scope, id, expired + Duration::days(15))
+	delete(&mut scope, id, later + Duration::days(15))
 		.await
 		.unwrap();
 	assert!(
-		read(&mut scope, id, expired + Duration::days(15))
+		read(&mut scope, id, later + Duration::days(15))
 			.await
 			.is_err()
 	);
@@ -276,7 +301,7 @@ async fn stale_settings_revision_does_not_overwrite_another_members_edit() {
 	let space = space(now);
 	create(&mut scope, &space).await.unwrap();
 	let mut first = space.settings.clone();
-	first.idle_expiry_days = Some(30);
+	first.cpu_millis = 2000;
 	update_settings(&mut scope, space.id, now, 0, first)
 		.await
 		.unwrap();
@@ -284,7 +309,7 @@ async fn stale_settings_revision_does_not_overwrite_another_members_edit() {
 		update_settings(&mut scope, space.id, now, 0, space.settings).await,
 		Err(Error::Conflict(_))
 	));
-	assert_eq!(scope.spaces[&space.id].settings.idle_expiry_days, Some(30));
+	assert_eq!(scope.spaces[&space.id].settings.cpu_millis, 2000);
 }
 
 #[tokio::test]
@@ -382,43 +407,51 @@ async fn listing_shows_only_spaces_available_to_the_person_on_that_node() {
 }
 
 #[tokio::test]
-async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
-	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+async fn threads_reuse_the_node_default_and_may_choose_a_named_space() {
+	let now = Utc::now();
 	let mut scope = Memory {
 		person: "alice".into(),
 		..Default::default()
 	};
-	let node = NodeName::derived("conversation");
-	let id = select_for_thread(&mut scope, &node, "New conversation", None, now)
-		.await
-		.unwrap();
-	assert_eq!(scope.spaces[&id].creator, "alice");
-	assert_eq!(scope.spaces[&id].node, node);
-	assert_eq!(
-		scope.spaces[&id].settings.allowed_hosts,
-		HostAllowlist::Hosts(BTreeSet::new())
-	);
-	assert_eq!(
-		select_for_thread(
-			&mut scope,
-			&node,
-			"Other",
-			Some(id),
-			now + Duration::days(1)
-		)
-		.await
-		.unwrap(),
-		id
-	);
-	assert_eq!(scope.spaces[&id].last_used_at, now + Duration::days(1));
-	let other_node = NodeName::derived("other");
+	let named = space(now);
+	create(&mut scope, &named).await.unwrap();
+	let mut default = space(now);
+	default.is_default = true;
+	default.creator.clear();
+	scope.spaces.insert(default.id, default.clone());
+	scope.deny_create = true;
+	for person in ["alice", "bob"] {
+		scope.person = person.into();
+		assert_eq!(
+			select_for_thread(&mut scope, &named.node, None, now)
+				.await
+				.unwrap(),
+			default.id
+		);
+	}
 	assert!(matches!(
-		select_for_thread(&mut scope, &other_node, "Other", Some(id), now).await,
+		select_for_thread(&mut scope, &named.node, Some(named.id), now).await,
 		Err(Error::Forbidden)
 	));
-	scope.person = "bob".into();
 	assert!(matches!(
-		select_for_thread(&mut scope, &node, "Other", Some(id), now).await,
+		clear(&mut scope, default.id, now).await,
+		Err(Error::Forbidden)
+	));
+	scope.person = "alice".into();
+	assert_eq!(
+		select_for_thread(&mut scope, &named.node, Some(named.id), now)
+			.await
+			.unwrap(),
+		named.id
+	);
+	assert!(matches!(
+		select_for_thread(&mut scope, &NodeName::derived("other"), Some(named.id), now).await,
+		Err(Error::Forbidden)
+	));
+	clear(&mut scope, default.id, now).await.unwrap();
+	assert_eq!(scope.cleared, [default.id]);
+	assert!(matches!(
+		delete(&mut scope, default.id, now).await,
 		Err(Error::Forbidden)
 	));
 }
@@ -453,7 +486,7 @@ async fn members_can_use_services_already_shared_with_the_space() {
 	scope.person = "bob".into();
 	scope.deny_references = true;
 	assert_eq!(
-		select_for_thread(&mut scope, &space.node, "reuse", Some(space.id), now)
+		select_for_thread(&mut scope, &space.node, Some(space.id), now)
 			.await
 			.unwrap(),
 		space.id
@@ -478,77 +511,27 @@ async fn members_can_use_services_already_shared_with_the_space() {
 }
 
 #[tokio::test]
-async fn a_thread_gets_its_dedicated_space_without_scratch_create() {
-	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-	let node: NodeName = "brave-otter-k3m9q2xa".parse().unwrap();
-	let mut scope = Memory {
-		person: "alice".into(),
-		deny_create: true,
-		..Default::default()
-	};
-	let id = select_for_thread(&mut scope, &node, "Project", None, now)
-		.await
-		.unwrap();
-	assert_eq!(scope.spaces[&id].creator, "alice");
-	assert!(matches!(
-		create(&mut scope, &space(now)).await,
-		Err(Error::Forbidden)
-	));
-}
-
-#[tokio::test]
-async fn expired_space_is_visible_and_revived_on_authorized_run() {
-	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+async fn run_admission_preserves_contents_after_long_inactivity() {
+	let now = Utc::now();
 	let mut scope = Memory {
 		person: "alice".into(),
 		..Default::default()
 	};
 	let space = space(now);
 	create(&mut scope, &space).await.unwrap();
-	let expired = now + Duration::days(15);
-	assert!(
-		read(&mut scope, space.id, expired)
-			.await
-			.unwrap()
-			.is_expired(expired)
-	);
-	assert_eq!(
-		list(&mut scope, &space.node, expired).await.unwrap().len(),
-		1
-	);
-	assert_eq!(
-		select_for_thread(&mut scope, &space.node, "Next", Some(space.id), expired)
-			.await
-			.unwrap(),
-		space.id
-	);
-	assert!(scope.spaces[&space.id].is_expired(expired));
+	let later = now + Duration::days(365);
 	let mut run =
 		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
 	run.node = space.node.clone();
-	scope.binding = Some((space.id, "mallory".into()));
-	assert!(
-		scratch_space_for_run(&mut scope, &run, expired)
-			.await
-			.is_err()
-	);
-	assert!(scope.cleared.is_empty());
 	scope.binding = Some((space.id, "alice".into()));
 	assert_eq!(
-		scratch_space_for_run(&mut scope, &run, expired)
+		scratch_space_for_run(&mut scope, &run, later)
 			.await
 			.unwrap(),
 		space.id
 	);
-	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
-	assert!(!scope.spaces[&space.id].is_expired(expired));
-	assert_eq!(
-		scratch_space_for_run(&mut scope, &run, expired)
-			.await
-			.unwrap(),
-		space.id
-	);
-	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
+	assert_eq!(scope.spaces[&space.id].wipe_generation, 0);
+	assert!(scope.cleared.is_empty());
 }
 
 #[tokio::test]
@@ -606,23 +589,6 @@ async fn runtime_hosts_follow_a_narrowed_tenant_policy() {
 }
 
 #[tokio::test]
-async fn extending_expiry_cannot_restore_expired_contents() {
-	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-	let mut scope = Memory {
-		person: "alice".into(),
-		..Default::default()
-	};
-	let mut space = space(now);
-	create(&mut scope, &space).await.unwrap();
-	let expired = now + Duration::days(15);
-	space.settings.idle_expiry_days = None;
-	update_settings(&mut scope, space.id, expired, 0, space.settings)
-		.await
-		.unwrap();
-	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
-}
-
-#[tokio::test]
 async fn existing_default_settings_follow_reduced_resource_ceilings() {
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 	let mut scope = Memory {
@@ -666,30 +632,6 @@ async fn existing_default_settings_follow_reduced_resource_ceilings() {
 		)
 	);
 	assert_eq!(scope.spaces[&space.id].settings, space.settings);
-}
-
-#[tokio::test]
-async fn dedicated_space_defaults_fit_current_resource_ceilings() {
-	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-	let ceilings = ScratchCeilings {
-		cpu_millis: 2000,
-		memory_bytes: 8 * 1024 * 1024 * 1024,
-		..ScratchCeilings::default()
-	};
-	let mut scope = Memory {
-		person: "alice".into(),
-		ceilings: Some(ceilings.clone()),
-		..Default::default()
-	};
-	let node = NodeName::derived("limited");
-	let id = select_for_thread(&mut scope, &node, "Limited", None, now)
-		.await
-		.unwrap();
-	assert_eq!(scope.spaces[&id].settings.cpu_millis, ceilings.cpu_millis);
-	assert_eq!(
-		scope.spaces[&id].settings.memory_bytes,
-		ceilings.memory_bytes
-	);
 }
 
 #[tokio::test]

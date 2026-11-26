@@ -107,22 +107,6 @@ function Edit({
           }
         />
       </Field>
-      <Field label={t("scratchIdle")}>
-        <Input
-          type="number"
-          min={1}
-          max={365}
-          step={1}
-          value={settings.idle_expiry_days ?? ""}
-          placeholder={t("scratchNever")}
-          onChange={(e) =>
-            change(
-              "idle_expiry_days",
-              e.target.value ? Math.round(Number(e.target.value)) : null,
-            )
-          }
-        />
-      </Field>
       <Field label={t("scratchHosts")}>
         <Textarea
           value={hosts}
@@ -256,55 +240,78 @@ function Edit({
       >
         {t("scratchSave")}
       </Button>
-      <div>
-        {t("scratchCreator")}: {space.creator}
-      </div>
-      <div>
-        <strong>{t("scratchMembers")}</strong>
-        {space.members.map((subject) => (
-          <div key={subject}>
-            {subject}{" "}
-            <Button
-              disabled={saving}
-              onClick={() =>
-                void act(() => scratchMemberRemove(space.id, { subject }))
-              }
-            >
-              {t("scratchRemove")}
-            </Button>
+      {space.is_default ? (
+        <Hint>{t("scratchNodeVisibility")}</Hint>
+      ) : (
+        <>
+          <div>
+            {t("scratchCreator")}: {space.creator}
           </div>
-        ))}
-      </div>
-      <Field label={t("scratchMember")}>
-        <Input value={member} onChange={(e) => setMember(e.target.value)} />
-      </Field>
-      <Button
-        disabled={saving || !member.trim()}
-        onClick={() =>
-          void act(() => scratchMemberAdd(space.id, { subject: member.trim() }))
-        }
-      >
-        {t("scratchAdd")}
-      </Button>
+          <div>
+            <strong>{t("scratchMembers")}</strong>
+            {space.members.map((subject) => (
+              <div key={subject}>
+                {subject}{" "}
+                <Button
+                  disabled={saving}
+                  onClick={() =>
+                    void act(() => scratchMemberRemove(space.id, { subject }))
+                  }
+                >
+                  {t("scratchRemove")}
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Field label={t("scratchMember")}>
+            <Input value={member} onChange={(e) => setMember(e.target.value)} />
+          </Field>
+          <Button
+            disabled={saving || !member.trim()}
+            onClick={() =>
+              void act(() =>
+                scratchMemberAdd(space.id, { subject: member.trim() }),
+              )
+            }
+          >
+            {t("scratchAdd")}
+          </Button>
+        </>
+      )}
       <Hint>{t("scratchClearExplanation")}</Hint>
       <Button
         disabled={saving}
-        onClick={() => {
-          if (window.confirm(`${space.name}: ${t("scratchClearConfirm")}`))
-            void act(() => scratchClear(space.id));
-        }}
+        onClick={() =>
+          void act(async () => {
+            const { running_tasks } = await scratchClear(space.id, {});
+            const tasks = running_tasks.length
+              ? `
+
+${t("scratchRunningTasks")}
+${running_tasks.join("\n")}`
+              : "";
+            if (
+              window.confirm(
+                `${space.name} · ${t("scratchClearConfirm")}${tasks}`,
+              )
+            )
+              return scratchClear(space.id, { confirmed_tasks: running_tasks });
+          })
+        }
       >
         {t("scratchClear")}
       </Button>
-      <Button
-        disabled={saving}
-        onClick={() => {
-          if (window.confirm(`${space.name}: ${t("scratchDeleteConfirm")}`))
-            void act(() => scratchDelete(space.id));
-        }}
-      >
-        {t("scratchDelete")}
-      </Button>
+      {!space.is_default && (
+        <Button
+          disabled={saving}
+          onClick={() => {
+            if (window.confirm(`${space.name}: ${t("scratchDeleteConfirm")}`))
+              void act(() => scratchDelete(space.id));
+          }}
+        >
+          {t("scratchDelete")}
+        </Button>
+      )}
       {error && (
         <Notice role="alert">
           {t(error === "conflict" ? "scratchConflict" : "scratchSaveError")}
@@ -359,7 +366,6 @@ export function ThreadScratchSpace({
           {space.data.name}
         </Link>
       )}
-      {space.data?.expired && <> · {t("scratchExpired")}</>}
     </p>
   );
 }
@@ -454,7 +460,6 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
       {list.isSuccess && list.data.unavailable && id === focus && (
         <Notice role="alert">{t("scratchUnavailable")}</Notice>
       )}
-      {space?.expired && <Notice>{t("scratchExpired")}</Notice>}
       {space && limits.data && (
         <Edit
           key={`${node}:${space.id}`}

@@ -19,6 +19,8 @@ use crate::{Error, Result};
 #[async_trait]
 pub trait ScratchScope: Send {
 	fn person(&self) -> &str;
+	async fn default_space(&mut self, node: &NodeName) -> Result<ScratchSpaceId>;
+	async fn require_node_admin(&mut self, node: &NodeName) -> Result<()>;
 	async fn require_create(&mut self, node: &NodeName) -> Result<()>;
 	/// Enforce Node access for the authenticated person or the conversation starter.
 	async fn require_node_use(&mut self, node: &NodeName, person: &str) -> Result<()>;
@@ -66,12 +68,6 @@ fn require_use(space: &ScratchSpace, person: &str, _now: DateTime<Utc>) -> Resul
 
 pub async fn create(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Result<()> {
 	scope.require_create(&space.node).await?;
-	create_dedicated(scope, space).await
-}
-
-/// A space dedicated to one new Thread is authorized by creating that
-/// Thread, so it does not need `scratch.create`.
-pub async fn create_dedicated(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Result<()> {
 	let person = scope.person().to_owned();
 	scope.require_node_use(&space.node, &person).await?;
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
@@ -79,7 +75,8 @@ pub async fn create_dedicated(scope: &mut dyn ScratchScope, space: &ScratchSpace
 	scope
 		.validate_references(&space.node, &space.settings)
 		.await?;
-	if space.name.trim().is_empty()
+	if space.is_default
+		|| space.name.trim().is_empty()
 		|| person.trim().is_empty()
 		|| space.creator != person
 		|| space.state != ScratchState::Active
@@ -169,20 +166,15 @@ pub async fn update_settings(
 		.cloned()
 		.collect();
 	scope.validate_references(&space.node, &additions).await?;
-	let expired = space.is_expired(now);
-	if expired {
-		space.last_used_at = space.last_used_at.max(now);
+	if space.is_default {
+		scope.require_node_admin(&space.node).await?;
 	}
 	space.settings = settings;
 	space.revision = space
 		.revision
 		.checked_add(1)
 		.ok_or_else(|| Error::Conflict("Scratch Space revision exhausted".into()))?;
-	scope.save(&space).await?;
-	if expired {
-		scope.clear_contents(id).await?;
-	}
-	Ok(())
+	scope.save(&space).await
 }
 
 pub async fn add_member(
@@ -195,6 +187,9 @@ pub async fn add_member(
 		return Err(Error::Invalid("member is required".into()));
 	}
 	let mut space = read_for_update(scope, id, now).await?;
+	if space.is_default {
+		return Err(Error::Forbidden);
+	}
 	scope
 		.validate_members(&std::collections::BTreeSet::from([member.to_owned()]))
 		.await?;
@@ -209,8 +204,27 @@ pub async fn remove_member(
 	member: &str,
 ) -> Result<()> {
 	let mut space = read_for_update(scope, id, now).await?;
+	if space.is_default {
+		return Err(Error::Forbidden);
+	}
 	space.members.remove(member);
 	scope.save(&space).await
+}
+
+/// Hold the space and verify the caller's authority to clear it.
+pub async fn require_clear(
+	scope: &mut dyn ScratchScope,
+	id: ScratchSpaceId,
+) -> Result<ScratchSpace> {
+	let person = scope.person().to_owned();
+	let space = scope.load_for_update(id).await?;
+	scope.require_node_use(&space.node, &person).await?;
+	if space.is_default {
+		scope.require_node_admin(&space.node).await?;
+	} else if space.creator != person {
+		return Err(Error::Forbidden);
+	}
+	Ok(space)
 }
 
 pub async fn clear(
@@ -218,12 +232,7 @@ pub async fn clear(
 	id: ScratchSpaceId,
 	now: DateTime<Utc>,
 ) -> Result<()> {
-	let person = scope.person().to_owned();
-	let mut space = scope.load_for_update(id).await?;
-	scope.require_node_use(&space.node, &person).await?;
-	if !space.may_modify(&person) {
-		return Err(Error::Forbidden);
-	}
+	let mut space = require_clear(scope, id).await?;
 	space.last_used_at = space.last_used_at.max(now);
 	scope.save(&space).await?;
 	scope.clear_contents(id).await
@@ -237,7 +246,7 @@ pub async fn delete(
 	let person = scope.person().to_owned();
 	let mut space = scope.load_for_update(id).await?;
 	scope.require_node_use(&space.node, &person).await?;
-	if !space.may_modify(&person) {
+	if space.is_default || space.creator != person {
 		return Err(Error::Forbidden);
 	}
 	space.tombstone();
@@ -245,47 +254,27 @@ pub async fn delete(
 	scope.clear_contents(id).await
 }
 
-/// Select the immutable Scratch Space for a new Thread, creating one
-/// dedicated to that Thread when no existing space was requested.
+/// Select the immutable Scratch Space for a new Thread.
 pub async fn select_for_thread(
 	scope: &mut dyn ScratchScope,
 	node: &NodeName,
-	name: &str,
 	requested: Option<ScratchSpaceId>,
 	now: DateTime<Utc>,
 ) -> Result<ScratchSpaceId> {
-	if let Some(id) = requested {
-		let mut space = read_for_update(scope, id, now).await?;
-		if &space.node != node {
-			return Err(Error::Forbidden);
-		}
-		let (ceilings, tenant_hosts) = scope.limits(node).await?;
-		let effective = space.settings.effective_for(&ceilings, &tenant_hosts);
-		effective.validate(&ceilings, &tenant_hosts)?;
-		scope.validate_runtime(node, &effective).await?;
-		if !space.is_expired(now) {
-			space.last_used_at = space.last_used_at.max(now);
-			scope.save(&space).await?;
-		}
-		return Ok(id);
+	let id = match requested {
+		Some(id) => id,
+		None => scope.default_space(node).await?,
+	};
+	let person = scope.person().to_owned();
+	let space = read_for_person(scope, id, &person, now, false).await?;
+	if &space.node != node {
+		return Err(Error::Forbidden);
 	}
 	let (ceilings, tenant_hosts) = scope.limits(node).await?;
-
-	let space = ScratchSpace {
-		id: uuid::Uuid::new_v4(),
-		node: node.clone(),
-		name: name.to_owned(),
-		creator: scope.person().to_owned(),
-		members: Default::default(),
-		state: ScratchState::Active,
-		revision: 0,
-		wipe_generation: 0,
-		settings: ScratchSettings::for_policy(&ceilings, &tenant_hosts),
-		created_at: now,
-		last_used_at: now,
-	};
-	create_dedicated(scope, &space).await?;
-	Ok(space.id)
+	let effective = space.settings.effective_for(&ceilings, &tenant_hosts);
+	effective.validate(&ceilings, &tenant_hosts)?;
+	scope.validate_runtime(node, &effective).await?;
+	Ok(id)
 }
 
 pub async fn scratch_space_for_run(
@@ -296,10 +285,7 @@ pub async fn scratch_space_for_run(
 	let (id, starter) = scope.run_binding(run).await?;
 	// Run admission already checks the executing Node's authority; here the
 	// starter only has to still be allowed to use the space.
-	let mut space = scope.load(id).await?;
-	if space.is_expired(now) {
-		space = scope.load_for_update(id).await?;
-	}
+	let space = scope.load(id).await?;
 	require_use(&space, &starter, now)?;
 	if space.node != run.node {
 		return Err(Error::Forbidden);
@@ -311,14 +297,19 @@ pub async fn scratch_space_for_run(
 	let effective = space.settings.effective_for(&ceilings, &tenant_hosts);
 	effective.validate(&ceilings, &tenant_hosts)?;
 	scope.validate_runtime(&space.node, &effective).await?;
-	if space.is_expired(now) {
-		space.last_used_at = space.last_used_at.max(now);
-		scope.save(&space).await?;
-		scope.clear_contents(id).await?;
-	} else {
-		scope.touch(id, now).await?;
-	}
+	scope.touch(id, now).await?;
 	Ok(id)
+}
+
+/// Copy would expose a file to a reader who cannot read its source.
+pub fn copy_would_disclose() -> serde_json::Value {
+	serde_json::json!({
+		"status": "refused",
+		"error": {
+			"code": "copy_would_disclose",
+			"message": "Read the file without copying it, or use a named Scratch Space whose members can all read it."
+		}
+	})
 }
 
 #[cfg(test)]

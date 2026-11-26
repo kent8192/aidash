@@ -162,9 +162,12 @@ pub(crate) async fn create(
 				.await?;
 			}
 		}
+		let node_name = NodeName::parse(&name)?;
+		crate::apps::workspaces::repositories::scratch::create_default(tx, tenant, &node_name, now)
+			.await?;
 		return Ok(Node {
 			tenant: TenantName::new(tenant)?,
-			name: NodeName::parse(&name)?,
+			name: node_name,
 			label: label.to_owned(),
 			default: is_default,
 			created_at: now,

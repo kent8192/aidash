@@ -921,21 +921,12 @@ impl Store {
 		.scalar_one(&mut *tx)
 		.await?;
 		let node = aidash_domain::nodes::NodeName::parse(&node)?;
-		let now = chrono::Utc::now();
-		let space = aidash_domain::scratch::ScratchSpace {
-			id: Uuid::new_v4(),
-			node: node.clone(),
-			name: title.to_owned(),
-			creator: owner.to_owned(),
-			state: aidash_domain::scratch::ScratchState::Active,
-			revision: 0,
-			wipe_generation: 0,
-			settings: aidash_domain::scratch::ScratchSettings::default(),
-			members: Default::default(),
-			created_at: now,
-			last_used_at: now,
-		};
-		crate::apps::workspaces::repositories::scratch::insert(&mut *tx, tenant, &space).await?;
+		let scratch_space_id = crate::apps::workspaces::repositories::scratch::default_space_id(
+			&mut *tx,
+			tenant,
+			node.as_str(),
+		)
+		.await?;
 		let thread = self
 			.create_thread_in(
 				&mut tx,
@@ -944,7 +935,7 @@ impl Store {
 					tenant,
 					node: &node,
 					title,
-					scratch_space_id: space.id,
+					scratch_space_id,
 					created_by: owner,
 				},
 			)

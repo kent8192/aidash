@@ -82,6 +82,7 @@ async fn load_with_lock(
 		.columns(
 			[
 				"id",
+				"is_default",
 				"node",
 				"name",
 				"creator",
@@ -126,6 +127,7 @@ async fn load_with_lock(
 		.map(|row| row.subject)
 		.collect();
 	Ok(Some(ScratchSpace {
+		is_default: row.get("is_default").map_err(err)?,
 		id,
 		node: node.parse()?,
 		name: row.get("name").map_err(err)?,
@@ -152,6 +154,7 @@ pub(crate) async fn insert(
 		.ok_or_else(|| Error::Invalid("invalid Scratch Space state".into()))?
 		.to_owned();
 	let row = SpaceRecord::build()
+		.is_default(space.is_default)
 		.id(space.id)
 		.tenant(tenant.to_owned())
 		.node(space.node.as_str().to_owned())
@@ -302,6 +305,7 @@ async fn list_visible(
 		.columns(
 			[
 				"id",
+				"is_default",
 				"node",
 				"name",
 				"creator",
@@ -318,10 +322,12 @@ async fn list_visible(
 		.and_where(Expr::col("node").eq(node.to_owned()))
 		.and_where(Expr::col("state").eq("active"))
 		.and_where(
-			Expr::col("creator")
-				.eq(person.to_owned())
+			Expr::col("is_default")
+				.eq(true)
+				.or(Expr::col("creator").eq(person.to_owned()))
 				.or(Expr::col("id").in_subquery(membership)),
 		)
+		.order_by(Alias::new("is_default"), reinhardt::query::Order::Desc)
 		.order_by(Alias::new("created_at"), reinhardt::query::Order::Desc)
 		.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 		.limit(500)
@@ -361,6 +367,7 @@ async fn list_visible(
 		let node: String = row.get("node").map_err(err)?;
 		let state: String = row.get("state").map_err(err)?;
 		spaces.push(ScratchSpace {
+			is_default: row.get("is_default").map_err(err)?,
 			id,
 			node: node.parse()?,
 			name: row.get("name").map_err(err)?,
@@ -506,41 +513,83 @@ pub(crate) async fn remote_person(
 	Ok(person)
 }
 
-/// A receiving Node keeps one space per home Thread and mapped person.
-pub(crate) fn remote_space_id(
-	tenant: &str,
-	node: &NodeName,
-	home: &str,
-	thread: Uuid,
-	person: &str,
-) -> Uuid {
-	remote_space_key(tenant, node.as_str(), home, thread, person)
-}
-
-/// [`remote_space_id`] for a caller that holds the Node as text, such as a Run's row. The
-/// identity must be resolvable after authorization has been revoked, without a new admission,
-/// so every caller derives it through this one function.
-pub(crate) fn remote_space_key(
+/// Look up the Node's default space even after a Run loses authorization.
+pub(crate) async fn default_space_id(
+	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	node: &str,
-	home: &str,
-	thread: Uuid,
-	person: &str,
-) -> Uuid {
-	use sha2::{Digest, Sha256};
-	let mut hash = Sha256::new();
-	hash.update(b"aidash:remote-scratch-space:v1");
-	for value in [tenant, node, home, person] {
-		hash.update((value.len() as u64).to_be_bytes());
-		hash.update(value.as_bytes());
-	}
-	hash.update(thread.as_bytes());
-	let digest = hash.finalize();
-	let mut bytes = [0_u8; 16];
-	bytes.copy_from_slice(&digest[..16]);
-	bytes[6] = (bytes[6] & 0x0f) | 0x80;
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
-	Uuid::from_bytes(bytes)
+) -> Result<Uuid> {
+	let sql = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("scratch_spaces"))
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("node").eq(node.to_owned()))
+		.and_where(Expr::col("is_default").eq(true))
+		.to_string(PostgresQueryBuilder);
+	crate::database::native::query_scalar(&sql)
+		.scalar_optional(tx)
+		.await?
+		.ok_or_else(|| Error::NotFound("Node Scratch Space".into()))
+}
+
+pub(crate) async fn create_default(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	node: &NodeName,
+	now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+	insert(
+		tx,
+		tenant,
+		&ScratchSpace {
+			id: Uuid::new_v4(),
+			is_default: true,
+			node: node.clone(),
+			name: "Node Scratch Space".into(),
+			creator: String::new(),
+			members: BTreeSet::new(),
+			state: ScratchState::Active,
+			revision: 0,
+			wipe_generation: 0,
+			settings: ScratchSettings::for_node(),
+			created_at: now,
+			last_used_at: now,
+		},
+	)
+	.await
+}
+
+/// Tasks with active Runs affected by wiping this Node's default space.
+/// Remote Runs always use the default. A local Run uses its Thread's binding.
+pub(crate) async fn running_tasks_in_default(
+	access: &mut Access,
+	space: &ScratchSpace,
+) -> Result<Vec<Uuid>> {
+	let tenant = access.identity.tenant.clone();
+	let bound_threads = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("threads"))
+		.and_where(Expr::col("tenant").eq(tenant.clone()))
+		.and_where(Expr::col("scratch_space_id").eq(Expr::value(space.id)))
+		.to_owned();
+	let sql = Query::select()
+		.distinct()
+		.column(Alias::new("task_id"))
+		.from(Alias::new("task_executions"))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("node").eq(space.node.as_str().to_owned()))
+		.and_where(Expr::col("control").eq("ACTIVE"))
+		.and_where(Expr::col("phase").is_in(["READY", "THINKING", "TOOL_CALL", "WAITING"]))
+		.and_where(
+			Expr::col("home_node")
+				.ne(format!("{}/{}", access.node_id, space.node))
+				.or(Expr::col("thread_id").in_subquery(bound_threads)),
+		)
+		.order_by(Alias::new("task_id"), reinhardt::query::Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	Ok(crate::database::native::query_scalar(&sql)
+		.scalar_all(&mut **access.tx)
+		.await?)
 }
 
 /// Inputs that depend on Deployment configuration, the Registry, and the
@@ -629,6 +678,23 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 			.as_deref()
 			.unwrap_or(&self.access.identity.subject)
 	}
+	async fn default_space(&mut self, node: &NodeName) -> aidash_application::Result<Uuid> {
+		let tenant = self.access.identity.tenant.clone();
+		default_space_id(&mut **self.access.tx, &tenant, node.as_str())
+			.await
+			.map_err(Into::into)
+	}
+	async fn require_node_admin(&mut self, node: &NodeName) -> aidash_application::Result<()> {
+		let resource = self.access.node_resource(node).await?;
+		self.access
+			.require(
+				&resource,
+				aidash_domain::identity::tenant_administration::NODE_ADMINISTER,
+			)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn require_create(&mut self, node: &NodeName) -> aidash_application::Result<()> {
 		let resource = self.access.node_resource(node).await?;
 		let person = self
@@ -656,24 +722,27 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 		person: &str,
 	) -> aidash_application::Result<()> {
 		let resource = self.access.node_resource(node).await?;
-		let action = aidash_domain::identity::tenant_administration::NODE_USE;
-		self.access.require(&resource, action).await?;
+		use aidash_domain::identity::tenant_administration::{NODE_ADMINISTER, NODE_USE};
 		if !self.may_own(person) {
 			return Err(aidash_application::Error::Forbidden);
 		}
+		if !self.access.decide(&resource, NODE_USE).await?
+			&& !self.access.decide(&resource, NODE_ADMINISTER).await?
 		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+		for action in [NODE_USE, NODE_ADMINISTER] {
 			let evaluation = self.access.evaluation(person, &resource, action);
 			let mut decision = self.access.snapshot.bundle.evaluate(&evaluation);
 			decision.revision = self.access.snapshot.revision;
-			self.access
-				.record(&[(evaluation, decision.clone())])
-				.await?;
-			if !decision.allowed {
-				return Err(aidash_application::Error::Forbidden);
+			let allowed = decision.allowed;
+			self.access.record(&[(evaluation, decision)]).await?;
+			if allowed {
+				self.access.set_node(node.clone());
+				return Ok(());
 			}
 		}
-		self.access.set_node(node.clone());
-		Ok(())
+		Err(aidash_application::Error::Forbidden)
 	}
 
 	async fn limits(
@@ -899,70 +968,13 @@ impl NativeScratchServices<'_> {
 		run: &aidash_domain::RunMetadata,
 	) -> aidash_application::Result<(Uuid, String)> {
 		if !run.is_local(&access.node_id) {
-			let tenant = access.identity.tenant.clone();
 			let person = remote_person(access, run).await?;
-			// UUIDv8 is domain-separated from user-created UUIDv4 spaces and stable
-			// across retries. Existing spaces need no Node allocation lock.
-			let scratch_id =
-				remote_space_id(&tenant, &run.node, &run.home_node, run.thread_id, &person);
-			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, None)
-				.await
-				.map_err(aidash_application::Error::from)?
-			{
-				if space.node != run.node || space.creator != person {
-					return Err(aidash_application::Error::Forbidden);
-				}
-				return Ok((scratch_id, person));
-			}
-			// Serialize first allocation without blocking foreign-key checks.
-			let (sql, values) = Query::select()
-				.column(Alias::new("name"))
-				.from(Alias::new("nodes"))
-				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-				.and_where(Expr::col("name").eq(Expr::value(run.node.as_str().to_owned())))
-				.lock(LockType::NoKeyUpdate)
-				.build(PostgresQueryBuilder);
-			access
-				.tx
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let existing = load(&mut **access.tx, &tenant, scratch_id)
+			let id = default_space_id(&mut **access.tx, &access.identity.tenant, run.node.as_str())
 				.await
 				.map_err(aidash_application::Error::from)?;
-			if let Some(space) = existing {
-				if space.node != run.node || space.creator != person {
-					return Err(aidash_application::Error::Forbidden);
-				}
-			} else {
-				let mut scope = ScratchAdapter {
-					access,
-					services: self,
-					person_override: Some(person.clone()),
-				};
-				let (ceilings, tenant_hosts) =
-					aidash_application::scratch::ScratchScope::limits(&mut scope, &run.node)
-						.await?;
-
-				let now = chrono::Utc::now();
-				let space = ScratchSpace {
-					id: scratch_id,
-					node: run.node.clone(),
-					name: "Delegated Run".into(),
-					creator: person.clone(),
-					members: Default::default(),
-					state: ScratchState::Active,
-					revision: 0,
-					wipe_generation: 0,
-					settings: ScratchSettings::for_policy(&ceilings, &tenant_hosts),
-					created_at: now,
-					last_used_at: now,
-				};
-				aidash_application::scratch::create_dedicated(&mut scope, &space).await?;
-			}
-			return Ok((scratch_id, person));
+			return Ok((id, person));
 		}
+
 		let (sql, values) = Query::select()
 			.columns([Alias::new("scratch_space_id"), Alias::new("created_by")])
 			.from(Alias::new("threads"))

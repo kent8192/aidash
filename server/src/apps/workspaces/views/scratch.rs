@@ -1,6 +1,8 @@
 //! Scratch Space HTTP endpoints.
 use super::super::{
-	serializers::scratch::{ScratchCreate, ScratchList, ScratchMember, ScratchSettingsUpdate},
+	serializers::scratch::{
+		ScratchClear, ScratchCreate, ScratchList, ScratchMember, ScratchSettingsUpdate,
+	},
 	services::scratch::{Operation, execute},
 };
 use crate::{authorization::identity::Actor, federation::Federation, http::json::Json};
@@ -92,8 +94,9 @@ pub async fn clear(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
+	Json(input): Json<ScratchClear>,
 ) -> ViewResult<Response> {
-	crate::http::json(execute(&runtime, actor, Operation::Clear(id)).await)
+	crate::http::json(execute(&runtime, actor, Operation::Clear(id, input)).await)
 }
 #[delete(
 	"/api/scratch-spaces/{id}",

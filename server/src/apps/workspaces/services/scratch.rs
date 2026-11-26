@@ -1,8 +1,10 @@
 //! Transactional, Tenant-authorized Scratch Space operations.
 use super::super::repositories::scratch::service_states;
 use super::super::{
-	repositories::scratch::{NativeScratchServices, ScratchAdapter},
-	serializers::scratch::{ScratchCreate, ScratchSettingsUpdate, ScratchView},
+	repositories::scratch::{NativeScratchServices, ScratchAdapter, running_tasks_in_default},
+	serializers::scratch::{
+		ScratchClear, ScratchClearResult, ScratchCreate, ScratchSettingsUpdate, ScratchView,
+	},
 };
 use crate::{
 	Error, Result,
@@ -27,7 +29,7 @@ pub(crate) enum Operation {
 	Settings(Uuid, ScratchSettingsUpdate),
 	AddMember(Uuid, String),
 	RemoveMember(Uuid, String),
-	Clear(Uuid),
+	Clear(Uuid, ScratchClear),
 	Delete(Uuid),
 }
 
@@ -59,6 +61,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					ScratchSettings::for_policy(&ceilings, &tenant_hosts)
 				};
 				let space = ScratchSpace {
+					is_default: false,
 					id: Uuid::new_v4(),
 					node: input.node,
 					name: input.name,
@@ -73,13 +76,13 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 				};
 				app::create(&mut scope, &space).await?;
 				let states = service_states(&f.store, scope.access, &space).await?;
-				serde_json::to_value(ScratchView::new(space, now, states))?
+				serde_json::to_value(ScratchView::new(space, states))?
 			}
 			Operation::List(node) => {
 				let mut views = Vec::new();
 				for space in app::list(&mut scope, &node, now).await? {
 					let states = service_states(&f.store, scope.access, &space).await?;
-					views.push(ScratchView::new(space, now, states));
+					views.push(ScratchView::new(space, states));
 				}
 				serde_json::to_value(views)?
 			}
@@ -92,7 +95,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 			Operation::Read(id) => {
 				let space = app::read(&mut scope, id, now).await?;
 				let states = service_states(&f.store, scope.access, &space).await?;
-				serde_json::to_value(ScratchView::new(space, now, states))?
+				serde_json::to_value(ScratchView::new(space, states))?
 			}
 			Operation::Settings(id, value) => {
 				app::update_settings(&mut scope, id, now, value.revision, value.settings).await?;
@@ -106,9 +109,28 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 				app::remove_member(&mut scope, id, now, &subject).await?;
 				json!({"sent":true})
 			}
-			Operation::Clear(id) => {
-				app::clear(&mut scope, id, now).await?;
-				json!({"sent":true})
+			Operation::Clear(id, input) => {
+				let space = app::require_clear(&mut scope, id).await?;
+				let running_tasks = if space.is_default {
+					running_tasks_in_default(scope.access, &space).await?
+				} else {
+					Vec::new()
+				};
+				let sent = if let Some(confirmed) = input.confirmed_tasks {
+					if confirmed != running_tasks {
+						return Err(Error::Conflict(
+							"The running Tasks changed; confirm again".into(),
+						));
+					}
+					app::clear(&mut scope, id, now).await?;
+					true
+				} else {
+					false
+				};
+				serde_json::to_value(ScratchClearResult {
+					sent,
+					running_tasks,
+				})?
 			}
 			Operation::Delete(id) => {
 				app::delete(&mut scope, id, now).await?;

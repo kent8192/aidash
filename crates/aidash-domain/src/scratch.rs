@@ -1,7 +1,7 @@
 //! Scratch Space settings and authority, independent of storage and execution.
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,6 +10,14 @@ use crate::{Error, Result, nodes::NodeName};
 const GIB: u64 = 1024 * 1024 * 1024;
 
 pub type ScratchSpaceId = Uuid;
+
+/// A Run's working directory relative to the Scratch Space root at /work.
+pub fn working_directory(thread: Uuid, duty: Option<Uuid>) -> String {
+	match duty {
+		Some(duty) => format!("duties/{duty}"),
+		None => format!("threads/{thread}"),
+	}
+}
 
 /// All hosts, or an explicit set of canonical DNS names or IP addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -75,8 +83,6 @@ fn valid_host(host: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ScratchSettings {
 	pub capacity_bytes: u64,
-	/// None means the Scratch Space never expires from idleness.
-	pub idle_expiry_days: Option<u32>,
 	pub allowed_hosts: HostAllowlist,
 	pub execution_image: Option<String>,
 	/// Registry identifiers of External services available to users of the space.
@@ -92,7 +98,6 @@ impl Default for ScratchSettings {
 	fn default() -> Self {
 		Self {
 			capacity_bytes: 100 * GIB,
-			idle_expiry_days: Some(14),
 			allowed_hosts: HostAllowlist::Hosts(default_public_hosts()),
 			execution_image: None,
 			external_services: BTreeSet::new(),
@@ -121,8 +126,8 @@ impl Default for ScratchCeilings {
 	fn default() -> Self {
 		Self {
 			capacity_bytes: 1024 * GIB,
-			cpu_millis: 4000,
-			memory_bytes: 16 * GIB,
+			cpu_millis: 8000,
+			memory_bytes: 32 * GIB,
 			daily_sent_bytes: 1024 * GIB,
 			daily_received_bytes: 1024 * GIB,
 			docker_allowed: false,
@@ -141,6 +146,16 @@ impl ScratchSettings {
 		};
 		Self {
 			allowed_hosts: HostAllowlist::Hosts(hosts),
+			..Self::default()
+		}
+	}
+
+	/// Resources reserved by default for a Node's shared space.
+	pub fn for_node() -> Self {
+		Self {
+			capacity_bytes: 500 * GIB,
+			cpu_millis: 8000,
+			memory_bytes: 32 * GIB,
 			..Self::default()
 		}
 	}
@@ -172,9 +187,6 @@ impl ScratchSettings {
 			|| self.cpu_millis > ceilings.cpu_millis
 			|| self.memory_bytes == 0
 			|| self.memory_bytes > ceilings.memory_bytes
-			|| self
-				.idle_expiry_days
-				.is_some_and(|days| !(1..=365).contains(&days))
 			|| self.daily_sent_bytes == 0
 			|| self.daily_sent_bytes > ceilings.daily_sent_bytes
 			|| self.daily_received_bytes == 0
@@ -211,6 +223,8 @@ pub enum ScratchState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ScratchSpace {
+	/// Access follows Node policy for the default space.
+	pub is_default: bool,
 	pub id: ScratchSpaceId,
 	pub node: NodeName,
 	pub name: String,
@@ -228,27 +242,12 @@ pub struct ScratchSpace {
 impl ScratchSpace {
 	pub fn may_use(&self, person: &str) -> bool {
 		self.state == ScratchState::Active
-			&& (self.creator == person || self.members.contains(person))
+			&& (self.is_default || self.creator == person || self.members.contains(person))
 	}
 
 	/// Agents inherit the authority of the person who started their conversation.
 	pub fn agent_may_use(&self, conversation_starter: &str) -> bool {
 		self.may_use(conversation_starter)
-	}
-
-	pub fn may_modify(&self, person: &str) -> bool {
-		self.may_use(person)
-	}
-
-	pub fn expires_at(&self) -> Option<DateTime<Utc>> {
-		self.settings.idle_expiry_days.and_then(|days| {
-			self.last_used_at
-				.checked_add_signed(Duration::days(i64::from(days)))
-		})
-	}
-
-	pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
-		self.expires_at().is_some_and(|expiry| now >= expiry)
 	}
 
 	pub fn tombstone(&mut self) {

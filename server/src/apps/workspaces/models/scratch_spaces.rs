@@ -8,6 +8,8 @@ use uuid::Uuid;
 #[model(app_label = "workspaces", table_name = "scratch_spaces")]
 #[derive(Serialize, Deserialize)]
 pub struct ScratchSpace {
+	#[field(default = "false")]
+	pub is_default: bool,
 	#[field(primary_key = true)]
 	pub id: Uuid,
 	#[field(field_type = "text")]

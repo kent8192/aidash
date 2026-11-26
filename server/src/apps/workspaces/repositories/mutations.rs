@@ -72,7 +72,6 @@ impl ThreadMutations for NativeMutations<'_> {
 		let scratch_id = aidash_application::scratch::select_for_thread(
 			&mut scratch,
 			node,
-			title,
 			self.requested_scratch,
 			chrono::Utc::now(),
 		)

@@ -2,14 +2,11 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
-fn idle_and_daily_budgets_have_bounded_positive_values() {
+fn daily_budgets_have_bounded_positive_values() {
 	let limits = ScratchCeilings::default();
 	let hosts = HostAllowlist::All;
 	let mut settings = ScratchSettings::default();
 	assert!(settings.validate(&limits, &hosts).is_ok());
-	settings.idle_expiry_days = Some(366);
-	assert!(settings.validate(&limits, &hosts).is_err());
-	settings.idle_expiry_days = None;
 	settings.daily_sent_bytes = 0;
 	assert!(settings.validate(&limits, &hosts).is_err());
 	settings.daily_sent_bytes = 1024 * 1024 * 1024 * 1024 + 1;
@@ -42,10 +39,11 @@ fn settings_cannot_expand_tenant_hosts_or_enable_disallowed_docker() {
 }
 
 #[test]
-fn membership_and_expiry_follow_conversation_person_and_last_use() {
-	use chrono::{Duration, TimeZone, Utc};
+fn named_space_membership_uses_the_conversation_starter() {
+	use chrono::{TimeZone, Utc};
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 	let mut space = ScratchSpace {
+		is_default: false,
 		id: uuid::Uuid::nil(),
 		node: crate::nodes::NodeName::derived("scratch-test"),
 		name: "Example".into(),
@@ -60,10 +58,6 @@ fn membership_and_expiry_follow_conversation_person_and_last_use() {
 	};
 	assert!(space.agent_may_use("bob"));
 	assert!(!space.agent_may_use("eve"));
-	assert!(!space.is_expired(now + Duration::days(13)));
-	assert!(space.is_expired(now + Duration::days(14)));
-	space.settings.idle_expiry_days = None;
-	assert!(!space.is_expired(now + Duration::days(100)));
 	space.tombstone();
 	assert!(!space.may_use("alice"));
 }
@@ -94,7 +88,6 @@ fn ceilings_and_operator_control_bound_settings() {
 	ceilings.capacity_bytes = u64::MAX;
 	assert!(settings.validate(&ceilings, &hosts).is_err());
 	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024;
-	settings.idle_expiry_days = None;
 	assert!(settings.validate(&ceilings, &hosts).is_ok());
 }
 
