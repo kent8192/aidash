@@ -1,6 +1,6 @@
 //! The worker event determines which durable retry and diagnostic fields survive a save.
 use super::encode;
-use crate::{Result, Run, capabilities::sessions::QUEUED};
+use crate::{Result, Run};
 use serde_json::Value;
 /// Checkpoints that continue the same step and keep its worker lease.
 pub fn retains_lease(event: &str) -> bool {
@@ -64,7 +64,7 @@ impl Run {
 			recovery.lease_recoveries = 0;
 		}
 		let pending = encode(&self.state, &recovery)?;
-		let error = if retrying || matches!(event, QUEUED | "execution.failed") {
+		let error = if retrying || event == "execution.failed" {
 			self.error.as_deref()
 		} else {
 			None

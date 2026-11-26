@@ -5,7 +5,6 @@ use aidash_domain::{
 	capabilities::sessions::{
 		Area, REMOTE_HOME, SessionStatus, received_scope_matches, reusable_context,
 	},
-	federation::execution::admission::RunQueued,
 	registry::AgentConfig,
 };
 use serde_json::{Value, json};
@@ -177,23 +176,17 @@ pub async fn admit(
 	scope.pin(run_id, &mut area, config).await?;
 	scope.enqueue(run_id, &area, true).await
 }
-pub enum Initialization {
-	Ready,
-	/// Only a remote Run's first entry into the queue carries a Home notice.
-	Queued(Option<RunQueued>),
-}
-
 pub async fn initialize(
 	scope: &mut dyn SessionScope,
 	run: &RunMetadata,
 	config: &AgentConfig,
-) -> Result<Initialization> {
+) -> Result<()> {
 	let initialized = scope
 		.initialized(run.id)
 		.await?
 		.ok_or_else(|| Error::NotFound("working area unavailable".into()))?;
 	if initialized {
-		return Ok(Initialization::Ready);
+		return Ok(());
 	}
 	let mut area = for_run(scope, run).await?;
 	// Recheck after acquiring the area lock so simultaneous callers pin only once.
@@ -201,7 +194,7 @@ pub async fn initialize(
 		scope.pin(run.id, &mut area, config).await?;
 		scope.mark_initialized(run.id).await?;
 	}
-	Ok(Initialization::Ready)
+	Ok(())
 }
 /// Bind the Run on its receiving Node once.
 pub async fn initialize_remote(
@@ -209,9 +202,9 @@ pub async fn initialize_remote(
 	run: &RunMetadata,
 	owner: &str,
 	config: &AgentConfig,
-) -> Result<Initialization> {
+) -> Result<()> {
 	match scope.initialized(run.id).await? {
-		Some(true) => return Ok(Initialization::Ready),
+		Some(true) => return Ok(()),
 		Some(false) => {}
 		None => {
 			let mut area = scope.ensure_remote_area(run, owner).await?;

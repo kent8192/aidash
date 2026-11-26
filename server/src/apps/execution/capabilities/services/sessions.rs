@@ -8,7 +8,7 @@ use crate::{
 	registry::AgentConfig,
 	store::Store,
 };
-use aidash_application::capabilities::sessions::{self as application, Initialization};
+use aidash_application::capabilities::sessions::{self as application};
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) async fn load(access: &mut Access, id: Uuid) -> Result<Area> {
@@ -177,7 +177,7 @@ pub(crate) async fn initialize(
 	access: &mut Access,
 	run: &Run,
 	config: &AgentConfig,
-) -> Result<Initialization> {
+) -> Result<()> {
 	application::initialize(
 		&mut crate::bootstrap::session_scope(Some(store), access),
 		&run.metadata(),
@@ -196,7 +196,7 @@ pub(crate) async fn initialize_remote(
 	access: &mut Access,
 	run: &Run,
 	config: &AgentConfig,
-) -> Result<Initialization> {
+) -> Result<()> {
 	let metadata = run.metadata();
 	let owner =
 		crate::apps::workspaces::repositories::scratch::remote_person(access, &metadata).await?;

@@ -2705,19 +2705,9 @@ pub(crate) struct Guard {
 #[doc(hidden)]
 pub struct Step(Guard);
 
-pub(crate) enum GuardEntry {
-	Ready(Box<Guard>),
-	Queued(Option<aidash_domain::federation::execution::admission::RunQueued>),
-}
-
 impl Step {
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
-		match Guard::begin(f, run).await? {
-			GuardEntry::Ready(guard) => Ok(Self(*guard)),
-			GuardEntry::Queued(_) => Err(Error::Conflict(
-				aidash_domain::capabilities::sessions::QUEUED.into(),
-			)),
-		}
+		Guard::begin(f, run).await.map(Self)
 	}
 
 	/// The Run's Home carrying the step's authority, as the worker's tools see it.
@@ -2828,26 +2818,20 @@ impl Guard {
 		})
 	}
 
-	pub async fn begin(f: &Federation, run: &Run) -> Result<GuardEntry> {
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
 		let entry = aidash_application::authorization::worker_entry::execution(
 			&crate::bootstrap::worker_entry_repository(f),
 			run,
 		)
 		.await?;
-		if let aidash_application::capabilities::sessions::Initialization::Queued(notice) =
-			entry.initialization
-		{
-			entry.scope.finish(Ok(())).await?;
-			return Ok(GuardEntry::Queued(notice));
-		}
-		Ok(GuardEntry::Ready(Box::new(Self {
+		Ok(Self {
 			scratch_space_id: entry.scratch_space_id.ok_or(Error::Forbidden)?,
 			tenancy: entry.scope.tenancy()?,
 			remote: entry.remote.then(|| f.clone()),
 			access: Arc::new(RwLock::new(entry.scope)),
 			run: run.clone(),
 			agent: entry.agent,
-		})))
+		})
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.write().await;

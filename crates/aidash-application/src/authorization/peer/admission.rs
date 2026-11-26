@@ -452,11 +452,9 @@ pub async fn status<R: PeerAdmissionRepository>(
 		declinable_call: run.as_ref().and_then(|r| r.declinable_call.clone()),
 		error: run.and_then(|r| {
 			r.error
-				.clone()
-				.map(|error| match error.as_str() {
-					aidash_domain::capabilities::sessions::QUEUED
-					| aidash_domain::capabilities::sessions::QUEUE_LIMIT => error,
-					_ => "Remote execution requires attention. Review current authority and retry controls.".into(),
+				.as_ref()
+				.map(|_| {
+					"Remote execution requires attention. Review current authority and retry controls.".into()
 				})
 		}),
 	}))

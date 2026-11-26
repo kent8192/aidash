@@ -30,8 +30,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 				| "artifact" | "create_task"
 				| "delegate" | "message"
 				| "run_message_output"
-				| "event" | "run_queued"
-				| "human_request"
+				| "event" | "human_request"
 				| "mcp.connection_call"
 				| "task_assign"
 				| "connection_request"
@@ -50,11 +49,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 	} else {
 		data["key"].as_str()
 	};
-	let request_key = if operation == "run_queued" {
-		// A single notice belongs to this grant, even if a different command
-		// key is supplied by a peer. The typed payload accepts no such key.
-		operation.to_owned()
-	} else if let Some(key) = key {
+	let request_key = if let Some(key) = key {
 		if key.is_empty() || key.len() > 512 {
 			return Err(Error::Invalid("invalid command key".into()));
 		}

@@ -12,15 +12,6 @@ use serde_json::Value;
 use uuid::Uuid;
 mod semantic_failure;
 
-/// First entry into a receiving Working Area behind one or more awake Runs.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunQueued {
-	pub task_id: Uuid,
-	pub run_id: Uuid,
-	pub runs_ahead: usize,
-	pub queued_at: DateTime<Utc>,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RemoteExecutionPhase {

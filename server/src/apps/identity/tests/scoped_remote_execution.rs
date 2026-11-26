@@ -619,11 +619,10 @@ mod scoped_pair_composition {
 }
 use scoped_pair_composition::scoped_pair;
 
-/// A second admission for the same receiving Area waits without starting a
-/// Stint. Its Home sees one queue event and keeps renewing the live grant.
+/// The receiving Node starts a second Run while the first still holds its lease.
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_run_waits_for_its_receiving_area(
+async fn remote_runs_can_start_concurrently_on_the_receiving_node(
 	#[with(false, false, false, false, (false, false, 32), false, false, false, true, true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -640,7 +639,7 @@ async fn remote_run_waits_for_its_receiving_area(
 		&p.token,
 		"POST",
 		&format!("/api/threads/{}/tasks", first.thread_id),
-		json!({"title":"Follow-up research","description":"Use the same receiving Area"}),
+		json!({"title":"Follow-up research","description":"Use the same Node Scratch Space"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
@@ -665,71 +664,25 @@ async fn remote_run_waits_for_its_receiving_area(
 		federation: p.b.clone(),
 	};
 	assert!(worker.worker_once().await.unwrap());
-	let queued = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
-	assert_eq!(queued.error.as_deref(), Some("execution.queued"));
-	assert_eq!(queued.phase().as_str(), "READY");
-	assert!(queued.lease_owner.is_none());
-	assert!(queued.recovery.retry.is_none());
-	let stints = Query::select()
-		.expr(Expr::cust("COUNT(*)"))
-		.from(Alias::new("stints"))
-		.and_where(Expr::col("run_id").eq(Expr::value(second)))
-		.to_string(PostgresQueryBuilder);
-	let stint_count = async || -> i64 {
-		sqlx::query_scalar(&stints)
-			.fetch_one(p.b.store.pool.fixture_driver())
-			.await
-			.unwrap()
-	};
-	assert_eq!(stint_count().await, 0);
-	assert!(
-		p.requests.lock().await.is_empty(),
-		"no provider work while queued"
-	);
-	for _ in 0..2 {
-		assert!(
-			!worker.worker_once().await.unwrap(),
-			"the Area head still holds its turn"
-		);
-	}
-
-	let events = async || {
+	let started = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
+	assert_eq!(started.phase().as_str(), "THINKING", "{:?}", started.error);
+	assert!(started.error.is_none());
+	assert!(started.recovery.retry.is_none());
+	let stints: i64 = sqlx::query_scalar("SELECT count(*) FROM stints WHERE run_id = $1")
+		.bind(second)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(stints, 1);
+	assert_eq!(p.run().await.lease_owner, Some(lease));
+	assert_eq!(
 		p.a.store
-			.events(&TEST_FIXTURE, 0, Some(first.thread_id), 1000)
-			.await
-			.unwrap()
-			.into_iter()
-			.filter(|event| event.kind == "remote_run.queued")
-			.collect::<Vec<_>>()
-	};
-	let notices = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-		loop {
-			let notices = events().await;
-			if !notices.is_empty() {
-				return notices;
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-		}
-	})
-	.await
-	.expect("the Home records its queue notice");
-	assert_eq!(notices.len(), 1);
-	assert_eq!(notices[0].data["task_id"], json!(task));
-	assert_eq!(notices[0].data["remote_run_id"], json!(second));
-	assert_eq!(notices[0].data["runs_ahead"], 1);
-	assert!(
-		serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
-			notices[0].data["queued_at"].clone()
-		)
-		.is_ok()
-	);
-	assert!(
-		!p.a.store
 			.task(&TEST_FIXTURE, task)
 			.await
 			.unwrap()
 			.status
-			.is_terminal()
+			.as_str(),
+		"RUNNING"
 	);
 	let due = chrono::Utc::now() + chrono::Duration::minutes(10);
 	let expiry = Query::update()
@@ -759,32 +712,6 @@ async fn remote_run_waits_for_its_receiving_area(
 		.release_lease(&TEST_FIXTURE, first.id, lease)
 		.await
 		.unwrap();
-	for _ in 0..10 {
-		if p.run().await.phase().is_terminal() {
-			break;
-		}
-		p.step().await;
-	}
-	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
-	for _ in 0..2 {
-		if worker.worker_once().await.unwrap() {
-			break;
-		}
-	}
-	let started = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
-	assert_eq!(started.phase().as_str(), "THINKING", "{:?}", started.error);
-	assert!(started.error.is_none());
-	assert_eq!(stint_count().await, 1);
-	assert_eq!(
-		p.a.store
-			.task(&TEST_FIXTURE, task)
-			.await
-			.unwrap()
-			.status
-			.as_str(),
-		"RUNNING"
-	);
-	assert_eq!(events().await.len(), 1);
 	p.close().await;
 }
 

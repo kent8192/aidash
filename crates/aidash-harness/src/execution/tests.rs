@@ -216,9 +216,9 @@ impl WorkerStep for Scope {
 		self.trace.lock().unwrap().push("cancel");
 		Ok(false)
 	}
-	async fn admit(&mut self) -> Result<aidash_application::ports::execution::worker::Admission> {
+	async fn admit(&mut self) -> Result<()> {
 		self.trace.lock().unwrap().push("admit");
-		Ok(aidash_application::ports::execution::worker::Admission::Ready)
+		Ok(())
 	}
 	async fn invoke(&mut self, _: Uuid) -> Result<()> {
 		self.trace.lock().unwrap().push("invoke");
