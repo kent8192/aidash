@@ -22,7 +22,7 @@ const series = [
 
 type Model = {
   id: string;
-  created?: number;
+  created?: number | null;
   architecture?: { output_modalities: string[] };
 };
 const numeric = new Intl.Collator("en", { numeric: true });
