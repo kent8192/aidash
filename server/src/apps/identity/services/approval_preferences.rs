@@ -80,13 +80,21 @@ fn resource(bundle: &PolicyBundle, kind: &str, id: &str, attributes: Value) -> R
 }
 
 /// Whether the Tenant's policy lets `subject` use `mode`.
-fn mode_allowed(bundle: &PolicyBundle, subject: &str, mode: ApprovalMode) -> bool {
+fn mode_allowed(
+	bundle: &PolicyBundle,
+	subject: &str,
+	mode: ApprovalMode,
+	configurator: bool,
+) -> bool {
 	mode.policy_requirement().is_none_or(|(action, id)| {
-		permits(
-			bundle,
-			subject,
-			resource(bundle, MODE_RESOURCE, id, json!({})),
-			action,
+		mode.offered(
+			&bundle.evaluate(&Evaluation {
+				subject: subject.into(),
+				resource: resource(bundle, MODE_RESOURCE, id, json!({})),
+				action: action.into(),
+				environment: json!({"transport":"api"}),
+			}),
+			configurator,
 		)
 	})
 }
@@ -100,8 +108,9 @@ fn mode_choice(
 	mode: ApprovalMode,
 	auto: Availability,
 	accepted: bool,
+	configurator: bool,
 ) -> ModeChoice {
-	let (allowed, reason) = if !mode_allowed(bundle, subject, mode) {
+	let (allowed, reason) = if !mode_allowed(bundle, subject, mode, configurator) {
 		(false, Some(ModeReason::Policy))
 	} else {
 		match (mode, auto) {
@@ -125,10 +134,11 @@ fn modes(
 	subject: &str,
 	auto: Availability,
 	accepted: bool,
+	configurator: bool,
 ) -> Vec<ModeChoice> {
 	MODES
 		.into_iter()
-		.map(|mode| mode_choice(bundle, subject, mode, auto, accepted))
+		.map(|mode| mode_choice(bundle, subject, mode, auto, accepted, configurator))
 		.collect()
 }
 
@@ -410,7 +420,7 @@ fn view_preferences(
 		answer_deadline_seconds: row.and_then(|row| row.answer_deadline_seconds),
 		bypass_accepted_at,
 		revision: row.map_or(0, |row| row.revision),
-		modes: modes(bundle, owner, auto, bypass_accepted_at.is_some()),
+		modes: modes(bundle, owner, auto, bypass_accepted_at.is_some(), false),
 	})
 }
 
@@ -809,16 +819,28 @@ impl ApprovalPreferences {
 				access.identity.subject.clone(),
 			);
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
-			let bypass_accepted = row.as_ref().is_some_and(|p| p.bypass_accepted_at.is_some())
-				|| repository::configurator_thread(&mut *access.tx, &tenant, &subject, thread)
-					.await?;
+			let configurator =
+				repository::configurator_thread(&mut *access.tx, &tenant, &subject, thread).await?
+					&& aidash_domain::identity::tenant_administration::configurator_administrator(
+						&access.snapshot.bundle,
+						&subject,
+						self.runtime.config.deployment.as_str(),
+					);
+			let bypass_accepted =
+				configurator || row.as_ref().is_some_and(|p| p.bypass_accepted_at.is_some());
 
 			let node = access.thread_node(thread).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
 				default_mode: repository::default_mode(row.as_ref())?,
-				modes: modes(&access.snapshot.bundle, &subject, auto, bypass_accepted),
+				modes: modes(
+					&access.snapshot.bundle,
+					&subject,
+					auto,
+					bypass_accepted,
+					configurator,
+				),
 			})
 		}
 		.await;
@@ -847,12 +869,22 @@ impl ApprovalPreferences {
 			);
 			repository::lock_owner(&mut *access.tx, &tenant, &subject).await?;
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
-			let bypass_accepted = row.as_ref().is_some_and(|p| p.bypass_accepted_at.is_some())
-				|| repository::configurator_thread(&mut *access.tx, &tenant, &subject, thread)
-					.await?;
+			let configurator =
+				repository::configurator_thread(&mut *access.tx, &tenant, &subject, thread).await?
+					&& aidash_domain::identity::tenant_administration::configurator_administrator(
+						&access.snapshot.bundle,
+						&subject,
+						self.runtime.config.deployment.as_str(),
+					);
+			let bypass_accepted =
+				configurator || row.as_ref().is_some_and(|p| p.bypass_accepted_at.is_some());
 
 			if let Some(mode) = input.mode {
-				if let Some((action, id)) = mode.policy_requirement() {
+				if let Some((action, id)) = mode.policy_requirement()
+					&& !(configurator
+						&& mode == ApprovalMode::Bypass
+						&& mode_allowed(&access.snapshot.bundle, &subject, mode, true))
+				{
 					let target = access.resource(MODE_RESOURCE, id, json!({}));
 					access.require(&target, action).await?;
 				}
@@ -869,7 +901,13 @@ impl ApprovalPreferences {
 			Ok(ThreadMode {
 				mode: input.mode,
 				default_mode: repository::default_mode(row.as_ref())?,
-				modes: modes(&access.snapshot.bundle, &subject, auto, bypass_accepted),
+				modes: modes(
+					&access.snapshot.bundle,
+					&subject,
+					auto,
+					bypass_accepted,
+					configurator,
+				),
 			})
 		}
 		.await;

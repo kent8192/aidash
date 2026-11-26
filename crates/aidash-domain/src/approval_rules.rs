@@ -112,6 +112,13 @@ pub enum ApprovalMode {
 }
 
 impl ApprovalMode {
+	/// Starting the Configurator accepts Bypass for its own Thread. An explicit
+	/// policy denial still applies, as does the ceiling for the action itself.
+	pub fn offered(self, decision: &crate::policy::Decision, configurator: bool) -> bool {
+		decision.allowed
+			|| (configurator && self == Self::Bypass && decision.reason == "no_matching_allow")
+	}
+
 	/// The policy action and the id of the `approval_mode` resource that lets
 	/// a person use this mode, if the Tenant's policy has to allow it.
 	pub fn policy_requirement(self) -> Option<(&'static str, &'static str)> {

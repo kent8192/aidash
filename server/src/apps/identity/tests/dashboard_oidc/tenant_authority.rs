@@ -2166,7 +2166,7 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 				json!({"mode":mode}),
 			)
 			.await;
-		assert_eq!(status, 200, "{changed}");
+		assert_eq!(status, 200, "switch to {mode}: {changed}");
 		assert_eq!(changed["mode"], mode);
 	}
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();

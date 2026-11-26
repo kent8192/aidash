@@ -46,7 +46,7 @@ fn a_member_may_use_every_mode_but_bypass_until_the_policy_names_it() {
 	let mut bundle = bundle();
 
 	// Act
-	let before = modes(&bundle, "alice", Availability::Usable, true);
+	let before = modes(&bundle, "alice", Availability::Usable, true, false);
 	bundle.policies.push(Policy {
 		id: "alice-bypass".into(),
 		effect: Effect::Allow,
@@ -61,7 +61,7 @@ fn a_member_may_use_every_mode_but_bypass_until_the_policy_names_it() {
 		},
 		condition: None,
 	});
-	let after = modes(&bundle, "alice", Availability::Usable, true);
+	let after = modes(&bundle, "alice", Availability::Usable, true, false);
 
 	// Assert
 	assert!(allowed(&before, ApprovalMode::Manual));
@@ -74,7 +74,25 @@ fn a_member_may_use_every_mode_but_bypass_until_the_policy_names_it() {
 #[test]
 fn an_administrator_still_has_to_be_named_for_bypass() {
 	assert!(!allowed(
-		&modes(&bundle(), OWNER, Availability::Usable, true),
+		&modes(&bundle(), OWNER, Availability::Usable, true, false),
+		ApprovalMode::Bypass
+	));
+}
+
+#[test]
+fn configurator_bypass_still_honors_an_explicit_deny() {
+	let mut bundle = bundle();
+	assert!(allowed(
+		&modes(&bundle, OWNER, Availability::Missing, true, true),
+		ApprovalMode::Bypass
+	));
+	let mut deny = bundle.policies[0].clone();
+	deny.id = "deny-bypass".into();
+	deny.effect = Effect::Deny;
+	deny.actions = [MODE_BYPASS.to_owned()].into();
+	bundle.policies.push(deny);
+	assert!(!allowed(
+		&modes(&bundle, OWNER, Availability::Missing, true, true),
 		ApprovalMode::Bypass
 	));
 }
@@ -98,7 +116,7 @@ fn auto_needs_a_decider_that_can_judge_and_says_why_it_is_unavailable() {
 		),
 		(Availability::Missing, (false, Some(ModeReason::NoDecider))),
 	] {
-		let offered = modes(&bundle, "alice", availability, false);
+		let offered = modes(&bundle, "alice", availability, false, false);
 		assert_eq!(
 			(
 				allowed(&offered, ApprovalMode::Auto),
@@ -114,7 +132,7 @@ fn auto_needs_a_decider_that_can_judge_and_says_why_it_is_unavailable() {
 
 #[test]
 fn a_mode_the_policy_withholds_says_policy_whatever_the_node_offers() {
-	let offered = modes(&bundle(), "alice", Availability::Missing, false);
+	let offered = modes(&bundle(), "alice", Availability::Missing, false, false);
 	assert_eq!(
 		reason(&offered, ApprovalMode::Bypass),
 		Some(ModeReason::Policy)
@@ -139,8 +157,8 @@ fn bypass_is_the_persons_to_choose_yet_takes_effect_only_after_they_accept_its_r
 		condition: None,
 	});
 
-	let unaccepted = modes(&bundle, "alice", Availability::Usable, false);
-	let accepted = modes(&bundle, "alice", Availability::Usable, true);
+	let unaccepted = modes(&bundle, "alice", Availability::Usable, false, false);
+	let accepted = modes(&bundle, "alice", Availability::Usable, true, false);
 
 	assert!(allowed(&unaccepted, ApprovalMode::Bypass));
 	assert_eq!(
