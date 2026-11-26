@@ -40,6 +40,7 @@ fn scope() -> Scope {
 			title: "task".into(),
 			description: "task".into(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "primary".into(),
@@ -63,6 +64,7 @@ fn input() -> NewTask {
 	NewTask {
 		title: "task".into(),
 		description: "日本語".into(),
+		goal: None,
 		requirements: json!({"kind":"model"}),
 		dependencies: vec![Uuid::from_u128(7)],
 		parent_id: Some(Uuid::from_u128(8)),

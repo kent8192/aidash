@@ -36,8 +36,7 @@ struct Scope {
 	deny_entry: Option<String>,
 	deny_pinned: Option<String>,
 	changed: Option<String>,
-	/// Inputs of Completion Gate Checks admitted to the operation journal.
-	verified: Vec<Value>,
+
 	/// `(kind, cancel, input)` of every operation control request.
 	polled: Vec<(String, bool, Value)>,
 	control_result: Option<Value>,
@@ -145,10 +144,6 @@ impl FileScopePort for Scope {
 		_key: &str,
 	) -> Result<Value> {
 		match action {
-			Action::Verify => {
-				self.verified.push(input);
-				Ok(json!({"operation_id": Uuid::nil(), "status": "prepared"}))
-			}
 			Action::Control { kind, cancel } => {
 				self.polled.push((kind.to_owned(), cancel, input));
 				Ok(self
@@ -291,7 +286,6 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			deny_entry: None,
 			deny_pinned: None,
 			changed: None,
-			verified: vec![],
 			polled: vec![],
 			control_result: None,
 			active_run: None,
@@ -1210,66 +1204,6 @@ async fn direct_invocations_recheck_the_bound_definition_before_any_effect(
 }
 
 #[tokio::test]
-async fn a_completion_check_is_admitted_like_the_models_own_shell_call() {
-	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
-	let input = json!({"idempotency_key":Uuid::nil(),"command":"cargo test","expected_revision":4});
-	verify(&mut scope, &run, input.clone(), "check")
-		.await
-		.unwrap();
-	assert_eq!(scope.verified, [input]);
-}
-
-#[rstest::rstest]
-#[case("catalog")]
-#[case("installation")]
-#[case("digest")]
-#[tokio::test]
-async fn a_completion_check_rechecks_the_bound_shell_before_any_effect(#[case] withdrawal: &str) {
-	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
-	let id = scope
-		.binding_snapshot()
-		.unwrap()
-		.operation("shell")
-		.unwrap()
-		.identity
-		.id
-		.clone();
-	match withdrawal {
-		"catalog" => scope.deny_entry = Some(id),
-		"installation" => scope.deny_pinned = Some(id),
-		_ => scope.changed = Some(id),
-	}
-	let result = verify(&mut scope, &run, json!({"command":"cargo test"}), "check").await;
-	if withdrawal == "digest" {
-		assert!(matches!(result, Err(Error::Conflict(_))));
-	} else {
-		assert!(matches!(result, Err(Error::Forbidden)));
-	}
-	assert!(scope.verified.is_empty());
-}
-
-/// Polling a Check reads its operation as a `verification`, never as the
-/// model's shell, and never cancels it.
-#[tokio::test]
-async fn a_completion_check_is_polled_as_a_verification_operation() {
-	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
-	let operation = Uuid::from_u128(7);
-	let result = verification(&mut scope, &run, operation, "poll")
-		.await
-		.unwrap();
-	assert_eq!(result["status"], "running");
-	assert_eq!(
-		scope.polled,
-		[(
-			aidash_domain::capabilities::operations::VERIFICATION.to_owned(),
-			false,
-			json!({"operation_id": operation}),
-		)]
-	);
-	assert!(scope.verified.is_empty());
-}
-
-#[tokio::test]
 async fn polling_preserves_the_runner_error_message_in_the_tool_result() {
 	let (mut scope, run, _) = invoke_fixture("shell_poll", json!({}));
 	scope.area.as_mut().unwrap().state = "running".into();
@@ -1289,16 +1223,6 @@ async fn polling_preserves_the_runner_error_message_in_the_tool_result() {
 		response.result["error"]["message"],
 		"File changes were not saved."
 	);
-}
-
-#[tokio::test]
-async fn a_completion_check_needs_a_bound_shell() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	assert!(matches!(
-		verify(&mut scope, &run, json!({"command":"cargo test"}), "check").await,
-		Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message.contains("shell")
-	));
-	assert!(scope.verified.is_empty());
 }
 
 fn working_copy(paths: &[&str]) -> WorkingCopy {

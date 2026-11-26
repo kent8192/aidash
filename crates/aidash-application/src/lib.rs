@@ -6,6 +6,7 @@ pub mod connection_calls;
 pub mod connection_wait;
 pub mod context;
 pub mod decision;
+pub mod deliverables;
 pub mod deployment;
 pub mod duties;
 pub mod execution;

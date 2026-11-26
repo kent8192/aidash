@@ -43,7 +43,7 @@ fn only_provider_verified_reads_declare_shared_read() {
 		"task_create",
 		"task_assign",
 		"task_delegate",
-		"artifact_publish",
+		"deliverable_note",
 		"workspace_message",
 		"memory_mutate",
 		"memory_recall",

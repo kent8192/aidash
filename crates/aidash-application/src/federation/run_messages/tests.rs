@@ -228,6 +228,7 @@ fn message(scope: &Scope, key: &str) -> Message {
 		thread_id: scope.run.thread_id,
 		sender: "human".into(),
 		content: "correction".into(),
+		completion: None,
 		idempotency_key: Some(remote::full_key(scope.node(), scope.run.task_id, key)),
 		created_at: scope.run.updated_at,
 		run_id: None,

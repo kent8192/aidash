@@ -233,6 +233,7 @@ fn scope(run: RunMetadata) -> Scope {
 			title: "Task".into(),
 			description: "".into(),
 			status: TaskStatus::Running,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "creator".into(),

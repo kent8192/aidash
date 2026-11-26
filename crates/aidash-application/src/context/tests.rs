@@ -439,7 +439,7 @@ async fn summary_merges_old_history_and_refuses_a_dropped_previous_item() {
 	assert!(plan.pruned.offloaded.is_none());
 	assert!(first.offloaded.is_some());
 	let previous = first.execution_summary.as_ref().unwrap();
-	assert_eq!(previous.content.goal, "Ship the release");
+	assert_eq!(previous.content.intent, "Ship the release");
 	let mut second = first.clone();
 	append_journaled(
 		&mut second,
@@ -594,7 +594,7 @@ async fn repeated_summary_adoption_bounds_older_prose_in_context_bytes() {
 		let (adopted, _) = scenario.adopt(&plan, &draft, &policy).unwrap();
 		let content = &adopted.execution_summary.as_ref().unwrap().content;
 		assert!(serde_json::to_string(content).unwrap().len() <= scenario.window / 8);
-		assert_eq!(content.goal, "g".repeat(433));
+		assert_eq!(content.intent, "g".repeat(433));
 		assert!(content.decisions.iter().any(|item| {
 			item.starts_with("Full tool results remain in Context Journal sequences ")
 		}));

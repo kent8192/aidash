@@ -2,8 +2,8 @@
 use super::*;
 use crate::tenant_secrets::{CallSecret, SecretRecord};
 use aidash_domain::{
-	Artifact, ArtifactInput, HumanRequest, NewTask, ReadyState, RecoveryState, Run, RunControl,
-	RunState, StateVersion, Task, TaskStatus, context::Context, registry::SkillFile,
+	HumanRequest, NewTask, ReadyState, RecoveryState, Run, RunControl, RunState, StateVersion,
+	Task, TaskStatus, context::Context, registry::SkillFile,
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -141,9 +141,6 @@ impl ToolOperations for Operations {
 			.unwrap()
 			.push((key.to_owned(), json!({"node":node,"agent":agent})));
 		Ok(json!({"node_id":node}))
-	}
-	async fn artifact(&self, _key: &str, _input: &ArtifactInput) -> Result<Artifact> {
-		panic!("unexpected tool effect: artifact")
 	}
 	async fn message(&self, _key: &str, _content: &str) -> Result<()> {
 		panic!("unexpected tool effect: message")
@@ -586,6 +583,7 @@ fn fixture() -> Fixture {
 		title: "Child".into(),
 		description: "Child task".into(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "fixture".into(),

@@ -6,8 +6,7 @@ use crate::{
 	tools::{ToolContext, builtins},
 };
 use aidash_domain::{
-	Artifact, ArtifactInput, HumanRequest, NewTask, ReadyState, RecoveryState, RunControl,
-	RunState, StateVersion, Task,
+	HumanRequest, NewTask, ReadyState, RecoveryState, RunControl, RunState, StateVersion, Task,
 	capabilities::skills::SkillMetadata,
 	context::Context,
 	exposure::{ExposurePolicy, ExposureUpdate, SkillOriginKind},
@@ -70,9 +69,6 @@ impl ToolOperations for Operations {
 	}
 	async fn delegate_with_key(&self, _: &str, _: Uuid, _: &str, _: &EntityRef) -> Result<Value> {
 		panic!("unexpected tool effect: delegate")
-	}
-	async fn artifact(&self, _: &str, _: &ArtifactInput) -> Result<Artifact> {
-		panic!("unexpected tool effect: artifact")
 	}
 	async fn message(&self, _: &str, _: &str) -> Result<()> {
 		panic!("unexpected tool effect: message")

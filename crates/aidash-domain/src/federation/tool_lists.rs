@@ -26,7 +26,7 @@ pub const THREAD_MESSAGE_FILES: &str = "thread_message:files";
 /// a message without files; with files it is [`THREAD_MESSAGE_FILES`].
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"task_create",
-	"artifact_publish",
+	"deliverable_note",
 	"thread_message",
 	"thread_read",
 	"thread_observe",

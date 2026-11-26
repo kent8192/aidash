@@ -521,6 +521,7 @@ impl AgentToolScope for Scope<'_> {
 			title: "saved".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "saved creator".into(),
@@ -538,15 +539,6 @@ impl AgentToolScope for Scope<'_> {
 			"task",
 			&task.id.to_string(),
 			json!({"revision":task.revision,"creator":task.created_by}),
-		))
-	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource> {
-		self.0.record(format!("artifact:{creator}"));
-		self.0.check("artifact")?;
-		Ok(resource(
-			"artifact",
-			&task.to_string(),
-			json!({"created_by":creator}),
 		))
 	}
 	async fn memory_resource(&mut self, run: &RunMetadata) -> Result<Resource> {
@@ -1227,7 +1219,7 @@ async fn artifact_creation_uses_the_last_subject_in_the_delegation_chain(
 		&repository,
 		&run,
 		&agent,
-		&call("artifact_publish", json!({})),
+		&call("deliverable_note", json!({})),
 	)
 	.await
 	.unwrap();
@@ -1250,7 +1242,7 @@ async fn local_artifact_creation_requires_a_nonempty_subject_chain(
 			&repository,
 			&run,
 			&agent,
-			&call("artifact_publish", json!({}))
+			&call("deliverable_note", json!({}))
 		)
 		.await,
 		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::Policy
@@ -1270,7 +1262,7 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 		&repository,
 		&run,
 		&agent,
-		&call("artifact_publish", json!({})),
+		&call("deliverable_note", json!({})),
 	)
 	.await
 	.unwrap();

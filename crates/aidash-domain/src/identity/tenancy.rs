@@ -56,8 +56,6 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"agent_version.inspect",
 	APPROVAL_ADVANCE,
 	MODE_AUTO,
-	"artifact.create",
-	"artifact.read",
 	"capability.request",
 	"chatgpt.tokens.use.direct",
 	"cluster.execute",

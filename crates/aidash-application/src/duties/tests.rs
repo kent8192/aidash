@@ -232,6 +232,7 @@ fn definition() -> Definition {
 		title: "Weekly dependency check".into(),
 		mission: "List outdated dependencies.".into(),
 		procedure: "1. Check every manifest.".into(),
+		goal: None,
 		agent: EntityRef {
 			id: "reporter".into(),
 			version: "1.0.0".into(),

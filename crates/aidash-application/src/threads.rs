@@ -14,6 +14,7 @@ pub struct ConversationRequest<'a> {
 	pub title: &'a str,
 	/// The person's request: the first message and the Root Task's description.
 	pub request: &'a str,
+	pub goal: Option<&'a str>,
 	pub target: &'a EntityRef,
 	pub target_kind: &'a str,
 	/// The Node the Thread goes to; the Tenant's default Node when absent.
@@ -60,6 +61,7 @@ pub async fn conversation(
 			&NewTask {
 				title: input.title.into(),
 				description: input.request.into(),
+				goal: input.goal.map(str::to_owned),
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

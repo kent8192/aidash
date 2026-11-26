@@ -28,6 +28,7 @@ fn task(value: u128) -> Task {
 		title: "task".into(),
 		description: "description".into(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "saved-author".into(),
@@ -150,9 +151,6 @@ impl ThreadStateScope for Scope {
 	async fn task_candidates(&mut self, _: Option<&str>) -> Result<Vec<Task>> {
 		Ok(self.tasks.clone())
 	}
-	async fn artifact_candidates(&mut self, _: Option<&str>) -> Result<Vec<Artifact>> {
-		Ok(vec![])
-	}
 	async fn run_candidates(&mut self, _: Option<&str>) -> Result<Vec<RawRun>> {
 		Ok(self.runs.clone())
 	}
@@ -167,9 +165,6 @@ impl ThreadStateScope for Scope {
 	}
 	async fn task_visible(&mut self, _: &Task) -> Result<bool> {
 		Ok(true)
-	}
-	async fn artifact_visible(&mut self, _: &Artifact) -> Result<bool> {
-		unreachable!()
 	}
 	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
 		if self.silent_runs.contains(&row.id) {

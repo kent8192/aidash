@@ -133,7 +133,7 @@ pub fn legacy_workspace_entries(
 			),
 			"aidash.workspace_read" => (
 				"Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
-				json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+				json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","message","event"]},"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 			),
 			_ => unreachable!(),
 		};
@@ -147,7 +147,7 @@ pub fn legacy_workspace_entries(
 		.clone();
 	attachment_reader.version = "1.0.1".into();
 	attachment_reader.description.insert("en".into(), "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.".into());
-	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
+	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
 	entries.push(attachment_reader);
 	// The Thread Attachment versions as they were before Thread Attachment
 	// images could be described and searched (#622 part 2).

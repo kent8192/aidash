@@ -1,13 +1,12 @@
 use super::*;
 use crate::ports::authorization::records::ChildTaskRecord;
-use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Thread, policy::Resource};
+use aidash_domain::{Event, Message, Task, TaskStatus, Thread, policy::Resource};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
 struct Scope {
 	thread: Thread,
 	task: Task,
-	artifact: Artifact,
 	message: Message,
 	attachments: Vec<aidash_domain::media::MessageAttachment>,
 	event: Event,
@@ -44,6 +43,7 @@ fn scope() -> Scope {
 			title: "task".into(),
 			description: "description".into(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "saved-author".into(),
@@ -53,23 +53,12 @@ fn scope() -> Scope {
 			revision: 3,
 			created_at: now,
 		},
-		artifact: Artifact {
-			id: Uuid::from_u128(12),
-			thread_id: thread,
-			task_id: Uuid::from_u128(11),
-			kind: "text".into(),
-			name: "artifact".into(),
-			content: json!({"text":"日本語\u{0000}","nested":[1,2]}),
-			created_by: "saved-author".into(),
-			idempotency_key: "artifact".into(),
-			created_at: now,
-			run_id: None,
-		},
 		message: Message {
 			id: Uuid::from_u128(13),
 			thread_id: thread,
 			sender: "saved-sender".into(),
 			content: "日本語\u{0000}".into(),
+			completion: None,
 			idempotency_key: None,
 			created_at: now,
 			run_id: None,
@@ -154,11 +143,6 @@ impl ThreadRecordScope for Scope {
 		self.reads.push((thread, id));
 		Ok(self.found.then(|| self.task.clone()))
 	}
-	async fn artifact_record(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Artifact>> {
-		self.touch("artifact")?;
-		self.reads.push((thread, id));
-		Ok(self.found.then(|| self.artifact.clone()))
-	}
 	async fn message_record(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Message>> {
 		self.touch("message")?;
 		self.reads.push((thread, id));
@@ -199,11 +183,6 @@ impl ThreadRecordScope for Scope {
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		assert_eq!(row.created_by, "saved-author");
 		self.touch("task_visible")?;
-		Ok(self.visible)
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		assert_eq!(row.created_by, "saved-author");
-		self.touch("artifact_visible")?;
 		Ok(self.visible)
 	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
@@ -294,7 +273,6 @@ impl ChildSummaryScope for Scope {
 #[rstest]
 #[case::thread("thread", 1)]
 #[case::task("task", 11)]
-#[case::artifact("artifact", 12)]
 #[case::message("message", 13)]
 #[case::event("event", 14)]
 #[tokio::test]
@@ -306,7 +284,6 @@ async fn a_record_returns_the_original_serialized_value_after_exact_membership_t
 	let expected = match kind {
 		"thread" => json!(scope.thread),
 		"task" => json!(scope.task),
-		"artifact" => json!(scope.artifact),
 		"message" => {
 			let mut value = json!(scope.message);
 			value["attachments"] = json!([]);
@@ -322,7 +299,6 @@ async fn a_record_returns_the_original_serialized_value_after_exact_membership_t
 	let snapshot = &scope.tracked[0];
 	assert_eq!(snapshot.thread.id, Uuid::from_u128(1));
 	assert_eq!(snapshot.tasks.len(), usize::from(kind == "task"));
-	assert_eq!(snapshot.artifacts.len(), usize::from(kind == "artifact"));
 	assert_eq!(snapshot.messages.len(), usize::from(kind == "message"));
 	assert_eq!(snapshot.events.len(), usize::from(kind == "event"));
 	assert_eq!(scope.calls.last(), Some(&"track"));
@@ -332,7 +308,6 @@ async fn a_record_returns_the_original_serialized_value_after_exact_membership_t
 }
 #[rstest]
 #[case::task("task")]
-#[case::artifact("artifact")]
 #[case::message("message")]
 #[case::event("event")]
 #[tokio::test]
@@ -351,7 +326,6 @@ async fn missing_records_are_denied_without_a_membership_commit(
 fn record_id(kind: &str) -> Uuid {
 	Uuid::from_u128(match kind {
 		"task" => 11,
-		"artifact" => 12,
 		"message" => 13,
 		"event" => 14,
 		_ => 1,
@@ -359,7 +333,6 @@ fn record_id(kind: &str) -> Uuid {
 }
 #[rstest]
 #[case::task("task", "task_visible")]
-#[case::artifact("artifact", "artifact_visible")]
 #[case::message("message", "message_visible")]
 #[case::event("event", "event_visible")]
 #[tokio::test]
@@ -434,8 +407,6 @@ async fn thread_read_denial_precedes_record_lookup(mut scope: Scope) {
 #[case::thread_row("thread", "thread_row")]
 #[case::task("task", "task")]
 #[case::task_policy("task", "task_visible")]
-#[case::artifact("artifact", "artifact")]
-#[case::artifact_policy("artifact", "artifact_visible")]
 #[case::message("message", "message")]
 #[case::message_policy("message", "message_visible")]
 #[case::event_permission("event", "decide")]

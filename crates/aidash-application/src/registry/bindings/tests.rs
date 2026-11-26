@@ -1503,8 +1503,8 @@ async fn sent_tool_definitions(bindings: [&str; 3]) -> String {
 /// depend on the order an Agent declares its Bindings (ADR 0019).
 #[tokio::test]
 async fn tool_definitions_are_byte_identical_for_any_binding_order() {
-	let declared = sent_tool_definitions(["workspace_read", "file_read", "artifact_publish"]).await;
-	let reversed = sent_tool_definitions(["artifact_publish", "file_read", "workspace_read"]).await;
+	let declared = sent_tool_definitions(["workspace_read", "file_read", "deliverable_note"]).await;
+	let reversed = sent_tool_definitions(["deliverable_note", "file_read", "workspace_read"]).await;
 	assert_eq!(declared, reversed);
 }
 

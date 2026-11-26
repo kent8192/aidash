@@ -35,6 +35,7 @@ fn scope() -> Scope {
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
+			goal: None,
 			requirements: json!({}),
 			owner: Some(aidash_domain::agent_subject("aidash://peer", "agent", "1")),
 			created_by: "root".into(),
@@ -169,12 +170,6 @@ impl RemoteCommandEffects for Scope {
 		self.call("thread")?;
 		Ok(self.res("thread", &id.to_string(), json!({})))
 	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
-		assert_eq!(task, self.task.id);
-		assert_eq!(owner, self.task.owner.as_deref().unwrap());
-		self.call("artifact_resource")?;
-		Ok(self.res("artifact", "new", json!({})))
-	}
 	async fn snapshot(&mut self, _: Uuid) -> Result<Value> {
 		self.call("snapshot")?;
 		Ok(json!({"snapshot":"visible"}))
@@ -247,13 +242,15 @@ impl RemoteCommandEffects for Scope {
 				through,
 				..
 			} => json!({"kind":"transition","revision":revision,"next":next,"through":through}),
-			Effect::Artifact {
-				artifact,
-				complete_through,
+			Effect::Complete {
+				completion,
+				through,
 				abandon,
 			} => {
-				json!({"kind":"artifact","artifact":artifact,"through":complete_through,"abandon":abandon})
+				json!({"kind":"completion","completion":completion,"through":through,"abandon":abandon})
 			}
+			Effect::ChildGoal { child, goal } => json!({"child":child,"goal":goal}),
+			Effect::GoalVerdict { verdict } => json!({"kind":"goal_verdict","verdict":verdict}),
 			Effect::AbandonUnassigned { ids } => json!({"kind":"abandon_unassigned","ids":ids}),
 			Effect::CreateTask { task } => json!({"kind":"create_task","task":task}),
 			Effect::Delegate { child, agent } => {
@@ -782,6 +779,7 @@ impl HandOnScope for HandingScope {
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: self.chain[1].clone(),
@@ -988,7 +986,7 @@ async fn a_remote_run_discovers_from_its_homes_task_node_and_rechecks_the_grant(
 }
 #[rstest]
 #[case::terminal("run_message_terminal_transition",json!({"key":"id","revision":8,"status":"COMPLETED","through_seq":-1}),"invalid terminal sequence")]
-#[case::complete("run_message_complete",json!({"key":"id","artifact":{"kind":"text","name":"a","content":"saved"},"through_seq":-1}),"invalid input sequence")]
+#[case::complete("run_message_complete",json!({"key":"id","settlement_version":2,"completion":aidash_domain::deliverable::Completion::new(Uuid::nil(), "id", "saved".into(), None),"through_seq":-1}),"Invalid completion settlement identity")]
 #[tokio::test]
 async fn negative_terminal_boundaries_fail_before_persistence(
 	mut scope: Scope,
@@ -1109,6 +1107,7 @@ async fn history_rechecks_disclosure_for_every_stored_message(mut scope: Scope) 
 			thread_id: scope.task.thread_id,
 			sender: "human@aidash://peer".into(),
 			content: "protected".into(),
+			completion: None,
 			idempotency_key: None,
 			created_at: chrono::Utc::now(),
 			run_id: None,

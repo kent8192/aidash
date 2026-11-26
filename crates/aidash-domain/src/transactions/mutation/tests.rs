@@ -1,5 +1,4 @@
 use super::*;
-use crate::ArtifactInput;
 use rstest::{fixture, rstest};
 use serde_json::json;
 
@@ -107,11 +106,7 @@ fn paired_completion_is_bound_to_the_same_task_and_participant() {
 	participant.mutations.push(Mutation::CompleteTask {
 		task_id: task,
 		expected_revision: 0,
-		artifact: ArtifactInput {
-			kind: "text".into(),
-			name: "Answer".into(),
-			content: json!("Done"),
-		},
+		text: "completed".into(),
 	});
 	assert_eq!(validate_home_completion(&participant, task), Ok(()));
 }

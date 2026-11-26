@@ -20,7 +20,6 @@ impl AgentConfig {
 			projection_version: self.projection_version,
 			harness_contract: self.harness_contract,
 			prompt_cache: self.prompt_cache,
-			completion: self.completion.clone(),
 			agent_plugins: self.agent_plugins.clone(),
 			agent_plugin_settings: self.agent_plugin_settings.clone(),
 		}
@@ -51,7 +50,6 @@ impl AgentConfig {
 			projection_version: input.projection_version,
 			harness_contract: input.harness_contract,
 			prompt_cache: input.prompt_cache,
-			completion: input.completion,
 			agent_plugins: input.agent_plugins,
 			agent_plugin_settings: input.agent_plugin_settings,
 			core_capabilities: Default::default(),

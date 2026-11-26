@@ -563,6 +563,8 @@ pub mod tool {
 		/// The checklist the Agent follows on every Task, if any.
 		#[serde(default)]
 		pub procedure: Option<String>,
+		#[serde(default)]
+		pub goal: Option<String>,
 		/// The Agent version to start; this Run's own Agent when omitted.
 		#[serde(default)]
 		pub agent: Option<EntityRef>,
@@ -599,6 +601,8 @@ pub mod tool {
 		pub mission: Option<String>,
 		#[serde(default)]
 		pub procedure: Option<String>,
+		#[serde(default)]
+		pub goal: Option<String>,
 		#[serde(default)]
 		pub agent: Option<EntityRef>,
 		/// A new time trigger, or `{"kind":"none"}` to remove it.

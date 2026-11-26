@@ -1,5 +1,5 @@
 //! Iterative journal traversal terminates cycles without omitting any current read policy.
-use super::resources::{artifact_visible, conversation_resource, message_visible, task_visible};
+use super::resources::{conversation_resource, message_visible, task_visible};
 use crate::ports::authorization::visibility::resources::ResourceVisibilityScope;
 use crate::{
 	Error, Result,
@@ -9,7 +9,7 @@ use crate::{
 	},
 };
 use aidash_domain::semantic::Failure;
-use aidash_domain::{Artifact, HumanRequest, Task, policy::Resource, registry::EntityRef};
+use aidash_domain::{HumanRequest, Task, policy::Resource, registry::EntityRef};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -221,15 +221,6 @@ pub async fn classified_semantic_output_source(
 ) -> Result<Option<String>> {
 	use aidash_domain::semantic::Source;
 	match source {
-		Source::Artifact { id } => {
-			let Some(row) = scope.source_artifact(*id, thread).await? else {
-				return Ok(None);
-			};
-			if !artifact_visible(&mut ClassifiedOutputs { scope, pending }, &row).await? {
-				return Ok(None);
-			}
-			Ok(Some(serde_json::to_string(&row.content)?))
-		}
 		Source::Message { id } => {
 			let Some(row) = scope.source_message(*id, thread).await? else {
 				return Ok(None);
@@ -239,7 +230,7 @@ pub async fn classified_semantic_output_source(
 			}
 			Ok(Some(row.content))
 		}
-		_ => unreachable!("classified semantic output must be an artifact or message"),
+		_ => unreachable!("classified semantic output must be a message"),
 	}
 }
 
@@ -261,13 +252,6 @@ async fn source_invalidity(
 				task_visible(&mut ClassifiedOutputs { scope, pending }, &task).await?
 			}
 			Some(task) => task_visible(scope, &task).await?,
-			None => return Ok(Some(Failure::Invalidated)),
-		},
-		"artifact" => match scope.source_artifact(id, thread).await? {
-			Some(row) if classify_outputs => {
-				artifact_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
-			}
-			Some(row) => artifact_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
 		"attachment" => match scope.source_attachment_message(id, thread).await? {
@@ -342,9 +326,6 @@ impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		self.scope.decide(resource, action).await
-	}
-	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
-		self.scope.artifact_task(artifact).await
 	}
 	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		match self.scope.output_producers(thread, kind, id).await? {

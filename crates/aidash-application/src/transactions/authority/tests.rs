@@ -185,6 +185,7 @@ impl TransactionAuthorityScope for Scope {
 			title: String::new(),
 			description: String::new(),
 			status: aidash_domain::TaskStatus::Claimed,
+			goal: None,
 			requirements: json!({}),
 			owner: Some("agent".into()),
 			created_by: "root".into(),
@@ -198,11 +199,6 @@ impl TransactionAuthorityScope for Scope {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.call("task_resource".into())?;
 		Ok(self.resource("task", task.id, json!({})))
-	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
-		assert_eq!(owner, "agent");
-		self.call("artifact_resource".into())?;
-		Ok(self.resource("artifact", task, json!({})))
 	}
 }
 #[rstest]

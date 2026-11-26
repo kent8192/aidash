@@ -302,6 +302,7 @@ async fn graph_reports_unconfirmed_rows_under_the_answering_node() {
 				title: "task".into(),
 				description: String::new(),
 				status: aidash_domain::TaskStatus::Open,
+				goal: None,
 				requirements: json!({}),
 				owner: None,
 				created_by: "user".into(),

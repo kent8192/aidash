@@ -5,12 +5,9 @@ use crate::{
 		Loaded, OperationReconciliationRepository, OperationReconciliationScope,
 	},
 };
-use aidash_domain::{
-	capabilities::operations::{
-		VERIFICATION, capability_of, lost_area_state, reconciliation::Snapshot,
-		request_validation_failure, undelivered_refusal,
-	},
-	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
+use aidash_domain::capabilities::operations::{
+	VERIFICATION, capability_of, lost_area_state, reconciliation::Snapshot,
+	request_validation_failure, undelivered_refusal,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
@@ -363,3 +360,16 @@ pub(super) async fn download_output<
 }
 #[cfg(test)]
 mod tests;
+
+const MAX_DIAGNOSTIC_BYTES: usize = 4096;
+
+fn bounded_tail(text: &str, limit: usize) -> String {
+	if text.len() <= limit {
+		return text.to_owned();
+	}
+	let mut start = text.len() - limit;
+	while !text.is_char_boundary(start) {
+		start += 1;
+	}
+	text[start..].to_owned()
+}

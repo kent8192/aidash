@@ -42,6 +42,7 @@ fn scope() -> Scope {
 		title: "Task".into(),
 		description: "Work".into(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "root".into(),

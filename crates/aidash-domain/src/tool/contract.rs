@@ -493,7 +493,7 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		| "capability_load"
 		| "capability_unload"
 		| "task_wait" => ToolReach::Run,
-		"task_create" | "task_assign" | "artifact_publish" | "thread_message" | "thread_read"
+		"task_create" | "task_assign" | "deliverable_note" | "thread_message" | "thread_read"
 		| "thread_observe" | "thread_search" | "memory_recall" | "memory_reflect"
 		| "memory_mutate" | "file_share" | "attachment_copy" => ToolReach::HomeWorkspace,
 		// A remote Run discovers through its Home and hands a Task on through
@@ -600,10 +600,6 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 				LocalDelegation,
 				resource("task.delegate", "task", ArgumentUuid("task_id")),
 			];
-		}
-		"artifact_publish" => {
-			auth.requirements
-				.push(resource("artifact.create", "artifact", Task));
 		}
 		"thread_message" => {
 			auth.requirements
@@ -805,7 +801,7 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"task_wait",
 	"task_create",
 	"task_assign",
-	"artifact_publish",
+	"deliverable_note",
 	"thread_message",
 	"thread_read",
 	"thread_observe",
@@ -1000,7 +996,7 @@ mod tests {
 			sorted(vec![
 				"task_create",
 				"task_assign",
-				"artifact_publish",
+				"deliverable_note",
 				"thread_message",
 				"thread_read",
 				"thread_observe",
@@ -1099,7 +1095,7 @@ mod tests {
 			"task_create",
 			"task_assign",
 			"task_delegate",
-			"artifact_publish",
+			"deliverable_note",
 			"workspace_message",
 			"memory_mutate",
 			"memory_recall",
@@ -1222,7 +1218,7 @@ mod tests {
 			"task_create",
 			"task_assign",
 			"task_delegate",
-			"artifact_publish",
+			"deliverable_note",
 			"workspace_message",
 			"memory_mutate",
 			"memory_recall",

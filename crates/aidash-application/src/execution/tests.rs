@@ -948,15 +948,6 @@ fn referenced_run_message_requires_every_record_chunk() {
 }
 
 #[rstest::rstest]
-
-fn result_names_fit_for_ascii_and_multibyte_titles() {
-	for title in ["a".repeat(64_000), "界".repeat(21_333)] {
-		let name = super::result_artifact_name(&title);
-		assert!(name.len() <= 64_000);
-		assert!(name.ends_with(" result"));
-	}
-}
-#[rstest::rstest]
 fn declared_continuations_keep_approval_precedence() {
 	let human = aidash_domain::tool::builtin_contract("human_request").unwrap();
 	let wait = aidash_domain::tool::builtin_contract("workspace_wait").unwrap();

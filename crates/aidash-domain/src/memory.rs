@@ -217,11 +217,6 @@ pub enum Evidence {
 		revision: i64,
 		digest: String,
 	},
-	Artifact {
-		id: Uuid,
-		revision: i64,
-		digest: String,
-	},
 	Run {
 		id: Uuid,
 		revision: i64,
@@ -374,12 +369,7 @@ impl Content {
 					revision,
 					digest,
 				} => !id.is_nil() && *revision > 0 && !digest.is_empty(),
-				Evidence::Artifact {
-					id,
-					revision,
-					digest,
-				}
-				| Evidence::Run {
+				Evidence::Run {
 					id,
 					revision,
 					digest,

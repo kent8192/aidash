@@ -7,8 +7,8 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	Artifact, Conversation, Message, RunMetadata, Task, generation::requests::Request,
-	registry::EntityRef, semantic::Failure,
+	Conversation, Message, RunMetadata, Task, generation::requests::Request, registry::EntityRef,
+	semantic::Failure,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -63,7 +63,7 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 		id: Uuid,
 	) -> Result<Option<Vec<Uuid>>>;
 	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>>;
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>>;
+
 	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>>;
 	/// Resolve an extant attachment to its parent message for current-authority checks.
 	async fn source_attachment_message(

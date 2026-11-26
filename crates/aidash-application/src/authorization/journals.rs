@@ -22,7 +22,6 @@ pub async fn track_snapshot(
 		.tasks
 		.iter()
 		.map(|r| ("task".into(), r.id))
-		.chain(snapshot.artifacts.iter().map(|r| ("artifact".into(), r.id)))
 		.chain(snapshot.messages.iter().map(|r| ("message".into(), r.id)))
 		.collect();
 	let id = |value: &Value| value.as_str().and_then(|s| s.parse::<Uuid>().ok());

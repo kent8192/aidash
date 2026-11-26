@@ -166,6 +166,7 @@ fn world() -> World {
 			title: "Task".into(),
 			description: "Work".into(),
 			status: TaskStatus::Running,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "creator".into(),

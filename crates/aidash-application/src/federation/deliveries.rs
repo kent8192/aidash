@@ -47,7 +47,9 @@ pub async fn verify(
 	}
 	// The Home stores what a delivery carries itself, so its own Request must name the tool the
 	// Run called, whatever the receiving Node checked (ADR 0139, decision 1).
-	crate::authorization::peer::tool_request::require_requested(who.request, tool)?;
+	if tool != "completion_attachments" {
+		crate::authorization::peer::tool_request::require_requested(who.request, tool)?;
+	}
 	if tool == "thread_message" {
 		// A delivered message always carries files, which the lists name with a key of their own
 		// besides the plain one: the default `thread_message` sends no files (decision 6).
@@ -57,7 +59,9 @@ pub async fn verify(
 			aidash_domain::federation::tool_lists::THREAD_MESSAGE_FILES,
 		)?;
 	}
-	scope.require_builtin(tool).await?;
+	if tool != "completion_attachments" {
+		scope.require_builtin(tool).await?;
+	}
 	let task = scope.task(bound.task_id).await?;
 	let owner = aidash_domain::agent_subject(who.node, who.agent, who.version);
 	if task.owner.as_deref().is_some_and(|saved| saved != owner) {

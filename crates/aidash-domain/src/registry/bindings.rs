@@ -44,7 +44,7 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"task_create",
 	"task_delegate",
 	"agent_discover",
-	"artifact_publish",
+	"deliverable_note",
 	"thread_message",
 	"attachment_copy",
 	"memory_mutate",
@@ -260,10 +260,6 @@ pub struct AgentBindings {
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prompt_cache: Option<crate::projection::PromptCache>,
-	/// Completion Policy every Run of this Agent version pins (#112). Omitted
-	/// means no verification and is not serialized, like `prompt_cache`.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub completion: Option<crate::completion::CompletionPolicy>,
 	/// The Agent Plugin copies this Agent version takes in (ADR 0072). Omitted when empty, so
 	/// definitions without plugins keep their bytes and digests.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -339,9 +335,6 @@ impl AgentBindings {
 			));
 		}
 		if let Some(policy) = &self.context_policy {
-			policy.validate()?;
-		}
-		if let Some(policy) = &self.completion {
 			policy.validate()?;
 		}
 		self.validate_agent_plugins()?;

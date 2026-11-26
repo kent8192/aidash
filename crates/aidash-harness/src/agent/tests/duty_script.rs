@@ -61,8 +61,8 @@ async fn a_duty_script_completes_its_task_from_the_calls_output_without_a_model(
 	assert_eq!(fixture.run.phase(), RunPhase::Completed);
 	assert_eq!(fixture.backend.task_value().status, TaskStatus::Completed);
 	assert_eq!(
-		*fixture.backend.0.artifacts.lock().unwrap(),
-		vec![json!("{\"action\":\"drop\"}\n")]
+		*fixture.backend.0.published.lock().unwrap(),
+		vec!["{\"action\":\"drop\"}\n"]
 	);
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 	let calls = fixture.backend.calls();
@@ -112,7 +112,7 @@ async fn a_script_that_exits_unsuccessfully_fails_its_run_with_the_reason(mut fi
 			.contains("exited with code 2: Traceback: KeyError 'pr'"),
 		"{error}"
 	);
-	assert!(fixture.backend.0.artifacts.lock().unwrap().is_empty());
+	assert!(fixture.backend.0.published.lock().unwrap().is_empty());
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 
@@ -226,8 +226,8 @@ async fn a_python_script_sends_its_code_as_the_python_operation_reads_it(mut fix
 	assert_eq!(fixture.run.phase(), RunPhase::Completed);
 	assert_eq!(fixture.backend.task_value().status, TaskStatus::Completed);
 	assert_eq!(
-		*fixture.backend.0.artifacts.lock().unwrap(),
-		vec![json!("{\"action\":\"drop\"}\n")]
+		*fixture.backend.0.published.lock().unwrap(),
+		vec!["{\"action\":\"drop\"}\n"]
 	);
 	let codes = python.codes.lock().unwrap().clone();
 	assert_eq!(codes.len(), 1, "{codes:?}");

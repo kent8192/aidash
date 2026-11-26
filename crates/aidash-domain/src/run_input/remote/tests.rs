@@ -33,6 +33,7 @@ fn message(run: &RunMetadata, key: &str) -> Message {
 		thread_id: run.thread_id,
 		sender: "human".into(),
 		content: "correction".into(),
+		completion: None,
 		idempotency_key: Some(full_key("executor", run.task_id, key)),
 		created_at: run.updated_at,
 		run_id: None,

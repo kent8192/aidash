@@ -1,6 +1,6 @@
 use super::*;
 use crate::Error;
-use aidash_domain::{Artifact, TaskStatus, Thread, policy::Resource};
+use aidash_domain::{TaskStatus, Thread, policy::Resource};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
@@ -24,6 +24,7 @@ fn task(id: usize, visible: bool) -> Task {
 		title: "task".into(),
 		description: "description".into(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: if visible { "visible" } else { "hidden" }.into(),
@@ -40,6 +41,7 @@ fn message(id: usize, visible: bool) -> Message {
 		thread_id: Uuid::from_u128(1),
 		sender: if visible { "visible" } else { "hidden" }.into(),
 		content: "saved content".into(),
+		completion: None,
 		idempotency_key: None,
 		created_at: Utc::now(),
 		run_id: None,
@@ -56,26 +58,11 @@ fn event(sequence: i64, visible: bool) -> Event {
 		created_at: Utc::now(),
 	}
 }
-fn artifact(id: usize, visible: bool) -> Artifact {
-	Artifact {
-		id: Uuid::from_u128(id as u128),
-		thread_id: Uuid::from_u128(1),
-		task_id: Uuid::from_u128(2),
-		kind: "text".into(),
-		name: "artifact".into(),
-		content: json!("immutable content"),
-		created_by: if visible { "visible" } else { "hidden" }.into(),
-		idempotency_key: "artifact".into(),
-		created_at: Utc::now(),
-		run_id: None,
-	}
-}
 struct Scope {
 	tasks: Vec<Task>,
 	events: Vec<Event>,
 	messages: Vec<Message>,
 	attachments: Vec<aidash_domain::media::MessageAttachment>,
-	artifacts: Vec<Artifact>,
 	calls: Vec<&'static str>,
 	task_offsets: Vec<u64>,
 	message_offsets: Vec<u64>,
@@ -110,7 +97,6 @@ fn scope() -> Scope {
 		events: vec![],
 		messages: vec![],
 		attachments: vec![],
-		artifacts: vec![],
 		calls: vec![],
 		task_offsets: vec![],
 		message_offsets: vec![],
@@ -177,14 +163,6 @@ impl ThreadProjection for Scope {
 	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		self.touch("task_visible")?;
-		if self.silent.contains(&row.id) {
-			self.silence = Some(SILENT_NODE.into());
-			return Ok(false);
-		}
-		Ok(row.created_by == "visible")
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		self.touch("artifact_visible")?;
 		if self.silent.contains(&row.id) {
 			self.silence = Some(SILENT_NODE.into());
 			return Ok(false);
@@ -259,11 +237,6 @@ impl ThreadProjection for Scope {
 		assert_eq!(id, Uuid::from_u128(1));
 		self.touch("thread_tasks")?;
 		Ok(self.tasks.clone())
-	}
-	async fn thread_artifacts(&mut self, id: Uuid) -> Result<Vec<Artifact>> {
-		assert_eq!(id, Uuid::from_u128(1));
-		self.touch("thread_artifacts")?;
-		Ok(self.artifacts.clone())
 	}
 	async fn track(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
 		self.touch("track")?;
@@ -430,7 +403,6 @@ async fn hidden_message_rows_are_scanned_until_repository_exhaustion(
 #[tokio::test]
 async fn snapshot_rechecks_message_visibility_and_tracks_only_final_disclosure(mut scope: Scope) {
 	scope.tasks = vec![task(3, true), task(2, false), task(1, true)];
-	scope.artifacts = vec![artifact(8, true), artifact(9, false)];
 	scope.messages = vec![message(12, true), message(11, false)];
 	scope.events = vec![event(9, true), event(8, false)];
 	scope.second_message_denied = true;
@@ -439,8 +411,6 @@ async fn snapshot_rechecks_message_visibility_and_tracks_only_final_disclosure(m
 		result.tasks.iter().map(|row| row.id).collect::<Vec<_>>(),
 		vec![Uuid::from_u128(3), Uuid::from_u128(1)]
 	);
-	assert_eq!(result.artifacts[0].content, json!("immutable content"));
-	assert_eq!(result.artifacts.len(), 1);
 	assert!(result.messages.is_empty());
 	assert_eq!(
 		result
@@ -469,7 +439,6 @@ async fn snapshot_rechecks_message_visibility_and_tracks_only_final_disclosure(m
 			"event_rows",
 			"thread_row",
 			"thread_tasks",
-			"thread_artifacts",
 			"message_rows"
 		]
 	);
@@ -503,7 +472,6 @@ async fn thread_read_denial_precedes_any_snapshot_rows_or_membership_write(mut s
 #[tokio::test]
 async fn fitted_observation_tracks_only_the_selected_page_from_each_collection(mut scope: Scope) {
 	scope.tasks = (1..=5).map(|id| task(id, true)).collect();
-	scope.artifacts = (1..=5).map(|id| artifact(id, true)).collect();
 	scope.events = (1..=5).rev().map(|seq| event(seq, true)).collect();
 	scope.messages = (1..=5).rev().map(|id| message(id, true)).collect();
 	let mut tried = vec![];
@@ -521,14 +489,6 @@ async fn fitted_observation_tracks_only_the_selected_page_from_each_collection(m
 	let tracked = &scope.tracked[0];
 	assert_eq!(
 		tracked.tasks.iter().map(|row| row.id).collect::<Vec<_>>(),
-		vec![Uuid::from_u128(2), Uuid::from_u128(3)]
-	);
-	assert_eq!(
-		tracked
-			.artifacts
-			.iter()
-			.map(|row| row.id)
-			.collect::<Vec<_>>(),
 		vec![Uuid::from_u128(2), Uuid::from_u128(3)]
 	);
 	assert_eq!(
@@ -593,7 +553,6 @@ async fn snapshot_adapter_failures_cannot_publish_partial_disclosure(
 	#[case] fail: &'static str,
 ) {
 	scope.tasks = vec![task(1, true)];
-	scope.artifacts = vec![artifact(1, true)];
 	scope.messages = vec![message(1, true)];
 	scope.events = vec![event(1, true)];
 	scope.fail = Some(fail);
@@ -718,7 +677,6 @@ async fn a_page_with_nothing_left_out_says_so_with_an_empty_list(mut scope: Scop
 #[tokio::test]
 async fn a_snapshot_counts_tasks_artifacts_and_messages_a_silent_node_left_out(mut scope: Scope) {
 	scope.tasks = (10..14).map(|id| task(id, true)).collect();
-	scope.artifacts = (20..23).map(|id| artifact(id, true)).collect();
 	scope.messages = (30..33).map(|id| message(id, true)).collect();
 	scope.silent = [10, 11, 20, 30, 31, 32]
 		.into_iter()
@@ -732,9 +690,6 @@ async fn a_snapshot_counts_tasks_artifacts_and_messages_a_silent_node_left_out(m
 		.iter()
 		.map(|entry| (entry.kind, entry.count))
 		.collect();
-	assert_eq!(
-		counts,
-		vec![(Kind::Task, 2), (Kind::Artifact, 1), (Kind::Message, 3)]
-	);
+	assert_eq!(counts, vec![(Kind::Task, 2), (Kind::Message, 3)]);
 	assert_eq!(snapshot.tasks.len(), 2);
 }

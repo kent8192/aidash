@@ -868,12 +868,6 @@ async fn protected_resource(
 				};
 				scope.task_resource(&task).await?
 			}
-			"artifact" => {
-				let creator = scope.subjects().last().ok_or(Error::Forbidden)?.clone();
-				scope
-					.artifact_creation_resource(run.task_id, &creator)
-					.await?
-			}
 			"memory" => scope.memory_resource(run).await?,
 			_ => scope.resource(kind, id, json!({})),
 		}

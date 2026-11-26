@@ -46,7 +46,7 @@ pub struct VerificationRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SummaryContent {
-	pub goal: String,
+	pub intent: String,
 	pub constraints: Vec<SummaryItem>,
 	pub decisions: Vec<String>,
 	pub unresolved: Vec<SummaryItem>,
@@ -56,7 +56,7 @@ pub struct SummaryContent {
 	pub verification: Vec<VerificationRef>,
 }
 
-/// Model-authored labels and prose. Evidence and the goal are copied by code.
+/// Model-authored labels and prose. Evidence and the intent are copied by code.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SummaryDraft {
@@ -135,9 +135,9 @@ pub struct ExecutionSummary {
 pub enum Rejection {
 	#[error("summary output is not valid structured JSON")]
 	Malformed,
-	#[error("summary goal is empty")]
+	#[error("summary intent is empty")]
 	EmptyGoal,
-	#[error("summary changed the previous goal")]
+	#[error("summary changed the previous intent")]
 	ChangedGoal,
 	#[error("summary item IDs must be unique, non-empty and at most 64 bytes")]
 	InvalidItem,
@@ -227,7 +227,7 @@ impl SummaryContent {
 	/// item rejects the merge so no accumulated state is silently lost.
 	pub fn from_draft(
 		text: &str,
-		goal: &str,
+		intent: &str,
 		previous: Option<&ExecutionSummary>,
 		absorbed: &[HistoryEntry],
 		_max_tokens: u32,
@@ -242,7 +242,7 @@ impl SummaryContent {
 		let mut content = previous
 			.map(|item| item.content.clone())
 			.unwrap_or_else(|| Self {
-				goal: goal.to_owned(),
+				intent: intent.to_owned(),
 				constraints: vec![],
 				decisions: vec![],
 				unresolved: vec![],
@@ -250,7 +250,7 @@ impl SummaryContent {
 				artifacts: vec![],
 				verification: vec![],
 			});
-		if content.goal.trim().is_empty() {
+		if content.intent.trim().is_empty() {
 			return Err(Rejection::EmptyGoal);
 		}
 		if !draft.prose.trim().is_empty() {
@@ -377,12 +377,12 @@ impl SummaryContent {
 		max_tokens: u32,
 	) -> Result<Self, Rejection> {
 		let content: Self = serde_json::from_str(text.trim()).map_err(|_| Rejection::Malformed)?;
-		if content.goal.trim().is_empty() {
+		if content.intent.trim().is_empty() {
 			return Err(Rejection::EmptyGoal);
 		}
-		// The goal is accumulated state the absorbed events no longer show;
+		// The intent is accumulated state the absorbed events no longer show;
 		// a later merge copies it verbatim.
-		if previous.is_some_and(|previous| previous.content.goal != content.goal) {
+		if previous.is_some_and(|previous| previous.content.intent != content.intent) {
 			return Err(Rejection::ChangedGoal);
 		}
 		let mut ids = BTreeSet::new();
@@ -673,7 +673,7 @@ impl ExecutionSummary {
 	pub fn model_view(&self) -> Value {
 		let content = &self.content;
 		json!({
-			"goal": content.goal,
+			"intent": content.intent,
 			"constraints": content.constraints,
 			"decisions": content.decisions,
 			"unresolved": content.unresolved,

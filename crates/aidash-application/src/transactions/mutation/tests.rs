@@ -1,6 +1,6 @@
 use super::*;
 use aidash_domain::{
-	Artifact, ArtifactInput, RecoveryState, RunControl, RunPhase, RunState, Task, Thread,
+	Message, RecoveryState, RunControl, RunPhase, RunState, Task, Thread,
 	context::{Context, ContextUsage},
 	provider::ToolCall,
 	run_state::{RawRun, ToolCallState, encode},
@@ -35,18 +35,11 @@ fn run() -> RawRun {
 	}
 }
 
-fn artifact_input() -> ArtifactInput {
-	ArtifactInput {
-		kind: "text".into(),
-		name: "Answer".into(),
-		content: json!("Done"),
-	}
-}
 fn completion() -> Mutation {
 	Mutation::CompleteTask {
 		task_id: Uuid::from_u128(1),
 		expected_revision: 3,
-		artifact: artifact_input(),
+		text: "report".into(),
 	}
 }
 fn finalization() -> Mutation {
@@ -144,25 +137,23 @@ impl MutationScope for Scope {
 	async fn complete_task(
 		&mut self,
 		task: &Task,
-		artifact: &ArtifactInput,
+		text: &str,
 		key: &str,
-	) -> Result<(Task, Artifact)> {
+	) -> Result<(Task, Message)> {
 		self.call("complete_task")?;
 		self.keys.push(key.into());
 		let mut saved = task.clone();
 		saved.status = aidash_domain::TaskStatus::Completed;
 		saved.revision += 1;
-		let created = Artifact {
+		let created = Message {
 			id: Uuid::from_u128(8),
 			thread_id: task.thread_id,
-			task_id: task.id,
-			kind: artifact.kind.clone(),
-			name: artifact.name.clone(),
-			content: artifact.content.clone(),
-			created_by: task.owner.clone().unwrap(),
-			idempotency_key: key.into(),
+			sender: task.owner.clone().unwrap(),
+			content: text.to_owned(),
+			idempotency_key: Some(key.to_owned()),
 			created_at: task.created_at,
 			run_id: None,
+			completion: None,
 		};
 		Ok((saved, created))
 	}

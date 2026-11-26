@@ -146,6 +146,7 @@ fn message() -> Message {
 		thread_id: task().thread_id,
 		sender: "requester".into(),
 		content: "input text".into(),
+		completion: None,
 		idempotency_key: None,
 		created_at: Utc.timestamp_opt(0, 0).unwrap(),
 		run_id: None,

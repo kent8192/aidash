@@ -359,6 +359,8 @@ pub enum Command {
 		id: subnodes::SubnodeId,
 		title: String,
 		request: String,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		goal: Option<String>,
 		#[serde(default)]
 		journal_range: Option<subnodes::JournalRange>,
 	},

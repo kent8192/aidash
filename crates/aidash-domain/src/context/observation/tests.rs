@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Artifact, Event, Message, Task, Thread};
+use crate::{Event, Message, Task, Thread};
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -23,6 +23,7 @@ fn snapshot(rows: usize) -> ThreadSnapshot {
 				title: "\0".repeat(256),
 				description: "\0".repeat(512),
 				status: crate::TaskStatus::Running,
+				goal: None,
 				requirements: json!({}),
 				owner: Some("\0".repeat(256)),
 				created_by: "subject".into(),
@@ -30,31 +31,6 @@ fn snapshot(rows: usize) -> ThreadSnapshot {
 				parent_id: None,
 				started_by_duty: None,
 				revision: 1,
-				created_at: now,
-			})
-			.collect(),
-		artifacts: (0..rows)
-			.map(|_| Artifact {
-				id: Uuid::new_v4(),
-				thread_id,
-				task_id: Uuid::new_v4(),
-				kind: "text".into(),
-				name: "\0".repeat(256),
-				content: json!("omitted"),
-				created_by: "subject".into(),
-				idempotency_key: "artifact".into(),
-				created_at: now,
-				run_id: None,
-			})
-			.collect(),
-		events: (0..rows)
-			.map(|sequence| Event {
-				sequence: sequence as i64,
-				id: Uuid::new_v4(),
-				node: None,
-				thread_id: Some(thread_id),
-				kind: "\0".repeat(128),
-				data: json!({}),
 				created_at: now,
 			})
 			.collect(),

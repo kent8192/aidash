@@ -1,5 +1,5 @@
 use super::*;
-use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Thread};
+use aidash_domain::{Event, Message, Task, TaskStatus, Thread};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
@@ -21,6 +21,7 @@ fn snapshot() -> ThreadSnapshot {
 			title: "task".into(),
 			description: "task".into(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "saved".into(),
@@ -30,23 +31,12 @@ fn snapshot() -> ThreadSnapshot {
 			revision: 1,
 			created_at: Utc::now(),
 		}],
-		artifacts: vec![Artifact {
-			id: Uuid::from_u128(6),
-			thread_id: Uuid::from_u128(1),
-			task_id: Uuid::from_u128(7),
-			kind: "text".into(),
-			name: "artifact".into(),
-			content: json!("immutable"),
-			created_by: "saved".into(),
-			idempotency_key: "artifact".into(),
-			created_at: Utc::now(),
-			run_id: None,
-		}],
 		messages: vec![Message {
 			id: Uuid::from_u128(5),
 			thread_id: Uuid::from_u128(1),
 			sender: "saved".into(),
 			content: "saved".into(),
+			completion: None,
 			idempotency_key: None,
 			created_at: Utc::now(),
 			run_id: None,
@@ -508,7 +498,6 @@ async fn thread_open_events_without_a_message_id_do_not_use_legacy_content_match
 async fn empty_membership_sources_keep_the_existing_commit_boundary(mut scope: Scope) {
 	let mut snapshot = snapshot();
 	snapshot.tasks.clear();
-	snapshot.artifacts.clear();
 	snapshot.messages.clear();
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
 	assert_eq!(scope.calls, vec!["sources_commit"]);

@@ -268,9 +268,6 @@ pub enum Source {
 	Memory {
 		text: String,
 	},
-	Artifact {
-		id: Uuid,
-	},
 	Message {
 		id: Uuid,
 	},

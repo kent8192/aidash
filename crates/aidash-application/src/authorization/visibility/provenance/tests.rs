@@ -3,8 +3,8 @@ use crate::ports::authorization::visibility::{
 	provenance::RecordedRead, resources::ResourceVisibilityScope,
 };
 use aidash_domain::{
-	Artifact, Conversation, HumanRequest, Message, RunMetadata, Task,
-	generation::requests::Request, policy::Resource, registry::EntityRef,
+	Conversation, HumanRequest, Message, RunMetadata, Task, generation::requests::Request,
+	policy::Resource, registry::EntityRef,
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -96,13 +96,6 @@ impl ResourceVisibilityScope for Scope {
 		self.touch(key)?;
 		self.decisions.push(resource.clone());
 		Ok(self.denied != Some(key))
-	}
-	async fn artifact_task(&mut self, a: &Artifact) -> Result<Option<Task>> {
-		self.lookup("artifact_task", a.task_id, a.thread_id)?;
-		let mut t = task();
-		t.id = a.task_id;
-		t.thread_id = a.thread_id;
-		Ok(Some(t))
 	}
 	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.touch("output")?;
@@ -219,13 +212,6 @@ impl ReadProvenanceScope for Scope {
 		t.thread_id = thread;
 		Ok((!self.missing).then_some(t))
 	}
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		self.lookup("artifact", id, thread)?;
-		let mut a = artifact();
-		a.id = id;
-		a.thread_id = thread;
-		Ok((!self.missing).then_some(a))
-	}
 	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		self.lookup("message", id, thread)?;
 		let mut m = message(id.as_u128(), "stored-sender");
@@ -311,7 +297,6 @@ impl crate::ports::semantic::memory::SemanticMemoryReadSession for Scope {
 	) -> Result<bool> {
 		let source: aidash_domain::semantic::Source = serde_json::from_value(entry.source.clone())?;
 		let (kind, id) = match source {
-			aidash_domain::semantic::Source::Artifact { id } => ("artifact", id),
 			aidash_domain::semantic::Source::Message { id } => ("message", id),
 			_ => unreachable!(),
 		};
@@ -439,39 +424,6 @@ async fn semantic_output_cycles_and_authority_keep_the_correct_cause(
 	assert_eq!(
 		run_reads_invalidity(&mut scope, root).await.unwrap(),
 		expected
-	);
-}
-
-#[rstest]
-#[case("task", "task")]
-#[case("artifact", "artifact")]
-#[case("artifact", "task")]
-#[case("message", "message")]
-#[tokio::test]
-async fn changed_producer_source_retains_invalidation_through_output_provenance(
-	mut scope: Scope,
-	#[case] source_kind: &str,
-	#[case] output_kind: &str,
-) {
-	let root = Uuid::from_u128(1);
-	let producer = Uuid::from_u128(2);
-	let thread = Uuid::from_u128(3);
-	let source = Uuid::from_u128(4);
-	let output = if output_kind == "task" && source_kind == "artifact" {
-		artifact().task_id
-	} else {
-		source
-	};
-	scope
-		.graph
-		.insert(root, vec![(thread, source_kind.into(), source)]);
-	scope
-		.outputs
-		.insert((thread, output_kind.into(), output), vec![producer]);
-	scope.invalid_runs.insert(producer, Failure::Invalidated);
-	assert_eq!(
-		run_reads_invalidity(&mut scope, root).await.unwrap(),
-		Some(Failure::Invalidated)
 	);
 }
 
@@ -995,6 +947,7 @@ fn task() -> Task {
 		title: "Task".into(),
 		description: String::new(),
 		status: aidash_domain::TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "stored-task-author".into(),
@@ -1006,28 +959,13 @@ fn task() -> Task {
 	}
 }
 
-#[fixture]
-fn artifact() -> Artifact {
-	Artifact {
-		id: Uuid::from_u128(3),
-		thread_id: Uuid::from_u128(2),
-		task_id: Uuid::from_u128(1),
-		kind: "text".into(),
-		name: "Artifact".into(),
-		content: json!({}),
-		created_by: "stored-artifact-author".into(),
-		idempotency_key: "key".into(),
-		created_at: chrono::Utc::now(),
-		run_id: None,
-	}
-}
-
 fn message(id: u128, sender: &str) -> Message {
 	Message {
 		id: Uuid::from_u128(id),
 		thread_id: Uuid::from_u128(2),
 		sender: sender.into(),
 		content: "same content".into(),
+		completion: None,
 		idempotency_key: None,
 		created_at: chrono::Utc::now(),
 		run_id: None,
