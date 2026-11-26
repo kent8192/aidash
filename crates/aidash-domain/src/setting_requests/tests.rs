@@ -172,3 +172,14 @@ fn rejects_invalid_forms_before_asking() {
 		.is_err()
 	);
 }
+
+#[test]
+fn browser_time_zone_names_match_the_domain_database() {
+	let mut expected: Vec<_> = chrono_tz::TZ_VARIANTS
+		.iter()
+		.map(|zone| zone.name())
+		.collect();
+	expected.sort_unstable();
+	let browser = include_str!("../../../../web/src/collaboration/setting-time-zones.txt");
+	assert_eq!(browser.lines().collect::<Vec<_>>(), expected);
+}

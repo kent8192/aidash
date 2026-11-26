@@ -426,12 +426,26 @@ impl Constraint {
 						"https:// で始まる URL を入力してください。",
 					),
 					Format::Date => (
-						s.len() == 10 && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok(),
+						s.len() == 10
+							&& s.bytes().enumerate().all(|(i, b)| {
+								if i == 4 || i == 7 {
+									b == b'-'
+								} else {
+									b.is_ascii_digit()
+								}
+							}) && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok(),
 						"Enter a date as YYYY-MM-DD.",
 						"日付を YYYY-MM-DD で入力してください。",
 					),
 					Format::Time => (
-						s.len() == 5 && chrono::NaiveTime::parse_from_str(s, "%H:%M").is_ok(),
+						s.len() == 5
+							&& s.bytes().enumerate().all(|(i, b)| {
+								if i == 2 {
+									b == b':'
+								} else {
+									b.is_ascii_digit()
+								}
+							}) && chrono::NaiveTime::parse_from_str(s, "%H:%M").is_ok(),
 						"Enter a time as HH:MM.",
 						"時刻を HH:MM で入力してください。",
 					),

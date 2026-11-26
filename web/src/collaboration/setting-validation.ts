@@ -3,6 +3,10 @@ import type {
   SettingConstraint,
 } from "../generated/models";
 
+import zoneNames from "./setting-time-zones.txt?raw";
+
+const timeZones = new Set(zoneNames.trim().split("\n"));
+
 export function formTitle(form: SettingRequestForm) {
   return form.kind === "text"
     ? form.fields.map((field) => field.label).join(" · ")
@@ -23,7 +27,8 @@ async function validateText(
   if (rule.type === "regex") {
     // Use the same Unicode classes, flags and matching semantics as the server.
     const { init, RRegex } = await import("rregex/web");
-    await init();
+    const { default: wasmUrl } = await import("rregex/lib/rregex.wasm?url");
+    await init({ module_or_path: wasmUrl });
     const regex = new RRegex(rule.pattern);
     try {
       if (!regex.isMatch(value)) throw Error(rule.message);
@@ -95,10 +100,7 @@ async function validateText(
           );
         break;
       case "time_zone":
-        try {
-          if (/^[+-]/.test(value)) throw Error();
-          new Intl.DateTimeFormat("en", { timeZone: value });
-        } catch {
+        if (!timeZones.has(value)) {
           throw Error(
             ja
               ? "Asia/Tokyo などのタイムゾーンを入力してください。"
