@@ -5,7 +5,6 @@
 use super::super::models::{
 	ApprovalPreference, ApprovalRuleRecord, ThreadApprovalMode, database_time,
 };
-use super::approval_decider::{self, Availability};
 use aidash_domain::RunMetadata;
 use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, RuleEffect, RuleTarget, Settings,
@@ -551,7 +550,7 @@ pub(crate) async fn settings_for_run(
 		return Ok(None);
 	};
 	let rules = rules(tx, tenant, &covering.subject).await?;
-	let auto_available = auto_available(tx, tenant, &run.node, covering.mode).await?;
+	let auto_available = auto_available(covering.mode);
 	Ok(Some(Settings {
 		mode: covering.mode,
 		rules: rules.into_iter().map(|(rule, _)| rule).collect(),
@@ -562,17 +561,8 @@ pub(crate) async fn settings_for_run(
 
 /// Whether the Tenant's approval Decider can judge on this Node, which only
 /// Auto needs to know.
-async fn auto_available(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	node: &aidash_domain::nodes::NodeName,
-	mode: ApprovalMode,
-) -> crate::Result<bool> {
-	if mode != ApprovalMode::Auto {
-		return Ok(false);
-	}
-	let chosen = approval_decider::chosen(tx, tenant).await?;
-	Ok(approval_decider::availability(tx, tenant, node, &chosen).await? == Availability::Usable)
+fn auto_available(mode: ApprovalMode) -> bool {
+	mode == ApprovalMode::Auto
 }
 
 /// The settings of `root` without a Run: their default mode and rules. `None`
@@ -581,7 +571,7 @@ pub(crate) async fn settings_for_root(
 	tx: &mut dyn TransactionExecutor,
 	bundle: &PolicyBundle,
 	tenant: &str,
-	node: &aidash_domain::nodes::NodeName,
+	_node: &aidash_domain::nodes::NodeName,
 	root: &str,
 ) -> crate::Result<Option<Settings>> {
 	if !is_person(bundle, root) {
@@ -590,7 +580,7 @@ pub(crate) async fn settings_for_root(
 	let preference = preference(tx, tenant, root).await?;
 	let rules = rules(tx, tenant, root).await?;
 	let mode = default_mode(preference.as_ref())?;
-	let auto_available = auto_available(tx, tenant, node, mode).await?;
+	let auto_available = auto_available(mode);
 	Ok(Some(Settings {
 		mode,
 		rules: rules.into_iter().map(|(rule, _)| rule).collect(),

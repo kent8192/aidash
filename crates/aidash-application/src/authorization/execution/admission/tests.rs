@@ -47,7 +47,7 @@ impl Scope {
 			revision: 7,
 			created_at: chrono::Utc::now(),
 		};
-		Self{task:Some(task),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
+		Self{task:Some(task),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());
@@ -159,14 +159,6 @@ impl ExecutionAdmissionSession for Scope {
 	async fn executable_entry(&mut self, _: &EntityRef) -> Result<Entry> {
 		self.call("entry")?;
 		Ok(self.entry.clone())
-	}
-	async fn decider_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		self.call("decider")?;
-		self.deciders
-			.iter()
-			.find(|(held, _)| held == reference)
-			.map(|(_, entry)| entry.clone())
-			.ok_or(Error::Forbidden)
 	}
 	async fn active_installation(&mut self, _: &Entry) -> Result<bool> {
 		self.call("active")?;

@@ -382,12 +382,6 @@ impl RuntimeTasks {
 			),
 		);
 		tasks.spawn_service(
-			"observation",
-			runtime_task(crate::apps::execution::observation::run(
-				worker_runtime.clone(),
-			)),
-		);
-		tasks.spawn_service(
 			"semantic worker",
 			runtime_task(crate::semantic::worker::run(worker_runtime.clone())),
 		);

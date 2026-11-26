@@ -65,7 +65,6 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"conversation.read",
 	"credential.create",
 	"decision.evidence.read",
-	"decision.invoke",
 	"decision.state.read",
 	"embedding.invoke",
 	"file.delete",

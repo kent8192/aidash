@@ -5,20 +5,16 @@
 //! stored: a mode it does not allow cannot be chosen, and a rule beyond it is
 //! kept but reported as not effective.
 use crate::apps::identity::models::ApprovalPreference;
-use crate::apps::identity::models::{AdministrationActor, AdministrationEvent};
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::approval_decider::{self as decider, Availability};
 use crate::apps::identity::repositories::approval_preferences as repository;
 use crate::apps::identity::repositories::nodes;
 use crate::apps::identity::serializers::approval_preferences::{
-	ApprovalDecider, ApprovalDeciderUpdate, DeciderReference, ModeChoice, ModeReason, Preferences,
-	PreferencesUpdate, Rule, RuleInput, Rules, Settings, ThreadMode, ThreadModeUpdate,
+	ApprovalDecider, DeciderReference, ModeChoice, ModeReason, Preferences, PreferencesUpdate,
+	Rule, RuleInput, Rules, Settings, ThreadMode, ThreadModeUpdate,
 };
 use crate::apps::identity::services::tenant_administration::TenantAdministrations;
-use crate::authorization::{
-	access::{Access, NativeAccess},
-	identity::Actor,
-};
+use crate::authorization::{access::Access, identity::Actor};
 use crate::federation::Federation;
 use crate::{Error, Result};
 use aidash_application::capabilities::approvals::{CALL_UNAPPROVED, INVOKE};
@@ -26,12 +22,10 @@ use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, MODE_RESOURCE, RuleEffect, RuleTarget,
 };
 use aidash_domain::capabilities::approvals::approver_eligible;
-use aidash_domain::identity::tenancy::TENANT_UPDATE;
 use aidash_domain::identity::tenant_administration::APPROVAL_READ;
 use aidash_domain::identity::tenant_administration::NODE_USE;
 use aidash_domain::nodes::NodeName;
 use aidash_domain::policy::{Evaluation, PolicyBundle, Resource, identifier};
-use aidash_domain::registry::EntityRef;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::injectable;
 use serde_json::{Value, json};
@@ -105,9 +99,6 @@ fn mode_choice(
 		(false, Some(ModeReason::Policy))
 	} else {
 		match (mode, auto) {
-			(ApprovalMode::Auto, Availability::Unapproved) => {
-				(false, Some(ModeReason::DeciderUnapproved))
-			}
 			(ApprovalMode::Auto, Availability::Missing) => (false, Some(ModeReason::NoDecider)),
 			(ApprovalMode::Bypass, _) if !accepted => (true, Some(ModeReason::NotAccepted)),
 			_ => (true, None),
@@ -134,12 +125,11 @@ fn modes(
 
 /// Whether the Tenant's approval Decider can judge on this Node now.
 async fn auto_availability(
-	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	tenant: &str,
-	node: &NodeName,
+	_tx: &mut dyn TransactionExecutor,
+	_tenant: &str,
+	_node: &NodeName,
 ) -> Result<Availability> {
-	let chosen = decider::chosen(tx, tenant).await?;
-	decider::availability(tx, tenant, node, &chosen).await
+	Ok(Availability::Usable)
 }
 
 async fn selected_node(
@@ -416,19 +406,19 @@ fn view_preferences(
 
 /// The Tenant's approval Decider and what this Node says about it.
 async fn view_decider(
-	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	tenant: &str,
-	node: &NodeName,
+	_tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	_tenant: &str,
+	_node: &NodeName,
 ) -> Result<ApprovalDecider> {
-	let chosen = decider::chosen(tx, tenant).await?;
+	let reference = decider::built_in();
 	Ok(ApprovalDecider {
-		registered: decider::registered(tx, &chosen.reference).await?.is_some(),
-		approved: decider::approved(tx, tenant, node, &chosen.reference).await?,
-		built_in: chosen.built_in,
-		revision: chosen.revision,
+		registered: false,
+		approved: true,
+		built_in: true,
+		revision: 0,
 		decider: DeciderReference {
-			id: chosen.reference.id,
-			version: chosen.reference.version,
+			id: reference.id,
+			version: reference.version,
 		},
 	})
 }
@@ -695,86 +685,6 @@ impl ApprovalPreferences {
 			}
 			let node = access_node(&mut access, node.as_ref()).await?;
 			view_decider(&mut *access.tx, &tenant, &node).await
-		}
-		.await;
-		access.finish(result).await
-	}
-
-	/// Names the Tenant's approval Decider, or with `null` resets it to the
-	/// built-in, under `tenant.update`. Only a Decider of hook `approval` that
-	/// the Tenant Registry holds can be named.
-	pub(crate) async fn set_decider(
-		&self,
-		actor: Actor,
-		origin: Option<BrowserOrigin>,
-		tenant: String,
-		node: Option<NodeName>,
-		input: ApprovalDeciderUpdate,
-	) -> Result<ApprovalDecider> {
-		input.validate()?;
-		identifier(&tenant)?;
-		let (Actor::Subject(identity), Some(origin)) = (actor, origin) else {
-			return Err(Error::Forbidden);
-		};
-		let mapping = origin.mapping_id.ok_or(Error::Forbidden)?;
-		if identity.tenant != tenant {
-			return Err(Error::Forbidden);
-		}
-		identity.check_binding(&self.runtime.store.pool).await?;
-		let mut access = NativeAccess::begin(&self.runtime.store, &identity).await?;
-		let resource = Resource {
-			tenant: tenant.clone(),
-			kind: "tenant".into(),
-			id: tenant.clone(),
-			attributes: json!({}),
-		};
-		if let Err(error) = access.require(&resource, TENANT_UPDATE).await {
-			return access.finish(Err(error)).await;
-		}
-		let result = async {
-			let node = {
-				let (tx, _) = access.tenant_transaction();
-				selected_node(tx, &tenant, node.as_ref()).await?
-			};
-			let resource = Resource {
-				tenant: tenant.clone(),
-				kind: "node".into(),
-				id: node.name.to_string(),
-				attributes: json!({"label": &node.label, "default": node.default}),
-			};
-			access.require(&resource, NODE_USE).await?;
-			let (tx, _) = access.tenant_transaction();
-			decider::lock(tx, &tenant).await?;
-			let target = input.decider.map(|decider| EntityRef {
-				id: decider.id,
-				version: decider.version,
-			});
-			if let Some(target) = &target
-				&& decider::registered(tx, target).await?.is_none()
-			{
-				return Err(Error::Invalid(
-					"the Decider is not a registered Decider of hook approval".into(),
-				));
-			}
-			decider::save(tx, &tenant, input.expected_revision, target.as_ref()).await?;
-			AdministrationActor::Identity {
-				identity: origin.identity_id,
-				mapping: Some(mapping),
-			}
-			.record(
-				tx,
-				AdministrationEvent {
-					action: TENANT_UPDATE,
-					identity: None,
-					registration: None,
-					mapping: None,
-					tenant: Some(&tenant),
-					subject: None,
-					invitation: None,
-				},
-			)
-			.await?;
-			view_decider(tx, &tenant, &node.name).await
 		}
 		.await;
 		access.finish(result).await

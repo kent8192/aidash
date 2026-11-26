@@ -294,12 +294,6 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			.fetch_one(&mut **access.tx)
 			.await?
 		};
-		crate::apps::execution::observation::enqueue_generation(
-			access,
-			&generated,
-			creation.given_by,
-		)
-		.await?;
 		Ok(generated)
 	}
 

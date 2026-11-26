@@ -66,7 +66,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::management::human_requests,
 	)?;
-	super::super::observation::register(contracts, document)?;
 	contracts.response::<_, StateResponse>(
 		document,
 		views::management::state,

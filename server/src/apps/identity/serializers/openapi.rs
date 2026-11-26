@@ -760,15 +760,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		)?;
 		contracts.path(document, v::decider, &["String"])?;
 		contracts.query::<_, approval::NodeQuery>(document, v::decider)?;
-		contracts.request::<_, approval::ApprovalDeciderUpdate>(document, v::set_decider)?;
-		contracts.response::<_, approval::ApprovalDecider>(
-			document,
-			v::set_decider,
-			200,
-			"application/json",
-		)?;
-		contracts.path(document, v::set_decider, &["String"])?;
-		contracts.query::<_, approval::NodeQuery>(document, v::set_decider)?;
 		contracts.response::<_, approval::ThreadMode>(
 			document,
 			v::thread_mode,

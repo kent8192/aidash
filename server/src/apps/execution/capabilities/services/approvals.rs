@@ -78,24 +78,9 @@ pub(crate) async fn decide(
 	id: Uuid,
 	input: ApprovalDecision,
 ) -> Result<Value> {
-	let human = match input.choice {
-		crate::apps::execution::capabilities::serializers::approvals::ApprovalChoice::Deny => {
-			aidash_domain::decision::observation::HumanLabel::Deny
-		}
-		_ => aidash_domain::decision::observation::HumanLabel::Allow,
-	};
 	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
 	let result =
 		aidash_application::capabilities::approvals::decide(&mut scope, id, input.into()).await?;
-	if result["state"] == "approved" || result["state"] == "denied" {
-		crate::apps::execution::observation::label(
-			&mut *access.tx,
-			&access.identity.tenant,
-			id,
-			human,
-		)
-		.await?;
-	}
 	Ok(result)
 }
 /// The kind of the approval record `id` names, among those a revocation can

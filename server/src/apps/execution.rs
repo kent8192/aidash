@@ -23,7 +23,6 @@ pub mod capabilities;
 pub mod activation;
 
 pub mod generation;
-pub(crate) mod observation;
 
 #[cfg(test)]
 mod tests;

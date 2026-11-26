@@ -39,12 +39,6 @@ fn align_default_source_tools(declaration: &mut SourceDeclaration, identities: &
 	}
 }
 
-#[derive(Clone, Copy)]
-struct SourceQueryFrame<'a> {
-	task: &'a Task,
-	input_cutoff: i64,
-}
-
 /// Each item retains its owning source identity and the pointer used only to
 /// reconstruct the current request. Array positions never form its identity.
 #[derive(Clone)]
@@ -277,7 +271,7 @@ impl Environment<'_> {
 		&self,
 		run: &Run,
 		handle: &ContextSourceHandle,
-		worker: Uuid,
+		_worker: Uuid,
 		frame: ContextSourceFrame<'_>,
 	) -> SemanticContextRead {
 		let slot = match self.planned_context_slot(run, handle) {
@@ -291,24 +285,7 @@ impl Environment<'_> {
 				};
 			}
 		};
-		let semantic_query = matches!(slot, Slot::Semantic | Slot::ReferenceImages).then(|| {
-			aidash_application::execution::semantic_context::query_material(
-				run,
-				frame.task,
-				frame.inputs,
-				MAX_SOURCE_BYTES,
-			)
-		});
 		let resident_blocks = matches!(slot, Slot::ResidentSkills).then_some(frame.prepared);
-		let max_bytes = if matches!(slot, Slot::Semantic | Slot::ReferenceImages) {
-			frame.budget
-		} else {
-			MAX_SOURCE_BYTES
-		};
-		let query_frame = SourceQueryFrame {
-			task: frame.task,
-			input_cutoff: frame.input_cutoff,
-		};
 		let prepare = || -> Result<Vec<(QualifiedRef, SourceDeclaration, SourcePin)>> {
 			let snapshot = run.context.binding_snapshot.as_ref().ok_or_else(|| {
 				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
@@ -391,13 +368,7 @@ impl Environment<'_> {
 			) {
 				for (_, declaration, _) in &mut declarations {
 					declaration.required_home = true;
-					if matches!(
-						declaration.pin,
-						PinPolicy::Scored {
-							mode: aidash_domain::decision::Mode::Enforce,
-							..
-						} | PinPolicy::OnDemand
-					) {
+					if matches!(declaration.pin, PinPolicy::OnDemand) {
 						return Err(aidash_application::Error::Invalid(
 							if matches!(slot, Slot::ReferenceImages) {
 								"reference image context must retain its mandatory delivery".into()
@@ -433,39 +404,7 @@ impl Environment<'_> {
 			let mut selected = std::collections::BTreeSet::new();
 			let mut retained = false;
 			for (source, declaration, _) in declarations {
-				let (query, query_failure) = if matches!(declaration.pin, PinPolicy::Scored { .. })
-				{
-					match if let Some(query) = &semantic_query {
-						query
-							.as_ref()
-							.map_err(|_| {
-								aidash_application::Error::Invalid(
-									"source retrieval query is unavailable".into(),
-								)
-							})
-							.cloned()
-					} else {
-						self.source_query(run, declaration.query, query_frame).await
-					} {
-						Ok(query) => (query, None),
-						Err(
-							aidash_application::Error::Forbidden
-							| aidash_application::Error::Unauthorized,
-						) => (
-							query_material(declaration.query, "", &[], MAX_SOURCE_BYTES),
-							Some(SelectionFailure::ForbiddenDisclosure),
-						),
-						Err(_) => (
-							query_material(declaration.query, "", &[], MAX_SOURCE_BYTES),
-							Some(SelectionFailure::AuthorityUnavailable),
-						),
-					}
-				} else {
-					(
-						query_material(declaration.query, "", &[], MAX_SOURCE_BYTES),
-						None,
-					)
-				};
+				let query = query_material(declaration.query, "", &[], MAX_SOURCE_BYTES);
 				let request = SourceRequest {
 					run_id: run.id,
 					source,
@@ -488,32 +427,7 @@ impl Environment<'_> {
 						slot,
 						fragments: fragments.to_vec(),
 					};
-					let mut batch = fetch(&batch_provider, &request).await?;
-					if let PinPolicy::Scored { mode, decider } = &request.declaration.pin {
-						let selection = self
-							.select_context_source(
-								run,
-								worker,
-								decider,
-								*mode,
-								&request,
-								&batch.candidates,
-								&content,
-								query_failure,
-								max_bytes,
-							)
-							.await?;
-						let failure = selection.evidence.failure;
-						result.selections.push(selection.evidence);
-						if *mode == aidash_domain::decision::Mode::Enforce
-							&& let Some(failure) = failure
-						{
-							return Err(aidash_application::Error::Context(failure.pause_reason()));
-						}
-						batch.candidates.retain(|candidate| {
-							selection.selected.contains(&candidate.identity.key())
-						});
-					}
+					let batch = fetch(&batch_provider, &request).await?;
 					retained |= !batch.candidates.is_empty();
 					selected.extend(
 						batch
@@ -603,238 +517,6 @@ impl Environment<'_> {
 			Err(error) => result.result = Err(error),
 		}
 		result
-	}
-
-	async fn source_query(
-		&self,
-		run: &Run,
-		policy: QueryPolicy,
-		frame: SourceQueryFrame<'_>,
-	) -> Result<QueryMaterial> {
-		let home = self.home(run);
-		let task = frame.task;
-		let inputs = self.run_store.run_inputs(run.id).await?;
-		let mut accepted = vec![];
-		for input in inputs
-			.into_iter()
-			.filter(|input| input.seq <= frame.input_cutoff)
-		{
-			let Some(id) = input.message_id else {
-				continue;
-			};
-			let message: Message =
-				serde_json::from_value(home.read_record("message", &id.to_string()).await?)?;
-			if message.thread_id != run.thread_id || message.content != input.content {
-				return Err(aidash_application::Error::Conflict(
-					"run input message binding changed".into(),
-				));
-			}
-			accepted.push(AcceptedQueryInput {
-				sequence: input.seq,
-				text: message.content,
-			});
-		}
-		Ok(query_material(
-			policy,
-			&format!("{}\n{}", task.title, task.description),
-			&accepted,
-			MAX_SOURCE_BYTES,
-		))
-	}
-}
-
-struct SourceAuthority<'a> {
-	source: QualifiedRef,
-	query_policy: QueryPolicy,
-	environment: &'a Environment<'a>,
-	run: &'a Run,
-	allowed: Vec<SourcePin>,
-	content: Value,
-	config: aidash_domain::decision::DeciderConfig,
-}
-#[async_trait]
-impl aidash_application::ports::decision::DecisionAuthority for SourceAuthority<'_> {
-	async fn check(
-		&self,
-		_: &aidash_domain::decision::Boundary,
-		decider: &aidash_domain::decision::DeciderPin,
-		sources: &[SourcePin],
-	) -> Result<aidash_application::ports::decision::Approval> {
-		if sources != self.allowed {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		let authority = self
-			.environment
-			.authority
-			.as_ref()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		super::super::decisions::require_approved(authority.guard, decider).await?;
-		authority
-			.guard
-			.context_source_disclosure(
-				decider,
-				&self.config,
-				sources,
-				&self.source,
-				self.query_policy,
-			)
-			.await?;
-		self.environment
-			.recheck_source_observation(self.run, &self.content)
-			.await?;
-		Ok(aidash_application::ports::decision::Approval {
-			restrictions: Default::default(),
-			state_retention: self.config.state_retention.clone(),
-		})
-	}
-}
-impl Environment<'_> {
-	// Keep the native selection boundary's authorization and decision inputs explicit.
-	#[allow(clippy::too_many_arguments)]
-	async fn select_context_source(
-		&self,
-		run: &Run,
-		worker: Uuid,
-		reference: &QualifiedRef,
-		mode: aidash_domain::decision::Mode,
-		request: &SourceRequest,
-		candidates: &[SourceCandidate],
-		authorized_content: &Value,
-		query_failure: Option<SelectionFailure>,
-		budget: usize,
-	) -> Result<SourceSelection> {
-		use super::super::decisions::{ChainAllowance, RunDecisionJournal};
-		use aidash_application::decision::{
-			DecisionGate, Evaluation, source_selection_input_digest, source_selection_pins,
-		};
-		use aidash_domain::decision::{Boundary, Hook};
-		let (bound, definition) = run
-			.context
-			.binding_snapshot
-			.as_ref()
-			.ok_or_else(|| {
-				aidash_application::Error::Invalid(
-					"source selection lacks admitted snapshot".into(),
-				)
-			})?
-			.bound_decider(Hook::ContextSelection)?
-			.ok_or_else(|| {
-				aidash_application::Error::Context(SelectionFailure::Unapproved.pause_reason())
-			})?;
-		if &bound.pin.identity != reference || bound.config.mode != mode {
-			return Err(aidash_application::Error::Invalid(
-				"source selection differs from admitted Decider reference or mode".into(),
-			));
-		}
-		let boundary = Boundary {
-			node: self.node_id().into(),
-			run: run.id,
-			step: run.step,
-			run_revision: run.revision,
-			input_revision: run.observed_input_seq,
-			worker,
-			input_digest: source_selection_input_digest(candidates, &request.query, budget),
-			cycle: run.recovery.decision_cycle,
-			retry: run.recovery.decider_retry,
-		};
-		let unavailable = || SourceSelection {
-			selected: if mode == aidash_domain::decision::Mode::Shadow {
-				candidates.iter().map(|c| c.identity.key()).collect()
-			} else {
-				vec![]
-			},
-			evidence: SelectionEvidence {
-				configuration: bound.config.clone(),
-				binding_restrictions: bound.restrictions.clone(),
-				restrictions: bound.restrictions.clone(),
-				attempt_routes: Default::default(),
-				source_pins: source_selection_pins(candidates, &request.query),
-				window: budget,
-				candidates: candidates
-					.iter()
-					.map(|candidate| SelectionCandidate {
-						identity: candidate.identity.clone(),
-						mandatory: candidate.mandatory,
-					})
-					.collect(),
-				boundary: boundary.clone(),
-				decider: bound.pin.clone(),
-				mode,
-				query_digest: request.query.query_digest.clone(),
-				candidate_digest: digest(&json!(candidates)),
-				state_digest: digest(&Value::Null),
-				route: None,
-				threshold: None,
-				questions: Default::default(),
-				answers: Default::default(),
-				attempts: vec![],
-				proposed: vec![],
-				selected: if mode == aidash_domain::decision::Mode::Shadow {
-					candidates.iter().map(|c| c.identity.key()).collect()
-				} else {
-					vec![]
-				},
-				failure: Some(query_failure.unwrap_or(SelectionFailure::AuthorityUnavailable)),
-			},
-		};
-		if query_failure.is_some() {
-			return Ok(unavailable());
-		}
-		let Some(authority) = &self.authority else {
-			return Ok(unavailable());
-		};
-		// Required-Home execution may observe under its existing local contract;
-		// it cannot invent a new remote decision or ancestor allowance.
-		if authority.guard.local_authority().is_none() {
-			return Ok(unavailable());
-		}
-		let journal = RunDecisionJournal::new(
-			&self.federation.store,
-			run.clone(),
-			bound.allowance(),
-			ChainAllowance(bound.allowance()),
-		)?;
-		let ports = self
-			.decision_ports(
-				authority,
-				run,
-				bound.clone(),
-				definition.clone(),
-				Box::new(journal),
-			)
-			.await?;
-		let pins = source_selection_pins(candidates, &request.query);
-		let source_authority = SourceAuthority {
-			source: request.source.clone(),
-			query_policy: request.query.policy,
-			environment: self,
-			run,
-			allowed: pins.clone(),
-			content: json!({"semantic_memory": if request.declaration.operation.contains("memory") || request.declaration.operation=="workspace_retrieval" {authorized_content.clone()} else {Value::Null}}),
-			config: bound.config.clone(),
-		};
-		let disclosure = aidash_application::ports::decision::Disclosure {
-			sources: pins,
-			..Default::default()
-		};
-		DecisionGate {
-			authority: &source_authority,
-			journal: ports.journal.as_ref(),
-			provider: ports.provider.as_ref(),
-		}
-		.select_sources(
-			candidates,
-			&request.query,
-			&Evaluation {
-				boundary: &boundary,
-				decider: &bound,
-				definition: &definition,
-				disclosure: &disclosure,
-				now: ports.journal.now(),
-			},
-			budget,
-		)
-		.await
 	}
 }
 

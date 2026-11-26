@@ -1198,8 +1198,7 @@ impl Environment<'_> {
 		)?;
 		Ok(aidash_application::ports::decision::DecisionPorts {
 			authority: Box::new(
-				crate::apps::execution::repositories::decisions::CatalogAuthority {
-					guard: authority.guard,
+				crate::apps::execution::repositories::decisions::ApprovalAuthority {
 					config: decider.config.clone(),
 				},
 			),
@@ -1561,7 +1560,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		_token: Uuid,
 	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
 		use crate::apps::execution::repositories::decisions::{ChainAllowance, RunDecisionJournal};
-		use aidash_domain::decision::{BoundDecider, DeciderConfig, DeciderPin, Hook};
+		use aidash_domain::decision::{BoundDecider, DeciderConfig, DeciderPin};
 		// Only a worker holding the Run's authority on its home Node may call a
 		// Decider for it. A Run executing for another Node asks that Node.
 		let Some(authority) = &self.authority else {
@@ -1570,41 +1569,14 @@ impl ExecutionEnvironment for Environment<'_> {
 		if authority.guard.local_authority().is_none() {
 			return Ok(None);
 		}
-		let reference = authority.guard.approval_decider_reference().await?;
-		// The Decider runs only under its Catalog Approval for this exact version.
-		let definition = match authority.guard.decider_entry(&reference).await {
-			Ok(entry) => entry,
-			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
-			Err(error) => return Err(error.into()),
-		};
-		let Ok(config) = serde_json::from_value::<DeciderConfig>(definition.config.clone()) else {
-			return Ok(None);
-		};
-		if definition.kind != "decider" || config.hook != Hook::Approval {
-			return Ok(None);
-		}
+		let definition = aidash_application::registry::system::approval_decider()?;
+		let config: DeciderConfig = serde_json::from_value(definition.config.clone())?;
 		let identity = aidash_domain::registry::bindings::QualifiedRef {
 			registry_deployment: self.node_id().to_owned(),
 			id: definition.id.clone(),
 			version: definition.version.clone(),
 		};
-		// An Agent's Binding can only make the chosen Decider's thresholds
-		// stricter: its narrowing applies whichever Decider the Tenant chose,
-		// and the Decider it names is never the judge.
-		let restrictions = match &self.step_run.context.binding_snapshot {
-			Some(snapshot) => snapshot
-				.bound_decider(Hook::Approval)?
-				.map(|(bound, _)| bound.restrictions)
-				.unwrap_or_default(),
-			None => Default::default(),
-		};
-		if restrictions.validate(&config).is_err() {
-			tracing::warn!(
-				decider = %identity.id,
-				"the Agent's Binding narrows the approval Decider beyond its version; a person is asked"
-			);
-			return Ok(None);
-		}
+		let restrictions = Default::default();
 		let decider = BoundDecider {
 			pin: DeciderPin {
 				definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
@@ -1618,8 +1590,6 @@ impl ExecutionEnvironment for Environment<'_> {
 			config,
 			restrictions,
 		};
-		// The pin is constant for the step: a withdrawn Catalog Approval is
-		// caught by the Decision Authority before every dispatch.
 		let journal = RunDecisionJournal::new(
 			&self.federation.store,
 			run.clone(),

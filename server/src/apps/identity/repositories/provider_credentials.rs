@@ -462,7 +462,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		context: &aidash_application::provider_access::Context,
 		network_policy: &serde_json::Value,
 	) -> Result<String> {
-		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		if context.observation.is_some() {
+			return Err(Error::Forbidden.into());
+		}
 		super::data_protection::current(&self.store, context)
 			.await?
 			.permits(aidash_domain::data_protection::Destination::ProviderTool)?;
@@ -490,7 +492,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
-		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		if context.observation.is_some() {
+			return Err(Error::Forbidden.into());
+		}
 		use aidash_application::provider_access::Source;
 		let policy = super::data_protection::current(&self.store, context).await?;
 		let destination = match source {
@@ -542,7 +546,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<()> {
-		crate::apps::execution::observation::provider_scope(&self.store, context, false).await?;
+		if context.observation.is_some() {
+			return Err(Error::Forbidden.into());
+		}
 		use aidash_application::provider_access::Source;
 		let policy = super::data_protection::current(&self.store, context).await?;
 		let destination = match source {

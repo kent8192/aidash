@@ -12,7 +12,6 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Table, TableBody, TableCell, TableRow } from "./components/ui/table";
 import { RemoteGenerationAssignForm } from "./remote-generation";
-import { ApprovalObservation } from "./approval-observation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
@@ -1077,11 +1076,6 @@ function RequestDetail({
             </time>,
           ],
         ]}
-      />
-      <ApprovalObservation
-        tenant={tenant}
-        kind="generation"
-        approval={request.id}
       />
       {usage.isError ? (
         <Alert>{usage.error.message}</Alert>

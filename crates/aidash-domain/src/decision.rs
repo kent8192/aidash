@@ -36,7 +36,6 @@ pub const APPROVAL_EVIDENCE_VERSION: u8 = 1;
 pub const MAX_ROUTES: usize = 4;
 /// OpenRouter hosts one Decisions Route may name.
 pub const MAX_HOSTS: usize = 8;
-pub const INVOKE: &str = "decision.invoke";
 pub const EVIDENCE_READ: &str = "decision.evidence.read";
 pub const STATE_READ: &str = "decision.state.read";
 
