@@ -244,6 +244,18 @@ async fn retain_tenant(
 			}
 		}
 	}
+	// Passages belong to the Tenant's digest cache, so Node purge can
+	// remove one Drive without deleting embeddings another Drive still uses.
+	let referenced = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("drive_entries"))
+		.and_where(db::col("tenant").eq(Expr::value(tenant)))
+		.and_where(db::col("digest").eq(Expr::col((
+			Alias::new("drive_passages"),
+			Alias::new("digest"),
+		))))
+		.to_owned();
+	db::delete(tx, "drive_passages", tenant, Expr::not_exists(referenced)).await?;
 	let uploads = db::select("drive_uploads", tenant)
 		.and_where(db::col("expires_at").lte(Expr::value(now)))
 		.limit(256)

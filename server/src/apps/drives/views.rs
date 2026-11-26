@@ -522,8 +522,10 @@ async fn move_drive(
 		.await?
 		.pop()
 		.ok_or_else(|| Error::Conflict("Drive move requires an open Node deletion".into()))?;
-	if deletion.purge_step.is_some() {
-		return Err(Error::Conflict("Node purge has already started".into()));
+	if deletion.purge_step.is_some() || deletion.purge_after <= Utc::now() {
+		return Err(Error::Conflict(
+			"the Node deletion grace period has ended".into(),
+		));
 	}
 	let incoming = db::by_node(access.tx.as_mut(), &tenant, source, true).await?;
 	let current = db::by_node(access.tx.as_mut(), &tenant, destination, true).await?;
