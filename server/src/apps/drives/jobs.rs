@@ -1,5 +1,6 @@
 //! Scratch Space publication plans and resumable, digest-addressed transfers.
 use super::{repository as db, tools::MAINTENANCE, transfer};
+use crate::apps::execution::repositories::capability_objects::{PendingObject, SealedObject};
 use crate::{Error, Result, authorization::access::Access, store::Store};
 use aidash_application::{
 	drive::Change,
@@ -526,13 +527,7 @@ fn process(
 			.filter(|file| digests.insert(file.sha256.clone()))
 			.collect();
 		for batch in files.chunks(100) {
-			let mut uploads = FuturesUnordered::new();
-			for file in batch {
-				uploads.push(stage(store, &scope, &job, &context, file));
-			}
-			while let Some(result) = uploads.next().await {
-				result?;
-			}
+			stage_batch(store, &scope, &job, &context, batch).await?;
 		}
 		let mut access = recheck(store, &run).await?;
 		let current_node = publishing_node(&mut access, &run.metadata()).await?;
@@ -586,78 +581,119 @@ fn process(
 	})
 }
 
-async fn stage(
+async fn stage_batch(
 	store: &Store,
 	scope: &TenancyScope,
 	job: &Job,
 	context: &PodContext,
-	file: &ManifestFile,
+	files: &[&ManifestFile],
 ) -> Result<()> {
-	// Scratch and Drive staging share this admission limit. A stage holds one
-	// connection while reserving and sealing an object on another connection.
+	// Each batch holds one ownership transaction. Share the Scratch staging
+	// admission limit so object reservation and sealing still have a connection.
 	let _slot = store
 		.scratch_upload_slots
 		.acquire()
 		.await
 		.map_err(|error| Error::External(error.to_string()))?;
 	let mut tx = store.scratch_upload_pool.begin(scope).await?;
+	#[derive(Deserialize)]
+	struct Digest {
+		digest: String,
+	}
 	let query = db::select("drive_job_blobs", &job.tenant)
 		.and_where(db::col("job_id").eq(Expr::value(job.id)))
-		.and_where(db::col("digest").eq(Expr::value(&file.sha256)))
+		.and_where(db::col("digest").is_in(files.iter().map(|file| file.sha256.as_str())))
 		.to_owned();
-	if !db::rows::<Value>(tx.as_mut(), &query).await?.is_empty() {
+	let staged: BTreeSet<_> = db::rows::<Digest>(tx.as_mut(), &query)
+		.await?
+		.into_iter()
+		.map(|row| row.digest)
+		.collect();
+	let files: Vec<_> = files
+		.iter()
+		.copied()
+		.filter(|file| !staged.contains(&file.sha256))
+		.collect();
+	if files.is_empty() {
 		return Ok(());
 	}
-	let query = db::select("core_blobs", &job.tenant)
-		.and_where(db::col("digest").eq(Expr::value(&file.sha256)))
-		.lock(LockType::Share)
+	let mut query = db::select("core_blobs", &job.tenant)
+		.and_where(db::col("digest").is_in(files.iter().map(|file| file.sha256.as_str())))
 		.to_owned();
-	let mut sealed = None;
-	if db::rows::<Value>(tx.as_mut(), &query).await?.is_empty() {
-		let mut pending = store
+	let existing: BTreeSet<_> = db::rows::<Digest>(tx.as_mut(), &query)
+		.await?
+		.into_iter()
+		.map(|row| row.digest)
+		.collect();
+	let mut uploads = FuturesUnordered::new();
+	for file in files.iter().filter(|file| !existing.contains(&file.sha256)) {
+		let pending = store
 			.capabilities
 			.begin_object_for(&mut tx, &job.tenant, None, "drive", file.size, true)
 			.await?;
-		let mut offset = 0;
-		while offset < file.size {
-			let request = FileReadRequest {
-				scratch_space_id: context.scratch_space_id().to_owned(),
-				path: file.path.clone(),
-				offset: Some(offset),
-				limit: transfer::PART_BYTES as u32,
-			};
-			let chunk = context
-				.runtime
-				.file_read(&request)
-				.await
-				.map_err(aidash_application::capabilities::pod::tool_error)?;
-			let bytes = STANDARD
-				.decode(chunk.data)
-				.map_err(|_| Error::External("invalid Pod file data".into()))?;
-			if bytes.is_empty() || chunk.size != file.size {
-				return Err(Error::Conflict(format!(
-					"Scratch Space file changed: {}",
-					file.path
-				)));
-			}
-			pending.write_block(&bytes).await?;
-			offset += bytes.len() as u64;
-		}
-		sealed = Some(pending.seal(Some(&file.sha256)).await?);
+		uploads.push(upload(context, file, pending));
 	}
-	db::insert(
+	let mut sealed = Vec::with_capacity(uploads.len());
+	while let Some(result) = uploads.next().await {
+		sealed.push(result?);
+	}
+	// Pin reused objects only when recording references. A collected digest can
+	// be uploaded on the next attempt without changing the publication plan.
+	query.lock(LockType::Share);
+	if db::rows::<Digest>(tx.as_mut(), &query).await?.len() != files.len() {
+		return Err(Error::External("A reused Drive blob was collected".into()));
+	}
+	db::insert_batch(
 		tx.as_mut(),
 		"drive_job_blobs",
 		["id", "tenant", "job_id", "digest"],
-		[
-			Uuid::new_v4().into(),
-			job.tenant.clone().into(),
-			job.id.into(),
-			file.sha256.clone().into(),
-		],
+		files
+			.iter()
+			.map(|file| {
+				[
+					Uuid::new_v4().into(),
+					job.tenant.clone().into(),
+					job.id.into(),
+					file.sha256.clone().into(),
+				]
+			})
+			.collect(),
 	)
 	.await?;
 	tx.commit().await?;
 	drop(sealed);
 	Ok(())
+}
+
+async fn upload(
+	context: &PodContext,
+	file: &ManifestFile,
+	mut pending: PendingObject,
+) -> Result<SealedObject> {
+	let mut offset = 0;
+	while offset < file.size {
+		let request = FileReadRequest {
+			scratch_space_id: context.scratch_space_id().to_owned(),
+			path: file.path.clone(),
+			offset: Some(offset),
+			limit: transfer::PART_BYTES as u32,
+		};
+		let chunk = context
+			.runtime
+			.file_read(&request)
+			.await
+			.map_err(aidash_application::capabilities::pod::tool_error)?;
+		let bytes = STANDARD
+			.decode(chunk.data)
+			.map_err(|_| Error::External("invalid Pod file data".into()))?;
+		if bytes.is_empty() || chunk.size != file.size {
+			return Err(Error::Conflict(format!(
+				"Scratch Space file changed: {}",
+				file.path
+			)));
+		}
+		pending.write_block(&bytes).await?;
+		offset += bytes.len() as u64;
+	}
+	pending.seal(Some(&file.sha256)).await
 }

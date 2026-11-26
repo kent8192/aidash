@@ -560,7 +560,7 @@ async fn write_manifest(
 	})
 }
 
-async fn insert_batch<const N: usize>(
+pub(super) async fn insert_batch<const N: usize>(
 	tx: &mut dyn TransactionExecutor,
 	table: &str,
 	columns: [&str; N],
