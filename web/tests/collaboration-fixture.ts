@@ -278,6 +278,7 @@ export async function setup(
     tenantActions?: string[];
     /** When the Run waiting for the question continues without an answer. */
     answerBy?: string;
+    setting?: Record<string, unknown>;
     elicitation?: { message: string; schema: Record<string, unknown> };
     /** Items a silent Node left out; every list response carries them (#770). */
     unconfirmed?: Unconfirmed[];
@@ -455,6 +456,10 @@ export async function setup(
   }
   if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";
   if (options.answerBy) data.human_requests[0].answer_by = options.answerBy;
+  if (options.setting) {
+    data.human_requests[0].kind = "SETTING_REQUEST";
+    data.human_requests[0].prompt = JSON.stringify(options.setting);
+  }
   if (options.elicitation) {
     data.human_requests[0].kind = "MCP_ELICITATION";
     data.human_requests[0].prompt = JSON.stringify(options.elicitation);
@@ -810,6 +815,12 @@ export async function setup(
         declinable = null;
         data.runs[0].control = "ACTIVE";
         return route.fulfill({ json: data.runs[0] });
+      }
+      if (path === "/api/setting-requests/question-one/answer") {
+        data.human_requests[0].response = {
+          outcome: body.action === "decline" ? "declined" : "saved",
+        };
+        return route.fulfill({ json: data.human_requests[0] });
       }
       if (path === "/api/human-requests/question-one/answer") {
         data.human_requests[0].response = body;

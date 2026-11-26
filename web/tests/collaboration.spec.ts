@@ -3943,3 +3943,78 @@ test("a successor can edit the Duty immediately when takeover succeeds and resum
     duties.getByRole("button", { name: "Resume", exact: true }),
   ).toBeEnabled();
 });
+
+test("Setting Request shows destination hosts and sends a secret only to its answer endpoint", async ({
+  page,
+}) => {
+  const label = "API key for https://example.com";
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: {
+      kind: "secret",
+      label,
+      name: "demo-key",
+      hosts: ["api.example.com"],
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: label }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("link")).toHaveCount(0);
+  await expect(dialog).toContainText("Destination hosts");
+  await expect(dialog).toContainText("api.example.com");
+  const field = dialog.getByLabel(label, { exact: true });
+  await field.fill("あ".repeat(3000));
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("8 KB");
+  expect(
+    submissions.filter((item) => item.path.endsWith("/answer")),
+  ).toHaveLength(0);
+  await field.fill("setting-fixture-canary");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find(
+      (item) => item.path === "/api/setting-requests/question-one/answer",
+    )?.body,
+  ).toEqual({
+    action: "accept",
+    value: "setting-fixture-canary",
+    language: "en",
+  });
+});
+
+test("Setting Request uses Rust regex and can be deferred after a validation error", async ({
+  page,
+}) => {
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: {
+      kind: "text",
+      fields: [
+        {
+          name: "greek",
+          label: "Greek letters",
+          constraint: {
+            type: "regex",
+            pattern: "(?i)^\\p{Greek}+$",
+            message: "Use Greek letters.",
+          },
+        },
+      ],
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "Greek letters" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Greek letters").fill("abc");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Use Greek letters.");
+  await dialog.getByRole("button", { name: "Later", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.find(
+      (item) => item.path === "/api/setting-requests/question-one/answer",
+    )?.body,
+  ).toEqual({ action: "decline", language: "en" });
+});
