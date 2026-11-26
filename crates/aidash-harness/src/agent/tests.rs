@@ -1611,6 +1611,7 @@ impl ExecutionEnvironment for Backend {
 			knowledge_digest: None,
 			tools: vec![],
 			skills: self.0.skills.clone(),
+			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
 			context_policy: self.0.context_policy.clone(),

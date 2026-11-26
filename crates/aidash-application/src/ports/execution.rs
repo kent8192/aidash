@@ -45,6 +45,8 @@ pub struct ExecutionAgent {
 	pub reference_files: usize,
 	pub tools: Vec<EntityRef>,
 	pub skills: Vec<EntityRef>,
+	/// Production Runs have no step limit (ADR 0141).
+	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
 	/// Opt-in Context Policy from the immutable Agent version.

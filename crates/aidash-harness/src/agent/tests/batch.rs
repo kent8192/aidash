@@ -1111,6 +1111,7 @@ impl ExecutionEnvironment for Bench {
 			knowledge_digest: None,
 			tools: vec![],
 			skills: vec![],
+			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: false,
 			context_policy: None,
