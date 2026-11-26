@@ -16,6 +16,7 @@ impl From<HumanRequestRecord> for HumanRequest {
 				HumanRequestKind::Confirmation => "CONFIRMATION",
 				HumanRequestKind::InformationRequest => "INFORMATION_REQUEST",
 				HumanRequestKind::McpElicitation => "MCP_ELICITATION",
+				HumanRequestKind::SettingRequest => aidash_domain::setting_requests::KIND,
 				HumanRequestKind::McpConnection => {
 					aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
 				}

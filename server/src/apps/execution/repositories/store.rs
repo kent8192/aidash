@@ -4161,7 +4161,16 @@ impl Store {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
-		human_interaction::validate_request(kind, prompt)?;
+		if kind == aidash_domain::setting_requests::KIND {
+			if !aidash_domain::setting_requests::is_tenant_configurator(&run.agent_id)
+				|| !run.is_local(self.deployment.as_str())
+			{
+				return Err(Error::Forbidden);
+			}
+			serde_json::from_str::<aidash_domain::setting_requests::Form>(prompt)?.validate()?;
+		} else {
+			human_interaction::validate_request(kind, prompt)?;
+		}
 		let (request, created) =
 			HumanRequestRecord::admit(tx, run.thread_id, run.id, kind, prompt, key).await?;
 		human_interaction::validate_replay(&request, run, kind, prompt)?;
@@ -4295,6 +4304,15 @@ impl Store {
 		let old = HumanRequestRecord::read_in(tx, id, true)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
+		if old.kind == aidash_domain::setting_requests::KIND
+			&& !(actor == "system"
+				&& response
+					== aidash_application::capabilities::approvals::answer_deadline_response())
+		{
+			return Err(Error::Invalid(
+				"Answer this form through the Setting Request endpoint.".into(),
+			));
+		}
 		let run = RunRecord::read_in(tx, old.run_id, None)
 			.await?
 			.ok_or_else(|| Error::NotFound("run".into()))?;
@@ -4303,7 +4321,18 @@ impl Store {
 		else {
 			return Ok(old);
 		};
-		let request = HumanRequestRecord::answer_locked(tx, id, response, &actor).await?;
+		self.record_human_answer(tx, &run, id, response, &actor)
+			.await
+	}
+	pub(crate) async fn record_human_answer(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		run: &Run,
+		id: Uuid,
+		response: Value,
+		actor: &str,
+	) -> Result<HumanRequest> {
+		let request = HumanRequestRecord::answer_locked(tx, id, response, actor).await?;
 		event_records::append_run(
 			tx,
 			run.id,

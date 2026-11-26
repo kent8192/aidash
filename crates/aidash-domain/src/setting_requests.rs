@@ -128,6 +128,14 @@ impl Language {
 	}
 }
 
+pub fn valid_secret_value(secret: &str) -> bool {
+	!secret.is_empty()
+		&& secret.len() <= 8192
+		&& !secret
+			.chars()
+			.any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+}
+
 fn check(ok: bool, message: &str) -> Result<()> {
 	if ok {
 		Ok(())
@@ -280,12 +288,7 @@ impl Form {
 		match self {
 			Self::Secret { .. } => {
 				let secret = value.as_str().ok_or_else(invalid)?;
-				if secret.is_empty()
-					|| secret.len() > 8192
-					|| secret
-						.chars()
-						.any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
-				{
+				if !valid_secret_value(secret) {
 					return Err(lang.message(
 						"Enter a single-line secret of up to 8 KB without control characters.",
 						"秘密情報は制御文字や改行を含めず、8 KB 以内で入力してください。",

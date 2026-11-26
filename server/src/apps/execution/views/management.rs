@@ -217,6 +217,20 @@ pub async fn human_answer(
 	crate::http::json(service.human_answer(actor, id, response).await)
 }
 
+#[post(
+	"/api/setting-requests/{id}/answer",
+	name = "setting-request-answer",
+	auth = "protected"
+)]
+pub async fn setting_answer(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Json(input): Json<aidash_domain::setting_requests::Answer>,
+) -> ViewResult<Response> {
+	crate::http::json(service.setting_answer(actor, id, input).await)
+}
+
 #[get("/api/events", name = "events", auth = "protected")]
 pub async fn events(
 	#[inject] service: Depends<HarnessManagement>,

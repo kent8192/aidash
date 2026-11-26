@@ -3768,9 +3768,11 @@ connection: None,
 						&& !matches!(waiting, WaitingState::Reconciliation { .. })
 					{
 						run.context.push(ContextEvent::Human {
-							request: h.prompt,
-							request_kind: h.kind,
-							response: answer_for_model(response),
+							response: if h.kind == aidash_domain::setting_requests::KIND && response == answer_deadline_response() {
+                                serde_json::from_str::<aidash_domain::setting_requests::Form>(&h.prompt)?.outcome("unanswered")
+                            } else {answer_for_model(response)},
+                            request: h.prompt,
+                            request_kind: h.kind,
 						});
 					}
 				}

@@ -69,6 +69,7 @@ parameters alongside each committed charge. Existing daily counters need no
 backfill. Receipts follow their scope through Node and Tenant purge. Forced
 Tenant row security uses SQL assets because Reinhardt cannot express policies.
 `execution/0163_scope_host_debit_state` registers the receipt model state.
+Execution migrations 0164 and 0165 admit Setting Requests and track their enum state.
 
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.

@@ -435,13 +435,7 @@ fn validate_value(value: &SecretString) -> Result<()> {
 			"a Tenant Secret value is 1 to 4096 printable ASCII characters without surrounding spaces".into(),
 		));
 	}
-	// An Aidash Subject Credential stored here would let a Tenant tool, and so
-	// an Agent's chain, call Aidash's own API (#1012, ADR 0143).
-	if value.contains(aidash_domain::identity::credentials::SUBJECT_PREFIX) {
-		return Err(Error::Invalid(
-			"a Tenant Secret cannot hold an Aidash Subject Credential".into(),
-		));
-	}
+
 	Ok(())
 }
 fn unavailable() -> Error {
@@ -598,6 +592,61 @@ impl Service {
 		tenant_secrets::validate_name(name)?;
 		if let Some(value) = &input.value {
 			validate_value(value)?;
+		}
+		self.put_validated(tenant, owner, name, input, actor).await
+	}
+
+	/// The form has validated its single-line, 8 KiB UTF-8 value. Ordinary
+	/// Tenant Secret management retains its printable ASCII input contract.
+	pub async fn put_setting(
+		&self,
+		tenant: &str,
+		name: &str,
+		hosts: Vec<String>,
+		value: SecretString,
+		actor: &str,
+	) -> Result<Metadata> {
+		tenant_secrets::validate_name(name)?;
+		if !aidash_domain::setting_requests::valid_secret_value(value.expose_secret()) {
+			return Err(Error::Invalid(
+				"Enter a single-line secret of up to 8 KB without control characters.".into(),
+			));
+		}
+		let expected_revision = match self.get_owned(tenant, None, name).await {
+			Ok(metadata) => metadata.revision,
+			Err(Error::NotFound(_)) => 0,
+			Err(error) => return Err(error),
+		};
+		self.put_validated(
+			tenant,
+			None,
+			name,
+			Put {
+				expected_revision,
+				hosts: Some(hosts),
+				value: Some(value),
+			},
+			actor,
+		)
+		.await
+	}
+	async fn put_validated(
+		&self,
+		tenant: &str,
+		owner: Option<&str>,
+		name: &str,
+		input: Put,
+		actor: &str,
+	) -> Result<Metadata> {
+		// An Aidash Subject Credential stored here would let a Tenant tool, and so
+		// an Agent's chain, call Aidash's own API (#1012, ADR 0143).
+		if input.value.as_ref().is_some_and(|v| {
+			v.expose_secret()
+				.contains(aidash_domain::identity::credentials::SUBJECT_PREFIX)
+		}) {
+			return Err(Error::Invalid(
+				"a Tenant Secret cannot hold an Aidash Subject Credential".into(),
+			));
 		}
 		let hosts = input
 			.hosts

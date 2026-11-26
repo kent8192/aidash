@@ -199,6 +199,7 @@ dependencies = [
  "http 1.5.0",
  "jsonschema",
  "psl",
+ "regex",
  "ruzstd",
  "schemars 1.2.2",
  "semver",
