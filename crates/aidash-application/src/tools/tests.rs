@@ -610,7 +610,6 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 }
 
 #[rstest]
-#[rstest]
 #[tokio::test]
 async fn thread_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {
 	let tool = builtins().remove("workspace_search").unwrap();

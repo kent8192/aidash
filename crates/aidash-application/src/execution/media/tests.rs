@@ -718,26 +718,6 @@ impl SelectedMediaScope for FileScope {
 		}
 		Ok(self.content[&file].clone())
 	}
-	async fn thread_image(
-		&mut self,
-		area: Uuid,
-		generation: i64,
-		file: Uuid,
-		path: &str,
-	) -> Result<Option<SelectedFile>> {
-		self.calls.push(("thread_image", area));
-		if self.denied {
-			return Err(Error::Forbidden);
-		}
-		if generation != 3 {
-			return Ok(None);
-		}
-		Ok(self
-			.files
-			.iter()
-			.find(|entry| entry.file_id == file && entry.path == path)
-			.cloned())
-	}
 	async fn thread_attachment(
 		&mut self,
 		selection: &aidash_domain::media::ThreadAttachmentSelection,
@@ -751,8 +731,6 @@ impl SelectedMediaScope for FileScope {
 	}
 }
 
-#[rstest]
-#[rstest]
 #[rstest]
 #[tokio::test]
 async fn selected_files_preserve_input_order_duplicates_labels_and_bytes(

@@ -38,15 +38,6 @@ pub trait SelectedMediaScope: Send {
 	) -> Result<aidash_domain::media::SelectedFile> {
 		Err(crate::Error::Forbidden)
 	}
-	async fn thread_image(
-		&mut self,
-		_area: Uuid,
-		_generation: i64,
-		_file: Uuid,
-		_path: &str,
-	) -> Result<Option<aidash_domain::media::SelectedFile>> {
-		Ok(None)
-	}
 	async fn scratch_image(
 		&mut self,
 		_selection: &aidash_domain::media::ScratchImageSelection,
