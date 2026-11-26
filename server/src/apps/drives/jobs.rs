@@ -525,9 +525,7 @@ fn process(
 			.iter()
 			.filter(|file| digests.insert(file.sha256.clone()))
 			.collect();
-		// Each upload may also borrow a reservation and a BlobStore commit
-		// connection. Keep the shared pool available for completion and cleanup.
-		for batch in files.chunks(8) {
+		for batch in files.chunks(100) {
 			let mut uploads = FuturesUnordered::new();
 			for file in batch {
 				uploads.push(stage(store, &scope, &job, &context, file));
@@ -595,6 +593,13 @@ async fn stage(
 	context: &PodContext,
 	file: &ManifestFile,
 ) -> Result<()> {
+	// Scratch and Drive staging share this admission limit. A stage holds one
+	// connection while reserving and sealing an object on another connection.
+	let _slot = store
+		.scratch_upload_slots
+		.acquire()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?;
 	let mut tx = store.scratch_upload_pool.begin(scope).await?;
 	let query = db::select("drive_job_blobs", &job.tenant)
 		.and_where(db::col("job_id").eq(Expr::value(job.id)))
