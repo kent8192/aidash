@@ -198,8 +198,8 @@ pub(crate) async fn create(
 ) -> Result<Created> {
 	let label = tenancy::label(label)?;
 	let (name, created_at) = insert_root(tx, &label, personal, creator).await?;
-	super::nodes::create_default(tx, &name, creator).await?;
-	let bundle = if personal {
+	let default_node = super::nodes::create_default(tx, &name, creator).await?;
+	let mut bundle = if personal {
 		tenancy::personal_initial_policy(&name)?
 	} else {
 		tenancy::initial_policy(
@@ -207,6 +207,10 @@ pub(crate) async fn create(
 			matches!(creator, Creator::Identity(_) | Creator::HostAccess),
 		)?
 	};
+	aidash_application::registry::system::configurator::install_subject(
+		&mut bundle,
+		&aidash_domain::nodes::DeploymentId::parse(node)?.node(default_node.name),
+	);
 	AuthorizationBundle::replace(
 		tx,
 		&name,

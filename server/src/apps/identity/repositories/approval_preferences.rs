@@ -342,6 +342,30 @@ pub(crate) async fn save_preference(
 		.ok_or_else(|| crate::Error::Invalid("Approval preferences are unavailable".into()))
 }
 
+/// Starting this built-in Agent accepts Bypass for the creator's Thread only (ADR 0151).
+pub(crate) async fn configurator_thread(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	subject: &str,
+	thread: Uuid,
+) -> crate::Result<bool> {
+	use aidash_application::registry::system::configurator::{ID, VERSION};
+	let (sql, values) = Query::select()
+		.expr(Expr::value(1))
+		.from(Alias::new("conversations"))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(Expr::col("created_by").eq(subject))
+		.and_where(Expr::col("target_kind").eq("agent"))
+		.and_where(Expr::col("target").eq(format!("{ID}@{VERSION}")))
+		.limit(1)
+		.build(PostgresQueryBuilder);
+	Ok(tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.is_some())
+}
+
 /// The owner's mode for one Thread, if they set one.
 pub(crate) async fn thread_mode(
 	tx: &mut dyn TransactionExecutor,
@@ -533,7 +557,9 @@ pub(crate) async fn covering(
 	Ok(Some(Covering {
 		subject: row.root_subject,
 		mode,
-		bypass_accepted: row.bypass_accepted_at.is_some(),
+		bypass_accepted: row.bypass_accepted_at.is_some()
+			|| (run.agent_id == aidash_application::registry::system::configurator::ID
+				&& row.thread_mode.is_some()),
 		answer_deadline_seconds: row.answer_deadline_seconds,
 	}))
 }

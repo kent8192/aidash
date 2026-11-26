@@ -130,6 +130,9 @@ impl TenantAdministrator {
 			json!({"kind": kind}),
 		)
 		.await?;
+		if aidash_domain::identity::tenant_administration::is_configurator_subject(subject) {
+			return Err(Error::Forbidden);
+		}
 		if !matches!(kind, Some(SubjectKind::Service | SubjectKind::Agent)) {
 			return Err(Error::Invalid(
 				"credentials for another subject are issued only for service and agent subjects"

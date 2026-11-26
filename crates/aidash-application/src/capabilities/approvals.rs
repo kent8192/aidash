@@ -174,6 +174,7 @@ fn api_evaluation(
 fn ceiling(
 	scope: &dyn ApprovalScope,
 	settings: &Settings,
+	run: &Run,
 	root: &str,
 	target: &Resource,
 ) -> Ceiling {
@@ -190,7 +191,18 @@ fn ceiling(
 			.mode
 			.policy_requirement()
 			.is_none_or(|(action, id)| {
-				allows(&scope.resource(MODE_RESOURCE, id, json!({})), action)
+				let target = scope.resource(MODE_RESOURCE, id, json!({}));
+				let evaluation = api_evaluation(scope, root, &target, action);
+				let configurator = run.agent_id == crate::registry::system::configurator::ID
+					&& run.agent_version == crate::registry::system::configurator::VERSION
+					&& aidash_domain::identity::tenant_administration::configurator_administrator(
+						scope.bundle(),
+						root,
+						aidash_domain::nodes::deployment_of(&run.home_node),
+					);
+				settings
+					.mode
+					.offered(&scope.bundle().evaluate(&evaluation), configurator)
 			}),
 	})
 }
@@ -226,7 +238,7 @@ async fn advise(
 	let (Some(settings), Some(person)) = (settings, root) else {
 		return Ok(Advice::Ask);
 	};
-	let ceiling = ceiling(scope, &settings, &person, target);
+	let ceiling = ceiling(scope, &settings, run, &person, target);
 	let auto_suspended =
 		settings.mode == ApprovalMode::Auto && scope.auto_blocks(run).await?.suspended();
 	Ok(
@@ -258,7 +270,7 @@ pub async fn connection_mode(
 	let Some(root) = scope.chain_root() else {
 		return Ok(None);
 	};
-	let allowed = ceiling(scope, &settings, root, target).mode_allowed;
+	let allowed = ceiling(scope, &settings, run, root, target).mode_allowed;
 	let suspended =
 		settings.mode == ApprovalMode::Auto && scope.auto_blocks(run).await?.suspended();
 	Ok(Some(if allowed && !suspended {
@@ -836,7 +848,7 @@ pub async fn can_allow_always(
 	let Some(settings) = scope.approval_settings(run).await? else {
 		return Ok(false);
 	};
-	Ok(ceiling(scope, &settings, &owner, &target).may_approve)
+	Ok(ceiling(scope, &settings, run, &owner, &target).may_approve)
 }
 
 pub async fn decide(

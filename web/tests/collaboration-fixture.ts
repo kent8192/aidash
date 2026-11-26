@@ -277,6 +277,7 @@ export async function setup(
     nativeMemoryDisabled?: boolean;
     remoteNativeCollision?: boolean;
     tenantActions?: string[];
+    configuratorRole?: "administrator" | "member" | "node administrator";
     /** When the Run waiting for the question continues without an answer. */
     answerBy?: string;
     setting?: Record<string, unknown>;
@@ -295,6 +296,15 @@ export async function setup(
     options.subject ??
     (!options.administrator && options.dashboardContext === undefined);
   let data = fixture(options.referenceLayout);
+  if (options.configuratorRole) {
+    data.registry.push({
+      ...data.registry[0],
+      id: "aidash.tenant-configurator",
+      version: "0.1.0",
+      name: { en: "Tenant Configurator" },
+      config: { schema_version: 1, bindings: [], remove_default: [] },
+    });
+  }
   data.unconfirmed = options.unconfirmed ?? [];
   if (options.withoutWork) {
     data.tasks = [];
@@ -626,7 +636,8 @@ export async function setup(
           label: null,
           actions: options.tenantActions ?? ["registry.create"],
           assignable_groups: [],
-          policy_revision: null,
+          policy_revision: options.configuratorRole === "member" ? null : 1,
+          can_start_configurator: options.configuratorRole === "administrator",
         },
       });
     if (path === "/api/registry/versions")

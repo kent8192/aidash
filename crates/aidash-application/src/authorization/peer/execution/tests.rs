@@ -311,3 +311,18 @@ async fn a_missing_dependency_is_refused_like_an_unapproved_one() {
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
 }
+
+#[tokio::test]
+async fn configurator_is_refused_before_remote_admission_or_catalog_access() {
+	let mut scope = Scope::new();
+	let mut input = input();
+	input.agent.id = crate::registry::system::configurator::ID.into();
+	let error = inspect(&mut scope, "aidash://home", &input)
+		.await
+		.unwrap_err();
+	assert!(matches!(
+		error,
+		Error::RemoteExecutionRefused(Refusal::InvalidExecutor)
+	));
+	assert!(scope.calls.is_empty());
+}

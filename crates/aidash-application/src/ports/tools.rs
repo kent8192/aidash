@@ -346,6 +346,9 @@ pub trait ToolOperations: Send + Sync {
 	/// A Node tool call (#1012, ADR 0143). The Home acts for the person at the
 	/// root of the Run's chain and refuses a federated Run and a Run whose
 	/// chain starts at no person.
+	async fn configure(&self, _operation: &str, _input: Value) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn node(&self, _key: &str, _operation: &str, _input: Value) -> Result<Value> {
 		Err(crate::Error::Invalid(
 			"Nodes are unavailable to this Run".into(),

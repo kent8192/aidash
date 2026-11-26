@@ -146,7 +146,9 @@ impl AccessBoundary {
 			| Requirement::DeploymentAdministrator => {}
 		}
 		let token = bearer(&request.headers);
-		let actor = if token.is_some_and(|token| same_secret(token, &runtime.config.api_token)) {
+		let actor = if let Some(caller) = request.extensions.get::<super::configurator::Caller>() {
+			Actor::Subject(caller.identity)
+		} else if token.is_some_and(|token| same_secret(token, &runtime.config.api_token)) {
 			Actor::DeploymentAdministrator
 		} else if request.headers.contains_key(AUTHORIZATION)
 			&& crate::apps::identity::repositories::desktop::access_token(&request.headers)

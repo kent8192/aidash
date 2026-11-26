@@ -14,6 +14,7 @@ export type TenantAdministration = {
   /** Listed only for a Tenant Administrator. */
   assignable_groups: string[];
   policy_revision: number | null;
+  can_start_configurator?: boolean;
   model_call_usage?: ModelCallUsageByPurpose[] | null;
 };
 
@@ -41,6 +42,20 @@ export function useTenantAdministration(tenant: string | null) {
       ),
     enabled: tenant !== null,
   });
+}
+
+export const TENANT_CONFIGURATOR = "aidash.tenant-configurator";
+
+/** Admission and the selector use the same server-side policy decision. */
+export function useConfiguratorAccess(access: State["access"]) {
+  const { data, isError } = useTenantAdministration(
+    access.kind === "subject" ? access.tenant : null,
+  );
+  return (
+    access.kind === "subject" &&
+    !isError &&
+    data?.can_start_configurator === true
+  );
 }
 
 /** What the signed-in subject may do in its Tenant. A Deployment

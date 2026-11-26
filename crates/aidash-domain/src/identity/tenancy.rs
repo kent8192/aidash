@@ -336,6 +336,7 @@ pub fn initial_policy(tenant: &str, creator: bool) -> Result<PolicyBundle> {
 		condition: None,
 	};
 	let bundle = PolicyBundle {
+		evaluation_chain: None,
 		tenant: tenant.into(),
 		subjects: if creator {
 			[(

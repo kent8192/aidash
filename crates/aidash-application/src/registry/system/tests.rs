@@ -191,6 +191,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			+ JOURNAL_TOOLS.len()
 			+ NODE_TOOLS.len()
 			+ NOTIFY_TOOLS.len()
+			+ aidash_domain::tool::configurator::TOOLS.len()
 			// The Workspace tools the Thread tools replace stay declared (#1008).
 			+ aidash_domain::tool::thread_tools::WORKSPACE_TOOLS.len()
 			+ 3
@@ -270,15 +271,19 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	let declared = declarations(&validation, NODE).unwrap();
 
-	assert_eq!(declared.len(), builtins.len() + 5);
+	assert_eq!(declared.len(), builtins.len() + 7);
 	assert_eq!(declared[..builtins.len()], builtins);
-	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
 	assert_eq!(
-		declared[builtins.len() + 1],
+		&declared[builtins.len()..builtins.len() + 2],
+		&configurator::definitions(NODE).unwrap()
+	);
+	assert_eq!(declared[builtins.len() + 2], approval_decider().unwrap());
+	assert_eq!(
+		declared[builtins.len() + 3],
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap()
 	);
 	assert_eq!(
-		&declared[builtins.len() + 2..],
+		&declared[builtins.len() + 4..],
 		aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
 	);
 	assert!(
@@ -569,4 +574,91 @@ fn builtin_memory_definitions_pin_agent_roles_and_no_embedding() {
 	assert_eq!(provider.policy.bounds.max_units, 64);
 	assert!(provider.policy.learn_from_runs);
 	assert!(provider.policy.maintain_observations);
+}
+
+#[test]
+fn configurator_instructions_changes_require_both_the_administrator_and_its_agent() {
+	use aidash_domain::{
+		identity::{tenancy, tenant_administration as admin},
+		policy::{Evaluation, Resource},
+	};
+	let mut bundle = tenancy::initial_policy("tenant", true).unwrap();
+	let node = aidash_domain::nodes::NodeAddress::derived("aidash://local", "home");
+	let groups = [tenancy::MEMBERS.to_owned()].into();
+	admin::add_user_subject(&mut bundle, "member", &groups).unwrap();
+	let mut node_settings = bundle.policies[0].clone();
+	node_settings.id = "member-node-settings".into();
+	node_settings.subjects.groups = groups.clone();
+	node_settings.actions = [admin::NODE_UPDATE.to_owned()].into();
+	bundle.policies.push(node_settings);
+	assert!(admin::configurator_administrator(
+		&bundle,
+		tenancy::OWNER,
+		"aidash://local"
+	));
+	assert!(!admin::configurator_administrator(
+		&bundle,
+		"member",
+		"aidash://local"
+	));
+	let ordinary = aidash_domain::qualified_agent(&node, "ordinary", "1.0.0");
+	admin::add_agent_subject(&mut bundle, &ordinary, &node.node, &groups).unwrap();
+	assert!(super::configurator::install_subject(&mut bundle, &node));
+	let configurator = aidash_domain::qualified_agent(
+		&node,
+		super::configurator::ID,
+		super::configurator::VERSION,
+	);
+	for (person, executor, allowed) in [
+		(tenancy::OWNER, &configurator, true),
+		("member", &configurator, false),
+		(tenancy::OWNER, &ordinary, false),
+	] {
+		bundle.evaluation_chain = Some((person.to_owned(), executor.clone()));
+		let decision = bundle.evaluate(&Evaluation {
+			subject: person.into(),
+			action: admin::TENANT_INSTRUCTIONS_UPDATE.into(),
+			resource: Resource {
+				tenant: "tenant".into(),
+				id: admin::COLLECTION.into(),
+				kind: admin::resource_kind(admin::TENANT_INSTRUCTIONS_UPDATE).into(),
+				attributes: serde_json::json!({}),
+			},
+			environment: serde_json::json!({}),
+		});
+		assert_eq!(decision.allowed, allowed, "{person} / {executor}");
+	}
+}
+
+#[test]
+fn configurator_guide_can_be_loaded_as_a_run_skill() {
+	let [guide, agent] = super::configurator::definitions(NODE).unwrap();
+	let attachment = aidash_domain::capabilities::skills::imported(
+		guide.id.clone(),
+		guide.config["instructions"].as_str().unwrap().into(),
+		vec![],
+	)
+	.unwrap();
+	assert_eq!(
+		aidash_domain::capabilities::skills::validate(&attachment)
+			.unwrap()
+			.name,
+		"tenant-configuration-guide"
+	);
+	assert_eq!(agent.config["bindings"][0]["target"]["id"], guide.id);
+	let request = agent.config["bindings"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["alias"] == "setting_request")
+		.unwrap();
+	assert_eq!(request["target"]["id"], "aidash.setting_request");
+	assert_eq!(request["target"]["version"], "1.0.0");
+	assert_eq!(
+		aidash_domain::tool::providers::core_provider("setting_request"),
+		Some("core.human@1")
+	);
+	assert!(agent.config.get("model").is_none());
+	assert!(is_builtin(&agent));
+	assert!(is_builtin(&guide));
 }

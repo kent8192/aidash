@@ -81,7 +81,16 @@ impl AdministrationActor {
 			Self::DeploymentAdministratorBearer => "deployment-administrator-bearer".into(),
 			Self::DeploymentAdministrator { identity } => format!("oidc:{identity}"),
 			Self::TenantAdministrator(administrator) => {
-				format!("oidc:{}", administrator.identity_id)
+				if let Some(caller) =
+					crate::apps::identity::services::configurator::current(&administrator.identity)
+				{
+					format!(
+						"tenant-configurator:{}:thread:{}:run:{}",
+						administrator.identity.subject, caller.thread, caller.run
+					)
+				} else {
+					format!("oidc:{}", administrator.identity_id)
+				}
 			}
 			Self::Identity { identity, .. } => format!("oidc:{identity}"),
 			Self::DemoData => "demo-data".into(),
@@ -644,7 +653,9 @@ impl TenantAdministrator {
 			let mut issuable_subjects = vec![];
 			let mut decisions = vec![];
 			for (id, subject) in candidates {
-				if mapped.contains(id) {
+				if mapped.contains(id)
+					|| aidash_domain::identity::tenant_administration::is_configurator_subject(id)
+				{
 					continue;
 				}
 				let evaluation =
@@ -676,6 +687,11 @@ impl TenantAdministrator {
 				None
 			};
 			Ok(TenantAdministration {
+				can_start_configurator: rules::configurator_administrator(
+					&snapshot.bundle,
+					&self.identity.subject,
+					&self.node_id,
+				),
 				model_call_usage,
 				label,
 				tenant: self.tenant().to_owned(),

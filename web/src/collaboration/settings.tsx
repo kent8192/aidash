@@ -53,7 +53,11 @@ import type { RegistryVersion } from "../generated/models";
 import { useNodes } from "../nodes";
 import { NodesPage } from "../nodes-settings";
 import { registryDeployment } from "../node-selection";
-import { useTenantActions } from "../tenant-administration";
+import {
+  useTenantActions,
+  useConfiguratorAccess,
+  TENANT_CONFIGURATOR,
+} from "../tenant-administration";
 import { SubnodeLimits } from "../subnode-limits";
 import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
@@ -555,6 +559,10 @@ export function Configuration({
 }) {
   const { t, locale } = useI18n();
   const { can } = useTenantActions(data.access);
+  const configurator = data.registry.find(
+    (entry) => entry.id === TENANT_CONFIGURATOR,
+  );
+  const admin = useConfiguratorAccess(data.access);
   const nodeSelection = useNodes();
   const selectedNode = nodeSelection.selected;
   const link = new URLSearchParams(window.location.search);
@@ -729,6 +737,15 @@ export function Configuration({
             ))}
           {section === "node" && (
             <>
+              {admin && configurator && (
+                <Button
+                  onClick={() => open({ kind: "goal", entity: configurator })}
+                >
+                  {locale === "ja-JP"
+                    ? "エージェントに設定を頼む"
+                    : "Ask an agent to configure this Tenant"}
+                </Button>
+              )}
               <NodeView data={data} disconnect={disconnect} />
               {data.access.kind === "subject" && (
                 <ScratchSpacesSettings focus={focus} />

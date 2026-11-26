@@ -21,6 +21,7 @@ pub(crate) mod desktop_cors;
 pub mod approval_preferences;
 
 pub mod bootstrap_command;
+pub(crate) mod configurator;
 pub mod demo_data;
 pub mod invitations;
 pub mod node_registrations;

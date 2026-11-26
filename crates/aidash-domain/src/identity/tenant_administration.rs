@@ -6,6 +6,42 @@ use crate::{Error, Result};
 use serde_json::json;
 use std::collections::BTreeSet;
 
+pub const CONFIGURATOR_ID: &str = "aidash.tenant-configurator";
+/// All release versions of the reserved Node-qualified subject are Run-only.
+pub fn is_configurator_subject(subject: &str) -> bool {
+	subject
+		.rsplit_once("/agents/")
+		.and_then(|(_, agent)| agent.split_once('@'))
+		.is_some_and(|(id, version)| id == CONFIGURATOR_ID && !version.is_empty())
+}
+
+/// The mapped person must hold the Tenant administration permissions (ADRs 0021, 0026).
+pub fn configurator_administrator(bundle: &PolicyBundle, person: &str, deployment: &str) -> bool {
+	bundle
+		.subjects
+		.get(person)
+		.is_some_and(|s| s.kind == SubjectKind::User)
+		&& ADMINISTRATION_ACTIONS.iter().all(|action| {
+			bundle
+				.evaluate(&crate::policy::Evaluation {
+					subject: person.into(),
+					action: (*action).into(),
+					resource: crate::policy::Resource {
+						tenant: bundle.tenant.clone(),
+						kind: resource_kind(action).into(),
+						id: if *action == super::tenancy::TENANT_DELETE {
+							bundle.tenant.clone()
+						} else {
+							COLLECTION.into()
+						},
+						attributes: json!({}),
+					},
+					environment: json!({"node_id":deployment,"transport":"api"}),
+				})
+				.allowed
+		})
+}
+
 pub const REGISTRATION_READ: &str = "registration.read";
 pub const REGISTRATION_APPROVE: &str = "registration.approve";
 pub const REGISTRATION_REJECT: &str = "registration.reject";
@@ -79,7 +115,7 @@ pub const CONNECTION_ADMINISTER: &str = "connection.administer";
 /// setting the Tenant's Schedule limits (#557).
 pub const SCHEDULE_ADMINISTER: &str = crate::duties::ADMINISTER;
 /// Writing the Tenant Instructions every Agent of the Tenant works under
-/// (#1010). Agents never hold it: only a person's browser session writes them.
+/// (#1010). The Tenant Configurator may write them for its administrator (ADR 0151).
 pub const TENANT_INSTRUCTIONS_UPDATE: &str = "tenant.instructions.update";
 /// Administering one Node (#1007, ADR 0140): writing its Node Instructions and
 /// seeing everything in it. Tenant Administrators hold it through `*`.

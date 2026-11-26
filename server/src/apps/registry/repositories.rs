@@ -102,9 +102,89 @@ impl Registry {
 			})
 			.await?;
 		for tenant in tenants {
+			let needs_subject =
+				self.pool
+					.atomic(&scope(&tenant), async |tx| {
+						use crate::apps::identity::{
+							models::AuthorizationBundle, repositories::nodes,
+						};
+						use aidash_application::registry::system::configurator;
+						let snapshot =
+							match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false)
+								.await
+							{
+								Ok(s) => s,
+								Err(crate::Error::NotFound(_) | crate::Error::TenantDeleted) => {
+									return Ok(false);
+								}
+								Err(e) => return Err(e),
+							};
+						Ok(nodes::list_live(tx, tenant.as_str())
+							.await?
+							.iter()
+							.any(|n| {
+								!snapshot.bundle.subjects.contains_key(
+									&aidash_domain::qualified_agent(
+										&self.deployment.node(n.name.clone()),
+										configurator::ID,
+										configurator::VERSION,
+									),
+								)
+							}))
+					})
+					.await?;
+			if needs_subject {
+				self.pool
+					.atomic(&scope(&tenant), async |tx| {
+						use crate::apps::identity::{
+							models::AuthorizationBundle, repositories::nodes,
+						};
+						use aidash_application::registry::system::configurator;
+						if crate::apps::identity::repositories::tenant_deletions::is_deleted(
+							tx,
+							tenant.as_str(),
+						)
+						.await?
+						{
+							return Ok(());
+						}
+
+						let mut snapshot =
+							match AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), true)
+								.await
+							{
+								Ok(snapshot) => snapshot,
+								Err(crate::Error::NotFound(_) | crate::Error::TenantDeleted) => {
+									return Ok(());
+								}
+								Err(e) => return Err(e),
+							};
+						let mut changed = false;
+						for node in nodes::list_live(tx, tenant.as_str()).await? {
+							changed |= configurator::install_subject(
+								&mut snapshot.bundle,
+								&self.deployment.node(node.name),
+							);
+						}
+						if changed {
+							snapshot.bundle.validate()?;
+							AuthorizationBundle::replace(
+								tx,
+								tenant.as_str(),
+								snapshot.revision,
+								serde_json::to_value(snapshot.bundle)?,
+								"tenant-configurator",
+								None,
+							)
+							.await?;
+						}
+						Ok(())
+					})
+					.await?;
+			}
 			self.pool
 				.scoped(&scope(&tenant), async |tx| {
-					// Built-in definitions are never agents, so carrying them changes
+					// Configurator subjects were seeded above. Carrying other built-ins changes
 					// no policy: the shared hold keeps approvals from changing while
 					// sources are read, and never waits on the Tenant's running work.
 					let snapshot =

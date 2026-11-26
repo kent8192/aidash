@@ -19,6 +19,8 @@ pub(crate) struct TenantAdministration {
 	/// The Tenant label every member sees.
 	pub(crate) label: Option<String>,
 	pub(crate) actions: Vec<String>,
+	/// The mapped person can start the Built-in Tenant Configurator.
+	pub(crate) can_start_configurator: bool,
 	/// Service/agent subjects this caller may issue a credential for.
 	pub(crate) issuable_subjects: Vec<String>,
 	/// Empty unless the caller holds a Tenant Administrator action.

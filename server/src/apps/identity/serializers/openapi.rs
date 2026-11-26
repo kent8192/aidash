@@ -54,6 +54,52 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		&["String"],
 	)?;
 	{
+		use super::{oidc, tenant_administration as a};
+		use views::tenant_administration as v;
+		contracts.path(document, v::registrations, &["String"])?;
+		contracts.query::<_, oidc::AdminMappingPage>(document, v::registrations)?;
+		contracts.response::<_, Vec<a::TenantRegistration>>(
+			document,
+			v::registrations,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::approve, &["String", "Uuid"])?;
+		contracts.request::<_, a::TenantApproval>(document, v::approve)?;
+		contracts.response::<_, oidc::ApprovedMapping>(
+			document,
+			v::approve,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::reject, &["String", "Uuid"])?;
+		contracts.response::<_, oidc::Registration>(
+			document,
+			v::reject,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::mappings, &["String"])?;
+		contracts.query::<_, oidc::AdminMappingPage>(document, v::mappings)?;
+		contracts.response::<_, Vec<a::TenantMapping>>(
+			document,
+			v::mappings,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::disable_mapping, &["String", "Uuid"])?;
+		contracts.request::<_, oidc::MappingRevision>(document, v::disable_mapping)?;
+		contracts.empty(document, v::disable_mapping, 204)?;
+		contracts.path(document, v::update_memberships, &["String", "String"])?;
+		contracts.request::<_, a::MembershipUpdate>(document, v::update_memberships)?;
+		contracts.response::<_, a::Membership>(
+			document,
+			v::update_memberships,
+			200,
+			"application/json",
+		)?;
+	}
+	{
 		use super::tenant_administration::CredentialMaximum;
 		use views::tenant_administration::{credential_maximum, set_credential_maximum};
 		contracts.response::<_, CredentialMaximum>(

@@ -43,6 +43,7 @@ import {
 } from "./transport";
 import { ConnectionGate } from "./connection-gate";
 import { LocaleContext, useI18n, type Locale } from "./ui";
+import { TENANT_CONFIGURATOR } from "./tenant-administration";
 import { Channel } from "./collaboration/channel";
 import { ThreadDashboard } from "./collaboration/request/dashboard";
 import { Graph } from "./collaboration/graph";
@@ -1119,6 +1120,9 @@ function Dashboard({
     : undefined;
   const thread =
     selectedRef && data?.threads.find((value) => value.id === selectedRef.id);
+  const configurator = data?.registry.find(
+    (entry) => entry.id === TENANT_CONFIGURATOR,
+  );
   const currentChannel = thread?.id ?? route.channel;
   const runs = data
     ? data.runs.map((run) => ({ run, node: data.node.id }))
@@ -1439,6 +1443,12 @@ function Dashboard({
                         />
                       ) : (
                         <TrustTools
+                          configure={
+                            configurator
+                              ? () =>
+                                  open({ kind: "goal", entity: configurator })
+                              : undefined
+                          }
                           offering={data.offering}
                           deploymentAdministrator={deploymentAdministrator}
                           invitations={browserSession?.invitations ?? false}

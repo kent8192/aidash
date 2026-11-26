@@ -76,6 +76,16 @@ impl ConversationScope for NativeConversation<'_> {
 			.map_err(Into::into)
 	}
 	async fn registry_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+		if reference.id == aidash_application::registry::system::configurator::ID
+			&& !aidash_domain::identity::tenant_administration::configurator_administrator(
+				&self.access.snapshot.bundle,
+				&self.access.identity.subject,
+				self.federation.config.deployment.as_str(),
+			) {
+			return Err(aidash_application::Error::Invalid(
+				"tenant_configurator_administrator_required".into(),
+			));
+		}
 		catalog::entry(self.access, reference, action)
 			.await
 			.map_err(Into::into)
@@ -116,6 +126,26 @@ impl ConversationScope for NativeConversation<'_> {
 		target: &EntityRef,
 		target_kind: &str,
 	) -> Result<Conversation> {
+		if target_kind == "agent"
+			&& target.id == aidash_application::registry::system::configurator::ID
+		{
+			use crate::apps::identity::repositories::approval_preferences;
+			let identity = &self.access.identity;
+			approval_preferences::lock_owner(
+				&mut *self.access.tx,
+				&identity.tenant,
+				&identity.subject,
+			)
+			.await?;
+			approval_preferences::set_thread_mode(
+				&mut *self.access.tx,
+				&identity.tenant,
+				&identity.subject,
+				thread_id,
+				Some(aidash_domain::approval_rules::ApprovalMode::Bypass),
+			)
+			.await?;
+		}
 		let conversation: ConversationRecord = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = thread_id;

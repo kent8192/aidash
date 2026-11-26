@@ -106,6 +106,7 @@ export function CreatorTools({
   );
 }
 export function TrustTools({
+  configure,
   deploymentAdministrator,
   offering,
   invitations,
@@ -113,6 +114,7 @@ export function TrustTools({
   subject,
   initiallyOpen,
 }: {
+  configure?: () => void;
   deploymentAdministrator: boolean;
   offering?: State["offering"];
   /** Whether this Deployment issues Invitations. */
@@ -146,6 +148,7 @@ export function TrustTools({
         ) : tenant ? (
           <Suspense fallback={loading}>
             <TenantAccess
+              configure={configure}
               key={tenant}
               tenant={tenant}
               subject={subject}

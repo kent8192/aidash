@@ -169,9 +169,11 @@ impl AuthorizationBundle {
 			.await?
 			.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
 		let row = QueryRow::from_backend_row(row).data;
+		let mut bundle = serde_json::from_value(row["document"].clone())?;
+		crate::apps::identity::services::configurator::constrain(&mut bundle)?;
 		Ok(Snapshot {
 			revision: serde_json::from_value(row["revision"].clone())?,
-			bundle: serde_json::from_value(row["document"].clone())?,
+			bundle,
 		})
 	}
 }
@@ -350,6 +352,9 @@ impl AuthorizationCredential {
 		actor: &str,
 		mapping: Option<Uuid>,
 	) -> Result<Credential> {
+		if aidash_domain::identity::tenant_administration::is_configurator_subject(subject) {
+			return Err(Error::Forbidden);
+		}
 		authority_control(tx).await?;
 		let (sql, values) = Query::select()
 			.expr_as(

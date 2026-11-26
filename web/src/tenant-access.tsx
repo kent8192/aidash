@@ -1,3 +1,5 @@
+import { Button } from "./components/ui/button";
+import { useI18n } from "./ui";
 import { DataProtectionSettings } from "./data-protection";
 import { StandingInstructionsSettings } from "./standing-instructions";
 import { BudgetSettings } from "./budgets";
@@ -27,16 +29,28 @@ export function TenantAccess({
   tenant,
   subject,
   fallback,
+  configure,
 }: {
   tenant: string;
   subject: string | null;
   fallback: ReactNode;
+  configure?: () => void;
 }) {
+  const { locale } = useI18n();
   const overview = useTenantAdministration(tenant);
   const actions = overview.isError ? [] : (overview.data?.actions ?? []);
   const can = (action: string) => actions.includes(action);
   return (
     <>
+      {configure &&
+        !overview.isError &&
+        overview.data?.policy_revision != null && (
+          <Button onClick={configure}>
+            {locale === "ja-JP"
+              ? "エージェントに設定を頼む"
+              : "Ask an agent to configure this Tenant"}
+          </Button>
+        )}
       {subject && overview.data && (
         <OwnCredentials
           key={tenant}

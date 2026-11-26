@@ -1364,3 +1364,42 @@ for (const peerEdit of [true, false]) {
     ).toHaveValue(peerEdit ? "" : "ci");
   });
 }
+
+for (const role of ["administrator", "member", "node administrator"] as const) {
+  test(`Tenant Configurator entry points for ${role}`, async ({ page }) => {
+    await setup(page, { configuratorRole: role, locale: "en-US" });
+    await page.goto("/settings?view=node");
+    const configure = page.getByRole("button", {
+      name: "Ask an agent to configure this Tenant",
+    });
+    if (role === "administrator") {
+      await configure.click();
+      await expect(
+        page
+          .getByRole("dialog")
+          .locator("select")
+          .filter({
+            has: page.locator(
+              'option[value="aidash.tenant-configurator@0.1.0"]',
+            ),
+          }),
+      ).toHaveValue("aidash.tenant-configurator@0.1.0");
+    } else {
+      await expect(
+        page.getByRole("button", { name: "New request", exact: true }),
+      ).toBeVisible();
+      await expect(configure).toHaveCount(0);
+      await page
+        .getByRole("button", { name: "New request", exact: true })
+        .click();
+      await expect(
+        page.getByRole("dialog").locator('option[value="researcher@1.0.0"]'),
+      ).toHaveCount(1);
+      await expect(
+        page
+          .getByRole("dialog")
+          .locator('option[value="aidash.tenant-configurator@0.1.0"]'),
+      ).toHaveCount(0);
+    }
+  });
+}

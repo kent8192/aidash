@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct RegistryManagement {
-	runtime: Federation,
+	pub(crate) runtime: Federation,
 }
 #[injectable(scope = "request")]
 pub async fn provide(#[inject] runtime: Federation) -> RegistryManagement {

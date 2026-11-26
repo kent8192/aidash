@@ -67,6 +67,12 @@ async fn fetch_inspection<R: GrantRepository>(
 	identity: &ExecutionPrincipal,
 	input: &InspectInput,
 ) -> Result<Inspection> {
+	// A Home must refuse this executor even when its peer predates ADR 0151.
+	if input.agent.id == crate::registry::system::configurator::ID {
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InvalidExecutor,
+		));
+	}
 	let inspection = repository
 		.source_request(
 			home,

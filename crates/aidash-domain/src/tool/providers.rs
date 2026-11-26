@@ -92,6 +92,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"duty_create" | "duty_list" | "duty_update" | "duty_delete" | "duty_notify" => {
 			"core.duties@1"
 		}
+		op if super::configurator::TOOLS.contains(&op) => "core.configurator@1",
 		"node_create" | "node_delete" => "core.nodes@1",
 		_ => return None,
 	})

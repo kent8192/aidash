@@ -205,7 +205,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0030_threads"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
+	("registry", "0083_optional_agent_model"),
 	("registry", "0083_setting_request_descriptor"),
+	("registry", "0084_configurator_tools"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -385,7 +387,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
-	assert_eq!(head("registry"), ["0083_setting_request_descriptor"]);
+	assert_eq!(head("registry"), ["0084_configurator_tools"]);
 	assert_eq!(head("execution"), ["0165_setting_requests_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
@@ -2548,7 +2550,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("federation", "0030_threads"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
+			("registry", "0083_optional_agent_model"),
 			("registry", "0083_setting_request_descriptor"),
+			("registry", "0084_configurator_tools"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;

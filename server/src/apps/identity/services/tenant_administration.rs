@@ -78,10 +78,10 @@ impl TenantAdministrations {
 		tenant: &str,
 	) -> Result<Arc<TenantAdministrator>> {
 		aidash_domain::policy::identifier(tenant)?;
-		let (Actor::Subject(identity), Some(origin)) = (actor, origin) else {
+		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
-		let mapping = origin.mapping_id.ok_or(Error::Forbidden)?;
+		let (identity_id, mapping) = super::configurator::mapping(&identity, origin.as_ref())?;
 		if identity.tenant != tenant {
 			return Err(Error::Forbidden);
 		}
@@ -89,7 +89,7 @@ impl TenantAdministrations {
 		identity.check_binding(&self.runtime.store.pool).await?;
 		Ok(Arc::new(TenantAdministrator::new(
 			identity,
-			origin.identity_id,
+			identity_id,
 			mapping,
 			self.runtime.config.deployment.to_string(),
 			self.runtime.config.dashboard_policy(),

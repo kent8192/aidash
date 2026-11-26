@@ -67,6 +67,9 @@ async fn inspect_in(
 	input: &InspectInput,
 	pinned: Option<&Inspection>,
 ) -> Result<Inspection> {
+	if input.agent.id == crate::registry::system::configurator::ID {
+		return Err(Error::RemoteExecutionRefused(Refusal::InvalidExecutor));
+	}
 	// Receiving external execution is separate from advertising metadata.
 	let resource = access.receiver_resource().await?;
 	access
