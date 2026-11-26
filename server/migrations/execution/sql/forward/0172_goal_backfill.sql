@@ -1,0 +1,9 @@
+SET LOCAL aidash.scope = 'deployment';
+ALTER TABLE public.registry DISABLE TRIGGER marketplace_registry_fence;
+UPDATE "registry" SET "metadata" = jsonb_set(metadata, '{config}', (metadata->'config') - 'completion') WHERE "kind" = 'agent' AND (metadata->'config' ? 'completion');
+ALTER TABLE public.registry ENABLE TRIGGER marketplace_registry_fence;
+UPDATE "task_executions" SET "context" = context - 'completion' WHERE context ? 'completion';
+UPDATE "task_executions" SET "context" = jsonb_set(context, '{execution_summary,content}', (context #> '{execution_summary,content}') - 'goal' || jsonb_build_object('intent', context #> '{execution_summary,content,goal}')) WHERE context #> '{execution_summary,content,goal}' IS NOT NULL;
+DELETE FROM "authorization_run_reads" WHERE "resource_kind" = 'artifact';
+DELETE FROM "semantic_entries" WHERE source->>'kind' = 'artifact';
+DELETE FROM "events" WHERE "kind" = 'artifact.published';

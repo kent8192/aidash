@@ -165,6 +165,18 @@ fn assets() -> [(&'static str, String); 36] {
 			crate::apps::execution::services::area_queue_sleep_backfill::forward(),
 		),
 		(
+			"execution/sql/forward/0172_goal_backfill.sql",
+			crate::apps::execution::services::goal_backfill::execution(),
+		),
+		(
+			"federation/sql/forward/0032_retire_artifact_reads.sql",
+			crate::apps::execution::services::goal_backfill::federated_reads(),
+		),
+		(
+			"federation/sql/forward/0033_completion_settlement_v2.sql",
+			crate::apps::execution::services::goal_backfill::federation_settlement(),
+		),
+		(
 			"workspaces/sql/forward/0067_task_duty_start.sql",
 			crate::apps::workspaces::services::duty_start_backfill::forward(),
 		),
