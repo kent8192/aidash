@@ -73,7 +73,14 @@ pub(crate) fn forward() -> String {
 		.value_expr(a("wipe_generation"), Expr::col(a("wipe_generation")).add(1))
 		.and_where(Expr::col(a("is_default")).eq(false))
 		.to_string(PostgresQueryBuilder);
+	let retire_idle_expiry = Query::update()
+		.table(a("scratch_space_settings"))
+		.value_expr(
+			a("settings"),
+			Expr::col(a("settings")).sub(Expr::value("idle_expiry_days")),
+		)
+		.to_string(PostgresQueryBuilder);
 	format!(
-		"SET LOCAL aidash.scope = 'deployment';\n{spaces};\n{settings};\n{bindings};\n{retired};\n"
+		"SET LOCAL aidash.scope = 'deployment';\n{spaces};\n{settings};\n{bindings};\n{retired};\n{retire_idle_expiry};\n"
 	)
 }

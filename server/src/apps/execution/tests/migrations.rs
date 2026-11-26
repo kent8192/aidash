@@ -178,6 +178,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_scratch_wipe_receipts"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -192,6 +195,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0180_unorder_runs"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -252,6 +256,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_scratch_wipe_receipts"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -266,6 +273,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0180_unorder_runs"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -302,6 +310,7 @@ async fn reverse_task_executions(
 		"0161_generation_subnode_cleanup",
 		"0162_scope_host_debits",
 		"0163_scope_host_debit_state",
+		"0180_unorder_runs",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -379,9 +388,9 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0163_scope_host_debit_state"]);
+	assert_eq!(head("execution"), ["0180_unorder_runs"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
-	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
+	assert_eq!(head("workspaces"), ["0074_thread_scratch_wipes"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -659,15 +668,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0164_policy_probe")
+		.get_migration("execution", "0181_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0163_scope_host_debit_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0180_unorder_runs".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -753,6 +759,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -767,6 +776,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -964,12 +974,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0068_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0075_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0067_task_duty_start".to_owned())]
+		vec![(
+			"workspaces".to_owned(),
+			"0074_thread_scratch_wipes".to_owned()
+		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -2512,6 +2525,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -2526,6 +2542,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5202,6 +5219,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_scratch_wipe_receipts"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5225,6 +5245,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0180_unorder_runs"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5796,6 +5817,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5813,6 +5835,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5903,6 +5928,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5920,6 +5946,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -6018,6 +6047,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6035,6 +6065,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
@@ -6556,6 +6589,7 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6680,6 +6714,7 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6938,6 +6973,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7333,6 +7369,7 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
 		])
 		.await;
 	let tenant = "call-owner";

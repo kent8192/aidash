@@ -453,7 +453,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 			&delete_token,
 			"POST",
 			&delete_path,
-			json!({"idempotency_key":Uuid::new_v4(),"files":[]}),
+			json!({"idempotency_key":Uuid::new_v4()}),
 		)
 		.await
 	});
@@ -665,7 +665,7 @@ async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture:
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
+async fn deleting_a_thread_schedules_the_scratch_wipe_and_closes_its_records(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = Box::pin(capability_fixture).await;
@@ -693,31 +693,8 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	assert_eq!(status, 200, "{session}");
 	let run = session["active_run_id"].as_str().unwrap();
 	let question = pending_question(&c, run.parse().unwrap(), thread).await;
-	let (status,result)=request(&c.app,&c.token,"POST",&format!("/api/executions/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"kept.txt":null},"patch":"*** Begin Patch\n*** Add File: kept.txt\n+Keep 東京 exactly\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{result}");
-	let (_, before) = request(
-		&c.app,
-		&c.token,
-		"GET",
-		&format!("/api/executions/{run}/working-area"),
-		Value::Null,
-	)
-	.await;
 	let path = format!("/api/threads/{thread}/delete");
-	assert_eq!(
-		request(
-			&c.app,
-			&c.token,
-			"POST",
-			&path,
-			json!({"idempotency_key":Uuid::new_v4(),"files":[]})
-		)
-		.await
-		.0,
-		409,
-		"file choices must precede disappearing thread controls"
-	);
-	let input = json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":area["id"],"expected_revision":before["revision"],"choice":"keep"}]});
+	let input = json!({"idempotency_key":Uuid::new_v4()});
 	let (status, deleted) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{deleted}");
 	assert_question_closed(&c, question).await;
@@ -762,42 +739,13 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 			"{method} {path}: {status} {body}"
 		);
 	}
-	// Kept files stay in the owner's settings.
-	let (status, inventory) =
-		request(&c.app, &c.token, "GET", "/api/working-files", Value::Null).await;
-	assert_eq!(status, 200, "{inventory}");
-	let retained = &inventory["items"][0];
-	assert_eq!(retained["state"], "retained");
-	assert_eq!(retained["files"], 1);
-	assert!(retained["snapshot_id"].is_string());
-	let restore = format!(
-		"/api/working-areas/{}/restore",
-		area["id"].as_str().unwrap()
-	);
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":retained["snapshot_id"]});
-	let (_, bob) = async {
-		(
-			200_u16,
-			common::issued_credential(&c.f.store, "acme", "bob").await,
-		)
-	}
-	.await;
-	assert_eq!(
-		request(
-			&c.app,
-			bob["token"].as_str().unwrap(),
-			"POST",
-			&restore,
-			input.clone()
-		)
-		.await
-		.0,
-		404
-	);
-	// An Area is restored only into its own Thread, which is gone.
-	let (status, refused) = request(&c.app, &c.token, "POST", &restore, input).await;
-	assert!(matches!(status, 403 | 404), "{refused}");
-	assert_ne!(request(&c.app,&c.token,"POST",&format!("/api/executions/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+late\n*** End Patch"})).await.0,200);
+	let pending: bool =
+		sqlx::query_scalar("SELECT scratch_wipe_requested FROM threads WHERE id = $1")
+			.bind(thread)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(pending, "the Thread is queued for removal from Scratch");
 	c.close().await;
 }
 
@@ -855,7 +803,7 @@ async fn a_node_administrator_deleting_a_thread_stops_its_owners_work(
 		bob["token"].as_str().unwrap(),
 		"POST",
 		&format!("/api/threads/{thread}/delete"),
-		json!({"idempotency_key":Uuid::new_v4(),"files":[]}),
+		json!({"idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
 	// Assert

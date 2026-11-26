@@ -503,8 +503,6 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 }
 
 #[rstest::rstest]
-#[case::ordering("ordering")]
-#[case::inactive_area("area")]
 #[case::remote_dependencies("remote_dependencies")]
 #[tokio::test]
 async fn notification_deferral_waits_for_its_authoritative_unblock(
@@ -535,113 +533,30 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	let provider = prepared.provider.clone();
 
 	let run = admit(&f, &token, task).await;
-	let area = if blocker == "remote_dependencies" {
-		Uuid::new_v4()
-	} else {
-		sqlx::query_scalar::<_, Uuid>(
-			&Query::select()
-				.column(a("area_id"))
-				.from(a("core_runs"))
-				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(f.store.pool.fixture_driver())
-		.await
-		.unwrap()
-	};
-	let mut predecessor = None;
 	let deadline = chrono::Utc::now() + chrono::Duration::hours(1);
-	if blocker == "remote_dependencies" {
-		sqlx::query(
-			&Query::update()
-				.table(a("task_executions"))
-				.value(a("home_node"), "aidash://remote-home")
-				.value(a("phase"), "WAITING")
-				.value(
-					a("pending"),
-					common::pending(aidash_server::domain::RunState::Waiting(Box::new(
-						aidash_server::domain::WaitingState::Dependencies {
-							wake_at: deadline,
-							resume: Default::default(),
-						},
-					))),
-				)
-				.and_where(Expr::col(a("id")).eq(Expr::value(run)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	} else {
-		sqlx::query(
-			&Query::update()
-				.table(a("core_areas"))
-				.value(
-					a("state"),
-					if blocker == "area" {
-						"paused"
-					} else {
-						"active"
+	sqlx::query(
+		&Query::update()
+			.table(a("task_executions"))
+			.value(a("home_node"), "aidash://remote-home")
+			.value(a("phase"), "WAITING")
+			.value(
+				a("pending"),
+				common::pending(aidash_server::domain::RunState::Waiting(Box::new(
+					aidash_server::domain::WaitingState::Dependencies {
+						wake_at: deadline,
+						resume: Default::default(),
 					},
-				)
-				.and_where(Expr::col(a("id")).eq(Expr::value(area)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		// Reserve zero for the predecessor before inserting it below.
-		sqlx::query(
-			&Query::update()
-				.table(a("core_runs"))
-				.value(a("sequence"), 1_i64)
-				.value(a("initialized"), false)
-				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		if blocker == "ordering" {
-			let previous = unblock::insert_run(&f, "PAUSED", "acme").await;
-			let generation: i64 = sqlx::query_scalar(
-				&Query::select()
-					.column(a("generation"))
-					.from(a("core_runs"))
-					.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
-					.to_string(PostgresQueryBuilder),
+				))),
 			)
-			.fetch_one(f.store.pool.fixture_driver())
-			.await
-			.unwrap();
-			sqlx::query(
-				&Query::insert()
-					.into_table(a("core_runs"))
-					.columns(["run_id", "area_id", "sequence", "generation", "tenant"].map(a))
-					.values_expr(vec![
-						reinhardt::query::IntoValue::into_value(previous).into(),
-						reinhardt::query::IntoValue::into_value(area).into(),
-						reinhardt::query::IntoValue::into_value(0_i64).into(),
-						reinhardt::query::IntoValue::into_value(generation).into(),
-						Expr::value("acme").into(),
-					])
-					.expect("one value per column")
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(f.store.pool.fixture_driver())
-			.await
-			.unwrap();
-			predecessor = Some(previous);
-		}
-	}
+			.and_where(Expr::col(a("id")).eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	let mut worker = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (1, true), binary.clone());
 	worker.ready().await;
-	let due_predicate = if blocker == "remote_dependencies" {
-		"due_at > CURRENT_TIMESTAMP"
-	} else {
-		"due_at IS NULL"
-	};
-	let predicate = format!("run_id='{run}' AND state='deferred' AND {due_predicate}");
+	let predicate = format!("run_id='{run}' AND state='deferred' AND due_at > CURRENT_TIMESTAMP");
 	tokio::time::timeout(Duration::from_secs(10), async {
 		while count(&f, &predicate).await == 0 {
 			tokio::time::sleep(Duration::from_millis(20)).await;
@@ -687,51 +602,19 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 			.lease_owner
 			.is_none()
 	);
-	if blocker != "remote_dependencies" {
-		let (table, column, id, value) = match predecessor {
-			Some(id) => ("task_executions", "phase", id, "COMPLETED"),
-			None => ("core_areas", "state", area, "active"),
-		};
-		sqlx::query(
-			&Query::update()
-				.table(a(table))
-				.value_expr(a(column), value)
-				.and_where(Expr::col(a("id")).eq(Expr::value(id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		complete(&f, run).await;
-		assert_eq!(calls.load(Ordering::SeqCst), 1);
-		let reason = if blocker == "ordering" {
-			"ordering_release"
-		} else {
-			"area_release"
-		};
-		assert!(count(&f, &format!("run_id='{run}' AND reason='{reason}'")).await > 0);
-		assert!(
-			count(
-				&f,
-				&format!("run_id='{run}' AND claim_source='notification'")
-			)
-			.await > 0
-		);
-	} else {
-		let due: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
-			&Query::select()
-				.column(a("due_at"))
-				.from(a("run_activations"))
-				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
-				.and_where(Expr::col(a("state")).eq(Expr::value("deferred")))
-				.limit(1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		assert_eq!(due.timestamp_micros(), deadline.timestamp_micros());
-	}
+	let due: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+		&Query::select()
+			.column(a("due_at"))
+			.from(a("run_activations"))
+			.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+			.and_where(Expr::col(a("state")).eq(Expr::value("deferred")))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(due.timestamp_micros(), deadline.timestamp_micros());
 	worker.stop();
 	server.stop();
 	drop(provider);
