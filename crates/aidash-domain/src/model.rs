@@ -656,16 +656,27 @@ impl ModelConfig {
 	/// The configuration a memory role call (extraction, reflection,
 	/// observation) uses. Its typed JSON follows the model's reasoning inside
 	/// the same output limit, and the administrator's limit is a hard cap for a
-	/// BYOK route. A configured effort above `minimal` is lowered to `minimal`:
-	/// at `low`, reasoning alone used up to 5,577 of 8,192 output tokens of one
-	/// extraction and the JSON was cut off or the call outlived its deadline
-	/// (#1122). An unset effort and `none` are left as they are.
+	/// BYOK route. A configured effort above `low` is lowered to `low`: at
+	/// `high`, reasoning used most of an extraction's output limit and the JSON
+	/// was cut off or the call outlived its deadline (#1122). An unset effort,
+	/// `none`, `minimal` and `low` are left as they are.
+	///
+	/// The floor is `low`, not `minimal`, because the configuration does not
+	/// record which levels the model accepts, and a Plan Connection sends the
+	/// effort verbatim: models such as GPT-5.2 reject `minimal` outright, while
+	/// every reasoning model with an effort selector accepts `low`. The effort
+	/// is never raised.
 	pub fn for_memory_role(&self) -> ModelConfig {
 		let mut config = self.clone();
 		if let Some(effort) = config.reasoning_effort
-			&& !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal)
-		{
-			config.reasoning_effort = Some(ReasoningEffort::Minimal);
+			&& matches!(
+				effort,
+				ReasoningEffort::Medium
+					| ReasoningEffort::High
+					| ReasoningEffort::Xhigh
+					| ReasoningEffort::Max
+			) {
+			config.reasoning_effort = Some(ReasoningEffort::Low);
 		}
 		config
 	}

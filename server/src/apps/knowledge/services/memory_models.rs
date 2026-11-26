@@ -70,6 +70,30 @@ fn model_operation_capacity() -> Error {
 	Error::Conflict("memory model operation record capacity reached".into())
 }
 
+/// Set a memory call's output reservation to at most `cap` tokens and at most
+/// what the context window leaves after the request's input and framing, under
+/// the same estimate `ensure_fits` checks. A model whose output limit is close
+/// to its context window would otherwise reserve the whole window for output
+/// and be refused before any provider I/O (#1122). The result depends only on
+/// the request, the window and the cap, so the operation replay key stays
+/// stable. Returns the reservation, or an error when the input alone leaves
+/// no room for a response.
+fn fit_memory_output(request: &mut ModelRequest, window: usize, cap: usize) -> Result<usize> {
+	request.max_output_tokens = 0;
+	// Surface an oversized or malformed input with the estimator's own error.
+	request.ensure_fits(window)?;
+	let room = window.saturating_sub(request.estimated_total_tokens());
+	let output = cap.min(room).min(u32::MAX as usize);
+	if output == 0 {
+		return Err(Error::Invalid(
+			"memory model input leaves no room for a response in the context window".into(),
+		));
+	}
+	request.max_output_tokens = output as u32;
+	request.ensure_fits(window)?;
+	Ok(output)
+}
+
 /// A Run reads another Thread's bank only through Built-in Memory, inside
 /// its own Tenant, while the Tenant shares memory per Agent (#852 decision 6).
 /// Which Units it may see is filtered afterwards by `sharing::agent_unit`.
@@ -955,12 +979,12 @@ impl Models {
 				"memory model input leaves no response allowance".into(),
 			));
 		}
-		let request = ModelRequest {
+		let mut request = ModelRequest {
 			provider_tools: vec![],
 			instructions: instruction.into(),
 			context: ModelContext::native_data(&context),
 			tools: vec![],
-			max_output_tokens: output as u32,
+			max_output_tokens: 0,
 			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
@@ -972,7 +996,7 @@ impl Models {
 			input_format: InputFormat::for_model(&config),
 			estimate: Default::default(),
 		};
-		request.ensure_fits(config.context_window)?;
+		let output = fit_memory_output(&mut request, config.context_window, output)?;
 		let charge = rate.charge(input as u64, output as u64)?;
 
 		self.require_origins(Some(reference)).await?;
@@ -1404,3 +1428,6 @@ impl MemoryModels for Models {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests;
