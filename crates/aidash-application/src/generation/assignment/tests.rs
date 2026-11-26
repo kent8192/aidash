@@ -88,6 +88,7 @@ impl Scope {
 				created_by: "alice".into(),
 				dependencies: vec![],
 				parent_id: None,
+				task_model: None,
 				started_by_duty: None,
 				revision: 0,
 				created_at: now,

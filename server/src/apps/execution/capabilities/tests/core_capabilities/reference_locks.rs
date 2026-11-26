@@ -321,6 +321,20 @@ async fn a_run_on_an_agent_with_a_source_completes_its_tool_calls_after_copying_
 	}
 	let runs = d.c.f.store.runs(&TEST_FIXTURE).await.unwrap();
 	let child = runs.iter().find(|child| child.id != finished.id).unwrap();
+	let delegated_task =
+		d.c.f
+			.store
+			.task(&TEST_FIXTURE, child.task_id)
+			.await
+			.unwrap();
+	let inherited = finished
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.inherited_model()
+		.unwrap();
+	assert_eq!(delegated_task.task_model, Some(inherited));
 	assert_eq!(
 		child.phase(),
 		aidash_server::domain::RunPhase::Completed,

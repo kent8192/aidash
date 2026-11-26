@@ -19,15 +19,16 @@ pub(crate) async fn snapshot(
 	remote: bool,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	snapshot_mode(tx, node, agent, remote, true, configured).await
+	snapshot_mode(tx, node, agent, remote, true, configured, None).await
 }
-async fn snapshot_mode(
+pub(crate) async fn snapshot_mode(
 	tx: &mut crate::database::native::Transaction,
 	node: &str,
 	agent: &aidash_domain::registry::Entry,
 	remote: bool,
 	foreign: bool,
 	configured: bool,
+	task_model: Option<&aidash_domain::TaskModel>,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let mut definitions = super::sql::SqlScope(tx);
 	let mut catalog = aidash_application::registry::bindings::catalog::LocalCatalog(
@@ -36,7 +37,7 @@ async fn snapshot_mode(
 			node,
 		},
 	);
-	Ok(aidash_application::registry::bindings::resolve(
+	Ok(aidash_application::registry::bindings::resolve_with_model(
 		if foreign {
 			&mut catalog.0
 		} else {
@@ -50,6 +51,7 @@ async fn snapshot_mode(
 		},
 		agent,
 		remote,
+		task_model,
 	)
 	.await?)
 }
@@ -179,13 +181,106 @@ pub(crate) async fn installation_executor(
 	Ok(())
 }
 
+pub(crate) async fn check_task_model(
+	store: &crate::store::Store,
+	remote: bool,
+	access: &mut crate::authorization::access::Access,
+	agent: &aidash_domain::registry::Entry,
+	selection: Option<&aidash_domain::TaskModel>,
+	caller_subjects: &[String],
+) -> Result<()> {
+	use crate::apps::identity::repositories::catalog_approvals;
+	use aidash_domain::TaskModelRefusal::*;
+	let Some(selection) = selection else {
+		return if agent.config["model"].is_null() {
+			Err(TaskModelRequired.into())
+		} else {
+			Ok(())
+		};
+	};
+	selection.validate().map_err(|error| TaskModelUnusable {
+		reasons: vec![error.to_string()],
+	})?;
+	let model = match catalog_approvals::definition(&mut access.tx, &selection.model).await {
+		Ok(model) if model.kind == "model" => model,
+		Ok(_) | Err(aidash_application::Error::NotFound(_)) => {
+			return Err(TaskModelNotRegistered.into());
+		}
+		Err(other) => return Err(other.into()),
+	};
+	let node = access.catalog_node().await?;
+	if !catalog_approvals::approved(
+		&mut access.tx,
+		&access.identity.tenant,
+		&node,
+		&selection.model,
+	)
+	.await?
+	{
+		let tenant = access.identity.tenant.clone();
+		let nodes =
+			crate::apps::identity::repositories::nodes::list_live(&mut *access.tx, &tenant).await?;
+		let previous = std::mem::replace(&mut access.subjects, caller_subjects.to_vec());
+		let allowed: Result<bool> = async {
+			for target in nodes {
+				access.set_node(target.name);
+				let resource = access.resource(
+					"registry",
+					format!("model/{}@{}", model.id, model.version),
+					aidash_application::authorization::catalog::attributes(&model),
+				);
+				if !access.decide_hint(&resource, "catalog.approve").await? {
+					return Ok(false);
+				}
+			}
+			Ok(true)
+		}
+		.await;
+		access.set_node(node);
+		access.subjects = previous;
+		return Err(TaskModelNotApproved {
+			model: selection.model.clone(),
+			can_approve: allowed?,
+		}
+		.into());
+	}
+	match crate::authorization::catalog::entry(access, &selection.model, "model.infer").await {
+		Ok(_) => {
+			let config = aidash_domain::model::ModelConfig::from_stored(model.config)?;
+			match crate::apps::identity::repositories::provider_credentials::check_task_route(
+				&mut *access.tx,
+				store,
+				&access.identity.tenant,
+				&access.identity.subject,
+				&config,
+				selection.reasoning_effort,
+				remote,
+			)
+			.await
+			{
+				Err(e @ (Error::Invalid(_) | Error::Plan(_))) => Err(TaskModelUnusable {
+					reasons: vec![e.to_string()],
+				}
+				.into()),
+				result => result,
+			}
+		}
+		Err(Error::Forbidden | Error::AuthorityRefused(_)) => Err(TaskModelUnusable {
+			reasons: vec!["The current authority cannot use this model".into()],
+		}
+		.into()),
+		Err(error) => Err(error),
+	}
+}
+
 pub(crate) async fn authorized(
+	task_model: Option<&aidash_domain::TaskModel>,
 	access: &mut crate::authorization::access::Access,
 	entry: &aidash_domain::registry::Entry,
 	remote: bool,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	authorized_mode(access, entry, remote, configured, false, None).await
+	authorized_mode(access, entry, remote, configured, false, None, task_model).await
 }
 
 /// [`authorized`] for a child agent's closure prepared under its delegating
@@ -193,21 +288,32 @@ pub(crate) async fn authorized(
 /// chain: the child's own direct dependencies are checked against the child,
 /// not against the delegating agent that still ends the chain.
 pub(crate) async fn authorized_child(
+	selection: Option<&aidash_domain::TaskModel>,
 	access: &mut crate::authorization::access::Access,
 	entry: &aidash_domain::registry::Entry,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	authorized_mode(access, entry, false, configured, true, None).await
+	authorized_mode(access, entry, false, configured, true, None, selection).await
 }
 
 /// Resolve the receiver closure while retaining the failed dependency for refusal auditing.
 pub(crate) async fn authorized_peer(
+	selection: Option<&aidash_domain::TaskModel>,
 	access: &mut crate::authorization::access::Access,
 	entry: &aidash_domain::registry::Entry,
 	configured: bool,
 	failure: &mut Option<(aidash_domain::registry::EntityRef, u64)>,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	authorized_mode(access, entry, true, configured, false, Some(failure)).await
+	authorized_mode(
+		access,
+		entry,
+		true,
+		configured,
+		false,
+		Some(failure),
+		selection,
+	)
+	.await
 }
 
 async fn authorized_mode(
@@ -217,9 +323,36 @@ async fn authorized_mode(
 	configured: bool,
 	child: bool,
 	mut failure: Option<&mut Option<(aidash_domain::registry::EntityRef, u64)>>,
+	task_model: Option<&aidash_domain::TaskModel>,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
-	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
+	let snapshot = snapshot_mode(
+		&mut access.tx,
+		&node,
+		entry,
+		remote,
+		false,
+		configured,
+		task_model,
+	)
+	.await
+	.map_err(|error| match error {
+		Error::Invalid(reason) if entry.config["model"].is_null() && task_model.is_some() => {
+			aidash_domain::TaskModelRefusal::TaskModelUnusable {
+				reasons: vec![reason],
+			}
+			.into()
+		}
+		other => other,
+	})?;
+	if snapshot.task_model.is_some() {
+		crate::bootstrap::registry_validation()
+			.with_provider_credentials(configured)
+			.bound_prompt_headroom(&snapshot, &serde_json::Value::Null)
+			.map_err(|error| aidash_domain::TaskModelRefusal::TaskModelUnusable {
+				reasons: vec![error.to_string()],
+			})?;
+	}
 	// A delegated agent's own dependencies are checked against that agent.
 	let delegated = snapshot.delegated_users()?;
 	let root = [snapshot.agent.local()];

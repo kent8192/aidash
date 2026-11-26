@@ -122,7 +122,7 @@ pub const EXPLICIT_CACHE_PREFIXES: &[&str] = &["anthropic/", "openai/gpt-5.6", "
 const EXPLICIT_ONLY_CACHE_PREFIXES: &[&str] = &["openai/gpt-5.6", "openai/gpt-6"];
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
 	None,

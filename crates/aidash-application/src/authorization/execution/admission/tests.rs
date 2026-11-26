@@ -43,6 +43,7 @@ impl Scope {
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 7,
 			created_at: chrono::Utc::now(),
@@ -120,6 +121,7 @@ impl ExecutionAdmissionSession for Scope {
 	}
 	async fn bindings(
 		&mut self,
+		_task_model: Option<&aidash_domain::TaskModel>,
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let _: aidash_domain::registry::bindings::AgentBindings =

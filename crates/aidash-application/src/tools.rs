@@ -425,6 +425,9 @@ impl Plugin {
 			ToolConfig::Agent { node_id, agent } => {
 				let mut input: NewTask =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+				if input.task_model.is_none() {
+					input.task_model = child_task_model(ctx.run, &Value::Null)?;
+				}
 				input.parent_id.get_or_insert(ctx.run.task_id);
 				let task = ctx
 					.operations
@@ -432,7 +435,7 @@ impl Plugin {
 					.await?;
 				let delegation_key = format!("{key}:delegate");
 				Ok(
-					json!({"task":task,"delegation":ctx.operations.delegate_with_key(&delegation_key,task.id,node_id,agent).await?}),
+					json!({"task":task,"delegation":ctx.operations.delegate_with_key(&delegation_key,task.id,node_id,agent,input.task_model.as_ref()).await?}),
 				)
 			}
 		}
@@ -443,6 +446,26 @@ pub(crate) fn validate_arguments(schema: &Value, input: &Value) -> Result<()> {
 		.map_err(|e| Error::Invalid(e.to_string()))?
 		.validate(input)
 		.map_err(|e| Error::Invalid(e.to_string()))
+}
+
+fn child_task_model(run: &Run, input: &Value) -> Result<Option<aidash_domain::TaskModel>> {
+	let effort = input
+		.get("reasoning_effort")
+		.map(|value| serde_json::from_value(value.clone()))
+		.transpose()?;
+	if let Some(reference) = input.get("model") {
+		let selection = aidash_domain::TaskModel {
+			model: serde_json::from_value(reference.clone())?,
+			reasoning_effort: effort,
+		};
+		selection.validate()?;
+		return Ok(Some(selection));
+	}
+	match run.context.binding_snapshot.as_deref() {
+		Some(snapshot) => Ok(Some(snapshot.inherited_model_with_effort(effort)?)),
+		None if effort.is_some() => Err(Error::Invalid("reasoning effort requires a model".into())),
+		None => Ok(None),
+	}
 }
 
 pub struct Builtin {
@@ -516,6 +539,7 @@ impl Builtin {
 				};
 				let command = match self.name {
 					"subnode_task" => Command::Task {
+						task_model: child_task_model(ctx.run, &input)?,
 						id: id()?,
 						title: required(&input, "title")?.into(),
 						request: required(&input, "request")?.into(),
@@ -617,12 +641,78 @@ impl Builtin {
 					.await?
 			)),
 			"task_create" => {
+				let assignee = input.get("assignee").cloned();
+				let delegate = if assignee.is_some() {
+					let snapshot = ctx
+						.run
+						.context
+						.binding_snapshot
+						.as_deref()
+						.ok_or(Error::Forbidden)?;
+					Some(
+						snapshot
+							.bindings
+							.iter()
+							.find(|binding| {
+								binding.excluded_reason.is_none()
+									&& binding.alias.is_some() && binding.definition.config["provider"]
+									== "core.tasks@1" && binding.definition.config["operation"]
+									== "task_delegate"
+							})
+							.ok_or(Error::Forbidden)?,
+					)
+				} else {
+					None
+				};
+				let task_model = child_task_model(ctx.run, &input)?;
+				let mut input = input;
+				if let Some(object) = input.as_object_mut() {
+					object.remove("assignee");
+					object.remove("model");
+					object.remove("reasoning_effort");
+				}
 				let mut task: NewTask =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+				task.task_model = task_model;
 				if task.parent_id.is_none() {
 					task.parent_id = Some(ctx.run.task_id);
 				}
-				Ok(json!(ctx.operations.create_task(key, &task).await?))
+				let created = ctx.operations.create_task(key, &task).await?;
+				if let (Some(assignee), Some(binding)) = (assignee, delegate) {
+					let agent = serde_json::from_value(assignee["agent"].clone())?;
+					let mut arguments = json!({"task_id":created.id,"node_id":required(&assignee,"node_id")?,"agent":agent});
+					crate::registry::bindings::execution::validate_bound_input(
+						binding, &arguments,
+					)?;
+					binding.narrow.apply(&mut arguments)?;
+					let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+						serde_json::from_value(binding.definition.config.clone())?;
+					let mut contract = descriptor.declared_contract(binding.identity.clone())?;
+					contract.behavior.concurrency = contract
+						.behavior
+						.concurrency
+						.narrowed(binding.narrow.concurrency);
+					let call = aidash_domain::provider::ToolCall {
+						id: format!("{key}:delegate"),
+						name: binding.alias.clone().ok_or(Error::Forbidden)?,
+						arguments,
+					};
+					ctx.operations
+						.authorize_delegation(&call, &contract)
+						.await?;
+					let delegation = ctx
+						.operations
+						.delegate_with_key(
+							&format!("{key}:delegate"),
+							created.id,
+							required(&assignee, "node_id")?,
+							&agent,
+							task.task_model.as_ref(),
+						)
+						.await?;
+					return Ok(json!({"task":created, "delegation":delegation}));
+				}
+				Ok(json!(created))
 			}
 			"task_assign" => {
 				let id = required(&input, "task_id")?
@@ -652,7 +742,20 @@ impl Builtin {
 					.map_err(|e| Error::Invalid(e.to_string()))?;
 				Ok(json!(
 					ctx.operations
-						.delegate_with_key(key, id, required(&input, "node_id")?, &agent)
+						.delegate_with_key(
+							key,
+							id,
+							required(&input, "node_id")?,
+							&agent,
+							if input.get("model").is_some()
+								|| input.get("reasoning_effort").is_some()
+							{
+								child_task_model(ctx.run, &input)?
+							} else {
+								None
+							}
+							.as_ref()
+						)
 						.await?
 				))
 			}
@@ -922,7 +1025,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("subnode_task")
 				.expect("declared builtin"),
 			description: "Give a task to a Subnode's leader.",
-			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":string,"title":string,"request":string,"journal_range":{"type":"object","required":["from_seq","through_seq"],"properties":{"from_seq":{"type":"integer","minimum":0},"through_seq":{"type":"integer","minimum":0}},"additionalProperties":false}},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"model":entity_ref,"reasoning_effort":{"enum":["low","medium","high","xhigh","max"]},"subnode_id":string,"title":string,"request":string,"journal_range":{"type":"object","required":["from_seq","through_seq"],"properties":{"from_seq":{"type":"integer","minimum":0},"through_seq":{"type":"integer","minimum":0}},"additionalProperties":false}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "subnode_add_member",
@@ -984,8 +1087,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_create",
 			contract: aidash_domain::tool::builtin_contract("task_create")
 				.expect("declared builtin"),
-			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next. A subtask nobody is given is abandoned when this Run finishes.",
-			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
+			description: "Decompose a goal or task. Create a subtask in this workspace; optionally give it to an assignee by node_id and exact agent version. A subtask nobody is given is abandoned when this Run finishes.",
+			schema: json!({"type":"object","required":["title","description"],"properties":{"assignee":{"type":"object","required":["node_id","agent"],"properties":{"node_id":string,"agent":entity_ref},"additionalProperties":false},"model":entity_ref,"reasoning_effort":{"enum":["low","medium","high","xhigh","max"]},"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_assign",
@@ -999,7 +1102,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("task_delegate")
 				.expect("declared builtin"),
 			description: "Offer an existing workspace task to the explicitly selected local or remote agent.",
-			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"model":entity_ref,"reasoning_effort":{"enum":["low","medium","high","xhigh","max"]},"task_id":string,"node_id":string,"agent":entity_ref},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "artifact_publish",

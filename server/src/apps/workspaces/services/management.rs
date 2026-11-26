@@ -57,6 +57,7 @@ impl CollaborationManagement {
 					&f,
 					&identity,
 					aidash_application::threads::ConversationRequest {
+						task_model: input.task_model,
 						title: &input.title,
 						request,
 						target,

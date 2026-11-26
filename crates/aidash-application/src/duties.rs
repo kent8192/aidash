@@ -52,7 +52,11 @@ pub trait DutyScope: Send {
 	/// Whether the Tenant's policy lets the person use the mode.
 	async fn mode_allowed(&mut self, mode: ApprovalMode) -> Result<bool>;
 	/// Refuses an Agent version of the Tenant this person could not start.
-	async fn require_agent(&mut self, agent: &EntityRef) -> Result<()>;
+	async fn require_agent(
+		&mut self,
+		agent: &EntityRef,
+		_selection: Option<&aidash_domain::TaskModel>,
+	) -> Result<()>;
 	/// The newest version of the Agent the person could start, if newer.
 	async fn newer_agent_version(&mut self, agent: &EntityRef) -> Result<Option<String>>;
 	/// Whether `subject` names an enabled person of the Tenant.
@@ -141,10 +145,19 @@ async fn check_definition(
 	thread: Uuid,
 	definition: &Definition,
 ) -> Result<()> {
+	if let Some(selection) = &definition.task_model {
+		selection
+			.validate()
+			.map_err(|e| aidash_domain::TaskModelRefusal::TaskModelUnusable {
+				reasons: vec![e.to_string()],
+			})?;
+	}
 	definition.validate(scope.now())?;
 	// Its Runs start Tasks here, so the Requester must be able to.
 	scope.require_thread(thread, "task.create").await?;
-	scope.require_agent(&definition.agent).await?;
+	scope
+		.require_agent(&definition.agent, definition.task_model.as_ref())
+		.await?;
 	if let Some(mode) = definition.approval_mode
 		&& !scope.mode_allowed(mode).await?
 	{
@@ -555,6 +568,8 @@ pub mod tool {
 	#[derive(Debug, Clone, Deserialize, JsonSchema)]
 	#[serde(deny_unknown_fields)]
 	pub struct Create {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		pub task_model: Option<aidash_domain::TaskModel>,
 		/// A short name people see in the Duty list.
 		pub title: String,
 		/// What the Duty is for, written as a person would ask it; every Task
@@ -592,6 +607,8 @@ pub mod tool {
 	#[derive(Debug, Clone, Deserialize, JsonSchema)]
 	#[serde(deny_unknown_fields)]
 	pub struct Update {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		pub task_model: Option<aidash_domain::TaskModel>,
 		pub duty_id: Uuid,
 		#[serde(default)]
 		pub title: Option<String>,

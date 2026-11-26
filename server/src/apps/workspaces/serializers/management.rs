@@ -11,6 +11,8 @@ use uuid::Uuid;
 #[derive(Deserialize, Serialize, JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ThreadInput {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<aidash_domain::TaskModel>,
 	#[serde(deserialize_with = "crate::apps::workspaces::services::validation::trimmed_text")]
 	#[validate(length(min = 1))]
 	pub(crate) title: String,

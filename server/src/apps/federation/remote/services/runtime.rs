@@ -1151,17 +1151,29 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
+		self.delegate_selected(key, task_id, node, agent, None)
+			.await
+	}
+	pub async fn delegate_selected(
+		&self,
+		key: &str,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+		selection: Option<&aidash_domain::TaskModel>,
+	) -> Result<Delegation> {
 		// A Run started by a Remote Grant has no local authority: its Home owns
 		// the Task and hands it on, to its own Node or to any other (#654).
 		let _scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
-				.delegate(
+				.delegate_selected(
 					&self.federation,
 					self.execution_run()?,
 					task_id,
 					node,
 					agent,
+					selection,
 				)
 				.await
 				.map_err(|error| match error {
@@ -1195,11 +1207,21 @@ impl Home {
 		if self.local() {
 			return Err(Error::Forbidden);
 		}
-		self.command(
-			"delegate",
-			json!({"key":key,"task_id":task_id,"node_id":node,"agent":agent}),
-		)
-		.await
+		let mut command = json!({"key":key,"task_id":task_id,"node_id":node,"agent":agent});
+		let inherited = if selection.is_none() {
+			self.execution_run()?
+				.context
+				.binding_snapshot
+				.as_deref()
+				.map(|s| s.inherited_model())
+				.transpose()?
+		} else {
+			None
+		};
+		if let Some(model) = selection.or(inherited.as_ref()) {
+			command["task_model"] = json!(model);
+		}
+		self.command("delegate", command).await
 	}
 	pub async fn message(&self, key: &str, content: &str) -> Result<()> {
 		let scope = self.tenancy().await?;

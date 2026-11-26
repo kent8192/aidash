@@ -895,6 +895,16 @@ pub async fn delegate<R: HomeRepository>(
 	agent: &EntityRef,
 	by_tool: bool,
 ) -> Result<Delegation> {
+	delegate_with_model(repository, task, node, agent, by_tool, None).await
+}
+pub async fn delegate_with_model<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	node: &str,
+	agent: &EntityRef,
+	by_tool: bool,
+	selection: Option<&aidash_domain::TaskModel>,
+) -> Result<Delegation> {
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
@@ -911,6 +921,8 @@ pub async fn delegate<R: HomeRepository>(
 			.find(|g| {
 				g.inspection["agent"]["id"] == agent.id
 					&& g.inspection["agent"]["version"] == agent.version
+					&& selection
+						.is_none_or(|m| g.inspection["binding_snapshot"]["task_model"] == json!(m))
 			})
 			.map(|g| g.id))
 	}
@@ -922,6 +934,7 @@ pub async fn delegate<R: HomeRepository>(
 			.prepare(
 				task,
 				PrepareInput {
+					task_model: selection.cloned(),
 					id,
 					node_id: node.into(),
 					agent: agent.clone(),
@@ -960,6 +973,7 @@ pub async fn follow_up<R: HomeRepository>(
 		let key = format!("remote-follow-up:{}:{}", grant.id, input.id);
 		// Independent intent avoids importing invalid producer context through parent or dependency links.
 		let input = NewTask {
+			task_model: None,
 			title: input.title,
 			description: input.description,
 			requirements: serde_json::to_value(input.requirements)?,

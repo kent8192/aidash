@@ -183,6 +183,9 @@ impl GenerationUsageAuthority for Authority {
 			.get(&job.id)
 			.unwrap_or(&true))
 	}
+	async fn task_model(&mut self, _: &Request) -> Result<Option<aidash_domain::TaskModel>> {
+		Ok(None)
+	}
 	async fn pinned_policy(&mut self, job: &Request) -> Result<Value> {
 		assert_eq!(job.policy_revision, 7);
 		point(&self.0, format!("pinned:{}", job.id)).await?;

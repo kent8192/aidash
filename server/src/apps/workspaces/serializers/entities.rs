@@ -27,6 +27,7 @@ impl From<TaskRecord> for Task {
 			dependencies: record.dependencies,
 			parent_id: record.parent_id,
 			started_by_duty: record.started_by_duty,
+			task_model: record.task_model.map(reinhardt::db::orm::Json::into_inner),
 			revision: record.revision,
 			created_at: record.created_at,
 		}

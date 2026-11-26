@@ -23,6 +23,8 @@ REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
     ("POST", "/api/setting-requests/{id}/answer"): ("setting-request-answer", "execution/management"),
+    ("POST", "/api/tasks/{id}/remote-grants/models"): ("remote-task-models", "remote_grants"),
+    ("POST", "/federation/v0.1/scoped/task-models"): ("peer-task-models", "peer_mappings"),
     ("GET", "/api/registry/{id}/{version}/reference-revocations"): ("registry-source-revocations", "registry/management"),
     ("GET", "/api/tenants/{tenant}/invitation-approvals"): ("tenant-invitation-approvals", "tenant_administration"),
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),

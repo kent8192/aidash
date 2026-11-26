@@ -101,7 +101,11 @@ impl DutyScope for Fake {
 	async fn mode_allowed(&mut self, mode: ApprovalMode) -> Result<bool> {
 		Ok(mode != ApprovalMode::Bypass || self.bypass)
 	}
-	async fn require_agent(&mut self, agent: &EntityRef) -> Result<()> {
+	async fn require_agent(
+		&mut self,
+		agent: &EntityRef,
+		_selection: Option<&aidash_domain::TaskModel>,
+	) -> Result<()> {
 		if self
 			.agents
 			.get(&agent.id)
@@ -229,6 +233,7 @@ impl DutyScope for Fake {
 
 fn definition() -> Definition {
 	Definition {
+		task_model: None,
 		title: "Weekly dependency check".into(),
 		mission: "List outdated dependencies.".into(),
 		procedure: "1. Check every manifest.".into(),

@@ -291,6 +291,7 @@ pub(crate) async fn enqueue(
 				&mut access.tx,
 				area.thread_id,
 				&NewTask {
+					task_model: input.task_model,
 					title: input.title,
 					description: input.description,
 					requirements: json!({}),
@@ -580,6 +581,7 @@ pub(crate) async fn start_in_thread(
 			&mut access.tx,
 			thread,
 			&NewTask {
+				task_model: input.task_model,
 				title: input.title,
 				description: input.description,
 				requirements: json!({}),

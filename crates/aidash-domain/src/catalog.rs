@@ -17,6 +17,8 @@ pub struct CatalogSnapshot {
 pub struct CatalogModel {
 	pub id: String,
 	pub name: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub created: Option<i64>,
 	pub context_length: usize,
 	#[serde(default)]
 	pub top_provider: Option<TopProvider>,
@@ -209,3 +211,72 @@ mod tests {
 }
 
 pub mod carry_over;
+
+/// Batch, free, experimental and alias IDs do not identify a picker selection.
+pub fn picker_id(id: &str) -> bool {
+	!id.starts_with('~')
+		&& !id.contains("-exp")
+		&& !id
+			.split(':')
+			.skip(1)
+			.any(|variant| matches!(variant, "batch" | "free"))
+}
+
+/// Sort key of [`picker_order`]: series, generation, tier, version, release date, id.
+pub type PickerKey<'a> = (
+	usize,
+	std::cmp::Reverse<u32>,
+	usize,
+	std::cmp::Reverse<Vec<u32>>,
+	std::cmp::Reverse<i64>,
+	&'a str,
+);
+
+/// Registered models use the same series and tier order on a receiving Node's picker.
+pub fn picker_order(id: &str, created: Option<i64>) -> PickerKey<'_> {
+	let (vendor, name) = id.split_once('/').unwrap_or(("", id));
+	let numbers = name
+		.split(|c: char| !c.is_ascii_digit())
+		.filter_map(|n| n.parse().ok())
+		.collect::<Vec<u32>>();
+	let (series, tiers): (_, &[&str]) = match vendor {
+		"anthropic" if name.starts_with("claude-") => (0, &["fable", "opus", "sonnet", "haiku"]),
+		"openai" if name.starts_with("gpt-") && !name.split('-').any(|s| s == "pro") => {
+			(1, &["astra", "sol", "terra", "luna"])
+		}
+		"google" if name.starts_with("gemini-") => (2, &["neon", "carbon", "argon", "hydrogen"]),
+		"deepseek" => (3, &["pro", "flash"]),
+		"moonshotai" if name.starts_with("kimi-k") && numbers.first().is_some_and(|n| *n >= 3) => {
+			(4, &[])
+		}
+		"meta"
+			if name == "muse-wonder"
+				|| name.strip_prefix("muse-spark-").is_some_and(|version| {
+					version.split('.').all(|n| n.parse::<u32>().is_ok())
+				}) =>
+		{
+			(5, &["wonder", "spark"])
+		}
+		_ => (6, &[]),
+	};
+	let tier = tiers
+		.iter()
+		.position(|tier| name.split('-').any(|s| s == *tier))
+		.unwrap_or(tiers.len());
+	(
+		series,
+		std::cmp::Reverse(if series < 5 {
+			numbers.first().copied().unwrap_or(0)
+		} else {
+			0
+		}),
+		tier,
+		std::cmp::Reverse(if series == 6 { vec![] } else { numbers }),
+		std::cmp::Reverse(if series == 6 {
+			0
+		} else {
+			created.unwrap_or_default()
+		}),
+		id,
+	)
+}

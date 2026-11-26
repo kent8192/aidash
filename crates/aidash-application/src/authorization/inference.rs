@@ -10,7 +10,9 @@ pub async fn authorize(
 	agent: &AgentConfig,
 ) -> Result<()> {
 	if scope.remote() {
-		scope.catalog(&agent.model, "model.infer").await?;
+		scope
+			.catalog(agent.required_model()?, "model.infer")
+			.await?;
 		for skill in &agent.skills {
 			scope.catalog(skill, "skill.use").await?;
 		}
@@ -30,7 +32,9 @@ pub async fn authorize(
 			},
 		)
 		.await?;
-	scope.catalog(&agent.model, "model.infer").await?;
+	scope
+		.catalog(agent.required_model()?, "model.infer")
+		.await?;
 	for skill in &agent.skills {
 		scope.catalog(skill, "skill.use").await?;
 	}

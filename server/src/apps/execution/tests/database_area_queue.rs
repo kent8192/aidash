@@ -82,6 +82,7 @@ impl Queue {
 				&self.scope,
 				self.thread.id,
 				&NewTask {
+					task_model: None,
 					title: title.into(),
 					description: "Area queue".into(),
 					requirements: json!({}),

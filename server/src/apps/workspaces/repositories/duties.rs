@@ -41,6 +41,7 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 		requester: row.requester,
 		credential_id: row.credential_id,
 		definition: Definition {
+			task_model: row.task_model.map(|value| value.0),
 			title: row.title,
 			mission: row.mission,
 			procedure: row.procedure,
@@ -97,6 +98,7 @@ fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 	row.title = definition.title.trim().to_owned();
 	row.mission = definition.mission.clone();
 	row.procedure = definition.procedure.clone();
+	row.task_model = definition.task_model.clone().map(reinhardt::db::orm::Json);
 	row.agent_id = definition.agent.id.clone();
 	row.agent_version = definition.agent.version.clone();
 	row.trigger = definition
@@ -155,6 +157,7 @@ pub(crate) async fn insert(
 		.procedure(String::new())
 		.agent_id(String::new())
 		.agent_version(String::new())
+		.task_model(None)
 		.trigger(None)
 		.approval_mode(None)
 		.max_lateness_seconds(0)

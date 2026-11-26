@@ -233,7 +233,9 @@ pub async fn validate_content(
 		.await?
 	};
 	let visible = aidash_domain::registry::knowledge::visible_documents(&documents)?;
-	validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":visible}))?;
+	if !entry.config["model"].is_null() {
+		validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":visible}))?;
+	}
 	let Principal::Subject { subject, .. } = scope.principal() else {
 		return Err(Error::Forbidden);
 	};

@@ -71,6 +71,19 @@ pub async fn discover(
 	crate::http::json(service.discover(peer.0, input).await)
 }
 
+#[post(
+	"/federation/v0.1/scoped/task-models",
+	name = "peer-task-models",
+	auth = "protected"
+)]
+pub async fn discover_task_models(
+	#[inject] service: Depends<PeerMappings>,
+	#[inject] peer: InboundCall,
+	Json(agent): Json<aidash_domain::registry::EntityRef>,
+) -> ViewResult<Response> {
+	crate::http::json(service.discover_task_models(peer.0, agent).await)
+}
+
 /// The tools this Node offers the calling Node to request (ADR 0139).
 #[post(
 	"/federation/v0.1/scoped/tools/discover",

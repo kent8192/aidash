@@ -114,6 +114,7 @@ async fn a_write_waiting_for_a_deletion_is_refused_when_it_commits(
 						&scope,
 						id,
 						&NewTask {
+							task_model: None,
 							title: "Late".into(),
 							description: "Must not land".into(),
 							requirements: json!({}),

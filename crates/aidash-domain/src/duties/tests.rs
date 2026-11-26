@@ -16,6 +16,7 @@ fn cron(expression: &str, zone: &str) -> Trigger {
 
 fn definition(trigger: Trigger) -> Definition {
 	Definition {
+		task_model: None,
 		title: "Daily report".into(),
 		mission: "Summarize yesterday's merged pull requests.".into(),
 		procedure: String::new(),

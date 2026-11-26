@@ -40,6 +40,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			&scope,
 			thread.id,
 			&NewTask {
+				task_model: None,
 				title: "Plan".into(),
 				description: "Coordinate specialists".into(),
 				requirements: json!({}),
@@ -180,6 +181,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 				&scope,
 				thread.id,
 				&NewTask {
+					task_model: None,
 					title: format!("Child {index}"),
 					description: "large child description ".repeat(2_500),
 					requirements: json!({}),

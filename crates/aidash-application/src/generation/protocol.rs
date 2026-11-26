@@ -74,15 +74,27 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 		Purpose::Inference | Purpose::Summary => {
 			let agent: aidash_domain::registry::AgentConfig =
 				serde_json::from_value(description.inspection.agent.config.clone())?;
+			let model = agent
+				.model
+				.as_ref()
+				.or_else(|| {
+					description
+						.inspection
+						.binding_snapshot
+						.task_model
+						.as_ref()
+						.map(|selection| &selection.model)
+				})
+				.ok_or(Error::Forbidden)?;
 			let definition = description
 				.inspection
 				.definitions
 				.iter()
-				.find(|d| d.kind == "model" && d.entry == agent.model)
+				.find(|d| d.kind == "model" && d.entry == *model)
 				.ok_or(Error::Forbidden)?;
 			if usage.provider.node_id
 				!= aidash_domain::nodes::deployment_of(&description.target_node)
-				|| usage.provider.entry != agent.model
+				|| usage.provider.entry != *model
 				|| usage.provider.digest != definition.digest
 				|| usage.provider.configuration_digest
 					!= aidash_domain::registry::rules::digest(&definition.metadata.config)
@@ -296,15 +308,27 @@ pub async fn admit(
 		Purpose::Inference | Purpose::Summary => {
 			let agent: aidash_domain::registry::AgentConfig =
 				serde_json::from_value(description.inspection.agent.config.clone())?;
+			let model = agent
+				.model
+				.as_ref()
+				.or_else(|| {
+					description
+						.inspection
+						.binding_snapshot
+						.task_model
+						.as_ref()
+						.map(|selection| &selection.model)
+				})
+				.ok_or(Error::Forbidden)?;
 			let definition = description
 				.inspection
 				.definitions
 				.iter()
-				.find(|definition| definition.kind == "model" && definition.entry == agent.model)
+				.find(|definition| definition.kind == "model" && definition.entry == *model)
 				.ok_or(Error::Forbidden)?;
 			aidash_domain::semantic::remote::Provider {
 				node_id: authority.node_id().into(),
-				entry: agent.model,
+				entry: model.clone(),
 				digest: definition.digest.clone(),
 				configuration_digest: aidash_domain::registry::rules::digest(
 					&definition.metadata.config,

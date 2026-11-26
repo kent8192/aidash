@@ -1,4 +1,5 @@
 use super::{Authorization, access::Access, identity::SubjectIdentity};
+use crate::apps::identity::services::policies::catalog_row;
 use crate::{
 	Result,
 	registry::{EntityRef, Entry, Search},
@@ -20,6 +21,13 @@ impl Authorization {
 			.pool
 			.begin(&aidash_application::tenancy::TenancyScope::tenant(tenant)?)
 			.await?;
+		let model =
+			crate::apps::identity::repositories::catalog_approvals::definition(&mut tx, entry)
+				.await?
+				.kind == "model";
+		if model {
+			crate::apps::identity::repositories::nodes::lock_tenant(&mut *tx, tenant).await?;
+		}
 		let binding = aidash_application::authorization::catalog::set_catalog(
 			&mut crate::bootstrap::catalog_administrator_scope(
 				&mut tx,
@@ -33,6 +41,36 @@ impl Authorization {
 			actor,
 		)
 		.await?;
+		if model {
+			use crate::apps::identity::repositories::{catalog_mutation, nodes};
+			use aidash_domain::identity::catalog::ApprovalScope;
+			catalog_mutation::set_scope(&mut tx, &binding, ApprovalScope::Deployment).await?;
+			for target in nodes::list_live(&mut *tx, tenant).await? {
+				if target.name == *node {
+					continue;
+				}
+				let row = catalog_row(&mut *tx, tenant, &target.name, entry).await?;
+				let revision = row.as_ref().map_or(0, |r| r.revision);
+				if row.is_none() && !enabled {
+					continue;
+				}
+				// An administrator's unrestricted write never drops an existing restriction.
+				let other = aidash_application::authorization::catalog::set_catalog(
+					&mut crate::bootstrap::catalog_administrator_scope(
+						&mut tx,
+						aidash_domain::identity::Principal::DeploymentAdministrator,
+					),
+					tenant,
+					&target.name,
+					entry,
+					revision,
+					enabled,
+					actor,
+				)
+				.await?;
+				catalog_mutation::set_scope(&mut tx, &other, ApprovalScope::Deployment).await?;
+			}
+		}
 		tx.commit().await?;
 		Ok(binding)
 	}

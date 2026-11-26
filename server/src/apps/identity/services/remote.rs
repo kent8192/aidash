@@ -113,6 +113,21 @@ pub async fn provide_remote_grants(#[inject] runtime: Federation) -> RemoteGrant
 }
 
 impl RemoteGrants {
+	pub async fn task_models(
+		&self,
+		actor: Actor,
+		task_id: Uuid,
+		input: aidash_domain::federation::execution::TaskModelOptionsInput,
+	) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
+		aidash_application::authorization::source::grants::task_models(
+			&crate::bootstrap::home_execution_repository(&self.runtime, actor),
+			task_id,
+			input,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	pub async fn agent_inspection(
 		&self,
 		actor: Actor,

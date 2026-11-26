@@ -431,6 +431,7 @@ impl Template {
 	/// the default lateness and failure pause.
 	pub fn definition(&self, agent: EntityRef) -> Definition {
 		Definition {
+			task_model: None,
 			title: self.title.trim().to_owned(),
 			mission: self.mission.clone(),
 			procedure: self.procedure.clone(),

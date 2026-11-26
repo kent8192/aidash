@@ -27,12 +27,13 @@ impl RemoteManagement {
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
-		execution::delegate(
+		execution::delegate_with_model(
 			&self.runtime,
 			&identity,
 			id,
 			input.node_id.as_str(),
 			&input.agent,
+			input.task_model.as_ref(),
 		)
 		.await
 	}

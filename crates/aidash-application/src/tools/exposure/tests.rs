@@ -68,7 +68,14 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: assign")
 	}
-	async fn delegate_with_key(&self, _: &str, _: Uuid, _: &str, _: &EntityRef) -> Result<Value> {
+	async fn delegate_with_key(
+		&self,
+		_: &str,
+		_: Uuid,
+		_: &str,
+		_: &EntityRef,
+		_: Option<&aidash_domain::TaskModel>,
+	) -> Result<Value> {
 		panic!("unexpected tool effect: delegate")
 	}
 	async fn artifact(&self, _: &str, _: &ArtifactInput) -> Result<Artifact> {

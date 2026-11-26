@@ -139,6 +139,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		&f,
 		identity,
 		aidash_application::threads::ConversationRequest {
+			task_model: None,
 			title: "Conversation",
 			request: "Delegate research",
 			target: &reference("coordinator"),

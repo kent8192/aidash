@@ -74,6 +74,7 @@ fn task() -> Task {
 		created_by: "deployment_administrator".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 7,
 		created_at: Utc::now(),

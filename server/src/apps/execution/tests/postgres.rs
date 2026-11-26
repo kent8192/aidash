@@ -86,6 +86,7 @@ async fn seed(registry: &Registry) -> Entry {
 }
 fn new_task() -> NewTask {
 	NewTask {
+		task_model: None,
 		title: "Research".into(),
 		description: "Compare Rust frameworks".into(),
 		requirements: json!({"capability":"web.search","language":"ja"}),

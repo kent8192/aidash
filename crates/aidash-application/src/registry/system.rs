@@ -249,6 +249,43 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 	Ok(old)
 }
 
+/// The tool schemas an Agent could pin before Task Models were introduced.
+pub fn legacy_task_model_entries(
+	validation: &DefinitionValidation,
+	node: &str,
+) -> Result<Vec<Entry>> {
+	let mut legacy = Vec::new();
+	for mut entry in entries(validation, node)? {
+		let version = match entry.id.as_str() {
+			"aidash.subnode_task" => "1.1.0",
+			"aidash.task_create"
+			| "aidash.task_delegate"
+			| "aidash.duty_create"
+			| "aidash.duty_update" => "1.0.0",
+			_ => continue,
+		};
+		if entry.id == "aidash.task_create" {
+			entry.description.insert("en".into(),"Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next. A subtask nobody is given is abandoned when this Run finishes.".into());
+		}
+		if let Some(props) = entry.schema["properties"].as_object_mut() {
+			for key in ["model", "reasoning_effort", "task_model", "assignee"] {
+				props.remove(key);
+			}
+		}
+		if let Some(defs) = entry
+			.schema
+			.get_mut("$defs")
+			.and_then(|v| v.as_object_mut())
+		{
+			defs.remove("TaskModel");
+			defs.remove("ReasoningEffort");
+		}
+		entry.version = version.into();
+		legacy.push(entry);
+	}
+	Ok(legacy)
+}
+
 /// Every definition the Node declares to every Tenant's Registry: the built-in
 /// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
 /// Catalog Approval before anything may use it.
@@ -270,6 +307,7 @@ pub fn pinned_declarations(
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_task_model_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?))
 }
 
@@ -365,6 +403,7 @@ pub async fn seed(
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_task_model_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
@@ -468,6 +507,7 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		return true;
 	}
 	(reference.version == "1.0.0"
+		|| (reference.version == "1.2.0" && reference.id == "aidash.subnode_task")
 		|| (matches!(
 			reference.id.as_str(),
 			"aidash.workspace_read"
@@ -475,6 +515,10 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.task_create"
+				| "aidash.task_delegate"
+				| "aidash.duty_create"
+				| "aidash.duty_update"
 				| "aidash.task_assign"
 				| "aidash.workspace_wait"
 		) && reference.version == "1.1.0")

@@ -1098,6 +1098,7 @@ async fn materialize_plan_run(f: &Federation, run: Uuid) {
 			&scope,
 			thread.id,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Plan call".into(),
 				description: "Record the named exemption".into(),
 				requirements: json!({}),

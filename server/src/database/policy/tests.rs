@@ -103,6 +103,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"identity.0111_thread_member_policy forward",
 	"identity.0113_budget_notice_delivery backward",
 	"identity.0114_policy_revision_backfill forward",
+	"identity.0116_model_approval_scope forward",
 	"registry.0054_remove_agent_cluster forward",
 	"registry.0070_remove_package_index_draft_bindings forward",
 	"registry.0072_remove_agent_external_service_draft_bindings forward",

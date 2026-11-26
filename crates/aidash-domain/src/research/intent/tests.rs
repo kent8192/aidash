@@ -56,6 +56,7 @@ fn snapshot(remote: bool, definitions: Vec<ResolvedDefinition>) -> BindingSnapsh
 		.map(|definition| bound(definition, false))
 		.collect();
 	BindingSnapshot {
+		task_model: None,
 		schema_version: 1,
 		agent: QualifiedRef {
 			registry_deployment: NODE.into(),

@@ -717,6 +717,7 @@ fn a_workbench_test_excludes_only_the_schedule_tools() {
 		}
 	};
 	let snapshot = BindingSnapshot {
+		task_model: None,
 		schema_version: 1,
 		agent: QualifiedRef {
 			registry_deployment: "aidash://node-a".into(),

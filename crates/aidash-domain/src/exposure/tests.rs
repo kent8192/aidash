@@ -174,6 +174,7 @@ impl Run {
 		);
 		self.define(definition);
 		BindingSnapshot {
+			task_model: None,
 			schema_version: 1,
 			agent,
 			remote: false,

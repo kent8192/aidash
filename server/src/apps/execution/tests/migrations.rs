@@ -178,6 +178,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0068_task_models"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -200,6 +201,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0116_model_approval_scope"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -257,6 +259,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0068_task_models"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -279,6 +282,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0116_model_approval_scope"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -390,7 +394,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(head("registry"), ["0084_configurator_tools"]);
 	assert_eq!(head("execution"), ["0165_setting_requests_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
-	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
+	assert_eq!(head("workspaces"), ["0068_task_models"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -762,6 +766,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0068_task_models"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -784,6 +789,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -980,7 +986,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0067_task_duty_start".to_owned())]
+		vec![("workspaces".to_owned(), "0068_task_models".to_owned())]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -1536,6 +1542,7 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 			("identity", name),
 			backfill,
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 		])
 		.await;
 	fixture.tenant_root("notice-upgrade").await;
@@ -2523,6 +2530,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0068_task_models"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -2545,6 +2553,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5218,6 +5227,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0068_task_models"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5226,6 +5236,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0116_model_approval_scope"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5822,6 +5833,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5833,6 +5845,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0068_task_models"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5931,6 +5944,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -5942,6 +5956,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0068_task_models"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -6048,6 +6063,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -6059,6 +6075,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0068_task_models"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
@@ -6954,6 +6971,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 			("execution", "0150_task_executions"),
 			("execution", "0151_task_executions_state"),
 			("execution", "0152_stint_leases"),
@@ -7151,6 +7169,7 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 		.migrate_excluding(&[
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0116_model_approval_scope"),
 		])
 		.await;
 
@@ -7453,4 +7472,61 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 	.await
 	.unwrap();
 	assert_eq!(checked, (true, true));
+}
+
+#[rstest]
+#[tokio::test]
+async fn task_model_approval_migration_widens_only_within_the_tenant(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[("identity", "0116_model_approval_scope")])
+		.await;
+	for tenant in ["acme", "other"] {
+		fixture.tenant_root(tenant).await;
+	}
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	sqlx::query(
+		"INSERT INTO authorization_bundles (tenant, revision, document) VALUES ('acme', 1, $1)",
+	)
+	.bind(json!({"tenant":"acme","subjects":{},"policies":[]}))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	let home = aidash_domain::nodes::NodeName::derived("acme");
+	let second = aidash_domain::nodes::NodeName::derived("second").to_string();
+	sqlx::query("INSERT INTO node_names (name,tenant,created_at) VALUES ($1,'acme',now())")
+		.bind(&second)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO nodes (name,tenant,label,is_default,created_at,created_by_kind) VALUES ($1,'acme','Second',false,now(),'deployment_administrator')").bind(&second).execute(&mut *tx).await.unwrap();
+	let model = json!({"id":"task-model-test","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"Fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}});
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','task-model-test','1.0.0','model',$1)").bind(model).execute(&mut *tx).await.unwrap();
+	sqlx::query("INSERT INTO authorization_catalog (tenant,node,entry_id,entry_version,enabled,revision,scope) VALUES ('acme',$1,'task-model-test','1.0.0',true,1,'node')").bind(home.as_str()).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+	fixture.migrate().await;
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	let rows:Vec<(String,String,String,bool,i64)>=sqlx::query_as("SELECT tenant,node,scope,enabled,revision FROM authorization_catalog WHERE entry_id='task-model-test' ORDER BY revision").fetch_all(&mut *tx).await.unwrap();
+	assert_eq!(
+		rows,
+		vec![
+			("acme".into(), second, "deployment".into(), true, 1),
+			(
+				"acme".into(),
+				home.to_string(),
+				"deployment".into(),
+				true,
+				2
+			)
+		]
+	);
+	let changed:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_catalog_history WHERE entry_id='task-model-test' AND actor='migration:identity/0116_model_approval_scope'").fetch_one(&mut *tx).await.unwrap();
+	assert_eq!(changed, 2);
 }

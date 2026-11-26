@@ -526,6 +526,7 @@ impl AgentToolScope for Scope<'_> {
 			created_by: "saved creator".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 7,
 			created_at: Utc::now(),
@@ -1590,6 +1591,7 @@ fn asset_snapshot(repository: &mut Repository, run: &RunMetadata) -> String {
 		json!({"schema_version":1,"model":{"id":"model","version":"1"},"instructions":"Work.","bindings":[],"exposure":{"version":"deferred@1"}}),
 	);
 	let snapshot = BindingSnapshot {
+		task_model: None,
 		schema_version: 1,
 		agent: agent.clone(),
 		remote: false,

@@ -228,7 +228,8 @@ for (const locale of ["en-US", "ja-JP"]) {
     const dialog = page.getByRole("dialog");
     const model = dialog.locator('select[name="model"]');
     await expect(model.locator("option")).toHaveText([
-      japanese ? "選択してください…" : "Choose…",
+      // An agent may leave its model to each Task start (#1154).
+      japanese ? "Task を始めるたびに選択" : "Picked at each Task start",
       `${japanese ? "調査モデル" : "Research model"} · 1.0.0 (#1)`,
       `${japanese ? "調査モデル" : "Research model"} · 2.0.0`,
       "Fallback model · 1.0.0",

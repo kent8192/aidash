@@ -47,6 +47,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 			&acme,
 			thread.id,
 			&aidash_server::domain::NewTask {
+				task_model: None,
 				title: "Work".into(),
 				description: "A Run whose owner stops it".into(),
 				requirements: json!({}),
@@ -211,6 +212,7 @@ impl World {
 				&acme,
 				self.thread,
 				&aidash_server::domain::NewTask {
+					task_model: None,
 					title: "Parent".into(),
 					description: "The Run that delegated the Task".into(),
 					requirements: json!({}),
@@ -602,6 +604,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 			&acme,
 			thread.id,
 			&aidash_server::domain::NewTask {
+				task_model: None,
 				title: "Work".into(),
 				description: "An Agent that bound core.npm".into(),
 				requirements: json!({}),

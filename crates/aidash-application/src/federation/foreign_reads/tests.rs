@@ -238,11 +238,13 @@ fn scope(run: RunMetadata) -> Scope {
 			created_by: "creator".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 1,
 			created_at: now,
 		},
 		inspection: Inspection {
+			task_model: None,
 			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],

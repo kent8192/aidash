@@ -615,16 +615,19 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 				"APPROVAL_REVIEW_STALE: item revision or digest changed".into(),
 			));
 		}
+		let scope = if reviewed.kind == "model" {
+			aidash_domain::identity::catalog::ApprovalScope::Deployment
+		} else {
+			item.scope
+				.or(reviewed.scope)
+				.unwrap_or_else(approvals::default_scope)
+		};
 		match reviewed.status {
 			ReviewStatus::Approvable => {}
 			ReviewStatus::Approved => {
 				// Approving it again Deployment-wide approves it on the Nodes
 				// that lack it, which the items using it may need there.
-				let spreads = item
-					.scope
-					.or(reviewed.scope)
-					.unwrap_or_else(approvals::default_scope)
-					== aidash_domain::identity::catalog::ApprovalScope::Deployment
+				let spreads = scope == aidash_domain::identity::catalog::ApprovalScope::Deployment
 					&& !reviewed.unapproved_nodes.is_empty();
 				if !spreads
 					&& (item.restriction.is_none() || item.restriction == reviewed.restriction)
@@ -649,10 +652,7 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 		approvals.push(Approval {
 			expected_node_revisions: item.expected_node_revisions.clone(),
 			carry_over: item.carry_over.or(reviewed.carry_over).unwrap_or(true),
-			scope: item
-				.scope
-				.or(reviewed.scope)
-				.unwrap_or_else(approvals::default_scope),
+			scope,
 			entry: item.reference.clone(),
 			provider_warning_acknowledged: item.provider_warning_acknowledged,
 			enabled: true,

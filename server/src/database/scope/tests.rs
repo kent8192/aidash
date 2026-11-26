@@ -103,6 +103,7 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 			"migrations/identity/sql/forward/0110_reply_thread_modes.sql",
 			"migrations/identity/sql/forward/0111_thread_member_policy.sql",
 			"migrations/identity/sql/forward/0114_policy_revision_backfill.sql",
+			"migrations/identity/sql/forward/0116_model_approval_scope.sql",
 			"migrations/registry/sql/forward/0054_remove_agent_cluster.sql",
 			"migrations/registry/sql/forward/0055_remove_structured_harness_contracts.sql",
 			"migrations/registry/sql/forward/0070_remove_package_index_draft_bindings.sql",

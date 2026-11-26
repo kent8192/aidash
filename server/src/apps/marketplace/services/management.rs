@@ -365,6 +365,11 @@ impl MarketplaceManagement {
 				},
 			)
 			.await?;
+			crate::apps::identity::services::policies::finish_installed_model_approval(
+				&mut access,
+				&revision.entry,
+			)
+			.await?;
 			if enabled {
 				let node = access.catalog_address().await?;
 				crate::apps::identity::repositories::catalog_approvals::admit_agents(
@@ -428,6 +433,13 @@ impl MarketplaceManagement {
 					f.store.deployment.as_str(),
 				)
 				.await?;
+			for entry in &entries {
+				crate::apps::identity::services::policies::finish_installed_model_approval(
+					&mut access,
+					entry,
+				)
+				.await?;
+			}
 			crate::apps::identity::repositories::catalog_approvals::admit_agents(
 				&mut access,
 				&f.config.deployment.node(node.clone()),

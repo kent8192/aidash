@@ -501,6 +501,7 @@ pub async fn execute(
 				.apply(
 					context(),
 					Effect::Delegate {
+						task_model: serde_json::from_value(data["task_model"].clone())?,
 						child: child.id,
 						agent: &agent,
 					},
@@ -644,6 +645,7 @@ pub async fn execute(
 /// talk to the target Node, and the Home releases its locks before peer calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Onward {
+	pub task_model: Option<aidash_domain::TaskModel>,
 	pub child: Uuid,
 	pub node: String,
 	pub agent: EntityRef,
@@ -721,6 +723,7 @@ pub async fn onward(
 		return Err(Error::Forbidden);
 	}
 	Ok(OnwardStep::HandOn(Onward {
+		task_model: serde_json::from_value(data["task_model"].clone())?,
 		child: child.id,
 		node,
 		agent,

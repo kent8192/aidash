@@ -199,6 +199,20 @@ async fn approve_scoped(
 ) -> Result<Vec<Binding>> {
 	use aidash_domain::identity::catalog::ApprovalScope;
 	let tenant = access.identity.tenant.clone();
+	let mut models = std::collections::BTreeSet::new();
+	let mut resolved = approvals.to_vec();
+	for item in &mut resolved {
+		let entry = crate::apps::identity::repositories::catalog_approvals::definition(
+			&mut access.tx,
+			&item.entry,
+		)
+		.await?;
+		if entry.kind == "model" {
+			models.insert((item.entry.id.clone(), item.entry.version.clone()));
+			item.scope = ApprovalScope::Deployment;
+		}
+	}
+	let approvals = resolved.as_slice();
 	let all_nodes = approvals
 		.iter()
 		.any(|item| item.scope == ApprovalScope::Deployment);
@@ -250,10 +264,16 @@ async fn approve_scoped(
 					// as it is rather than overwrite it unseen. The
 					// Deployment-wide scope still needs `catalog.approve` on
 					// every current Node (decision 10 of #873).
-					if catalog_row(&mut **access.tx, &tenant, &node, &item.entry)
-						.await?
-						.is_some()
+					if let Some(row) =
+						catalog_row(&mut **access.tx, &tenant, &node, &item.entry).await?
 					{
+						if models.contains(&(item.entry.id.clone(), item.entry.version.clone()))
+							&& (!row.enabled || row.scope != "deployment")
+						{
+							return Err(Error::Conflict(
+								"Review the current model approval revisions on every Node".into(),
+							));
+						}
 						use aidash_application::ports::catalog::CatalogApprovalScope;
 						access.set_node(node.clone());
 						let definition =
@@ -340,6 +360,61 @@ async fn approve_scoped(
 	Ok(source_bindings)
 }
 
+/// Complete a Marketplace model activation under the same policy transaction.
+pub(crate) async fn finish_installed_model_approval(
+	access: &mut Access,
+	entry: &crate::registry::Entry,
+) -> Result<()> {
+	if entry.kind != "model" {
+		return Ok(());
+	}
+	let address = access.catalog_address().await?;
+	let tenant = access.identity.tenant.clone();
+	let reference = crate::registry::EntityRef {
+		id: entry.id.clone(),
+		version: entry.version.clone(),
+	};
+	let row = catalog_row(&mut **access.tx, &tenant, &address.node, &reference)
+		.await?
+		.ok_or_else(|| Error::Conflict("activated model approval disappeared".into()))?;
+	let nodes =
+		&crate::apps::identity::repositories::nodes::list_live(&mut **access.tx, &tenant).await?;
+	let mut revisions = std::collections::BTreeMap::new();
+	for node in nodes {
+		if node.name != address.node
+			&& let Some(previous) =
+				catalog_row(&mut **access.tx, &tenant, &node.name, &reference).await?
+		{
+			revisions.insert(node.name.to_string(), previous.revision);
+		}
+	}
+	let approval = aidash_application::authorization::catalog::approvals::Approval {
+		expected_node_revisions: revisions,
+		carry_over: row.carry_over,
+		scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+		entry: reference,
+		enabled: row.enabled,
+		expected_revision: row.revision,
+		provider_warning_acknowledged: false,
+		groups: None,
+		restriction: row
+			.restriction
+			.map(|value| serde_json::from_value(value.0))
+			.transpose()?,
+	};
+	approve_scoped(
+		access,
+		&address.deployment,
+		&address.node,
+		&[approval],
+		&Default::default(),
+		&Default::default(),
+		&Default::default(),
+	)
+	.await?;
+	Ok(())
+}
+
 /// Every approval row of one definition on one Node.
 async fn entry_rows(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
@@ -415,7 +490,7 @@ async fn refresh_requests_on_nodes(
 	Ok(())
 }
 
-async fn catalog_row(
+pub(crate) async fn catalog_row(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	tenant: &str,
 	node: &aidash_domain::nodes::NodeName,

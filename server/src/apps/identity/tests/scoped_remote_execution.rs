@@ -3835,6 +3835,7 @@ async fn a_remote_grant_run_hands_its_child_on_to_a_third_node_through_its_home(
 		.create_task(
 			"multi-hop-child",
 			&NewTask {
+				task_model: None,
 				title: "Multi-hop child".into(),
 				description: "Handed on to a third Node".into(),
 				requirements: json!({}),
@@ -3930,6 +3931,7 @@ async fn a_hop_through_an_executor_the_home_does_not_know_is_refused(
 		.create_task(
 			"unknown-executor-child",
 			&NewTask {
+				task_model: None,
 				title: "Unknown executor child".into(),
 				description: "Handed on".into(),
 				requirements: json!({}),
@@ -3999,6 +4001,7 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 		.create_task(
 			"tool-hop-child",
 			&NewTask {
+				task_model: None,
 				title: "Tool hop child".into(),
 				description: "Handed on by the model".into(),
 				requirements: json!({}),
@@ -4069,6 +4072,7 @@ async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
 		.create_task(
 			"chain-child",
 			&NewTask {
+				task_model: None,
 				title: "Chain child".into(),
 				description: "Handed on".into(),
 				requirements: json!({}),
@@ -4141,6 +4145,7 @@ async fn a_repeated_onward_delegation_answers_its_first_delegation_after_the_tar
 		.create_task(
 			"replayed-child",
 			&NewTask {
+				task_model: None,
 				title: "Replayed child".into(),
 				description: "Handed on once".into(),
 				requirements: json!({}),
@@ -4276,6 +4281,7 @@ async fn a_hop_needs_both_lists_to_name_the_tool(#[future(awt)] scoped_pair: Pai
 		.create_task(
 			"unlisted-hop-child",
 			&NewTask {
+				task_model: None,
 				title: "Unlisted hop child".into(),
 				description: "Not handed on".into(),
 				requirements: json!({}),
@@ -4317,6 +4323,7 @@ async fn a_remote_grant_run_hands_its_child_back_to_its_homes_own_node(
 		.create_task(
 			"scoped-child-create",
 			&NewTask {
+				task_model: None,
 				title: "Scoped delegated child".into(),
 				description: "Created under a remote run".into(),
 				requirements: json!({}),
@@ -11366,6 +11373,7 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 				&TEST_FIXTURE,
 				parent.thread_id,
 				&aidash_server::domain::NewTask {
+					task_model: None,
 					title: "Remote subtask".into(),
 					description: "Nobody is given this".into(),
 					requirements: json!({}),

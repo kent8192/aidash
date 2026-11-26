@@ -45,6 +45,7 @@ fn scope() -> Scope {
 			created_by: "primary".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 1,
 			created_at: now,
@@ -61,6 +62,7 @@ fn scope() -> Scope {
 }
 fn input() -> NewTask {
 	NewTask {
+		task_model: None,
 		title: "task".into(),
 		description: "日本語".into(),
 		requirements: json!({"kind":"model"}),

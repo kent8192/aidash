@@ -150,7 +150,7 @@ async fn inspect_in(
 		pinned.binding_snapshot.validate()?;
 		pinned.binding_snapshot.clone()
 	} else {
-		match access.bindings(&entry).await {
+		match access.bindings(&entry, input.task_model.as_ref()).await {
 			Ok(snapshot) => snapshot,
 			Err(Error::RemoteExecutionRefused(Refusal::ReceiverRefused(reason))) => {
 				return Err(record_binding_refusal(access, &resource, reason).await?);
@@ -248,6 +248,7 @@ async fn inspect_in(
 	}
 	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
+		task_model: input.task_model.clone(),
 		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,

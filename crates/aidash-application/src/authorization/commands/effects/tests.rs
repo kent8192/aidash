@@ -40,6 +40,7 @@ fn scope() -> Scope {
 			created_by: "root".into(),
 			dependencies: vec![],
 			parent_id: None,
+			task_model: None,
 			started_by_duty: None,
 			revision: 8,
 			created_at: chrono::Utc::now(),
@@ -256,7 +257,7 @@ impl RemoteCommandEffects for Scope {
 			}
 			Effect::AbandonUnassigned { ids } => json!({"kind":"abandon_unassigned","ids":ids}),
 			Effect::CreateTask { task } => json!({"kind":"create_task","task":task}),
-			Effect::Delegate { child, agent } => {
+			Effect::Delegate { child, agent, .. } => {
 				json!({"kind":"delegate","child":child,"agent":agent})
 			}
 			Effect::Assign {
@@ -609,6 +610,7 @@ async fn a_child_handed_to_another_node_is_checked_here_and_granted_after_the_le
 	assert_eq!(
 		onward,
 		OnwardStep::HandOn(Onward {
+			task_model: None,
 			child: id,
 			node: node.into(),
 			agent: EntityRef {
@@ -787,6 +789,7 @@ impl HandOnScope for HandingScope {
 			created_by: self.chain[1].clone(),
 			dependencies: vec![],
 			parent_id: Some(Uuid::from_u128(2)),
+			task_model: None,
 			started_by_duty: None,
 			revision: 1,
 			created_at: chrono::Utc::now(),
@@ -813,6 +816,7 @@ impl HandOnScope for HandingScope {
 }
 fn handed() -> Onward {
 	Onward {
+		task_model: None,
 		child: Uuid::from_u128(5),
 		node: "aidash://third/quiet-falcon-4f8k2m1z".into(),
 		agent: EntityRef {

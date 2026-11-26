@@ -1006,6 +1006,7 @@ async fn thread_embedding_credential_is_pinned_with_environment_model_admission(
 			&TEST_FIXTURE,
 			thread.id,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Embedding admission".into(),
 				description: "Env model, Tenant embedding".into(),
 				requirements: json!({}),

@@ -191,6 +191,7 @@ pub async fn remove_member(
 	scope.remove_member(&subnode, agent).await
 }
 
+#[allow(clippy::too_many_arguments)] // The Subnode Task carries its request, journal range and Task Model.
 pub async fn task(
 	scope: &mut dyn crate::ports::subnodes::ManageScope,
 	run: &RunMetadata,
@@ -199,13 +200,22 @@ pub async fn task(
 	title: &str,
 	request: &str,
 	journal_range: Option<subnodes::JournalRange>,
+	task_model: Option<aidash_domain::TaskModel>,
 ) -> Result<uuid::Uuid> {
 	let subnode = active(scope, id).await?;
 	creator(&subnode, run)?;
 	aidash_domain::nonempty(title, "title")?;
 	aidash_domain::nonempty(request, "request")?;
 	scope
-		.task(&subnode, run, key, title, request, journal_range)
+		.task(
+			&subnode,
+			run,
+			key,
+			title,
+			request,
+			journal_range,
+			task_model,
+		)
 		.await
 }
 
@@ -356,6 +366,8 @@ pub async fn end_if_creator_removed(
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum Command {
 	Task {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		task_model: Option<aidash_domain::TaskModel>,
 		id: subnodes::SubnodeId,
 		title: String,
 		request: String,

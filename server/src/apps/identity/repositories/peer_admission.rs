@@ -358,9 +358,21 @@ where
 	async fn bindings(
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
+		selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let mut failure = None;
+		let caller = self.access.subjects[..self.access.subjects.len().saturating_sub(1)].to_vec();
+		crate::apps::registry::repositories::bindings::check_task_model(
+			&self.runtime.borrow().store,
+			true,
+			&mut self.access,
+			entry,
+			selection,
+			&caller,
+		)
+		.await?;
 		let result = crate::apps::registry::repositories::bindings::authorized_peer(
+			selection,
 			&mut self.access,
 			entry,
 			self.runtime.borrow().store.provider_credentials.is_some(),

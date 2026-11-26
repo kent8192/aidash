@@ -236,6 +236,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		.await
 		.unwrap();
 	let input = NewTask {
+		task_model: None,
 		title: "task".into(),
 		description: "work".into(),
 		requirements: json!({}),

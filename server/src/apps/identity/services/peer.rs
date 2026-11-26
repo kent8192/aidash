@@ -279,6 +279,13 @@ impl PeerMappings {
 	) -> Result<Vec<Entry>> {
 		discover_for(self.runtime.clone(), admitted, input).await
 	}
+	pub(crate) async fn discover_task_models(
+		&self,
+		admitted: Admitted,
+		agent: aidash_domain::registry::EntityRef,
+	) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
+		task_models_for(self.runtime.clone(), admitted, agent).await
+	}
 	pub(crate) async fn discover_tools(
 		&self,
 		admitted: Admitted,
@@ -417,6 +424,144 @@ async fn hide_blocked_tools(
 		kept.push(binding);
 	}
 	entry.config["bindings"] = serde_json::Value::Array(kept);
+}
+
+/// Read models under the same Node discovery and agent execution permissions as its card.
+pub(crate) async fn task_models_for(
+	f: Federation,
+	admitted: Admitted,
+	agent: aidash_domain::registry::EntityRef,
+) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
+	let mut access = access(&f, &admitted).await?;
+	let result = async {
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			admitted.receiver.node.as_str(),
+		)
+		.await?;
+		let resource = access.resource(
+			"node",
+			node.name.as_str(),
+			json!({"label": node.label, "default":node.default}),
+		);
+		access.require(&resource, "federation.discover").await?;
+		let entry = catalog::readable(&mut access, &agent).await?;
+		if entry.kind != "agent" {
+			return Err(crate::Error::Forbidden);
+		}
+		let target = catalog::entry(&mut access, &agent, "agent.execute").await?;
+		crate::marketplace::check_pinned(&mut access, &target).await?;
+		if !target.config["model"].is_null() {
+			return Err(crate::Error::Forbidden);
+		}
+		let caller = access.subjects.clone();
+		access.subjects.push(aidash_domain::agent_subject(
+			&admitted.receiver.to_string(),
+			&agent.id,
+			&agent.version,
+		));
+		let mut options = Vec::new();
+		for entry in catalog::list_in(
+			&mut access,
+			&Search {
+				kind: Some("model".into()),
+				..Default::default()
+			},
+		)
+		.await?
+		{
+			let model = aidash_domain::registry::EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			let config = aidash_domain::model::ModelConfig::from_stored(entry.config)?;
+			if !aidash_domain::catalog::picker_id(&config.model_id) {
+				continue;
+			}
+			let selection = aidash_domain::TaskModel {
+				model: model.clone(),
+				reasoning_effort: None,
+			};
+			let usable: Result<()> = async {
+				use crate::apps::registry::repositories::bindings::{authorized, check_task_model};
+				check_task_model(
+					&f.store,
+					true,
+					&mut access,
+					&target,
+					Some(&selection),
+					&caller,
+				)
+				.await?;
+				authorized(
+					Some(&selection),
+					&mut access,
+					&target,
+					true,
+					f.store.provider_credentials.is_some(),
+				)
+				.await?;
+				Ok(())
+			}
+			.await;
+			match usable {
+				Ok(()) => (),
+				Err(
+					crate::Error::TaskModel(_)
+					| crate::Error::Forbidden
+					| crate::Error::AuthorityRefused(_),
+				) => continue,
+				Err(other) => return Err(other),
+			}
+			options.push(aidash_domain::federation::execution::TaskModelOption {
+				model,
+				name: entry.name,
+				openrouter_model_id: config.model_id,
+				pricing: None,
+			});
+		}
+		Ok(options)
+	}
+	.await;
+	let mut options = access.finish(result).await?;
+	let mut released = std::collections::BTreeMap::new();
+	if !options.is_empty()
+		&& let Ok(catalog) = crate::apps::execution::services::management::OPENROUTER_CATALOG
+			.get(
+				crate::bootstrap::model_catalog(f.client.clone()).as_ref(),
+				chrono::Utc::now,
+			)
+			.await
+	{
+		let prices: std::collections::BTreeMap<_, _> = catalog
+			.models
+			.into_iter()
+			.map(|m| {
+				released.insert(m.id.clone(), m.created);
+				(m.id, (m.pricing, m.architecture.output_modalities))
+			})
+			.collect();
+		options.retain_mut(|option| {
+			let Some((price, output)) = prices.get(&option.openrouter_model_id) else {
+				return true;
+			};
+			option.pricing = Some(price.clone());
+			output.as_slice() == ["text"]
+		});
+	}
+	options.sort_by(|a, b| {
+		aidash_domain::catalog::picker_order(
+			&a.openrouter_model_id,
+			released.get(&a.openrouter_model_id).copied().flatten(),
+		)
+		.cmp(&aidash_domain::catalog::picker_order(
+			&b.openrouter_model_id,
+			released.get(&b.openrouter_model_id).copied().flatten(),
+		))
+		.then_with(|| (&a.model.id, &a.model.version).cmp(&(&b.model.id, &b.model.version)))
+	});
+	Ok(options)
 }
 
 /// The tools this Node offers `admitted.sender` to request (ADR 0139): every tool whose Reach

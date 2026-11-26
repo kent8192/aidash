@@ -164,6 +164,7 @@ impl PeerInspectionScope for Scope {
 	async fn bindings(
 		&mut self,
 		_: &Entry,
+		_selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		Ok(crate::test_support::snapshot("aidash://receiver", "agent"))
 	}

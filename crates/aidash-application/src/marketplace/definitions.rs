@@ -16,7 +16,12 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 				serde_json::from_value(entry.config.clone())
 					.map_err(|error| Error::Invalid(format!("invalid Agent bindings: {error}")))?;
 			config.validate()?;
-			refs.push((config.model, "model".into()));
+			refs.extend(
+				config
+					.model
+					.into_iter()
+					.map(|model| (model, "model".into())),
+			);
 			// Only authored edges travel. The receiving Node materializes its
 			// own required/default declarations during registration.
 			for binding in config.bindings {
@@ -417,7 +422,9 @@ pub async fn resolve(
 			false,
 		)
 		.await?;
-		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
+		if !entry.config["model"].is_null() {
+			validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
+		}
 		entry.binding_normalization = snapshot
 			.definitions
 			.iter()

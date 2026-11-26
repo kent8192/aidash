@@ -280,6 +280,16 @@ pub async fn delegate(
 	node: &str,
 	agent: &EntityRef,
 ) -> Result<Delegation> {
+	delegate_with_model(f, identity, task, node, agent, None).await
+}
+pub async fn delegate_with_model(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	task: Uuid,
+	node: &str,
+	agent: &EntityRef,
+	selection: Option<&aidash_domain::TaskModel>,
+) -> Result<Delegation> {
 	let target = (node != f.config.deployment)
 		.then(|| aidash_domain::nodes::NodeAddress::parse(node))
 		.transpose()?;
@@ -287,13 +297,14 @@ pub async fn delegate(
 		.as_ref()
 		.is_some_and(|target| target.deployment != f.config.deployment)
 	{
-		return super::remote::execution::delegate(f, identity, task, node, agent).await;
+		return super::remote::execution::delegate(f, identity, task, node, agent, selection).await;
 	}
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
 		let current = access.task_read(task).await?;
 		let home = access.thread_node(current.thread_id).await?;
 		if target.as_ref().is_none_or(|target| target.node == home) {
+			set_task_model(&mut access, task, selection).await?;
 			delegate_in(f, &mut access, task, agent).await.map(Some)
 		} else {
 			Ok(None)
@@ -306,8 +317,34 @@ pub async fn delegate(
 			f.notify.notify_waiters();
 			Ok(result)
 		}
-		None => super::remote::execution::delegate(f, identity, task, node, agent).await,
+		None => super::remote::execution::delegate(f, identity, task, node, agent, selection).await,
 	}
+}
+
+pub(crate) async fn set_task_model(
+	access: &mut Access,
+	task: Uuid,
+	selection: Option<&aidash_domain::TaskModel>,
+) -> Result<()> {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	if let Some(selection) = selection {
+		crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("tasks"))
+				.value_expr(
+					Alias::new("task_model"),
+					Expr::value(serde_json::to_value(selection)?),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.and_where(Expr::col("status").eq(Expr::value("OPEN")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
+	}
+	Ok(())
 }
 
 pub(crate) async fn delegate_in(
@@ -2195,6 +2232,16 @@ impl WorkerAuthority {
 		// Read potential references under the outer lease before opening the mutation transaction.
 		catalog::list_in(&mut lease, &Search::default()).await?;
 		let mut access = Access::under_lease(&lease).await?;
+		let target = lease.delegation_task_read(task, &run.metadata()).await?;
+		if target.thread_id == run.thread_id && target.task_model.is_none() {
+			let model = run
+				.context
+				.binding_snapshot
+				.as_deref()
+				.map(|s| s.inherited_model())
+				.transpose()?;
+			set_task_model(&mut access, task, model.as_ref()).await?;
+		}
 		let result = aidash_application::authorization::worker_tasks::assign(
 			&mut crate::bootstrap::worker_task_scope(f, &mut access),
 			&run.metadata(),
@@ -2297,6 +2344,7 @@ impl WorkerAuthority {
 				catalog::tool_entry(&mut lease, agent, "agent.execute", "subnode_create").await?;
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
+				None,
 				&mut lease,
 				&entry,
 				f.store.provider_credentials.is_some(),
@@ -2419,6 +2467,10 @@ impl WorkerAuthority {
 			};
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
+				match command {
+					Command::Task { task_model, .. } => task_model.as_ref(),
+					_ => None,
+				},
 				&mut lease,
 				&entry,
 				f.store.provider_credentials.is_some(),
@@ -2493,6 +2545,7 @@ impl WorkerAuthority {
 		}
 		let result: Result<Value> = match command {
 			Command::Task {
+				task_model,
 				id,
 				title,
 				request,
@@ -2505,6 +2558,7 @@ impl WorkerAuthority {
 				title,
 				request,
 				*journal_range,
+				task_model.clone(),
 			)
 			.await
 			.map(|task| json!({"task_id":task}))
@@ -2732,33 +2786,66 @@ impl WorkerAuthority {
 			.await
 	}
 
-	pub async fn delegate(
+	pub(crate) async fn authorize_delegation(
+		&self,
+		run: &Run,
+		call: &ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> aidash_application::Result<()> {
+		let snapshot = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let agent = AgentConfig::from_snapshot(snapshot)?;
+		aidash_application::authorization::tools::authorize(
+			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, run),
+			&run.metadata(),
+			&agent,
+			call,
+			contract,
+		)
+		.await
+	}
+	pub async fn delegate_selected(
 		&self,
 		f: &Federation,
 		run: &Run,
 		task: Uuid,
 		node: &str,
 		agent: &EntityRef,
+		selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<Delegation> {
 		let mut lease = self.access.write().await;
 		if !run.is_local(f.config.deployment.as_str()) {
 			return Err(Error::Forbidden);
 		}
+		// A missing task and one the Run may not see read the same, as for a local delegation.
+		let not_visible =
+			|| Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task));
+		let record = lease
+			.delegation_task_read(task, &run.metadata())
+			.await
+			.map_err(|error| match error {
+				Error::Forbidden => not_visible(),
+				error => error,
+			})?;
+		if record.thread_id != run.thread_id {
+			return Err(not_visible());
+		}
+		let inherited = if selection.is_none() && record.task_model.is_none() {
+			run.context
+				.binding_snapshot
+				.as_deref()
+				.map(|s| s.inherited_model())
+				.transpose()?
+		} else {
+			None
+		};
+		let selection = selection
+			.or(record.task_model.as_ref())
+			.or(inherited.as_ref());
 		if !aidash_domain::nodes::names_home(node, &run.home_node) {
-			// A missing task and one the Run may not see read the same, as for a local delegation.
-			let not_visible = || {
-				Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task))
-			};
-			let record = lease
-				.delegation_task_read(task, &run.metadata())
-				.await
-				.map_err(|error| match error {
-					Error::Forbidden => not_visible(),
-					error => error,
-				})?;
-			if record.thread_id != run.thread_id {
-				return Err(not_visible());
-			}
 			let identity = lease.identity.clone();
 			if lease.tx.is_active() {
 				lease.suspend().await?;
@@ -2769,12 +2856,13 @@ impl WorkerAuthority {
 				worker: Some(run.metadata()),
 				chain: None,
 			};
-			let result = aidash_application::authorization::home::delegate(
+			let result = aidash_application::authorization::home::delegate_with_model(
 				&repository,
 				task,
 				node,
 				agent,
 				true,
+				selection,
 			)
 			.await
 			.map_err(Into::into);
@@ -2791,12 +2879,14 @@ impl WorkerAuthority {
 		let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
 		crate::marketplace::check_pinned(&mut lease, &entry).await?;
 		crate::apps::registry::repositories::bindings::authorized_child(
+			selection,
 			&mut lease,
 			&entry,
 			f.store.provider_credentials.is_some(),
 		)
 		.await?;
 		let mut access = Access::under_lease(&lease).await?;
+		set_task_model(&mut access, task, selection).await?;
 		let result = aidash_application::authorization::worker_tasks::delegate(
 			&mut crate::bootstrap::worker_task_scope(f, &mut access),
 			&run.metadata(),

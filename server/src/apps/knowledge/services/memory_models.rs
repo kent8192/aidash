@@ -274,13 +274,12 @@ impl Models {
 					.definitions
 					.iter()
 					.find(|d| {
-						d.identity.id == config.model.id
-							&& d.identity.version == config.model.version
+						Some(d.identity.local()) == config.model
 							&& d.identity.registry_deployment == snapshot.agent.registry_deployment
 					})
 					.ok_or(Error::Forbidden)?;
 				agent_entry = Some(entry.definition.clone());
-				agent_model = Some(config.model);
+				agent_model = config.model;
 			}
 			crate::authorization::execution::access_for_run(store, &record.metadata(), true).await?
 		} else {

@@ -669,6 +669,7 @@ mod duty_templates {
 
 	fn template() -> Template {
 		let duty = Definition {
+			task_model: None,
 			title: "GitHub CI duty".into(),
 			mission: "Fix failing CI runs.".into(),
 			procedure: "1. Read the failed job.".into(),

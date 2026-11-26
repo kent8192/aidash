@@ -72,6 +72,7 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 			&TEST_FIXTURE,
 			bank.thread,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Reader".into(),
 				description: "Read one Unit".into(),
 				requirements: json!({}),
@@ -505,6 +506,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			&TEST_FIXTURE,
 			thread,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Produced task".into(),
 				description: "Continue the producer work".into(),
 				requirements: json!({}),
@@ -523,6 +525,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			&TEST_FIXTURE,
 			thread,
 			&aidash_domain::NewTask {
+				task_model: None,
 				title: "Root task".into(),
 				description: "Read the dependency".into(),
 				requirements: json!({}),

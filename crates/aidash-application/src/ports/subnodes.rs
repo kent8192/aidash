@@ -67,6 +67,7 @@ pub trait ManageScope: Send {
 	async fn remove_member(&mut self, subnode: &Subnode, agent: &EntityRef) -> Result<()>;
 	/// Inserts the task in the Subnode Thread and admits its leader with the
 	/// creating Run's subject chain in the same transaction. Reuses `key`.
+	#[allow(clippy::too_many_arguments)] // The Subnode Task carries its request, journal range and Task Model.
 	async fn task(
 		&mut self,
 		subnode: &Subnode,
@@ -75,6 +76,7 @@ pub trait ManageScope: Send {
 		title: &str,
 		request: &str,
 		journal_range: Option<aidash_domain::subnodes::JournalRange>,
+		task_model: Option<aidash_domain::TaskModel>,
 	) -> Result<Uuid>;
 	/// Marks dissolved and controls active member Runs using normal cancellation.
 	async fn dissolve(

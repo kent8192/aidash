@@ -168,7 +168,8 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: app.runtime.store.pool.clone(),
 	};
-	for id in ["model", "http", "research"] {
+	// Model approval was copied when the sibling Node was created.
+	for id in ["http", "research"] {
 		authorization
 			.set_catalog(
 				"acme",
@@ -233,6 +234,223 @@ async fn sibling_discovery_uses_the_receiving_nodes_catalog_and_policy_resource(
 
 #[rstest]
 #[tokio::test]
+async fn task_model_picker_and_grant_acceptance_recheck_receiver_authority(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+) {
+	let fixture = Box::pin(execution).await;
+	let app = &fixture.app;
+	let (status, peer) = endpoint::browser_mapping(app, "acme", "alice")
+		.await
+		.send(
+			"POST",
+			"/api/tenants/acme/nodes",
+			json!({"label":"Receiving Node"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{peer}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let node = aidash_domain::nodes::NodeName::parse(peer["name"].as_str().unwrap()).unwrap();
+	let mut agent = app
+		.runtime
+		.registry
+		.get(&tenant, "research", "1.0.0")
+		.await
+		.unwrap();
+	agent.version = "1.1.0".into();
+	agent.binding_normalization = None;
+	agent.config["model"] = Value::Null;
+	agent.config["bindings"] = json!([]);
+	app.runtime.registry.register(&tenant, agent).await.unwrap();
+	let target = aidash_domain::registry::EntityRef {
+		id: "research".into(),
+		version: "1.1.0".into(),
+	};
+	let mut policy = fixture.policy.clone();
+	policy["subjects"][aidash_domain::agent_subject(
+		peer["address"].as_str().unwrap(),
+		&target.id,
+		&target.version,
+	)] = json!({"kind":"agent","node":node});
+	deployment_administrator(
+		app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	aidash_server::authorization::Authorization {
+		pool: app.runtime.store.pool.clone(),
+	}
+	.set_catalog("acme", &node, &target, 0, true, "fixture")
+	.await
+	.unwrap();
+	let path = format!("/api/tasks/{}/remote-grants/models", fixture.task);
+	let input = json!({"node_id":peer["address"],"agent":target});
+	let list = assert_json(
+		fixture.subject.post(&path, &input, "json").await.unwrap(),
+		200,
+	);
+	let option = list
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["model"] == json!({"id":"model","version":"1.0.0"}))
+		.unwrap();
+	assert_eq!(option["openrouter_model_id"], "fixture");
+	assert!(option["name"].is_object());
+	assert!(option.get("pricing").is_some());
+
+	let grants = format!("/api/tasks/{}/remote-grants", fixture.task);
+	let grant = uuid::Uuid::new_v4();
+	let selected = json!({"model":option["model"],"reasoning_effort":"high"});
+	let prepared = assert_json(
+		fixture
+			.subject
+			.post(
+				&grants,
+				&json!({
+					"id":grant,"node_id":peer["address"],"agent":target,"ttl_seconds":300,
+					"semantic":{"mode":"disabled"},"task_model":selected
+				}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(prepared["id"], json!(grant));
+	let model: aidash_domain::registry::EntityRef =
+		serde_json::from_value(option["model"].clone()).unwrap();
+	aidash_server::authorization::Authorization {
+		pool: app.runtime.store.pool.clone(),
+	}
+	.set_catalog("acme", &node, &model, 1, false, "fixture")
+	.await
+	.unwrap();
+	let refused = assert_json(
+		fixture
+			.subject
+			.post(&format!("{grants}/{grant}/activate"), &json!({}), "json")
+			.await
+			.unwrap(),
+		422,
+	);
+	assert_eq!(refused["code"], "task_model_not_approved");
+	assert_eq!(refused["model"], option["model"]);
+
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"hide-receiving-node","effect":"deny","subjects":{"any":true},
+		"actions":["federation.discover"],"resources":{"kinds":["node"],"ids":[node]}
+	}));
+	deployment_administrator(
+		app,
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_json(
+		fixture.subject.post(&path, &input, "json").await.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn task_model_options_obey_the_sending_deployments_remote_agent_visibility(
+	#[future] discovery_pair: DiscoveryPair,
+) {
+	let pair = Box::pin(discovery_pair).await;
+	let source = endpoint::default_node(&pair.source_runtime.store, "acme").await;
+	let receiver = endpoint::default_node(&pair.destination_runtime.store, "acme").await;
+	let credential =
+		endpoint::issued_credential(&pair.destination_runtime.store, "acme", "alice").await;
+	deployment_administrator(
+		&pair.destination.app,
+		"/api/authorization/acme/peer-mappings",
+		json!({
+			"node":receiver.node,"source_node":source,"source_subject":"alice",
+			"credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true,
+		}),
+	)
+	.await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut agent = pair
+		.destination_runtime
+		.registry
+		.get(&tenant, "research", "1.0.0")
+		.await
+		.unwrap();
+	agent.version = "1.1.0".into();
+	agent.config["model"] = Value::Null;
+	agent.config["bindings"] = json!([]);
+	agent.binding_normalization = None;
+	let target = aidash_domain::registry::EntityRef {
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	};
+	pair.destination_runtime
+		.registry
+		.register(&tenant, agent)
+		.await
+		.unwrap();
+	let mut receiver_policy = pair.destination.policy.clone();
+	let qualified = aidash_server::domain::qualified_agent(&receiver, &target.id, &target.version);
+	receiver_policy["subjects"][&qualified] = json!({"kind":"agent","node":receiver.node});
+	deployment_administrator(
+		&pair.destination.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":receiver_policy}),
+	)
+	.await;
+	aidash_server::authorization::Authorization {
+		pool: pair.destination_runtime.store.pool.clone(),
+	}
+	.set_catalog("acme", &receiver.node, &target, 0, true, "fixture")
+	.await
+	.unwrap();
+	let path = format!("/api/tasks/{}/remote-grants/models", pair.source.task);
+	let input = json!({"node_id":receiver,"agent":target});
+	let options = assert_json(
+		pair.source
+			.subject
+			.post(&path, &input, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert!(
+		options
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["model"] == json!({"id":"model","version":"1.0.0"})),
+		"{options}"
+	);
+
+	let mut policy = pair.source.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"hide-remote-agent","effect":"deny","subjects":{"any":true},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":[qualified]},
+	}));
+	deployment_administrator(
+		&pair.source.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_json(
+		pair.source
+			.subject
+			.post(&path, &input, "json")
+			.await
+			.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn catalog_reads_distinguish_an_empty_node_from_another_tenants_node(
 	#[future]
 	#[from(execution_fixtures::execution)]
@@ -281,7 +499,8 @@ async fn delegating_to_a_sibling_executes_on_that_receiving_node(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: app.runtime.store.pool.clone(),
 	};
-	for id in ["model", "http", "research"] {
+	// Model approval was copied when the sibling Node was created.
+	for id in ["http", "research"] {
 		authorization
 			.set_catalog(
 				"acme",

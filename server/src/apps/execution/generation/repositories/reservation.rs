@@ -72,6 +72,9 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 			super::policy::load(&mut self.catalog.0.tx, &job.tenant, &job.policy_id, false).await?;
 		Ok(policy.spec.enabled)
 	}
+	async fn task_model(&mut self, job: &Request) -> Result<Option<aidash_domain::TaskModel>> {
+		Ok(self.catalog.0.task_read(job.task_id).await?.task_model)
+	}
 	async fn pinned_policy(&mut self, job: &Request) -> Result<Value> {
 		let access = &mut *self.catalog.0;
 		let value: Value = {

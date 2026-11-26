@@ -88,6 +88,7 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		})
 		.collect();
 	let snapshot = BindingSnapshot {
+		task_model: None,
 		schema_version: 1,
 		agent: definitions[0].identity.clone(),
 		remote: true,

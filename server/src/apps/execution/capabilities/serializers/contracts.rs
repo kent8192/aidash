@@ -312,6 +312,8 @@ pub enum MaterializeSource {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Enqueue {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<aidash_domain::TaskModel>,
 	pub idempotency_key: Uuid,
 	#[validate(length(min = 1, max = 128))]
 	pub agent_version: String,

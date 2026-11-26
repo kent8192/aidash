@@ -1002,6 +1002,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] 
 				&TEST_FIXTURE,
 				wa,
 				&NewTask {
+					task_model: None,
 					title: "Atomic task".into(),
 					description: "Finish with the remote execution".into(),
 					requirements: json!({}),

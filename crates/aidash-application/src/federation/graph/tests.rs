@@ -307,6 +307,7 @@ async fn graph_reports_unconfirmed_rows_under_the_answering_node() {
 				created_by: "user".into(),
 				dependencies: vec![],
 				parent_id: None,
+				task_model: None,
 				started_by_duty: None,
 				revision: 0,
 				created_at: now(),

@@ -67,6 +67,7 @@ fn repository() -> Repository {
 		created_by: "root".into(),
 		dependencies: vec![],
 		parent_id: None,
+		task_model: None,
 		started_by_duty: None,
 		revision: 7,
 		created_at: now,

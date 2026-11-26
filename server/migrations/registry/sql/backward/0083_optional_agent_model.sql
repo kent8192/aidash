@@ -12,6 +12,15 @@ BEGIN
  IF edited = original THEN RAISE EXCEPTION 'unexpected aidash_agent_before_provider_tools_0050(jsonb) body'; END IF;
  EXECUTE edited;
 END $$;
+-- Migration 0066 also passes the Agent model to the nested summary validator.
+DO $$
+DECLARE original text; edited text;
+BEGIN
+ original := pg_get_functiondef('public.aidash_agent_before_provider_tools_0050(jsonb)'::regprocedure);
+ edited := replace(original, $before$(COALESCE(summary->'model','null'::jsonb) <> 'null'::jsonb AND NOT COALESCE(public.aidash_qualified_ref_is_valid(summary->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false))$before$, $after$NOT COALESCE(public.aidash_qualified_ref_is_valid(summary->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)$after$);
+ IF edited = original THEN RAISE EXCEPTION 'unexpected aidash_agent_before_provider_tools_0050(jsonb) body'; END IF;
+ EXECUTE edited;
+END $$;
 DO $$
 DECLARE original text; edited text;
 BEGIN

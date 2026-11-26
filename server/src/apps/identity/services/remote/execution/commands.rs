@@ -116,12 +116,13 @@ impl effects::HandOnRepository for HandOnHome<'_> {
 			worker: None,
 			chain: Some(chain),
 		};
-		aidash_application::authorization::home::delegate(
+		aidash_application::authorization::home::delegate_with_model(
 			&repository,
 			onward.child,
 			&onward.node,
 			&onward.agent,
 			true,
+			onward.task_model.as_ref(),
 		)
 		.await
 	}

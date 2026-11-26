@@ -39,6 +39,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Errors at the use-case boundary contain no transport or database types.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error(transparent)]
+	TaskModel(#[from] aidash_domain::TaskModelRefusal),
 	/// The transport proved the operation did not execute; never inferred from tool JSON.
 	#[error("{}", .0.code())]
 	Connection(aidash_domain::agent_plugin::ConnectionCause),

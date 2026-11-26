@@ -383,6 +383,7 @@ impl Cloud {
 				&scope,
 				workspace.id,
 				&aidash_server::domain::NewTask {
+					task_model: None,
 					title: "Task".into(),
 					description: "Admission".into(),
 					requirements: json!({}),

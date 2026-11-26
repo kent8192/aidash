@@ -507,7 +507,7 @@ async fn omitted_carry_options_keep_existing_values_and_default_new_approvals() 
 	assert!(!existing.carry_over);
 	assert_eq!(
 		existing.scope,
-		aidash_domain::identity::catalog::ApprovalScope::Node
+		aidash_domain::identity::catalog::ApprovalScope::Deployment
 	);
 	let new = plan
 		.approvals
@@ -1015,12 +1015,18 @@ async fn a_deployment_wide_submission_may_approve_a_dependency_missing_on_other_
 			.iter()
 			.all(|approval| approval.scope == ApprovalScope::Deployment)
 	);
-	// On this Node alone the dependency has nothing left to change.
+	// A model picked with Node scope still reaches every Node.
 	for item in &mut request.items {
 		item.scope = Some(ApprovalScope::Node);
 	}
-	assert!(matches!(
-		plan(&review, &request),
-		Err(Error::Invalid(message)) if message == "APPROVAL_REVIEW_NO_CHANGE"
-	));
+	let planned = plan(&review, &request).unwrap();
+	assert_eq!(
+		planned
+			.approvals
+			.iter()
+			.find(|a| a.entry.id == "model")
+			.unwrap()
+			.scope,
+		ApprovalScope::Deployment
+	);
 }

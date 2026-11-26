@@ -90,6 +90,8 @@ pub struct ToolAskTarget {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectInput {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
 	/// Sent while preparing a new grant. Live rechecks refresh the lists through its Description.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub tool_request: Option<crate::federation::tool_lists::ToolList>,

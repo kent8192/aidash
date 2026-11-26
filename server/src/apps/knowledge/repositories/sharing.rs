@@ -187,6 +187,7 @@ mod tests {
 					&TEST_FIXTURE,
 					thread,
 					&aidash_domain::NewTask {
+						task_model: None,
 						title: "source".into(),
 						description: "source".into(),
 						requirements: serde_json::json!({}),

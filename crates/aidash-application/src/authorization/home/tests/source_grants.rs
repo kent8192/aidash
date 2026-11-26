@@ -355,6 +355,14 @@ impl SourcePeerScope for SourceSession {
 }
 #[async_trait]
 impl GrantScope for SourceSession {
+	async fn require_discoverable_agent(
+		&mut self,
+		_: &aidash_domain::nodes::NodeAddress,
+		_: &aidash_domain::registry::EntityRef,
+	) -> Result<()> {
+		self.repository.call("require_discoverable_agent");
+		Ok(())
+	}
 	async fn registered_tool_request(
 		&mut self,
 		_: &str,
@@ -440,6 +448,7 @@ fn receiver() -> String {
 }
 fn input() -> PrepareInput {
 	PrepareInput {
+		task_model: None,
 		id: Uuid::from_u128(4),
 		node_id: receiver(),
 		agent: EntityRef {
@@ -655,6 +664,7 @@ async fn selection_inspection_checks_assignment_authority_without_creating_a_gra
 	let repository = SourceRepository::new();
 	let input = input();
 	let preview = aidash_domain::federation::execution::AgentInspectionInput {
+		task_model: None,
 		node_id: input.node_id,
 		agent: input.agent,
 	};

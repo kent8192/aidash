@@ -1435,7 +1435,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			})?;
 		let config = AgentConfig::from_snapshot(snapshot)?;
 		Ok(ExecutionAgent {
-			model: config.model,
+			model: config.required_model()?.clone(),
 			instructions: config.instructions,
 			knowledge_digest: config.knowledge_digest,
 			reference_files: config.reference_attachments.len(),

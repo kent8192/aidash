@@ -149,7 +149,7 @@ async fn invalid_consent_surface_reports_failure_without_writing() {
 }
 
 #[tokio::test]
-async fn a_carry_that_fails_on_one_node_writes_node_scoped_rows_elsewhere() {
+async fn model_carry_requires_success_on_every_node() {
 	let deployment = |version: &str, provider: &str| Source {
 		definition: model(version, provider),
 		enabled: true,
@@ -167,9 +167,9 @@ async fn a_carry_that_fails_on_one_node_writes_node_scoped_rows_elsewhere() {
 	let result = carry(&mut fixture, &model("1.1.0", "provider"))
 		.await
 		.unwrap();
-	assert!(result[0].carried);
+	assert!(!result[0].carried);
 	assert!(!result[1].carried);
-	assert_eq!(fixture.scopes, [ApprovalScope::Node]);
+	assert!(fixture.scopes.is_empty());
 
 	let mut fixture = Fixture {
 		sources: vec![deployment("1.0.0", "provider")],
@@ -183,7 +183,7 @@ async fn a_carry_that_fails_on_one_node_writes_node_scoped_rows_elsewhere() {
 }
 
 #[tokio::test]
-async fn a_node_without_a_carrying_source_keeps_the_carry_to_this_node() {
+async fn a_node_without_a_model_carry_source_prevents_tenant_wide_carry() {
 	let deployment = Source {
 		definition: model("1.0.0", "provider"),
 		enabled: true,
@@ -202,7 +202,7 @@ async fn a_node_without_a_carrying_source_keeps_the_carry_to_this_node() {
 	let result = carry(&mut fixture, &model("1.1.0", "provider"))
 		.await
 		.unwrap();
-	assert!(result[0].carried);
+	assert!(!result[0].carried);
 	assert!(!result[1].carried);
-	assert_eq!(fixture.scopes, [ApprovalScope::Node]);
+	assert!(fixture.scopes.is_empty());
 }

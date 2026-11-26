@@ -580,14 +580,16 @@ impl HarnessManagement {
 				return Ok(());
 			}
 			let tenant = f.store.run_tenant(run.id).await?;
-			let agent = f
-				.registry
-				.get_for_run(&tenant, &run, &run.agent_id, &run.agent_version)
-				.await?;
-			let agent: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
+			let snapshot = run
+				.context
+				.binding_snapshot
+				.as_ref()
+				.ok_or(Error::Forbidden)?;
+			let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
+			let reference = agent.required_model()?;
 			let model = f
 				.registry
-				.get_for_run(&tenant, &run, &agent.model.id, &agent.model.version)
+				.get_for_run(&tenant, &run, &reference.id, &reference.version)
 				.await?;
 			let model: crate::registry::ModelConfig =
 				crate::registry::ModelConfig::from_stored(model.config)?;

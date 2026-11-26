@@ -72,7 +72,7 @@ pub(crate) fn run_model(run: &aidash_domain::Run) -> Result<aidash_domain::model
 		.definitions
 		.iter()
 		.find(|entry| {
-			entry.identity.local() == agent.model
+			Some(entry.identity.local()) == agent.model
 				&& entry.identity.registry_deployment == snapshot.agent.registry_deployment
 		})
 		.ok_or(aidash_application::Error::Forbidden)?;
@@ -298,15 +298,31 @@ impl ToolOperations for Operations {
 		}
 		Ok(json!(self.0.home.assign(id, policy, reason, draft).await?))
 	}
+	async fn authorize_delegation(
+		&self,
+		call: &aidash_domain::provider::ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()> {
+		self.0
+			.home
+			.tool_authority()
+			.ok_or(aidash_application::Error::Forbidden)?
+			.authorize_delegation(&self.0.run, call, contract)
+			.await
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,
 		id: Uuid,
 		node: &str,
 		agent: &EntityRef,
+		selection: Option<&aidash_domain::TaskModel>,
 	) -> Result<Value> {
 		Ok(json!(
-			self.0.home.delegate_with_key(key, id, node, agent).await?
+			self.0
+				.home
+				.delegate_selected(key, id, node, agent, selection)
+				.await?
 		))
 	}
 	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact> {

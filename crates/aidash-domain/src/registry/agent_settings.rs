@@ -5,6 +5,11 @@ use crate::{Result, tool::providers::ToolDescriptor};
 use sources::{NativeContext, NativeSource, OnUnavailable};
 
 impl AgentConfig {
+	pub fn required_model(&self) -> Result<&super::EntityRef> {
+		self.model
+			.as_ref()
+			.ok_or_else(|| crate::Error::Invalid("task_model_required".into()))
+	}
 	pub fn definition(&self) -> AgentBindings {
 		AgentBindings {
 			schema_version: self.schema_version,
@@ -104,6 +109,9 @@ impl AgentConfig {
 			.expect("validated Agent closure");
 		let input: AgentBindings = serde_json::from_value(definition.definition.config.clone())?;
 		let mut result = Self::from_definition(input);
+		if let Some(selection) = &snapshot.task_model {
+			result.model = Some(selection.model.clone());
+		}
 		result.core_capabilities = Default::default();
 		result.allow_task_creation = Some(false);
 		result.allow_task_delegation = Some(false);
