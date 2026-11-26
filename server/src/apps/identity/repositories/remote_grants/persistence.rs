@@ -139,6 +139,34 @@ impl SourceAuthorityScope for Scope {
 }
 #[async_trait]
 impl GrantScope for Scope {
+	async fn require_discoverable_agent(
+		&mut self,
+		receiver: &NodeAddress,
+		agent: &aidash_domain::registry::EntityRef,
+	) -> Result<()> {
+		let sender = self.access.catalog_node().await?;
+		let search = aidash_domain::registry::Search {
+			query: Some(agent.id.clone()),
+			..Default::default()
+		};
+		let visible = crate::authorization::peer::discovery::discover_from(
+			&self.runtime,
+			&mut self.access,
+			Some(sender),
+			&search,
+			Some(receiver),
+		)
+		.await?;
+		if visible
+			.agents
+			.iter()
+			.any(|card| card.entity.id == agent.id && card.entity.version == agent.version)
+		{
+			Ok(())
+		} else {
+			Err(aidash_application::Error::Forbidden)
+		}
+	}
 	fn home_address(&self) -> String {
 		self.access.node_reference().to_owned()
 	}

@@ -355,6 +355,14 @@ impl SourcePeerScope for SourceSession {
 }
 #[async_trait]
 impl GrantScope for SourceSession {
+	async fn require_discoverable_agent(
+		&mut self,
+		_: &aidash_domain::nodes::NodeAddress,
+		_: &aidash_domain::registry::EntityRef,
+	) -> Result<()> {
+		self.repository.call("require_discoverable_agent");
+		Ok(())
+	}
 	async fn registered_tool_request(
 		&mut self,
 		_: &str,

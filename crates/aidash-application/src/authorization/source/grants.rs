@@ -168,7 +168,7 @@ pub async fn task_models<R: GrantRepository>(
 	input: aidash_domain::federation::execution::TaskModelOptionsInput,
 ) -> Result<Vec<aidash_domain::federation::execution::TaskModelOption>> {
 	let identity = repository.source_identity().ok_or(Error::Forbidden)?;
-	NodeAddress::parse(&input.node_id)?;
+	let receiver = NodeAddress::parse(&input.node_id)?;
 	let mut scope = repository.source_begin().await?;
 	let result = async {
 		scope.inherit_task_origin(task_id).await?;
@@ -179,6 +179,9 @@ pub async fn task_models<R: GrantRepository>(
 		scope.require(&resource, "task.delegate").await?;
 		require_remote_delegation(&mut scope, task.thread_id, &input.node_id).await?;
 		inspection_route(&mut scope, &input.node_id).await?;
+		scope
+			.require_discoverable_agent(&receiver, &input.agent)
+			.await?;
 		repository
 			.source_request(
 				&scope.home_address(),

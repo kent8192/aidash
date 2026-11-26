@@ -357,6 +357,100 @@ async fn task_model_picker_and_grant_acceptance_recheck_receiver_authority(
 
 #[rstest]
 #[tokio::test]
+async fn task_model_options_obey_the_sending_deployments_remote_agent_visibility(
+	#[future] discovery_pair: DiscoveryPair,
+) {
+	let pair = Box::pin(discovery_pair).await;
+	let source = endpoint::default_node(&pair.source_runtime.store, "acme").await;
+	let receiver = endpoint::default_node(&pair.destination_runtime.store, "acme").await;
+	let credential =
+		endpoint::issued_credential(&pair.destination_runtime.store, "acme", "alice").await;
+	deployment_administrator(
+		&pair.destination.app,
+		"/api/authorization/acme/peer-mappings",
+		json!({
+			"node":receiver.node,"source_node":source,"source_subject":"alice",
+			"credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true,
+		}),
+	)
+	.await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut agent = pair
+		.destination_runtime
+		.registry
+		.get(&tenant, "research", "1.0.0")
+		.await
+		.unwrap();
+	agent.version = "1.1.0".into();
+	agent.config["model"] = Value::Null;
+	agent.config["bindings"] = json!([]);
+	agent.binding_normalization = None;
+	let target = aidash_domain::registry::EntityRef {
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	};
+	pair.destination_runtime
+		.registry
+		.register(&tenant, agent)
+		.await
+		.unwrap();
+	let mut receiver_policy = pair.destination.policy.clone();
+	let qualified = aidash_server::domain::qualified_agent(&receiver, &target.id, &target.version);
+	receiver_policy["subjects"][&qualified] = json!({"kind":"agent","node":receiver.node});
+	deployment_administrator(
+		&pair.destination.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":receiver_policy}),
+	)
+	.await;
+	aidash_server::authorization::Authorization {
+		pool: pair.destination_runtime.store.pool.clone(),
+	}
+	.set_catalog("acme", &receiver.node, &target, 0, true, "fixture")
+	.await
+	.unwrap();
+	let path = format!("/api/tasks/{}/remote-grants/models", pair.source.task);
+	let input = json!({"node_id":receiver,"agent":target});
+	let options = assert_json(
+		pair.source
+			.subject
+			.post(&path, &input, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert!(
+		options
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["model"] == json!({"id":"model","version":"1.0.0"})),
+		"{options}"
+	);
+
+	let mut policy = pair.source.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"hide-remote-agent","effect":"deny","subjects":{"any":true},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":[qualified]},
+	}));
+	deployment_administrator(
+		&pair.source.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_json(
+		pair.source
+			.subject
+			.post(&path, &input, "json")
+			.await
+			.unwrap(),
+		403,
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn catalog_reads_distinguish_an_empty_node_from_another_tenants_node(
 	#[future]
 	#[from(execution_fixtures::execution)]
