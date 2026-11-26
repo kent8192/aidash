@@ -212,7 +212,9 @@ export function CatalogApprovalSection({
     version.approval?.carry_over ?? true,
   );
   const [approvalScope, setApprovalScope] = useState<ApprovalScope>(
-    version.approval?.scope === "node" ? "node" : "deployment",
+    version.entry.kind !== "model" && version.approval?.scope === "node"
+      ? "node"
+      : "deployment",
   );
   const [restricting, setRestricting] = useState<boolean>();
   const [subjectNames, setSubjectNames] = useState<string>();
@@ -569,6 +571,7 @@ export function CatalogApprovalSection({
       )}
       {decides && state !== "approved" && (
         <CatalogCarryOptions
+          deploymentOnly={entry.kind === "model"}
           carry={carryOver}
           setCarry={setCarryOver}
           scope={approvalScope}

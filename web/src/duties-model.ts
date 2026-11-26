@@ -1,3 +1,4 @@
+import type { TaskModel } from "./task-model";
 /** Duties (#1011, ADR 0142; from the Schedules of #557): what the API
  *  returns and the pure rules the Duty screens and the notification bell
  *  share. */
@@ -53,6 +54,7 @@ export type Halt =
   | "thread_deleted"
   | "tenant_deleted";
 export type Duty = {
+  task_model?: TaskModel | null;
   id: string;
   /** The Duty's own Thread, where its Tasks belong (#1008). */
   thread_id: string;

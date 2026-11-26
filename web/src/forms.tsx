@@ -2,6 +2,12 @@ import {
   useConfiguratorAccess,
   TENANT_CONFIGURATOR,
 } from "./tenant-administration";
+import {
+  useTaskModel,
+  useRemoteTaskModel,
+  taskModelError,
+} from "./task-model-fields";
+import { needsTaskModel, modelDefinitionConfig } from "./task-model";
 import { useTaskPickerPages } from "./task-picker-pages";
 import { contextSourceConfiguration } from "./context-source-model";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
@@ -157,6 +163,12 @@ export function RequestForm({
   const admin = useConfiguratorAccess(data.access);
   const { t } = useI18n();
   const where = useNodeChoice();
+  const [targetKey, setTargetKey] = useState("");
+  const taskModel = useTaskModel(
+    data,
+    data.registry.find((e) => e.id + "@" + e.version === targetKey),
+    where.node,
+  );
   const [scratchChoice, setScratchChoice] = useState<{
     node: string | undefined;
     id: string;
@@ -187,13 +199,16 @@ export function RequestForm({
       if (!target) throw new Error(t("choose"));
       if (
         await submit(() =>
-          threadCreate({
-            ...value,
-            target: ref(value.target),
-            target_kind: target.kind,
-            node: where.node,
-            scratch_space_id: scratchId || undefined,
-          }),
+          taskModel.run((fields) =>
+            threadCreate({
+              ...fields,
+              ...value,
+              target: ref(value.target),
+              target_kind: target.kind,
+              node: where.node,
+              scratch_space_id: scratchId || undefined,
+            }),
+          ),
         )
       )
         where.follow();
@@ -238,7 +253,10 @@ export function RequestForm({
             <NativeSelect
               required
               value={f.state.value}
-              onChange={(e) => f.handleChange(e.target.value)}
+              onChange={(e) => {
+                f.handleChange(e.target.value);
+                setTargetKey(e.target.value);
+              }}
             >
               <option value="">{t("choose")}</option>
               {targets.map((e) => (
@@ -253,6 +271,8 @@ export function RequestForm({
           </Field>
         )}
       </form.Field>
+      {taskModel.fields}
+      {taskModel.dialog}
       {where.field}
       <Field label={t("scratchSpace")}>
         <NativeSelect
@@ -276,7 +296,7 @@ export function RequestForm({
       <form.Subscribe selector={(s) => s.isSubmitting}>
         {(pending) => (
           <Button
-            disabled={pending || targets.length === 0}
+            disabled={pending || !taskModel.ready || targets.length === 0}
             className="justify-self-end"
             type="submit"
           >
@@ -506,7 +526,7 @@ export function EntityForm({
           config =
             kind === "agent"
               ? {
-                  model: ref(s("model")),
+                  model: s("model") ? ref(s("model")) : null,
                   instructions: s("instructions"),
                   schema_version: 1,
                   ...(s("reference_embedding")
@@ -520,42 +540,22 @@ export function EntityForm({
                   ...pluginConfig,
                 }
               : kind === "model"
-                ? {
-                    provider:
-                      modelSource === "keyless" ? "openrouter" : modelSource,
-                    ...(modelSource === "chatgpt"
-                      ? {
-                          plan_connection: "chatgpt",
-                          streaming: true,
-                        }
-                      : modelSource === "openrouter"
-                        ? {
-                            provider_credential: "openrouter",
-                            // Omitted keeps the Chat Completions bytes.
-                            ...(s("wire_api") === "responses"
-                              ? { wire_api: "responses" }
-                              : {}),
-                            // Omitted lets registration choose by route.
-                            ...(s("cache_mode")
-                              ? { cache_mode: s("cache_mode") }
-                              : {}),
-                          }
-                        : {}),
-                    model_id: s("model_id"),
-                    endpoint: s("endpoint"),
-                    reasoning_effort: s("reasoning_effort") || null,
-                    context_window: Number(s("context_window")),
-                    max_output_tokens: Number(s("max_output_tokens")),
-                    modalities: JSON.parse(s("modalities")),
-                    media_routes: JSON.parse(s("media_routes") || "[]"),
-                    cost: JSON.parse(s("cost")),
-                    // New versions count requests with the Token Encoding
-                    // chosen for them, or size them from observed usage;
-                    // versions that omit it keep the byte estimate (ADR 0017).
-                    request_estimator: s("token_encoding")
-                      ? { tokenized: s("token_encoding") }
-                      : "calibrated",
-                  }
+                ? modelDefinitionConfig(
+                    modelSource,
+                    {
+                      model_id: s("model_id"),
+                      endpoint: s("endpoint"),
+                      reasoning_effort: s("reasoning_effort") || null,
+                      context_window: Number(s("context_window")),
+                      max_output_tokens: Number(s("max_output_tokens")),
+                      modalities: JSON.parse(s("modalities")),
+                      media_routes: JSON.parse(s("media_routes") || "[]"),
+                      cost: JSON.parse(s("cost")),
+                    },
+                    s("wire_api"),
+                    s("cache_mode"),
+                    s("token_encoding"),
+                  )
                 : kind === "embedding"
                   ? {
                       provider: s("embedding_provider"),
@@ -738,9 +738,7 @@ export function EntityForm({
           <>
             <Hint>{t("agentHelp")}</Hint>
             <RegistryModelPicker entries={models} access={data.access} />
-            {models.length === 0 && (
-              <Notice tone="warning">{t("noModel")}</Notice>
-            )}
+
             <Field label={t("additionalInstructions")}>
               <Textarea
                 name="instructions"
@@ -853,6 +851,7 @@ export function EntityForm({
             <div key={modelSource} className="grid min-w-0 gap-4">
               {modelSource === "openrouter" ? (
                 <OpenRouterModelPicker
+                  entries={models}
                   onNameChange={setModelName}
                   tenant={
                     data.access.kind === "subject"
@@ -1077,6 +1076,16 @@ export function AssignForm({
   );
   const scopedRemote =
     data.access.kind === "subject" && chosen && chosen.node_id !== data.node.id;
+  const taskModel = useTaskModel(
+    data,
+    scopedRemote ? undefined : chosen?.entity,
+  );
+  const remoteModel = useRemoteTaskModel(
+    task.id,
+    chosen?.node_id,
+    chosen?.entity,
+    !!scopedRemote && needsTaskModel(chosen?.entity),
+  );
   const inspection = useQuery({
     queryKey: ["remote-agent-inspection", task.id, selected],
     enabled: !!scopedRemote,
@@ -1116,20 +1125,29 @@ export function AssignForm({
               agent.entity.version,
             ]) === (d.get("agent") ?? selected),
         );
-        if (!a || inspectionBlocked) return;
+        if (
+          !a ||
+          (!request.current &&
+            (inspectionBlocked || !remoteModel.ready || !taskModel.ready))
+        )
+          return;
         setGrantBusy(true);
         void submit(async () => {
           if (data.access.kind !== "subject" || a.node_id === data.node.id) {
-            return taskDelegate(task.id, {
-              node_id: a.node_id,
-              agent: { id: a.entity.id, version: a.entity.version },
-            });
+            return taskModel.run((fields) =>
+              taskDelegate(task.id, {
+                ...fields,
+                node_id: a.node_id,
+                agent: { id: a.entity.id, version: a.entity.version },
+              }),
+            );
           }
           const input = request.current
             ? JSON.parse(request.current.binding)
             : {
                 node_id: a.node_id,
                 agent: { id: a.entity.id, version: a.entity.version },
+                ...remoteModel.payload,
                 ttl_seconds: 3600,
                 semantic: useMemory
                   ? {
@@ -1168,7 +1186,7 @@ export function AssignForm({
               request.current = null;
               setGrantPending(false);
             }
-            throw cause;
+            throw taskModelError(cause, ja);
           }
         }).finally(() => setGrantBusy(false));
       }}
@@ -1203,6 +1221,9 @@ export function AssignForm({
             ))}
           </NativeSelect>
         </Field>
+        {taskModel.fields}
+        {remoteModel.fields}
+        {taskModel.dialog}
         {scopedRemote && (
           <Group
             nested
@@ -1276,7 +1297,11 @@ export function AssignForm({
       )}
       <Button
         className="justify-self-end"
-        disabled={grantBusy || inspectionBlocked}
+        disabled={
+          grantBusy ||
+          (!grantPending &&
+            (inspectionBlocked || !remoteModel.ready || !taskModel.ready))
+        }
       >
         {grantPending
           ? ja

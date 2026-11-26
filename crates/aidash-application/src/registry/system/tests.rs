@@ -194,7 +194,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			+ aidash_domain::tool::configurator::TOOLS.len()
 			// The Workspace tools the Thread tools replace stay declared (#1008).
 			+ aidash_domain::tool::thread_tools::WORKSPACE_TOOLS.len()
-			+ 2
+			+ 3
 	);
 	let specifications = validation.node_specifications();
 	for entry in &entries {
@@ -646,6 +646,18 @@ fn configurator_guide_can_be_loaded_as_a_run_skill() {
 		"tenant-configuration-guide"
 	);
 	assert_eq!(agent.config["bindings"][0]["target"]["id"], guide.id);
+	let request = agent.config["bindings"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["alias"] == "setting_request")
+		.unwrap();
+	assert_eq!(request["target"]["id"], "aidash.setting_request");
+	assert_eq!(request["target"]["version"], "1.0.0");
+	assert_eq!(
+		aidash_domain::tool::providers::core_provider("setting_request"),
+		Some("core.human@1")
+	);
 	assert!(agent.config.get("model").is_none());
 	assert!(is_builtin(&agent));
 	assert!(is_builtin(&guide));

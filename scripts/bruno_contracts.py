@@ -153,6 +153,7 @@ TENANT_ROUTES = {
         "path": "/api/tasks/{{task_id}}/delegate",
     },
     "POST /api/executions/{id}/message": {"body": {"content": "Must not persist"}},
+    "POST /api/setting-requests/{id}/answer": {"body": {"action": "decline"}},
     "POST /api/human-requests/{id}/answer": {"body": {"answer": "Must not persist"}},
 }
 # Tenant reads by subjects. Journey 05 gives the contract subject `registry.read`

@@ -325,6 +325,14 @@ pub async fn resolve(
 				));
 			}
 			let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone())?;
+			if descriptor.operation == "setting_request"
+				&& descriptor.provider == "core.human@1"
+				&& !aidash_domain::setting_requests::is_tenant_configurator(&agent.id)
+			{
+				return Err(Error::Invalid(
+					"Only the Tenant Configurator may bind setting_request.".into(),
+				));
+			}
 			config.exposure_policy().admit_tool(&descriptor)?;
 			let mut contract = providers.contract(&descriptor, &target)?;
 			if remote_without_mounted_skills

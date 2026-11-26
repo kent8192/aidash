@@ -138,13 +138,12 @@ export function RegistryModelPicker({
       <Field label={t("provider")}>
         <NativeSelect
           value={source}
-          required
           onChange={(event) => {
             selectSource(event.target.value);
             selectModel("");
           }}
         >
-          <option value="">{t("choose")}</option>
+          <option value="">{t("taskStartModel")}</option>
           {[...groups].map(([key, value]) => (
             <option key={key} value={key}>
               {providerLabel(value.provider)} · {sourceLabel(value.source)}
@@ -158,12 +157,11 @@ export function RegistryModelPicker({
       <Field label={t("model")}>
         <NativeSelect
           name="model"
-          required
           value={validModel}
           disabled={!group}
           onChange={(event) => selectModel(event.target.value)}
         >
-          <option value="">{t("choose")}</option>
+          <option value="">{t("taskStartModel")}</option>
           {group?.entries.map((entry) => (
             <option
               key={`${entry.id}@${entry.version}`}

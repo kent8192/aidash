@@ -25,7 +25,7 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain(DEFAULT_TOOLS)
 		.chain(EXPOSURE_TOOLS)
 		.copied()
-		.chain([SKILL_ASSET_READ, TASK_ASSIGN])
+		.chain([SKILL_ASSET_READ, TASK_ASSIGN, "setting_request"])
 		.chain(SUBNODE_TOOLS.iter().copied())
 		.chain(JOURNAL_TOOLS.iter().copied())
 		.chain(NODE_TOOLS.iter().copied())

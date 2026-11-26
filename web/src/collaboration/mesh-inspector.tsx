@@ -320,7 +320,9 @@ export function MeshInspector({
             true,
           ] as [string, string, boolean],
         ]
-      : []),
+      : entity?.kind === "agent" && entity.config?.model === null
+        ? [[copy.model, t("taskStartModel")] as [string, string]]
+        : []),
     ...(thread ? [[copy.kinds.thread, thread.title] as [string, string]] : []),
   ];
   const connections = (all: boolean) => (

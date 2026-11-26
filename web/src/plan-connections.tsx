@@ -114,9 +114,13 @@ export function PlanConnectionBanner({
 export function PlanConnectionsPage({
   tenant,
   subject,
+  settingLabel,
+  onDecision,
 }: {
   tenant: string;
   subject: string;
+  settingLabel?: string;
+  onDecision?: (action: "done" | "decline") => Promise<unknown>;
 }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
@@ -210,6 +214,9 @@ export function PlanConnectionsPage({
                 : "Could not complete the connection. Try again.",
       );
       await status.refetch();
+      if (result.outcome === "connected" || result.outcome === "reconnected")
+        await onDecision?.("done");
+      else if (result.outcome === "denied") await onDecision?.("decline");
     } catch {
       if (holds(flow))
         setError(
@@ -328,16 +335,17 @@ export function PlanConnectionsPage({
               disabled={busy}
               onClick={() => void connect()}
             >
-              {connection
-                ? ja
-                  ? "再接続"
-                  : "Reconnect"
-                : ja
-                  ? "ChatGPT を接続"
-                  : "Connect ChatGPT"}
+              {settingLabel ??
+                (connection
+                  ? ja
+                    ? "再接続"
+                    : "Reconnect"
+                  : ja
+                    ? "ChatGPT を接続"
+                    : "Connect ChatGPT")}
             </Button>
           )}
-        {connection && (
+        {connection && !settingLabel && (
           <Button
             type="button"
             variant="outline"

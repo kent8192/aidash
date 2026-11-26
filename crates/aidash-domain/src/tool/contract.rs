@@ -519,7 +519,7 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		// person of its own Tenant (ADR 0134), which a remote Run cannot be, and Node tools
 		// and node events act as that person too (#1012, #1013).
 		"mcp_stdio" | "duty_create" | "duty_update" | "duty_delete" | "duty_list"
-		| "duty_notify" | "node_create" | "node_delete" => ToolReach::Never,
+		| "duty_notify" | "node_create" | "node_delete" | "setting_request" => ToolReach::Never,
 		op if super::configurator::TOOLS.contains(&op) => ToolReach::Never,
 		_ => return None,
 	})
@@ -633,7 +633,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			));
 			behavior.effect = ToolEffect::ReadOnly;
 		}
-		"human_request" | "connection_request" => {
+		"human_request" | "connection_request" | "setting_request" => {
 			auth.requirements
 				.push(resource("human.request", "run", Run));
 			behavior.continuation = Continuation::Human;
@@ -838,6 +838,7 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"subnode_message",
 	"human_request",
 	"connection_request",
+	"setting_request",
 	"outbound_get",
 	"shell",
 	"shell_poll",
@@ -1112,6 +1113,7 @@ mod tests {
 					"duty_list",
 					"duty_notify",
 					"node_create",
+					"setting_request",
 					"node_delete"
 				]
 				.into_iter()

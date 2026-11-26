@@ -37,7 +37,7 @@ test.beforeEach(async ({ page }) => {
                 input_modalities: ["text"],
                 output_modalities: ["text"],
               },
-              supported_parameters: ["tools", "reasoning"],
+              supported_parameters: ["tools", "reasoning_effort"],
               reasoning: {
                 supported_efforts: ["high", "low", "none"],
                 mandatory: true,
@@ -189,13 +189,13 @@ test("searches and selects a model without credential input", async ({
   await expect(
     dialog.getByText(/Tenant のデータ保護レベルで決まります/),
   ).toBeVisible();
-  const effort = dialog.getByLabel("Reasoning Effort");
-  await expect(effort.locator("option")).toHaveText([
-    "モデルの既定値",
-    "high",
-    "low",
-  ]);
-  await effort.selectOption("high");
+  const effort = dialog.getByLabel("推論強度");
+  await expect(effort).toHaveAttribute("aria-valuetext", "low");
+  await expect(
+    dialog.getByRole("button", { name: "medium", exact: true }),
+  ).toBeDisabled();
+  await effort.press("End");
+  await expect(effort).toHaveAttribute("aria-valuetext", "high");
   const submitted = page.waitForRequest(
     (r) =>
       new URL(r.url()).pathname === "/api/registry" && r.method() === "POST",
@@ -306,11 +306,10 @@ test("clears reasoning settings when selecting an unsupported model", async ({
   });
   await picker.fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
-  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("End");
   await picker.fill("other/model");
   await dialog.getByRole("option", { name: /Other Model/ }).click();
-  await expect(dialog.getByLabel("Reasoning Effort")).toBeDisabled();
-  await expect(dialog.getByLabel("Reasoning Effort")).toHaveValue("");
+  await expect(dialog.getByRole("slider")).toHaveCount(0);
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("8192");
   await expect(dialog.getByLabel("名前", { exact: true })).toHaveValue(
     "other-model-none",
@@ -329,7 +328,7 @@ test("model names follow provider, model and effort until manually edited", asyn
   await picker.fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
   await expect(name).toHaveValue("vendor-fixture-model-low");
-  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("End");
   await expect(name).toHaveValue("vendor-fixture-model-high");
   await dialog.getByLabel("説明").fill("Auto-named model");
   const posted = page.waitForRequest(
@@ -355,11 +354,11 @@ test("manual model names survive model and effort changes", async ({
   });
   await picker.fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
-  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("End");
   await expect(name).toHaveValue("My research model");
   await name.fill("");
   await expect(name).toHaveValue("vendor-fixture-model-high");
-  await dialog.getByLabel("Reasoning Effort").selectOption("");
+  await dialog.getByRole("slider", { name: "推論強度" }).press("Home");
   await expect(name).toHaveValue("vendor-fixture-model-low");
 });
 

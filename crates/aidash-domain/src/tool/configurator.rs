@@ -101,6 +101,7 @@ mod tests {
 		for path in [
 			"/api/tenants/other/nodes",
 			"/api/dashboard/foo",
+			"/api/setting-requests/123/answer",
 			"/api/registry/../dashboard",
 			"/api/tenants/mine/purge",
 			"/api/tenants/mine/nodes/a/purge",

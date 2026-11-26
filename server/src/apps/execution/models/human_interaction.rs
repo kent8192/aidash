@@ -144,7 +144,52 @@ impl HumanRequest {
 		Ok((request.into(), false))
 	}
 
-	pub(crate) async fn answer_locked(
+	/// Serialize the person and the deadline using the same Run-then-request
+	/// lock order as termination. Called under the Tenant's own RLS scope.
+	pub(crate) async fn lock_setting(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		run_id: Uuid,
+	) -> Result<Contract> {
+		Self::require_active_run(tx, run_id).await?;
+		let request = Self::read_in(tx, id, true).await?.ok_or(Error::Forbidden)?;
+		if request.kind != aidash_domain::setting_requests::KIND || request.run_id != run_id {
+			return Err(Error::Forbidden);
+		}
+		if request.response.is_some() {
+			return Err(Error::Conflict("Setting Request already answered.".into()));
+		}
+		let run = super::Run::read_in(tx, run_id, Some(request.thread_id))
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if let crate::domain::RunState::Waiting(wait) = &run.state
+			&& wait.request_id() == Some(id)
+			&& wait.deadline().is_some_and(|end| end <= chrono::Utc::now())
+		{
+			return Err(Error::Conflict("The Answer Deadline has passed.".into()));
+		}
+		Ok(request)
+	}
+
+	pub(crate) async fn record_answer(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		response: Value,
+		actor: &str,
+		local_thread: Option<Uuid>,
+	) -> Result<Contract> {
+		let request = Self::answer_locked(tx, id, response, actor).await?;
+		super::event_records::append_run(
+			tx,
+			request.run_id,
+			local_thread,
+			"human.answered",
+			serde_json::json!(request),
+		)
+		.await?;
+		Ok(request)
+	}
+	async fn answer_locked(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
 		response: Value,

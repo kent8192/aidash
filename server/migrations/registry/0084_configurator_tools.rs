@@ -5,6 +5,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0084_configurator_tools", "registry")
 		.add_dependency("registry", "0083_optional_agent_model")
+		.add_dependency("registry", "0083_setting_request_descriptor")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {

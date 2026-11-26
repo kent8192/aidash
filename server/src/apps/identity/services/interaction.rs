@@ -385,6 +385,29 @@ pub async fn answer(
 	id: Uuid,
 	response: Value,
 ) -> Result<HumanRequest> {
+	answer_request(f, identity, id, AnswerInput::Human(response)).await
+}
+
+enum AnswerInput {
+	Human(Value),
+	Setting(aidash_domain::setting_requests::Answer),
+}
+
+pub(crate) async fn setting_answer(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	id: Uuid,
+	input: aidash_domain::setting_requests::Answer,
+) -> Result<HumanRequest> {
+	answer_request(f, identity, id, AnswerInput::Setting(input)).await
+}
+
+async fn answer_request(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	id: Uuid,
+	input: AnswerInput,
+) -> Result<HumanRequest> {
 	let mut access = NativeAccess::begin(&f.store, identity).await?;
 	let result = async {
 		let request = HumanRequestRecord::read_in(access.tx.as_mut(), id, false)
@@ -397,14 +420,98 @@ pub async fn answer(
 		let resource = access.human_resource(&request).await?;
 		access.require(&resource, "human.read").await?;
 		access.require(&resource, "human.answer").await?;
-		f.store
-			.answer_in(access.tx.as_mut(), id, response, &identity.subject)
-			.await
+		match input {
+			AnswerInput::Human(response) => {
+				if request.kind == aidash_domain::setting_requests::KIND {
+					return Err(Error::Invalid(
+						"Use the Setting Request answer endpoint.".into(),
+					));
+				}
+				f.store
+					.answer_in(access.tx.as_mut(), id, response, &identity.subject)
+					.await
+			}
+			AnswerInput::Setting(answer) => {
+				answer_setting_locked(f, identity, &mut access, &run, request, answer).await
+			}
+		}
 	}
 	.await;
 	let response = access.finish(result).await?;
 	f.notify.notify_waiters();
 	Ok(response)
+}
+
+async fn answer_setting_locked(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	access: &mut NativeAccess,
+	run: &Run,
+	request: HumanRequest,
+	answer: aidash_domain::setting_requests::Answer,
+) -> Result<HumanRequest> {
+	use aidash_domain::setting_requests::{self, Action, Form};
+	if !access
+		.snapshot
+		.bundle
+		.subjects
+		.get(&identity.subject)
+		.is_some_and(|subject| subject.kind == aidash_domain::policy::SubjectKind::User)
+		|| request.kind != setting_requests::KIND
+		|| !setting_requests::is_tenant_configurator(&run.agent_id)
+		|| !run.is_local(f.store.deployment.as_str())
+	{
+		return Err(Error::Forbidden);
+	}
+	let id = request.id;
+	let form: Form = serde_json::from_str(&request.prompt)?;
+	let response = form.answer(&answer)?;
+	if let Some(existing) = &request.response {
+		if existing == &response
+			&& request.answered_by.as_deref() == Some(identity.subject.as_str())
+		{
+			return Ok(request);
+		}
+		return Err(Error::Conflict("Setting Request already answered.".into()));
+	}
+	if let (Form::Secret { name, hosts, .. }, Action::Accept) = (form, answer.action) {
+		let secret = access.resource("secret", &name, json!({"name":name}));
+		access
+			.require(
+				&secret,
+				aidash_domain::identity::tenant_administration::SECRET_MANAGE,
+			)
+			.await?;
+		let service = f.store.tenant_secrets.as_ref().ok_or_else(|| {
+			Error::NotFound("Tenant Secrets are not available on this Deployment".into())
+		})?;
+		let Some(Value::String(value)) = answer.value else {
+			return Err(Error::Invalid("Enter a secret value.".into()));
+		};
+		service
+			.put_setting(
+				id,
+				&identity.tenant,
+				&name,
+				hosts,
+				value.into(),
+				&identity.subject,
+			)
+			.await?;
+		// The Secret metadata, answer and wake event committed together.
+		return HumanRequestRecord::read_in(access.tx.as_mut(), id, false)
+			.await?
+			.ok_or(Error::Forbidden);
+	}
+	HumanRequestRecord::lock_setting(access.tx.as_mut(), id, run.id).await?;
+	HumanRequestRecord::record_answer(
+		access.tx.as_mut(),
+		id,
+		response,
+		&identity.subject,
+		Some(run.thread_id),
+	)
+	.await
 }
 
 pub async fn abandon(

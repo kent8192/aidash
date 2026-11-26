@@ -1,3 +1,6 @@
+import { useTaskModel } from "./task-model-fields";
+import type { State } from "./types";
+import type { TaskModelFields, TaskModel } from "./task-model";
 /** Duties (#557): a Thread's Duties, "my Duties", and for holders
  *  of `duty.administer` every Duty of the Tenant. A Duty always
  *  acts as its Requester (ADR 0134), so only they edit or resume it. */
@@ -190,9 +193,11 @@ function listUrl(scope: Scope): string {
 }
 
 export function DutiesPanel({
+  data,
   scope,
   administrator = false,
 }: {
+  data: State;
   scope: Scope;
   /** The viewer holds `duty.administer` and may list the whole Tenant. */
   administrator?: boolean;
@@ -394,24 +399,36 @@ export function DutiesPanel({
       </ul>
       {editing ? (
         <DutyEditor
+          data={data}
+          saved={
+            editing === "new" ? undefined : (editing.task_model ?? undefined)
+          }
           key={editing === "new" ? "new" : editing.id}
           initial={editing === "new" ? emptyForm(timeZone) : formOf(editing)}
           busy={busy}
           onCancel={() => setEditing(null)}
-          onSave={(form) =>
-            void act(async () => {
-              if (editing === "new") {
-                if (scope.kind !== "thread") return;
-                await apiFetch(listUrl(scope), json(definitionOf(form)));
-              } else {
-                await apiFetch(`/api/duties/${editing.id}`, {
-                  method: "PATCH",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify(patchOf(form, editing)),
-                });
-              }
-              setEditing(null);
-            })
+          onSave={(form, run) =>
+            void act(() =>
+              run(async (fields) => {
+                if (editing === "new") {
+                  if (scope.kind !== "thread") return;
+                  await apiFetch(
+                    listUrl(scope),
+                    json({ ...definitionOf(form), ...fields }),
+                  );
+                } else {
+                  await apiFetch(`/api/duties/${editing.id}`, {
+                    method: "PATCH",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({
+                      ...patchOf(form, editing),
+                      task_model: fields.task_model ?? null,
+                    }),
+                  });
+                }
+                setEditing(null);
+              }),
+            )
           }
         />
       ) : (
@@ -769,20 +786,41 @@ function DutyTriggers({
 }
 
 function DutyEditor({
+  data,
+  saved,
   initial,
   busy,
   onCancel,
   onSave,
 }: {
+  data: State;
+  saved?: TaskModel;
   initial: DutyForm;
   busy: boolean;
   onCancel: () => void;
-  onSave: (form: DutyForm) => void;
+  onSave: (
+    form: DutyForm,
+    run: (action: (fields: TaskModelFields) => Promise<void>) => Promise<void>,
+  ) => void;
 }) {
   const { locale } = useI18n();
   const words = copy[locale];
   const [form, setForm] = useState(initial);
   const [tried, setTried] = useState(false);
+  const taskModel = useTaskModel(
+    data,
+    data.registry.find(
+      (e) =>
+        e.kind === "agent" &&
+        e.id === form.agentId.trim() &&
+        e.version === form.agentVersion.trim(),
+    ),
+    undefined,
+    form.agentId === initial.agentId &&
+      form.agentVersion === initial.agentVersion
+      ? saved
+      : undefined,
+  );
   const problems = formProblems(form);
   const set = <K extends keyof DutyForm>(key: K, value: DutyForm[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -792,7 +830,7 @@ function DutyEditor({
       onSubmit={(event) => {
         event.preventDefault();
         setTried(true);
-        if (!problems.length) onSave(form);
+        if (!problems.length && taskModel.ready) onSave(form, taskModel.run);
       }}
     >
       <Field label={words.name}>
@@ -828,6 +866,8 @@ function DutyEditor({
           />
         </Field>
       </div>
+      {taskModel.fields}
+      {taskModel.dialog}
       <Field label={words.timing}>
         <NativeSelect
           value={form.timing}
@@ -931,7 +971,7 @@ function DutyEditor({
         </Alert>
       )}
       <div className="flex gap-2">
-        <Button type="submit" disabled={busy}>
+        <Button type="submit" disabled={busy || !taskModel.ready}>
           {words.save}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>

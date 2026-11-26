@@ -718,6 +718,7 @@ export function Configuration({
           {section === "schedules" &&
             (data.access.kind === "subject" ? (
               <DutiesPanel
+                data={data}
                 key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
                 scope={{ kind: "mine" }}
                 administrator={can("duty.administer")}

@@ -2,6 +2,7 @@ import {
   useConfiguratorAccess,
   TENANT_CONFIGURATOR,
 } from "../tenant-administration";
+import { useTaskModel } from "../task-model-fields";
 import { ProviderToolActivity } from "../provider-tools";
 import { Input } from "../components/ui/input";
 import {
@@ -999,6 +1000,7 @@ export function ThreadCapabilities({
   const target = availableAgents.find(
     (e) => `${e.id}@${e.version}` === effectiveAgent,
   );
+  const taskModel = useTaskModel(data, area ? undefined : target);
   const registryNode = registryDeployment(data);
   const canRead = bindsPageReading(target, data.registry, registryNode);
   // Steering reaches the active Run, which reads pages only through the
@@ -1075,6 +1077,8 @@ export function ThreadCapabilities({
           </NativeSelect>
         </Field>
       }
+      {taskModel.fields}
+      {taskModel.dialog}
       {(query.data?.items.length ?? 0) > 1 && (
         <Field label={ja ? "作業領域" : "Working area"}>
           <NativeSelect
@@ -1118,7 +1122,13 @@ export function ThreadCapabilities({
         <Button
           variant="outline"
           type="button"
-          disabled={busy || !prompt.trim() || !target || !queueReadsSelection}
+          disabled={
+            busy ||
+            !prompt.trim() ||
+            !target ||
+            !taskModel.ready ||
+            !queueReadsSelection
+          }
           onClick={() =>
             void act(async () => {
               if (area) {
@@ -1132,13 +1142,16 @@ export function ThreadCapabilities({
                   description: prompt,
                 });
               } else if (target)
-                await enqueueRun(
-                  `/threads/${thread}/agents/${encodeURIComponent(target.id)}/executions`,
-                  {
-                    agent_version: target.version,
-                    title: prompt.slice(0, 80),
-                    description: prompt,
-                  },
+                await taskModel.run((fields) =>
+                  enqueueRun(
+                    `/threads/${thread}/agents/${encodeURIComponent(target.id)}/executions`,
+                    {
+                      ...fields,
+                      agent_version: target.version,
+                      title: prompt.slice(0, 80),
+                      description: prompt,
+                    },
+                  ),
                 );
             })
           }

@@ -952,7 +952,7 @@ test("the Review shows saved carry options for an existing approval", async ({
   await expect(review.getByLabel("Approval scope")).toHaveValue("node");
 });
 
-test("the Review submits the carry options it shows for every item", async ({
+test("the Review applies the chosen carry option and approves models across the Deployment", async ({
   page,
 }) => {
   const { decisions } = await reviewDashboard(page, {
@@ -975,8 +975,8 @@ test("the Review submits the carry options it shows for every item", async ({
   await review.getByRole("button", { name: /Approve selected \(2\)/ }).click();
   await expect.poll(() => decisions.length).toBe(1);
   expect(decisions[0].body.items).toMatchObject([
-    { carry_over: true, scope: "node" },
-    { carry_over: true, scope: "node" },
+    { reference: ref("writer"), carry_over: true, scope: "node" },
+    { reference: ref("model"), carry_over: true, scope: "deployment" },
   ]);
 });
 
@@ -1078,8 +1078,8 @@ test("the Review shows the whole closure and approves local items and activation
     request?: string;
   };
   expect(decisions[0].body.items).toMatchObject([
-    { carry_over: false, scope: "node" },
-    { carry_over: false, scope: "node" },
+    { reference: ref("model"), carry_over: false, scope: "deployment" },
+    { reference: ref("widened"), carry_over: false, scope: "node" },
   ]);
   expect(body.items.map((item) => item.reference.id).sort()).toEqual([
     "model",
