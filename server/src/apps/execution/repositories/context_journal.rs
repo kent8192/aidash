@@ -348,7 +348,11 @@ pub(crate) fn abandon_open(run: Uuid) -> UpdateStatement {
 		.to_owned()
 }
 
-/// Lock the Run row while `worker` still holds its lease.
+/// Lock the Run row while `worker` still holds its lease. `FOR NO KEY UPDATE`
+/// excludes every other writer of the row as `FOR UPDATE` did, but not a
+/// `FOR KEY SHARE` reader such as a foreign key check of `memory_run_reads` or
+/// a memory evidence check, which waited on this Run's own memory work and
+/// hung the Run (#1121).
 async fn fence(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<()> {
 	let leased: Option<Uuid> = native::query_scalar(
 		&Query::select()
@@ -357,7 +361,7 @@ async fn fence(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
 			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
-			.lock(LockType::Update)
+			.lock(LockType::NoKeyUpdate)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **tx)
