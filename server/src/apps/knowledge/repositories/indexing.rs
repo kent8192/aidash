@@ -73,7 +73,6 @@ impl SemanticIndexingRepository for NativeIndexing {
 		super::purge::sweep(&self.store).await?;
 		super::engine_jobs::sweep(&self.store).await?;
 		super::memory_decay::sweep(&self.store).await?;
-		super::image_publications::sweep(&self.store).await?;
 		Ok(())
 	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>> {
@@ -301,31 +300,12 @@ impl SemanticIndexingSession for Session {
 		source: &Source,
 		max_bytes: usize,
 	) -> Result<Option<IndexImageRead>> {
-		let store = self.store.clone();
-		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::read(
-				&store,
-				&mut self.lease,
-				thread,
-				source,
-				max_bytes,
-			)
-			.await
-			.map_err(Into::into);
-		}
-		let access = self.lease.access().ok_or(Error::Forbidden)?;
-		let Some(file) = super::image_files::current(access, thread, source).await? else {
+		if !matches!(source, Source::AttachmentImage { .. }) {
 			return Ok(None);
-		};
-		if file.size > max_bytes as u64 {
-			return Ok(Some(IndexImageRead::TooLarge));
 		}
-		let bytes = store.capabilities.read(access, &file).await?;
-		Ok(Some(IndexImageRead::Image(IndexImage {
-			media_type: file.media_type,
-			bytes,
-			description: None,
-		})))
+		super::attachment_images::read(&self.store, &mut self.lease, thread, source, max_bytes)
+			.await
+			.map_err(Into::into)
 	}
 	async fn embed_image(
 		&mut self,

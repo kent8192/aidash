@@ -52,20 +52,12 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		thread: Uuid,
 		source: &Source,
 	) -> Result<Option<serde_json::Value>> {
-		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::pointer(self.entries.lease, thread, source)
-				.await
-				.map_err(Into::into);
+		if !matches!(source, Source::AttachmentImage { .. }) {
+			return Ok(None);
 		}
-		let Some(access) = self.entries.lease.access() else {
-			return Ok(None);
-		};
-		let Some(file) = super::image_files::current(access, thread, source).await? else {
-			return Ok(None);
-		};
-		Ok(Some(
-			serde_json::json!({"file_id":file.file_id,"path":file.path,"name":file.path.rsplit('/').next().unwrap_or(&file.path),"media_type":file.media_type,"size":file.size,"digest":file.digest}),
-		))
+		super::attachment_images::pointer(self.entries.lease, thread, source)
+			.await
+			.map_err(Into::into)
 	}
 	async fn query_image(
 		&mut self,
