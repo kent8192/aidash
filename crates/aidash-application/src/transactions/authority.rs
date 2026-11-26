@@ -1,53 +1,61 @@
-//! Complete inherited authority before evaluating ordered mutations and disclosures.
+//! Complete inherited authority before evaluating ordered mutations.
 use crate::{Error, Result, ports::transactions::TransactionAuthorityScope};
 use aidash_domain::{
 	RunMetadata,
 	transactions::{
 		Manifest, Mutation,
 		authority::{Origin, Preflight, Target, chain_compatible},
+		share::Share,
 	},
 };
 use serde_json::json;
-pub fn request(manifest: &Manifest, origin: &Origin, node: &str) -> Result<Preflight> {
-	let targets = manifest
-		.local(node)
-		.map_err(|_| Error::Forbidden)?
-		.mutations
-		.iter()
-		.map(|mutation| {
-			Ok(match mutation {
-				Mutation::ThreadTitle { thread_id, .. } => Target {
-					kind: "thread".into(),
-					id: *thread_id,
-					task_id: None,
-				},
-				Mutation::CompleteTask { task_id, .. } => Target {
-					kind: "task".into(),
-					id: *task_id,
-					task_id: None,
-				},
-				Mutation::FinishRun {
-					run_id, task_id, ..
-				} => Target {
-					kind: "run".into(),
-					id: *run_id,
-					task_id: Some(*task_id),
-				},
-			})
-		})
-		.collect::<Result<Vec<_>>>()?;
+/// The metadata-only preflight for the participant holding `share`.
+pub fn request(share: &Share, origin: &Origin) -> Result<Preflight> {
 	Ok(Preflight {
-		id: manifest.id,
-		coordinator: manifest.coordinator.clone(),
-		digest: manifest.digest()?,
+		id: share.id,
+		coordinator: share.coordinator.clone(),
+		digest: share.digest()?,
 		origin: origin.clone(),
-		recipients: manifest
-			.participants
-			.iter()
-			.map(|participant| participant.node_id.clone())
-			.collect(),
-		targets,
+		recipients: share.recipients(),
+		targets: targets(&share.part.mutations),
 	})
+}
+
+/// The preflight the coordinator sends `node`, from the manifest sealed with
+/// its `seed`.
+pub fn sealed_request(
+	manifest: &Manifest,
+	seed: &str,
+	origin: &Origin,
+	node: &str,
+) -> Result<Preflight> {
+	manifest.local(node).map_err(|_| Error::Forbidden)?;
+	request(&manifest.share(seed, node)?, origin)
+}
+
+fn targets(mutations: &[Mutation]) -> Vec<Target> {
+	mutations
+		.iter()
+		.map(|mutation| match mutation {
+			Mutation::ThreadTitle { thread_id, .. } => Target {
+				kind: "thread".into(),
+				id: *thread_id,
+				task_id: None,
+			},
+			Mutation::CompleteTask { task_id, .. } => Target {
+				kind: "task".into(),
+				id: *task_id,
+				task_id: None,
+			},
+			Mutation::FinishRun {
+				run_id, task_id, ..
+			} => Target {
+				kind: "run".into(),
+				id: *run_id,
+				task_id: Some(*task_id),
+			},
+		})
+		.collect()
 }
 pub async fn inherit_run(
 	scope: &mut dyn TransactionAuthorityScope,
@@ -102,14 +110,13 @@ pub async fn checks(
 	}
 	scope.require(&transaction, action).await?;
 	for target in &input.targets {
-		let resource = match target.kind.as_str() {
+		match target.kind.as_str() {
 			"thread" => {
 				let resource = scope.thread(target.id).await?;
 				scope.require(&resource, "thread.read").await?;
 				if action != "transaction.read" {
 					scope.require(&resource, "thread.update").await?;
 				}
-				resource
 			}
 			"task" => {
 				let task = scope.task(target.id).await?;
@@ -121,7 +128,6 @@ pub async fn checks(
 						.await?;
 					scope.require(&artifact, "artifact.create").await?;
 				}
-				resource
 			}
 			"run" => {
 				let run = scope.run(target.id).await?;
@@ -134,16 +140,8 @@ pub async fn checks(
 				if action != "transaction.read" {
 					scope.require(&resource, "run.finish").await?;
 				}
-				resource
 			}
 			_ => return Err(Error::Forbidden),
-		};
-		if action != "transaction.read" {
-			for recipient in &input.recipients {
-				let mut disclosure = resource.clone();
-				disclosure.attributes["recipient_node"] = json!(recipient);
-				scope.require(&disclosure, "transaction.disclose").await?;
-			}
 		}
 	}
 	Ok(())
@@ -151,15 +149,19 @@ pub async fn checks(
 #[cfg(test)]
 mod tests;
 
+/// The submitting subject's authority over every target of `manifest`, its
+/// own Node's targets through the full checks and every other Node's through
+/// its qualified resources.
 pub async fn source_checks(
 	scope: &mut dyn TransactionAuthorityScope,
 	manifest: &Manifest,
+	seed: &str,
 	origin: &Origin,
 	action: &str,
 ) -> Result<()> {
 	checks(
 		scope,
-		&request(manifest, origin, &manifest.coordinator)?,
+		&sealed_request(manifest, seed, origin, &manifest.coordinator)?,
 		&manifest.coordinator,
 		action,
 	)
@@ -168,16 +170,9 @@ pub async fn source_checks(
 		if participant.node_id == manifest.coordinator {
 			continue;
 		}
-		for target in request(manifest, origin, &participant.node_id)?.targets {
+		for target in targets(&participant.mutations) {
 			let resource = scope.qualified_resource(&target.kind, &participant.node_id, target.id);
 			scope.require(&resource, action).await?;
-			for recipient in &manifest.participants {
-				if action != "transaction.read" {
-					let mut disclosure = resource.clone();
-					disclosure.attributes["recipient_node"] = json!(recipient.node_id);
-					scope.require(&disclosure, "transaction.disclose").await?;
-				}
-			}
 		}
 	}
 	Ok(())

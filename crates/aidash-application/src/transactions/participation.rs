@@ -5,8 +5,8 @@ use crate::{
 	ports::transactions::participation::{ParticipantRepository, ParticipantScope},
 };
 use aidash_domain::transactions::{
-	Manifest,
 	coordination::{LocalStatus, ParticipantPhase, abortable, commit_ready, participant_matches},
+	share::Share,
 };
 use std::sync::Arc;
 
@@ -24,21 +24,29 @@ impl Participant {
 		}
 	}
 
-	fn sender(&self, caller: &str, manifest: &Manifest) -> Result<()> {
-		super::validate(manifest)?;
-		// An inbound request is for the Node the transport admitted. The
-		// coordinator's own work has no other Node than the coordinator.
-		manifest
-			.local(self.repository.receiver().unwrap_or(caller))
-			.map_err(|_| Error::Forbidden)?;
-		if caller != manifest.coordinator {
+	fn sender(&self, caller: &str, share: &Share) -> Result<()> {
+		super::validate_share(share)?;
+		// An inbound request is for the Node the transport admitted. Work this
+		// Deployment does for itself, such as recovery, is for its one Node in
+		// the transaction (`Manifest::validate` admits no other).
+		let own = match self.repository.receiver() {
+			Some(receiver) => share.part.node_id == receiver,
+			None => aidash_domain::nodes::same_deployment(
+				&share.part.node_id,
+				self.repository.node_id(),
+			),
+		};
+		if !own {
+			return Err(Error::Forbidden);
+		}
+		if caller != share.coordinator {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
 	}
 
-	fn check(existing: &LocalStatus, manifest: &Manifest) -> Result<()> {
-		if !participant_matches(manifest, &manifest.digest()?, existing) {
+	fn check(existing: &LocalStatus, share: &Share) -> Result<()> {
+		if !participant_matches(share, &share.digest()?, existing) {
 			return Err(Error::Conflict(
 				"transaction ID already has another immutable manifest".into(),
 			));
@@ -48,62 +56,60 @@ impl Participant {
 
 	async fn expire_reserved(
 		scope: &mut dyn ParticipantScope,
-		manifest: &Manifest,
+		share: &Share,
 		existing: &LocalStatus,
 	) -> Result<Option<LocalStatus>> {
-		if existing.phase != "RESERVED" || manifest.deadline > scope.now().await? {
+		if existing.phase != "RESERVED" || share.deadline > scope.now().await? {
 			return Ok(None);
 		}
-		if scope.gate_exclusive().await? != Some(manifest.id) {
+		if scope.gate_exclusive().await? != Some(share.id) {
 			return Err(Error::Conflict(
 				"participant lost its visibility barrier".into(),
 			));
 		}
-		Self::abort_reserved(scope, manifest).await.map(Some)
+		Self::abort_reserved(scope, share).await.map(Some)
 	}
 
 	/// Abort a RESERVED participant whose deadline passed; the caller holds its gate.
 	async fn abort_reserved(
 		scope: &mut dyn ParticipantScope,
-		manifest: &Manifest,
+		share: &Share,
 	) -> Result<LocalStatus> {
 		scope.release_gate(false).await?;
-		scope
-			.transition(manifest.id, ParticipantPhase::Aborted)
-			.await
+		scope.transition(share.id, ParticipantPhase::Aborted).await
 	}
 
-	pub async fn reserve(&self, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
-		self.sender(caller, manifest)?;
+	pub async fn reserve(&self, caller: &str, share: &Share) -> Result<LocalStatus> {
+		self.sender(caller, share)?;
 		// Existing durable admission remains an obligation after live grant revocation.
 		let mut scope = self.repository.begin().await?;
-		if let Some(existing) = scope.lock(manifest.id).await? {
-			Self::check(&existing, manifest)?;
-			let row = Self::expire_reserved(scope.as_mut(), manifest, &existing)
+		if let Some(existing) = scope.lock(share.id).await? {
+			Self::check(&existing, share)?;
+			let row = Self::expire_reserved(scope.as_mut(), share, &existing)
 				.await?
 				.unwrap_or(existing);
 			return scope.finish(Ok(row)).await;
 		}
 		scope.rollback().await?;
-		if let Some(mut scope) = self.repository.admission(caller, manifest).await? {
-			let result = self.reserve_in(scope.as_mut(), caller, manifest).await;
+		if let Some(mut scope) = self.repository.admission(caller, share).await? {
+			let result = self.reserve_in(scope.as_mut(), caller, share).await;
 			self.repository
-				.fault(manifest.id, "participant.reserve.before")
+				.fault(share.id, "participant.reserve.before")
 				.await?;
 			let row = scope.finish(result).await?;
 			self.repository
-				.fault(manifest.id, "participant.reserve.after")
+				.fault(share.id, "participant.reserve.after")
 				.await?;
 			Ok(row)
 		} else {
 			let mut scope = self.repository.begin().await?;
-			let row = self.reserve_in(scope.as_mut(), caller, manifest).await?;
+			let row = self.reserve_in(scope.as_mut(), caller, share).await?;
 			self.repository
-				.fault(manifest.id, "participant.reserve.before")
+				.fault(share.id, "participant.reserve.before")
 				.await?;
 			let row = scope.finish(Ok(row)).await?;
 			self.repository
-				.fault(manifest.id, "participant.reserve.after")
+				.fault(share.id, "participant.reserve.after")
 				.await?;
 			Ok(row)
 		}
@@ -113,15 +119,15 @@ impl Participant {
 		&self,
 		scope: &mut dyn ParticipantScope,
 		_caller: &str,
-		manifest: &Manifest,
+		share: &Share,
 	) -> Result<LocalStatus> {
-		if let Some(existing) = scope.lock(manifest.id).await? {
-			Self::check(&existing, manifest)?;
-			return Ok(Self::expire_reserved(scope, manifest, &existing)
+		if let Some(existing) = scope.lock(share.id).await? {
+			Self::check(&existing, share)?;
+			return Ok(Self::expire_reserved(scope, share, &existing)
 				.await?
 				.unwrap_or(existing));
 		}
-		let remaining = manifest
+		let remaining = share
 			.deadline
 			.signed_duration_since(scope.now().await?)
 			.num_seconds();
@@ -134,64 +140,64 @@ impl Participant {
 			return Err(Error::TransactionPending);
 		}
 		// Waiting for the gate can outlast the deadline sampled before it.
-		if manifest.deadline <= scope.now().await? {
+		if share.deadline <= scope.now().await? {
 			return Err(Error::Invalid(
 				"participant deadline passed while waiting for the visibility barrier".into(),
 			));
 		}
-		let row = scope.insert(manifest, ParticipantPhase::Reserved).await?;
-		scope.reserve_gate(manifest.id).await?;
-		scope.reservation_history(manifest.id).await?;
+		let row = scope.insert(share, ParticipantPhase::Reserved).await?;
+		scope.reserve_gate(share.id).await?;
+		scope.reservation_history(share.id).await?;
 		Ok(row)
 	}
 
-	pub async fn prepare(&self, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
-		self.sender(caller, manifest)?;
+	pub async fn prepare(&self, caller: &str, share: &Share) -> Result<LocalStatus> {
+		self.sender(caller, share)?;
 		let mut scope = self.repository.begin().await?;
 		let existing = scope
-			.lock(manifest.id)
+			.lock(share.id)
 			.await?
 			.ok_or_else(|| Error::Conflict("participant was not reserved".into()))?;
-		Self::check(&existing, manifest)?;
+		Self::check(&existing, share)?;
 		if existing.phase != "RESERVED" {
 			return scope.finish(Ok(existing)).await;
 		}
-		if scope.gate_exclusive().await? != Some(manifest.id) {
+		if scope.gate_exclusive().await? != Some(share.id) {
 			return Err(Error::Conflict(
 				"participant lost its visibility barrier".into(),
 			));
 		}
 		// Sample the deadline only once the gate is held: waiting for it can
 		// outlast a deadline that was still in the future before the wait.
-		if manifest.deadline <= scope.now().await? {
-			let aborted = Self::abort_reserved(scope.as_mut(), manifest).await?;
+		if share.deadline <= scope.now().await? {
+			let aborted = Self::abort_reserved(scope.as_mut(), share).await?;
 			return scope.finish(Ok(aborted)).await;
 		}
-		scope.validate_mutations(manifest).await?;
+		scope.validate_mutations(share).await?;
 		let row = scope
-			.transition(manifest.id, ParticipantPhase::Prepared)
+			.transition(share.id, ParticipantPhase::Prepared)
 			.await?;
 		self.repository
-			.fault(manifest.id, "participant.prepare.before")
+			.fault(share.id, "participant.prepare.before")
 			.await?;
 		let row = scope.finish(Ok(row)).await?;
 		self.repository
-			.fault(manifest.id, "participant.prepare.after")
+			.fault(share.id, "participant.prepare.after")
 			.await?;
 		Ok(row)
 	}
 
-	pub async fn finish(&self, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
-		self.sender(caller, manifest)?;
+	pub async fn finish(&self, caller: &str, share: &Share) -> Result<LocalStatus> {
+		self.sender(caller, share)?;
 		// Participant messages only wake the workflow; its decision comes from storage.
-		let proof = self.coordinator.decision(manifest).await?;
+		let proof = self.coordinator.decision(share).await?;
 		let Some(decision) = proof.decision.as_deref() else {
 			return Err(Error::TransactionPending);
 		};
 		let mut scope = self.repository.begin().await?;
-		let existing = scope.lock(manifest.id).await?;
+		let existing = scope.lock(share.id).await?;
 		if let Some(existing) = &existing {
-			Self::check(existing, manifest)?;
+			Self::check(existing, share)?;
 		}
 		if decision == "ABORT" {
 			if let Some(existing) = existing {
@@ -201,7 +207,7 @@ impl Participant {
 				if existing.phase == "ABORTED" {
 					return scope.finish(Ok(existing)).await;
 				}
-				if scope.gate_exclusive().await? != Some(manifest.id) {
+				if scope.gate_exclusive().await? != Some(share.id) {
 					return Err(Error::Conflict(
 						"participant lost its visibility barrier".into(),
 					));
@@ -209,17 +215,17 @@ impl Participant {
 				scope.release_gate(false).await?;
 			} else {
 				// The tombstone prevents a delayed reserve from resurrecting aborted work.
-				scope.insert(manifest, ParticipantPhase::Aborted).await?;
+				scope.insert(share, ParticipantPhase::Aborted).await?;
 			}
 			let row = scope
-				.transition(manifest.id, ParticipantPhase::Aborted)
+				.transition(share.id, ParticipantPhase::Aborted)
 				.await?;
 			self.repository
-				.fault(manifest.id, "participant.abort.before")
+				.fault(share.id, "participant.abort.before")
 				.await?;
 			let row = scope.finish(Ok(row)).await?;
 			self.repository
-				.fault(manifest.id, "participant.abort.after")
+				.fault(share.id, "participant.abort.after")
 				.await?;
 			return Ok(row);
 		}
@@ -233,25 +239,25 @@ impl Participant {
 				"commit requires a prepared participant".into(),
 			));
 		}
-		if scope.gate_exclusive().await? != Some(manifest.id) {
+		if scope.gate_exclusive().await? != Some(share.id) {
 			return Err(Error::Conflict(
 				"participant lost its visibility barrier".into(),
 			));
 		}
 		if existing.phase == "PREPARED" {
-			scope.apply_mutations(manifest).await?;
+			scope.apply_mutations(share).await?;
 			scope
-				.transition(manifest.id, ParticipantPhase::Applied)
+				.transition(share.id, ParticipantPhase::Applied)
 				.await?;
 		}
 		let row = if proof.visible {
 			scope.release_gate(true).await?;
 			scope
-				.transition(manifest.id, ParticipantPhase::Committed)
+				.transition(share.id, ParticipantPhase::Committed)
 				.await?
 		} else {
 			scope
-				.lock(manifest.id)
+				.lock(share.id)
 				.await?
 				.ok_or_else(|| Error::Conflict("participant disappeared during commit".into()))?
 		};
@@ -261,11 +267,11 @@ impl Participant {
 			"participant.apply"
 		};
 		self.repository
-			.fault(manifest.id, &format!("{point}.before"))
+			.fault(share.id, &format!("{point}.before"))
 			.await?;
 		let row = scope.finish(Ok(row)).await?;
 		self.repository
-			.fault(manifest.id, &format!("{point}.after"))
+			.fault(share.id, &format!("{point}.after"))
 			.await?;
 		self.repository.wake();
 		Ok(row)
@@ -275,13 +281,13 @@ impl Participant {
 		let pending = self.repository.pending().await?;
 		let mut completed = 0;
 		for row in pending.rows() {
-			let manifest: Manifest = serde_json::from_value(row.manifest.clone())?;
+			let share: Share = serde_json::from_value(row.manifest.clone())?;
 			if row.phase == "RESERVED" {
 				let mut scope = self.repository.begin().await?;
-				if let Some(existing) = scope.lock(manifest.id).await? {
-					Self::check(&existing, &manifest)?;
+				if let Some(existing) = scope.lock(share.id).await? {
+					Self::check(&existing, &share)?;
 					if let Some(aborted) =
-						Self::expire_reserved(scope.as_mut(), &manifest, &existing).await?
+						Self::expire_reserved(scope.as_mut(), &share, &existing).await?
 					{
 						scope.finish(Ok(aborted)).await?;
 						completed += 1;
@@ -291,18 +297,18 @@ impl Participant {
 				scope.rollback().await?;
 			}
 			// Only a durable coordinator decision can advance a participant's outcome.
-			match self.coordinator.decision(&manifest).await {
+			match self.coordinator.decision(&share).await {
 				Ok(proof) if proof.decision.is_some() => {
-					match self.finish(&manifest.coordinator, &manifest).await {
+					match self.finish(&share.coordinator, &share).await {
 						Ok(_) => completed += 1,
 						Err(error) => {
-							tracing::debug!(id=%manifest.id,%error,"participant recovery waits")
+							tracing::debug!(id=%share.id,%error,"participant recovery waits")
 						}
 					}
 				}
 				Ok(_) => {}
 				Err(error) => {
-					tracing::debug!(id=%manifest.id,%error,"participant decision unavailable")
+					tracing::debug!(id=%share.id,%error,"participant decision unavailable")
 				}
 			}
 		}

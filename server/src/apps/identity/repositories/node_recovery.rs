@@ -3,7 +3,7 @@
 use crate::{Error, Result};
 use aidash_domain::{
 	nodes::{DeploymentId, NodeAddress, NodeName},
-	transactions::Manifest,
+	transactions::{Manifest, share::Share},
 };
 use reinhardt::db::{
 	backends::TransactionExecutor,
@@ -52,6 +52,8 @@ pub(crate) async fn registration_sources_with_planned_in(
 		query.columns(["id", "digest", "manifest"].map(Alias::new));
 		if table == "atomic_participants" {
 			query.column(Alias::new("coordinator"));
+		} else {
+			query.column(Alias::new("seed"));
 		}
 		let (sql, values) = query
 			.from(Alias::new(table))
@@ -73,18 +75,40 @@ pub(crate) async fn registration_sources_with_planned_in(
 			} else {
 				None
 			};
-			let manifest: Manifest =
-				serde_json::from_value(QueryRow::from_backend_row(row).data["manifest"].clone())
-					.map_err(|_| blocked())?;
-			manifest.validate::<Error>().map_err(|_| blocked())?;
-			if manifest.id != id || manifest.digest().map_err(|_| blocked())? != digest {
+			// A coordinator holds the manifest and the seed that seals it; a
+			// participant holds only its own share (ADR 0146).
+			let data = QueryRow::from_backend_row(row).data;
+			let (journal, stored, nodes, sealed) = if table == "atomic_coordinators" {
+				let manifest: Manifest =
+					serde_json::from_value(data["manifest"].clone()).map_err(|_| blocked())?;
+				manifest.validate::<Error>().map_err(|_| blocked())?;
+				let seed = data["seed"].as_str().ok_or_else(blocked)?;
+				let sealed = manifest.sealed_digest(seed).map_err(|_| blocked())?;
+				let nodes = manifest
+					.participants
+					.iter()
+					.map(|participant| participant.node_id.clone())
+					.collect::<Vec<_>>();
+				(manifest.id, manifest.coordinator, nodes, sealed)
+			} else {
+				let share: Share =
+					serde_json::from_value(data["manifest"].clone()).map_err(|_| blocked())?;
+				share.validate().map_err(|_| blocked())?;
+				let sealed = share.digest().map_err(|_| blocked())?;
+				(
+					share.id,
+					share.coordinator.clone(),
+					share.recipients(),
+					sealed,
+				)
+			};
+			if journal != id || sealed != digest {
 				return Err(blocked());
 			}
-			let coordinator = NodeAddress::parse(&manifest.coordinator).map_err(|_| blocked())?;
-			let participants = manifest
-				.participants
+			let coordinator = NodeAddress::parse(&stored).map_err(|_| blocked())?;
+			let participants = nodes
 				.iter()
-				.map(|participant| NodeAddress::parse(&participant.node_id).map_err(|_| blocked()))
+				.map(|node| NodeAddress::parse(node).map_err(|_| blocked()))
 				.collect::<Result<Vec<_>>>()?;
 			let local = participants
 				.iter()
@@ -109,7 +133,7 @@ pub(crate) async fn registration_sources_with_planned_in(
 					);
 				}
 			} else {
-				if stored_coordinator.as_deref() != Some(manifest.coordinator.as_str()) {
+				if stored_coordinator.as_deref() != Some(stored.as_str()) {
 					return Err(blocked());
 				}
 				if local == &owner && &coordinator.deployment != deployment {

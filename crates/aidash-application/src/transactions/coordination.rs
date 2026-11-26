@@ -7,11 +7,12 @@ use crate::{
 };
 use aidash_domain::transactions::{
 	CoordinatorDecision, CoordinatorTransition, Manifest,
-	authority::Status,
+	authority::{Decision, Status},
 	coordination::{
 		LocalStatus, ParticipantOperation, Vote, decision_matches, next_participant,
 		next_transition, validate_acknowledgement,
 	},
+	share::Share,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -41,16 +42,16 @@ impl Coordinator {
 		self.repository.votes(id).await
 	}
 
-	pub async fn decision(&self, manifest: &Manifest) -> Result<Status> {
-		let proof = if aidash_domain::nodes::same_deployment(
-			&manifest.coordinator,
-			self.repository.node_id(),
-		) {
-			self.status(manifest.id).await?
-		} else {
-			self.transport.decision(manifest).await?
-		};
-		if !decision_matches(manifest, &manifest.digest()?, &proof) {
+	/// The coordinator's decision for the participant holding `share`.
+	pub async fn decision(&self, share: &Share) -> Result<Decision> {
+		let proof =
+			if aidash_domain::nodes::same_deployment(&share.coordinator, self.repository.node_id())
+			{
+				self.status(share.id).await?.decision()
+			} else {
+				self.transport.decision(share).await?
+			};
+		if !decision_matches(share, &share.digest()?, &proof) {
 			return Err(Error::Conflict(
 				"coordinator decision does not match participant manifest".into(),
 			));
@@ -102,9 +103,10 @@ impl Coordinator {
 		}
 		let votes = self.votes(id).await?;
 		if let Some((vote, operation)) = next_participant(&state, &votes) {
-			match self.send(&manifest, &vote.node_id, operation).await {
+			let share = state.share(&vote.node_id)?;
+			match self.send(&state, &share, operation).await {
 				Ok(response) => {
-					validate_acknowledgement(&manifest, &state, operation, &response)?;
+					validate_acknowledgement(&share, &state, operation, &response)?;
 					self.repository.fault(id, "coordinator.vote.before").await?;
 					self.repository
 						.settle_authority(id, &vote.node_id, &response.phase)
@@ -141,16 +143,18 @@ impl Coordinator {
 		self.status(id).await
 	}
 
+	/// Send one participant its own share, never the manifest (ADR 0146).
 	async fn send(
 		&self,
-		manifest: &Manifest,
-		node: &str,
+		state: &Status,
+		share: &Share,
 		operation: ParticipantOperation,
 	) -> Result<LocalStatus> {
+		let node = &share.part.node_id;
 		if operation == ParticipantOperation::Reserve {
-			self.repository.issue_authority(manifest, node).await?;
+			self.repository.issue_authority(state, node).await?;
 		}
-		self.transport.send(manifest, node, operation).await
+		self.transport.send(share, node, operation).await
 	}
 
 	pub async fn recover_once(&self) -> Result<()> {

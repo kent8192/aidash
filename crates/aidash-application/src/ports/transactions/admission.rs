@@ -11,6 +11,9 @@ use uuid::Uuid;
 #[async_trait]
 pub trait AdmissionScope: Send {
 	fn node_id(&self) -> &str;
+	/// The seed that seals `manifest` (ADR 0146): the same for the same
+	/// manifest.
+	fn seed(&self, manifest: &Manifest) -> Result<String>;
 	fn now(&self) -> DateTime<Utc>;
 	async fn status(&mut self, id: Uuid) -> Result<Status>;
 	async fn match_origin(&mut self, id: Uuid, origin: Option<&Origin>) -> Result<()>;
@@ -30,7 +33,8 @@ pub trait AdmissionScope: Send {
 	) -> Result<bool>;
 	/// Admission is serialized by transaction ID and checks the immutable manifest
 	/// again under its lock, then inserts participant votes and history atomically.
-	async fn admit(&mut self, manifest: &Manifest) -> Result<Status>;
+	/// A new manifest is sealed with `seed`; an existing one keeps its own.
+	async fn admit(&mut self, manifest: &Manifest, seed: &str) -> Result<Status>;
 	async fn bind_origin(&mut self, id: Uuid, origin: &Origin) -> Result<()>;
 }
 

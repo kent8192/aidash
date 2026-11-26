@@ -34,15 +34,19 @@ pub(super) async fn submit_bound(
 	.map(Into::into)
 	.map_err(Into::into)
 }
+/// Admit inside the caller's transaction. A subject's submission passes the
+/// seed its preflights were sealed with.
 pub(crate) async fn submit_in(
 	f: &Federation,
 	manifest: &Manifest,
+	seed: Option<&str>,
 	origin: Option<&super::authority::Origin>,
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 ) -> Result<Status> {
 	let origin = origin.map(Into::into);
 	aidash_application::transactions::admission::submit_in(
 		&mut crate::bootstrap::transaction_admission_scope(f, tx),
+		seed,
 		manifest,
 		origin.as_ref(),
 	)

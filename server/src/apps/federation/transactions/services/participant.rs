@@ -1,5 +1,5 @@
 //! Participant adapters share the application workflow and native persistence scope.
-use super::{LocalStatus, Manifest};
+use super::{LocalStatus, Share};
 use crate::{Result, federation::Federation};
 use aidash_application::federation::inbound::Admitted;
 
@@ -17,7 +17,7 @@ pub async fn reserve(
 	f: &Federation,
 	admitted: Option<&Admitted>,
 	caller: &str,
-	manifest: &Manifest,
+	manifest: &Share,
 ) -> Result<LocalStatus> {
 	crate::apps::federation::transactions::repositories::participation::require_live_participant(
 		f, manifest,
@@ -33,7 +33,7 @@ pub async fn prepare(
 	f: &Federation,
 	admitted: Option<&Admitted>,
 	caller: &str,
-	manifest: &Manifest,
+	manifest: &Share,
 ) -> Result<LocalStatus> {
 	crate::apps::federation::transactions::repositories::participation::require_live_participant(
 		f, manifest,
@@ -49,7 +49,7 @@ pub async fn finish(
 	f: &Federation,
 	admitted: Option<&Admitted>,
 	caller: &str,
-	manifest: &Manifest,
+	manifest: &Share,
 ) -> Result<LocalStatus> {
 	participant(f, admitted)
 		.finish(caller, manifest)

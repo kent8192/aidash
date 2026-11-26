@@ -15,7 +15,7 @@ pub async fn submit(
 	origin: Option<&Origin>,
 ) -> Result<Status> {
 	let mut scope = repository.begin().await?;
-	let stored = submit_in(scope.admission().as_mut(), manifest, origin).await?;
+	let stored = submit_in(scope.admission().as_mut(), None, manifest, origin).await?;
 	repository
 		.fault(manifest.id, "coordinator.submit.before")
 		.await?;
@@ -27,8 +27,11 @@ pub async fn submit(
 	Ok(stored)
 }
 
+/// Admit `manifest`. A new one is sealed with `seed`, the one the caller's
+/// preflights used, or else with the scope's seed for it.
 pub async fn submit_in(
 	scope: &mut dyn AdmissionScope,
+	seed: Option<&str>,
 	manifest: &Manifest,
 	origin: Option<&Origin>,
 ) -> Result<Status> {
@@ -49,7 +52,7 @@ pub async fn submit_in(
 	match scope.status(manifest.id).await {
 		Ok(existing) => {
 			scope.match_origin(manifest.id, origin).await?;
-			if existing.digest != manifest.digest()? || existing.manifest != json!(manifest) {
+			if existing.manifest != json!(manifest) {
 				return Err(Error::Conflict(
 					"transaction ID already has another immutable manifest".into(),
 				));
@@ -78,7 +81,21 @@ pub async fn submit_in(
 			return Err(Error::Forbidden);
 		}
 	}
-	let stored = scope.admit(manifest).await?;
+	let derived;
+	let seed = match seed {
+		Some(seed) => seed,
+		None => {
+			derived = scope.seed(manifest)?;
+			&derived
+		}
+	};
+	// A share repeats the header and every seal around one part, so a manifest
+	// within its own limit can still yield a share no participant accepts.
+	// Refuse it here rather than commit a transaction that can never finish.
+	for participant in &manifest.participants {
+		super::validate_share(&manifest.share(seed, &participant.node_id)?)?;
+	}
+	let stored = scope.admit(manifest, seed).await?;
 	if let Some(origin) = origin {
 		scope.bind_origin(manifest.id, origin).await?;
 	}

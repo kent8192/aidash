@@ -4,7 +4,10 @@ use crate::{
 	apps::federation::transactions::models::{AtomicCoordinator, AtomicParticipant},
 };
 use aidash_application::federation::inbound::RequestDigest;
-use aidash_domain::{nodes::NodeAddress, transactions::Manifest};
+use aidash_domain::{
+	nodes::NodeAddress,
+	transactions::{Manifest, share::Share},
+};
 use reinhardt::{
 	core::exception::Error as FrameworkError,
 	db::{backends::TransactionExecutor, orm::Model},
@@ -12,14 +15,15 @@ use reinhardt::{
 use serde_json::json;
 use uuid::Uuid;
 
-fn finish(request: &RequestDigest<'_>) -> Option<Manifest> {
+/// A finish request carries the receiving participant's own share (ADR 0146).
+fn finish(request: &RequestDigest<'_>) -> Option<Share> {
 	if request.method != "POST" || request.path != "/transactions/finish" {
 		return None;
 	}
-	let manifest: Manifest = serde_json::from_slice(request.body).ok()?;
+	let share: Share = serde_json::from_slice(request.body).ok()?;
 	// Reject ignored nested fields as well as changed durable fields.
 	let raw: serde_json::Value = serde_json::from_slice(request.body).ok()?;
-	(raw == json!(manifest)).then_some(manifest)
+	(raw == json!(share)).then_some(share)
 }
 
 fn decision(request: &RequestDigest<'_>) -> Option<Uuid> {
@@ -33,11 +37,15 @@ fn decision(request: &RequestDigest<'_>) -> Option<Uuid> {
 	let parsed = Uuid::parse_str(id).ok()?;
 	(id == parsed.to_string()).then_some(parsed)
 }
-fn participant(manifest: &Manifest, address: &NodeAddress) -> bool {
+fn participant(nodes: &[String], address: &NodeAddress) -> bool {
+	nodes.iter().any(|node| *node == address.to_string())
+}
+fn nodes(manifest: &Manifest) -> Vec<String> {
 	manifest
 		.participants
 		.iter()
-		.any(|p| p.node_id == address.to_string())
+		.map(|participant| participant.node_id.clone())
+		.collect()
 }
 async fn participant_record(
 	tx: &mut dyn TransactionExecutor,
@@ -73,15 +81,15 @@ pub(crate) async fn inbound(
 	if !subject.is_empty() {
 		return Ok(false);
 	}
-	if let Some(manifest) = finish(request) {
-		let Some(row) = participant_record(tx, manifest.id).await? else {
+	if let Some(share) = finish(request) {
+		let Some(row) = participant_record(tx, share.id).await? else {
 			return Ok(false);
 		};
 		return Ok(row.coordinator == sender.to_string()
-			&& manifest.coordinator == row.coordinator
-			&& row.digest == manifest.digest()?
-			&& row.manifest.0 == json!(manifest)
-			&& participant(&manifest, receiver));
+			&& share.coordinator == row.coordinator
+			&& row.digest == share.digest()?
+			&& row.manifest.0 == json!(share)
+			&& share.part.node_id == receiver.to_string());
 	}
 	if let Some(id) = decision(request) {
 		let Some(row) = coordinator_record(tx, id).await? else {
@@ -90,9 +98,9 @@ pub(crate) async fn inbound(
 		let manifest: Manifest = serde_json::from_value(row.manifest.0)?;
 		return Ok(row.decision.is_some()
 			&& manifest.id == id
-			&& row.digest == manifest.digest()?
+			&& row.digest == manifest.sealed_digest(&row.seed)?
 			&& manifest.coordinator == receiver.to_string()
-			&& participant(&manifest, sender));
+			&& participant(&nodes(&manifest), sender));
 	}
 	Ok(false)
 }
@@ -108,26 +116,27 @@ pub(crate) async fn outbound(
 	if !subject.is_empty() {
 		return Ok(false);
 	}
-	if let Some(manifest) = finish(request) {
-		let Some(row) = coordinator_record(tx, manifest.id).await? else {
+	if let Some(share) = finish(request) {
+		let Some(row) = coordinator_record(tx, share.id).await? else {
 			return Ok(false);
 		};
+		let manifest: Manifest = serde_json::from_value(row.manifest.0.clone())?;
 		return Ok(row.decision.is_some()
-			&& row.digest == manifest.digest()?
-			&& row.manifest.0 == json!(manifest)
-			&& manifest.coordinator == sender.to_string()
-			&& participant(&manifest, receiver));
+			&& row.digest == share.digest()?
+			&& share.part.node_id == receiver.to_string()
+			&& json!(share) == json!(manifest.share(&row.seed, &share.part.node_id)?)
+			&& share.coordinator == sender.to_string());
 	}
 	if let Some(id) = decision(request) {
 		let Some(row) = participant_record(tx, id).await? else {
 			return Ok(false);
 		};
-		let manifest: Manifest = serde_json::from_value(row.manifest.0)?;
-		return Ok(manifest.id == id
-			&& row.digest == manifest.digest()?
+		let share: Share = serde_json::from_value(row.manifest.0)?;
+		return Ok(share.id == id
+			&& row.digest == share.digest()?
 			&& row.coordinator == receiver.to_string()
-			&& manifest.coordinator == row.coordinator
-			&& participant(&manifest, sender));
+			&& share.coordinator == row.coordinator
+			&& share.part.node_id == sender.to_string());
 	}
 	Ok(false)
 }

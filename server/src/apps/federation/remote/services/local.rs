@@ -19,7 +19,7 @@
 use crate::{
 	Error, Result,
 	apps::federation::transactions::{
-		Manifest, serializers::authority::Preflight, services::protocol::Transactions,
+		Share, serializers::authority::Preflight, services::protocol::Transactions,
 	},
 	federation::Federation,
 	transactions::gate::ReadLease,
@@ -426,7 +426,7 @@ async fn dispatch(
 				operation @ ("reserve" | "prepare" | "finish"),
 			],
 		) => {
-			let manifest = input!(body, Manifest);
+			let manifest = input!(body, Share);
 			let service = Transactions::for_peers(f);
 			match *operation {
 				"reserve" => respond(boxed(|| service.reserve(admitted, manifest)).await),

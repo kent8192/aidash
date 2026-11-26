@@ -1,5 +1,9 @@
 //! Participant vote ordering and manifest-bound coordinator decisions.
-use super::{CoordinatorDecision, CoordinatorTransition, Manifest, authority::Status};
+use super::{
+	CoordinatorDecision, CoordinatorTransition,
+	authority::{Decision, Status},
+	share::Share,
+};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
@@ -42,10 +46,11 @@ impl ParticipantPhase {
 	}
 }
 
-pub fn participant_matches(manifest: &Manifest, digest: &str, existing: &LocalStatus) -> bool {
-	existing.coordinator == manifest.coordinator
+/// A participant holds one share per transaction ID.
+pub fn participant_matches(share: &Share, digest: &str, existing: &LocalStatus) -> bool {
+	existing.coordinator == share.coordinator
 		&& existing.digest == digest
-		&& existing.manifest == json!(manifest)
+		&& existing.manifest == json!(share)
 }
 
 pub fn abortable(existing: &LocalStatus) -> bool {
@@ -118,16 +123,18 @@ pub fn next_participant<'a>(
 	}
 }
 
+/// A participant acknowledges its own share; the digest binds it to every
+/// other part.
 pub fn validate_acknowledgement(
-	manifest: &Manifest,
+	share: &Share,
 	state: &Status,
 	operation: ParticipantOperation,
 	response: &LocalStatus,
 ) -> Result<()> {
-	if response.id != manifest.id
-		|| response.coordinator != manifest.coordinator
+	if response.id != share.id
+		|| response.coordinator != share.coordinator
 		|| response.digest != state.digest
-		|| response.manifest != state.manifest
+		|| response.manifest != json!(share)
 	{
 		return Err(Error::Conflict(
 			"participant acknowledged another manifest".into(),
@@ -141,11 +148,10 @@ pub fn validate_acknowledgement(
 	Ok(())
 }
 
-/// The digest is computed from the participant's immutable manifest.
-pub fn decision_matches(manifest: &Manifest, digest: &str, proof: &Status) -> bool {
-	proof.id == manifest.id
+/// The digest is computed from the participant's immutable share.
+pub fn decision_matches(share: &Share, digest: &str, proof: &Decision) -> bool {
+	proof.id == share.id
 		&& proof.digest == digest
-		&& proof.manifest == json!(manifest)
 		&& proof
 			.decision
 			.as_deref()

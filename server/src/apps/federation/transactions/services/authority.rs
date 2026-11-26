@@ -1,8 +1,8 @@
 //! Native adapters delegate authority decisions and durable orchestration to application.
-use super::Manifest;
 use crate::{Error, Result, authorization::access::Access, federation::Federation};
 use aidash_application::federation::inbound::Admitted;
 use aidash_application::transactions::authority::control as application;
+use aidash_domain::transactions::{authority::Status, share::Share};
 use uuid::Uuid;
 
 pub(in crate::apps::federation::transactions) async fn preflight(
@@ -21,12 +21,12 @@ pub(in crate::apps::federation::transactions) async fn preflight(
 
 pub(in crate::apps::federation::transactions) async fn issue(
 	f: &Federation,
-	manifest: &Manifest,
+	state: &Status,
 	node: &str,
 ) -> Result<()> {
 	application::issue(
 		&crate::bootstrap::transaction_authority_repository(f),
-		manifest,
+		state,
 		node,
 	)
 	.await
@@ -52,13 +52,13 @@ pub(in crate::apps::federation::transactions) async fn admission(
 	f: &Federation,
 	admitted: Option<&Admitted>,
 	caller: &str,
-	manifest: &Manifest,
+	share: &Share,
 ) -> Result<Option<Access>> {
 	let repository = match admitted {
 		Some(admitted) => crate::bootstrap::transaction_authority_repository_as(f, admitted),
 		None => crate::bootstrap::transaction_authority_repository(f),
 	};
-	let Some(bound) = application::prepare_admission(&repository, caller, manifest).await? else {
+	let Some(bound) = application::prepare_admission(&repository, caller, share).await? else {
 		return Ok(None);
 	};
 	// The participant must retain this exact locked transaction for its write.

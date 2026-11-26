@@ -1,24 +1,23 @@
 //! Apply local manifest mutations and their events in the caller's original scope.
 use crate::{Error, Result, ports::transactions::mutation::MutationScope};
-use aidash_domain::transactions::{Manifest, Mutation, Participant, mutation as rules};
+use aidash_domain::transactions::{Mutation, mutation as rules, share::Share};
 use serde_json::json;
-
-/// The participant for a Node address.
-fn participant<'a>(manifest: &'a Manifest, address: &str) -> Result<&'a Participant> {
-	manifest.local(address).map_err(|_| Error::Forbidden)
-}
 
 /// Preparation and commit invoke this same workflow; storage alone owns the
 /// rollback-only savepoint and the visibility gate around the caller's transaction.
-pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifest) -> Result<()> {
+pub async fn apply(scope: &mut dyn MutationScope, node: &str, share: &Share) -> Result<()> {
+	// A participant holds only its own part (ADR 0146).
+	if share.part.node_id != node {
+		return Err(Error::Forbidden);
+	}
 	// A finished Run ends its Subnodes, and an event appended by an earlier
 	// mutation must not come before the locks that end takes.
-	for mutation in &participant(manifest, node)?.mutations {
+	for mutation in &share.part.mutations {
 		if let Mutation::FinishRun { run_id, .. } = mutation {
 			scope.lock_subnode_end(*run_id).await?;
 		}
 	}
-	for mutation in &participant(manifest, node)?.mutations {
+	for mutation in &share.part.mutations {
 		match mutation {
 			Mutation::ThreadTitle {
 				thread_id,
@@ -43,12 +42,9 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 					return Err(Error::Conflict("task still has unfinished children".into()));
 				}
 				if let Some(executor) = scope.delegated_node(*task_id).await? {
-					rules::validate_delegated_completion(
-						participant(manifest, &executor)?,
-						*task_id,
-					)?;
+					rules::validate_delegated_completion(share, &executor, *task_id)?;
 				}
-				let key = format!("atomic:{}:task:{}", manifest.id, task.id);
+				let key = format!("atomic:{}:task:{}", share.id, task.id);
 				let (saved, created) = scope.complete_task(&task, artifact, &key).await?;
 				if let Some(run) = scope.source_run(task.id).await? {
 					scope
@@ -76,7 +72,7 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 					return Err(Error::Conflict("run still has pending tools".into()));
 				}
 				let run = &raw.metadata;
-				rules::validate_home_completion(participant(manifest, &run.home_node)?, *task_id)?;
+				rules::validate_home_completion(share, &run.home_node, *task_id)?;
 				scope.complete_run(*run_id).await?;
 				scope.append_event(run.is_local(aidash_domain::nodes::deployment_of(node)).then_some(run.thread_id), "execution.completed", json!({"run_id":run.id,"task_id":run.task_id,"thread_id":run.thread_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":raw.context.get("usage")})).await?;
 			}

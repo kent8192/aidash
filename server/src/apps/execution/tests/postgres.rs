@@ -1174,6 +1174,7 @@ fn federation(
 				tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 				preview: None,
 				dashboard_origin: "http://localhost:3000".into(),
+				transaction_seed_key: [7; 32],
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
@@ -2710,6 +2711,7 @@ fn authenticated_runtime(
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
+			transaction_seed_key: [7; 32],
 		};
 		runtime.federation.client = http_client;
 		runtime
