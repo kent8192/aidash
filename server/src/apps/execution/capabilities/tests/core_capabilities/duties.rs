@@ -2799,6 +2799,26 @@ async fn task_model_admission_refusals_and_duty_ticks_use_the_stored_selection(
 			assert!(!body["reasons"].as_array().unwrap().is_empty());
 		}
 	}
+	c.policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"cannot-approve-this-model", "effect":"deny", "subjects":{"ids":["alice"]},
+		"actions":["catalog.approve"], "resources":{"kinds":["registry"],"ids":[
+			format!("model/task-model-awaiting-approval@{}", model.version)
+		]}
+	}));
+	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	let (status, denied) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/threads",
+		start(json!({"model":pending})),
+	)
+	.await;
+	assert_eq!(status, 422, "{denied}");
+	assert_eq!(denied["code"], "task_model_not_approved");
+	assert_eq!(denied["model"], pending);
+	assert_eq!(denied["can_approve"], false);
+
 	let selected = json!({"model":original,"reasoning_effort":"high"});
 	let (status, created) = request(
 		&c.app,
