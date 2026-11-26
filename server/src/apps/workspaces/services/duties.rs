@@ -203,15 +203,30 @@ impl DutyScope for Adapter<'_> {
 			crate::apps::identity::services::catalog::entry(self.access, agent, "agent.execute")
 				.await?;
 		let caller = self.access.subjects.clone();
-		crate::apps::registry::repositories::bindings::check_task_model(
-			self.store,
-			false,
-			self.access,
-			&entry,
-			selection,
-			&caller,
-		)
-		.await?;
+		let address = self.access.catalog_address().await?;
+		self.access.subjects.push(aidash_domain::qualified_agent(
+			&address,
+			&agent.id,
+			&agent.version,
+		));
+		let admitted: crate::Result<()> = async {
+			use crate::apps::registry::repositories::bindings::{authorized, check_task_model};
+			check_task_model(self.store, false, self.access, &entry, selection, &caller).await?;
+			if selection.is_some() && entry.config["model"].is_null() {
+				authorized(
+					selection,
+					self.access,
+					&entry,
+					false,
+					self.store.provider_credentials.is_some(),
+				)
+				.await?;
+			}
+			Ok(())
+		}
+		.await;
+		self.access.subjects = caller;
+		admitted?;
 		use reinhardt::query::QueryStatementBuilder as _;
 		// A generated agent staffs only the Duties of the person whose chain
 		// generated it, while it is live (#1012 decision 49); anyone else

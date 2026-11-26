@@ -98,6 +98,7 @@ impl<'a> Executor<'a> {
 				Err(Error::AuthorityRefused(refusal))
 			}
 			// A swallowed denial could leave a note behind; never read it here.
+			Err(Error::TaskModel(reason)) => Ok(json!({"error": reason})),
 			Err(Error::NotFound(message)) => {
 				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call found nothing");
 				Ok(json!({"error":format!(
@@ -913,7 +914,9 @@ impl<'a> Executor<'a> {
 			summary_model.max_output_tokens = Some(request.max_output_tokens);
 			request
 		} else {
-			summary_model.reasoning_effort = Some(aidash_domain::model::ReasoningEffort::None);
+			summary_model.reasoning_effort = Some(
+				task_reasoning_effort(run).unwrap_or(aidash_domain::model::ReasoningEffort::None),
+			);
 			summary_model.max_output_tokens = Some(max_tokens);
 			loop {
 				if let Some(last) = plan.absorbed.last() {
@@ -5042,15 +5045,18 @@ pub(crate) fn cited_versions(record: &serde_json::Value) -> Vec<String> {
 		.unwrap_or_default()
 }
 
+fn task_reasoning_effort(run: &Run) -> Option<aidash_domain::model::ReasoningEffort> {
+	run.context
+		.binding_snapshot
+		.as_deref()?
+		.task_model
+		.as_ref()?
+		.reasoning_effort
+}
+
 fn run_model_config(run: &Run, config: serde_json::Value) -> Result<ModelConfig> {
 	let mut model = ModelConfig::from_stored(config)?;
-	if let Some(effort) = run
-		.context
-		.binding_snapshot
-		.as_ref()
-		.and_then(|snapshot| snapshot.task_model.as_ref())
-		.and_then(|selection| selection.reasoning_effort)
-	{
+	if let Some(effort) = task_reasoning_effort(run) {
 		model.reasoning_effort = Some(effort);
 	}
 	Ok(model)

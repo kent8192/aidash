@@ -17,6 +17,8 @@ pub struct CatalogSnapshot {
 pub struct CatalogModel {
 	pub id: String,
 	pub name: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub created: Option<i64>,
 	pub context_length: usize,
 	#[serde(default)]
 	pub top_provider: Option<TopProvider>,
@@ -221,7 +223,17 @@ pub fn picker_id(id: &str) -> bool {
 }
 
 /// Registered models use the same series and tier order on a receiving Node's picker.
-pub fn picker_order(id: &str) -> (usize, usize, std::cmp::Reverse<Vec<u32>>, &str) {
+pub fn picker_order(
+	id: &str,
+	created: Option<i64>,
+) -> (
+	usize,
+	std::cmp::Reverse<u32>,
+	usize,
+	std::cmp::Reverse<Vec<u32>>,
+	std::cmp::Reverse<i64>,
+	&str,
+) {
 	let (vendor, name) = id.split_once('/').unwrap_or(("", id));
 	let numbers = name
 		.split(|c: char| !c.is_ascii_digit())
@@ -233,14 +245,15 @@ pub fn picker_order(id: &str) -> (usize, usize, std::cmp::Reverse<Vec<u32>>, &st
 			(1, &["astra", "sol", "terra", "luna"])
 		}
 		"google" if name.starts_with("gemini-") => (2, &["neon", "carbon", "argon", "hydrogen"]),
-		"deepseek" => (3, &["v", "pro", "flash"]),
+		"deepseek" => (3, &["pro", "flash"]),
 		"moonshotai" if name.starts_with("kimi-k") && numbers.first().is_some_and(|n| *n >= 3) => {
 			(4, &[])
 		}
-		_ if matches!(name, "muse-wonder" | "muse-spark")
-			|| name
-				.strip_prefix("muse-spark-")
-				.is_some_and(|n| n.parse::<u32>().is_ok()) =>
+		"meta"
+			if name == "muse-wonder"
+				|| name.strip_prefix("muse-spark-").is_some_and(|version| {
+					version.split('.').all(|n| n.parse::<u32>().is_ok())
+				}) =>
 		{
 			(5, &["wonder", "spark"])
 		}
@@ -248,19 +261,22 @@ pub fn picker_order(id: &str) -> (usize, usize, std::cmp::Reverse<Vec<u32>>, &st
 	};
 	let tier = tiers
 		.iter()
-		.position(|tier| {
-			name.split('-').any(|s| {
-				s == *tier
-					|| (*tier == "v"
-						&& s.strip_prefix('v')
-							.is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit())))
-			})
-		})
+		.position(|tier| name.split('-').any(|s| s == *tier))
 		.unwrap_or(tiers.len());
 	(
 		series,
+		std::cmp::Reverse(if series < 5 {
+			numbers.first().copied().unwrap_or(0)
+		} else {
+			0
+		}),
 		tier,
 		std::cmp::Reverse(if series == 6 { vec![] } else { numbers }),
+		std::cmp::Reverse(if series == 6 {
+			0
+		} else {
+			created.unwrap_or_default()
+		}),
 		id,
 	)
 }

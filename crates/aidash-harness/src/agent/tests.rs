@@ -2003,6 +2003,24 @@ fn fixture() -> Fixture {
 }
 
 #[rstest]
+fn task_model_effort_reaches_the_provider_configuration(mut fixture: Fixture) {
+	use aidash_domain::model::ReasoningEffort;
+	let config = fixture.backend.entry("model").config;
+	let mut snapshot = DeferredSnapshot::default().snapshot();
+	snapshot.task_model = Some(aidash_domain::TaskModel {
+		model: reference("model").local(),
+		reasoning_effort: Some(ReasoningEffort::High),
+	});
+	fixture.run.context.binding_snapshot = Some(Box::new(snapshot));
+	assert_eq!(
+		run_model_config(&fixture.run, config)
+			.unwrap()
+			.reasoning_effort,
+		Some(ReasoningEffort::High)
+	);
+}
+
+#[rstest]
 #[tokio::test]
 async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 	let result = Executor::tool_delivery_result(

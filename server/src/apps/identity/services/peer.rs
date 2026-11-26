@@ -450,10 +450,12 @@ pub(crate) async fn task_models_for(
 		if entry.kind != "agent" {
 			return Err(crate::Error::Forbidden);
 		}
-		let entry = catalog::entry(&mut access, &agent, "agent.execute").await?;
-		if !entry.config["model"].is_null() {
+		let target = catalog::entry(&mut access, &agent, "agent.execute").await?;
+		crate::marketplace::check_pinned(&mut access, &target).await?;
+		if !target.config["model"].is_null() {
 			return Err(crate::Error::Forbidden);
 		}
+		let caller = access.subjects.clone();
 		access.subjects.push(aidash_domain::agent_subject(
 			&admitted.receiver.to_string(),
 			&agent.id,
@@ -473,29 +475,44 @@ pub(crate) async fn task_models_for(
 				id: entry.id.clone(),
 				version: entry.version.clone(),
 			};
-			match catalog::entry(&mut access, &model, "model.infer").await {
-				Ok(_) => (),
-				Err(crate::Error::Forbidden | crate::Error::AuthorityRefused(_)) => continue,
-				Err(e) => return Err(e),
-			}
 			let config = aidash_domain::model::ModelConfig::from_stored(entry.config)?;
-			match crate::apps::identity::repositories::provider_credentials::check_task_route(
-				&mut *access.tx,
-				&f.store,
-				&access.identity.tenant,
-				&access.identity.subject,
-				&config,
-				None,
-				true,
-			)
-			.await
-			{
-				Ok(()) => (),
-				Err(crate::Error::Invalid(_) | crate::Error::Plan(_)) => continue,
-				Err(e) => return Err(e),
-			}
 			if !aidash_domain::catalog::picker_id(&config.model_id) {
 				continue;
+			}
+			let selection = aidash_domain::TaskModel {
+				model: model.clone(),
+				reasoning_effort: None,
+			};
+			let usable: Result<()> = async {
+				use crate::apps::registry::repositories::bindings::{authorized, check_task_model};
+				check_task_model(
+					&f.store,
+					true,
+					&mut access,
+					&target,
+					Some(&selection),
+					&caller,
+				)
+				.await?;
+				authorized(
+					Some(&selection),
+					&mut access,
+					&target,
+					true,
+					f.store.provider_credentials.is_some(),
+				)
+				.await?;
+				Ok(())
+			}
+			.await;
+			match usable {
+				Ok(()) => (),
+				Err(
+					crate::Error::TaskModel(_)
+					| crate::Error::Forbidden
+					| crate::Error::AuthorityRefused(_),
+				) => continue,
+				Err(other) => return Err(other),
 			}
 			options.push(aidash_domain::federation::execution::TaskModelOption {
 				model,
@@ -508,6 +525,7 @@ pub(crate) async fn task_models_for(
 	}
 	.await;
 	let mut options = access.finish(result).await?;
+	let mut released = std::collections::BTreeMap::new();
 	if !options.is_empty()
 		&& let Ok(catalog) = crate::apps::execution::services::management::OPENROUTER_CATALOG
 			.get(
@@ -519,7 +537,10 @@ pub(crate) async fn task_models_for(
 		let prices: std::collections::BTreeMap<_, _> = catalog
 			.models
 			.into_iter()
-			.map(|m| (m.id, (m.pricing, m.architecture.output_modalities)))
+			.map(|m| {
+				released.insert(m.id.clone(), m.created);
+				(m.id, (m.pricing, m.architecture.output_modalities))
+			})
 			.collect();
 		options.retain_mut(|option| {
 			let Some((price, output)) = prices.get(&option.openrouter_model_id) else {
@@ -530,11 +551,15 @@ pub(crate) async fn task_models_for(
 		});
 	}
 	options.sort_by(|a, b| {
-		aidash_domain::catalog::picker_order(&a.openrouter_model_id)
-			.cmp(&aidash_domain::catalog::picker_order(
-				&b.openrouter_model_id,
-			))
-			.then_with(|| (&a.model.id, &a.model.version).cmp(&(&b.model.id, &b.model.version)))
+		aidash_domain::catalog::picker_order(
+			&a.openrouter_model_id,
+			released.get(&a.openrouter_model_id).copied().flatten(),
+		)
+		.cmp(&aidash_domain::catalog::picker_order(
+			&b.openrouter_model_id,
+			released.get(&b.openrouter_model_id).copied().flatten(),
+		))
+		.then_with(|| (&a.model.id, &a.model.version).cmp(&(&b.model.id, &b.model.version)))
 	});
 	Ok(options)
 }
