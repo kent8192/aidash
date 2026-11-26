@@ -48,12 +48,14 @@ impl Authority<'_> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(rename = "DriveNewFile")]
 pub enum NewFile {
 	New,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(rename = "DriveBaseVersion")]
 pub enum BaseVersion {
 	Version(i64),
 	New(NewFile),
@@ -107,6 +109,7 @@ pub struct Publish {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "DriveVersionRef")]
 pub struct VersionRef {
 	pub drive_id: Uuid,
 	pub version: i64,
@@ -122,6 +125,7 @@ pub struct FileLocation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "DriveFile")]
 pub struct File {
 	pub path: String,
 	pub digest: String,
@@ -131,6 +135,7 @@ pub struct File {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "DriveVersion")]
 pub struct Version {
 	pub version: i64,
 	pub author: String,

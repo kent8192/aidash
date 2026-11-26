@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "DriveBrowseQuery")]
 pub struct BrowseQuery {
 	pub prefix: Option<String>,
 	pub after: Option<String>,
@@ -30,6 +31,7 @@ pub struct BrowseQuery {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "DriveTrash")]
 pub struct Trash {
 	pub id: Uuid,
 	pub path: String,
@@ -39,6 +41,7 @@ pub struct Trash {
 }
 
 #[derive(Serialize, JsonSchema)]
+#[schemars(rename = "DriveBrowse")]
 pub struct Browse {
 	pub drive: db::Drive,
 	pub files: Vec<File>,
@@ -55,6 +58,7 @@ pub struct Browse {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "DriveDownload")]
 pub struct Download {
 	pub path: String,
 	pub version: Option<i64>,
@@ -62,6 +66,7 @@ pub struct Download {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "DriveMutation")]
 pub enum Mutation {
 	Close {
 		closed: bool,
@@ -85,6 +90,7 @@ pub enum Mutation {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(rename = "DriveMutationResult")]
 pub enum MutationResult {
 	Publication(db::Publication),
 	Updated {
@@ -602,6 +608,7 @@ pub async fn upload_start(
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "DrivePartQuery")]
 pub struct PartQuery {
 	pub number: i64,
 }

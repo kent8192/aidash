@@ -95,6 +95,7 @@ pub(super) async fn delete(
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "NodeDrive")]
 pub struct Drive {
 	pub id: Uuid,
 	pub node: String,
@@ -287,6 +288,7 @@ fn entries_query(drive: &Drive, tenant: &str) -> SelectStatement {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
+#[schemars(rename = "DrivePublication")]
 pub enum Publication {
 	Published { version: VersionRef },
 	Conflict { paths: Vec<String> },

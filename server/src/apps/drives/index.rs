@@ -102,6 +102,7 @@ async fn config_for_reference(
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "DriveIndexConfirmation")]
 pub struct Request {
 	pub id: Uuid,
 	pub version: i64,

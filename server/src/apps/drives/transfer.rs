@@ -16,6 +16,7 @@ pub(super) const PART_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "DriveUploadSpec")]
 pub struct UploadSpec {
 	pub path: String,
 	pub size: i64,
@@ -24,6 +25,7 @@ pub struct UploadSpec {
 }
 
 #[derive(Serialize, JsonSchema)]
+#[schemars(rename = "DriveUploadReceipt")]
 pub struct UploadReceipt {
 	pub id: Uuid,
 	pub part_bytes: usize,
