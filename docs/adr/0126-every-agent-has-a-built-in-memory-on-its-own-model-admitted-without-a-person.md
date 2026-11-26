@@ -31,12 +31,12 @@ A Run that a Remote Grant started recalls and writes memory through its Home (AD
 
 ## Amendment (2026-11-25): a person's deletion marks what was learned from it (#928)
 
-When a person deletes a fact, the facts learned from Task executions that recalled it are marked, not withdrawn. The mark spreads to facts learned from Task executions that recalled a marked fact. Recall returns a marked fact with the deleted fact's text and asks the model to rely on it only if it does not depend on that fact. Marked facts rank below unmarked ones. A new revision with new evidence clears the mark. Running Task executions that read the deleted or a newly marked fact are not stopped: they receive a platform notice before their next inference. The memory's own evictions, corrections and reconciliations still change nothing downstream.
+When a person deletes a fact, the facts learned from Task executions that recalled it are marked, not withdrawn. The mark spreads to facts learned from Task executions that recalled a marked fact. Recall returns a marked fact with the deleted fact's text and asks the model to rely on it only if it does not depend on that fact. Marked facts rank below unmarked ones. A new revision with new evidence clears the mark. Running Task executions that read the deleted or a newly marked fact are not stopped: they receive a platform notice before their next inference. The memory's own evictions, corrections and reconciliations cause no Deletion Mark.
 
 A live comparison chose this over withdrawing the facts. DeepSeek V4.1 Flash, with the learned facts recorded by hand and the Agent told to consult memory, gave these results:
 
 - **Nothing re-checkable.** Withdrawing every affected fact removed every poisoned answer (8 of 10 to 0) but also every true fact the same Task executions had learned (9 of 10 to 0). A mark without the deleted text did no better: the model distrusted all marked facts (0 of 8 kept). A mark quoting the deleted fact removed the poisoned answers (11 of 12 to 0) and kept the unrelated facts (11 of 12 kept, against 11 of 12 with no cascade).
-- **Source re-checkable.** No arm gave poisoned answers.
+- **Source re-checkable.** Poisoned answers were rare in every arm (at most 1 of 32, in the one-hop arm).
 
 ### Considered Options
 
