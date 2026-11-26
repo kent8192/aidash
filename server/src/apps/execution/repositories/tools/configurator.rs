@@ -4,6 +4,7 @@ use crate::{
 };
 use aidash_application::tools::configurator::route;
 use aidash_domain::{Run, tool::configurator::permits};
+use futures_util::StreamExt;
 use reinhardt::{InjectionContext, Request, http::Handler};
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
@@ -67,20 +68,50 @@ impl Api<'_> {
 		let context = Arc::new(InjectionContext::builder(services).build());
 		request.set_di_context(context.clone());
 		let router = crate::routes().into_server().with_di_context(context);
-		let response = self.caller.during(router.handle(request)).await?;
-		let value = if response.body.is_empty() {
-			Value::Null
-		} else {
-			serde_json::from_slice(&response.body)
-				.map_err(|_| Error::Invalid("this operation does not return JSON".into()))?
-		};
-		if !response.status.is_success() {
-			return Err(Error::Invalid(format!(
-				"{} {}: {}",
-				response.status, path, value
-			)));
-		}
-		Ok(value)
+		self.caller
+			.during(async {
+				let mut response = router.handle(request).await?;
+				let status = response.status;
+				if status == http::StatusCode::NO_CONTENT {
+					return Ok(Value::Null);
+				}
+				// Gateway wraps even buffered JSON as a stream. Do not subscribe to
+				// event streams or read a file download into a model tool result.
+				if response
+					.headers
+					.get(http::header::CONTENT_TYPE)
+					.and_then(|value| value.to_str().ok())
+					.and_then(|value| value.split(';').next())
+					.is_some_and(|mime| mime != "application/json" && !mime.ends_with("+json"))
+				{
+					return Err(Error::Invalid(format!("{status} {path}: expected JSON")));
+				}
+				const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
+				if response.body.len() > MAX_JSON_BYTES {
+					return Err(Error::Invalid("API response exceeds 8 MiB".into()));
+				}
+				let mut bytes = response.body.to_vec();
+				if let Some(mut stream) = response.take_stream_body() {
+					while let Some(chunk) = stream.next().await {
+						let chunk = chunk.map_err(|error| Error::External(error.to_string()))?;
+						if bytes.len().saturating_add(chunk.len()) > MAX_JSON_BYTES {
+							return Err(Error::Invalid("API response exceeds 8 MiB".into()));
+						}
+						bytes.extend_from_slice(&chunk);
+					}
+				}
+				let value = if bytes.is_empty() {
+					Value::Null
+				} else {
+					serde_json::from_slice(&bytes)
+						.map_err(|_| Error::Invalid(format!("{status} {path}: expected JSON")))?
+				};
+				if !status.is_success() {
+					return Err(Error::Invalid(format!("{status} {path}: {value}")));
+				}
+				Ok(value)
+			})
+			.await
 	}
 
 	async fn overview(&self, run: &Run) -> Result<Value> {

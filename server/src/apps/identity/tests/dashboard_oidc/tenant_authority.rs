@@ -2173,7 +2173,7 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 		)
 		.await
 		.unwrap();
-	assert_eq!(updated["revision"], 1);
+	assert_eq!(updated["revision"], 1, "Instructions response: {updated}");
 	assert!(
 		updated["updated_by"]
 			.as_str()
@@ -2188,7 +2188,10 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 		)
 		.await
 		.unwrap();
-	assert_eq!(protection["policy"]["forbid_keyless_endpoints"], true);
+	assert_eq!(
+		protection["policy"]["forbid_keyless_endpoints"], true,
+		"{protection}"
+	);
 	let (status, read) =
 		t.d.as_person(
 			&t.alice,
