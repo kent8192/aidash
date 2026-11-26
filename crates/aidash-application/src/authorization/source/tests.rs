@@ -27,6 +27,7 @@ fn inspection(kind: &str) -> Inspection {
 	let agent = entry("agent");
 	let metadata = entry(kind);
 	Inspection {
+		task_model: None,
 		binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 		node_id: "aidash://receiver".into(),
 		authority_digest: "sha256:pinned".into(),

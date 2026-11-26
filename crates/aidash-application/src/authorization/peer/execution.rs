@@ -245,6 +245,7 @@ async fn inspect_in(
 	}
 	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
+		task_model: input.task_model.clone(),
 		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,

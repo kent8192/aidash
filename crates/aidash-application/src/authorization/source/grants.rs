@@ -83,9 +83,10 @@ async fn fetch_inspection<R: GrantRepository>(
 		&input.agent,
 		&input.requirements,
 	)?;
-	if inspection.agent.config["model"].is_null()
-		&& (input.task_model.is_none()
-			|| inspection.binding_snapshot.task_model != input.task_model)
+	if inspection.task_model != input.task_model
+		|| (inspection.agent.config["model"].is_null()
+			&& (input.task_model.is_none()
+				|| inspection.binding_snapshot.task_model != input.task_model))
 	{
 		return Err(Error::Conflict(
 			"receiver did not pin the requested Task Model".into(),
@@ -283,7 +284,7 @@ pub async fn prepare<R: GrantRepository>(
   let metadata=serde_json::to_value(&inspection)?;
   // Keep the original task revision through persistence, after authorizing its read.
   let current=scope.locked_task(task_id).await?;
-  if current.revision!=task.revision || current.status!=TaskStatus::Open {return Err(Error::Conflict("task changed during grant preparation".into()));}
+  if current.revision!=task.revision || current.task_model!=task.task_model || current.status!=TaskStatus::Open {return Err(Error::Conflict("task changed during grant preparation".into()));}
   let inserted=scope.insert_grant(&input,&task,&metadata).await?;
   if inserted==1 {scope.persist_semantic(input.id,&semantic).await?;}
   let grant=scope.current_grant(input.id).await?;
@@ -512,9 +513,7 @@ async fn description_pass<R: GrantRepository>(
 			return Err(Error::Forbidden);
 		}
 		let binding = scope.binding(current.id).await?;
-		if inspection.binding_snapshot.task_model.is_some()
-			&& task.task_model != inspection.binding_snapshot.task_model
-		{
+		if task.task_model != inspection.task_model {
 			return Err(Error::Conflict(
 				"Task Model changed after the Remote Grant was prepared".into(),
 			));
@@ -545,7 +544,7 @@ async fn description_pass<R: GrantRepository>(
 				identity: scope.identity(),
 				input: inspection_input(
 					task.id,
-					inspection.binding_snapshot.task_model.clone(),
+					inspection.task_model.clone(),
 					&agent,
 					requirements,
 				),

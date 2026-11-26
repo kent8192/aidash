@@ -698,6 +698,7 @@ fn admission_description(
 			created_at: now,
 		},
 		inspection: Inspection {
+			task_model: None,
 			binding_snapshot: BindingSnapshot {
 				task_model: None,
 				schema_version: 1,

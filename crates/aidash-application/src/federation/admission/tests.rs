@@ -40,6 +40,7 @@ fn inspection() -> Inspection {
 		.definition
 		.clone();
 	Inspection {
+		task_model: None,
 		binding_snapshot: snapshot.clone(),
 		generation: None,
 		lineage: vec![],

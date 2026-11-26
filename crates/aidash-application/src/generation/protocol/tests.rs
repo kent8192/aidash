@@ -177,6 +177,7 @@ fn world() -> World {
 			created_at: now,
 		},
 		inspection: Inspection {
+			task_model: None,
 			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],

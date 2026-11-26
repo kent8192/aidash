@@ -174,6 +174,9 @@ pub struct Definition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inspection {
+	/// The Task selection attested by the receiver, also when the Agent fixes its own model.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub task_model: Option<crate::TaskModel>,
 	pub binding_snapshot: crate::registry::bindings::BindingSnapshot,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub generation: Option<serde_json::Value>,
@@ -301,7 +304,8 @@ impl Described {
 
 impl Inspection {
 	pub fn satisfies(&self, pinned: &Self) -> bool {
-		self.binding_snapshot == pinned.binding_snapshot
+		self.task_model == pinned.task_model
+			&& self.binding_snapshot == pinned.binding_snapshot
 			&& self.generation == pinned.generation
 			&& self.lineage == pinned.lineage
 			&& self.node_id == pinned.node_id

@@ -202,6 +202,7 @@ fn description() -> Description {
 	let mut agent = crate::test_support::agent("agent");
 	agent.config["model"] = json!({"id":"model","version":"1.0.0"});
 	let inspection = Inspection {
+		task_model: None,
 		node_id: "aidash://receiver".into(),
 		authority_digest: "authority".into(),
 		binding_snapshot: crate::test_support::resolve("aidash://receiver", &agent, true, vec![]),
