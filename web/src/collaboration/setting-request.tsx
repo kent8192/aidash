@@ -15,6 +15,7 @@ import {
 import { connect } from "../connections/connect";
 import { outcomeMessage } from "../connections/install";
 import { PlanConnectionsPage } from "../plan-connections";
+import { settingAuthorization } from "./setting-authorization";
 import { answerValue } from "./setting-validation";
 
 export function SettingRequest({
@@ -67,6 +68,7 @@ export function SettingRequest({
           tenant,
           resource: form.target.resource,
           scopes: form.target.scopes,
+          returnTo: settingAuthorization(request.id, false),
         });
         if (outcome === "connected" || outcome === "reconnected")
           return answer("done");
@@ -76,7 +78,7 @@ export function SettingRequest({
         const started = await providerAuthorizationStart(
           path,
           form.target.provider,
-          { return_to: window.location.pathname + window.location.search },
+          { return_to: settingAuthorization(request.id, true) },
         );
         window.location.assign(started.authorization_url);
       }

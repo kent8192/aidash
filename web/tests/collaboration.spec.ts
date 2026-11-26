@@ -4018,3 +4018,35 @@ test("Setting Request uses Rust regex and can be deferred after a validation err
     )?.body,
   ).toEqual({ action: "decline", language: "en" });
 });
+
+test("Setting Request completes on the matching provider authorization return", async ({
+  page,
+}) => {
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: {
+      kind: "oauth",
+      label: "OpenRouter",
+      target: { type: "provider", provider: "openrouter" },
+    },
+  });
+  await page.route("**/provider-authorizations/openrouter", (route) => {
+    const back = new URL(
+      route.request().postDataJSON().return_to,
+      route.request().url(),
+    );
+    back.searchParams.set("provider_authorization", "connected");
+    return route.fulfill({ json: { authorization_url: back.href } });
+  });
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "OpenRouter" }).click();
+  await page.getByRole("button", { name: "Connect to OpenRouter" }).click();
+  await expect
+    .poll(
+      () =>
+        submissions.find(
+          (item) => item.path === "/api/setting-requests/question-one/answer",
+        )?.body,
+    )
+    .toEqual({ action: "done" });
+});
