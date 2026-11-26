@@ -2225,5 +2225,23 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 		assert_eq!(status, 200, "switch to {mode}: {changed}");
 		assert_eq!(changed["mode"], mode);
 	}
+	let catalog = tools["aidash_api_catalog"]
+		.invoke(
+			&context,
+			json!({"query":"POST registrations/{id}/approve"}),
+			"registration-schema",
+		)
+		.await
+		.unwrap();
+	let operations = catalog["operations"].as_array().unwrap();
+	assert_eq!(operations.len(), 1, "{catalog}");
+	assert_eq!(
+		operations[0]["path"],
+		"/api/tenants/{tenant}/registrations/{id}/approve"
+	);
+	assert_eq!(
+		operations[0]["request"]["properties"]["subject"]["type"],
+		"string"
+	);
 	t.finish().await;
 }
