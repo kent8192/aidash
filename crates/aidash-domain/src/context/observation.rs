@@ -31,6 +31,9 @@ pub fn project(snapshot: &ThreadSnapshot, offset: usize, limit: usize) -> Value 
 			"dependencies":t.dependencies.iter().take(MAX_LIMIT).collect::<Vec<_>>(),
 			"dependency_count":t.dependencies.len()
 		})).collect::<Vec<_>>(),
+		"events":snapshot.events.iter().rev().skip(offset).take(limit).map(|e| json!({
+			"id":e.id,"sequence":e.sequence,"kind":preview(&e.kind,128),"created_at":e.created_at
+		})).collect::<Vec<_>>(),
 		"messages":snapshot.messages.iter().rev().skip(offset).take(limit).map(|m| json!({
 			"id":m.id,"sender":preview(&m.sender,256),"content_preview":preview(&m.content,512),"created_at":m.created_at
 		})).collect::<Vec<_>>(),

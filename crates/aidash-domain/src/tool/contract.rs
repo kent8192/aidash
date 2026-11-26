@@ -601,6 +601,10 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 				resource("task.delegate", "task", ArgumentUuid("task_id")),
 			];
 		}
+		"deliverable_note" => {
+			auth.requirements
+				.push(resource("task.complete", "task", Task));
+		}
 		"thread_message" => {
 			auth.requirements
 				.push(resource("message.create", "thread", Thread));

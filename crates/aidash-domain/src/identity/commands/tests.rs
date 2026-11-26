@@ -5,7 +5,7 @@ use rstest::rstest;
 #[case::transition("transition")]
 #[case::terminal("run_message_terminal_transition")]
 #[case::complete("run_message_complete")]
-#[case::artifact("artifact")]
+#[case::verdict("goal_verdict")]
 #[case::create("create_task")]
 #[case::delegate("delegate")]
 #[case::message("message")]

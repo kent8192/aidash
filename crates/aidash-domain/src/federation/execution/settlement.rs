@@ -241,12 +241,9 @@ mod tests {
 		recovery.early_abandoned_tasks = vec![task(5), task(6)];
 		raw.pending = crate::run_state::encode(&state, &recovery).unwrap();
 		let text = "Done.\n\nNobody was given these subtasks, so they were abandoned during this Run: \"Task 5\", \"Task 6\".";
-		assert!(allows(
-			&raw,
-			&[],
-			"run_message_complete",
-			&completion(text, Some(vec![Uuid::from_u128(6)]))
-		));
+		let prepared = completion(text, Some(vec![Uuid::from_u128(6)]));
+		raw.context["final_completion"] = prepared["completion"].clone();
+		assert!(allows(&raw, &[], "run_message_complete", &prepared));
 		assert!(!allows(
 			&raw,
 			&[],
