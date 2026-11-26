@@ -1,4 +1,3 @@
-import { EmbeddingModelFields } from "./embedding-model-fields";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -31,7 +30,7 @@ import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { UnconfirmedNotice } from "./unconfirmed-notice";
 import type {
   SemanticEntry,
-  SemanticIndexSpec,
+  SemanticThreadIndexOptions,
   SemanticSearchResult,
   SemanticSource,
 } from "./generated/models";
@@ -253,7 +252,11 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
     refetchInterval: 3000,
   });
   const current = !index.isError ? index.data : null;
-  const spec = current?.spec as SemanticIndexSpec | undefined;
+  const spec = current?.spec as
+    | (SemanticThreadIndexOptions & {
+        embedding: { model: string; model_version: string };
+      })
+    | undefined;
   const mutate = async (action: () => Promise<unknown>) => {
     if (busy) return;
     const submittedDialogGeneration = dialogGeneration.current;
@@ -272,7 +275,7 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
       setBusy(false);
     }
   };
-  const configure = (draft: SemanticIndexSpec) => {
+  const configure = (draft: SemanticThreadIndexOptions) => {
     const submittedDialogGeneration = dialogGeneration.current;
     const request = { expected_revision: current?.revision ?? 0, spec: draft };
     return mutate(async () => {
@@ -583,14 +586,7 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
       )}
       {configuring && (
         <Modal title={t("semanticConfigure")} close={closeDialogs}>
-          <IndexForm
-            tenant={
-              data.access.kind === "subject" ? data.access.tenant : undefined
-            }
-            previous={spec}
-            busy={busy}
-            submit={configure}
-          />
+          <IndexForm previous={spec} busy={busy} submit={configure} />
           {dialogAlert}
         </Modal>
       )}
@@ -680,21 +676,12 @@ function IndexForm({
   previous,
   busy,
   submit,
-  tenant,
 }: {
-  tenant?: string;
-  previous?: SemanticIndexSpec;
+  previous?: SemanticThreadIndexOptions;
   busy: boolean;
-  submit: (spec: SemanticIndexSpec) => Promise<void>;
+  submit: (spec: SemanticThreadIndexOptions) => Promise<void>;
 }) {
   const { t, locale } = useI18n();
-  const [acceptImage, setAcceptImage] = useState(
-    previous
-      ? ((previous.embedding as { inputs?: string[] }).inputs?.includes(
-          "image",
-        ) ?? false)
-      : true,
-  );
   return (
     <form
       className="grid gap-3 sm:grid-cols-2"
@@ -702,19 +689,6 @@ function IndexForm({
         e.preventDefault();
         const values = new FormData(e.currentTarget);
         void submit({
-          embedding: {
-            provider: String(values.get("embeddingProvider")),
-            endpoint: String(values.get("embedding")),
-            ...(String(values.get("embeddingProvider")) === "openrouter"
-              ? { provider_credential: "openrouter" }
-              : {}),
-            model: String(values.get("model")),
-            model_version: String(values.get("version")),
-            dimensions: Number(values.get("dimensions")),
-            inputs: values.has("embedding_image")
-              ? ["text", "image"]
-              : ["text"],
-          },
           vector: {
             provider: "postgres",
             endpoint: "local",
@@ -734,52 +708,6 @@ function IndexForm({
       }}
     >
       <Hint className="sm:col-span-2">{t("semanticConfigHelp")}</Hint>
-      <Field label={t("provider")}>
-        <NativeSelect
-          name="embeddingProvider"
-          defaultValue={previous?.embedding.provider ?? "openrouter"}
-          onChange={(event) => {
-            if (event.target.value === "openai") setAcceptImage(false);
-          }}
-        >
-          <option value="openrouter">OpenRouter</option>
-          <option value="openai">{t("openaiCompatible")}</option>
-        </NativeSelect>
-      </Field>
-      <Field label={t("semanticEmbeddingEndpoint")}>
-        <Input
-          name="embedding"
-          type="url"
-          required
-          defaultValue={
-            previous?.embedding.endpoint ?? "https://openrouter.ai/api/v1"
-          }
-        />
-      </Field>
-      <EmbeddingModelFields
-        tenant={tenant}
-        modelLabel={t("semanticModel")}
-        modelName="model"
-        dimensionsName="dimensions"
-        dimensionsLabel={t("semanticDimensions")}
-        previous={
-          previous
-            ? {
-                model: previous.embedding.model,
-                dimensions: previous.embedding.dimensions,
-              }
-            : undefined
-        }
-        versionField={
-          <Field label={t("semanticModelVersion")}>
-            <Input
-              name="version"
-              required
-              defaultValue={previous?.embedding.model_version ?? "1.0.0"}
-            />
-          </Field>
-        }
-      />
       <Field label={locale === "ja-JP" ? "画像の最大件数" : "Maximum images"}>
         <Input
           name="max_images"
@@ -790,7 +718,7 @@ function IndexForm({
           defaultValue={
             (
               previous as
-                | (SemanticIndexSpec & { max_images?: number })
+                | (SemanticThreadIndexOptions & { max_images?: number })
                 | undefined
             )?.max_images ?? 256
           }
@@ -812,20 +740,13 @@ function IndexForm({
           defaultValue={
             (
               previous as
-                | (SemanticIndexSpec & { max_image_bytes?: number })
+                | (SemanticThreadIndexOptions & { max_image_bytes?: number })
                 | undefined
             )?.max_image_bytes ?? 8388608
           }
         />
       </Field>
       <div className="grid gap-2 sm:col-span-2">
-        <Check
-          name="embedding_image"
-          checked={acceptImage}
-          onChange={(event) => setAcceptImage(event.target.checked)}
-        >
-          {locale === "ja-JP" ? "画像入力に対応" : "Accept image input"}
-        </Check>
         <Check name="enabled" defaultChecked={previous?.enabled ?? true}>
           {t("semanticEnabled")}
         </Check>

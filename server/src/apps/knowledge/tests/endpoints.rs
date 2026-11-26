@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn index_spec() -> Value {
-	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
+	json!({"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
 }
 
 #[rstest]
@@ -425,34 +425,13 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		("/enabled", json!("true"), 422),
 		("/embedding", json!({}), 422),
 		("/vector", json!({}), 422),
-		("/embedding/provider", json!("unsupported"), 400),
 		("/vector/provider", json!("pgvector"), 400),
-		(
-			"/embedding/endpoint",
-			json!("http://user:password@localhost/v1"),
-			400,
-		),
-		(
-			"/embedding/endpoint",
-			json!("http://localhost/v1?token=x"),
-			400,
-		),
 		("/vector/endpoint", json!("file:///tmp/vectors"), 400),
 		(
 			"/vector/endpoint",
 			json!("http://999.999.999.999/vectors"),
 			400,
 		),
-		// ADR 0006: embeddings cannot name an environment key at all, so the
-		// field is rejected while decoding, before validation.
-		(
-			"/embedding/credential_env",
-			json!("AIDASH_SECRET_EMBEDDING"),
-			422,
-		),
-		("/embedding/model", json!(" \t\u{2003}"), 400),
-		("/embedding/model", json!("m".repeat(257)), 400),
-		("/embedding/model_version", json!("v".repeat(129)), 400),
 	] {
 		let mut wrong = index_spec.clone();
 		let (parent, key) = field.rsplit_once('/').unwrap();
@@ -472,7 +451,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			invalid.push((wrong, 400));
 		}
 	}
-	for section in ["embedding", "vector"] {
+	for section in ["vector"] {
 		for field in index_spec[section]
 			.as_object()
 			.unwrap()
@@ -491,11 +470,6 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			wrong[section][field] = value;
 			invalid.push((wrong, 422));
 		}
-	}
-	for dimensions in [0, 8193] {
-		let mut wrong = index_spec.clone();
-		wrong["embedding"]["dimensions"] = json!(dimensions);
-		invalid.push((wrong, 400));
 	}
 	for (spec, status) in invalid {
 		let response = member
@@ -533,23 +507,6 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			assert_eq!(saved["revision"], revision);
 			assert_eq!(saved["spec"][field], value);
 		}
-	}
-	for dimensions in [1, 8192] {
-		let mut boundary = index_spec.clone();
-		boundary["embedding"]["dimensions"] = json!(dimensions);
-		let saved = assert_json(
-			member
-				.post(
-					&path,
-					&json!({"expected_revision":revision,"spec":boundary}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
-		revision += 1;
-		assert_eq!(saved["revision"], revision);
 	}
 }
 
@@ -665,7 +622,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	);
 	let original = assert_json(member.post(&entries_path,
 		&json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
-	index_spec["embedding"]["model_version"] = json!("2");
+	index_spec["max_results"] = json!(2);
 	let second = assert_json(
 		member
 			.post(
@@ -702,23 +659,36 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let store = &app.runtime.store;
 	let first_collection = first["collection"].as_str().unwrap();
 	let second_collection = second["collection"].as_str().unwrap();
-	aidash_server::semantic::backend::ensure_collection(store, &vector, first_collection, 8)
-		.await
-		.unwrap();
-	aidash_server::semantic::backend::ensure_collection(store, &vector, second_collection, 8)
-		.await
-		.unwrap();
+	let dimensions = first["spec"]["embedding"]["dimensions"].as_u64().unwrap() as usize;
+	aidash_server::semantic::backend::ensure_collection(
+		store,
+		&vector,
+		first_collection,
+		dimensions,
+	)
+	.await
+	.unwrap();
+	aidash_server::semantic::backend::ensure_collection(
+		store,
+		&vector,
+		second_collection,
+		dimensions,
+	)
+	.await
+	.unwrap();
 	let thread_tenant: String = sqlx::query_scalar("SELECT tenant FROM threads WHERE id = $1")
 		.bind(thread["id"].as_str().unwrap().parse::<Uuid>().unwrap())
 		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap();
+	let mut point = vec![0.; dimensions];
+	point[0] = 1.;
 	aidash_server::semantic::backend::upsert(
 		store,
 		&vector,
 		second_collection,
 		point_id,
-		&[1., 0., 0., 0., 0., 0., 0., 0.],
+		&point,
 		json!({"thread_id":thread["id"],"tenant":thread_tenant}),
 	)
 	.await
@@ -1087,7 +1057,7 @@ async fn members_configure_their_index_under_semantic_index_manage(
 #[case::loopback("http://127.0.0.1:9/v1")]
 #[case::metadata("http://169.254.169.254/v1")]
 #[tokio::test]
-async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_configured(
+async fn index_configuration_refuses_client_embedding_overrides(
 	#[future] endpoint: EndpointFixture,
 	mut index_spec: Value,
 	#[case] address: &str,
@@ -1095,18 +1065,21 @@ async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_co
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let thread = thread(&member, "Private embeddings").await;
-	index_spec["embedding"]["endpoint"] = json!(address);
-	let body = json!({"expected_revision":0,"spec":index_spec});
+	let options = json!({"expected_revision":0,"spec":index_spec});
+	index_spec["embedding"] = json!({"provider":"openai","endpoint":address,"model":"injected","model_version":"1","dimensions":8});
+	let override_request = json!({"expected_revision":0,"spec":index_spec});
 	let path = format!(
 		"/api/threads/{}/semantic/index",
 		thread["id"].as_str().unwrap()
 	);
-	assert_json(member.post(&path, &body, "json").await.unwrap(), 400);
-	// A Deployment Administrator holds no Tenant settings authority (#484), so
-	// the refusal precedes the address check.
+	assert_json_rejection(
+		member.post(&path, &override_request, "json").await.unwrap(),
+		422,
+	);
+	// A Deployment Administrator holds no Tenant settings authority (#484).
 	assert_json(
 		app.deployment_administrator
-			.post(&path, &body, "json")
+			.post(&path, &options, "json")
 			.await
 			.unwrap(),
 		403,

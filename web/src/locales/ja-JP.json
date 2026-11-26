@@ -332,7 +332,7 @@
   "semanticHistory": "索引処理の履歴",
   "semanticDelete": "メモリの元データを削除",
   "semanticDeleteHelp": "検索対象から直ちに除外し、永続的な削除処理でベクトルを除去します。参照済みの実行内容も、この元データへのアクセスを失います。",
-  "semanticConfigHelp": "設定変更時は新しい版の索引を構築します。閲覧可能な元データの処理が完了するまで検索は待機します。OpenRouter の埋め込みは Tenant の OpenRouter 接続を使用し、OpenAI 互換の接続先にはキーを送りません。",
+  "semanticConfigHelp": "設定変更時は新しい版の索引を構築します。閲覧可能な元データの処理が完了するまで検索は待機します。埋め込みモデルは Tenant の設定で選択します。",
   "semanticEmbeddingEndpoint": "埋め込みAPIのURL",
   "semanticModel": "埋め込みモデル",
   "semanticModelVersion": "モデルの版",

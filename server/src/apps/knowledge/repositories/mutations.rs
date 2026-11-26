@@ -158,6 +158,17 @@ impl SemanticConfigurationSession for Configuration {
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}
+	async fn lock_active_embedding(
+		&mut self,
+		tenant: &str,
+	) -> Result<aidash_domain::semantic::EmbeddingConfig> {
+		crate::apps::identity::repositories::embedding_settings::lock_active_config(
+			self.tx()?,
+			tenant,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn index(&mut self, thread: Uuid) -> Result<Option<Index>> {
 		Ok(SemanticIndexe::locked(self.tx()?, thread, true)
 			.await?

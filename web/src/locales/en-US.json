@@ -332,7 +332,7 @@
   "semanticHistory": "Indexing history",
   "semanticDelete": "Delete semantic source",
   "semanticDeleteHelp": "Search stops returning this source immediately. Its vector is removed by durable cleanup. Runs that read it lose access to that source.",
-  "semanticConfigHelp": "Changing configuration rebuilds the index in a new generation. Searches wait until authorized sources are ready. OpenRouter embeddings use the tenant's OpenRouter connection; OpenAI-compatible endpoints are called without a key.",
+  "semanticConfigHelp": "Changing configuration rebuilds the index in a new generation. Searches wait until authorized sources are ready. The Tenant embedding setting selects the model.",
   "semanticEmbeddingEndpoint": "Embedding API endpoint",
   "semanticModel": "Embedding model",
   "semanticModelVersion": "Model version",

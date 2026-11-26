@@ -35,6 +35,8 @@ export function TenantEmbeddingSettings({ tenant }: { tenant: string }) {
   const query = useQuery({
     queryKey: key,
     queryFn: () => apiFetch<SettingsResponse>(path),
+    refetchInterval: (state) =>
+      state.state.data?.settings.pending ? 5000 : false,
     retry: false,
   });
   const change = useMutation({
@@ -61,7 +63,8 @@ export function TenantEmbeddingSettings({ tenant }: { tenant: string }) {
   const selected = data?.embeddings.find(
     (ref) => versionKey(ref) === selection,
   );
-  const estimate = change.data?.estimate;
+  const preview = change.data?.estimate ? change.data : undefined;
+  const estimate = preview?.estimate;
   return (
     <Panel title={ja ? "埋め込みモデル" : "Embedding model"}>
       {query.isPending && <Loading />}
@@ -116,8 +119,9 @@ export function TenantEmbeddingSettings({ tenant }: { tenant: string }) {
                 if (selected)
                   change.mutate({
                     embedding: selected,
-                    revision: data.settings.revision,
-                    confirm: Boolean(estimate),
+                    revision:
+                      preview?.settings.revision ?? data.settings.revision,
+                    confirm: Boolean(preview),
                   });
               }}
             >

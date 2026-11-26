@@ -1,4 +1,5 @@
 //! HTTP endpoints backed by native dependency injection.
+use crate::apps::knowledge::serializers::contracts::ConfigureThreadIndex;
 use crate::apps::knowledge::services::entries::SemanticEntries;
 use crate::apps::knowledge::*;
 use crate::authorization::identity::Actor;
@@ -19,7 +20,7 @@ pub async fn configure(
 	#[inject] service: Depends<SemanticEntries>,
 	#[inject] actor: Actor,
 	Path(thread): Path<Uuid>,
-	Json(input): Json<ConfigureIndex>,
+	Json(input): Json<ConfigureThreadIndex>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.configure(actor, thread, input).await)
 }

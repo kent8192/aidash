@@ -158,7 +158,7 @@ mod controlled_context_composition {
 			.permit_origin_of(&embedding_endpoint)
 			.unwrap();
 		let embedding_server = embeddings;
-		configure(&app, &token, thread, &spec(&embedding_endpoint), 0).await;
+		configure(&f, &token, thread, &spec(&embedding_endpoint), 0).await;
 		assert_eq!(
 			common::post(
 				&app,
@@ -1084,28 +1084,43 @@ fn spec(endpoint: &str) -> IndexSpec {
 		max_images: 256,
 	}
 }
+fn configure_request(spec: &IndexSpec, expected_revision: i64) -> Value {
+	let mut options = serde_json::to_value(spec).unwrap();
+	options.as_object_mut().unwrap().remove("embedding");
+	json!({"expected_revision": expected_revision, "spec": options})
+}
 async fn configure(
-	app: &common::TestApplication,
+	f: &aidash_server::federation::Federation,
 	token: &str,
 	thread: Uuid,
 	spec: &IndexSpec,
 	revision: i64,
 ) -> Value {
-	let (status, index) = common::post(
-		app,
-		token,
-		&format!("/api/threads/{thread}/semantic/index"),
-		serde_json::to_value(ConfigureIndex {
-			expected_revision: revision,
-			acknowledge_memory_embeddings: false,
-			spec: spec.clone(),
-		})
+	// The provider-under-test uses a deliberately isolated configuration.
+	// HTTP index settings always derive their model from the Tenant.
+	let actor = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.authenticate(token)
+	.await
+	.unwrap();
+	serde_json::to_value(
+		semantic::service::configure(
+			&f.store,
+			&actor,
+			thread,
+			ConfigureIndex {
+				expected_revision: revision,
+				acknowledge_memory_embeddings: false,
+				spec: spec.clone(),
+			},
+		)
+		.await
 		.unwrap(),
 	)
-	.await;
-	assert_eq!(status, 200, "{index}");
-	index
+	.unwrap()
 }
+
 async fn put(
 	app: &common::TestApplication,
 	token: &str,
@@ -1174,9 +1189,9 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut config = spec(&endpoint);
 	config.embedding.provider = provider.into();
-	let first = configure(&app, &token, thread, &config, 0).await;
+	let first = configure(&f, &token, thread, &config, 0).await;
 	assert_eq!(
-		configure(&app, &token, thread, &config, 0).await["revision"],
+		configure(&f, &token, thread, &config, 0).await["revision"],
 		1
 	);
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
@@ -1221,7 +1236,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 		2
 	);
 	config.embedding.model_version = "2".into();
-	let second = configure(&app, &token, thread, &config, 1).await;
+	let second = configure(&f, &token, thread, &config, 1).await;
 	assert_ne!(first["collection"], second["collection"]);
 	assert_eq!(search(&app, &token, thread).await.0, 409);
 	// Fresh pools reconstruct authority and jobs entirely from durable state.
@@ -1341,7 +1356,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
-	configure(&app, &token, thread, &spec(&endpoint), 0).await;
+	configure(&f, &token, thread, &spec(&endpoint), 0).await;
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"revoke-semantic","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
@@ -1443,7 +1458,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut config = spec(&endpoint);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
-	configure(&app, &token, thread, &config, 0).await;
+	configure(&f, &token, thread, &config, 0).await;
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	let entries = request(
@@ -1459,7 +1474,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	assert_eq!(entries.1["entries"][0]["attempts"], 1);
 	assert_eq!(search(&app, &token, thread).await.0, 409);
 	config.embedding.dimensions = 3;
-	configure(&app, &token, thread, &config, 1).await;
+	configure(&f, &token, thread, &config, 1).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, thread).await.0, 200);
 	let reindex_path = format!(
@@ -1522,7 +1537,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let endpoint = server.url.clone();
 	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
-	configure(&app, &token, thread, &spec(&embedding_endpoint), 0).await;
+	configure(&f, &token, thread, &spec(&embedding_endpoint), 0).await;
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(
@@ -1669,7 +1684,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
-	configure(&app, &token, thread, &spec(&endpoint), 0).await;
+	configure(&f, &token, thread, &spec(&endpoint), 0).await;
 	assert_eq!(
 		common::post(
 			&app,
@@ -1830,12 +1845,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			&app,
 			&token,
 			&format!("/api/threads/{}/semantic/index", other.id),
-			serde_json::to_value(ConfigureIndex {
-				expected_revision: 0,
-				acknowledge_memory_embeddings: false,
-				spec: spec(&endpoint),
-			})
-			.unwrap()
+			configure_request(&spec(&endpoint), 0)
 		)
 		.await
 		.0,
@@ -1867,7 +1877,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let config = spec(&embedding);
-	let index = configure(&app, &token, thread, &config, 0).await;
+	let index = configure(&f, &token, thread, &config, 0).await;
 	let entry = put(
 		&app,
 		&token,
@@ -2113,7 +2123,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let config = spec(&endpoint);
-	configure(&app, &token, thread, &config, 0).await;
+	configure(&f, &token, thread, &config, 0).await;
 	let entry = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	let browser = common::BrowserAdministrator::new(&f).await;
 	common::tenant_root(&f, "other").await;
@@ -2126,12 +2136,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	let entries = format!("/api/threads/{thread}/semantic/entries");
 	let mut reconfigured = config.clone();
 	reconfigured.max_results = 1;
-	let reconfigure = serde_json::to_value(ConfigureIndex {
-		expected_revision: 1,
-		acknowledge_memory_embeddings: false,
-		spec: reconfigured,
-	})
-	.unwrap();
+	let reconfigure = configure_request(&reconfigured, 1);
 	let overwrite = json!({"key":"cars","expected_revision":1,"source":{"kind":"memory","text":"overwritten"},"metadata":{}});
 	let routes = [
 		("GET", index.clone(), Value::Null),

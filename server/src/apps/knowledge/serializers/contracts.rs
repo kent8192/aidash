@@ -45,6 +45,51 @@ pub struct ConfigureIndex {
 	pub spec: IndexSpec,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "SemanticConfigureIndex")]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureThreadIndex {
+	pub expected_revision: i64,
+	/// Confirms deleting this Thread's memory embeddings when disabling its index.
+	#[serde(default)]
+	pub acknowledge_memory_embeddings: bool,
+	pub spec: ThreadIndexOptions,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "SemanticThreadIndexOptions")]
+#[serde(deny_unknown_fields)]
+pub struct ThreadIndexOptions {
+	pub vector: VectorConfig,
+	pub enabled: bool,
+	pub auto_context: bool,
+	pub max_sources: usize,
+	pub max_results: usize,
+	pub max_result_tokens: usize,
+	pub max_input_bytes: usize,
+	#[serde(default = "aidash_domain::semantic::indexing::default_max_image_bytes")]
+	pub max_image_bytes: usize,
+	#[serde(default = "aidash_domain::semantic::indexing::default_max_images")]
+	pub max_images: usize,
+}
+
+impl From<ThreadIndexOptions> for aidash_domain::semantic::indexing::IndexingSpec<()> {
+	fn from(options: ThreadIndexOptions) -> Self {
+		Self {
+			embedding: (),
+			vector: options.vector,
+			enabled: options.enabled,
+			auto_context: options.auto_context,
+			max_sources: options.max_sources,
+			max_results: options.max_results,
+			max_result_tokens: options.max_result_tokens,
+			max_input_bytes: options.max_input_bytes,
+			max_image_bytes: options.max_image_bytes,
+			max_images: options.max_images,
+		}
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticIndex")]
 pub struct Index {

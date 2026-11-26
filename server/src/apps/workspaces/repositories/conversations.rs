@@ -1,14 +1,10 @@
 //! Conversation writes retain the same access transaction and audit context.
+use crate::apps::identity::repositories::embedding_settings::lock_active_config;
 use crate::apps::workspaces::models::Conversation as ConversationRecord;
-use crate::apps::{
-	identity::repositories::embedding_settings::{EmbeddingSettings, lock_tenant},
-	registry::models::Definition,
-};
 use crate::{
 	authorization::{access::Access, catalog, execution, policy::Resource},
 	federation::Federation,
 };
-use aidash_application::embedding::tenant_embedding;
 use aidash_application::{
 	Result,
 	ports::threads::{ConversationScope, MemoryEmbedding},
@@ -237,34 +233,13 @@ impl ConversationScope for NativeConversation<'_> {
 	}
 	async fn memory_embedding(&mut self, _agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
 		let tenant = self.access.identity.tenant.clone();
-		lock_tenant(
-			&mut **self.access.tx,
-			&tenant,
-			reinhardt::query::LockType::KeyShare,
-		)
-		.await?;
-		let reference = {
-			let settings = EmbeddingSettings(tokio::sync::Mutex::new(&mut **self.access.tx));
-			tenant_embedding(&settings, &tenant).await?
-		};
-		let entry = Definition::read_of(
-			&mut **self.access.tx,
-			&tenant,
-			&reference.id,
-			&reference.version,
-		)
-		.await?;
-		if entry.kind != "embedding" {
-			return Err(aidash_application::Error::Invalid(
-				"invalid Tenant embedding".into(),
-			));
-		}
+		let embedding = lock_active_config(&mut **self.access.tx, &tenant).await?;
 		Ok(Some(MemoryEmbedding {
 			provider: aidash_domain::registry::bindings::memory_defaults::reference(
 				self.federation.store.deployment.as_str(),
 			)
 			.local(),
-			embedding: serde_json::from_value(entry.config)?,
+			embedding,
 		}))
 	}
 

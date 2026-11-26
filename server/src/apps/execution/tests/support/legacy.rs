@@ -765,7 +765,7 @@ async fn bootstrap_with_policy(
 	f: &Federation,
 	app: &TestApplication,
 	endpoint: &str,
-	semantic: bool,
+	_semantic: bool,
 	files: bool,
 	read_only_tool: bool,
 	policy: Value,
@@ -815,15 +815,6 @@ async fn bootstrap_with_policy(
 			.await
 			.unwrap();
 	};
-	if semantic {
-		let memory = json!({"id":"semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Semantic Memory"},"description":{"en":"Explicit retrieval opt-in"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}});
-		f.registry
-			.register(&tenant, serde_json::from_value(memory).unwrap())
-			.await
-			.unwrap();
-		approve("semantic-memory").await;
-		agent_bindings.push(json!({"kind":"memory","target":{"registry_deployment":f.config.deployment,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
-	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
 	f.store.keyless.permit_origin_of(endpoint).unwrap();

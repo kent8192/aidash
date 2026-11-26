@@ -20,15 +20,78 @@ pub async fn configure(
 	spec: IndexingSpec,
 	acknowledged: bool,
 ) -> Result<Index> {
+	configure_index(
+		repository,
+		thread,
+		revision,
+		Configuration::Explicit(spec),
+		acknowledged,
+	)
+	.await
+}
+
+pub async fn configure_for_tenant(
+	repository: &dyn SemanticConfigurationRepository,
+	thread: Uuid,
+	revision: i64,
+	options: IndexingSpec<()>,
+	acknowledged: bool,
+) -> Result<Index> {
+	configure_index(
+		repository,
+		thread,
+		revision,
+		Configuration::Tenant(options),
+		acknowledged,
+	)
+	.await
+}
+
+enum Configuration {
+	Explicit(IndexingSpec),
+	Tenant(IndexingSpec<()>),
+}
+
+async fn configure_index(
+	repository: &dyn SemanticConfigurationRepository,
+	thread: Uuid,
+	revision: i64,
+	configuration: Configuration,
+	acknowledged: bool,
+) -> Result<Index> {
 	mutations::validate_revision(revision, "invalid index revision")?;
 	let mut scope = repository.begin().await?;
 	// Authority comes first: a caller without it learns neither whether the
 	// Thread exists nor which private embedding origins are allowed.
 	scope.authorize(thread).await?;
-	repository.validate(&spec)?;
-	scope.lock_thread(thread).await?;
-	let tenant = scope.tenant(thread).await?;
-	let old = scope.index(thread).await?;
+	let (tenant, old, spec) = match configuration {
+		Configuration::Tenant(options) => {
+			let tenant = scope.tenant(thread).await?;
+			let active = scope.lock_active_embedding(&tenant).await?;
+			scope.lock_thread(thread).await?;
+			let old = scope.index(thread).await?;
+			let embedding = match &old {
+				// Preserve an installed generation until a Tenant switch publishes
+				// its replacement, including indexes created before this setting.
+				Some(index) => {
+					serde_json::from_value::<IndexingSpec>(index.spec.clone())?.embedding
+				}
+				None => active,
+			};
+			let spec = options.with_embedding(embedding);
+			repository.validate(&spec)?;
+			(tenant, old, spec)
+		}
+		Configuration::Explicit(spec) => {
+			repository.validate(&spec)?;
+			scope.lock_thread(thread).await?;
+			(
+				scope.tenant(thread).await?,
+				scope.index(thread).await?,
+				spec,
+			)
+		}
+	};
 	let value = serde_json::to_value(&spec)?;
 	if old.as_ref().map_or(0, |old| old.revision) != revision {
 		if let Some(old) = old
