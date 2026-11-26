@@ -128,6 +128,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
+	contracts.path(document, views::scratch::clear_thread, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::clear_thread,
+		200,
+		"application/json",
+	)?;
 	contracts.path(document, views::scratch::remove_member, &["Uuid"])?;
 	contracts.response::<_, SentResponse>(
 		document,

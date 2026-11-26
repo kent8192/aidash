@@ -26,7 +26,6 @@ use uuid::Uuid;
 pub mod files;
 pub mod previews;
 pub mod processes;
-pub mod save;
 
 pub const SHELL: &str = "shell";
 pub const PYTHON: &str = "code_interpreter";
@@ -43,10 +42,11 @@ pub async fn accept<O: Send>(
 	expected_session_id: Option<Uuid>,
 	kind: &str,
 	scratch_space_id: &str,
+	working_directory: &str,
 ) -> Result<Value> {
 	let limits = scope.limits();
 	let seconds = input.seconds(limits)?;
-	let mut extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id});
+	let mut extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id, "working_directory": working_directory});
 	if let Some(session_id) = expected_session_id {
 		extra["expected_session_id"] = json!(session_id);
 	}
@@ -61,7 +61,7 @@ pub async fn accept<O: Send>(
 	if !limits.admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
-	if scope.active_run().await? != Some(run.id) || run.phase.is_terminal() {
+	if run.phase.is_terminal() || run.control != aidash_domain::RunControl::Active {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	scope.require_write().await?;
@@ -112,7 +112,9 @@ pub fn command_request(operation: &PodOperation, context: &PodContext) -> Result
 		expected_session_id: serde_json::from_value(
 			operation.input["expected_session_id"].clone(),
 		)?,
-		cwd: None,
+		cwd: operation.input["working_directory"]
+			.as_str()
+			.map(str::to_owned),
 		timeout_seconds: Some(u32::try_from(seconds).unwrap_or(u32::MAX)),
 		background: false,
 		proxy_credential: context.credential.clone(),

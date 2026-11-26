@@ -98,6 +98,19 @@ pub async fn clear(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Clear(id, input)).await)
 }
+#[post(
+	"/api/threads/{id}/scratch/clear",
+	name = "thread-scratch-clear",
+	auth = "protected"
+)]
+pub async fn clear_thread(
+	#[inject] runtime: Federation,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(execute(&runtime, actor, Operation::ClearThread(id)).await)
+}
+
 #[delete(
 	"/api/scratch-spaces/{id}",
 	name = "scratch-delete",

@@ -774,6 +774,34 @@ impl Access {
 					error => error,
 				})?;
 		}
+		Ok(self.replace_publication_context(identity, subjects))
+	}
+
+	/// Evaluate a Scratch Space member's own read permissions under the same
+	/// held Tenant policy and the current database transaction.
+	pub(crate) async fn scratch_reader_view(
+		&mut self,
+		subject: String,
+	) -> Result<PublicationView<'_>> {
+		super::identity::require_live_subject(&mut *self.tx, &self.snapshot, &subject).await?;
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id: Uuid::nil(),
+			tenant: self.identity.tenant.clone(),
+			subject: subject.clone(),
+		};
+		let old = self.replace_publication_context(identity, vec![subject]);
+		Ok(PublicationView {
+			access: self,
+			old: Some(old),
+		})
+	}
+
+	fn replace_publication_context(
+		&mut self,
+		identity: SubjectIdentity,
+		subjects: Vec<String>,
+	) -> PublicationContext {
 		let old = PublicationContext {
 			identity: std::mem::replace(&mut self.identity, identity),
 			subjects: std::mem::replace(&mut self.subjects, subjects),
@@ -803,7 +831,7 @@ impl Access {
 			read_lookups: std::mem::take(&mut self.read_lookups),
 		};
 		self.worker();
-		Ok(old)
+		old
 	}
 	pub(crate) async fn publisher_view(
 		&mut self,

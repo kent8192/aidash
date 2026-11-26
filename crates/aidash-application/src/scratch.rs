@@ -287,6 +287,9 @@ pub async fn scratch_space_for_run(
 	// starter only has to still be allowed to use the space.
 	let space = scope.load(id).await?;
 	require_use(&space, &starter, now)?;
+	if space.wipe_pending() {
+		return Err(Error::Conflict("Scratch Space wipe is pending".into()));
+	}
 	if space.node != run.node {
 		return Err(Error::Forbidden);
 	}

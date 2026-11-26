@@ -74,11 +74,46 @@ def enter_user_root(root, cwd, docker_enabled):
         raise ValueError('invalid guest process ceiling')
     resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
     os.chroot(root)
-    target = os.path.realpath(os.path.join('/scratch', cwd))
-    if os.path.commonpath(['/scratch', target]) != '/scratch':
-        raise ValueError('cwd must resolve beneath /scratch')
-    os.chdir(target)
+    enter_working_directory('/work', cwd)
     drop_user_capabilities(docker_enabled)
+
+
+def enter_working_directory(root, cwd):
+    """Create Aidash's working folders without following replaced directory links."""
+    import uuid
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parts = cwd.split('/')
+    task_directory = False
+    if len(parts) == 2 and parts[0] in ('threads', 'duties'):
+        try:
+            task_directory = str(uuid.UUID(parts[1])) == parts[1]
+        except ValueError:
+            pass
+
+    directory = os.open(root, flags)
+    try:
+        try:
+            os.mkdir('shared', dir_fd=directory)
+        except FileExistsError:
+            pass
+        if task_directory:
+            for part in parts:
+                try:
+                    os.mkdir(part, dir_fd=directory)
+                except FileExistsError:
+                    pass
+                child = os.open(part, flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            os.fchdir(directory)
+        else:
+            target = os.path.realpath(os.path.join(root, cwd))
+            if os.path.commonpath([root, target]) != root:
+                raise ValueError('cwd must resolve beneath /work')
+            os.chdir(target)
+    finally:
+        os.close(directory)
 
 
 def save_image_environment(store, environ):
@@ -173,7 +208,8 @@ def mount_rootfs(docker_enabled):
         if not stat.S_ISDIR(os.lstat(runtime).st_mode):
             raise ValueError('Python session directory must not be a symlink')
     mounts = [('/proc', 'proc'), ('/dev', 'dev'), ('/tmp', 'tmp'),
-              ('/scratch-system/scratch', 'scratch'), ('/.aidash-helpers', '.aidash-helpers')]
+              ('/scratch-system/scratch', 'scratch'), ('/scratch-system/scratch', 'work'),
+              ('/.aidash-helpers', '.aidash-helpers')]
     if docker_enabled:
         mounts.append(('/docker-storage', 'var/lib/docker'))
     for source, relative in mounts:
@@ -849,7 +885,7 @@ if __name__ == '__main__':
             request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
             service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
             operation = sys.argv[2]
-            if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+            if operation not in ('read', 'search', 'write', 'manifest', 'patch', 'clear_thread'):
                 raise ValueError('invalid file operation')
             result = {'result': run_bounded(service, operation, request)}
         except PatchReceiptUnavailable as error:

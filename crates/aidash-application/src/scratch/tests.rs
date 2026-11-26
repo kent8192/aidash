@@ -174,6 +174,7 @@ fn space(now: DateTime<Utc>) -> ScratchSpace {
 		state: ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings: ScratchSettings {
 			allowed_hosts: HostAllowlist::Hosts(BTreeSet::new()),
 			..ScratchSettings::default()

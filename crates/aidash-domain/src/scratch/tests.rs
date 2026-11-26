@@ -52,6 +52,7 @@ fn named_space_membership_uses_the_conversation_starter() {
 		state: ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings: ScratchSettings::default(),
 		created_at: now,
 		last_used_at: now,

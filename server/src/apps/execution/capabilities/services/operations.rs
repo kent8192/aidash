@@ -63,7 +63,17 @@ pub(crate) async fn read_recheck_maintenance(
 		// again from the database on restart.
 		tokio::select! {
 			_ = stopping.changed() => break,
-			() = passes.run(repository.maintain_read_recheck_targets()) => {}
+			() = passes.run(async {
+				let (recheck, wipe) = tokio::join!(
+					repository.maintain_read_recheck_targets(),
+					crate::apps::workspaces::repositories::scratch::wipe_pending_space(store),
+				);
+				recheck?;
+				wipe?;
+				crate::apps::workspaces::repositories::scratch::wipe_pending_thread(store)
+					.await
+					.map_err(Into::into)
+			}) => {}
 		}
 		passes.pause(&mut stopping).await;
 	}
@@ -138,6 +148,12 @@ pub(crate) async fn prepare_pod(
 		area.id,
 	)
 	.await?;
+	let working_directory =
+		crate::apps::execution::repositories::operations::pods::working_directory(
+			access,
+			&run.metadata(),
+		)
+		.await?;
 	aidash_application::capabilities::pod::accept(
 		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
 		&run.metadata(),
@@ -145,6 +161,7 @@ pub(crate) async fn prepare_pod(
 		expected_session_id,
 		kind,
 		scratch_space_id,
+		&working_directory,
 	)
 	.await
 	.map_err(Into::into)

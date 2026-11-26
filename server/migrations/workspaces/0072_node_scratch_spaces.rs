@@ -29,6 +29,7 @@ pub(super) fn migration() -> Migration {
 		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0072_node_scratch_spaces.sql").into(),
-			reverse_sql: None,
+			// Reversal restores the schema. Retired contents are disposable.
+			reverse_sql: Some("".into()),
 		})
 }

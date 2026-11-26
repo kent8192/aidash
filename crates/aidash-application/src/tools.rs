@@ -1010,7 +1010,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
+			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to copy an attachment into the Thread folder in its Scratch Space. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
 			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file","attachment"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
@@ -1024,8 +1024,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "attachment_copy",
 			contract: aidash_domain::tool::builtin_contract("attachment_copy")
 				.expect("declared builtin"),
-			description: "Copy a visible Thread Attachment into the Working Area, or, where commands run in an Execution Pod, into the Scratch Space at path. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
-			schema: json!({"type":"object","required":["id","path","expected_revision","idempotency_key"],"properties":{"id":string,"path":string,"expected_revision":{"type":"integer"},"idempotency_key":string},"additionalProperties":false}),
+			description: "Copy a Thread Attachment into the Thread folder of its Scratch Space if all members can read the source. Path is relative to the Thread folder and defaults to the attachment filename.",
+			schema: json!({"type":"object","required":["id","idempotency_key"],"properties":{"id":string,"path":string,"idempotency_key":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",
@@ -1054,7 +1054,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "thread_read",
 			contract: aidash_domain::tool::builtin_contract("thread_read")
 				.expect("declared builtin"),
-			description: "Read an accessible record of this Thread or a Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread. Text records return bounded chunks with next_offset.",
+			description: "Read an accessible record of this Thread or a Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to copy an attachment into the Thread folder in its Scratch Space. To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread. Text records return bounded chunks with next_offset.",
 			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["thread","task","artifact","message","event","file","attachment"]},"id":string,"thread_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {

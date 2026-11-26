@@ -89,6 +89,7 @@ impl ThreadScope for Scope<'_> {
 	async fn mark_deleted(&mut self, thread: Uuid) -> Result<()> {
 		let query = Query::update()
 			.table(Alias::new("threads"))
+			.value(Alias::new("scratch_wipe_requested"), true)
 			.value_expr(Alias::new("deleted_at"), Expr::cust("CURRENT_TIMESTAMP"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("deleted_at")).is_null())

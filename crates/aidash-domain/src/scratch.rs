@@ -234,6 +234,8 @@ pub struct ScratchSpace {
 	pub revision: i64,
 	/// Monotonic wipe request observed by the Execution Pod runtime.
 	pub wipe_generation: i64,
+	#[serde(skip)]
+	pub wipe_completed_generation: i64,
 	pub settings: ScratchSettings,
 	pub created_at: DateTime<Utc>,
 	pub last_used_at: DateTime<Utc>,
@@ -248,6 +250,10 @@ impl ScratchSpace {
 	/// Agents inherit the authority of the person who started their conversation.
 	pub fn agent_may_use(&self, conversation_starter: &str) -> bool {
 		self.may_use(conversation_starter)
+	}
+
+	pub fn wipe_pending(&self) -> bool {
+		self.wipe_generation > self.wipe_completed_generation
 	}
 
 	pub fn tombstone(&mut self) {

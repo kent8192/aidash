@@ -3,7 +3,7 @@
  * caller supplies a path relative to the Working Area revision (no leading
  * slash), or null when the reference would leave that revision.
  */
-export function resolveWorkingAreaPath(
+export function resolveRelativePath(
   fromPath: string,
   reference: string,
 ): string | null {

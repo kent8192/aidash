@@ -128,23 +128,8 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"file_read",
-			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set thread_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			"Read authorized text or metadata. Give file_id for a Reference file, or path for a file relative to the Scratch Space root (text only, continue with next_offset). Use model_input with an exact digest to include an image or audio file in the next model inference only.",
 			schema::<pod::ToolFileRead>(),
-		),
-		(
-			"file_save",
-			"Save files from the Scratch Space into the Working Area so they outlast it and can be shared, attached or read by others. paths are files or directories (\".\" is everything); ignore_files defaults to [\".gitignore\"], exclude beats it and include beats both. Do not save what can be regenerated, such as build output or installed dependencies (node_modules, .venv, target). sync also removes saved files under paths that are gone. A save over a limit is refused whole and names the first file over it.",
-			schema::<pod::FileSave>(),
-		),
-		(
-			"file_remove",
-			"Remove saved files, or every saved file under a directory, from the Working Area. The Scratch Space is not changed.",
-			schema::<pod::FileRemove>(),
-		),
-		(
-			"file_copy",
-			"Copy saved Working Area files (deliverables, attachments, references) into the Scratch Space at their paths, or under destination. Files already there are replaced.",
-			schema::<pod::FileCopy>(),
 		),
 		(
 			"process_list",
@@ -200,11 +185,6 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 			"apply_patch",
 			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Patch>(),
-		),
-		(
-			"file_share",
-			"Share selected immutable files with an exact authorized Agent/thread; delivery cannot recall information already read. expected_revision is the revision from the previous result; a new area starts at 1.",
-			schema::<Share>(),
 		),
 		(
 			"live_preview_start",

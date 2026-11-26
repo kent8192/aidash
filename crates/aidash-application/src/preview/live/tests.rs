@@ -1,5 +1,4 @@
-//! A start takes holds over its revision, respects the ceilings and stops on
-//! the limits; the gateway's authority is rechecked at use (ADR 0070).
+//! Live preview limits, startup and termination.
 use super::*;
 use aidash_domain::capabilities::sessions::Area;
 use std::collections::BTreeMap;
@@ -12,11 +11,6 @@ struct Fake {
 	area: Option<Area>,
 	current: Option<LivePreview>,
 	rows: BTreeMap<Uuid, LivePreview>,
-	area_revision: i64,
-	holds: Vec<(Uuid, i64, Holder)>,
-	released: Vec<Holder>,
-	fail_insert: bool,
-	quota_exceeded: bool,
 }
 
 impl Fake {
@@ -25,7 +19,6 @@ impl Fake {
 		Self {
 			domain: Some("aidashusercontent.app".into()),
 			ceilings: Limits::default(),
-			area_revision: area.revision,
 			area: Some(area),
 			..Self::default()
 		}
@@ -81,9 +74,6 @@ impl Scope for Fake {
 		Ok(self.rows.get(&id).cloned())
 	}
 	async fn insert(&mut self, preview: &LivePreview) -> Result<()> {
-		if self.fail_insert {
-			return Err(Error::External("insert failed".into()));
-		}
 		self.rows.insert(preview.id, preview.clone());
 		self.current = Some(preview.clone());
 		Ok(())
@@ -91,31 +81,6 @@ impl Scope for Fake {
 	async fn save(&mut self, preview: &LivePreview) -> Result<()> {
 		self.rows.insert(preview.id, preview.clone());
 		self.current = Some(preview.clone());
-		Ok(())
-	}
-	async fn retain_revision(
-		&mut self,
-		area_id: Uuid,
-		revision: i64,
-		holder: &Holder,
-	) -> Result<()> {
-		if self
-			.area
-			.as_ref()
-			.is_some_and(|area| area.revision != revision)
-		{
-			return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
-		}
-		if self.quota_exceeded {
-			return Err(Error::Conflict(
-				"QUOTA_EXCEEDED: the Tenant's storage cannot keep this File version".into(),
-			));
-		}
-		self.holds.push((area_id, revision, holder.clone()));
-		Ok(())
-	}
-	async fn release(&mut self, holder: &Holder) -> Result<()> {
-		self.released.push(holder.clone());
 		Ok(())
 	}
 	async fn unsettled(&mut self) -> Result<Vec<LivePreview>> {
@@ -126,9 +91,6 @@ impl Scope for Fake {
 			.cloned()
 			.collect())
 	}
-	async fn area_revision(&mut self, _area: Uuid) -> Result<Option<i64>> {
-		Ok(Some(self.area_revision))
-	}
 }
 
 fn request(command: &str, port: u16) -> Start {
@@ -136,30 +98,6 @@ fn request(command: &str, port: u16) -> Start {
 		command: command.into(),
 		port,
 	}
-}
-
-#[tokio::test]
-async fn a_start_retains_every_file_version_of_the_pinned_revision() {
-	let mut scope = Fake::new();
-	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
-		.await
-		.unwrap();
-	assert_eq!(preview.revision, 3);
-	assert_eq!(
-		scope.holds,
-		vec![(
-			Uuid::nil(),
-			3,
-			Holder::LivePreview {
-				live_preview_id: preview.id
-			}
-		)]
-	);
-	assert!(
-		preview.stop_reason.is_none(),
-		"a start records a row at once"
-	);
-	assert_eq!(scope.rows.len(), 1);
 }
 
 #[tokio::test]
@@ -172,7 +110,6 @@ async fn a_deployment_without_a_preview_domain_starts_nothing() {
 			.unwrap_err(),
 		Error::Conflict(message) if message == "PREVIEW_UNAVAILABLE"
 	));
-	assert!(scope.holds.is_empty());
 }
 
 #[tokio::test]
@@ -187,30 +124,6 @@ async fn a_tenant_lowers_the_limits_and_a_start_uses_them() {
 		preview.expires_at,
 		preview.started_at + chrono::TimeDelta::seconds(1800)
 	);
-}
-
-#[tokio::test]
-async fn a_start_over_quota_releases_nothing_and_reports_the_reason() {
-	let mut scope = Fake::new();
-	scope.quota_exceeded = true;
-	let error = start(&mut scope, &request("python3 -m http.server 3000", 3000))
-		.await
-		.unwrap_err();
-	assert!(matches!(error, Error::Conflict(message) if message.starts_with("QUOTA_EXCEEDED")));
-	assert!(scope.holds.is_empty());
-	assert!(scope.rows.is_empty());
-}
-
-#[tokio::test]
-async fn a_failed_insert_releases_the_hold_it_took() {
-	let mut scope = Fake::new();
-	scope.fail_insert = true;
-	assert!(
-		start(&mut scope, &request("python3 -m http.server 3000", 3000))
-			.await
-			.is_err()
-	);
-	assert_eq!(scope.released.len(), 1);
 }
 
 #[tokio::test]
@@ -239,22 +152,7 @@ async fn a_started_preview_reports_where_it_serves_but_never_the_address() {
 }
 
 #[tokio::test]
-async fn a_stale_preview_keeps_its_revision_and_status_says_so() {
-	let mut scope = Fake::new();
-	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
-		.await
-		.unwrap();
-	serving(&mut scope, preview.clone(), "10.0.0.7", "", Utc::now())
-		.await
-		.unwrap();
-	scope.area_revision = 4;
-	let status = status(&mut scope, preview.run_id).await.unwrap().unwrap();
-	assert_eq!(status.state, State::Stale);
-	assert_eq!(status.revision, 3);
-}
-
-#[tokio::test]
-async fn the_idle_limit_stops_it_and_releases_the_hold_only_after_the_proof() {
+async fn the_idle_limit_stops_it_and_waits_for_termination_proof() {
 	let mut scope = Fake::new();
 	scope.ceilings = Limits::new(60, 600).unwrap();
 	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
@@ -269,9 +167,7 @@ async fn the_idle_limit_stops_it_and_releases_the_hold_only_after_the_proof() {
 		.unwrap();
 	assert_eq!(sweep.terminate.len(), 1);
 	assert_eq!(sweep.terminate[0].stop_reason, Some(StopReason::Idle));
-	assert!(scope.released.is_empty(), "the Pod may still hold files");
 	assert!(settled(&mut scope, preview.id).await.unwrap().is_some());
-	assert_eq!(scope.released.len(), 1);
 }
 
 #[tokio::test]
@@ -314,20 +210,4 @@ async fn stopping_is_idempotent_and_keeps_the_first_reason() {
 		.await
 		.unwrap();
 	assert_eq!(again.stop_reason, Some(StopReason::RunCancelled));
-}
-
-#[tokio::test]
-async fn a_later_revision_marks_stale_without_terminating() {
-	let mut scope = Fake::new();
-	let preview = start(&mut scope, &request("python3 -m http.server 3000", 3000))
-		.await
-		.unwrap();
-	serving(&mut scope, preview.clone(), "10.0.0.7", "", Utc::now())
-		.await
-		.unwrap();
-	scope.area_revision = 4;
-	let sweep = sweep(&mut scope, Utc::now()).await.unwrap();
-	assert_eq!(sweep.stale, 1);
-	assert!(sweep.terminate.is_empty());
-	assert_eq!(scope.rows[&preview.id].state, State::Stale);
 }

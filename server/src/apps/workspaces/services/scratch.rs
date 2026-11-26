@@ -30,6 +30,7 @@ pub(crate) enum Operation {
 	AddMember(Uuid, String),
 	RemoveMember(Uuid, String),
 	Clear(Uuid, ScratchClear),
+	ClearThread(Uuid),
 	Delete(Uuid),
 }
 
@@ -70,6 +71,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					state: ScratchState::Active,
 					revision: 0,
 					wipe_generation: 0,
+					wipe_completed_generation: 0,
 					settings,
 					created_at: now,
 					last_used_at: now,
@@ -131,6 +133,11 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					sent,
 					running_tasks,
 				})?
+			}
+			Operation::ClearThread(thread) => {
+				super::super::repositories::scratch::request_thread_wipe(scope.access, thread)
+					.await?;
+				json!({"sent":true})
 			}
 			Operation::Delete(id) => {
 				app::delete(&mut scope, id, now).await?;

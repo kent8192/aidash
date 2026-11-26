@@ -1,11 +1,9 @@
 //! File tools share current authority, immutable content and generation-bound search cursors.
-use super::pod::{files as pod_files, save as pod_save};
+use super::pod::files as pod_files;
 use crate::{
 	Error, Result,
 	ports::capabilities::{
-		files::{
-			Action, FileScopePort, ScratchPublisher, ScratchStager, ScratchUpload, VerifiedFile,
-		},
+		files::{Action, FileScopePort, VerifiedFile},
 		pod_operations::PodContext,
 	},
 };
@@ -178,19 +176,22 @@ pub async fn invoke(
 	input: Value,
 	key: &str,
 ) -> Result<Invocation> {
-	let input = admit(scope, run, name, input).await?;
-	if name == "file_share" {
-		scope.serialize_sharing().await?;
+	if matches!(
+		name,
+		"file_save" | "file_remove" | "file_copy" | "file_share"
+	) {
+		return Err(Error::NotFound(format!("retired file tool: {name}")));
 	}
+	let input = admit(scope, run, name, input).await?;
 	let mut area = scope.for_run(run).await?;
 	// Tools on the Scratch Space reach the Run's Execution Pod (#745).
 	let scratch = aidash_domain::tool::concurrency::scratch_file_read(name, &input);
-	let pod = if scratch || POD_TOOLS.contains(&name) || name == "apply_patch" {
+	let pod = if scratch || POD_TOOLS.contains(&name) {
 		scope.pod(run).await?
 	} else {
 		None
 	};
-	if pod.is_none() && (scratch || (POD_TOOLS.contains(&name) && name != "file_remove")) {
+	if pod.is_none() && (scratch || POD_TOOLS.contains(&name)) {
 		return Err(Error::Conflict(
 			"RUNTIME_UNAVAILABLE: this Deployment runs no Execution Pods".into(),
 		));
@@ -200,10 +201,7 @@ pub async fn invoke(
 	// Only tools that publish a Working Area revision need it free.
 	let scratch_only = scratch
 		|| (pod.is_some() && name == "apply_patch")
-		|| matches!(
-			name,
-			"file_copy" | "process_list" | "process_log" | "process_stop"
-		);
+		|| matches!(name, "process_list" | "process_log" | "process_stop");
 	if !saved_read
 		&& !scratch_only
 		&& !matches!(
@@ -217,7 +215,7 @@ pub async fn invoke(
 		) {
 		available(&area.state)?;
 	}
-	if matches!(name, "file_read" | "file_search") {
+	if !scratch && matches!(name, "file_read" | "file_search") {
 		scope.require_current(&area, run).await?;
 	}
 	if let Some(pod) = pod.as_ref()
@@ -240,7 +238,6 @@ pub async fn invoke(
 		};
 	}
 	let result = match (name, pod.as_ref()) {
-		("file_remove", _) => pod_save::remove(scope, run, &mut area, parse(input)?).await?,
 		("process_list", Some(pod)) => {
 			super::pod::processes::list(pod, &run.id.to_string()).await?
 		}
@@ -255,14 +252,7 @@ pub async fn invoke(
 	Ok(Invocation::Complete(envelope(scope, &area, key, result)?))
 }
 /// Tools that exist only with Execution Pods (#745).
-const POD_TOOLS: &[&str] = &[
-	"file_save",
-	"file_remove",
-	"file_copy",
-	"process_list",
-	"process_log",
-	"process_stop",
-];
+const POD_TOOLS: &[&str] = &["apply_patch", "process_list", "process_log", "process_stop"];
 /// The fields a caller left null are absent.
 fn without_nulls(mut input: Value) -> Value {
 	if let Some(object) = input.as_object_mut() {
@@ -301,7 +291,7 @@ fn scratch_read(input: Value) -> Result<ScratchRead> {
 			None | Some("text") => {}
 			Some(_) => {
 				return Err(Error::Invalid(
-					"a Scratch Space file is read as text; save it to the Working Area for other representations".into(),
+					"a Scratch Space file can be read as text".into(),
 				));
 			}
 		}
@@ -328,8 +318,6 @@ enum PodFile {
 		claim: Uuid,
 		apply: bool,
 	},
-	Save(pod_save::Save),
-	Copy(pod_save::Copy),
 }
 
 struct PodFileAccess {
@@ -363,7 +351,7 @@ pub struct DeferredPodFile {
 	input: Value,
 }
 
-enum PodFileResult<U> {
+enum PodFileResult {
 	Read(Value),
 	Patch {
 		value: Value,
@@ -371,12 +359,10 @@ enum PodFileResult<U> {
 		digest: String,
 		claim: Uuid,
 	},
-	Save(Box<pod_save::Downloaded<U>>),
-	Copy(pod_save::Copy, Value),
 }
 
-pub struct CompletedPodFile<U> {
-	result: PodFileResult<U>,
+pub struct CompletedPodFile {
+	result: PodFileResult,
 	access: PodFileAccess,
 	input: Value,
 }
@@ -427,18 +413,6 @@ async fn prepare_pod_file(
 				apply,
 			}
 		}
-		"file_save" => {
-			match pod_save::Save::prepare(scope, run, area, parse(input.clone())?).await? {
-				Prepared::Replay(value) => return Ok(Prepared::Replay(value)),
-				Prepared::Call(save) => PodFile::Save(save),
-			}
-		}
-		"file_copy" => {
-			match pod_save::Copy::prepare(scope, run, area, parse(input.clone())?).await? {
-				Prepared::Replay(value) => return Ok(Prepared::Replay(value)),
-				Prepared::Call(copy) => PodFile::Copy(copy),
-			}
-		}
 		_ => unreachable!("Scratch Space file tool"),
 	}))
 }
@@ -449,7 +423,7 @@ async fn require_scratch_write(
 	area: &Area,
 ) -> Result<()> {
 	scope.authorize(area, "file.write").await?;
-	if scope.current_run(area).await? != Some(run.id) {
+	if run.phase.is_terminal() || run.control != aidash_domain::RunControl::Active {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	Ok(())
@@ -457,11 +431,7 @@ async fn require_scratch_write(
 
 impl DeferredPodFile {
 	/// Run the Pod calls with the authority and Working Area transactions released.
-	pub async fn execute<S: ScratchStager>(
-		self,
-		run: &RunMetadata,
-		stage: &mut S,
-	) -> Result<CompletedPodFile<<S::Upload as ScratchUpload>::Sealed>> {
+	pub async fn execute(self, run: &RunMetadata) -> Result<CompletedPodFile> {
 		let Self {
 			operation,
 			access,
@@ -492,13 +462,6 @@ impl DeferredPodFile {
 				digest,
 				claim,
 			},
-			PodFile::Save(save) => {
-				PodFileResult::Save(Box::new(save.download(stage, &access.area, pod).await?))
-			}
-			PodFile::Copy(mut copy) => {
-				let value = copy.execute(run, pod).await?;
-				PodFileResult::Copy(copy, value)
-			}
 		};
 		Ok(CompletedPodFile {
 			result,
@@ -508,20 +471,19 @@ impl DeferredPodFile {
 	}
 }
 
-impl<U: Send> CompletedPodFile<U> {
+impl CompletedPodFile {
 	/// Recheck the Run's authority before disclosing bytes or committing results.
 	pub async fn settle(
 		self,
-		scope: &mut dyn ScratchPublisher<Upload = U>,
+		scope: &mut dyn FileScopePort,
 		run: &RunMetadata,
 		name: &str,
 		key: &str,
 	) -> Result<Envelope> {
 		admit(scope, run, name, self.input).await?;
-		let mut area = self.access.recheck(scope, run).await?;
+		let area = self.access.recheck(scope, run).await?;
 		let value = match self.result {
 			PodFileResult::Read(value) => {
-				scope.require_current(&area, run).await?;
 				scope.authorize(&area, "file.read").await?;
 				value
 			}
@@ -540,19 +502,6 @@ impl<U: Send> CompletedPodFile<U> {
 					Some(previous) if previous.is_object() => previous,
 					_ => return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into())),
 				}
-			}
-			PodFileResult::Save(save) => {
-				available(&area.state)?;
-				save.publish(scope, run, &mut area, self.access.area.revision)
-					.await?
-			}
-			PodFileResult::Copy(copy, value) => {
-				if area.revision != self.access.area.revision {
-					return Err(Error::Conflict(
-						aidash_domain::capabilities::errors::area_revision_changed(area.revision),
-					));
-				}
-				copy.settle(scope, run, &area, value).await?
 			}
 		};
 		envelope(scope, &area, key, value)
@@ -585,11 +534,9 @@ async fn legacy(
 			scope.execute(action, area, input, key).await?
 		}
 		"outbound_get" => scope.execute(Action::Outbound, area, input, key).await?,
-		"file_share" => scope.execute(Action::Share, area, input, key).await?,
 		"skill_list" | "skill_load" | "skill_read" => {
 			scope.execute(Action::Skill(name), area, input, key).await?
 		}
-		"apply_patch" => scope.execute(Action::Patch, area, input, key).await?,
 		"shell_poll" | "shell_cancel" | "python_poll" | "python_cancel" => {
 			scope
 				.execute(
@@ -1174,176 +1121,6 @@ pub async fn materialize(
 	let result = json!({"area_id":area.id,"revision":area.revision,"file":published});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	Ok(result)
-}
-
-pub enum AttachmentCopy {
-	Complete(Value),
-	Pod(Box<PodAttachmentCopy>),
-}
-
-pub struct PodAttachmentCopy {
-	access: PodFileAccess,
-	key: Uuid,
-	request_digest: String,
-	path: String,
-	pub message_id: Uuid,
-	attachment_id: Uuid,
-	digest: String,
-	media_type: String,
-}
-
-impl PodAttachmentCopy {
-	pub async fn execute(&self, run: &RunMetadata, bytes: &[u8]) -> Result<Value> {
-		let size = pod_files::write(
-			&self.access.pod,
-			&run.id.to_string(),
-			&self.path,
-			bytes,
-			None,
-		)
-		.await?;
-		Ok(json!({"path":self.path,"size":size,"digest": self.digest,
-			"media_type":self.media_type,"location":"scratch",
-			"source":{"message_id":self.message_id,"attachment_id":self.attachment_id}}))
-	}
-
-	pub async fn settle(
-		self,
-		scope: &mut dyn FileScopePort,
-		run: &RunMetadata,
-		result: Value,
-	) -> Result<Value> {
-		if !settings(scope, run).await?.core_capabilities.files {
-			return Err(Error::Forbidden);
-		}
-		let area = self.access.recheck(scope, run).await?;
-		require_scratch_write(scope, run, &area).await?;
-		if let Some(cached) = scope.cached(self.key, &self.request_digest).await? {
-			return Ok(cached);
-		}
-		scope.cache(self.key, &self.request_digest, &result).await?;
-		Ok(result)
-	}
-}
-
-/// Copy verified Thread Attachment bytes through the Working Area publication path.
-#[allow(clippy::too_many_arguments)]
-pub async fn copy_thread_attachment(
-	scope: &mut dyn FileScopePort,
-	run: &RunMetadata,
-	key: Uuid,
-	expected_revision: i64,
-	path: String,
-	message_id: Uuid,
-	attachment_id: Uuid,
-	media_type: String,
-	expected_digest: String,
-	bytes: &[u8],
-) -> Result<AttachmentCopy> {
-	if !settings(scope, run).await?.core_capabilities.files {
-		return Err(Error::Forbidden);
-	}
-	// Where commands run in an Execution Pod, the attachment lands in the
-	// Scratch Space they read (#745).
-	if let Some(pod) = scope.pod(run).await? {
-		let area = scope.for_run(run).await?;
-		scope.authorize(&area, "file.write").await?;
-		let operation_digest = aidash_domain::registry::rules::digest(&json!([
-			"copy_thread_attachment_scratch",
-			run.id,
-			path,
-			message_id,
-			attachment_id,
-			expected_digest
-		]));
-		if let Some(cached) = scope.cached(key, &operation_digest).await? {
-			return Ok(AttachmentCopy::Complete(cached));
-		}
-		if scope.current_run(&area).await? != Some(run.id) {
-			return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
-		}
-		return Ok(AttachmentCopy::Pod(Box::new(PodAttachmentCopy {
-			access: PodFileAccess {
-				pod,
-				area,
-				policy_revision: scope.policy_revision(),
-			},
-			key,
-			request_digest: operation_digest,
-			path,
-			message_id,
-			attachment_id,
-			digest: expected_digest,
-			media_type,
-		})));
-	}
-	let mut area = scope.for_run(run).await?;
-	available(&area.state)?;
-	scope.authorize(&area, "file.write").await?;
-	let operation_digest = aidash_domain::registry::rules::digest(&json!([
-		"copy_thread_attachment",
-		run.id,
-		expected_revision,
-		path,
-		message_id,
-		attachment_id,
-		expected_digest
-	]));
-	if let Some(cached) = scope.cached(key, &operation_digest).await? {
-		return Ok(AttachmentCopy::Complete(cached));
-	}
-	if scope.current_run(&area).await? != Some(run.id) {
-		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
-	}
-	if area.revision != expected_revision {
-		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
-	}
-	aidash_domain::registry::rules::validate_path(&path)?;
-	let mut entries = files(&area)?;
-	if aidash_domain::capabilities::operations::counted_files(&entries).count() >= 4096
-		|| entries.iter().any(|entry| entry.path == path)
-	{
-		return Err(Error::Conflict("FILE_EXISTS_OR_LIMIT".into()));
-	}
-	let size = bytes.len() as u64;
-	if aidash_domain::capabilities::operations::counted_files(&entries)
-		.map(|f| f.size)
-		.sum::<u64>()
-		+ size + scope.retained_bytes(&area).await?
-		> scope.limits()?.working_bytes
-	{
-		return Err(Error::Conflict("WORKING_QUOTA".into()));
-	}
-	scope.begin_pending(area.id, size).await?;
-	scope.write_pending(bytes).await?;
-	let (file_id, digest) = scope.finish_pending(&expected_digest).await?;
-	let file = FileEntry {
-		file_id,
-		path,
-		digest,
-		size,
-		media_type,
-		scope: FileScope::Working,
-		provenance: json!({"kind":"thread_attachment", "thread_id":area.thread_id, "message_id":message_id, "attachment_id":attachment_id}),
-	};
-	entries.push(file.clone());
-	area.manifest = json!(entries);
-	// A local Area stays usable only while its Thread message may still be read. A receiving
-	// Area (ADR 0139) gets no such source: the message is the Home's, which this Node cannot
-	// read, so every later check of the Area would refuse. The Home checked the pull, the file
-	// keeps its provenance, the Area sends files to that Home only, and a copy into the Scratch
-	// Space above carries no source either.
-	if !area.is_remote_home() {
-		let source = json!({"kind":"message", "id":message_id});
-		let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
-		if !constraints.contains(&source) {
-			constraints.push(source);
-		}
-	}
-	publish(scope, &mut area).await?;
-	let result = json!({"area_id":area.id, "revision":area.revision, "file":file});
-	scope.cache(key, &operation_digest, &result).await?;
-	Ok(AttachmentCopy::Complete(result))
 }
 
 /// Resolve a Run's current Working Area paths into verified immutable snapshots.

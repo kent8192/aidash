@@ -129,6 +129,7 @@ async fn insert_space(f: &crate::federation::Federation, services: &[&str]) -> U
 		state: aidash_domain::scratch::ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings,
 		members: Default::default(),
 		created_at: now,

@@ -89,6 +89,7 @@ async fn load_with_lock(
 				"state",
 				"revision",
 				"wipe_generation",
+				"wipe_completed_generation",
 				"created_at",
 				"last_used_at",
 			]
@@ -135,6 +136,7 @@ async fn load_with_lock(
 		state: serde_json::from_value::<ScratchState>(Value::String(state))?,
 		revision: row.get("revision").map_err(err)?,
 		wipe_generation: row.get("wipe_generation").map_err(err)?,
+		wipe_completed_generation: row.get("wipe_completed_generation").map_err(err)?,
 		settings: serde_json::from_value::<ScratchSettings>(settings)?,
 		members,
 		created_at: row.get("created_at").map_err(err)?,
@@ -163,6 +165,7 @@ pub(crate) async fn insert(
 		.state(state)
 		.revision(space.revision)
 		.wipe_generation(space.wipe_generation)
+		.wipe_completed_generation(space.wipe_completed_generation)
 		.created_at(space.created_at)
 		.last_used_at(space.last_used_at)
 		.finish();
@@ -312,6 +315,7 @@ async fn list_visible(
 				"state",
 				"revision",
 				"wipe_generation",
+				"wipe_completed_generation",
 				"created_at",
 				"last_used_at",
 			]
@@ -375,6 +379,7 @@ async fn list_visible(
 			state: serde_json::from_value(Value::String(state))?,
 			revision: row.get("revision").map_err(err)?,
 			wipe_generation: row.get("wipe_generation").map_err(err)?,
+			wipe_completed_generation: row.get("wipe_completed_generation").map_err(err)?,
 			settings: serde_json::from_value(
 				settings
 					.remove(&id)
@@ -551,6 +556,7 @@ pub(crate) async fn create_default(
 			state: ScratchState::Active,
 			revision: 0,
 			wipe_generation: 0,
+			wipe_completed_generation: 0,
 			settings: ScratchSettings::for_node(),
 			created_at: now,
 			last_used_at: now,
@@ -590,6 +596,138 @@ pub(crate) async fn running_tasks_in_default(
 	Ok(crate::database::native::query_scalar(&sql)
 		.scalar_all(&mut **access.tx)
 		.await?)
+}
+
+/// Process one wipe while holding the row. The acknowledgment follows physical
+/// deletion; a lost acknowledgment retries before this space can start a Pod.
+pub(crate) async fn wipe_pending_space(store: &Store) -> Result<()> {
+	use aidash_application::{
+		ports::capabilities::execution_pod::ExecutionPodRuntime,
+		tenancy::{DeploymentScopeReason, TenancyScope},
+	};
+
+	if store.capabilities.0.runner.is_none() {
+		return Ok(());
+	}
+	let runner = crate::bootstrap::operation_runner(store)?;
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			DeploymentScopeReason::CapabilityMaintenance,
+		))
+		.await?;
+	let (sql, values) = Query::select()
+		.columns(["id", "tenant", "wipe_generation"].map(Alias::new))
+		.from(Alias::new("scratch_spaces"))
+		.and_where(Expr::col("wipe_generation").gt(Expr::col("wipe_completed_generation")))
+		.order_by(Alias::new("last_used_at"), reinhardt::query::Order::Asc)
+		.limit(1)
+		.lock(LockType::NoKeyUpdate)
+		.lock_behavior(reinhardt::query::LockBehavior::SkipLocked)
+		.build(PostgresQueryBuilder);
+	if let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? {
+		let err = reinhardt::core::exception::Error::from;
+		let id: Uuid = row.get("id").map_err(err)?;
+		let tenant: String = row.get("tenant").map_err(err)?;
+		let generation: i64 = row.get("wipe_generation").map_err(err)?;
+		runner
+			.delete(&id.to_string())
+			.await
+			.map_err(|error| Error::External(error.to_string()))?;
+		let (sql, values) = Query::update()
+			.table(Alias::new("scratch_spaces"))
+			.value(Alias::new("wipe_completed_generation"), generation)
+			.and_where(Expr::col("tenant").eq(tenant))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+	}
+	tx.commit().await?;
+	Ok(())
+}
+
+pub(crate) async fn request_thread_wipe(access: &mut Access, thread: Uuid) -> Result<()> {
+	access.require_thread(thread, "thread.read").await?;
+	access.require_thread(thread, "message.create").await?;
+	let (sql, values) = Query::update()
+		.table(Alias::new("threads"))
+		.value(Alias::new("scratch_wipe_requested"), true)
+		.and_where(Expr::col("tenant").eq(access.identity.tenant.clone()))
+		.and_where(Expr::col("id").eq(Expr::value(thread)))
+		.and_where(Expr::col("deleted_at").is_null())
+		.build(PostgresQueryBuilder);
+	if access
+		.tx
+		.execute(&sql, convert_values(values))
+		.await?
+		.rows_affected
+		!= 1
+	{
+		return Err(Error::NotFound("Thread".into()));
+	}
+	Ok(())
+}
+
+pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
+	use aidash_application::{
+		ports::capabilities::execution_pod::ExecutionPodRuntime,
+		tenancy::{DeploymentScopeReason, TenancyScope},
+	};
+	let Some(profile) = store.capabilities.0.runner.as_ref() else {
+		return Ok(());
+	};
+	let Some(bound) = store.in_process.get() else {
+		return Ok(());
+	};
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			DeploymentScopeReason::CapabilityMaintenance,
+		))
+		.await?;
+	let (sql, values) = Query::select()
+		.columns(["id", "tenant", "scratch_space_id"].map(Alias::new))
+		.from(Alias::new("threads"))
+		.and_where(Expr::col("scratch_wipe_requested").eq(true))
+		.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+		.limit(1)
+		.lock(LockType::NoKeyUpdate)
+		.lock_behavior(reinhardt::query::LockBehavior::SkipLocked)
+		.build(PostgresQueryBuilder);
+	if let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? {
+		let err = reinhardt::core::exception::Error::from;
+		let thread: Uuid = row.get("id").map_err(err)?;
+		let tenant: String = row.get("tenant").map_err(err)?;
+		let space_id: Uuid = row.get("scratch_space_id").map_err(err)?;
+		let space = read(&mut *tx, &tenant, space_id)
+			.await?
+			.ok_or_else(|| Error::NotFound("Thread Scratch Space".into()))?;
+		if space.wipe_pending() {
+			return Ok(());
+		}
+		if space.state == ScratchState::Active {
+			let settings = crate::apps::execution::services::execution_pod_command::pod_settings(
+				&space,
+				&tenant,
+				&bound.config.scratch_policy,
+				&profile.image,
+			)?;
+			let runner = crate::bootstrap::operation_runner(store)?;
+			runner
+				.clear_thread(&settings, thread)
+				.await
+				.map_err(|error| Error::External(error.to_string()))?;
+		}
+		let (sql, values) = Query::update()
+			.table(Alias::new("threads"))
+			.value(Alias::new("scratch_wipe_requested"), false)
+			.and_where(Expr::col("tenant").eq(tenant))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+	}
+	tx.commit().await?;
+	Ok(())
 }
 
 /// Inputs that depend on Deployment configuration, the Registry, and the

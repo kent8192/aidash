@@ -239,3 +239,21 @@ def test_a_sync_manifest_of_a_deleted_path_lists_nothing(tmp_path):
         service.manifest(request)
     assert service.manifest(dict(request, missing_ok=True)) == {
         'files': [], 'skipped_symlinks': [], 'truncated': False}
+
+
+def test_clear_thread_removes_only_the_requested_directory(tmp_path):
+    scratch = tmp_path / 'scratch'
+    thread = str(uuid.uuid4())
+    sibling = scratch / 'threads' / str(uuid.uuid4())
+    folder = scratch / 'threads' / thread
+    sibling.mkdir(parents=True)
+    folder.mkdir()
+    (sibling / 'keep.txt').write_text('keep')
+    (folder / 'remove.txt').write_text('discard')
+    (folder / 'sibling-link').symlink_to(sibling, target_is_directory=True)
+
+    service = FileService(scratch, tmp_path / 'state')
+    assert service.clear_thread({'thread_id': thread}) == {'cleared': True}
+    assert not folder.exists()
+    assert (sibling / 'keep.txt').read_text() == 'keep'
+    assert service.clear_thread({'thread_id': thread}) == {'cleared': True}

@@ -18,6 +18,7 @@ import {
   scratchMemberRemove,
   scratchClear,
   scratchDelete,
+  threadScratchClear,
 } from "./generated/aidash";
 import type {
   ScratchSettings as Settings,
@@ -336,6 +337,9 @@ export function ThreadScratchSpace({
   channel: string;
 }) {
   const { t } = useI18n();
+  const [wipe, setWipe] = useState<"idle" | "sending" | "queued" | "failed">(
+    "idle",
+  );
   const space = useQuery({
     queryKey: ["scratch-space", id, dashboardContext(), transportGeneration()],
     queryFn: ({ signal }) => scratchRead(id, { signal }),
@@ -365,6 +369,31 @@ export function ThreadScratchSpace({
         >
           {space.data.name}
         </Link>
+      )}
+      {space.data && (
+        <>
+          {" · "}
+          <button
+            type="button"
+            className="underline hover:text-foreground"
+            disabled={wipe === "sending"}
+            onClick={() => {
+              if (!window.confirm(t("scratchThreadClearConfirm"))) return;
+              setWipe("sending");
+              void threadScratchClear(channel)
+                .then(() => setWipe("queued"))
+                .catch(() => setWipe("failed"));
+            }}
+          >
+            {t("scratchThreadClear")}
+          </button>
+        </>
+      )}
+      {wipe === "queued" && (
+        <span role="status"> · {t("scratchClearQueued")}</span>
+      )}
+      {wipe === "failed" && (
+        <span role="alert"> · {t("scratchSaveError")}</span>
       )}
     </p>
   );

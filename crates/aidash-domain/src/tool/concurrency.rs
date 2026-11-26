@@ -127,8 +127,7 @@ pub fn scratch_file_read(operation: &str, input: &Value) -> bool {
 
 /// File tools that may wait on Runner I/O.
 pub fn pod_file_call(operation: &str, input: &Value) -> bool {
-	scratch_file_read(operation, input)
-		|| matches!(operation, "file_save" | "file_copy" | "apply_patch")
+	scratch_file_read(operation, input) || operation == "apply_patch"
 }
 
 /// Derive claims and output bounds for core read operations from validated

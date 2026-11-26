@@ -356,6 +356,7 @@ async fn pod_python_admission_preserves_the_expected_session_in_idempotency(
 		Some(session),
 		super::pod::PYTHON,
 		"space",
+		"threads/test",
 	)
 	.await
 	.unwrap();
@@ -370,11 +371,12 @@ async fn pod_python_admission_preserves_the_expected_session_in_idempotency(
 		Some(session),
 		super::pod::PYTHON,
 		"space",
+		"threads/test",
 	)
 	.await
 	.unwrap();
 	assert!(matches!(
-		super::pod::accept(&mut scope, &run, input, Some(Uuid::from_u128(12)), super::pod::PYTHON, "space").await,
+		super::pod::accept(&mut scope, &run, input, Some(Uuid::from_u128(12)), super::pod::PYTHON, "space", "threads/test").await,
 		Err(Error::Conflict(code)) if code == "IDEMPOTENCY_CONFLICT"
 	));
 	assert_eq!(scope.accepted.len(), 1);

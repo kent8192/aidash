@@ -455,17 +455,14 @@ pub struct OperationResult {
 
 use uuid::Uuid;
 
-/// `file_read` as Agents call it: a Working Area or Reference file by
-/// `file_id`, or a Scratch Space file by `path` (#745).
+/// Read a Reference file by `file_id` or a Scratch Space file by `path`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileRead {
-	/// A Working Area or Reference file. Leave it out to read `path`.
+	/// A Reference file. Leave it out to read `path`.
 	pub file_id: Option<Uuid>,
 	/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
 	pub path: Option<String>,
-	pub thread_id: Option<Uuid>,
-	pub area_id: Option<Uuid>,
 	pub representation: Option<Representation>,
 	pub offset: Option<usize>,
 	pub max_bytes: Option<usize>,
@@ -476,9 +473,7 @@ pub struct ToolFileRead {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolFileScope {
-	Working,
 	References,
-	Received,
 	Scratch,
 }
 

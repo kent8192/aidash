@@ -60,6 +60,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::clear)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::clear_thread)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::remove)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_list)

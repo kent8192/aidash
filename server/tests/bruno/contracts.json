@@ -53603,6 +53603,33 @@
   },
   {
     "json": false,
+    "method": "POST",
+    "name": "thread-scratch-clear",
+    "path": "/api/threads/{id}/scratch/clear",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "SentResponse": {
+            "properties": {
+              "sent": {
+                "type": "boolean"
+              }
+            },
+            "required": ["sent"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/SentResponse"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
     "method": "DELETE",
     "name": "scratch-delete",
     "path": "/api/scratch-spaces/{id}",

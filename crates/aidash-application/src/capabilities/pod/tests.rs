@@ -289,6 +289,7 @@ pub(crate) fn context(runtime: Arc<Runtime>) -> PodContext {
 	PodContext {
 		runtime,
 		settings: ExecutionPodSettings {
+			command_slots: 8,
 			scratch_space_id: "space".into(),
 			image: "image".into(),
 			cpu: 1,

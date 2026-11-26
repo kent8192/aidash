@@ -161,7 +161,7 @@ async fn dispatch(
 	input: Value,
 ) -> Result<Envelope> {
 	use super::service::Invocation;
-	use crate::apps::execution::repositories::{files::ScratchStaging, subnodes};
+	use crate::apps::execution::repositories::subnodes;
 
 	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
 	let key = Uuid::new_v4().to_string();
@@ -176,14 +176,12 @@ async fn dispatch(
 		service::invoke(&f.store, &mut access, &run, name, input, &key).await
 	}
 	.await;
-	let tenant = access.identity.tenant.clone();
 	let policy_revision = access.snapshot.revision;
 	let request = match access.finish(result).await? {
 		Invocation::Complete(output) => return Ok(*output),
 		Invocation::Pod(request) => request,
 	};
-	let mut stage = ScratchStaging::new(&f.store, &tenant);
-	let ran = request.execute(&run.metadata(), &mut stage).await;
+	let ran = request.execute(&run.metadata()).await;
 	let (mut access, run) = run_access(&f, actor, id).await?;
 	let result = async {
 		if access.snapshot.revision != policy_revision {

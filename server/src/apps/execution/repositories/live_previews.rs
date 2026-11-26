@@ -6,10 +6,7 @@
 //! row and release its holds only after the Runner proves the Pod is gone.
 use crate::{
 	Error as NativeError, Result as NativeResult,
-	apps::execution::capabilities::{
-		models::{CoreLivePreviews, CorePreviewLimits},
-		services::retention,
-	},
+	apps::execution::capabilities::models::{CoreLivePreviews, CorePreviewLimits},
 	authorization::{access::Access, identity::SubjectIdentity},
 	domain::Run,
 	store::Store,
@@ -177,24 +174,6 @@ impl application::Scope for Scope<'_> {
 			.map_err(NativeError::from)?;
 		Ok(())
 	}
-	async fn retain_revision(
-		&mut self,
-		area_id: Uuid,
-		revision: i64,
-		holder: &Holder,
-	) -> aidash_application::Result<()> {
-		let hold =
-			retention::retain_revision(self.store, self.access, area_id, revision, holder.clone())
-				.await?;
-		debug_assert_eq!(hold.revision, revision);
-		Ok(())
-	}
-	async fn release(&mut self, holder: &Holder) -> aidash_application::Result<()> {
-		retention::release(self.store, self.access, holder)
-			.await
-			.map(drop)
-			.map_err(Into::into)
-	}
 	async fn unsettled(&mut self) -> aidash_application::Result<Vec<LivePreview>> {
 		let rows = Row::objects()
 			.filter(Row::field_id().ne(Uuid::nil()))
@@ -210,21 +189,6 @@ impl application::Scope for Scope<'_> {
 			})
 			.collect::<NativeResult<Vec<_>>>()
 			.map_err(Into::into)
-	}
-	async fn area_revision(&mut self, area_id: Uuid) -> aidash_application::Result<Option<i64>> {
-		let revision: Option<i64> = crate::database::native::query_scalar(
-			&reinhardt::query::Query::select()
-				.column(reinhardt::query::Alias::new("revision"))
-				.from(reinhardt::query::Alias::new("core_areas"))
-				.and_where(
-					reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))
-						.eq(reinhardt::query::Expr::value(area_id)),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut **self.access.tx)
-		.await?;
-		Ok(revision)
 	}
 }
 
@@ -257,8 +221,7 @@ pub(crate) enum Dispatch {
 	},
 }
 
-/// Record the start outcome. An error from dispatch can leave a process
-/// running, so the revision's holds stay until termination is confirmed.
+/// Record the start outcome while accounting for uncertain dispatch.
 pub(crate) async fn finish_start(
 	store: &Store,
 	access: &mut Access,
@@ -285,7 +248,7 @@ pub(crate) async fn finish_start(
 			application::Scope::save(&mut scope, &current).await?;
 		}
 		return Ok(Started {
-			status: Status::of(&current, current.revision),
+			status: Status::of(&current),
 			startup_log: String::new(),
 		});
 	}
@@ -305,7 +268,7 @@ pub(crate) async fn finish_start(
 			current.stopping(StopReason::StartFailed);
 			application::Scope::save(&mut scope, &current).await?;
 			Ok(Started {
-				status: Status::of(&current, current.revision),
+				status: Status::of(&current),
 				startup_log: String::new(),
 			})
 		}
@@ -661,8 +624,7 @@ pub(crate) async fn stop_serving(store: &Store, id: Uuid, reason: StopReason) ->
 	Ok(())
 }
 
-/// One sweep pass: stale marking and stops at the idle, absolute and start
-/// limits. Each stop asks the Runner and settles the row only on its proof.
+/// Stop previews at the idle, absolute and start limits.
 pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 	let now = Utc::now();
 	let rows = {
@@ -692,20 +654,6 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 				.start_expired(now)
 				.then_some(StopReason::StartFailed)
 		}) else {
-			if preview.state == State::Running {
-				let mut tx = store.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
-				if let Some(revision) = area_revision(&mut tx, preview.area_id).await?
-					&& revision > preview.revision
-				{
-					preview.state = State::Stale;
-					Row::objects()
-						.save_with_executor(&mut *tx, &to_row(&preview))
-						.await
-						.map_err(reinhardt::core::exception::Error::from)
-						.map_err(NativeError::from)?;
-				}
-				tx.commit().await?;
-			}
 			continue;
 		};
 		preview.stopping(reason);
@@ -768,24 +716,6 @@ async fn settle_row(store: &Store, tenant: &str, preview: &mut LivePreview) -> N
 	release_hold(&mut tx, tenant, preview.id).await?;
 	tx.commit().await?;
 	Ok(())
-}
-
-async fn area_revision(
-	tx: &mut crate::database::native::Transaction,
-	area: Uuid,
-) -> NativeResult<Option<i64>> {
-	crate::database::native::query_scalar(
-		&reinhardt::query::Query::select()
-			.column(reinhardt::query::Alias::new("revision"))
-			.from(reinhardt::query::Alias::new("core_areas"))
-			.and_where(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))
-					.eq(reinhardt::query::Expr::value(area)),
-			)
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **tx)
-	.await
 }
 
 async fn release_hold(

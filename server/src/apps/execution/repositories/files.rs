@@ -1,5 +1,4 @@
 //! File adapters retain verified handles, pending-object guards and native publication statements.
-use super::capability_objects::SealedObject;
 use crate::apps::execution::capabilities::{
 	serializers::contracts::{
 		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
@@ -16,9 +15,7 @@ use crate::{
 };
 use aidash_application::{
 	Error, Result,
-	ports::capabilities::files::{
-		Action, FileScopePort, Limits, ScratchPublisher, ScratchStager, ScratchUpload, VerifiedFile,
-	},
+	ports::capabilities::files::{Action, FileScopePort, Limits, VerifiedFile},
 };
 use aidash_domain::capabilities::files::{Materialize, MaterializeSource};
 use aidash_domain::{
@@ -43,88 +40,6 @@ pub(crate) struct Scope<'a> {
 	pub(crate) run: Option<&'a Run>,
 	pub(crate) pending: Option<PendingObject>,
 }
-/// Holds upload ownership until publication commits. This transaction holds
-/// only object advisory locks, independent of the Run authority and Area.
-pub(crate) struct ScratchStaging<'a> {
-	store: &'a Store,
-	tenant: &'a str,
-	uploads: Option<(
-		crate::database::native::Transaction,
-		tokio::sync::SemaphorePermit<'a>,
-	)>,
-}
-
-impl<'a> ScratchStaging<'a> {
-	pub(crate) fn new(store: &'a Store, tenant: &'a str) -> Self {
-		Self {
-			store,
-			tenant,
-			uploads: None,
-		}
-	}
-}
-
-#[async_trait]
-impl ScratchStager for ScratchStaging<'_> {
-	type Upload = PendingObject;
-
-	async fn stage(&mut self, area: Uuid, size: u64) -> Result<Self::Upload> {
-		use aidash_application::tenancy::TenancyScope;
-		if self.uploads.is_none() {
-			let slot = self
-				.store
-				.scratch_upload_slots
-				.acquire()
-				.await
-				.map_err(|error| Error::External(error.to_string()))?;
-			let tx = self
-				.store
-				.scratch_upload_pool
-				.begin(&TenancyScope::tenant(self.tenant)?)
-				.await?;
-			self.uploads = Some((tx, slot));
-		}
-		Ok(self
-			.store
-			.capabilities
-			.begin_object_for(
-				&mut self.uploads.as_mut().expect("scratch upload batch open").0,
-				self.tenant,
-				Some(area),
-				"working",
-				size,
-				false,
-			)
-			.await?)
-	}
-}
-
-#[async_trait]
-impl ScratchUpload for PendingObject {
-	type Sealed = SealedObject;
-
-	async fn write_block(&mut self, bytes: &[u8]) -> Result<()> {
-		PendingObject::write_block(self, bytes)
-			.await
-			.map_err(Into::into)
-	}
-
-	async fn seal(self, digest: &str) -> Result<Self::Sealed> {
-		PendingObject::seal(self, Some(digest))
-			.await
-			.map_err(Into::into)
-	}
-}
-
-#[async_trait]
-impl ScratchPublisher for Scope<'_> {
-	type Upload = SealedObject;
-
-	async fn publish_scratch_upload(&mut self, upload: Self::Upload) -> Result<(Uuid, String)> {
-		upload.publish(self.access).await.map_err(Into::into)
-	}
-}
-
 struct Reader {
 	inner: Option<tokio::io::BufReader<aidash_application::ports::blob_store::BlobReader>>,
 	store: std::sync::Arc<dyn aidash_application::ports::blob_store::BlobStore>,
