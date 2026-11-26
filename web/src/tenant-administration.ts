@@ -43,6 +43,16 @@ export function useTenantAdministration(tenant: string | null) {
   });
 }
 
+export const TENANT_CONFIGURATOR = "aidash.tenant-configurator";
+
+/** The overview exposes the policy revision only to a Tenant Administrator. */
+export function useConfiguratorAccess(access: State["access"]) {
+  const { data, isError } = useTenantAdministration(
+    access.kind === "subject" ? access.tenant : null,
+  );
+  return access.kind === "subject" && !isError && data?.policy_revision != null;
+}
+
 /** What the signed-in subject may do in its Tenant. A Deployment
  *  Administrator, or a subject whose overview is unavailable, holds nothing;
  *  the server still refuses any action a hidden control would have sent. */

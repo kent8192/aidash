@@ -1,3 +1,7 @@
+import {
+  useConfiguratorAccess,
+  TENANT_CONFIGURATOR,
+} from "./tenant-administration";
 import { useTaskPickerPages } from "./task-picker-pages";
 import { contextSourceConfiguration } from "./context-source-model";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
@@ -141,7 +145,16 @@ function probabilityBits(value: number): string {
   view.setFloat64(0, value);
   return view.getBigUint64(0).toString(16).padStart(16, "0");
 }
-export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
+export function RequestForm({
+  data,
+  submit,
+  initialAgent,
+}: {
+  data: State;
+  submit: Submit;
+  initialAgent?: string;
+}) {
+  const admin = useConfiguratorAccess(data.access);
   const { t } = useI18n();
   const where = useNodeChoice();
   const [scratchChoice, setScratchChoice] = useState<{
@@ -160,11 +173,13 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
     queryFn: () => scratchList({ node: where.node ?? "" }),
   });
   const entityLabel = useEntityLabel(data.registry);
-  const targets = data.registry.filter((e) =>
-    ["agent", "cluster"].includes(e.kind),
+  const targets = data.registry.filter(
+    (e) =>
+      ["agent", "cluster"].includes(e.kind) &&
+      (e.id !== TENANT_CONFIGURATOR || admin),
   );
   const form = useForm({
-    defaultValues: { title: "", request: "", target: "" },
+    defaultValues: { title: "", request: "", target: initialAgent ?? "" },
     onSubmit: async ({ value }) => {
       const target = targets.find(
         (e) => `${e.id}@${e.version}` === value.target,

@@ -30,7 +30,7 @@ export function StandingInstructionsSettings({
   node?: string;
   canUpdate: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -49,6 +49,9 @@ export function StandingInstructionsSettings({
     retry: false,
   });
   const current = !query.isError ? query.data : undefined;
+  const attribution = current?.updated_by?.match(
+    /^tenant-configurator:(.+):thread:([0-9a-f-]{36}):run:[0-9a-f-]{36}$/,
+  );
   const text = draft ?? current?.text ?? "";
   const bytes = utf8Bytes(text);
   const title =
@@ -60,6 +63,18 @@ export function StandingInstructionsSettings({
   return (
     <Panel title={title}>
       <Hint>{help}</Hint>
+      {attribution && (
+        <Hint>
+          <a
+            href={`/collaboration?channel=${encodeURIComponent(attribution[2])}`}
+            className="underline"
+          >
+            {locale === "ja-JP"
+              ? `${attribution[1]} さんの依頼でテナント設定エージェントが変更しました`
+              : `Changed by Tenant Configurator at ${attribution[1]}'s request`}
+          </a>
+        </Hint>
+      )}
       {query.isPending && <Loading />}
       {query.isError && (
         <Alert retry={() => void query.refetch()}>{query.error.message}</Alert>

@@ -266,7 +266,15 @@ export function OperationsDialog({
                 <ThreadForm submit={submit} />
               </>
             )}
-            {d.kind === "goal" && <RequestForm data={data} submit={submit} />}
+            {d.kind === "goal" && (
+              <RequestForm
+                data={data}
+                submit={submit}
+                initialAgent={
+                  d.entity ? `${d.entity.id}@${d.entity.version}` : undefined
+                }
+              />
+            )}
             {d.kind === "task" && (
               <TaskForm data={data} thread={d.thread?.id} submit={submit} />
             )}

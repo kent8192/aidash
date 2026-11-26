@@ -1,3 +1,7 @@
+import {
+  useConfiguratorAccess,
+  TENANT_CONFIGURATOR,
+} from "../tenant-administration";
 import { ProviderToolActivity } from "../provider-tools";
 import { Input } from "../components/ui/input";
 import {
@@ -979,7 +983,12 @@ export function ThreadCapabilities({
     setRequested(pages);
     setReadPages([]);
   };
-  const availableAgents = agents.filter((e) => !area || e.id === area.agent_id);
+  const admin = useConfiguratorAccess(data.access);
+  const availableAgents = agents.filter(
+    (e) =>
+      (!area || e.id === area.agent_id) &&
+      (e.id !== TENANT_CONFIGURATOR || admin),
+  );
   const effectiveAgent = availableAgents.some(
     (e) => `${e.id}@${e.version}` === agent,
   )
