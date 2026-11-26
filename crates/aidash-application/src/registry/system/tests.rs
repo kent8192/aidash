@@ -30,12 +30,17 @@ fn compare_develop_builtin_declarations() {
 		.unwrap()
 		.into_iter()
 		.chain(legacy_workspace_entries(&validation, NODE).unwrap())
+		.chain(legacy_goal_entries(&validation, NODE).unwrap())
 		.chain(legacy_file_entries(&validation, NODE).unwrap())
 		.collect::<Vec<_>>();
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
 	for old in develop_seed().iter().filter(|entry| entry.kind == "tool") {
 		if !seen.insert(old.id.clone()) {
+			continue;
+		}
+		if old.id == "aidash.artifact_publish" {
+			assert!(!current.iter().any(|entry| entry.id == old.id));
 			continue;
 		}
 		let now = current
@@ -77,8 +82,12 @@ fn compare_develop_builtin_declarations() {
 	assert_eq!(
 		changed,
 		[
+			"aidash.workspace_read",
+			"aidash.workspace_observe",
 			"aidash.workspace_search",
 			"aidash.workspace_wait",
+			"aidash.task_create",
+			"aidash.task_delegate",
 			"aidash.workspace_message",
 			"aidash.attachment_copy",
 			"aidash.memory_mutate",
@@ -345,7 +354,7 @@ async fn seeding_a_develop_registry_preserves_every_existing_declaration() {
 			writer.definition(&entry.id, &entry.version).await.unwrap(),
 			entry
 		);
-		if entry.kind == "tool" {
+		if entry.kind == "tool" && entry.id != "aidash.artifact_publish" {
 			let reference = EntityRef {
 				id: entry.id.clone(),
 				version: entry.version.clone(),
@@ -458,7 +467,7 @@ async fn seeding_keeps_the_original_workspace_read_and_adds_a_new_version() {
 		writer.definition(&old.id, &old.version).await.unwrap(),
 		*old
 	);
-	let current = writer.definition(&old.id, "1.1.0").await.unwrap();
+	let current = writer.definition(&old.id, "1.2.0").await.unwrap();
 	assert!(
 		current.schema["properties"]["kind"]["enum"]
 			.as_array()

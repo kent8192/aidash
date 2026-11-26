@@ -664,23 +664,27 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if matches!(
+			version: if matches!(operation, "workspace_read" | "subnode_task") {
+				"1.2.0"
+			} else if matches!(
 				operation,
-				"workspace_read"
-					| "workspace_search"
+				"workspace_observe"
+					| "thread_read" | "thread_observe"
+					| "task_create" | "task_delegate"
+			) {
+				"1.1.0"
+			} else if matches!(
+				operation,
+				"workspace_search"
 					| "workspace_message"
 					| "memory_mutate"
-					| "subnode_task"
 					// Gained `draft` for free-form generation (#1012).
 					| "task_assign"
 					// Gained `on_trigger` and a 30-day wait (#1011).
 					| "workspace_wait"
 			) {
 				"1.1.0"
-			} else if matches!(
-				operation,
-				"workspace_observe" | "file_read" | "file_search" | "attachment_copy"
-			) {
+			} else if matches!(operation, "file_read" | "file_search" | "attachment_copy") {
 				"1.0.1"
 			} else {
 				"1.0.0"
@@ -1357,7 +1361,7 @@ impl BindingSnapshot {
 				names.iter().any(|name| {
 					let identity = QualifiedRef::builtin(&self.agent.registry_deployment, name);
 					(binding.identity == identity
-						|| (*name == "workspace_read"
+						|| (matches!(*name, "workspace_read" | "thread_read")
 							&& binding.identity.registry_deployment
 								== identity.registry_deployment
 							&& binding.identity.id == identity.id

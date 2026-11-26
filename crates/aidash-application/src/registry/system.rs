@@ -133,7 +133,7 @@ pub fn legacy_workspace_entries(
 			),
 			"aidash.workspace_read" => (
 				"Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
-				json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","message","event"]},"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+				json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 			),
 			_ => unreachable!(),
 		};
@@ -147,7 +147,7 @@ pub fn legacy_workspace_entries(
 		.clone();
 	attachment_reader.version = "1.0.1".into();
 	attachment_reader.description.insert("en".into(), "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.".into());
-	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
+	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
 	entries.push(attachment_reader);
 	// The Thread Attachment versions as they were before Thread Attachment
 	// images could be described and searched (#622 part 2).
@@ -247,6 +247,61 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 	Ok(old)
 }
 
+/// Keep the bytes of earlier immutable tool declarations already in the Registry.
+pub(crate) fn legacy_goal_entries(
+	validation: &DefinitionValidation,
+	node: &str,
+) -> Result<Vec<Entry>> {
+	let mut old = Vec::new();
+	for mut entry in entries(validation, node)? {
+		match entry.id.as_str() {
+			"aidash.workspace_read" | "aidash.thread_read" => {
+				entry.version = if entry.id == "aidash.workspace_read" {
+					"1.1.0"
+				} else {
+					"1.0.0"
+				}
+				.into();
+				if let Some(kinds) = entry.schema["properties"]["kind"]["enum"].as_array_mut() {
+					kinds.insert(2, json!("artifact"));
+				}
+			}
+			"aidash.workspace_observe" => {
+				entry.version = "1.0.1".into();
+				if let Some(description) = entry.description.get_mut("en") {
+					*description = description.replace(
+						"summary of tasks, messages",
+						"summary of goal, tasks, artifact references, messages",
+					);
+				}
+			}
+			"aidash.thread_observe" => {
+				entry.version = "1.0.0".into();
+				if let Some(description) = entry.description.get_mut("en") {
+					*description = description.replace(
+						"its tasks, messages",
+						"its tasks, artifact references, messages",
+					);
+				}
+			}
+			"aidash.task_create" | "aidash.task_delegate" | "aidash.subnode_task" => {
+				entry.version = if entry.id == "aidash.subnode_task" {
+					"1.1.0"
+				} else {
+					"1.0.0"
+				}
+				.into();
+				if let Some(properties) = entry.schema["properties"].as_object_mut() {
+					properties.remove("goal");
+				}
+			}
+			_ => continue,
+		}
+		old.push(entry);
+	}
+	Ok(old)
+}
+
 /// Every definition the Node declares to every Tenant's Registry: the built-in
 /// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
 /// Catalog Approval before anything may use it.
@@ -266,6 +321,7 @@ pub fn pinned_declarations(
 	Ok(declarations(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_goal_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?))
 }
@@ -361,6 +417,7 @@ pub async fn seed(
 	let entries: Vec<_> = entries(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_goal_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
@@ -447,16 +504,23 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		return true;
 	}
 	(reference.version == "1.0.0"
-		|| (matches!(
-			reference.id.as_str(),
-			"aidash.workspace_read"
-				| "aidash.workspace_search"
-				| "aidash.workspace_message"
-				| "aidash.memory_mutate"
-				| "aidash.subnode_task"
-				| "aidash.task_assign"
-				| "aidash.workspace_wait"
-		) && reference.version == "1.1.0")
+		|| reference
+			.id
+			.strip_prefix("aidash.")
+			.is_some_and(|operation| {
+				reference.version
+					== aidash_domain::registry::bindings::QualifiedRef::builtin("", operation)
+						.version
+			}) || (matches!(
+		reference.id.as_str(),
+		"aidash.workspace_read"
+			| "aidash.workspace_search"
+			| "aidash.workspace_message"
+			| "aidash.memory_mutate"
+			| "aidash.subnode_task"
+			| "aidash.task_assign"
+			| "aidash.workspace_wait"
+	) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),
