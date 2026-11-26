@@ -2408,7 +2408,10 @@ async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_su
 		.and(path("/v2/runs/stop"))
 		.respond_with(move |request: &Request| {
 			let body: Value = request.body_json().unwrap();
-			assert_eq!(body, json!({"scratch_space_id":scratch,"run_id":run}));
+			assert_eq!(
+				body,
+				json!({"scratch_space_id":scratch,"run_id":run,"reason":"run_authority_revoked"})
+			);
 			if observed.fetch_add(1, Ordering::SeqCst) == 0 {
 				ResponseTemplate::new(503)
 					.set_body_json(json!({"code":"runner_unavailable","message":"retry"}))

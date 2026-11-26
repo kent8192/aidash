@@ -46,7 +46,7 @@ namespaces of external Prometheus scrapers. Scrape each gateway replica for:
 - `aidash_egress_accept_emfile_total`
 
 A hard descriptor limit below 65,536 logs a startup warning. Run
-`manage diagnostics evaluation` in the gateway container and inspect
+`manage diagnostics egress` in the gateway container and inspect
 `egress_open_files` for the soft limit, hard limit and warning. Raise the
 node runtime's `LimitNOFILE`, replace the gateway Pods, and verify the new
 limits. An accept that encounters `EMFILE` is counted and retried after

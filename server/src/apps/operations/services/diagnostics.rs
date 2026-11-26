@@ -1,6 +1,7 @@
 //! Read-only query documents consumed by deployment acceptance runners.
 mod acceptance;
 mod calibration;
+mod egress;
 mod evaluation;
 mod remote_memory;
 
@@ -17,7 +18,13 @@ impl CapabilityCommand for Diagnostics {
 			.about("Export read-only Reinhardt Query diagnostics without connecting to services")
 			.arg(
 				clap::Arg::new("profile")
-					.value_parser(["acceptance", "calibration", "evaluation", "remote-memory"])
+					.value_parser([
+						"acceptance",
+						"calibration",
+						"egress",
+						"evaluation",
+						"remote-memory",
+					])
 					.required(true),
 			)
 	}
@@ -32,6 +39,7 @@ impl CapabilityCommand for Diagnostics {
 		let document = match matches.get_one::<String>("profile").map(String::as_str) {
 			Some("acceptance") => acceptance::document(),
 			Some("calibration") => calibration::document(),
+			Some("egress") => egress::document(),
 			Some("evaluation") => evaluation::document(),
 			Some("remote-memory") => remote_memory::document(),
 			_ => {
