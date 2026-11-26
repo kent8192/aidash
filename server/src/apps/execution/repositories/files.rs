@@ -4,7 +4,7 @@ use crate::apps::execution::capabilities::{
 		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
 		Materialize as NativeMaterialize, MaterializeSource as NativeMaterializeSource,
 	},
-	services::{approvals, objects::PendingObject, operations, patch, sessions, sharing, skills},
+	services::{approvals, objects::PendingObject, operations, sessions, sharing, skills},
 };
 use crate::{
 	Error as NativeError, Result as NativeResult,
@@ -239,6 +239,7 @@ impl FileScopePort for Scope<'_> {
 		let p = &self.store.ok_or_else(missing)?.capabilities.0;
 		Ok(Limits {
 			working_bytes: p.working_bytes,
+			patch_bytes: p.limits.patch_bytes,
 			read_bytes: p.limits.read_bytes,
 			search_matches: p.limits.search_matches,
 			search_bytes: p.limits.search_bytes,
@@ -424,17 +425,6 @@ impl FileScopePort for Scope<'_> {
 					.await?
 				}
 				Action::Skill(name) => skills::invoke(store, self.access, run, name, input).await?,
-				Action::Patch => {
-					patch::apply(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
 				Action::Verify => {
 					operations::prepare_kind(
 						store,

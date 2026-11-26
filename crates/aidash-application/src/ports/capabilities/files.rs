@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 pub struct Limits {
 	pub working_bytes: u64,
+	pub patch_bytes: usize,
 	pub read_bytes: usize,
 	pub search_matches: usize,
 	pub search_bytes: usize,
@@ -24,7 +25,6 @@ pub enum Action<'a> {
 	Outbound,
 	Share,
 	Skill(&'a str),
-	Patch,
 	/// A Completion Gate Check: shell admission, no file publication (#112).
 	Verify,
 	Control {

@@ -169,7 +169,6 @@ pub(crate) mod cleanup;
 pub(crate) mod files;
 
 pub(crate) mod configuration;
-pub(crate) mod patch;
 
 pub(crate) mod skills;
 

@@ -350,6 +350,9 @@ async fn prepare_pod_file(
 				.as_str()
 				.ok_or_else(|| Error::Invalid("patch must be a string".into()))?
 				.to_owned();
+			if patch.len() > scope.limits()?.patch_bytes {
+				return Err(Error::Invalid("PATCH_BYTE_LIMIT".into()));
+			}
 			let digest =
 				aidash_domain::registry::rules::digest(&json!(["scratch_patch", run.id, patch]));
 			require_scratch_write(scope, run, area).await?;

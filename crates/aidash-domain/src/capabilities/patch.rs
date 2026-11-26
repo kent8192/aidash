@@ -1,18 +1,7 @@
 //! Strict add/update/delete grammar frozen against openai/codex
 //! b35a7afbe83d72af4607c67732ab4dade38bacb7 (codex-rs/apply-patch/src/parser.rs).
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use uuid::Uuid;
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Patch {
-	pub idempotency_key: Uuid,
-	pub expected_revision: i64,
-	/// Every changed path must have a SHA-256 digest, or null to require absence.
-	pub preconditions: std::collections::BTreeMap<String, Option<String>>,
-	pub patch: String,
-}
 pub struct Edit {
 	pub path: String,
 	pub change: Change,

@@ -174,6 +174,7 @@ mod exposure {
 		fn limits(&self) -> Result<FileLimits> {
 			Ok(FileLimits {
 				working_bytes: 1_000_000,
+				patch_bytes: 64000,
 				read_bytes: 16,
 				search_matches: 20,
 				search_bytes: 10_000,
