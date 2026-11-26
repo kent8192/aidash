@@ -819,11 +819,8 @@ pub(super) async fn reembed(
 		if !scope.permits("semantic.write").await? || !scope.permits("semantic.read").await? {
 			return Ok(None);
 		}
-		let source = serde_json::from_value(entry.source.clone())?;
-		if matches!(
-			source,
-			Source::AttachmentImage { .. } | Source::WorkingImage { .. }
-		) {
+		let source: Source = serde_json::from_value(entry.source.clone())?;
+		if source.is_image() {
 			if !spec
 				.embedding
 				.inputs
