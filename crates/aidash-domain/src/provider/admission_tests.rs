@@ -195,14 +195,10 @@ fn unsupported_responses_input_never_passes_admission(#[case] audio: bool, #[cas
 	}
 	if audio {
 		assert!(
-			ModelRequest::content_parts_reservation(
-				&request.content_parts,
-				crate::projection::ProjectionVersion::Native,
-				InputFormat::Responses
-			)
-			.unwrap_err()
-			.to_string()
-			.contains(reason)
+			ModelRequest::content_parts_reservation(&request.content_parts, InputFormat::Responses)
+				.unwrap_err()
+				.to_string()
+				.contains(reason)
 		);
 	}
 	assert_eq!(request.estimated_total_tokens(), usize::MAX);
@@ -244,12 +240,9 @@ fn native_responses_media_reserves_escaped_frames_but_not_base64_payloads() {
 	// The reservation probe has no volatile evidence, so it also reserves the
 	// volatile message that media opens when a step has none (#942). That
 	// surplus is the small empty step envelope.
-	let reserved = ModelRequest::content_parts_reservation(
-		&request.content_parts,
-		crate::projection::ProjectionVersion::Native,
-		InputFormat::Responses,
-	)
-	.unwrap();
+	let reserved =
+		ModelRequest::content_parts_reservation(&request.content_parts, InputFormat::Responses)
+			.unwrap();
 	assert!(reserved >= required - before);
 	assert!(reserved - (required - before) < 256);
 }

@@ -155,3 +155,36 @@ fn receiver_agent_must_match_the_requested_capability(
 		Err(Error::External(_))
 	));
 }
+
+#[rstest]
+#[case("projection_version", "legacy")]
+#[case("harness_contract", "legacy@1")]
+fn a_retired_receiver_pin_is_a_typed_conflict(
+	validation: DefinitionValidation,
+	mut inspection: Inspection,
+	#[case] field: &str,
+	#[case] pin: &str,
+) {
+	inspection.agent.config[field] = json!(pin);
+	let metadata = digest(&serde_json::to_value(&inspection.agent).unwrap());
+	let snapshot = &mut inspection.binding_snapshot;
+	let root = snapshot
+		.definitions
+		.iter_mut()
+		.find(|entry| entry.identity == snapshot.agent)
+		.unwrap();
+	root.definition = inspection.agent.clone();
+	root.digest = metadata.clone();
+	let root = inspection
+		.definitions
+		.iter_mut()
+		.find(|entry| entry.kind == "agent")
+		.unwrap();
+	root.metadata = inspection.agent.clone();
+	root.digest = metadata;
+
+	assert!(matches!(
+		validate_inspection(&validation, &inspection, &receiver(), &expected(), &Search::default()),
+		Err(Error::ProjectionRetired(message)) if message.contains(pin)
+	));
+}

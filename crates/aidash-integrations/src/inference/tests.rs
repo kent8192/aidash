@@ -1,5 +1,5 @@
 use super::*;
-use aidash_domain::projection::{ProjectionVersion, native::NativeContext};
+use aidash_domain::projection::native::NativeContext;
 
 #[rstest::rstest]
 #[case("none", json!({"enabled": false}))]
@@ -81,7 +81,6 @@ fn media_reservation_covers_complete_request_growth() {
 			<= without_media.saturating_add(
 				ModelRequest::content_parts_reservation(
 					&request.content_parts,
-					ProjectionVersion::Native,
 					Default::default(),
 				)
 				.unwrap()

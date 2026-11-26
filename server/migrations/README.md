@@ -1056,6 +1056,13 @@ Run relation and Model Call ID in the Usage Record model state. Rollback
 requires background Usage Records to be cleared before restoring the
 required Run relation.
 
+`execution/0164_model_call_recovery` follows `execution/0163_scope_host_debit_state`.
+It adds retry keys for logical Model Calls, recovery deadlines for auxiliary
+Inference Attempts and a marker to consume late provider reports once. A partial
+unique index scopes summary and MCP sampling retry keys to a Tenant, Run and
+purpose. This migration uses typed database-only operations. The existing
+purpose constraint already excludes local media validation.
+
 `execution/0157_stdio_session_recheck` adds a nullable stdio session registration and its partial index to Task executions. `execution/0160_stdio_session_model_state` records the column in the ORM migration state. The registration keeps a potentially live session in Read Recheck across a server restart and is cleared after the Runner confirms termination. The migration leaves existing rows null. Roll out the matching Runner helper image so the standard Execution Pod replacement ends stdio sessions from before registration was available.
 `execution/0161_generation_subnode_cleanup` adds the database-only
 `generation_requests.subnode_cleanup_at` and a partial index for pending work.

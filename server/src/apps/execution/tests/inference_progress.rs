@@ -1,7 +1,7 @@
 //! Inference Attempts: one outcome per attempt, lease fencing and the
 //! replayable Run stream.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 #[path = "inference_progress/stream.rs"]
 mod stream;

@@ -1,4 +1,4 @@
-//! Node Cache Salt Keys for salted Projection Versions (ADR 0016).
+//! Node Cache Salt Keys for Native Runs (ADR 0016).
 use aidash_integrations::inference::{CacheSaltKey, CacheSaltKeys};
 use hmac::{Hmac, Mac};
 use reinhardt::conf::settings::{

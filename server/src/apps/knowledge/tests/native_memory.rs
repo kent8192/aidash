@@ -3989,6 +3989,24 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
+	let spend = async |root_subject: &str, node: Option<&str>| {
+		let mut query = Query::select();
+		query
+			.expr(reinhardt::query::Func::sum(Expr::col("unpriced_calls").into()).cast_as("int8"))
+			.from("budget_spend")
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("root_subject").eq(root_subject));
+		if let Some(node) = node {
+			query.and_where(Expr::col("node").eq(node));
+		}
+		let total: Option<i64> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap();
+		total.unwrap_or_default()
+	};
+	let billed_before = spend("alice", None).await;
+
 	let outcome = if backpressure {
 		memory::Outcome::Candidates(
 			review_pressure::retry_learning(&store, &participant.bank, &proof).await,
@@ -4001,6 +4019,28 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let memory::Outcome::Candidates(candidates) = outcome else {
 		panic!("learning must return review candidates")
 	};
+	let attribution: (String, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+		&Query::select()
+			.columns(["node", "run_id", "stint_id"])
+			.from("model_calls")
+			.and_where(Expr::col("tenant").eq("acme"))
+			.and_where(Expr::col("purpose").eq("memory_role"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		attribution,
+		(
+			aidash_domain::nodes::NodeName::derived("acme").to_string(),
+			None,
+			None
+		)
+	);
+	assert_eq!(spend("alice", None).await, billed_before);
+	assert!(spend("", Some(&attribution.0)).await > 0);
+
 	assert_eq!(candidates.len(), 2);
 	assert_eq!(candidates[0].content.verification, Verification::Unverified);
 	let extracted: serde_json::Value =

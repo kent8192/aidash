@@ -50,6 +50,33 @@ pub struct DefinitionValidation {
 	egress_limits: aidash_domain::egress::Limits,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
+/// Validate current registration fields before deserializing immutable pin types.
+pub(crate) fn check_registration_pins(entry: &Entry) -> Result<()> {
+	match entry.kind.as_str() {
+		"model" if entry.config.get("projection_versions").is_some() => Err(Error::Invalid(
+			"model field projection_versions has been removed. Models use native.".into(),
+		)),
+		"agent" => {
+			for (field, allowed) in [
+				("projection_version", &["native"][..]),
+				("harness_contract", &["structured@3", "structured@4"][..]),
+			] {
+				if let Some(value) = entry.config.get(field)
+					&& !value.is_null()
+					&& !value.as_str().is_some_and(|pin| allowed.contains(&pin))
+				{
+					return Err(Error::Invalid(format!(
+						"{field} value {value} is invalid or retired. Allowed values: {}.",
+						allowed.join(", ")
+					)));
+				}
+			}
+			Ok(())
+		}
+		_ => Ok(()),
+	}
+}
+
 impl DefinitionValidation {
 	pub fn new(core_tools: Arc<dyn CoreToolCatalog>) -> Self {
 		Self {
@@ -244,6 +271,7 @@ impl DefinitionValidation {
 		specifications
 	}
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
+		check_registration_pins(e)?;
 		self.validate_definition(e, local, false)
 	}
 
@@ -392,13 +420,6 @@ impl DefinitionValidation {
 				let input: aidash_domain::registry::bindings::AgentBindings =
 					serde_json::from_value(e.config.clone())?;
 				input.validate()?;
-				if !stored {
-					aidash_domain::registry::execution_contract(
-						input.projection_version,
-						input.harness_contract,
-					)
-					.map_err(Error::Invalid)?;
-				}
 				self.validate_plugin_servers(&input)?;
 			}
 			"cluster" => {

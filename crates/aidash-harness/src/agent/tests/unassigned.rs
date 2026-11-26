@@ -89,7 +89,9 @@ async fn a_final_answer_beside_an_unassigned_task_is_held_and_the_model_is_told(
 	));
 }
 
-async fn the_next_request_carries_the_notice(mut fixture: Fixture) {
+#[rstest]
+#[tokio::test]
+async fn the_next_native_request_carries_the_notice(mut fixture: Fixture) {
 	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
 	answer(&mut fixture.run, "All done.");
 	advance_sources(&mut fixture).await.unwrap();
@@ -103,18 +105,6 @@ async fn the_next_request_carries_the_notice(mut fixture: Fixture) {
 	assert!(body.contains("Task 1"), "{body}");
 	assert!(body.contains("task_delegate"), "{body}");
 	assert!(body.contains("abandoned"), "{body}");
-}
-
-#[rstest]
-#[tokio::test]
-async fn the_next_request_carries_the_notice_on_the_legacy_projection(fixture: Fixture) {
-	the_next_request_carries_the_notice(fixture).await;
-}
-
-#[rstest]
-#[tokio::test]
-async fn the_next_request_carries_the_notice_on_the_native_projection(fixture: Fixture) {
-	the_next_request_carries_the_notice(fixture).await;
 }
 
 #[rstest]

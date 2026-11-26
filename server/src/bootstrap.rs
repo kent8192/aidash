@@ -119,9 +119,7 @@ pub async fn initialize_as(
 			current_key_version = keys.current(),
 			"Tenant Cache Salt available"
 		),
-		None => tracing::warn!(
-			"no Cache Salt Key configured; Runs of salted Projection Versions will be rejected"
-		),
+		None => tracing::warn!("no Cache Salt Key configured; Native Runs will be rejected"),
 	}
 	crate::apps::execution::services::metrics::initialize_recorder()?;
 	let pool = connection
@@ -3029,7 +3027,7 @@ pub fn configure_tenant_secrets(
 
 /// Worker inference is bound to local admission evidence, never a mutable binding.
 /// It carries this node's Cache Salt Keys; only requests with a Cache Scope
-/// (salted Projection Versions) use them.
+/// (Native Runs) use them.
 pub(crate) fn admitted_model_provider(
 	store: &Store,
 	config: aidash_domain::model::ModelConfig,

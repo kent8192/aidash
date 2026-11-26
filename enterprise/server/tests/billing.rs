@@ -5,7 +5,7 @@
 //! The billing core on PostgreSQL: meters, Billing Accounts, Tiers, the rules
 //! for who may exist on Cloud, Run admission and the usage report.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "../../../server/src/apps/execution/tests/support/legacy.rs"]
+#[path = "../../../server/src/apps/execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "billing/real_allocation.rs"]
 mod real_allocation;

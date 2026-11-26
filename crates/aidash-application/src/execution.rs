@@ -809,13 +809,12 @@ pub fn choose_inference_media(
 	headroom: usize,
 	human_batch_present: bool,
 	model: &ModelConfig,
-	projection: aidash_domain::projection::ProjectionVersion,
 ) -> (Vec<aidash_domain::provider::ContentPart>, bool) {
 	let mut combined = selected_parts;
 	combined.extend(human_parts.iter().cloned());
 	let defer_selected = human_batch_present
 		&& (!aidash_domain::provider::ModelRequest::media_within_limits(&combined)
-			|| media_request_headroom(headroom, &combined, model, projection).is_err()
+			|| media_request_headroom(headroom, &combined, model).is_err()
 			|| !model.has_current_media_route_for_parts(&combined));
 	(
 		if defer_selected {
@@ -831,9 +830,8 @@ pub fn media_request_headroom(
 	headroom: usize,
 	parts: &[aidash_domain::provider::ContentPart],
 	model: &ModelConfig,
-	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = media::run_media_budget_request(model, projection, Vec::new());
+	let request = media::run_media_budget_request(model, Vec::new());
 	request
 		.ensure_fits_with_parts(headroom, parts)
 		.map_err(Into::into)
@@ -883,9 +881,8 @@ pub fn check_model_media_headroom(
 	headroom: usize,
 	parts: Vec<aidash_domain::provider::ContentPart>,
 	model: &ModelConfig,
-	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = media::run_media_budget_request(model, projection, parts);
+	let request = media::run_media_budget_request(model, parts);
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {
 		return Err(Error::Invalid(format!(
