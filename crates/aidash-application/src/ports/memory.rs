@@ -35,6 +35,13 @@ pub struct Snapshot {
 	pub authority_revision: String,
 }
 
+/// Input to the adapter's ranked keyword search.
+pub enum KeywordQuery<'a> {
+	Text(&'a str),
+	/// Match any of these terms literally, including words used as operators.
+	Any(&'a [&'a str]),
+}
+
 #[async_trait]
 pub trait MemoryScope: Send {
 	/// Verify the Home, tenant, participant binding, provider version and requested action.
@@ -118,10 +125,24 @@ pub trait MemoryScope: Send {
 		limit: usize,
 		allowance: Allowance,
 	) -> Result<Produced<Vec<Uuid>>>;
+	/// Search by meaning with the embedding of the bank's Thread semantic
+	/// index. `None` when that Thread has no enabled index. Only Units whose
+	/// current revision is already embedded can match; the rest stay
+	/// reachable by keyword (#1123).
+	async fn thread_semantic(
+		&mut self,
+		_bank: &Bank,
+		_text: &str,
+		_allowed: &[Uuid],
+		_limit: usize,
+		_allowance: Allowance,
+	) -> Result<Option<Produced<Vec<Uuid>>>> {
+		Ok(None)
+	}
 	async fn keyword(
 		&mut self,
 		bank: &Bank,
-		text: &str,
+		query: KeywordQuery<'_>,
 		allowed: &[Uuid],
 		limit: usize,
 	) -> Result<Vec<Uuid>>;

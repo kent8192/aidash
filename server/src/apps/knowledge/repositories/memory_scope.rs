@@ -13,6 +13,7 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub(crate) struct Scope<'a, 'scope> {
@@ -20,6 +21,7 @@ pub(crate) struct Scope<'a, 'scope> {
 	pub lease: &'a mut Lease<'scope>,
 	pub models: &'a Models,
 	pub delivered: &'a mut Vec<Unit>,
+	pub start_keyword_scores: Option<&'a mut HashMap<Uuid, i32>>,
 }
 
 fn automatic_changes(
@@ -198,55 +200,153 @@ impl Scope<'_, '_> {
 		let mut points = Vec::with_capacity(allowed.len());
 		let mut point_to_unit = std::collections::BTreeMap::new();
 		for id in allowed {
-			let unit = units::load(self.lease, *id, false)
+			let point = self
+				.indexed_point(bank, *id, index.revision)
 				.await?
 				.ok_or(Error::SemanticUnavailable)?;
-			if unit.bank != *bank || !unit.visible() {
-				return Err(Error::Conflict("memory search scope changed".into()));
-			}
-			let row = native::query(
-				&Query::select()
-					.columns(["point_id", "index_revision", "state", "metadata"].map(Alias::new))
-					.from(Alias::new("semantic_entries"))
-					.and_where(Expr::col("id").eq(Expr::value(*id)))
-					.and_where(Expr::col("deleted").eq(false))
-					.lock(LockType::Share)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **self.lease.tx())
-			.await?
-			.ok_or(Error::SemanticUnavailable)?;
-			let metadata: Value = row.try_get("metadata")?;
-			if row.try_get::<String>("state")? != "READY"
-				|| row.try_get::<i64>("index_revision")? != index.revision
-				|| metadata["unit_revision"].as_i64() != Some(unit.revision)
-			{
-				return Err(Error::SemanticUnavailable);
-			}
-			let point: Uuid = row.try_get("point_id")?;
-			let digest: Option<String> = native::query_scalar(
-				&Query::select()
-					.column(Alias::new("content_digest"))
-					.from(Alias::new("semantic_points"))
-					.and_where(Expr::col("id").eq(Expr::value(point)))
-					.and_where(Expr::col("retired").eq(false))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **self.lease.tx())
-			.await?
-			.flatten();
-			if digest.as_deref()
-				!= Some(&aidash_domain::semantic::indexing::content_digest(
-					&unit.content.text,
-				)) {
-				return Err(Error::SemanticUnavailable);
-			}
 			points.push(point);
 			point_to_unit.insert(point, *id);
 		}
+		let embedded = self.models.embed(model, text, allowance).await?;
+		let ids = Box::pin(self.query_points(
+			bank,
+			&index,
+			&spec,
+			&points,
+			&point_to_unit,
+			&embedded.output,
+			limit,
+		))
+		.await?;
+		Ok(Produced {
+			output: ids,
+			usage: embedded.usage,
+		})
+	}
+	/// Built-in Memory's search by meaning with the Thread index's own
+	/// embedding (#1123). Units not yet embedded at their current revision are
+	/// left to keyword search instead of failing the recall.
+	async fn thread_search(
+		&mut self,
+		bank: &Bank,
+		text: &str,
+		allowed: &[Uuid],
+		limit: usize,
+		allowance: Allowance,
+	) -> Result<Option<Produced<Vec<Uuid>>>> {
+		if !self.models.policy.thread_index_embedding {
+			return Ok(None);
+		}
+		let Some(index) = crate::semantic::models::SemanticIndexe::locked(
+			&mut **self.lease.tx(),
+			bank.thread,
+			false,
+		)
+		.await?
+		else {
+			return Ok(None);
+		};
+		let spec = index.configuration()?;
+		if !spec.enabled {
+			return Ok(None);
+		}
+		let mut points = Vec::with_capacity(allowed.len());
+		let mut point_to_unit = std::collections::BTreeMap::new();
+		for id in allowed {
+			if let Some(point) = self.indexed_point(bank, *id, index.revision).await? {
+				points.push(point);
+				point_to_unit.insert(point, *id);
+			}
+		}
+		if points.is_empty() {
+			return Ok(None);
+		}
+		let embedded = self
+			.models
+			.embed_thread_index(&spec.embedding, text, allowance)
+			.await?;
+		let ids = Box::pin(self.query_points(
+			bank,
+			&index,
+			&spec,
+			&points,
+			&point_to_unit,
+			&embedded.output,
+			limit,
+		))
+		.await?;
+		Ok(Some(Produced {
+			output: ids,
+			usage: embedded.usage,
+		}))
+	}
+	/// The vector point of a Unit embedded at its current revision in this
+	/// index generation, or `None` while it is not.
+	async fn indexed_point(
+		&mut self,
+		bank: &Bank,
+		id: Uuid,
+		index_revision: i64,
+	) -> Result<Option<Uuid>> {
+		let unit = units::load(self.lease, id, false)
+			.await?
+			.ok_or(Error::SemanticUnavailable)?;
+		if unit.bank != *bank || !unit.visible() {
+			return Err(Error::Conflict("memory search scope changed".into()));
+		}
+		let Some(row) = native::query(
+			&Query::select()
+				.columns(["point_id", "index_revision", "state", "metadata"].map(Alias::new))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("deleted").eq(false))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **self.lease.tx())
+		.await?
+		else {
+			return Ok(None);
+		};
+		let metadata: Value = row.try_get("metadata")?;
+		if row.try_get::<String>("state")? != "READY"
+			|| row.try_get::<i64>("index_revision")? != index_revision
+			|| metadata["unit_revision"].as_i64() != Some(unit.revision)
+		{
+			return Ok(None);
+		}
+		let point: Uuid = row.try_get("point_id")?;
+		let digest: Option<String> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("content_digest"))
+				.from(Alias::new("semantic_points"))
+				.and_where(Expr::col("id").eq(Expr::value(point)))
+				.and_where(Expr::col("retired").eq(false))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.lease.tx())
+		.await?
+		.flatten();
+		Ok((digest.as_deref()
+			== Some(&aidash_domain::semantic::indexing::content_digest(
+				&unit.content.text,
+			)))
+		.then_some(point))
+	}
+	#[allow(clippy::too_many_arguments)]
+	async fn query_points(
+		&mut self,
+		bank: &Bank,
+		index: &crate::apps::knowledge::serializers::contracts::Index,
+		spec: &crate::apps::knowledge::serializers::contracts::IndexSpec,
+		points: &[Uuid],
+		point_to_unit: &std::collections::BTreeMap<Uuid, Uuid>,
+		embedded: &[f32],
+		limit: usize,
+	) -> Result<Vec<Uuid>> {
 		let transport = crate::bootstrap::semantic_transport(self.store);
 		if !transport
-			.present(&spec.vector, &index.collection, &index.tenant, &points)
+			.present(&spec.vector, &index.collection, &index.tenant, points)
 			.await?
 		{
 			// Indexed points are missing from the vector backend: the index needs
@@ -256,16 +356,15 @@ impl Scope<'_, '_> {
 				crate::semantic::remote::Failure::IndexRepair,
 			));
 		}
-		let embedded = self.models.embed(model, text, allowance).await?;
 		let results = transport
 			.query(
 				&spec.vector,
 				&index.collection,
-				&embedded.output,
+				embedded,
 				VectorFilter {
 					thread: bank.thread,
 					tenant: &bank.tenant,
-					allowed: &points,
+					allowed: points,
 				},
 				limit,
 			)
@@ -282,10 +381,7 @@ impl Scope<'_, '_> {
 			}
 			ids.push(*id);
 		}
-		Ok(Produced {
-			output: ids,
-			usage: embedded.usage,
-		})
+		Ok(ids)
 	}
 }
 #[async_trait]
@@ -502,16 +598,30 @@ impl MemoryScope for Scope<'_, '_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn keyword(
+	async fn thread_semantic(
 		&mut self,
 		bank: &Bank,
 		text: &str,
 		allowed: &[Uuid],
 		limit: usize,
-	) -> aidash_application::Result<Vec<Uuid>> {
-		repository::keyword(self.lease, bank, text, allowed, limit)
+		allowance: Allowance,
+	) -> aidash_application::Result<Option<Produced<Vec<Uuid>>>> {
+		self.thread_search(bank, text, allowed, limit, allowance)
 			.await
 			.map_err(Into::into)
+	}
+	async fn keyword(
+		&mut self,
+		bank: &Bank,
+		query: KeywordQuery<'_>,
+		allowed: &[Uuid],
+		limit: usize,
+	) -> aidash_application::Result<Vec<Uuid>> {
+		let hits = repository::keyword(self.lease, bank, query, allowed, limit).await?;
+		if let Some(scores) = self.start_keyword_scores.as_deref_mut() {
+			scores.extend(hits.iter().copied());
+		}
+		Ok(hits.into_iter().map(|(id, _)| id).collect())
 	}
 	async fn deliver(
 		&mut self,

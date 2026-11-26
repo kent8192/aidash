@@ -18,7 +18,8 @@ fn pod_timeout(path: &str, body: &Value) -> Duration {
 			.and_then(Value::as_u64)
 			.unwrap_or(0)
 			.saturating_add(15),
-		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" => 60,
+		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" | "/v2/python/cell" => 60,
+		"/v2/runs/stop_sessions" | "/v2/python/stop" => 75,
 		// Ensuring a Pod waits for its admission and startup.
 		path if path.starts_with("/v2/pods/") => 1900,
 		_ => 30,
@@ -27,6 +28,48 @@ fn pod_timeout(path: &str, body: &Value) -> Duration {
 }
 
 impl RunnerHttp {
+	/// Ask for proof that an adopted Background process can no longer run.
+	pub async fn background_ended(
+		&self,
+		scratch_space_id: &str,
+		run_id: &str,
+		operation_id: &str,
+		pod_uid: Option<&str>,
+	) -> Result<bool> {
+		#[derive(serde::Deserialize)]
+		struct Evidence {
+			ended: bool,
+		}
+		let evidence: Evidence = self
+			.pod_call(
+				"/v2/background/ended",
+				&json!({
+					"scratch_space_id": scratch_space_id, "run_id": run_id,
+					"operation_id": operation_id, "pod_uid": pod_uid,
+				}),
+			)
+			.await?;
+		Ok(evidence.ended)
+	}
+
+	/// Fence future starts and wait for this Run's Python and stdio sessions to stop.
+	pub async fn stop_sessions(&self, scratch_space_id: &str, run_id: &str) -> Result<()> {
+		#[derive(serde::Deserialize)]
+		struct Confirmation {
+			#[serde(rename = "stopped")]
+			_stopped: Vec<String>,
+		}
+		let _: Confirmation = self
+			.pod_call(
+				"/v2/runs/stop_sessions",
+				&json!({
+					"scratch_space_id": scratch_space_id, "run_id": run_id,
+				}),
+			)
+			.await?;
+		Ok(())
+	}
+
 	async fn pod_call<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
 		let body = serde_json::to_value(body).map_err(aidash_application::Error::from)?;
 		let url = reqwest::Url::parse(&self.endpoint)

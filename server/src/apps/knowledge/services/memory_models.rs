@@ -54,10 +54,22 @@ pub(crate) struct Reservation {
 	tokens: usize,
 	cost: u64,
 }
-pub(crate) enum Prepared<T> {
+enum Prepared<T> {
+	AtCapacity,
+	SkipOnReplay,
 	Cached(Produced<T>),
 	Reserved(Reservation),
 }
+#[derive(Clone, Copy)]
+enum ModelStep {
+	Required,
+	ThreadIndexEmbedding,
+}
+
+fn model_operation_capacity() -> Error {
+	Error::Conflict("memory model operation record capacity reached".into())
+}
+
 /// A Run reads another Thread's bank only through Built-in Memory, inside
 /// its own Tenant, while the Tenant shares memory per Agent (#852 decision 6).
 /// Which Units it may see is filtered afterwards by `sharing::agent_unit`.
@@ -420,6 +432,12 @@ impl Models {
 		let Err(refused) = self.admit_budget().await else {
 			return Ok(());
 		};
+		self.release_reserved(reservation).await?;
+		Err(refused)
+	}
+
+	/// Release the reservation for a call rejected before provider dispatch.
+	async fn release_reserved(&self, reservation: &Reservation) -> Result<()> {
 		let mut tx = self
 			.store
 			.control_pool
@@ -473,7 +491,7 @@ impl Models {
 			.await?;
 		}
 		tx.commit().await?;
-		Err(refused)
+		Ok(())
 	}
 
 	/// Adds a finished call to the Budget ledger: the cost its provider
@@ -503,8 +521,9 @@ impl Models {
 			.ok_or(Error::Forbidden)
 	}
 	/// Reserving the maximum before I/O keeps crashes and incomplete usage charged.
-	pub async fn prepare<T: DeserializeOwned>(
+	async fn prepare<T: DeserializeOwned>(
 		&self,
+		step: ModelStep,
 		request: &Value,
 		tokens: usize,
 		cost: u64,
@@ -515,17 +534,29 @@ impl Models {
 			|| cost > allowance.cost_micros
 			|| allowance.calls == 0
 		{
-			return Err(Error::Invalid(
-				"memory request exceeds its model allowance".into(),
-			));
+			return Err(match step {
+				ModelStep::ThreadIndexEmbedding => Error::SemanticUnavailable,
+				ModelStep::Required => {
+					Error::Invalid("memory request exceeds its model allowance".into())
+				}
+			});
 		}
 		// Capture all source lineage before provider I/O, including shared
 		// derivation origins. Reports count this attempt once, not once per Run.
 		let source_run_ids = serde_json::to_value(&self.inference.lock().await.runs)?;
-		let ordinal = self.ordinal.fetch_add(1, Ordering::SeqCst);
-		if ordinal >= self.policy.bounds.max_model_calls {
-			return Err(Error::Invalid("memory call limit exhausted".into()));
-		}
+		let next_required = self.ordinal.load(Ordering::SeqCst) as i32;
+		let ordinal = match step {
+			ModelStep::Required => {
+				let ordinal = self.ordinal.fetch_add(1, Ordering::SeqCst);
+				if ordinal >= self.policy.bounds.max_model_calls {
+					return Err(Error::Invalid("memory call limit exhausted".into()));
+				}
+				ordinal as i32
+			}
+			// Each reflection step can ask for another recall. Give that search
+			// the negative ordinal paired with the next required model call.
+			ModelStep::ThreadIndexEmbedding => -1 - next_required,
+		};
 		let digest =
 			aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(request)?);
 		let mut tx = self
@@ -569,9 +600,7 @@ impl Models {
 			.scalar_one(&mut *tx)
 			.await?;
 			if count >= self.policy.retention.max_model_operations as i64 {
-				return Err(Error::Conflict(
-					"memory model operation record capacity reached".into(),
-				));
+				return Ok(Prepared::AtCapacity);
 			}
 		}
 		native::query(
@@ -639,19 +668,44 @@ impl Models {
 				.column(reinhardt::query::ColumnRef::Asterisk)
 				.from(Alias::new("memory_model_attempts"))
 				.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
-				.and_where(Expr::col("ordinal").eq(ordinal as i32))
+				.and_where(Expr::col("ordinal").eq(ordinal))
 				.order_by(Alias::new("created_at"), Order::Desc)
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_all(&mut *tx)
 		.await?;
-		if let Some(last) = attempts.first() {
+		let last = attempts.first();
+		let last_state = last
+			.map(|attempt| attempt.try_get::<String>("state"))
+			.transpose()?;
+		if matches!(step, ModelStep::ThreadIndexEmbedding)
+			&& exists && !matches!(last_state.as_deref(), Some("complete" | "purged"))
+		{
+			let required_started = native::query(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("memory_model_attempts"))
+					.and_where(Expr::col("operation_id").eq(Expr::value(self.operation)))
+					.and_where(Expr::col("ordinal").eq(next_required))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut *tx)
+			.await?
+			.is_some();
+			if required_started {
+				// The next model call already took its input from keyword recall.
+				// A newly ready index or recovered provider must not change it on replay.
+				return Ok(Prepared::SkipOnReplay);
+			}
+		}
+		if let Some(last) = last {
 			if last.try_get::<String>("digest")? != digest {
 				return Err(Error::Conflict(
 					"memory model request changed during replay".into(),
 				));
 			}
-			if last.try_get::<String>("state")? == "purged"
+			if last_state.as_deref() == Some("purged")
 				|| op.try_get::<chrono::DateTime<Utc>>("created_at")?
 					+ Duration::days(i64::from(self.policy.retention.model_result_days))
 					<= Utc::now()
@@ -660,7 +714,7 @@ impl Models {
 					"memory model result expired or was purged; use a new operation".into(),
 				));
 			}
-			if last.try_get::<String>("state")? == "complete" {
+			if last_state.as_deref() == Some("complete") {
 				let output: Value = last.try_get("output")?;
 				tx.commit().await?;
 				return Ok(Prepared::Cached(serde_json::from_value(output)?));
@@ -761,7 +815,7 @@ impl Models {
 						.expr(Expr::value(source_run_ids))
 						.expr(Expr::value(tokens as i64))
 						.expr(Expr::value(cost as i64))
-						.expr(Expr::value(ordinal as i32))
+						.expr(Expr::value(ordinal))
 						.expr(Expr::value(self.cycle))
 						.expr(Expr::value(digest))
 						.expr(Expr::value("pending"))
@@ -933,6 +987,7 @@ impl Models {
 			.remove("input_format");
 		let reservation = match self
 			.prepare::<T>(
+				ModelStep::Required,
 				&json!({"role":reference,"request":identity}),
 				input + output,
 				charge,
@@ -942,6 +997,8 @@ impl Models {
 		{
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
+			Prepared::AtCapacity => return Err(model_operation_capacity()),
+			Prepared::SkipOnReplay => unreachable!("required calls always check their own replay"),
 		};
 		self.admit_reserved(&reservation).await?;
 		let origin = self
@@ -1102,30 +1159,85 @@ impl Models {
 	) -> Result<Produced<Vec<f32>>> {
 		let config: EmbeddingConfig =
 			serde_json::from_value(self.role(reference, "embedding")?.config.clone())?;
+		// Boxed so each caller's future stays small on deep recall stacks.
+		Box::pin(self.embed_with(
+			&config,
+			Some(reference),
+			json!({"embedding":reference,"text":text}),
+			text,
+			allowance,
+		))
+		.await
+	}
+	/// Embed with the bank's Thread index embedding, which has no Registry
+	/// role (#1123). A remote Home cannot serve it, so remote callers fall
+	/// back to keyword search.
+	pub async fn embed_thread_index(
+		&self,
+		config: &EmbeddingConfig,
+		text: &str,
+		allowance: Allowance,
+	) -> Result<Produced<Vec<f32>>> {
+		if self.remote.is_some() {
+			return Err(Error::SemanticUnavailable);
+		}
+		// Boxed so each caller's future stays small on deep recall stacks.
+		Box::pin(self.embed_with(
+			config,
+			None,
+			json!({"thread_index_embedding":config,"text":text}),
+			text,
+			allowance,
+		))
+		.await
+	}
+	async fn embed_with(
+		&self,
+		config: &EmbeddingConfig,
+		reference: Option<&EntityRef>,
+		request: serde_json::Value,
+		text: &str,
+		allowance: Allowance,
+	) -> Result<Produced<Vec<f32>>> {
 		let tokens = text.len();
 		let charge = self.policy.prices.embedding.charge(tokens as u64, 0)?;
 		self.require_origins(None).await?;
+		let optional = reference.is_none();
+		let step = if optional {
+			ModelStep::ThreadIndexEmbedding
+		} else {
+			ModelStep::Required
+		};
 		let reservation = match self
-			.prepare::<Vec<f32>>(
-				&json!({"embedding":reference,"text":text}),
-				tokens,
-				charge,
-				allowance,
-			)
+			.prepare::<Vec<f32>>(step, &request, tokens, charge, allowance)
 			.await?
 		{
 			Prepared::Cached(output) => return Ok(output),
 			Prepared::Reserved(reservation) => reservation,
+			Prepared::AtCapacity if optional => {
+				return Err(Error::RemoteSemantic(
+					crate::semantic::remote::Failure::DurableMemoryBudget,
+				));
+			}
+			Prepared::AtCapacity => return Err(model_operation_capacity()),
+			Prepared::SkipOnReplay => return Err(Error::SemanticUnavailable),
 		};
 		self.admit_reserved(&reservation).await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
-			self.reserve_embedding(&config, text, origin).await?
+			match self.reserve_embedding(config, text, origin, optional).await {
+				Err(Error::SemanticUnavailable) if optional => {
+					self.release_reserved(&reservation).await?;
+					return Err(Error::SemanticUnavailable);
+				}
+				result => result?,
+			}
 		} else {
 			None
 		};
 		let remote = if let Some(origin) = &self.remote {
+			let reference = reference.ok_or(Error::SemanticUnavailable)?;
 			Some(
 				super::remote_memory_models::reserve(
 					self,
@@ -1151,7 +1263,7 @@ impl Models {
 					MaintenancePurpose::MemoryRetrieval
 				}),
 			)
-			.embed(&config, aidash_domain::semantic::EmbeddingInput::Text(text)),
+			.embed(config, aidash_domain::semantic::EmbeddingInput::Text(text)),
 		)
 		.await
 		// A provider deadline or transport failure is the outage a Run retries

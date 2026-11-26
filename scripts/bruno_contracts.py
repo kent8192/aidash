@@ -207,6 +207,10 @@ SUBJECT_READS = {
         ("Subject cannot read a definition it may not read", 403, SUBJECT,
          "/api/registry/aidash.workspace_read/1.0.0", ""),
     ],
+    "GET /api/registry/{id}/{version}/reference-revocations": [
+        ("Subject cannot read revocation hints for an unreadable definition", 403, SUBJECT,
+         "/api/registry/aidash.workspace_read/1.0.0/reference-revocations?node={{tenant_node}}", ""),
+    ],
 }
 
 

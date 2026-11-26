@@ -44,7 +44,7 @@ pub(crate) async fn lock_for_end(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	creator: Uuid,
 ) -> NativeResult<()> {
-	lock_control(tx, creator).await?;
+	lock_control(tx, creator, LockType::NoKeyUpdate).await?;
 	aidash_application::subnodes::lock_end(&mut NativeCascade { tx }, creator).await?;
 	Ok(())
 }
@@ -52,13 +52,14 @@ pub(crate) async fn lock_for_end(
 async fn lock_control(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	run: Uuid,
+	lock: LockType,
 ) -> NativeResult<Option<(String, String)>> {
 	crate::database::native::query_as(
 		&Query::select()
 			.columns(["control", "control_source"].map(Alias::new))
 			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
-			.lock(LockType::NoKeyUpdate)
+			.lock(lock)
 			.to_string(PostgresQueryBuilder),
 	)
 	.columns(&["control", "control_source"])
@@ -66,11 +67,13 @@ async fn lock_control(
 	.await
 }
 
-async fn safety_paused(
+/// Check for a Safety Stop with the Run locked until the caller's transaction ends.
+pub(crate) async fn safety_paused(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	run: Uuid,
+	lock: LockType,
 ) -> NativeResult<bool> {
-	Ok(lock_control(tx, run)
+	Ok(lock_control(tx, run, lock)
 		.await?
 		.is_some_and(|(control, source)| {
 			control == RunControl::Paused.as_str()
@@ -83,7 +86,7 @@ pub(crate) async fn lock_for_resume(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	creator: Uuid,
 ) -> NativeResult<bool> {
-	let cascade = safety_paused(tx, creator).await?;
+	let cascade = safety_paused(tx, creator, LockType::NoKeyUpdate).await?;
 	if cascade {
 		aidash_application::subnodes::lock_end(&mut NativeCascade { tx }, creator).await?;
 	}
@@ -139,8 +142,8 @@ impl EndScope for Cascade<'_> {
 		// Preserve the control revision of an existing Safety Stop. A direct
 		// stop's receipt identifies the paused branch during a later resume.
 		let skip = match action {
-			RunControlAction::Pause => safety_paused(self.tx, run).await?,
-			RunControlAction::Resume => !safety_paused(self.tx, run).await?,
+			RunControlAction::Pause => safety_paused(self.tx, run, LockType::NoKeyUpdate).await?,
+			RunControlAction::Resume => !safety_paused(self.tx, run, LockType::NoKeyUpdate).await?,
 			RunControlAction::Cancel => false,
 		};
 		if skip {

@@ -115,9 +115,28 @@ pub fn batchable(behavior: &ToolBehavior) -> bool {
 		&& !behavior.tool_call_approval
 }
 
+/// Whether a file read or search selects Scratch Space paths.
+pub fn scratch_file_read(operation: &str, input: &Value) -> bool {
+	let given = |field: &str| input.get(field).is_some_and(|value| !value.is_null());
+	match operation {
+		"file_read" => given("path") && !given("file_id"),
+		"file_search" => input["scope"] == "scratch",
+		_ => false,
+	}
+}
+
+/// File tools that may wait on Runner I/O.
+pub fn pod_file_call(operation: &str, input: &Value) -> bool {
+	scratch_file_read(operation, input)
+		|| matches!(operation, "file_save" | "file_copy" | "apply_patch")
+}
+
 /// Derive claims and output bounds for core read operations from validated
 /// arguments. Anything that cannot be derived runs alone on the sequential path.
 pub fn core_call(operation: &str, input: &Value, ceilings: ReadCeilings) -> Option<ConcurrentCall> {
+	if scratch_file_read(operation, input) {
+		return None;
+	}
 	match operation {
 		"file_read" => {
 			let read = FileRead::deserialize(input).ok()?;

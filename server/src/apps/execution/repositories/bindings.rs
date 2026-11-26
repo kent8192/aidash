@@ -10,6 +10,7 @@ use aidash_application::{
 		bindings::{ProviderCatalog, ProviderSet},
 		execution::ExecutionTool,
 	},
+	registry::bindings::execution::{bound_specification, validate_bound_input},
 };
 use aidash_domain::{
 	Run,
@@ -69,6 +70,7 @@ impl ProviderSet for Providers {
 		Ok(Arc::new(ProviderTool {
 			tool: self.tool(binding, descriptor, &implementations())?,
 			description_note: None,
+			pinned: None,
 			contract,
 			operation,
 			connection_scopes,
@@ -85,14 +87,37 @@ fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 }
 impl Providers {
 	/// Coordination tools are intrinsic to a Subnode, independent of a member's Bindings.
-	pub(crate) fn coordination_tool(&self, name: &str) -> Result<Arc<dyn ExecutionTool>> {
-		self.intrinsic_tool(name, None)
+	pub(crate) fn coordination_tool(
+		&self,
+		run: &Run,
+		name: &str,
+	) -> Result<Arc<dyn ExecutionTool>> {
+		let pinned = run.context.binding_snapshot.as_ref().and_then(|snapshot| {
+			snapshot.bindings.iter().find(|binding| {
+				binding.excluded_reason.is_none()
+					&& binding.alias.as_deref() == Some(name)
+					&& binding.definition.config["operation"] == name
+					&& binding.definition.config["provider"]
+						.as_str()
+						.is_some_and(|provider| provider.starts_with("core."))
+			})
+		});
+		self.intrinsic(name, None, pinned.cloned())
 	}
 
 	pub(crate) fn intrinsic_tool(
 		&self,
 		name: &str,
 		description_note: Option<String>,
+	) -> Result<Arc<dyn ExecutionTool>> {
+		self.intrinsic(name, description_note, None)
+	}
+
+	fn intrinsic(
+		&self,
+		name: &str,
+		description_note: Option<String>,
+		pinned: Option<ResolvedBinding>,
 	) -> Result<Arc<dyn ExecutionTool>> {
 		let tool = implementations()
 			.remove(name)
@@ -103,6 +128,7 @@ impl Providers {
 		Ok(Arc::new(ProviderTool {
 			tool,
 			description_note,
+			pinned,
 			contract,
 			operation: Some(name.into()),
 			connection_scopes: Vec::new(),
@@ -164,6 +190,8 @@ impl Providers {
 struct ProviderTool {
 	tool: Arc<dyn Tool>,
 	description_note: Option<String>,
+	/// The declaration of a coordination alias that the Agent also bound.
+	pinned: Option<ResolvedBinding>,
 	contract: ToolContract,
 	/// The core provider operation; integrations carry a transport instead.
 	operation: Option<String>,
@@ -182,6 +210,9 @@ impl ExecutionTool for ProviderTool {
 	}
 	fn specification(&self) -> ToolSpec {
 		let mut spec = self.tool.specification();
+		if let Some(pinned) = &self.pinned {
+			spec = bound_specification(pinned, spec);
+		}
 		if let Some(note) = &self.description_note {
 			spec.description.push_str(note);
 		}
@@ -190,7 +221,14 @@ impl ExecutionTool for ProviderTool {
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()
 	}
+	fn validate_input(&self, input: &Value) -> Result<()> {
+		if let Some(pinned) = &self.pinned {
+			validate_bound_input(pinned, input)?;
+		}
+		Ok(())
+	}
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
+		self.validate_input(&input)?;
 		self.tool
 			.invoke(
 				&ToolContext {

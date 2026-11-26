@@ -178,7 +178,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"code_interpreter",
-			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. SESSION_RESET requires acknowledging the new ID; saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Pass the previous result's session_id as expected_session_id when relying on variables or imports. On SESSION_RESET, rebuild state using the new ID if supplied, or omit expected_session_id to start fresh. Saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Python>(),
 		),
 		(

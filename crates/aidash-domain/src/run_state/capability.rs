@@ -45,6 +45,8 @@ pub enum PersistedCapability {
 	EarlyUnassignedAbandonment,
 	/// A Run can suspend while an external service is unavailable.
 	OutageWait,
+	/// An outage retains its spent short retries across wake-ups.
+	OutageRetryState,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
@@ -57,6 +59,7 @@ impl PersistedCapability {
 		Self::UnassignedAbandonment,
 		Self::EarlyUnassignedAbandonment,
 		Self::OutageWait,
+		Self::OutageRetryState,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -74,6 +77,7 @@ impl PersistedCapability {
 			Self::UnassignedAbandonment => "unassigned_abandonment",
 			Self::EarlyUnassignedAbandonment => "early_unassigned_abandonment",
 			Self::OutageWait => "outage_wait",
+			Self::OutageRetryState => "outage_retry_state",
 		}
 	}
 }
@@ -121,6 +125,12 @@ impl RecoveryState {
 			.as_ref()
 			.map(|_| PersistedCapability::OutageWait)
 			.into_iter()
+			.chain(
+				self.outage
+					.as_ref()
+					.filter(|outage| outage.short_retries_exhausted)
+					.map(|_| PersistedCapability::OutageRetryState),
+			)
 			.chain((!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext))
 			.chain(
 				self.thread_event_cursor

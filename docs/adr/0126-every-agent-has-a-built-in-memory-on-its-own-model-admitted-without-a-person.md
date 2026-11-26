@@ -29,6 +29,27 @@ Each fact names its Run and Context Journal range. A later Run reads details bac
 
 A Run that a Remote Grant started recalls and writes memory through its Home (ADR 0139). Recall reads the Home Workspace's published bank and the Agent's participant bank there, as the Run's starting context already did, and writes go only to the participant bank, so nothing the Run learns stays on the receiving Node and it never writes the Home's shared memory directly.
 
+## Amendment (2026-11-23)
+
+Task-start recall ranks facts that match any literal keyword from the Task title and description.
+Unicode word segmentation also supplies keywords for prose without spaces, such as Japanese.
+The Thread owns the bank by default under ADR 0140. Tenant-wide sharing also considers the
+same Agent's facts in other authorized Threads. The number of distinct matching words determines
+priority across eligible banks. Recall looks past oversized facts to fit up to eight facts
+in 1024 UTF-8 bytes of JSON, including their Unit IDs, revisions and provenance. Each inference
+reloads the selected revisions under current authority.
+
+## Amendment (2026-11-24)
+
+"Semantic search joins only when the Tenant approves an embedding" was never built: the built-in policy fixed `embedding: None`. A separate memory approval would also repeat the compaction Decider problem (#540), where an approval nobody gives means the feature never runs. #1123 settles it without one:
+
+- Built-in Memory searches by meaning only when its bank's Thread has an enabled semantic index, and it uses that index's embedding (`thread_index_embedding` in the built-in policy). Setting up the Thread index is the opt-in; memory adds no approval of its own, because its facts go to the same embedding the Thread's sources already use.
+- Without an enabled index, recall stays keyword, time and link search, exactly as before.
+- Facts are embedded like the Thread's other sources and on the same ledger. Facts admitted before the index was enabled are embedded when it is. A fact the index cannot take (source limit, text size) stays keyword-only instead of failing the memory write.
+- Disabling the index or changing its embedding is refused until the request confirms that it deletes or recomputes the embeddings of the Thread's memory facts (`acknowledge_memory_embeddings`). After disabling, search by meaning is off and the facts stay.
+- An embedding failure during recall (outage, exhausted balance or Budget, a fact not yet embedded) leaves keyword, time and link search and is logged; it is not a tool error.
+- Consolidation still compares facts by keyword. Memory work whose model calls go through a remote origin stays keyword-only, because the remote reservation names a Registry role and the Thread index embedding has none.
+
 ## Amendment (2026-11-25): a person's deletion marks what was learned from it (#928)
 
 When a person deletes a fact, the facts learned from Task executions that recalled it are marked, not withdrawn. The mark spreads to facts learned from Task executions that recalled a marked fact. Recall returns a marked fact with the deleted fact's text and asks the model to rely on it only if it does not depend on that fact. Marked facts rank below unmarked ones. A new revision with new evidence clears the mark. Running Task executions that read the deleted or a newly marked fact are not stopped: they receive a platform notice before their next inference. The memory's own evictions, corrections and reconciliations cause no Deletion Mark.
@@ -44,3 +65,4 @@ A live comparison chose this over withdrawing the facts. DeepSeek V4.1 Flash, wi
 - **Withdraw facts one hop away.** Poisoned facts two hops away survived (4 of 5 invoice answers poisoned), and the true facts of the first hop were lost.
 - **Withdraw transitively.** Removes the poison, but also every unrelated fact the same Task executions learned.
 - **Stop Task executions that read the deleted fact.** Built-in Memory failures are tool errors, not stops (above). A notice lets the execution re-check its own work.
+||||||| c933ce490a

@@ -53,6 +53,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, views::duties::successor, &["Uuid"])?;
 		contracts.request::<_, SuccessorInput>(document, views::duties::successor)?;
 		contracts.response::<_, DutyView>(document, views::duties::successor, 200, json)?;
+		contracts.path(document, views::duties::take_over, &["Uuid"])?;
+		contracts.response::<_, DutyView>(document, views::duties::take_over, 200, json)?;
 		contracts.path(document, views::duties::run_now, &["Uuid"])?;
 		contracts.response::<_, RunNowView>(document, views::duties::run_now, 200, json)?;
 		contracts.path(document, views::duties::remove, &["Uuid"])?;

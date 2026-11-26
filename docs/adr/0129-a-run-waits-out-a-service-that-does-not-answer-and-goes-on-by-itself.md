@@ -15,6 +15,8 @@ Many outages used to end in a pause that only a person could lift, even when the
 3. Goes on by itself at the first retry that gets an answer.
 4. After 24 hours without an answer, pauses as before, so that only a person can resume it, and sends the normal pause notice. Runs and schedules have no deadline of their own today, so the bound is the same 24 hours for all.
 
+The Outage Wait carries its spent short retries across wake-ups. A different failure on the resumed step can use the full generic retry budget (#1034).
+
 Attempts made during an Outage Wait count against no call limit (such as `max_calls_per_run`) and no charge. The dashboard marks the Run "Outage Wait: <service>". No notice goes out on entry, only when the bound turns the wait into a pause.
 
 These enter an Outage Wait:

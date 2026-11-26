@@ -48,7 +48,7 @@ impl WorkerLeases for Leases {
 			.renew_lease(&claimed(), run, token, seconds)
 			.await
 			.map_err(|error| {
-				self.store.recovery_cursors.outage.note(&error);
+				self.store.recovery_cursors.outage.note(&error, seconds);
 				error.into()
 			})
 	}
@@ -445,7 +445,9 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::ContextOverflow => ExecutionFailure::Context(
 			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted,
 		),
-		NativeError::Forbidden | NativeError::Unauthorized => {
+		NativeError::Forbidden
+		| NativeError::Unauthorized
+		| NativeError::CredentialForbidden(_) => {
 			ExecutionFailure::Authority(AuthorityFailure::Denied(None))
 		}
 		NativeError::AuthorityRefused(refusal) => {

@@ -9,6 +9,7 @@ use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::ScopeId;
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
+use indexmap::IndexSet;
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
@@ -17,13 +18,16 @@ use reinhardt::query::{
 use uuid::Uuid;
 
 use crate::apps::execution::capabilities::models::egress::{
-	RunRevocation, ScopeConnection, ScopeDaily, ScopeEvent, ScopeRefusal, ScopeState,
+	RunRevocation, ScopeConnection, ScopeDaily, ScopeEvent, ScopeHostDebit, ScopeRefusal,
+	ScopeState,
 };
 use crate::database::native::Transaction;
 use crate::{Error, Result, store::Store};
 
 mod authority;
 pub use authority::ScratchAuthority;
+
+const INITIALIZED_KEPT: usize = 4096;
 
 /// Durable counters composed with live Scratch Space authority.
 #[derive(Clone)]
@@ -33,7 +37,7 @@ pub struct DurableScopes {
 	/// Scopes whose state row this process has made sure of, so that a new
 	/// connection writes nothing before it holds a Host connection limit (#845).
 	/// A row that is gone again (Node purged) fails the scope's next charge.
-	initialized: Arc<std::sync::Mutex<std::collections::HashSet<ScopeId>>>,
+	initialized: Arc<std::sync::Mutex<IndexSet<ScopeId>>>,
 }
 impl DurableScopes {
 	pub fn new(store: Store, authority: Arc<dyn ScopeAuthority>) -> Self {
@@ -73,7 +77,13 @@ impl DurableScopes {
 		tx.execute(&sql, convert_values(values)).await?;
 		let _ = locked_state_now(&mut tx, id).await?;
 		tx.commit().await?;
-		self.initialized.lock().unwrap().insert(id.clone());
+		let mut initialized = self.initialized.lock().unwrap();
+		initialized.insert(id.clone());
+		if initialized.len() > INITIALIZED_KEPT {
+			// Evict the oldest half in one pass. Reinitializing an evicted scope
+			// reuses its existing state row and leaves its counters intact.
+			drop(initialized.drain(..INITIALIZED_KEPT / 2));
+		}
 		Ok(())
 	}
 	async fn charge(
@@ -83,7 +93,6 @@ impl DurableScopes {
 		bytes: u64,
 		day: NaiveDate,
 		service: Option<(&str, aidash_domain::egress::Limits)>,
-		forwarded: bool,
 	) -> Result<()> {
 		// Forwarded bytes have already crossed the gateway, so they are added
 		// even when live authority refuses: a deleted Tenant or Node can be
@@ -93,9 +102,7 @@ impl DurableScopes {
 		// purged Node, keeps them only in the request record.
 		let (current, refused) = match self.live(&settings.id).await {
 			Ok(current) => (Some(current), None),
-			Err(error)
-				if forwarded && DebitRefusal::of(&error) == Some(DebitRefusal::Forbidden) =>
-			{
+			Err(error) if DebitRefusal::of(&error) == Some(DebitRefusal::Forbidden) => {
 				(None, Some(error))
 			}
 			Err(error) => return Err(error.into()),
@@ -111,7 +118,7 @@ impl DurableScopes {
 				Direction::Sent => current.budget.sent_bytes,
 				Direction::Received => current.budget.received_bytes,
 			});
-		let mut exhausted = charge_row(&mut total, direction, bytes, max, forwarded)?;
+		let mut exhausted = charge_forwarded_row(&mut total, direction, bytes, max);
 		let service_row = if let Some((name, limits)) = service {
 			let mut row = daily(&mut tx, id, day, name).await?;
 			let max = match (&current, direction) {
@@ -119,7 +126,7 @@ impl DurableScopes {
 				(Some(_), Direction::Sent) => limits.sent_bytes,
 				(Some(_), Direction::Received) => limits.received_bytes,
 			};
-			exhausted |= charge_row(&mut row, direction, bytes, max, forwarded)?;
+			exhausted |= charge_forwarded_row(&mut row, direction, bytes, max);
 			Some(row)
 		} else {
 			None
@@ -287,23 +294,13 @@ fn add(row: &mut ScopeDaily, direction: Direction, bytes: i64, max: u64) -> Resu
 	*counter = next;
 	Ok(())
 }
-fn charge_row(
-	row: &mut ScopeDaily,
-	direction: Direction,
-	bytes: i64,
-	max: u64,
-	forwarded: bool,
-) -> Result<bool> {
-	if !forwarded {
-		add(row, direction, bytes, max)?;
-		return Ok(false);
-	}
+fn charge_forwarded_row(row: &mut ScopeDaily, direction: Direction, bytes: i64, max: u64) -> bool {
 	let counter = match direction {
 		Direction::Sent => &mut row.sent_bytes,
 		Direction::Received => &mut row.received_bytes,
 	};
 	*counter = counter.saturating_add(bytes);
-	Ok(bytes > 0 && (*counter as u64) >= max.min(i64::MAX as u64))
+	bytes > 0 && (*counter as u64) >= max.min(i64::MAX as u64)
 }
 // PostgreSQL counters are signed; reaching their maximum must fail closed even
 // if a future authority supplies a larger unsigned budget.
@@ -442,10 +439,61 @@ impl EgressScopes for DurableScopes {
 		direction: Direction,
 		bytes: u64,
 		day: NaiveDate,
+		reservation: Uuid,
 	) -> aidash_application::Result<()> {
-		self.charge(settings, direction, bytes, day, None, false)
-			.await
-			.map_err(application_error)
+		let current = self.live(&settings.id).await?;
+		let id = &current.id;
+		let result: Result<()> = async {
+			let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
+			let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
+			let _ = locked_state(&mut tx, id, "debit").await?;
+			let sent = matches!(direction, Direction::Sent);
+			let day_key = day.to_string();
+			let existing = ScopeHostDebit::objects()
+				.filter(ScopeHostDebit::field_id().eq(reservation))
+				.filter(ScopeHostDebit::field_tenant().eq(id.tenant.clone()))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?
+				.pop();
+			if let Some(existing) = existing {
+				if existing.scope_id != id.scratch_space
+					|| existing.node != id.node
+					|| existing.day != day_key
+					|| existing.sent != sent
+					|| existing.bytes != bytes
+				{
+					return Err(Error::Forbidden);
+				}
+				return tx.commit().await;
+			}
+			let mut total = daily(&mut tx, id, day, "").await?;
+			let max = match direction {
+				Direction::Sent => current.budget.sent_bytes,
+				Direction::Received => current.budget.received_bytes,
+			};
+			add(&mut total, direction, bytes, max)?;
+			ScopeDaily::objects()
+				.save_with_executor(&mut *tx, &total)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			let receipt = ScopeHostDebit::build()
+				.id(reservation)
+				.tenant(id.tenant.clone())
+				.node(id.node.clone())
+				.scope_id(id.scratch_space)
+				.day(day_key)
+				.sent(sent)
+				.bytes(bytes)
+				.finish();
+			ScopeHostDebit::objects()
+				.insert_with_executor(&mut *tx, &receipt)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			tx.commit().await
+		}
+		.await;
+		result.map_err(application_error)
 	}
 	async fn refund(
 		&self,
@@ -672,7 +720,6 @@ impl Meter for ScopedMeter {
 					owed,
 					Utc::now().date_naive(),
 					self.limits.map(|l| (self.service.as_str(), l)),
-					true,
 				)
 				.await
 				.map_err(application_error);

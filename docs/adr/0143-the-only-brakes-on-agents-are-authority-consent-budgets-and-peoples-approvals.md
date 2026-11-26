@@ -41,3 +41,7 @@ Lead's calls made while building Budgets:
 - **A Duty starts no Task** while a Budget that covers its Node, its Requester or itself is at its Hard Limit; the tick or event is skipped with reason `budget: <id>`.
 - **A Soft Limit records one notice per window** and mails its recipients through the Deployment's SMTP settings. Without SMTP, the pass records the notice as skipped. A refused or interrupted delivery stays pending. If SMTP accepts the message and the replica stops before recording success, a later attempt can deliver it again.
 - **In-flight calls can overshoot**: the gate reads spend recorded so far, and a call already dispatched completes. A call a newer lease abandoned still posts its cost when it finishes.
+
+## Amendment (2026-11-24, #1117)
+
+ADR 0146: every other limit, on threads, connections, counts, pages or waits, names what it protects, counts at that scope and says so when hit, or is removed.

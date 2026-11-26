@@ -2,9 +2,7 @@
 
 pub(crate) fn forward() -> String {
 	use crate::apps::identity::services::duty_policy_backfill;
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
-	};
+	use reinhardt::query::{Alias, Expr, ExprTrait, Query, SimpleExpr};
 	// The member policy as it stood when this migration was written, so the
 	// generated asset keeps the text it was applied with: every later grant and
 	// rename has its own migration (`identity/0080_schedule_member_policy`
@@ -27,13 +25,17 @@ pub(crate) fn forward() -> String {
 		"document->'policies' @> jsonb_build_array(?::jsonb)".into(),
 		vec![Expr::value(previous).into()],
 	);
-	Query::update()
+	let mut update = Query::update();
+	update
 		.table(Alias::new("authorization_bundles"))
 		.value_expr(Alias::new("document"), policies)
 		.value_expr(Alias::new("revision"), Expr::col("revision").add(1))
 		.value_expr(Alias::new("updated_at"), Expr::cust("CURRENT_TIMESTAMP"))
-		.and_where(matches_default)
-		.to_string(PostgresQueryBuilder)
+		.and_where(matches_default);
+	super::policy_revision_backfill::record_update(
+		&mut update,
+		"migration:identity/0067_scratch_member_policy",
+	)
 }
 
 /// Reversal preserves policy edits made after this data migration.

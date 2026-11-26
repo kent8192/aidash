@@ -247,35 +247,24 @@ pub(crate) async fn prepare(
 		.map_err(Into::into)
 }
 
-/// The Runner's answer to a dispatch.
-pub(crate) struct Dispatch {
-	pub pod_host: Option<String>,
-	pub startup_log: String,
-	pub started_at: DateTime<Utc>,
-	pub failure: Option<String>,
+/// The outcome of attempting to start a Live preview.
+pub(crate) enum Dispatch {
+	NotDispatched,
+	Failed,
+	Serving {
+		pod_host: String,
+		started_at: DateTime<Utc>,
+	},
 }
 
-impl Dispatch {
-	/// A dispatch that never reached the Runner still releases the revision's
-	/// holds through the recorded `start_failed` stop.
-	pub fn failed(message: impl Into<String>) -> Self {
-		Self {
-			pod_host: None,
-			startup_log: String::new(),
-			started_at: Utc::now(),
-			failure: Some(message.into()),
-		}
-	}
-}
-
-/// Record the Runner's answer: serving on success, or start-failed after the
-/// revision's holds are released.
+/// Record the start outcome. An error from dispatch can leave a process
+/// running, so the revision's holds stay until termination is confirmed.
 pub(crate) async fn finish_start(
 	store: &Store,
 	access: &mut Access,
 	run: &Run,
 	domain: Option<String>,
-	pending: LivePreview,
+	id: Uuid,
 	dispatched: Dispatch,
 ) -> NativeResult<Started> {
 	let mut scope = Scope {
@@ -284,51 +273,42 @@ pub(crate) async fn finish_start(
 		run: run.clone(),
 		domain,
 	};
-	// Lock the current row before using the pre-dispatch snapshot. A stop can
-	// commit while the Runner is starting; its reason must remain authoritative.
-	let current = Row::objects()
-		.filter(Row::field_id().eq(pending.id))
-		.select_for_update()
-		.all_with_executor(&mut **scope.access.tx)
-		.await
-		.map_err(reinhardt::core::exception::Error::from)
-		.map_err(NativeError::from)?
-		.pop()
+	// Preserve a stop that committed while the Runner was starting.
+	let mut current = load_locked(&mut **scope.access.tx, id)
+		.await?
 		.ok_or_else(|| NativeError::NotFound("live preview".into()))?;
-	let mut current = self::domain(current)?;
 	if current.state.is_stopped() {
-		if current.termination_confirmed
-			&& dispatched.pod_host.is_some()
-			&& dispatched.failure.is_none()
-		{
-			// An earlier termination proof cannot cover a later running observation.
-			// Re-arm the stopped row so the sweep retries if cancellation fails.
+		if current.termination_confirmed && !matches!(dispatched, Dispatch::NotDispatched) {
+			// Dispatch may have reached the Runner after the earlier termination
+			// proof. Re-arm the row for the sweep.
 			current.termination_confirmed = false;
 			application::Scope::save(&mut scope, &current).await?;
 		}
 		return Ok(Started {
 			status: Status::of(&current, current.revision),
-			startup_log: aidash_domain::preview::live::startup_tail(&dispatched.startup_log),
+			startup_log: String::new(),
 		});
 	}
-	match dispatched.pod_host {
-		Some(pod_host) if dispatched.failure.is_none() => application::serving(
-			&mut scope,
-			pending,
+	match dispatched {
+		Dispatch::Serving {
 			pod_host,
-			&dispatched.startup_log,
-			dispatched.started_at,
-		)
-		.await
-		.map_err(Into::into),
-		_ => application::failed(
-			&mut scope,
-			pending,
-			StopReason::StartFailed,
-			&dispatched.startup_log,
-		)
-		.await
-		.map_err(Into::into),
+			started_at,
+		} => application::serving(&mut scope, current, pod_host, "", started_at)
+			.await
+			.map_err(Into::into),
+		Dispatch::NotDispatched => {
+			application::failed(&mut scope, current, StopReason::StartFailed, "")
+				.await
+				.map_err(Into::into)
+		}
+		Dispatch::Failed => {
+			current.stopping(StopReason::StartFailed);
+			application::Scope::save(&mut scope, &current).await?;
+			Ok(Started {
+				status: Status::of(&current, current.revision),
+				startup_log: String::new(),
+			})
+		}
 	}
 }
 
@@ -489,6 +469,21 @@ async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<Li
 	row.map(domain).transpose()
 }
 
+async fn load_locked(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	id: Uuid,
+) -> NativeResult<Option<LivePreview>> {
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop();
+	row.map(domain).transpose()
+}
+
 /// The Read Recheck of a serving Live preview, for everyone on its Run's chain
 /// (ADR 0070, ADR 0116). A Run that has finished stays covered: its grant remains.
 pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> {
@@ -612,15 +607,7 @@ pub(crate) async fn set_unconfirmed(
 	// Decide on the locked row and write it in the same transaction, as the
 	// gateway does, so a stop or a gateway update committed after the read
 	// above is never written back over.
-	let row = Row::objects()
-		.filter(Row::field_id().eq(id))
-		.select_for_update()
-		.all_with_executor(&mut *tx)
-		.await
-		.map_err(reinhardt::core::exception::Error::from)
-		.map_err(NativeError::from)?
-		.pop();
-	let Some(mut preview) = row.map(domain).transpose()? else {
+	let Some(mut preview) = load_locked(&mut *tx, id).await? else {
 		tx.commit().await?;
 		return Ok(None);
 	};
@@ -643,23 +630,30 @@ pub(crate) async fn set_unconfirmed(
 /// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the
 /// row settles when the Runner proves the Pod is gone, here or on a later pass.
 pub(crate) async fn stop_serving(store: &Store, id: Uuid, reason: StopReason) -> NativeResult<()> {
-	let Some(mut preview) = load_for_maintenance(store, id).await? else {
+	let Some(tenant) = load_for_maintenance(store, id)
+		.await?
+		.map(|preview| preview.tenant)
+	else {
 		return Ok(());
 	};
-	if !matches!(preview.state, State::Running | State::Stale) {
+	let mut tx = store.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
+	// The gateway and other stops can commit after the maintenance lookup.
+	// Decide from the locked row and save before releasing the lock.
+	let Some(mut preview) = load_locked(&mut *tx, id).await? else {
+		tx.commit().await?;
+		return Ok(());
+	};
+	if !preview.running() {
+		tx.commit().await?;
 		return Ok(());
 	}
-	let tenant = preview.tenant.clone();
 	preview.stopping(reason);
-	{
-		let mut tx = store.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
-		Row::objects()
-			.save_with_executor(&mut *tx, &to_row(&preview))
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(NativeError::from)?;
-		tx.commit().await?;
-	}
+	Row::objects()
+		.save_with_executor(&mut *tx, &to_row(&preview))
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?;
+	tx.commit().await?;
 	if terminate(store, &preview).await.unwrap_or(false) {
 		preview.termination_confirmed = true;
 		settle_row(store, &tenant, &mut preview).await?;

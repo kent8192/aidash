@@ -531,7 +531,12 @@ async fn probe_legacy(store: &Store, thread: Uuid) -> Result<()> {
 				}
 			}
 			// An Area owner's suspended Account is their refusal, not a failed probe.
-			Err(Error::Forbidden | Error::Unauthorized | Error::AccountSuspended { .. }) => {
+			Err(
+				Error::Forbidden
+				| Error::Unauthorized
+				| Error::CredentialForbidden(_)
+				| Error::AccountSuspended { .. },
+			) => {
 				failed_areas.insert(area_id);
 				tracing::warn!("legacy image authority or File unavailable");
 			}

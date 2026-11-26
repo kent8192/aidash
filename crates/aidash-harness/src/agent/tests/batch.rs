@@ -108,6 +108,15 @@ fn read(path: &str) -> Value {
 	json!({"content": format!("contents of {path}")})
 }
 
+/// Map a Working Area file ID to the scripted path for that call.
+fn scripted_path(input: &Value) -> String {
+	if let Some(file_id) = input["file_id"].as_str() {
+		let file_id = Uuid::parse_str(file_id).expect("fixture file ID");
+		return format!("p{}", file_id.as_u128() - 1);
+	}
+	input["path"].as_str().expect("fixture path").to_owned()
+}
+
 /// Counts one execution or result recording in flight until it returns or is
 /// dropped; both hold a database connection on a Node.
 struct Flight<'a> {
@@ -142,7 +151,7 @@ struct Probe {
 }
 impl Probe {
 	async fn execute(&self, via: &str, input: Value, key: &str) -> Result<Value> {
-		let path = input["path"].as_str().expect("fixture path").to_owned();
+		let path = scripted_path(&input);
 		let attempt = {
 			let mut attempts = self.lab.attempts.lock().unwrap();
 			let attempt = attempts.entry(key.to_owned()).or_default();
@@ -174,11 +183,13 @@ impl ExecutionTool for Probe {
 	async fn invoke(&self, _run: &Run, input: Value, key: &str) -> Result<Value> {
 		self.execute("invoke", input, key).await
 	}
-	fn concurrent_call(&self, _input: &Value) -> Option<ConcurrentCall> {
-		self.claims.clone()
+	fn concurrent_call(&self, input: &Value) -> Option<ConcurrentCall> {
+		self.claims
+			.clone()
+			.filter(|_| !aidash_domain::tool::concurrency::scratch_file_read(self.name, input))
 	}
 	async fn admit(&self, _run: &Run, input: Value) -> Result<Value> {
-		let path = input["path"].as_str().expect("fixture path");
+		let path = scripted_path(&input);
 		self.lab
 			.events
 			.lock()
@@ -285,9 +296,8 @@ struct Desk {
 	finishes: Mutex<Vec<(String, Value)>>,
 	saves: Mutex<Vec<(String, Run)>>,
 	reports: Mutex<Vec<String>>,
-	/// Whether the Run may release its authority and visibility leases, as
-	/// it does only around an Authority Change; each release and resume is
-	/// then a `lease:` event. Otherwise any release is unexpected.
+	/// Whether this test expects lease suspension and resumption. Only tests
+	/// exercising those boundaries opt in and check the ordered `lease:` events.
 	releases: std::sync::atomic::AtomicBool,
 }
 impl Bench {
@@ -389,7 +399,17 @@ fn bench(
 		.map(|(index, name)| ToolCall {
 			id: format!("call-{index}"),
 			name: (*name).into(),
-			arguments: json!({"path": format!("p{index}")}),
+			arguments: match *name {
+				"file_read" | "pinned_read" => json!({
+					"file_id": Uuid::from_u128(index as u128 + 1),
+					"representation": "text",
+				}),
+				"file_search" => json!({
+					"query": "contents", "mode": "literal", "scope": "working",
+					"path": format!("p{index}"),
+				}),
+				_ => json!({"path": format!("p{index}")}),
+			},
 		})
 		.collect();
 	let run = Run {
@@ -441,6 +461,7 @@ fn bench(
 			created_by: "human".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 0,
 			created_at: now,
 		},
@@ -1618,6 +1639,28 @@ async fn an_ordinary_call_keeps_the_runs_leases() {
 }
 
 #[tokio::test]
+async fn a_scratch_read_releases_visibility_before_invoking_and_resumes_it_before_authority() {
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(&lab, &["file_read"], 2, Some(ToolSlots::new(2)));
+	run.state.tool_mut().unwrap().response.tool_calls[0].arguments = json!({"path": "p0"});
+	bench.0.releases.store(true, SeqCst);
+
+	advance(&bench, &mut run).await.unwrap();
+
+	assert_eq!(
+		lab.events.lock().unwrap().as_slice(),
+		[
+			"lease:visibility.suspend".to_owned(),
+			format!("invoke:{}", key(&run, 0)),
+			"lease:authority.suspend".to_owned(),
+			"lease:visibility.resume".to_owned(),
+			"lease:authority.resume".to_owned(),
+		]
+	);
+	assert_eq!(adopted(&run), expected(&[(0, read("p0"))]));
+}
+
+#[tokio::test]
 async fn sequential_tool_error_is_recorded_for_the_model() {
 	let expected_error = json!({"error":{"kind":"http_status","status":422,"body":"invalid"}});
 	let output = expected_error.clone();
@@ -2302,7 +2345,7 @@ async fn a_gate_refusal_names_the_call_it_stopped() {
 			replay_safe: true,
 			tool_call: Some(aidash_domain::tool::RefusedToolCall {
 				name: "file_read".into(),
-				arguments: json!({"path":"p0"})
+				arguments: json!({"file_id": Uuid::from_u128(1), "representation": "text"})
 			}),
 		})
 	);

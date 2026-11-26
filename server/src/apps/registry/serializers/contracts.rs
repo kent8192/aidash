@@ -60,12 +60,32 @@ pub struct RegistryVersion {
 	/// Disclosure shown only when approving this exact Provider tool version.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub provider_warning: Option<String>,
+	/// Revocation hints for the Reference files bound to this Source.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub reference_revocations: Vec<ReferenceRevocationHint>,
 	pub approval: Option<VersionApproval>,
 	pub history: Vec<ApprovalRecord>,
 	/// The agent subject an approval created, for an agent version (ADR 0062),
 	/// shown to subjects who may approve the version.
 	pub subject: Option<AgentSubject>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct ReferenceRevocationHint {
+	pub reference_id: uuid::Uuid,
+	pub path: String,
+	pub may_revoke: bool,
+	/// The current revision for an allowed revoke, omitted otherwise.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub revision: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReferenceRevocationsQuery {
+	/// The Node on which the Source is approved.
+	pub node: aidash_domain::nodes::NodeName,
+}
+
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct AgentSubject {
 	pub id: String,

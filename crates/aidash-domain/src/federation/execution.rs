@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Receiver-approved, content-free reasons that may cross a Federation boundary.
+/// Content-free reasons for refusal during remote execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Refusal {
@@ -19,6 +19,7 @@ pub enum Refusal {
 	NodeUseAsk,
 	NodeUnreachable,
 	InvalidExecutor,
+	SubnodeDelegation,
 	InstallationInactive,
 	ExecutorMismatch,
 	DefinitionChanged,
@@ -123,6 +124,9 @@ impl std::fmt::Display for Refusal {
 			Self::NodeUseAsk => "the target Node requires authority approval for node.use",
 			Self::NodeUnreachable => "the target Node is unreachable",
 			Self::InvalidExecutor => "the target Agent subject has an incompatible type",
+			Self::SubnodeDelegation => {
+				"Subnode members can delegate Tasks only to members of their own Subnode. Select a member on this Node"
+			}
 			Self::InstallationInactive => "the target Node has no active installation of the agent",
 			Self::ExecutorMismatch => {
 				"the target Node's agent does not match the one the task asked for"

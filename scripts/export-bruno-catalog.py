@@ -22,6 +22,7 @@ REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
+    ("GET", "/api/registry/{id}/{version}/reference-revocations"): ("registry-source-revocations", "registry/management"),
     ("GET", "/api/tenants/{tenant}/invitation-approvals"): ("tenant-invitation-approvals", "tenant_administration"),
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),
     ("POST", NODE_PATH + "/deletion"): ("tenant-node-deletion", "nodes"),
@@ -34,6 +35,8 @@ ADDITIONS = {
     ("POST", "/api/marketplace/packages/{key}/duty"): ("marketplace-install-duty", "marketplace/duty_templates"),
     ("POST", "/api/duties/{id}/template-update"): ("duty-template-update", "marketplace/duty_templates"),
     ("GET", "/api/threads/{id}/executions"): ("thread-executions", "execution/management"),
+    # A named successor takes a Duty over (#991, ADR 0145).
+    ("POST", "/api/duties/{id}/take-over"): ("duty-take-over", "workspaces/duties"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
     ("GET", "/api/authorization/{tenant}/catalog/requests/pending/count"): ("authorization-catalog-requests-pending-count", "policies"),

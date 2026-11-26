@@ -71,6 +71,7 @@ fn policy() -> Policy {
 		learn_from_runs: true,
 		maintain_observations: false,
 		refresh_mental_models: false,
+		thread_index_embedding: false,
 	}
 }
 fn unit() -> Unit {
@@ -207,7 +208,13 @@ impl MemoryScope for Scope {
 			},
 		})
 	}
-	async fn keyword(&mut self, _: &Bank, _: &str, _: &[Uuid], _: usize) -> Result<Vec<Uuid>> {
+	async fn keyword(
+		&mut self,
+		_: &Bank,
+		_: KeywordQuery<'_>,
+		_: &[Uuid],
+		_: usize,
+	) -> Result<Vec<Uuid>> {
 		Ok(if self.retention_test {
 			vec![Uuid::from_u128(2), Uuid::from_u128(1)]
 		} else {
@@ -870,7 +877,13 @@ impl MemoryScope for DiverseScope {
 			},
 		})
 	}
-	async fn keyword(&mut self, _: &Bank, _: &str, _: &[Uuid], _: usize) -> Result<Vec<Uuid>> {
+	async fn keyword(
+		&mut self,
+		_: &Bank,
+		_: KeywordQuery<'_>,
+		_: &[Uuid],
+		_: usize,
+	) -> Result<Vec<Uuid>> {
 		Ok(vec![])
 	}
 	async fn deliver(&mut self, _: &Bank, _: &str, evidence: &[Evidence]) -> Result<()> {

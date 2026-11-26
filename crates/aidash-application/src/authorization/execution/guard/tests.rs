@@ -175,6 +175,7 @@ impl RunGuardScope for Scope {
 			created_by: "creator".into(),
 			dependencies: vec![],
 			parent_id: None,
+			started_by_duty: None,
 			revision: 7,
 			created_at: Utc::now(),
 		})

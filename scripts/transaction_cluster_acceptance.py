@@ -481,6 +481,8 @@ class Cluster:
         self.rollout("nats")
         # Servers read the issuer's discovery document when a person logs in.
         self.provision_issuer()
+        # Bind the issuer's local port before any Node forward allocates a port.
+        self.reach_issuer()
         for node in range(count):
             # Each node has its own database; there are no runtime cross-DB reads.
             self.provision_database(node)

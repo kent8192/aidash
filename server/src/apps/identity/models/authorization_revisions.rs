@@ -25,10 +25,46 @@ pub struct AuthorizationRevision {
 }
 
 use crate::Result;
+use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
+};
 use serde_json::json;
+use std::collections::BTreeSet;
 
 impl AuthorizationRevision {
+	/// Reads the subject names recorded under the caller's Tenant policy lock.
+	pub(crate) async fn subject_names(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+	) -> Result<BTreeSet<String>> {
+		let subjects = SimpleExpr::FunctionCall(
+			"jsonb_extract_path".into_iden(),
+			vec![Expr::col("document").into(), Expr::value("subjects").into()],
+		);
+		let (sql, values) = Query::select()
+			.distinct()
+			.expr_as(
+				SimpleExpr::FunctionCall("jsonb_object_keys".into_iden(), vec![subjects]),
+				Alias::new("subject"),
+			)
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.build(PostgresQueryBuilder);
+		tx.fetch_all(&sql, convert_values(values))
+			.await?
+			.iter()
+			.map(|row| {
+				row.get("subject")
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(Into::into)
+			})
+			.collect()
+	}
+
 	pub(crate) async fn page<E: OrmExecutor>(
 		db: &mut E,
 		tenant: &str,

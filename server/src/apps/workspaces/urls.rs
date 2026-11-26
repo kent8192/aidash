@@ -24,6 +24,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::successor)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duties::take_over)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::run_now)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::remove)

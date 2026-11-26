@@ -1452,9 +1452,7 @@ impl<'a> Executor<'a> {
 		// Read before the retry state is cleared: this attempt may degrade an
 		// unavailable thread slot when it is the last one (ADR 0059).
 		let degrade_on_outage = run.recovery.degrades_on_outage();
-		// An Outage Wait keeps the retry count its outage spent; waking it
-		// restores that count below.
-		let waited_retry = run.recovery.retry.take();
+		run.recovery.retry = None;
 		// The count survives lease-retaining checkpoints of this step; the save
 		// that ends the step resets it (see `Run::worker_snapshot`).
 		let lease_recoveries = run.recovery.lease_recoveries;
@@ -3233,6 +3231,10 @@ connection: None,
 				}
 				let mut prepared_result = None;
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
+					if matches!(fitting, ResultFitting::ThreadRecord | ResultFitting::Observation) {
+						// These fitters read directly from Home.
+						tool_step!(call, async { tool.validate_input(&call.arguments) });
+					}
 					let (range, saved) = tool_step!(call, async {
 						tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor)
 					});
@@ -3432,16 +3434,25 @@ connection: None,
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					// An Authority Change (such as creating a Node) takes the Tenant's
-					// policy exclusively; this Run's own shared lease would make it wait
-					// on itself, so the Run releases its locks while the call runs.
-					let releases_authority = contract.behavior.authority_change && guard.is_some();
-					if releases_authority && let Some(guard) = guard {
-						guard.suspend().await?;
-						visibility.suspend().await?;
+					// Authority Changes enter without the Run's policy locks. A Scratch
+					// Space file call keeps them through Binding admission and releases
+					// them at the tool's Runner boundary.
+					let runner_file = pod_file_call(run, &contract.identity, &call.arguments);
+					if let Some(guard) = guard {
+						if contract.behavior.authority_change {
+							guard.suspend().await?;
+						}
+						if contract.behavior.authority_change || runner_file {
+							visibility.suspend().await?;
+						}
 					}
 					let (invoked, note) = refusal_note::scoped(tool.invoke(run, call.arguments.clone(), &key)).await;
-					if releases_authority && let Some(guard) = guard {
+					if (contract.behavior.authority_change || runner_file) && let Some(guard) = guard {
+						// The file tool reacquired authority to settle. Release it before
+						// the visibility gate so a waiting Authority Change can proceed.
+						if runner_file {
+							guard.suspend().await?;
+						}
 						let resumed = visibility.resume().await;
 						guard.resume().await?;
 						resumed?;
@@ -3827,16 +3838,8 @@ connection: None,
 						run.recovery.home_poll.observe(true);
 						resume.into_state()
 					}
-					WaitingState::Outage { resume, .. } => {
-						// The short retries stay spent across the wake-up, so the
-						// next failure waits again instead of retrying for another
-						// minute (ADR 0129). The wait records a count only for an
-						// outage counted by `recovery.retry` (semantic context, a
-						// service); a Decider or Node outage keeps its own.
-						run.recovery.retry = waited_retry.map(|retry| aidash_domain::RetryState {
-							at: chrono::Utc::now(),
-							..retry
-						});
+					WaitingState::Outage { service, resume, .. } => {
+						crate::recovery::restore_outage_wait(run, &service);
 						resume.into_state()
 					}
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
@@ -4364,6 +4367,32 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 			Error::RemoteSemantic(Failure::ContextBudget)
 		}
 		error => error,
+	}
+}
+
+fn pod_file_call(run: &Run, identity: &ToolIdentity, input: &Value) -> bool {
+	use aidash_domain::tool::{concurrency, providers::core_provider};
+	let uses_runner =
+		|operation| operation == "attachment_copy" || concurrency::pod_file_call(operation, input);
+	match identity {
+		ToolIdentity::Builtin(name) => name.strip_prefix("builtin:").is_some_and(uses_runner),
+		ToolIdentity::Descriptor(identity) => run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.and_then(|snapshot| {
+				snapshot
+					.bindings
+					.iter()
+					.find(|binding| binding.identity == *identity)
+			})
+			.is_some_and(|binding| {
+				let config = &binding.definition.config;
+				let operation = config["operation"].as_str().unwrap_or_default();
+				core_provider(operation).is_some_and(|provider| config["provider"] == provider)
+					&& uses_runner(operation)
+			}),
+		ToolIdentity::Registry(_) | ToolIdentity::AgentPlugin(_) => false,
 	}
 }
 

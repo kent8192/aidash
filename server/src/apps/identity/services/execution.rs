@@ -328,6 +328,16 @@ pub(crate) async fn delegate_in(
 #[derive(Clone)]
 pub(crate) struct WorkerAuthority {
 	access: Arc<RwLock<Access>>,
+	remote: Option<Federation>,
+}
+
+enum AttachmentSource<'a> {
+	Thread,
+	Pulled {
+		message_id: Uuid,
+		media_type: String,
+		bytes: &'a [u8],
+	},
 }
 
 /// A Run's worker authority as its step holds it, for integration tests outside
@@ -348,6 +358,7 @@ impl StepAuthority {
 		access.suspend().await?;
 		Ok(Self(WorkerAuthority {
 			access: Arc::new(RwLock::new(access)),
+			remote: None,
 		}))
 	}
 
@@ -1170,60 +1181,11 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
-		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
-			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
-		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
-			.map_err(|_| Error::Invalid("invalid idempotency key".into()))?;
-		let revision = input["expected_revision"]
-			.as_i64()
-			.ok_or_else(|| Error::Invalid("missing expected_revision".into()))?;
-		let path = input["path"]
-			.as_str()
-			.ok_or_else(|| Error::Invalid("missing path".into()))?
-			.to_owned();
-		let outer = self.access.read().await;
-		let access = Access::under_lease(&outer).await?;
-		let mut lease = crate::collaboration::access::Lease::from_access(access);
-		let result: Result<Value> = async {
-			crate::apps::execution::repositories::subnodes::require_writable(
-				lease.access_mut().tx.native_mut(),
-				run.thread_id,
-			)
-			.await?;
-			let record = lease
-				.access_mut()
-				.tool_thread_record(run.thread_id, run.thread_id, "attachment", attachment_id)
-				.await?;
-			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
-			let (attachment, content) = aidash_application::threads::channels::download(
-				&mut crate::bootstrap::channel_scope(store, &mut lease),
-				run.thread_id,
-				attachment_id,
-			)
-			.await?;
-			let digest = crate::apps::execution::repositories::capability_objects::digest(&content);
-			aidash_application::capabilities::files::copy_thread_attachment(
-				&mut crate::bootstrap::file_scope(Some(store), lease.access_mut(), Some(run)),
-				&run.metadata(),
-				key,
-				revision,
-				path,
-				message_id,
-				attachment_id,
-				attachment.media_type,
-				digest,
-				&content,
-			)
+		self.copy_attachment(store, run, input, AttachmentSource::Thread)
 			.await
-			.map_err(Into::into)
-		}
-		.await;
-		lease.finish(result).await
 	}
-	/// `attachment_copy` for a Run executing here for another Home (ADR 0139, decision 20): the
-	/// receiver pulled the Home's attachment, so there is no Thread record to read here. The
-	/// copy lands where `copy_thread_attachment` puts it for any Run, in the Scratch Space its
-	/// commands read, or in its receiving Working Area when the Node runs no Pods.
+
+	/// A receiving Run gets its Home's attachment bytes before taking its own authority.
 	pub(crate) async fn copy_pulled_thread_attachment(
 		&self,
 		store: &Store,
@@ -1233,6 +1195,30 @@ impl WorkerAuthority {
 		media_type: String,
 		content: &[u8],
 	) -> Result<Value> {
+		self.copy_attachment(
+			store,
+			run,
+			input,
+			AttachmentSource::Pulled {
+				message_id,
+				media_type,
+				bytes: content,
+			},
+		)
+		.await
+	}
+
+	async fn copy_attachment(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+		source: AttachmentSource<'_>,
+	) -> Result<Value> {
+		use crate::apps::execution::repositories::{operations::remote_tools, subnodes};
+		use aidash_application::capabilities::files::{AttachmentCopy, copy_thread_attachment};
+		use std::borrow::Cow;
+
 		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
 			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
 		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
@@ -1244,33 +1230,120 @@ impl WorkerAuthority {
 			.as_str()
 			.ok_or_else(|| Error::Invalid("missing path".into()))?
 			.to_owned();
-		let digest = crate::apps::execution::repositories::capability_objects::digest(content);
-		let outer = self.access.read().await;
-		let mut access = Access::under_lease(&outer).await?;
-		let result: Result<Value> = async {
-			crate::apps::execution::repositories::subnodes::require_writable(
-				access.tx.native_mut(),
-				run.thread_id,
-			)
-			.await?;
-			aidash_application::capabilities::files::copy_thread_attachment(
-				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
-				&run.metadata(),
-				key,
-				revision,
-				path,
-				message_id,
-				attachment_id,
-				media_type,
-				digest,
-				content,
-			)
-			.await
-			.map_err(Into::into)
+		let local = matches!(&source, AttachmentSource::Thread);
+		let mut outer = self.access.write().await;
+		let was_active = outer.tx.is_active();
+		let result = async {
+			if !was_active {
+				crate::database::authority_change::enter(&store.pool, &outer.identity.tenant).await;
+			}
+			let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+			if !was_active {
+				self.refresh_pod_file_authority(&mut outer, store, run)
+					.await?;
+				Self::remember_file_catalog(&mut outer, run, None).await?;
+			}
+			let access = Access::under_lease(&outer).await?;
+			let mut lease = crate::collaboration::access::Lease::from_access(access);
+			let prepared = async {
+				subnodes::require_writable(lease.access_mut().tx.native_mut(), run.thread_id)
+					.await?;
+				let (message_id, media_type, bytes) = match source {
+					AttachmentSource::Thread => {
+						let record = lease
+							.access_mut()
+							.tool_thread_record(
+								run.thread_id,
+								run.thread_id,
+								"attachment",
+								attachment_id,
+							)
+							.await?;
+						let message_id: Uuid =
+							serde_json::from_value(record["message_id"].clone())?;
+						let (attachment, content) =
+							aidash_application::threads::channels::download(
+								&mut crate::bootstrap::channel_scope(store, &mut lease),
+								run.thread_id,
+								attachment_id,
+							)
+							.await?;
+						(message_id, attachment.media_type, Cow::Owned(content))
+					}
+					AttachmentSource::Pulled {
+						message_id,
+						media_type,
+						bytes,
+					} => (message_id, media_type, Cow::Borrowed(bytes)),
+				};
+				let digest =
+					crate::apps::execution::repositories::capability_objects::digest(&bytes);
+				let prepared = copy_thread_attachment(
+					&mut crate::bootstrap::file_scope(Some(store), lease.access_mut(), Some(run)),
+					&run.metadata(),
+					key,
+					revision,
+					path,
+					message_id,
+					attachment_id,
+					media_type,
+					digest,
+					&bytes,
+				)
+				.await?;
+				Ok((prepared, bytes))
+			}
+			.await;
+			let (prepared, bytes) = lease.finish(prepared).await?;
+			let plan = match prepared {
+				AttachmentCopy::Complete(value) => return Ok(value),
+				AttachmentCopy::Pod(plan) => plan,
+			};
+			let metadata = run.metadata();
+			visibility.suspend().await?;
+			let (value, _visibility) = self
+				.without_pod_file_authority(&mut outer, store, run, plan.execute(&metadata, &bytes))
+				.await?;
+			Self::remember_file_catalog(&mut outer, run, Some("attachment_copy")).await?;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = async {
+				subnodes::require_writable(access.tx.native_mut(), run.thread_id).await?;
+				if remote_tools::withdrawn(access.tx.as_mut(), run.id, "attachment_copy").await? {
+					return Err(Error::Forbidden);
+				}
+				if local {
+					let record = access
+						.tool_thread_record(
+							run.thread_id,
+							run.thread_id,
+							"attachment",
+							attachment_id,
+						)
+						.await?;
+					if record["message_id"] != json!(plan.message_id)
+						|| record["sha256"] != value["digest"]
+					{
+						return Err(Error::Forbidden);
+					}
+				}
+				plan.settle(
+					&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+					&metadata,
+					value,
+				)
+				.await
+				.map_err(Into::into)
+			}
+			.await;
+			access.finish(result).await
 		}
 		.await;
-		access.finish(result).await
+		if !was_active && outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		result
 	}
+
 	/// The scope of every transaction this authority's Run opens.
 	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
 		self.access.read().await.tenancy()
@@ -1292,8 +1365,40 @@ impl WorkerAuthority {
 		if matches!(name, "live_preview_start" | "live_preview_stop") {
 			return self.live_preview_tool(store, run, name, input).await;
 		}
+		use crate::capabilities::service::Invocation;
+		if aidash_domain::tool::concurrency::pod_file_call(name, &input) {
+			return match self.pod_file_tool(store, run, name, input, key).await {
+				Ok(result) => Ok(result),
+				Err(error) => blocked(key, error),
+			};
+		}
 		let outer = self.access.read().await;
-		let mut access = Access::under_lease(&outer).await?;
+		match Self::prepare_core_tool(&outer, store, run, name, input, key, shared_read).await {
+			Ok(Invocation::Complete(result)) => Ok(json!(result)),
+			Ok(Invocation::Pod(_)) => Err(Error::Conflict(
+				"Scratch Space file boundary required".into(),
+			)),
+			Err(error) => blocked(key, error),
+		}
+	}
+
+	fn core_tool_wire(result: aidash_domain::capabilities::files::Envelope) -> Result<Value> {
+		Ok(serde_json::to_value(
+			crate::capabilities::service::envelope(result)?,
+		)?)
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	async fn prepare_core_tool(
+		outer: &Access,
+		store: &Store,
+		run: &Run,
+		name: &str,
+		input: Value,
+		key: &str,
+		shared_read: bool,
+	) -> Result<crate::capabilities::service::Invocation> {
+		let mut access = Access::under_lease(outer).await?;
 		access.shared_area = shared_read;
 		let result = async {
 			crate::apps::execution::repositories::subnodes::require_writable(
@@ -1304,10 +1409,154 @@ impl WorkerAuthority {
 			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await
 		}
 		.await;
-		match access.finish(result).await {
-			Ok(result) => Ok(json!(result)),
-			Err(error) => blocked(key, error),
+		access.finish(result).await
+	}
+
+	async fn refresh_pod_file_authority(
+		&self,
+		outer: &mut Access,
+		store: &Store,
+		run: &Run,
+	) -> Result<()> {
+		if let Some(remote) = &self.remote {
+			let (fresh, _) = super::peer::admission::worker_lease(remote, &run.metadata())
+				.await?
+				.ok_or(Error::Forbidden)?;
+			*outer = fresh;
+			return Ok(());
 		}
+		let result = refresh_access_for_run(outer, store, run).await;
+		if result.is_err() {
+			outer.discard_failed_execution_refresh().await;
+		}
+		result
+	}
+
+	/// A refreshed outer lease must remember the current Catalog entries before
+	/// its inner tool transaction may use them.
+	async fn remember_file_catalog(
+		outer: &mut Access,
+		run: &Run,
+		tool: Option<&str>,
+	) -> Result<()> {
+		catalog::entry(
+			outer,
+			&EntityRef {
+				id: run.agent_id.clone(),
+				version: run.agent_version.clone(),
+			},
+			"agent.execute",
+		)
+		.await?;
+		if let Some(tool) = tool {
+			let binding = run
+				.context
+				.binding_snapshot
+				.as_deref()
+				.ok_or(Error::Forbidden)?
+				.operation(tool)?;
+			catalog::entry(outer, &binding.identity.local(), "registry.read").await?;
+		}
+		Ok(())
+	}
+
+	/// Restore current execution authority on both Runner outcomes.
+	async fn without_pod_file_authority<T>(
+		&self,
+		outer: &mut Access,
+		store: &Store,
+		run: &Run,
+		wait: impl std::future::Future<Output = aidash_application::Result<T>>,
+	) -> Result<(T, crate::transactions::gate::ReadLease)> {
+		let identity = outer.identity.clone();
+		let subjects = outer.subjects.clone();
+		let policy_revision = outer.snapshot.revision;
+		outer.suspend().await?;
+		let result = wait.await;
+		// Settlement rechecks already-admitted work (ADR 0121).
+		let visibility = crate::transactions::gate::ReadLease::begin(store)
+			.await
+			.map_err(after_effect)?;
+		self.refresh_pod_file_authority(outer, store, run)
+			.await
+			.map_err(authority_gone_after_effect)?;
+		if outer.identity.tenant != identity.tenant
+			|| outer.identity.credential_id != identity.credential_id
+			|| outer.identity.subject != identity.subject
+			|| outer.subjects != subjects
+		{
+			return Err(authority_gone_after_effect(Error::Forbidden));
+		}
+		if outer.snapshot.revision != policy_revision {
+			return Err(Error::Forbidden);
+		}
+		Ok((result?, visibility))
+	}
+
+	async fn pod_file_tool(
+		&self,
+		store: &Store,
+		run: &Run,
+		name: &str,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		use crate::apps::execution::repositories::{
+			files::ScratchStaging, operations::remote_tools, subnodes,
+		};
+		use crate::capabilities::service::Invocation;
+		let mut outer = self.access.write().await;
+		// The harness suspends its lease and visibility gate before these calls.
+		// Calls from an already active boundary get their outer lease back below.
+		let was_active = outer.tx.is_active();
+		let result = async {
+			if !was_active {
+				crate::database::authority_change::enter(&store.pool, &outer.identity.tenant).await;
+			}
+			let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+			if !was_active {
+				self.refresh_pod_file_authority(&mut outer, store, run)
+					.await?;
+				Self::remember_file_catalog(&mut outer, run, Some(name)).await?;
+			}
+			let request =
+				match Self::prepare_core_tool(&outer, store, run, name, input, key, false).await? {
+					Invocation::Complete(result) => return Ok(json!(result)),
+					Invocation::Pod(request) => request,
+				};
+			let metadata = run.metadata();
+			let tenant = outer.identity.tenant.clone();
+			let mut stage = ScratchStaging::new(store, &tenant);
+			visibility.suspend().await?;
+			let (completed, _visibility) = self
+				.without_pod_file_authority(
+					&mut outer,
+					store,
+					run,
+					request.execute(&metadata, &mut stage),
+				)
+				.await?;
+			Self::remember_file_catalog(&mut outer, run, Some(name)).await?;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = async {
+				subnodes::require_writable(access.tx.native_mut(), run.thread_id).await?;
+				if remote_tools::withdrawn(access.tx.as_mut(), run.id, name).await? {
+					return Err(Error::Forbidden);
+				}
+				let mut scope = crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
+				let envelope = completed
+					.settle(&mut scope, &run.metadata(), name, key)
+					.await?;
+				Self::core_tool_wire(envelope)
+			}
+			.await;
+			access.finish(result).await
+		}
+		.await;
+		if !was_active && outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		result
 	}
 
 	/// Start or stop the Run's Live preview. A start waits up to 120 seconds for
@@ -1482,8 +1731,8 @@ impl WorkerAuthority {
 				&mut access,
 				run,
 				domain.clone(),
-				pending.clone(),
-				previews::Dispatch::failed(String::new()),
+				pending.id,
+				previews::Dispatch::NotDispatched,
 			)
 			.await;
 			let started = access.finish(result).await?;
@@ -1507,13 +1756,11 @@ impl WorkerAuthority {
 		)
 		.await
 		{
-			Ok(host) => previews::Dispatch {
-				pod_host: Some(host),
-				startup_log: String::new(),
+			Ok(host) => previews::Dispatch::Serving {
+				pod_host: host,
 				started_at: chrono::Utc::now(),
-				failure: None,
 			},
-			Err(error) => previews::Dispatch::failed(error.to_string()),
+			Err(_) => previews::Dispatch::Failed,
 		};
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
@@ -1522,7 +1769,7 @@ impl WorkerAuthority {
 			&mut access,
 			run,
 			domain.clone(),
-			pending.clone(),
+			pending.id,
 			dispatched,
 		)
 		.await;
@@ -2046,7 +2293,8 @@ impl WorkerAuthority {
 		let creator_authority = binding_authority(&usable, &config)?;
 		let mut members = std::collections::BTreeMap::new();
 		for agent in &input.members {
-			let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
+			let entry =
+				catalog::tool_entry(&mut lease, agent, "agent.execute", "subnode_create").await?;
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
 				&mut lease,
@@ -2157,13 +2405,18 @@ impl WorkerAuthority {
 			creator_bindings = Some(bindings);
 		}
 		let candidate = match command {
-			Command::Add { agent, .. } => Some(agent),
-			Command::Task { .. } => Some(&subnode.leader),
+			Command::Add { agent, .. } => Some((agent, Some("subnode_add_member"))),
+			Command::Task { .. } => Some((&subnode.leader, None)),
 			_ => None,
 		};
-		if let Some(candidate) = candidate {
+		if let Some((candidate, tool)) = candidate {
 			lease.set_node(run.node.clone());
-			let entry = catalog::entry(&mut lease, candidate, "agent.execute").await?;
+			let entry = match tool {
+				Some(tool) => {
+					catalog::tool_entry(&mut lease, candidate, "agent.execute", tool).await?
+				}
+				None => catalog::entry(&mut lease, candidate, "agent.execute").await?,
+			};
 			crate::marketplace::check_pinned(&mut lease, &entry).await?;
 			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
 				&mut lease,
@@ -2801,6 +3054,7 @@ impl Guard {
 	pub fn authority(&self) -> WorkerAuthority {
 		WorkerAuthority {
 			access: self.access.clone(),
+			remote: self.remote.clone(),
 		}
 	}
 	/// Retrieval Key scope: a local Run's subject and policy revision; a remote
@@ -3362,6 +3616,7 @@ impl DeliveryGuard {
 	pub fn local_authority(&self) -> Option<WorkerAuthority> {
 		(!self.remote).then(|| WorkerAuthority {
 			access: self.access.clone(),
+			remote: None,
 		})
 	}
 }

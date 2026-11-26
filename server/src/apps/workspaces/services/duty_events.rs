@@ -3,7 +3,7 @@
 //! requester: each starts or wakes a Task that acts for the Duty's requester,
 //! and its content reaches the Agent as data.
 use super::access::Lease;
-use super::duties::{Adapter, start_with};
+use super::duties::{Adapter, requester_refused, start_with};
 use crate::apps::workspaces::repositories::{duties as duty_repository, duty_events as repository};
 use crate::{
 	Error, Result,
@@ -135,6 +135,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		let mut scope = Adapter {
 			access: &mut access,
 			store: &f.store,
+			scratch_policy: &f.config.scratch_policy,
 			now,
 		};
 		match op {
@@ -330,6 +331,7 @@ pub(crate) async fn receive_from_node(
 			let mut scope = Adapter {
 				access: &mut access,
 				store: &f.store,
+				scratch_policy: &f.config.scratch_policy,
 				now: Utc::now(),
 			};
 			match app::detail(&mut scope, trigger.duty_id).await {
@@ -460,18 +462,6 @@ pub(super) async fn deliver_pending(f: &Federation) -> Result<bool> {
 			return Ok(delivered > 0);
 		}
 	}
-}
-
-/// Whether beginning the Requester's access failed because they left or lost
-/// the credential the Duty acts with, rather than for a reason that may pass.
-fn lost_access(error: &Error) -> bool {
-	matches!(
-		error,
-		Error::Unauthorized
-			| Error::CredentialUnauthorized(_)
-			| Error::Forbidden
-			| Error::CredentialForbidden(_)
-	)
 }
 
 /// Whether a webhook sender should send an event again: it was not recorded
@@ -613,7 +603,7 @@ async fn apply(
 		Ok(access) => access,
 		// The Requester left or lost the credential the Duty acts with: the
 		// event is recorded and starts nothing.
-		Err(error) if lost_access(&error) => {
+		Err(error) if requester_refused(&error) => {
 			event.reason = Some("the Requester lost access".into());
 			return record(f, tenant, &duty, event, intake).await;
 		}
@@ -803,11 +793,12 @@ mod tests {
 	#[rstest]
 	#[case(Error::Unauthorized, true)]
 	#[case(Error::Forbidden, true)]
+	#[case(Error::AccountSuspended { epoch: 1 }, true)]
 	#[case(Error::PolicyBusy { retry_after: 1 }, false)]
 	#[case(Error::Database(sqlx::Error::PoolTimedOut), false)]
 	#[case(Error::Conflict("authorization revision changed".into()), false)]
 	fn only_an_authorization_refusal_is_lost_access(#[case] error: Error, #[case] lost: bool) {
-		assert_eq!(lost_access(&error), lost, "{error:?}");
+		assert_eq!(requester_refused(&error), lost, "{error:?}");
 	}
 
 	/// A start that may pass answers 503; a definite refusal does not.
