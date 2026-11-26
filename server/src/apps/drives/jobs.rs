@@ -432,7 +432,13 @@ pub(super) async fn tick(store: &Store) -> Result<()> {
 }
 
 async fn mark_failed(store: &Store, tenant: &str, id: Uuid, error: &Error) -> Result<()> {
-	let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
+	let mut tx = store
+		.control_pool
+		.begin(&TenancyScope::tenant(tenant)?)
+		.await?;
+	if !claim(tx.as_mut(), id).await? {
+		return Ok(());
+	}
 	let query = db::select("drive_jobs", tenant)
 		.and_where(db::col("id").eq(Expr::value(id)))
 		.and_where(db::col("state").eq(Expr::value("pending")))
@@ -464,6 +470,26 @@ async fn mark_failed(store: &Store, tenant: &str, id: Uuid, error: &Error) -> Re
 	Ok(())
 }
 
+async fn claim(tx: &mut dyn TransactionExecutor, job: Uuid) -> Result<bool> {
+	#[derive(Deserialize)]
+	struct Lock {
+		acquired: bool,
+	}
+	let query = Query::select()
+		.expr_as(
+			SimpleExpr::CustomWithExpr(
+				"pg_try_advisory_xact_lock(hashtextextended(?, 0))".into(),
+				vec![Expr::value(format!("drive-job:{job}")).into()],
+			),
+			Alias::new("acquired"),
+		)
+		.to_owned();
+	Ok(db::rows::<Lock>(tx, &query)
+		.await?
+		.iter()
+		.any(|lock| lock.acquired))
+}
+
 fn process(
 	store: &Store,
 	job: Job,
@@ -471,24 +497,7 @@ fn process(
 	Box::pin(async move {
 		let scope = TenancyScope::tenant(&job.tenant)?;
 		let mut lock = store.control_pool.begin(&scope).await?;
-		#[derive(Deserialize)]
-		struct Lock {
-			acquired: bool,
-		}
-		let query = Query::select()
-			.expr_as(
-				SimpleExpr::CustomWithExpr(
-					"pg_try_advisory_xact_lock(hashtextextended(?, 0))".into(),
-					vec![Expr::value(format!("drive-job:{}", job.id)).into()],
-				),
-				Alias::new("acquired"),
-			)
-			.to_owned();
-		if !db::rows::<Lock>(lock.as_mut(), &query)
-			.await?
-			.iter()
-			.any(|lock| lock.acquired)
-		{
+		if !claim(lock.as_mut(), job.id).await? {
 			return Ok(None);
 		}
 		let Some(job) = load(lock.as_mut(), &job.tenant, job.id)
