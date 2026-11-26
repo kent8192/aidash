@@ -2839,6 +2839,29 @@ async fn task_model_admission_refusals_and_duty_ticks_use_the_stored_selection(
 	.await
 	.unwrap();
 	assert_eq!(selected_on_run, selected);
+
+	let (status, delegated) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", c.task),
+		json!({"node_id":c.f.config.deployment,"agent":target,"task_model":selected}),
+	)
+	.await;
+	assert_eq!(status, 200, "{delegated}");
+	let assigned = c.f.store.task(&TEST_FIXTURE, c.task).await.unwrap();
+	assert_eq!(json!(assigned.task_model), selected);
+	let (status, enqueued) = request(
+		&c.app, &c.token, "POST",
+		&format!("/api/threads/{}/agents/research/executions", assigned.thread_id),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.2.0","title":"Task Model enqueue","description":"Summarize.","task_model":selected}),
+	).await;
+	assert_eq!(status, 200, "{enqueued}");
+	let queued_selection: Value = sqlx::query_scalar(
+		"SELECT e.context->'binding_snapshot'->'task_model' FROM tasks t JOIN task_executions e ON t.id=e.task_id WHERE t.thread_id=$1 AND t.title=$2",
+	).bind(assigned.thread_id).bind("Task Model enqueue").fetch_one(c.f.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(queued_selection, selected);
+
 	let mut input = definition("Scheduled Task Model", 3600);
 	input["agent"] = target;
 	input["task_model"] = selected.clone();
