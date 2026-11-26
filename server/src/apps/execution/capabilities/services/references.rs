@@ -6,21 +6,21 @@ pub use crate::apps::execution::capabilities::serializers::references::{
 use crate::{Result, authorization::access::Access, registry::AgentConfig, store::Store};
 use uuid::Uuid;
 pub(crate) async fn get(access: &mut Access, id: Uuid, action: &str) -> Result<Record> {
-	let mut scope = crate::bootstrap::reference_scope(None, access, None);
+	let mut scope = crate::bootstrap::reference_scope(None, access);
 	aidash_application::capabilities::references::get(&mut scope, id, action)
 		.await
 		.map(|record| crate::apps::execution::repositories::capability_records::native(&record))
 		.map_err(Into::into)
 }
 pub(crate) async fn inspect(access: &mut Access, id: Uuid) -> Result<Reference> {
-	let mut scope = crate::bootstrap::reference_scope(None, access, None);
+	let mut scope = crate::bootstrap::reference_scope(None, access);
 	aidash_application::capabilities::references::inspect(&mut scope, id)
 		.await
 		.map(Into::into)
 		.map_err(Into::into)
 }
 pub(crate) async fn start(store: &Store, access: &mut Access, input: Upload) -> Result<Reference> {
-	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access);
 	aidash_application::capabilities::references::start(&mut scope, input.into())
 		.await
 		.map(Into::into)
@@ -32,14 +32,14 @@ pub(crate) async fn chunk(
 	id: Uuid,
 	input: Chunk,
 ) -> Result<Reference> {
-	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access);
 	aidash_application::capabilities::references::chunk(&mut scope, id, input.into())
 		.await
 		.map(Into::into)
 		.map_err(Into::into)
 }
 pub(crate) async fn commit(store: &Store, access: &mut Access, id: Uuid) -> Result<Reference> {
-	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access);
 	aidash_application::capabilities::references::commit(&mut scope, id)
 		.await
 		.map(Into::into)
@@ -50,7 +50,7 @@ pub(crate) async fn batch(
 	access: &mut Access,
 	input: crate::apps::execution::capabilities::serializers::references::Batch,
 ) -> Result<BatchResult> {
-	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access);
 	let files = input
 		.files
 		.into_iter()
@@ -70,7 +70,7 @@ pub(crate) async fn revocation(
 	access: &mut Access,
 	id: Uuid,
 ) -> Result<super::management::ReferenceRevocation> {
-	let mut scope = crate::bootstrap::reference_scope(None, access, None);
+	let mut scope = crate::bootstrap::reference_scope(None, access);
 	aidash_application::capabilities::references::revocation(&mut scope, id)
 		.await
 		.map(|record| super::management::ReferenceRevocation {
@@ -81,7 +81,7 @@ pub(crate) async fn revocation(
 		.map_err(Into::into)
 }
 pub(crate) async fn revoke(access: &mut Access, id: Uuid, revision: i64) -> Result<()> {
-	let mut scope = crate::bootstrap::reference_scope(None, access, None);
+	let mut scope = crate::bootstrap::reference_scope(None, access);
 	aidash_application::capabilities::references::revoke(&mut scope, id, revision)
 		.await
 		.map_err(Into::into)
@@ -91,7 +91,7 @@ pub(crate) async fn bound_files(
 	access: &mut Access,
 	config: &AgentConfig,
 ) -> Result<Vec<aidash_domain::capabilities::operations::MountedFile>> {
-	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access);
 	aidash_application::capabilities::references::bound_files(&mut scope, config)
 		.await
 		.map_err(Into::into)

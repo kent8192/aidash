@@ -20,18 +20,11 @@ pub struct Limits {
 	pub staging_seconds: u64,
 	pub runner_image: Option<String>,
 }
-pub struct Mounts {
-	pub manifest: Value,
-	pub constraints: Value,
-}
 #[async_trait]
 pub trait ReferenceScope: Send {
 	fn principal(&self) -> &str;
 	fn identity(&self) -> Value;
 	fn limits(&self) -> Result<Limits>;
-	fn mounts(&self) -> Result<Mounts>;
-	fn set_constraints(&mut self, value: Value) -> Result<()>;
-	fn set_manifest(&mut self, value: Value) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Record>;
 	/// Every listed reference that exists, without excluding concurrent readers.
 	async fn load_many(&mut self, ids: &[Uuid]) -> Result<Vec<Record>>;
@@ -55,7 +48,6 @@ pub trait ReferenceScope: Send {
 	async fn begin_original(&mut self, size: u64) -> Result<()>;
 	async fn write_original(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_original(&mut self, digest: &str) -> Result<(Uuid, String)>;
-	async fn publish(&mut self) -> Result<()>;
 	async fn verified_health(&mut self) -> Result<Value>;
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()>;

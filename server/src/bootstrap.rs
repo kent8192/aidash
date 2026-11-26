@@ -2132,13 +2132,11 @@ pub(crate) fn reference_repository(
 pub(crate) fn reference_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
-	area: Option<&'a mut crate::apps::execution::capabilities::serializers::contracts::Area>,
 ) -> crate::apps::execution::repositories::references::Scope<'a> {
 	use crate::apps::execution::repositories::references::{Authority, Scope};
 	Scope {
 		store,
 		authority: Authority::Borrowed(access),
-		area,
 		pending: None,
 	}
 }

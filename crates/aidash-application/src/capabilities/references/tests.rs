@@ -102,15 +102,6 @@ impl ReferenceScope for One {
 	fn limits(&self) -> Result<crate::ports::capabilities::references::Limits> {
 		unreachable!()
 	}
-	fn mounts(&self) -> Result<crate::ports::capabilities::references::Mounts> {
-		unreachable!()
-	}
-	fn set_constraints(&mut self, _: Value) -> Result<()> {
-		unreachable!()
-	}
-	fn set_manifest(&mut self, _: Value) -> Result<()> {
-		unreachable!()
-	}
 	async fn load(&mut self, _: Uuid) -> Result<Record> {
 		Ok(self.record.clone())
 	}
@@ -166,9 +157,6 @@ impl ReferenceScope for One {
 		unreachable!()
 	}
 	async fn finish_original(&mut self, _: &str) -> Result<(Uuid, String)> {
-		unreachable!()
-	}
-	async fn publish(&mut self) -> Result<()> {
 		unreachable!()
 	}
 	async fn verified_health(&mut self) -> Result<Value> {
