@@ -35,6 +35,7 @@ pub mod subnodes;
 pub mod unassigned;
 
 pub mod semantic;
+pub mod setting_requests;
 pub mod tenancy;
 pub mod tenant_secrets;
 pub mod unconfirmed;
