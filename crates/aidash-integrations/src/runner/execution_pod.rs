@@ -11,21 +11,21 @@ const STOP_POLL: Duration = Duration::from_millis(300);
 
 fn pod_timeout(path: &str, body: &Value) -> Duration {
 	let seconds = match path {
-		// The preview start waits 60 s (runner/execution_pod.py:2637).
+		// The preview start waits 60 s (runner/execution_pod.py:2638).
 		"/v2/previews/start" => 75,
-		// The stdio process starts within a 300 s window (runner/execution_pod.py:2497).
+		// The stdio process starts within a 300 s window (runner/execution_pod.py:2498).
 		"/v2/mcp/start" => 315,
-		// The Runner gives the exchange timeout + 10 s (runner/execution_pod.py:2534).
+		// The Runner gives the exchange timeout + 10 s (runner/execution_pod.py:2535).
 		"/v2/mcp/call" => body
 			.get("timeout_seconds")
 			.and_then(Value::as_u64)
 			.unwrap_or(0)
 			.saturating_add(15),
-		// These routes share the 60 s stop loop (runner/execution_pod.py:2286).
+		// These routes share the 60 s stop loop (runner/execution_pod.py:2287).
 		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/runs/stop_sessions" | "/v2/python/stop" => 75,
 		// Python start/cell cover Kubernetes lookup via kube() (runner/control.py:420).
 		"/v2/python/start" | "/v2/python/cell" => 60,
-		// Pod creation includes the 1800 s readiness wait (runner/execution_pod.py:1016, ADR 0113).
+		// Pod creation includes the 1800 s readiness wait (runner/execution_pod.py:1017, ADR 0113).
 		path if path.starts_with("/v2/pods/") => 1900,
 		// The default covers the 45 s kube() deadline (runner/control.py:420).
 		_ => 60,
