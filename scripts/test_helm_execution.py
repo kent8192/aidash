@@ -39,6 +39,18 @@ class ChartsTest(unittest.TestCase):
     base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
+    def test_database_budget_accepts_twelve_per_process_and_refuses_eleven(self):
+        values = dict(self.base, server={'replicas': 2}, database={'maxConnections': 59})
+        objects = render(self.aidash, values)
+        for role in ('server', 'worker'):
+            workload = select(objects, 'Deployment', '-aidash-' + role)
+            environment = workload['spec']['template']['spec']['containers'][0]['env']
+            budget = next(item['value'] for item in environment
+                          if item['name'] == 'AIDASH_DATABASE_CONNECTION_BUDGET')
+            self.assertEqual(budget, '12')
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(values, database={'maxConnections': 58}))
+
     def test_protected_memory_schedules_backup_and_independent_prune(self):
         gcip = {'dashboard': {'gcip': {'project_id': 'fixture', 'web_api_key': 'public',
                                       'public_origin': 'https://fixture.aidash.run', 'tenant_bindings': {}}}}
@@ -397,6 +409,10 @@ class ChartsTest(unittest.TestCase):
         for role in ('server', 'worker'):
             settings = json.loads(self.mounted(custom, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
             self.assertEqual(settings['tenant_groups'], {'acme': 'dedicated'})
+        # Ten replicas in each of two groups reserve eighty connections apiece.
+        work = select(custom, 'Deployment', '-aidash-worker')
+        env = work['spec']['template']['spec']['containers'][0]['env']
+        self.assertIn({'name': 'AIDASH_DATABASE_CONNECTION_BUDGET', 'value': '202'}, env)
         policy = select(objects, 'NetworkPolicy', '-egress-internal')['spec']
         self.assertEqual(policy['podSelector']['matchLabels']['app.kubernetes.io/component'], 'egress')
         ingress = policy['ingress'][0]
@@ -902,7 +918,14 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(egress['from'], [{'podSelector': {'matchLabels': {'app.kubernetes.io/component': 'egress'}}}])
         self.assertEqual(egress['ports'], [{'protocol': 'TCP', 'port': 5432}])
         postgres = select(objects, 'StatefulSet', '-postgres')['spec']['template']['spec']['containers'][0]
-        self.assertEqual(postgres['args'], ['-c', 'max_connections=300'])
+        self.assertEqual(postgres['args'], ['-c', 'shared_buffers=256MB', '-c', 'max_connections=588'])
+        self.assertEqual(postgres['resources']['limits']['memory'], '8Gi')
+        self.assertEqual(postgres['resources']['requests']['memory'], '256Mi')
+        smaller = render(self.environment, dict(values, postgres=dict(POSTGRES, resources={
+            'limits': {'memory': '4097Mi'},
+        })))
+        postgres = select(smaller, 'StatefulSet', '-postgres')['spec']['template']['spec']['containers'][0]
+        self.assertEqual(postgres['args'], ['-c', 'shared_buffers=256MB', '-c', 'max_connections=281'])
         self.assertEqual(observer['from'], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'fixture'}}}])
         self.assertEqual(observer['ports'], [{'protocol': 'TCP', 'port': 5432}])
         self.assertEqual(maintenance['ports'], [{'protocol': 'TCP', 'port': 5432}])

@@ -41,3 +41,26 @@ spec:
       afterNodeUnreachable:
         afterNodeUnreachableSeconds: {{ .seconds | int }}
 {{- end -}}
+
+{{- /* Count the maximum across every group, including the default shared one. */ -}}
+{{- define "aidash.egressMaxReplicasPerGroup" -}}
+10
+{{- end -}}
+
+{{- define "aidash.databaseConnectionBudget" -}}
+{{- $replicas := add .Values.server.replicas .Values.worker.replicas -}}
+{{- $gateways := 0 -}}
+{{- if .Values.execution.egress.enabled -}}
+  {{- $groups := merge (dict "shared" dict) .Values.execution.egress.ipGroups -}}
+  {{- $gateways = mul (len $groups) (include "aidash.egressMaxReplicasPerGroup" . | int) -}}
+{{- end -}}
+{{- /* Reserve three PostgreSQL superuser slots, twenty for jobs/commands,
+      and the eight connections allocated to each standalone Egress replica. */ -}}
+{{- $available := sub .Values.database.maxConnections (add 3 20 (mul $gateways 8)) -}}
+{{- /* A managed release may temporarily suspend both workloads during migration. */ -}}
+{{- $budget := div $available (max 1 $replicas) -}}
+{{- if lt $budget 12 -}}
+  {{- fail (printf "database connection budget is %d per server/worker process (minimum 12): max_connections=%d, server+worker replicas=%d, maximum Egress replicas=%d" $budget (int .Values.database.maxConnections) $replicas $gateways) -}}
+{{- end -}}
+{{- $budget -}}
+{{- end -}}

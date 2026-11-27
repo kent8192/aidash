@@ -4,6 +4,24 @@
 
 {{- $name := include "environment.name" . -}}
 {{- $secret := required "postgres.existingSecret is required" .Values.postgres.existingSecret -}}
+{{- $memory := .Values.postgres.resources.limits.memory | toString -}}
+{{- if not (regexMatch "^[1-9][0-9]*(Mi|Gi)$" $memory) -}}
+  {{- fail "postgres.resources.limits.memory must be a whole number in Mi or Gi" -}}
+{{- end -}}
+{{- $memoryMiB := regexFind "^[0-9]+" $memory | int -}}
+{{- if hasSuffix "Gi" $memory -}}
+  {{- $memoryMiB = mul $memoryMiB 1024 -}}
+{{- end -}}
+{{- $sharedMiB := int .Values.postgres.sharedBuffersMiB -}}
+{{- $backendMiB := int .Values.postgres.activeBackendMiB -}}
+{{- if or (lt $sharedMiB 1) (lt $backendMiB 1) -}}
+  {{- fail "postgres.sharedBuffersMiB and postgres.activeBackendMiB must be positive" -}}
+{{- end -}}
+{{- /* Leave 25% of the memory limit for PostgreSQL and workload variance. */ -}}
+{{- $maxConnections := div (sub (mul $memoryMiB 3) (mul $sharedMiB 4)) (mul $backendMiB 4) -}}
+{{- if lt $maxConnections 1 -}}
+  {{- fail "PostgreSQL memory limit leaves no connections after shared_buffers and 25% headroom" -}}
+{{- end -}}
 {{- range $role := list "postgres" "nats" }}
 {{- $settings := index $.Values $role }}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $settings.image)) -}}{{ fail (printf "%s.image must be pinned by digest: it runs with the retained %s volume" $role $role) }}{{- end }}
@@ -43,7 +61,11 @@ spec:
           resources: {{ toYaml $settings.resources | nindent 12 }}
           {{- if eq $role "postgres" }}
           envFrom: [{ secretRef: { name: {{ $secret | quote }} } }]
-          args: ["-c", "max_connections=300"]
+          args:
+            - "-c"
+            - {{ printf "shared_buffers=%dMB" $sharedMiB | quote }}
+            - "-c"
+            - {{ printf "max_connections=%d" $maxConnections | quote }}
           env: [{ name: PGDATA, value: /var/lib/postgresql/data/pgdata }]
           readinessProbe:
             exec: { command: [sh, -ec, 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
