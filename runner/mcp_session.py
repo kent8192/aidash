@@ -1,4 +1,5 @@
 """One stdio MCP process and its serialized local socket bridge."""
+import errno
 import json
 import os
 import select
@@ -9,6 +10,8 @@ import sys
 import time
 
 LIMIT = 4 * 1048576
+# Reserved for the bridge's own spawn refusal. Plugin exit statuses never leave the bridge.
+SPAWN_PROCESS_LIMIT_EXIT = 75
 
 
 def encode(value, limit=LIMIT):
@@ -100,9 +103,15 @@ def serve(path, config):
     # A stop signals the bridge: end through `finally`, so the server process is stopped
     # and the socket removed, instead of leaving the server behind.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    if install:
-        subprocess.run(install, shell=True, check=True, env=environment, timeout=300)
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, env=environment, bufsize=0)
+    try:
+        if install:
+            subprocess.run(install, shell=True, check=True, env=environment, timeout=300)
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=None, env=environment, bufsize=0)
+    except OSError as error:
+        if error.errno != errno.EAGAIN:
+            raise
+        return SPAWN_PROCESS_LIMIT_EXIT
     os.set_blocking(process.stdin.fileno(), False)
     pending = bytearray()
     if os.path.lexists(path):
@@ -182,7 +191,7 @@ def serve(path, config):
 
 if __name__ == '__main__':
     if len(sys.argv) == 4 and sys.argv[1] == 'serve':
-        serve(sys.argv[2], json.loads(sys.argv[3]))
+        sys.exit(serve(sys.argv[2], json.loads(sys.argv[3])))
     elif len(sys.argv) == 3 and sys.argv[1] == 'ping':
         print(json.dumps({'ready': ping(sys.argv[2])}))
     elif len(sys.argv) == 4 and sys.argv[1] == 'call':
