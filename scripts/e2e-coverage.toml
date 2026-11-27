@@ -1,0 +1,32 @@
+# E2E-only Rust coverage gate (Issue #1127).
+#
+# "E2E" means the server's integration test targets, which run against
+# disposable PostgreSQL and fake services through testcontainers. Unit tests
+# (the foundation and server-unit partitions) still run, but their hits do not
+# count here. The denominator is every instrumented line that any partition
+# loaded, so code that E2E never links still counts as uncovered. Items gated on
+# cfg(test) are test code and leave the denominator.
+
+# CI fails below this. Raise it with each change that adds E2E coverage; never
+# lower it to land a change.
+threshold = 76.5
+# Agreed goal for the program in Issue #1127.
+target = 90.0
+
+# Partitions from scripts/rust-test-partitions.py whose hits do not count.
+unit_partitions = ["foundation", "server-unit"]
+
+# Lines that are not production code, or that no E2E test can reach. Each entry
+# needs a reason; review the list whenever the threshold moves. Globs use
+# fnmatch, where `*` also matches `/`.
+[[exclude]]
+glob = "crates/**/test_support.rs"
+reason = "Test-only fakes behind cfg(test) or the test-support feature"
+
+[[exclude]]
+glob = "crates/**/test_support/**"
+reason = "Test-only fakes behind cfg(test) or the test-support feature"
+
+[[exclude]]
+glob = "server/src/bin/local-dev-db.rs"
+reason = "Developer tool that starts a local database; not part of the server"
