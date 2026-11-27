@@ -1,4 +1,5 @@
 use super::Error;
+use aidash_application::ports::tools::ListFailure;
 use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
 use rstest::{fixture, rstest};
 use serde_json::Value;
@@ -54,6 +55,32 @@ fn mcp_session_share_refusal_reports_503_and_the_share() {
 	let body: Value = serde_json::from_slice(&response.body).unwrap();
 	assert_eq!(body["code"], "mcp_session_memory_short");
 	assert!(body["error"].as_str().unwrap().contains("4 sessions"));
+}
+
+#[rstest]
+#[case::timeout(
+	ListFailure::ListingTimeout,
+	504,
+	"timeout",
+	"timeout: MCP tool listing exceeded 15 seconds"
+)]
+#[case::too_large(
+	ListFailure::ListingTooLarge,
+	502,
+	"mcp_listing_too_large",
+	"mcp_listing_too_large: MCP tool listing exceeds 1 MiB"
+)]
+fn mcp_listing_failure_reports_the_upstream_status_and_limit(
+	#[case] failure: ListFailure,
+	#[case] status: u16,
+	#[case] code: &str,
+	#[case] message: &str,
+) {
+	let response = Error::from(aidash_application::Error::from(failure)).http_response();
+	assert_eq!(response.status.as_u16(), status);
+	let body: Value = serde_json::from_slice(&response.body).unwrap();
+	assert_eq!(body["code"], code);
+	assert_eq!(body["error"], message);
 }
 
 #[fixture]
