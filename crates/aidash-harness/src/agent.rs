@@ -150,6 +150,14 @@ impl<'a> Executor<'a> {
 				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call refused");
 				return Ok(Err(message));
 			}
+			// Arguments that do not deserialize are the model's to fix, not a
+			// reason to fail the Run (#1155 live check: a path given as a file id).
+			Err(Error::Json(error)) => {
+				tracing::info!(run_id = %run.id, tool = tool.name, %error, "tool input unreadable");
+				return Ok(Err(format!(
+					"The tool input could not be read: {error}. Correct the arguments to match the tool's schema and call it again."
+				)));
+			}
 			Err(Error::AuthorityRefused(refusal)) => *refusal,
 			Err(Error::Forbidden | Error::Unauthorized) => match note {
 				Some(note) => AuthorityRefusal {
