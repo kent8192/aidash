@@ -3447,7 +3447,7 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 		json!([plugin(json!({}))]),
 		json!([plugin(json!({"version":"1.2.0","license":"MIT"}))]),
 		json!(
-			(0..8)
+			(0..9)
 				.map(|n| plugin(json!({"name":format!("tools-{n}")})))
 				.collect::<Vec<_>>()
 		),
@@ -3480,11 +3480,6 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 		json!([plugin(json!({"skills":{}}))]),
 		json!([plugin(json!({"findings":"none"}))]),
 		json!([plugin(json!({"servers":[]}))]),
-		json!(
-			(0..9)
-				.map(|n| plugin(json!({"name":format!("tools-{n}")})))
-				.collect::<Vec<_>>()
-		),
 	] {
 		assert!(
 			!contract_accepts(
