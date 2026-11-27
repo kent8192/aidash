@@ -414,7 +414,7 @@ keys, and local upload intents.
 | Inline read / search page              | 16 KiB / 50 matches                                            |
 | Command / patch input                  | 64 KiB / 256 KiB                                               |
 | Search response / duration             | 32 KiB / 5 seconds                                             |
-| Direct Skill package                   | 64 files / 256,000 bytes (existing import ceiling)             |
+| Direct Skill package                   | 64 files / 256,000 bytes (Deployment profile)                  |
 | Captured operation / broker output     | 8 MiB, with bounded continuation                               |
 | Run permission grant                   | At most 1 hour and no later than Run termination               |
 | Pending approval / uncommitted staging | 24 hours                                                       |
