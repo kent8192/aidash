@@ -11,18 +11,24 @@ const STOP_POLL: Duration = Duration::from_millis(300);
 
 fn pod_timeout(path: &str, body: &Value) -> Duration {
 	let seconds = match path {
+		// The preview start waits 60 s (runner/execution_pod.py:2637).
 		"/v2/previews/start" => 75,
-		"/v2/mcp/start" => 15 * 60,
+		// The stdio process starts within a 300 s window (runner/execution_pod.py:2497).
+		"/v2/mcp/start" => 315,
+		// The Runner gives the exchange timeout + 10 s (runner/execution_pod.py:2534).
 		"/v2/mcp/call" => body
 			.get("timeout_seconds")
 			.and_then(Value::as_u64)
 			.unwrap_or(0)
 			.saturating_add(15),
-		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" | "/v2/python/cell" => 60,
-		"/v2/runs/stop_sessions" | "/v2/python/stop" => 75,
-		// Ensuring a Pod waits for its admission and startup.
+		// These routes share the 60 s stop loop (runner/execution_pod.py:2286).
+		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/runs/stop_sessions" | "/v2/python/stop" => 75,
+		// Python start/cell cover Kubernetes lookup via kube() (runner/control.py:420).
+		"/v2/python/start" | "/v2/python/cell" => 60,
+		// Pod creation includes the 1800 s readiness wait (runner/execution_pod.py:1016, ADR 0113).
 		path if path.starts_with("/v2/pods/") => 1900,
-		_ => 30,
+		// The default covers the 45 s kube() deadline (runner/control.py:420).
+		_ => 60,
 	};
 	Duration::from_secs(seconds)
 }
@@ -94,19 +100,29 @@ impl RunnerHttp {
 			})?;
 		let client = reqwest::Client::builder()
 			.no_proxy()
-			.timeout(pod_timeout(path, &body))
 			.redirect(reqwest::redirect::Policy::none())
 			.build()
 			.map_err(crate::http_error)?;
-		let response = client
-			.post(format!("{}{path}", self.endpoint.trim_end_matches('/')))
-			.bearer_auth(token)
-			.json(&body)
-			.send()
-			.await
-			.map_err(crate::http_error)?;
-		let status = response.status();
-		let value: Value = crate::response::json(response, MAX_RUNNER_RESPONSE_BYTES).await?;
+		let deadline = pod_timeout(path, &body);
+		let (status, value): (_, Value) = tokio::time::timeout(deadline, async {
+			let response = client
+				.post(format!("{}{path}", self.endpoint.trim_end_matches('/')))
+				.bearer_auth(token)
+				.json(&body)
+				.send()
+				.await
+				.map_err(crate::http_error)?;
+			let status = response.status();
+			let value = crate::response::json(response, MAX_RUNNER_RESPONSE_BYTES).await?;
+			Ok::<_, aidash_application::Error>((status, value))
+		})
+		.await
+		.map_err(|_| {
+			aidash_application::Error::Port(Box::new(RunnerTimeout {
+				route: path.to_owned(),
+				seconds: deadline.as_secs(),
+			}))
+		})??;
 		if !status.is_success() {
 			let code = value
 				.get("code")
@@ -332,14 +348,17 @@ mod timeout_tests {
 	fn each_pod_route_uses_its_required_wait_limit() {
 		for (path, body, seconds) in [
 			("/v2/previews/start", json!({}), 75),
-			("/v2/mcp/start", json!({}), 900),
+			("/v2/mcp/start", json!({}), 315),
 			("/v2/mcp/call", json!({"timeout_seconds": 42}), 57),
 			("/v2/mcp/call", json!({"timeout_seconds": 0}), 15),
-			("/v2/runs/stop", json!({}), 60),
-			("/v2/mcp/stop_run", json!({}), 60),
+			("/v2/runs/stop", json!({}), 75),
+			("/v2/mcp/stop_run", json!({}), 75),
+			("/v2/runs/stop_sessions", json!({}), 75),
 			("/v2/python/start", json!({}), 60),
-			("/v2/commands/submit", json!({}), 30),
-			("/v2/commands/refuse", json!({}), 30),
+			("/v2/python/cell", json!({}), 60),
+			("/v2/python/stop", json!({}), 75),
+			("/v2/commands/submit", json!({}), 60),
+			("/v2/commands/refuse", json!({}), 60),
 			("/v2/pods/ensure", json!({}), 1900),
 		] {
 			assert_eq!(

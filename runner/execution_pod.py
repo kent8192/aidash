@@ -1013,6 +1013,7 @@ print(json.dumps(r))'''
             return self._pod_receipt(name, settings['image'])
         try:
             self._admit_pod(name, settings)
+            # Readiness includes scheduling and image pull. START_LIMIT_SECONDS bounds failed-start retries.
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=1800s'], timeout=1810)
             admitted_uid = self._verify_running_pod(name, settings)
             verified = self._get('pod', name)

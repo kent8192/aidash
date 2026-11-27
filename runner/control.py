@@ -36,9 +36,9 @@ TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 PROBE_PROTOCOL = "aidash-admission-probe/2"
 ALLOCATION_OBSERVATION_ATTEMPTS = 5
 STOP_WATCH_SECONDS = 1800
-# Bounds the wait for a Pod to be ready and the retries of a start that keeps
-# failing. It does not bound the input upload or the dispatch: a command that
-# is ready to start is not refused for having uploaded many files (#709).
+# Bounds retries of a failing start. Execution Pod readiness has its own
+# 1800 s wait for scheduling and image pull in execution_pod.py. Uploading
+# files before dispatch does not count against the retry window (#709).
 START_LIMIT_SECONDS = 120
 DEFAULT_UNCERTAIN_RETENTION_SECONDS = 86400
 

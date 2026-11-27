@@ -102,6 +102,12 @@ pub enum Error {
 	AccountSuspended { epoch: u64 },
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
+	#[error("media decoder slot was unavailable for 10 seconds")]
+	MediaDecoderBusy,
+	#[error("media decoding exceeded 20 seconds")]
+	MediaDecodeTimeout,
+	#[error(transparent)]
+	RunnerTimeout(aidash_application::ports::capabilities::execution_pod::RunnerTimeout),
 	#[error("verified model media route unavailable for {model}{}", aidash_application::route_refusal::CandidateRefusals(.candidates))]
 	MediaRouteUnavailable {
 		model: String,
@@ -209,6 +215,10 @@ impl Error {
 				},
 				self.to_string(),
 			),
+			Self::MediaDecoderBusy => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::MediaDecodeTimeout | Self::RunnerTimeout(_) => {
+				(StatusCode::GATEWAY_TIMEOUT, self.to_string())
+			}
 			Self::IdentityStatusUnavailable
 			| Self::OAuthClientSecretsUnavailable
 			| Self::MediaRouteUnavailable { .. } => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
@@ -307,6 +317,11 @@ impl Error {
 			}
 		};
 		let mut envelope = match &self {
+			Self::MediaDecoderBusy => json!({"error": message, "code": "media_decoder_busy"}),
+			Self::MediaDecodeTimeout => json!({"error": message, "code": "media_decode_timeout"}),
+			Self::RunnerTimeout(_) => {
+				json!({"error": message, "code": aidash_application::ports::capabilities::execution_pod::RunnerTimeout::CODE})
+			}
 			Self::ProjectionRetired(_) => json!({"error": message, "code": "projection_retired"}),
 			Self::NodeUnreachable { node, after_effect } => {
 				json!({"error": message, "code": "node_unreachable", "node": node, "after_effect": after_effect})
@@ -611,6 +626,13 @@ impl From<aidash_application::Error> for Error {
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
 			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
+			ApplicationError::Port(error)
+				if error
+					.is::<aidash_application::ports::capabilities::execution_pod::RunnerTimeout>(
+					) =>
+			{
+				Self::RunnerTimeout(*error.downcast().expect("checked RunnerTimeout type"))
+			}
 			ApplicationError::Port(error) | ApplicationError::TemporaryDatabase(error) => {
 				match error.downcast::<Self>() {
 					Ok(error) => *error,
@@ -663,6 +685,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
 			Error::External(message) => Self::External(message),
+			Error::RunnerTimeout(error) => Self::Port(Box::new(error)),
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
 			Error::Context(reason) => Self::Context(reason),
