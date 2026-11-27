@@ -13,31 +13,10 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{AtomicTransaction, Model};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde_json::json;
 use uuid::Uuid;
-
-/// Advisory lock namespace serializing the credentials one Mapping issues.
-const ISSUE_LOCK: i64 = 36_300_358;
-
-async fn lock_issues(tx: &mut AtomicTransaction, mapping: Uuid) -> Result<()> {
-	let (sql, values) = Query::select()
-		.expr(SimpleExpr::FunctionCall(
-			"pg_advisory_xact_lock".into_iden(),
-			vec![SimpleExpr::FunctionCall(
-				"hashtextextended".into_iden(),
-				vec![
-					Expr::value(mapping.to_string()).into(),
-					Expr::value(ISSUE_LOCK).into(),
-				],
-			)],
-		))
-		.build(PostgresQueryBuilder);
-	TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-	Ok(())
-}
 
 impl TenantAdministrator {
 	pub(crate) async fn set_credential_maximum(
@@ -177,25 +156,6 @@ impl TenantAdministrator {
 					credentials::validate_lifetime(lifetime)?;
 					self.require(tx, &snapshot, rules::CREDENTIAL_CREATE, subject, json!({}))
 						.await?;
-					lock_issues(tx, self.mapping_id).await?;
-					// Expiry follows the database clock, as issuance and authentication do.
-					let now = super::super::dashboard_administration::database_time(tx).await?;
-					let active = AuthorizationCredential::objects()
-						.filter(
-							AuthorizationCredential::field_mapping_id().eq(Some(self.mapping_id)),
-						)
-						.filter(AuthorizationCredential::field_parent_id().is_null())
-						.filter(AuthorizationCredential::field_revoked_at().is_null())
-						.filter(AuthorizationCredential::field_expires_at().gt(now))
-						.all_with_db(tx)
-						.await?
-						.len();
-					if active >= credentials::MAX_ACTIVE_PER_MAPPING {
-						return Err(Error::Conflict(format!(
-							"a Mapping holds at most {} active credentials",
-							credentials::MAX_ACTIVE_PER_MAPPING
-						)));
-					}
 				} else {
 					self.require_issuable(tx, &snapshot, subject).await?;
 					let maximum = super::super::Tenant::credential_maximum(

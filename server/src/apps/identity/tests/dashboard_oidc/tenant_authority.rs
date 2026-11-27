@@ -367,16 +367,6 @@ async fn a_member_issues_credentials_for_itself_that_end_with_its_mapping(
 			.iter()
 			.any(|row| row["id"] == issued["credential"]["id"])
 	);
-	for _ in 1..20 {
-		let (status, body) = t
-			.bob("POST", "/credentials", json!({"subject":"bob"}))
-			.await;
-		assert_eq!(status, 200, "{body}");
-	}
-	let (status, body) = t
-		.bob("POST", "/credentials", json!({"subject":"bob"}))
-		.await;
-	assert_eq!(status, 409, "a Mapping holds at most 20: {body}");
 
 	let (status, mappings) =
 		t.d.as_person(
