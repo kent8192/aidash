@@ -93,7 +93,8 @@ async fn catch_up_writes_one_mark_at_the_first_missed_grid_tick(
 	assert_eq!(pass(&c.f, now).await.unwrap().started.len(), 1);
 	assert!(pass(&c.f, now).await.unwrap().started.is_empty());
 
-	let recorded: Vec<(chrono::DateTime<Utc>, String, Option<String>, Option<Uuid>)> =
+	type ScheduledDutyTick = (chrono::DateTime<Utc>, String, Option<String>, Option<Uuid>);
+	let recorded: Vec<ScheduledDutyTick> =
 		sqlx::query_as("SELECT scheduled_at, status, reason, task_id FROM duty_ticks WHERE duty_id = $1 ORDER BY scheduled_at")
 			.bind(id)
 			.fetch_all(c.f.store.pool.fixture_driver())
