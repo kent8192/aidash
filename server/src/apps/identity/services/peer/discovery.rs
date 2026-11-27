@@ -8,7 +8,7 @@ use crate::{
 };
 use aidash_domain::federation::{PeerError, route::Sender};
 use aidash_domain::nodes::NodeName;
-use futures_util::{StreamExt, stream};
+use futures_util::{Stream, StreamExt, stream};
 use serde_json::json;
 use std::collections::BTreeSet;
 
@@ -77,7 +77,7 @@ pub(crate) async fn discover_in(
 		}
 	}
 	let body = json!({"search":query});
-	let mut responses = stream::iter(targets.into_iter().map(|target| {
+	let responses = peer_responses(targets, |target| {
 		let body = &body;
 		let sender = &sender;
 		async move {
@@ -92,9 +92,8 @@ pub(crate) async fn discover_in(
 				.await;
 			(target, response)
 		}
-	}))
-	// In-process peer requests also borrow this process's Work connections.
-	.buffer_unordered((f.store.pool.usage().max as usize / 2).max(1));
+	});
+	tokio::pin!(responses);
 	while let Some((node, response)) = responses.next().await {
 		let entries = match response {
 			Ok(entries) => entries,
@@ -152,3 +151,15 @@ pub(crate) async fn discover_in(
 	access.track_discovery(&result.agents, &same_tenant).await?;
 	Ok(result)
 }
+
+fn peer_responses<T, F: Future<Output = T>>(
+	targets: Vec<String>,
+	request: impl FnMut(String) -> F,
+) -> impl Stream<Item = T> {
+	// Bound concurrent remote Node requests to one page of 25 Nodes.
+	stream::iter(targets).map(request).buffer_unordered(25)
+}
+
+#[cfg(test)]
+#[path = "discovery/tests.rs"]
+mod tests;

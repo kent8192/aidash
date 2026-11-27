@@ -3,10 +3,13 @@ use aidash_domain::tenancy::TenantName;
 use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind, Error};
 use std::{
 	collections::{HashMap, VecDeque},
-	sync::{Arc, Mutex},
+	sync::{
+		Arc, Mutex,
+		atomic::{AtomicUsize, Ordering},
+	},
 	time::Duration,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OnceCell};
 
 // Wait at most as long as a PostgreSQL pool acquire before reporting pressure.
 pub(super) const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -14,7 +17,7 @@ pub(crate) const FAIR_SHARE_CODE: &str = "database_fair_share";
 pub(crate) const POOL_BUSY_CODE: &str = "database_pool_busy";
 
 tokio::task_local! {
-	pub(super) static TENANT: Option<TenantName>;
+	static OPERATION: Arc<Operation>;
 }
 
 pub(super) fn pool_busy(name: &str, size: usize) -> Error {
@@ -42,6 +45,14 @@ struct State {
 	next_ticket: u64,
 }
 
+struct Operation {
+	pool: Arc<FairShare>,
+	tenant: Option<TenantName>,
+	admitted: OnceCell<()>,
+	// Updated under the pool state lock so tenant counts and usage move together.
+	borrows: AtomicUsize,
+}
+
 struct Lane {
 	tenant: Option<TenantName>,
 	tickets: VecDeque<u64>,
@@ -55,7 +66,7 @@ impl State {
 	fn over_share(&self, tenant: Option<&TenantName>, size: usize) -> bool {
 		self.pressured
 			&& tenant.is_some_and(|tenant| {
-				// Include this borrow when checking whether it would exceed its share.
+				// Include the incoming operation when checking whether it would exceed its share.
 				self.holders.get(tenant).copied().unwrap_or(0) >= self.share(size)
 			})
 	}
@@ -70,13 +81,28 @@ impl State {
 	}
 
 	fn next(&self, size: usize) -> Option<u64> {
-		if self.used == size {
+		if self.used >= size {
 			return None;
 		}
 		self.lanes
 			.iter()
 			.find(|lane| !self.over_share(lane.tenant.as_ref(), size))
 			.and_then(|lane| lane.tickets.front().copied())
+	}
+
+	fn borrowed(
+		&mut self,
+		tenant: Option<&TenantName>,
+		operation: Option<&Operation>,
+		size: usize,
+	) {
+		self.used += 1;
+		if operation.is_none_or(|op| op.borrows.fetch_add(1, Ordering::Relaxed) == 0)
+			&& let Some(tenant) = tenant
+		{
+			*self.holders.entry(tenant.clone()).or_default() += 1;
+		}
+		self.update_pressure(size);
 	}
 
 	fn remove(&mut self, ticket: u64, tenant: &Option<TenantName>) {
@@ -99,7 +125,69 @@ impl FairShare {
 		}
 	}
 
-	async fn wait(self: &Arc<Self>, waiter: &Waiter<'_>) -> Permit {
+	pub(super) async fn operation<T>(
+		self: &Arc<Self>,
+		tenant: Option<TenantName>,
+		work: impl Future<Output = T>,
+	) -> T {
+		if self.current_operation(tenant.as_ref()).is_some() {
+			return work.await;
+		}
+		OPERATION
+			.scope(
+				Arc::new(Operation {
+					pool: self.clone(),
+					tenant,
+					admitted: OnceCell::new(),
+					borrows: AtomicUsize::new(0),
+				}),
+				work,
+			)
+			.await
+	}
+
+	fn current_operation(self: &Arc<Self>, tenant: Option<&TenantName>) -> Option<Arc<Operation>> {
+		OPERATION
+			.try_with(|op| {
+				(Arc::ptr_eq(self, &op.pool) && (tenant.is_none() || op.tenant.as_ref() == tenant))
+					.then(|| op.clone())
+			})
+			.ok()
+			.flatten()
+	}
+
+	pub(super) async fn borrow(self: &Arc<Self>) -> Result<Permit, Error> {
+		let Some(op) = self.current_operation(None) else {
+			return self.acquire(None, None).await;
+		};
+		let mut first = None;
+		op.admitted
+			.get_or_try_init(|| async {
+				first = Some(self.acquire(op.tenant.clone(), Some(op.clone())).await?);
+				Ok::<_, Error>(())
+			})
+			.await?;
+		if let Some(permit) = first {
+			return Ok(permit);
+		}
+		// Continuations still occupy the driver pool and contribute to pressure.
+		// Reentering the admission queue here could wait on our own operation.
+		self.state
+			.lock()
+			.expect("database admission state")
+			.borrowed(op.tenant.as_ref(), Some(&op), self.size);
+		Ok(Permit {
+			pool: self.clone(),
+			tenant: op.tenant.clone(),
+			operation: Some(op),
+		})
+	}
+
+	async fn wait(
+		self: &Arc<Self>,
+		waiter: &Waiter<'_>,
+		operation: Option<Arc<Operation>>,
+	) -> Permit {
 		loop {
 			let changed = self.changed.notified();
 			tokio::pin!(changed);
@@ -117,16 +205,13 @@ impl FairShare {
 					if !lane.tickets.is_empty() {
 						state.lanes.push_back(lane);
 					}
-					state.used += 1;
 					state.last = Some(waiter.tenant.clone());
-					if let Some(tenant) = &waiter.tenant {
-						*state.holders.entry(tenant.clone()).or_default() += 1;
-					}
-					state.update_pressure(self.size);
+					state.borrowed(waiter.tenant.as_ref(), operation.as_deref(), self.size);
 					self.changed.notify_waiters();
 					return Permit {
 						pool: self.clone(),
 						tenant: waiter.tenant.clone(),
+						operation,
 					};
 				}
 			}
@@ -134,9 +219,10 @@ impl FairShare {
 		}
 	}
 
-	pub(super) async fn acquire(
+	async fn acquire(
 		self: &Arc<Self>,
 		tenant: Option<TenantName>,
+		operation: Option<Arc<Operation>>,
 	) -> Result<Permit, Error> {
 		let ticket = {
 			let mut state = self.state.lock().expect("database admission state");
@@ -165,7 +251,7 @@ impl FairShare {
 			tenant,
 			ticket,
 		};
-		match tokio::time::timeout(ACQUIRE_TIMEOUT, self.wait(&waiter)).await {
+		match tokio::time::timeout(ACQUIRE_TIMEOUT, self.wait(&waiter, operation)).await {
 			Ok(permit) => Ok(permit),
 			Err(_) => {
 				let state = self.state.lock().expect("database admission state");
@@ -174,7 +260,7 @@ impl FairShare {
 					Err(DatabaseError::new(
 						DatabaseErrorKind::Timeout,
 						format!(
-							"Database fair share wait expired. The Work pool has {} connections and this Tenant's share is {share}.",
+							"Database fair share wait expired. The Work pool has {} connections and this Tenant's share is {share} operations.",
 							self.size
 						),
 					)
@@ -208,13 +294,19 @@ impl Drop for Waiter<'_> {
 pub(super) struct Permit {
 	pool: Arc<FairShare>,
 	tenant: Option<TenantName>,
+	operation: Option<Arc<Operation>>,
 }
 
 impl Drop for Permit {
 	fn drop(&mut self) {
 		let mut state = self.pool.state.lock().expect("database admission state");
 		state.used -= 1;
-		if let Some(tenant) = &self.tenant {
+		if self
+			.operation
+			.as_ref()
+			.is_none_or(|op| op.borrows.fetch_sub(1, Ordering::Relaxed) == 1)
+			&& let Some(tenant) = &self.tenant
+		{
 			let count = state.holders.get_mut(tenant).expect("admitted Tenant");
 			*count -= 1;
 			if *count == 0 {
