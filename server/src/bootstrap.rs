@@ -163,7 +163,8 @@ async fn initialize_as(
 		settings.deployment.key.as_ref(),
 		&settings.core.base_dir,
 		config.deployment.clone(),
-		store.pool.clone(),
+		// Federation signs protocol requests while a submission holds Work.
+		store.control_pool.clone(),
 	)
 	.await?;
 	if let Some(keys) = &keys {

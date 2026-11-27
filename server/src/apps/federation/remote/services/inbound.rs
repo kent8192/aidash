@@ -10,6 +10,7 @@ use crate::apps::identity::services::receiving_keys;
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
+	federation::inbound::{Admitted, Inbound, RequestDigest},
 	ports::federation::inbound::{InboundRepository, ReceivingKeyOwner, ReceivingKeys},
 	tenancy::TenancyScope,
 };
@@ -19,6 +20,24 @@ use aidash_domain::{
 	tenancy::TenantName,
 };
 use async_trait::async_trait;
+
+pub(super) fn is_transaction_protocol(request: &RequestDigest<'_>) -> bool {
+	request.path.starts_with("/transactions/")
+}
+
+pub(crate) async fn accept(
+	inbound: Inbound,
+	request: &RequestDigest<'_>,
+	runtime: &Federation,
+) -> Result<Admitted> {
+	// An incoming preflight must still be able to authenticate while user
+	// submissions on this Deployment hold all of its Work connections.
+	let authenticate = aidash_application::federation::inbound::accept;
+	if is_transaction_protocol(request) {
+		return authenticate(inbound, request, &runtime.using_control_pool()).await;
+	}
+	authenticate(inbound, request, runtime).await
+}
 
 #[async_trait]
 impl InboundRepository for Federation {

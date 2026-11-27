@@ -78,6 +78,21 @@ impl AdmissionScope for Scope<'_> {
 			node: Some(coordinator.node),
 			subject: None,
 		};
+		// A Tenant submission already holds its Work connection. Resolve
+		// trust on that transaction so a full Work pool cannot stall it.
+		if origin.is_some() {
+			return Ok(
+				crate::apps::federation::remote::repositories::routes::route_to(
+					self.tx,
+					&self.runtime.config.deployment,
+					&sender,
+					node,
+					false,
+				)
+				.await
+				.is_ok_and(|route| route.is_some_and(|route| route.atomic_transactions)),
+			);
+		}
 		Ok(self
 			.runtime
 			.route(&sender, node)

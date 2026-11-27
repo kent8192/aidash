@@ -40,6 +40,12 @@ pub trait SubmissionScope: Send {
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()>;
 }
 
+/// Whether the source is accepting new user work or serving an existing protocol step.
+pub enum SourcePurpose {
+	Submission,
+	Protocol,
+}
+
 #[async_trait]
 pub trait AuthorityRepository: Send + Sync {
 	fn node_id(&self) -> &str;
@@ -55,7 +61,11 @@ pub trait AuthorityRepository: Send + Sync {
 	fn seed(&self, manifest: &Manifest) -> Result<String>;
 	async fn origin(&self, id: Uuid) -> Result<Option<Origin>>;
 	async fn binding(&self, id: Uuid) -> Result<Option<Binding>>;
-	async fn source(&self, origin: &Origin) -> Result<Box<dyn ControlScope>>;
+	async fn source(
+		&self,
+		origin: &Origin,
+		purpose: SourcePurpose,
+	) -> Result<Box<dyn ControlScope>>;
 	async fn mapped(&self, input: &Preflight) -> Result<Box<dyn ControlScope>>;
 	async fn remote_preflight(&self, node: &str, input: &Preflight) -> Result<()>;
 	async fn remote_access(&self, node: &str, input: &Preflight) -> Result<()>;
