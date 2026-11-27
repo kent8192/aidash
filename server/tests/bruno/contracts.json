@@ -53752,6 +53752,165 @@
         "schema": {
           "$ref": "#/components/schemas/ScratchView"
         }
+      },
+      "400": {
+        "definitions": {
+          "ScratchSettingsError": {
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ScratchSettingsErrorCode"
+              },
+              "details": {
+                "$ref": "#/components/schemas/ScratchSettingsRefusal"
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": ["error", "code", "details"],
+            "type": "object"
+          },
+          "ScratchSettingsErrorCode": {
+            "enum": ["scratch_settings_invalid"],
+            "type": "string"
+          },
+          "ScratchSettingsRefusal": {
+            "description": "Every setting that must change before the request can be accepted.",
+            "properties": {
+              "all_hosts_allowed": {
+                "description": "Whether both the Deployment switch and the Tenant host policy allow all hosts.",
+                "type": "boolean"
+              },
+              "violations": {
+                "items": {
+                  "$ref": "#/components/schemas/ScratchSettingsViolation"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["all_hosts_allowed", "violations"],
+            "type": "object"
+          },
+          "ScratchSettingsViolation": {
+            "oneOf": [
+              {
+                "properties": {
+                  "hosts": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "kind": {
+                    "enum": ["outside_tenant_hosts"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "hosts"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "hosts": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "kind": {
+                    "enum": ["invalid_hosts"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "hosts"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "deployment_all_hosts_allowed": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "enum": ["all_hosts_not_allowed"],
+                    "type": "string"
+                  },
+                  "tenant_policy_allows_all_hosts": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "deployment_all_hosts_allowed",
+                  "tenant_policy_allows_all_hosts"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "deployment_admin_can_raise": {
+                    "type": "boolean"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["numeric_limit"],
+                    "type": "string"
+                  },
+                  "max": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "min": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "field",
+                  "value",
+                  "min",
+                  "max",
+                  "deployment_admin_can_raise"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "enum": ["docker_not_allowed"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "enum": ["invalid_execution_image"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScratchSettingsError"
+        }
       }
     },
     "source": "server/src/apps/workspaces/views/scratch.rs",
@@ -54317,6 +54476,165 @@
         },
         "schema": {
           "$ref": "#/components/schemas/SentResponse"
+        }
+      },
+      "400": {
+        "definitions": {
+          "ScratchSettingsError": {
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ScratchSettingsErrorCode"
+              },
+              "details": {
+                "$ref": "#/components/schemas/ScratchSettingsRefusal"
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": ["error", "code", "details"],
+            "type": "object"
+          },
+          "ScratchSettingsErrorCode": {
+            "enum": ["scratch_settings_invalid"],
+            "type": "string"
+          },
+          "ScratchSettingsRefusal": {
+            "description": "Every setting that must change before the request can be accepted.",
+            "properties": {
+              "all_hosts_allowed": {
+                "description": "Whether both the Deployment switch and the Tenant host policy allow all hosts.",
+                "type": "boolean"
+              },
+              "violations": {
+                "items": {
+                  "$ref": "#/components/schemas/ScratchSettingsViolation"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["all_hosts_allowed", "violations"],
+            "type": "object"
+          },
+          "ScratchSettingsViolation": {
+            "oneOf": [
+              {
+                "properties": {
+                  "hosts": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "kind": {
+                    "enum": ["outside_tenant_hosts"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "hosts"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "hosts": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "kind": {
+                    "enum": ["invalid_hosts"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "hosts"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "deployment_all_hosts_allowed": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "enum": ["all_hosts_not_allowed"],
+                    "type": "string"
+                  },
+                  "tenant_policy_allows_all_hosts": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "deployment_all_hosts_allowed",
+                  "tenant_policy_allows_all_hosts"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "deployment_admin_can_raise": {
+                    "type": "boolean"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["numeric_limit"],
+                    "type": "string"
+                  },
+                  "max": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "min": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "field",
+                  "value",
+                  "min",
+                  "max",
+                  "deployment_admin_can_raise"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "enum": ["docker_not_allowed"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "enum": ["invalid_execution_image"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScratchSettingsError"
         }
       }
     },

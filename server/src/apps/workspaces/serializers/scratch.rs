@@ -1,7 +1,7 @@
 //! Scratch Space request payloads.
 use aidash_domain::{
 	nodes::NodeName,
-	scratch::{HostAllowlist, ScratchCeilings, ScratchSettings},
+	scratch::{HostAllowlist, ScratchCeilings, ScratchSettings, ScratchSettingsRefusal},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,29 @@ pub(crate) struct ScratchList {
 pub(crate) struct ScratchLimits {
 	pub ceilings: ScratchCeilings,
 	pub tenant_hosts: HostAllowlist,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ScratchSettingsErrorCode {
+	ScratchSettingsInvalid,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct ScratchSettingsError<'a> {
+	error: &'a str,
+	code: ScratchSettingsErrorCode,
+	details: &'a ScratchSettingsRefusal,
+}
+
+impl<'a> ScratchSettingsError<'a> {
+	pub(crate) fn new(error: &'a str, details: &'a ScratchSettingsRefusal) -> Self {
+		Self {
+			error,
+			code: ScratchSettingsErrorCode::ScratchSettingsInvalid,
+			details,
+		}
+	}
 }
 
 /// Whether one External service on a Scratch Space is usable now (#738).

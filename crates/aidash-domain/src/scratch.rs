@@ -1,5 +1,5 @@
 //! Scratch Space settings and authority, independent of storage and execution.
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{Error, Result, nodes::NodeName};
 
 const GIB: u64 = 1024 * 1024 * 1024;
+const MAX_CAPACITY_BYTES: u64 = 1024 * GIB;
 
 pub type ScratchSpaceId = Uuid;
 
@@ -34,17 +35,6 @@ impl HostAllowlist {
 			(Self::All, value) | (value, Self::All) => value.clone(),
 			(Self::Hosts(left), Self::Hosts(right)) => {
 				Self::Hosts(left.intersection(right).cloned().collect())
-			}
-		}
-	}
-
-	fn narrows(&self, tenant: &Self, all_allowed: bool) -> bool {
-		match (self, tenant) {
-			(Self::All, Self::All) => all_allowed,
-			(Self::All, Self::Hosts(_)) => false,
-			(Self::Hosts(hosts), Self::All) => hosts.iter().all(|h| valid_host(h)),
-			(Self::Hosts(hosts), Self::Hosts(allowed)) => {
-				hosts.iter().all(|h| valid_host(h) && allowed.contains(h))
 			}
 		}
 	}
@@ -120,7 +110,7 @@ pub struct ScratchCeilings {
 impl Default for ScratchCeilings {
 	fn default() -> Self {
 		Self {
-			capacity_bytes: 1024 * GIB,
+			capacity_bytes: MAX_CAPACITY_BYTES,
 			cpu_millis: 4000,
 			memory_bytes: 16 * GIB,
 			daily_sent_bytes: 1024 * GIB,
@@ -128,6 +118,105 @@ impl Default for ScratchCeilings {
 			docker_allowed: false,
 			all_hosts_allowed: false,
 		}
+	}
+}
+
+/// Every setting that must change before the request can be accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema, thiserror::Error)]
+pub struct ScratchSettingsRefusal {
+	/// Whether both the Deployment switch and the Tenant host policy allow all hosts.
+	pub all_hosts_allowed: bool,
+	pub violations: Vec<ScratchSettingsViolation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScratchSettingsViolation {
+	OutsideTenantHosts {
+		hosts: BTreeSet<String>,
+	},
+	InvalidHosts {
+		hosts: BTreeSet<String>,
+	},
+	AllHostsNotAllowed {
+		deployment_all_hosts_allowed: bool,
+		tenant_policy_allows_all_hosts: bool,
+	},
+	NumericLimit {
+		field: &'static str,
+		value: u64,
+		min: u64,
+		max: u64,
+		deployment_admin_can_raise: bool,
+	},
+	DockerNotAllowed,
+	InvalidExecutionImage,
+}
+
+impl fmt::Display for ScratchSettingsRefusal {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		use ScratchSettingsViolation as V;
+		write!(
+			f,
+			"Scratch Space settings refused. This Tenant {} choose all hosts.",
+			if self.all_hosts_allowed {
+				"may"
+			} else {
+				"may not"
+			}
+		)?;
+		for violation in &self.violations {
+			write!(f, " ")?;
+			match violation {
+				V::OutsideTenantHosts { hosts } => write!(
+					f,
+					"The Tenant host policy excludes {}. Use hosts permitted by this Tenant or ask a Deployment Administrator to update the Tenant host policy.",
+					hosts
+						.iter()
+						.map(String::as_str)
+						.collect::<Vec<_>>()
+						.join(", ")
+				)?,
+				V::InvalidHosts { hosts } => write!(
+					f,
+					"{hosts:?} contains invalid host entries. Use canonical DNS names or IP addresses without a URL scheme, port, path or wildcard."
+				)?,
+				V::AllHostsNotAllowed {
+					deployment_all_hosts_allowed,
+					tenant_policy_allows_all_hosts,
+				} => write!(
+					f,
+					"The Deployment all-hosts switch is {deployment_all_hosts_allowed}. The Tenant policy's all-hosts permission is {tenant_policy_allows_all_hosts}. List permitted hosts or ask a Deployment Administrator to enable the missing permission."
+				)?,
+				V::NumericLimit {
+					field,
+					value,
+					min,
+					max,
+					deployment_admin_can_raise,
+				} => {
+					write!(f, "{field} is {value}. Choose a value from {min} to {max}.")?;
+					if *field == "idle_expiry_days" {
+						write!(f, " Use null to disable idle expiry.")?;
+					}
+					if *deployment_admin_can_raise {
+						write!(
+							f,
+							" A higher value requires a Deployment Administrator to raise this ceiling."
+						)?;
+					}
+				}
+				V::DockerNotAllowed => write!(
+					f,
+					"Docker is disabled for this Tenant. Turn it off for this Scratch Space or ask a Deployment Administrator to enable it for the Tenant."
+				)?,
+				V::InvalidExecutionImage => write!(
+					f,
+					"Use an execution image pinned by its SHA-256 digest or select the default image with null."
+				)?,
+			}
+		}
+		Ok(())
 	}
 }
 
@@ -165,40 +254,115 @@ impl ScratchSettings {
 	}
 
 	pub fn validate(&self, ceilings: &ScratchCeilings, tenant_hosts: &HostAllowlist) -> Result<()> {
-		if self.capacity_bytes == 0
-			|| self.capacity_bytes > ceilings.capacity_bytes
-			|| self.capacity_bytes > 1024 * GIB
-			|| self.cpu_millis == 0
-			|| self.cpu_millis > ceilings.cpu_millis
-			|| self.memory_bytes == 0
-			|| self.memory_bytes > ceilings.memory_bytes
-			|| self
-				.idle_expiry_days
-				.is_some_and(|days| !(1..=365).contains(&days))
-			|| self.daily_sent_bytes == 0
-			|| self.daily_sent_bytes > ceilings.daily_sent_bytes
-			|| self.daily_received_bytes == 0
-			|| self.daily_received_bytes > ceilings.daily_received_bytes
-			|| self.execution_image.as_ref().is_some_and(|s| {
-				let Some((name, digest)) = s.rsplit_once("@sha256:") else {
-					return true;
-				};
-				name.trim().is_empty()
-					|| name != name.trim()
-					|| digest.len() != 64
-					|| !digest
-						.bytes()
-						.all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-			}) || (self.docker_enabled && !ceilings.docker_allowed)
-			|| !self
-				.allowed_hosts
-				.narrows(tenant_hosts, ceilings.all_hosts_allowed)
-		{
-			return Err(Error::Invalid(
-				"Scratch Space settings exceed allowed limits or are invalid".into(),
-			));
+		use ScratchSettingsViolation as V;
+		let mut violations = Vec::new();
+		let tenant_policy_allows_all_hosts = matches!(tenant_hosts, HostAllowlist::All);
+		let all_hosts_allowed = ceilings.all_hosts_allowed && tenant_policy_allows_all_hosts;
+		match &self.allowed_hosts {
+			HostAllowlist::All if !all_hosts_allowed => violations.push(V::AllHostsNotAllowed {
+				deployment_all_hosts_allowed: ceilings.all_hosts_allowed,
+				tenant_policy_allows_all_hosts,
+			}),
+			HostAllowlist::All => {}
+			HostAllowlist::Hosts(hosts) => {
+				let invalid: BTreeSet<_> = hosts
+					.iter()
+					.filter(|host| !valid_host(host))
+					.cloned()
+					.collect();
+				if let HostAllowlist::Hosts(allowed) = tenant_hosts {
+					let outside: BTreeSet<_> = hosts
+						.difference(allowed)
+						.filter(|host| !invalid.contains(*host))
+						.cloned()
+						.collect();
+					if !outside.is_empty() {
+						violations.push(V::OutsideTenantHosts { hosts: outside });
+					}
+				}
+				if !invalid.is_empty() {
+					violations.push(V::InvalidHosts { hosts: invalid });
+				}
+			}
 		}
-		Ok(())
+		for (field, value, ceiling, hard_max) in [
+			(
+				"capacity_bytes",
+				self.capacity_bytes,
+				ceilings.capacity_bytes,
+				MAX_CAPACITY_BYTES,
+			),
+			(
+				"cpu_millis",
+				self.cpu_millis.into(),
+				ceilings.cpu_millis.into(),
+				u32::MAX.into(),
+			),
+			(
+				"memory_bytes",
+				self.memory_bytes,
+				ceilings.memory_bytes,
+				u64::MAX,
+			),
+			(
+				"daily_sent_bytes",
+				self.daily_sent_bytes,
+				ceilings.daily_sent_bytes,
+				u64::MAX,
+			),
+			(
+				"daily_received_bytes",
+				self.daily_received_bytes,
+				ceilings.daily_received_bytes,
+				u64::MAX,
+			),
+		] {
+			let max = ceiling.min(hard_max);
+			if !(1..=max).contains(&value) {
+				violations.push(V::NumericLimit {
+					field,
+					value,
+					min: 1,
+					max,
+					deployment_admin_can_raise: value > max && value <= hard_max,
+				});
+			}
+		}
+		if let Some(days) = self.idle_expiry_days
+			&& !(1..=365).contains(&days)
+		{
+			violations.push(V::NumericLimit {
+				field: "idle_expiry_days",
+				value: days.into(),
+				min: 1,
+				max: 365,
+				deployment_admin_can_raise: false,
+			});
+		}
+		if self.docker_enabled && !ceilings.docker_allowed {
+			violations.push(V::DockerNotAllowed);
+		}
+		if self.execution_image.as_ref().is_some_and(|s| {
+			let Some((name, digest)) = s.rsplit_once("@sha256:") else {
+				return true;
+			};
+			name.trim().is_empty()
+				|| name != name.trim()
+				|| digest.len() != 64
+				|| !digest
+					.bytes()
+					.all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+		}) {
+			violations.push(V::InvalidExecutionImage);
+		}
+		if violations.is_empty() {
+			Ok(())
+		} else {
+			Err(Error::ScratchSettings(Box::new(ScratchSettingsRefusal {
+				all_hosts_allowed,
+				violations,
+			})))
+		}
 	}
 }
 
