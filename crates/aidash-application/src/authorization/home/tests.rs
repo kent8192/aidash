@@ -868,19 +868,24 @@ async fn follow_up_creates_independent_intent_with_durable_audit_key() {
 #[rstest]
 #[tokio::test(start_paused = true)]
 async fn status_fanout_is_bounded_and_preserves_grant_order() {
+	// The repository returns more than one page so an unbounded fan-out fails.
+	const EXPECTED_PEAK: usize = 25;
+	const GRANTS: usize = EXPECTED_PEAK + 2;
 	let repository = Repository::default();
 	{
 		let mut state = repository.state.lock().unwrap();
-		state.grants = 7;
+		state.grants = GRANTS;
 		state.delay_status = true;
 	}
 	let statuses = list(&repository, task().id).await.unwrap();
 	assert_eq!(
 		statuses.iter().map(|s| s.grant.id).collect::<Vec<_>>(),
-		(4..11).map(Uuid::from_u128).collect::<Vec<_>>()
+		(4..4 + GRANTS as u128)
+			.map(Uuid::from_u128)
+			.collect::<Vec<_>>()
 	);
 	assert!(statuses.iter().all(|s| s.unavailable));
-	assert_eq!(repository.state.lock().unwrap().max_rpcs, 4);
+	assert_eq!(repository.state.lock().unwrap().max_rpcs, EXPECTED_PEAK);
 	assert_eq!(repository.state.lock().unwrap().rpcs, 0);
 }
 #[rstest]
