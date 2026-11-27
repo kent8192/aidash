@@ -438,7 +438,8 @@ pub async fn publish(
 		metrics::counter!("aidash_activation_published_total").increment(1);
 		Result::Ok(true)
 	}))
-	.buffer_unordered(8);
+	// Publication acknowledgements use one connection each. Leave half for other work.
+	.buffer_unordered((repository.publication_pool_size() / 2).max(1));
 	let mut backpressured = false;
 	while let Some(result) = sends.next().await {
 		backpressured |= !result?;

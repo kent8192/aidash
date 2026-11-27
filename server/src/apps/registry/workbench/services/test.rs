@@ -123,7 +123,11 @@ impl BehavioralTests {
 			&aidash_application::registry::workbench::sandbox::admission::Admission {
 				repository: &repository,
 				models: &models,
-				plugin_sessions: Some(runtime.store.plugin_sessions.clone()),
+				plugin_sessions: Some(std::sync::Arc::new(
+					crate::apps::execution::repositories::mcp_connections::session_manager(
+						&runtime.store,
+					),
+				)),
 			},
 			id,
 			input,

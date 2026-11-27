@@ -663,6 +663,9 @@ impl VisibilityScope for Visibility {
 }
 #[async_trait]
 impl ActivationRepository for Repository {
+	fn publication_pool_size(&self) -> usize {
+		16
+	}
 	fn node_id(&self) -> &str {
 		"aidash://home"
 	}

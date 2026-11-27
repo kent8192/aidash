@@ -6,36 +6,53 @@
 //! semaphore keeps such tasks from accumulating without limit.
 use super::{ChannelAttachment, ChannelAttachmentUploadQuery, access::Lease};
 use crate::{Result, store::Store};
-use std::sync::{Arc, OnceLock};
+use std::{
+	sync::{Arc, OnceLock},
+	time::Duration,
+};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
+
+// One decoder per available CPU protects the process from oversubscribing blocking work.
+static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+// Bound the queue wait to give the caller a retryable answer under load.
+const SLOT_WAIT: Duration = Duration::from_secs(10);
+// Bound the response time of a decode once its worker starts.
+const DECODE_DEADLINE: Duration = Duration::from_secs(20);
 
 async fn decode<T: Send + 'static>(
 	work: impl FnOnce() -> std::result::Result<T, aidash_integrations::media::Refusal> + Send + 'static,
 ) -> Result<T> {
-	decode_bounded(std::time::Duration::from_secs(20), work).await
+	let slots = SLOTS.get_or_init(|| {
+		Arc::new(Semaphore::new(
+			std::thread::available_parallelism().map_or(1, usize::from),
+		))
+	});
+	decode_bounded(slots.clone(), DECODE_DEADLINE, work).await
 }
 
 async fn decode_bounded<T: Send + 'static>(
-	deadline: std::time::Duration,
+	slots: Arc<Semaphore>,
+	deadline: Duration,
 	work: impl FnOnce() -> std::result::Result<T, aidash_integrations::media::Refusal> + Send + 'static,
 ) -> Result<T> {
-	static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-	let slots = SLOTS.get_or_init(|| Arc::new(Semaphore::new(2))).clone();
-	let run = async move {
-		let permit = slots
-			.acquire_owned()
-			.await
-			.map_err(|_| crate::Error::Invalid("MEDIA_UNDECODABLE".into()))?;
-		tokio::task::spawn_blocking(move || {
-			let _permit = permit;
-			work()
-		})
+	let permit = tokio::time::timeout(SLOT_WAIT, slots.acquire_owned())
 		.await
-		.map_err(|error| {
-			tracing::warn!(%error, "media decoder worker failed");
-			crate::Error::Invalid("MEDIA_UNDECODABLE".into())
-		})?
+		.map_err(|_| crate::Error::MediaDecoderBusy)?
+		.map_err(|_| crate::Error::External("media decoder semaphore closed".into()))?;
+	let (started, ready) = tokio::sync::oneshot::channel();
+	let worker = tokio::task::spawn_blocking(move || {
+		let _permit = permit;
+		let _ = started.send(tokio::time::Instant::now());
+		work()
+	});
+	let started_at = ready
+		.await
+		.map_err(|_| crate::Error::External("media decoder worker did not start".into()))?;
+	tokio::time::timeout_at(started_at + deadline, worker)
+		.await
+		.map_err(|_| crate::Error::MediaDecodeTimeout)?
+		.map_err(|error| crate::Error::External(format!("media decoder worker failed: {error}")))?
 		.map_err(|refusal| match refusal {
 			aidash_integrations::media::Refusal::Undecodable => {
 				crate::Error::Invalid("MEDIA_UNDECODABLE".into())
@@ -46,13 +63,6 @@ async fn decode_bounded<T: Send + 'static>(
 			aidash_integrations::media::Refusal::RenditionTooLong => crate::Error::Invalid(
 				"audio is too long to convert to WAV within the inference byte limit".into(),
 			),
-		})
-	};
-	tokio::time::timeout(deadline, run)
-		.await
-		.unwrap_or_else(|_| {
-			tracing::warn!("media decoder exceeded its deadline");
-			Err(crate::Error::Invalid("MEDIA_UNDECODABLE".into()))
 		})
 }
 
@@ -143,20 +153,47 @@ pub(crate) async fn download(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[tokio::test(start_paused = true)]
+	async fn slot_wait_times_out_as_decoder_busy_without_starting_work() {
+		let result = decode_bounded::<()>(Arc::new(Semaphore::new(0)), DECODE_DEADLINE, || {
+			panic!("no decoder slot was granted")
+		})
+		.await;
+		let response = result.unwrap_err().http_response();
+		assert_eq!(response.status.as_u16(), 503);
+		let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+		assert_eq!(body["code"], "media_decoder_busy");
+		assert!(body["error"].as_str().unwrap().contains("10 seconds"));
+	}
+
 	#[tokio::test]
-	async fn failed_or_timed_out_worker_is_an_undecodable_error() {
-		let panic = decode(
-			|| -> std::result::Result<(), aidash_integrations::media::Refusal> {
-				panic!("decoder panic")
+	async fn decoder_distinguishes_worker_failures_from_invalid_media() {
+		let closed = Arc::new(Semaphore::new(1));
+		closed.close();
+		let closed_error = decode_bounded::<()>(closed, DECODE_DEADLINE, || unreachable!())
+			.await
+			.unwrap_err();
+		assert_eq!(closed_error.http_response().status.as_u16(), 500);
+
+		let crash = decode::<()>(|| panic!("decoder panic")).await.unwrap_err();
+		assert_eq!(crash.http_response().status.as_u16(), 500);
+
+		let malformed =
+			decode::<()>(|| Err(aidash_integrations::media::Refusal::Undecodable)).await;
+		assert!(
+			matches!(malformed, Err(crate::Error::Invalid(code)) if code == "MEDIA_UNDECODABLE")
+		);
+
+		let slow = decode_bounded(
+			Arc::new(Semaphore::new(1)),
+			Duration::from_millis(10),
+			|| {
+				std::thread::sleep(Duration::from_millis(100));
+				Ok(())
 			},
 		)
 		.await;
-		assert!(matches!(panic, Err(crate::Error::Invalid(code)) if code == "MEDIA_UNDECODABLE"));
-		let timeout = decode_bounded(std::time::Duration::from_millis(10), || {
-			std::thread::sleep(std::time::Duration::from_millis(100));
-			Ok(())
-		})
-		.await;
-		assert!(matches!(timeout, Err(crate::Error::Invalid(code)) if code == "MEDIA_UNDECODABLE"));
+		assert!(matches!(slow, Err(crate::Error::MediaDecodeTimeout)));
 	}
 }

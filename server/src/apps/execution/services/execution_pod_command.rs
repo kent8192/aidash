@@ -155,6 +155,13 @@ async fn ensure_output(
 				code: ExecutionPodErrorCode::Unknown(_),
 				..
 			} => "runner_error".to_owned(),
+			ExecutionPodError::Transport(aidash_application::Error::Port(source))
+				if source
+					.is::<aidash_application::ports::capabilities::execution_pod::RunnerTimeout>(
+					) =>
+			{
+				return Error::from(aidash_application::Error::Port(source));
+			}
 			ExecutionPodError::Transport(_) => "runner_unavailable".to_owned(),
 			ExecutionPodError::Remote { code, .. } => code.to_string(),
 		};

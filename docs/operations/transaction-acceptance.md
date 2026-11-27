@@ -15,7 +15,7 @@ recovery, external effects, or all-six integrated release acceptance.
 When a case fails, the driver also keeps the last 400 lines of every Node's
 server log next to `cases.jsonl`, because a refusal's reason appears only there.
 
-## Run of 2026-11-25 (#869, ADR 0146)
+## Run of 2026-11-25 (#869, ADR 0151)
 
 The first full run since cross-Deployment submissions resumed passed every
 partition on local kind (Kubernetes v1.34.0, image `aidash:cluster-869` built

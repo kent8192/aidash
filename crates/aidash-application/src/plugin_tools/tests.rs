@@ -9,6 +9,7 @@ use crate::{
 use aidash_domain::agent_plugin::{Component, ConnectionCause, Outcome, Reason};
 use serde_json::json;
 use std::time::Duration;
+use tokio::time::Instant;
 
 fn servers(names: &[&str]) -> serde_json::Value {
 	names
@@ -128,6 +129,10 @@ async fn a_server_the_plugin_serves_over_stdio_is_not_listed() {
 #[rstest::rstest]
 #[case::refused(Listed::Forbidden, "forbidden")]
 #[case::unreachable(Listed::Failed(ListFailure::Unreachable), "unreachable")]
+#[case::large_listing(
+	Listed::Failed(ListFailure::ListingTooLarge),
+	"mcp_listing_too_large: MCP tool listing exceeds 1 MiB"
+)]
 #[case::initialize(Listed::Failed(ListFailure::InitializeFailed), "initialize_failed")]
 #[case::answer(Listed::Failed(ListFailure::InvalidResponse), "invalid_response")]
 #[case::invalid(Listed::Invalid, "invalid_response")]
@@ -183,12 +188,16 @@ async fn a_server_that_never_answers_times_out_after_ten_seconds_and_the_others_
 	assert_eq!(aliases(&pinned), ["acme__docs__search", "acme__wiki__read"]);
 	assert_eq!(
 		findings(&pinned),
-		[("slow".into(), Reason::ServerUnavailable, "timeout".into())]
+		[(
+			"slow".into(),
+			Reason::ServerUnavailable,
+			"timeout: MCP tool listing exceeded 15 seconds".into()
+		)]
 	);
 }
 
 #[tokio::test(start_paused = true)]
-async fn listings_run_four_at_a_time() {
+async fn all_remote_listings_start_concurrently() {
 	let names: Vec<String> = (0..6).map(|index| format!("s{index}")).collect();
 	let refs: Vec<&str> = names.iter().map(String::as_str).collect();
 	let snapshot = plugin_snapshot(vec![plugin("acme", &refs)], serde_json::Value::Null);
@@ -207,43 +216,8 @@ async fn listings_run_four_at_a_time() {
 		.unwrap();
 
 	assert_eq!(pinned.servers.len(), 6);
-	assert_eq!(sessions.peak(), CONCURRENCY);
-	assert_eq!(started.elapsed(), Duration::from_secs(2));
-}
-
-#[tokio::test(start_paused = true)]
-async fn thirty_seconds_in_total_end_the_listing_and_keep_what_already_answered() {
-	let first: Vec<String> = (0..8).map(|index| format!("a{index}")).collect();
-	let second: Vec<String> = (0..8).map(|index| format!("b{index}")).collect();
-	let plugins = vec![
-		plugin("one", &first.iter().map(String::as_str).collect::<Vec<_>>()),
-		plugin(
-			"two",
-			&second.iter().map(String::as_str).collect::<Vec<_>>(),
-		),
-	];
-	let snapshot = plugin_snapshot(plugins, serde_json::Value::Null);
-	let sessions = FakeSessions::default();
-	for name in first.iter().chain(&second) {
-		sessions.script_after(
-			name,
-			Duration::from_secs(9),
-			Listed::Tools(vec![listed_tool("search")]),
-		);
-	}
-	let started = Instant::now();
-
-	let pinned = pin_for_run(&sessions, Uuid::new_v4(), &snapshot)
-		.await
-		.unwrap();
-
-	assert_eq!(started.elapsed(), TOTAL_TIMEOUT);
-	assert_eq!(pinned.servers.len(), 12);
-	let timed_out = findings(&pinned);
-	assert_eq!(timed_out.len(), 4);
-	assert!(timed_out.iter().all(|(_, reason, detail)| {
-		*reason == Reason::ServerUnavailable && detail == "timeout"
-	}));
+	assert_eq!(sessions.peak(), names.len());
+	assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
 #[tokio::test]
@@ -423,7 +397,9 @@ async fn an_attach_time_listing_returns_names_and_the_digests_the_run_start_pin_
 	sessions.script("docs", Listed::Tools(vec![tool.clone()]));
 	let (server, config) = attach_target();
 
-	let listing = list_for_attach(&sessions, &server, &config, None).await;
+	let listing = list_for_attach(&sessions, &server, &config, None)
+		.await
+		.unwrap();
 
 	assert_eq!(
 		listing,
@@ -460,7 +436,9 @@ async fn an_attach_time_listing_that_fails_says_why_and_lists_nothing(
 	sessions.script("docs", listed);
 	let (server, config) = attach_target();
 
-	let listing = list_for_attach(&sessions, &server, &config, None).await;
+	let listing = list_for_attach(&sessions, &server, &config, None)
+		.await
+		.unwrap();
 
 	assert_eq!(
 		listing,

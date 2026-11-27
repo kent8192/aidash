@@ -42,7 +42,7 @@ pub struct Config {
 	/// carries none.
 	pub dashboard_origin: String,
 	/// The key, derived from `core.secret_key`, from which a coordinator
-	/// derives each atomic transaction's seed (ADR 0146). Deriving rather than
+	/// derives each atomic transaction's seed (ADR 0151). Deriving rather than
 	/// drawing the seed lets a resubmission after a crash seal the manifest as
 	/// the preflights it already sent did.
 	pub transaction_seed_key: [u8; 32],

@@ -224,22 +224,9 @@ impl AuthorizationCredential {
 		lifetime: i64,
 	) -> Result<Credential> {
 		use aidash_domain::identity::credentials::{
-			MAX_ACTIVE_CHILDREN, MAX_TENANT_LIFETIME_SECONDS, validate_tenant_lifetime,
+			MAX_TENANT_LIFETIME_SECONDS, validate_tenant_lifetime,
 		};
 		validate_tenant_lifetime(lifetime, MAX_TENANT_LIFETIME_SECONDS)?;
-		let (sql, values) = Query::select()
-			.expr(SimpleExpr::FunctionCall(
-				"pg_advisory_xact_lock".into_iden(),
-				vec![SimpleExpr::FunctionCall(
-					"hashtextextended".into_iden(),
-					vec![
-						Expr::value(parent.to_string()).into(),
-						Expr::value(36_300_359_i64).into(),
-					],
-				)],
-			))
-			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await?;
 		let parent_row = Self::objects()
 			.filter(Self::field_id().eq(parent))
 			.filter(Self::field_tenant().eq(tenant.to_owned()))
@@ -261,19 +248,6 @@ impl AuthorizationCredential {
 		if now + Duration::seconds(lifetime) > parent_row.expires_at {
 			return Err(Error::Invalid(
 				"child credential expires after its parent".into(),
-			));
-		}
-		let active = Self::objects()
-			.filter(Self::field_parent_id().eq(Some(parent)))
-			.filter(Self::field_revoked_at().is_null())
-			.filter(Self::field_expires_at().gt(now))
-			.all_with_executor(tx)
-			.await
-			.map_err(FrameworkError::from)?
-			.len();
-		if active >= MAX_ACTIVE_CHILDREN {
-			return Err(Error::Conflict(
-				"a credential holds at most 100 active children".into(),
 			));
 		}
 		let mut child = Self::issue(

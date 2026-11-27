@@ -36,7 +36,28 @@ class ForegroundAdoptionTest(unittest.TestCase):
                 while time.monotonic() < deadline and b'later' not in (output / (left + '.stdout')).read_bytes():
                     time.sleep(.05)
                 self.assertIn(b'later', (output / (left + '.stdout')).read_bytes())
-                sandbox_v2.stop_operation(left)
+                from types import SimpleNamespace
+
+                def kube(args, data=None, **kwargs):
+                    helper = args[args.index('/.aidash-helpers/sandbox_v2.py') + 1]
+                    if helper == 'stop':
+                        sandbox_v2.stop_operation(args[-1])
+                        return SimpleNamespace(returncode=0, stdout=b'')
+                    if helper == 'results':
+                        operations = json.loads(data)
+                        receipt = sandbox_v2.read_background_results(operations, 'pod')
+                    else:
+                        raise AssertionError(args)
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(receipt).encode())
+
+                controller = execution_pod.ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {})
+                with patch.object(controller, '_get', return_value={'metadata': {'uid': 'pod'}}), \
+                     patch('execution_pod.Thread'):
+                    controller._adopt_left({'run_id': 'run', 'scratch_space_id': 'space',
+                                            'pod': 'execution-pod', 'pod_uid': 'pod',
+                                            'docker_enabled': True}, left, b'secret')
+                    self.assertEqual(controller.command_result(left)['status'], 'running')
+                    self.assertEqual(controller.stop_background(left)['status'], 'stopping')
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline and not (state / (left + '.json')).exists():
                     time.sleep(.05)
@@ -61,7 +82,7 @@ class ForegroundAdoptionTest(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux', 'requires Linux subreaper support')
 class DetachedBackgroundTest(unittest.TestCase):
-    def test_deadline_and_tail_survive_loss_of_the_exec_parent(self):
+    def test_start_returns_before_in_pod_deadline_and_tail_are_persisted(self):
         import base64
         import subprocess
         from execution_pod import verify_adopted_result
@@ -78,33 +99,31 @@ command = [sys.executable, '-c', "import time; print('x' * 4096 + 'tail', flush=
 with patch.object(execution_pod, 'chroot_helper_command', return_value=command), \
      patch.object(sandbox_v2, 'OPERATION_DIRECTORY', str(Path(root) / 'state')), \
      patch.object(sandbox_v2, 'OUTPUT_DIRECTORY', str(Path(root) / 'output')):
-    sandbox_v2.supervise_detached(operation, 'run', '.', 'unused', 2, False,
-                                  expected_pod_uid='pod', record_changes=False,
-                                  output_limit=32, left_auth=b'secret', capture_tail=True)
+    import json
+    receipt = sandbox_v2.supervise_background(operation, 'run', '.', 'unused', 2, False,
+                                             expected_pod_uid='pod', record_changes=False,
+                                             output_limit=32, left_auth=b'secret', capture_tail=True)
+    print(json.dumps(receipt))
 """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with subprocess.Popen(
+            reply = subprocess.run(
                 [sys.executable, '-c', code, directory, operation],
                 env=dict(os.environ, AIDASH_POD_UID='pod'), cwd=Path(__file__).resolve().parent,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            ) as runner_exec:
-                output = root / 'output' / (operation + '.stdout')
-                deadline = time.monotonic() + 3
-                while time.monotonic() < deadline and (not output.exists() or not output.stat().st_size):
-                    time.sleep(.02)
-                self.assertGreater(output.stat().st_size, 0)
-                runner_exec.kill()
-                runner_exec.wait(timeout=3)
-                result_path = root / 'state' / (operation + '.json')
-                deadline = time.monotonic() + 8
-                while time.monotonic() < deadline and not result_path.exists():
-                    time.sleep(.02)
-                result = json.loads(result_path.read_text())
-                self.assertEqual(result['status'], 'timed_out')
-                self.assertTrue(verify_adopted_result(result, b'secret'))
-                self.assertEqual(base64.b64decode(result['output_tail']), b'x' * 4091 + b'tail\n')
-                self.assertEqual(output.stat().st_size, 32)
+                capture_output=True, check=True, timeout=5,
+            )
+            self.assertEqual(json.loads(reply.stdout), {'started': True})
+            result_path = root / 'state' / (operation + '.json')
+            self.assertFalse(result_path.exists())
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline and not result_path.exists():
+                time.sleep(.02)
+            result = json.loads(result_path.read_text())
+            self.assertEqual(result['status'], 'timed_out')
+            self.assertTrue(verify_adopted_result(result, b'secret'))
+            self.assertEqual(base64.b64decode(result['output_tail']), b'x' * 4091 + b'tail\n')
+            self.assertEqual((root / 'output' / (operation + '.stdout')).stat().st_size, 32)
+
 
 
 if __name__ == '__main__':

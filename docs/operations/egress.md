@@ -4,9 +4,9 @@ With `execution.egress.enabled`, Helm starts one Egress gateway Deployment,
 ClusterIP Service and autoscaler per Egress IP group. The API and gateway
 run in separate Pods. Each gateway has a 2 GiB memory request and limit,
 a database pool of eight connections, and a memory autoscaler targeting
-70% with one to ten replicas. The API's memory limit is 2 GiB. The GCP
-environment chart starts PostgreSQL with `max_connections=300`. Count
-eight connections per replica across all groups when sizing PostgreSQL.
+70% with one to ten replicas. The API's memory limit is 2 GiB. The
+[database connection budget](database.md) subtracts eight connections per
+maximum gateway replica across all groups before sizing the server and worker pools.
 
 Standalone installations can run `manage egress-gateway` with the same
 capability profile, database credentials and Runner token as the API. Set

@@ -1451,7 +1451,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			}))
 			.unwrap();
 			manifest.validate::<aidash_server::Error>().unwrap();
-			// A participant keeps only its own share (ADR 0146).
+			// A participant keeps only its own share (ADR 0151).
 			let share = manifest.share(&"5e".repeat(32), &local).unwrap();
 			let digest = if blocker == "atomic_digest" {
 				"corrupt".to_owned()

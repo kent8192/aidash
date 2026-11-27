@@ -521,11 +521,19 @@ left out with a typed cause and the Run continues without its tools. The event
 `reason` codes, and no URL, header, detail or server answer. The Run channel
 shows which servers could not be reached.
 
+Remote servers list concurrently and have 15 seconds each. A stdio server has
+330 seconds for setup and listing. Once listing starts, every transport has
+15 seconds to read all pages and reports `mcp_listing_too_large` if the
+listing exceeds 1 MiB.
+
 A Run keeps one MCP session per server. If a session is lost the next call
 opens another, lists the tools again and answers `CAPABILITY_CHANGED` for a
 tool whose input schema no longer has the pinned digest. A call that may already
 have run is never sent again. All of a Run's sessions end when it finishes,
-fails or expires, and an idle session ends on its own.
+fails or expires, and unused HTTP sessions expire after 10 minutes. When API
+replica memory is above 80%, a Tenant already holding more than the mean
+number of HTTP sessions receives `mcp_session_memory_short` for new sessions.
+Admission returns to normal below 70%.
 
 ### MCP client inputs and continuations
 

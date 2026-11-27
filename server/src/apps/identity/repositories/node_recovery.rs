@@ -76,7 +76,7 @@ pub(crate) async fn registration_sources_with_planned_in(
 				None
 			};
 			// A coordinator holds the manifest and the seed that seals it; a
-			// participant holds only its own share (ADR 0146).
+			// participant holds only its own share (ADR 0151).
 			let data = QueryRow::from_backend_row(row).data;
 			let (journal, stored, nodes, sealed) = if table == "atomic_coordinators" {
 				let manifest: Manifest =

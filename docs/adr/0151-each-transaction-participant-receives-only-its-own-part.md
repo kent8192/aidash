@@ -1,5 +1,7 @@
 # Each transaction participant receives only its own part
 
+Renumbered from 0146 on 2026-11-27: two ADRs had been given that number, and this one was added later.
+
 Decided on 2026-11-23 (#869, #1107, #1108). Until now every participant of an atomic transaction received the complete manifest (design D14), and each participant's `transaction.disclose` permission decided which Nodes could see its targets. That permission was checked only at preflight. Preflight commits and releases its locks before the coordinator sends the manifest, so a participant could withdraw its permission and another participant would still receive its target IDs, revisions and new values. New submissions that named another Deployment had been refused with 403 since 2026-10-11 because of this gap. Instead of holding authority across Nodes until delivery, nothing of one participant's part now reaches another participant, so withdrawing a permission has nothing left to protect.
 
 ## Decisions

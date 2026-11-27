@@ -54,11 +54,13 @@ pub struct AreaSnapshot {
 impl ShellRequest {
 	pub fn seconds(&self, limits: AdmissionLimits) -> Result<u64> {
 		let seconds = self.timeout_seconds.unwrap_or(limits.operation_seconds);
-		if self.command.is_empty()
-			|| self.command.len() > limits.command_bytes
-			|| seconds == 0
-			|| seconds > limits.maximum_seconds
-		{
+		if self.command.len() > limits.command_bytes {
+			return Err(Error::Invalid(format!(
+				"INVALID_SHELL_LIMIT: command exceeds {} bytes (Linux MAX_ARG_STRLEN is 128 KiB)",
+				limits.command_bytes
+			)));
+		}
+		if self.command.is_empty() || seconds == 0 || seconds > limits.maximum_seconds {
 			return Err(Error::Invalid("INVALID_SHELL_LIMIT".into()));
 		}
 		Ok(seconds)

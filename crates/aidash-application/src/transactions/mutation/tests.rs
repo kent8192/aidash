@@ -555,7 +555,7 @@ async fn a_share_whose_part_is_for_another_node_is_refused(mut scope: Scope) {
 }
 
 /// The home Node never sees the executor's mutations; the executor's seal
-/// claims carry the pairing (ADR 0146).
+/// claims carry the pairing (ADR 0151).
 #[rstest]
 #[case::claimed(true)]
 #[case::unclaimed(false)]

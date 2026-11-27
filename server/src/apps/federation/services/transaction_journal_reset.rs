@@ -1,4 +1,4 @@
-//! The journal reset of `federation/0031_transaction_parts` (#1107, ADR 0146),
+//! The journal reset of `federation/0031_transaction_parts` (#1107, ADR 0151),
 //! materialized by `migrationseeds`.
 //!
 //! From #1107 a coordinator seals every part with a per-transaction seed and a

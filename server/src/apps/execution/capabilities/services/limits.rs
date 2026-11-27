@@ -3,7 +3,7 @@
 impl Default for ContentLimits {
 	fn default() -> Self {
 		Self {
-			command_bytes: 65536,
+			command_bytes: aidash_domain::completion::MAX_COMMAND_BYTES,
 			patch_bytes: 256 << 10,
 			search_matches: 50,
 			search_bytes: 32 << 10,

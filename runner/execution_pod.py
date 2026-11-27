@@ -1,7 +1,7 @@
 """Scheduling primitives for commands sharing an Execution Pod."""
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock, RLock
+from concurrent.futures import Future
+from threading import Lock, RLock, Thread
 from helper_protocol import HELPER_PROTOCOL, LEGACY_HELPER_PROTOCOL, protocol_supported
 
 STOP_RETRY_SECONDS = 15 * 60
@@ -15,9 +15,17 @@ JOURNAL_RETENTION_SECONDS = max(LATE_RESULT_SECONDS, STOP_RETRY_SECONDS) + STOP_
 # after a stop for requests already dispatched, including across restarts.
 SESSION_FENCE_RETENTION_SECONDS = 24 * 60 * 60
 REFUSAL_RETENTION_SECONDS = 7 * 86400
-JOURNAL_MAX_RECORDS_PER_SPACE = 4096
+# Keep 10% of the Runner state volume available for updates to accepted operations.
+RUNNER_DISK_LIMIT_PERCENT = 90
 BACKGROUND_RETENTION_SECONDS = 7 * 86400
+# Allow the Pod supervisor to reap descendants and persist its result before sending a backup stop.
 BACKGROUND_STOP_GRACE_SECONDS = 60
+# One batched exec per Pod every 5 s bounds polling traffic and exit notification lag.
+BACKGROUND_POLL_SECONDS = 5
+# Restore observation of individual operations after three failed batched polls.
+BACKGROUND_POLL_FAILURES = 3
+# Leave time to return the startup result within the Runner's 30 s command transport.
+BACKGROUND_START_SECONDS = 25
 IDLE_MONITOR_SECONDS = 30
 
 
@@ -29,7 +37,8 @@ def background_deadline(record):
 
 
 def background_end_pending(record):
-    return (record.get('status') in ('queued', 'running', 'interrupted')
+    return ((record.get('status') in ('queued', 'running', 'interrupted')
+             or (record.get('status') == 'failed' and record.get('stop_pending')))
             and not record.get('run_stop_confirmed') and not record.get('pod_stop_confirmed'))
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
 # stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
@@ -88,47 +97,62 @@ def verify_adopted_result(result, key):
 
 
 class CommandQueue:
-    """Bound active commands and allow a Run's queued foreground work to stop."""
+    """Track command threads and cancel only work that has yet to enter its thread."""
 
     def __init__(self):
-        self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='execution-pod')
-        self._background = ThreadPoolExecutor(max_workers=16, thread_name_prefix='execution-background')
-        self._sessions = ThreadPoolExecutor(max_workers=8, thread_name_prefix='python-session')
         self._lock = Lock()
-        self._waiting = {}
+        self._workers = {}
+        self._closed = False
 
-    def submit(self, run_id, command, execute, *, background=False):
+    def submit(self, run_id, command, execute):
         if not isinstance(run_id, str) or not run_id:
             raise ValueError('run_id must be a nonempty string')
-        with self._lock:
-            future = (self._background if background else self._executor).submit(execute, command)
-            if not background:
-                self._waiting.setdefault(run_id, set()).add(future)
-        if not background:
-            future.add_done_callback(lambda done: self._forget(run_id, done))
-        return future
+        return self._start(run_id, command, execute, 'execution-pod')
 
-    def _forget(self, run_id, future):
+    def submit_session(self, operation_id, execute):
+        return self._start(None, operation_id, execute, 'python-session')
+
+    def _start(self, run_id, operation, execute, name):
+        future = Future()
+
+        def run():
+            try:
+                if future.set_running_or_notify_cancel():
+                    try:
+                        future.set_result(execute(operation))
+                    except BaseException as error:
+                        future.set_exception(error)
+            finally:
+                with self._lock:
+                    del self._workers[future]
+
+        worker = Thread(target=run, name=name + '-' + str(operation), daemon=True)
         with self._lock:
-            pending = self._waiting.get(run_id)
-            if pending is not None:
-                pending.discard(future)
-                if not pending:
-                    del self._waiting[run_id]
+            if self._closed:
+                raise RuntimeError('command scheduler is closed')
+            self._workers[future] = (run_id, worker)
+            try:
+                worker.start()
+            except Exception:
+                del self._workers[future]
+                raise
+        return future
 
     def cancel_waiting(self, run_id):
         with self._lock:
-            pending = tuple(self._waiting.get(run_id, ()))
+            pending = [future for future, (owner, _) in self._workers.items() if owner == run_id]
         for future in pending:
             future.cancel()
 
-    def submit_session(self, operation_id, execute):
-        return self._sessions.submit(execute, operation_id)
-
     def close(self, *, wait=True):
-        self._executor.shutdown(wait=wait, cancel_futures=True)
-        self._background.shutdown(wait=wait, cancel_futures=True)
-        self._sessions.shutdown(wait=wait, cancel_futures=True)
+        with self._lock:
+            self._closed = True
+            workers = tuple(self._workers.items())
+        for future, _ in workers:
+            future.cancel()
+        if wait:
+            for _, (_, worker) in workers:
+                worker.join()
 
 
 def system_tree_index(root):
@@ -465,6 +489,7 @@ class ExecutionPodController:
         self.preview_starts = Counter()
         self.mcp_locks = {}
         self.left_result_keys = {}
+        self.background_watches = {}
         self.live_output = {}
         self.foreground_jobs = {}
         self.viewers = {}
@@ -542,7 +567,7 @@ class ExecutionPodController:
                 status, terminal_at, stop_pending, background, *_ = metadata
                 retention = BACKGROUND_RETENTION_SECONDS if background else (
                     REFUSAL_RETENTION_SECONDS if status == 'refused' else JOURNAL_RETENTION_SECONDS)
-                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
+                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'failed', 'interrupted', 'refused')
                         or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
                         or stop_pending):
                     continue
@@ -555,7 +580,7 @@ class ExecutionPodController:
                     terminal_at = record.get('terminal_at')
                     retention = BACKGROUND_RETENTION_SECONDS if record.get('background') else (
                         REFUSAL_RETENTION_SECONDS if record.get('status') == 'refused' else JOURNAL_RETENTION_SECONDS)
-                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
+                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'failed', 'interrupted', 'refused')
                             or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
                             or record.get('stop_pending') or record.get('operation_id') in self.futures
                             or record.get('operation_id') in self.preview_starts):
@@ -1013,6 +1038,7 @@ print(json.dumps(r))'''
             return self._pod_receipt(name, settings['image'])
         try:
             self._admit_pod(name, settings)
+            # Readiness includes scheduling and image pull. START_LIMIT_SECONDS bounds failed-start retries.
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=1800s'], timeout=1810)
             admitted_uid = self._verify_running_pod(name, settings)
             verified = self._get('pod', name)
@@ -1163,9 +1189,10 @@ print(json.dumps(r))'''
                     future = self.futures.get(operation)
                     if future:
                         future.cancel()
-                elif status == 'running' or (status == 'interrupted' and background_end_pending(record)):
+                elif status == 'running' or (status in ('interrupted', 'failed') and background_end_pending(record)):
                     output = self.live_output.get(operation, {})
-                    self._update_command(operation, status='interrupted', outcome='unknown',
+                    self._update_command(operation, status='failed' if status == 'failed' else 'interrupted',
+                                         outcome='unknown',
                                          **({'output_tail': output['output_tail']} if 'output_tail' in output else {}),
                                          pod_stop_reason=effective, pod_stop_confirmed=confirmed,
                                          stop_reason=effective if confirmed else None,
@@ -1442,8 +1469,16 @@ print(json.dumps(r))'''
                 operation = record['operation_id']
                 if record['status'] == 'queued':
                     self._update_command(operation, status='cancelled', outcome='not_started')
+                elif (record.get('background') and record.get('kind') != 'python_session'
+                      and background_end_pending(record) and record['status'] in ('running', 'interrupted')):
+                    # A timed Background command has a journaled key and still needs its deadline backstop.
+                    # Other Docker Background keys are in memory only.
+                    if record.get('docker_enabled') and not record.get('time_limited'):
+                        self._update_command(operation, status='interrupted', outcome='unknown')
+                        continue
+                    self._watch_background(record, claim=record.get('kind') != 'left')
                 elif record['status'] == 'running':
-                    if record.get('docker_enabled') or record.get('time_limited'):
+                    if record.get('docker_enabled'):
                         self._update_command(operation, status='interrupted', outcome='unknown')
                         continue
                     scratch_id, run_id = record['scratch_space_id'], record['run_id']
@@ -1458,8 +1493,7 @@ print(json.dumps(r))'''
                             if record.get('kind') == 'python_session':
                                 future = queue.submit_session(operation, self._resume_command)
                             else:
-                                future = queue.submit(run_id, operation, self._resume_command,
-                                                      background=record.get('background', False))
+                                future = queue.submit(run_id, operation, self._resume_command)
                         except Exception:
                             if foreground:
                                 self.foreground_jobs[scratch_id] -= 1
@@ -1494,7 +1528,7 @@ print(json.dumps(r))'''
             record = self._read_command(operation_id)
             if allow_late and (record.get('status') != 'interrupted' or record.get('pod_stop_confirmed')):
                 return record
-            terminal = ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+            terminal = ('completed', 'timed_out', 'stopped', 'cancelled', 'failed', 'interrupted')
             if (record.get('status') in terminal and fields.get('status') != record.get('status')
                     and not (allow_late and record.get('status') == 'interrupted')):
                 return record
@@ -1540,6 +1574,8 @@ print(json.dumps(r))'''
                         self._stop_untracked_command(record)
             except Exception:
                 pass
+        if retry_stop and record.get('status') == 'failed' and record.get('stop_pending'):
+            self._stop_untracked_command(record)
         with self.lock:
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
@@ -1590,11 +1626,15 @@ print(json.dumps(r))'''
 
     def submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None, session_replaced=False):
         with self._space_lock(request['scratch_space_id']):
-            return self._submit_command(request, kind=kind, session_operation_id=session_operation_id, client_digest=client_digest, session_replaced=session_replaced)
+            result, launch = self._submit_command(request, kind=kind, session_operation_id=session_operation_id,
+                                                  client_digest=client_digest, session_replaced=session_replaced)
+        return self._start_background(result) if launch else result
 
     def _submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None, session_replaced=False):
         import hashlib
         import json
+        import secrets
+        import shutil
         import time
         from control import save, scratch_resource_name
 
@@ -1650,11 +1690,14 @@ print(json.dumps(r))'''
                     raise ExecutionPodError('command_refused', 'Command operation was refused')
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
-                return self.command_result(operation_id, observe_late=False)
+                return self.command_result(operation_id, observe_late=False), False
         self._check_run_open(scratch_id, run_id, kind)
         self.prune_space(scratch_id)
-        if len(self._space_journal_paths(scratch_id)) >= JOURNAL_MAX_RECORDS_PER_SPACE:
-            raise ExecutionPodError('journal_full', 'Scratch Space command journal is full; retry after retention expires')
+        disk = shutil.disk_usage(path.parent)
+        if disk.used * 100 > RUNNER_DISK_LIMIT_PERCENT * disk.total:
+            percent = disk.used * 100 / disk.total
+            raise ExecutionPodError('runner_disk_full',
+                                    f'Runner state volume is {percent:.2f}% used (limit {RUNNER_DISK_LIMIT_PERCENT}%)')
         pod = self._get('pod', name)
         if self._pod_update_due(scratch_id, pod, time.time()):
             self.helper_checks.add(scratch_id)
@@ -1668,7 +1711,7 @@ print(json.dumps(r))'''
                     raise ExecutionPodError('command_refused', 'Command operation was refused')
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
-                return self.command_result(operation_id, observe_late=False)
+                return self.command_result(operation_id, observe_late=False), False
             if not pod or pod.get('status', {}).get('phase') != 'Running':
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
             uid = pod.get('metadata', {}).get('uid')
@@ -1690,6 +1733,11 @@ print(json.dumps(r))'''
                       'request_digest': digest, 'accepted_at': time.time(), 'kind': kind,
                       'time_limited': time_limited, 'notify_on_exit': notify_on_exit,
                       'helper_protocol': HELPER_PROTOCOL}
+            detached = background and kind != 'python_session'
+            if detached:
+                record.update(status='running', running_at=time.time())
+                if time_limited or (kind == 'mcp_session' and not docker):
+                    record['result_proof_key'] = secrets.token_hex(32)
             record['proxy_credential_given'] = credential is not None
             if session_replaced:
                 record['session_replaced'] = True
@@ -1703,23 +1751,31 @@ print(json.dumps(r))'''
             self.journal_index.setdefault(scratch_id, set()).add(path.name)
             self.journal_metadata[path.name] = self._prune_metadata(record)
             self.touch_space(scratch_id)
+            if detached:
+                return record, True
             if not background:
                 self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
             if scratch_id not in self.queues:
                 self.queues[scratch_id] = CommandQueue()
             queue = self.queues[scratch_id]
-            if kind == 'python_session':
-                future = queue.submit_session(operation_id, self._execute_command)
-            else:
-                future = queue.submit(run_id, operation_id, self._execute_command, background=background)
+            try:
+                if kind == 'python_session':
+                    future = queue.submit_session(operation_id, self._execute_command)
+                else:
+                    future = queue.submit(run_id, operation_id, self._execute_command)
+            except Exception:
+                self.process_proxies.pop(operation_id, None)
+                if not background:
+                    self.foreground_jobs[scratch_id] -= 1
+                self._update_command(operation_id, status='cancelled', outcome='not_started',
+                                     error_code='runner_unavailable', message='Runner could not start the command thread')
+                raise
             self.futures[operation_id] = future
             future.add_done_callback(lambda done: self._cancelled_command(operation_id, done))
-            return self.command_result(operation_id, observe_late=False)
+            return self.command_result(operation_id, observe_late=False), False
 
     def _cancelled_command(self, operation_id, future):
         with self.lock:
-            if future.done():
-                self.left_result_keys.pop(operation_id, None)
             try:
                 if future.cancelled():
                     self.process_proxies.pop(operation_id, None)
@@ -1735,6 +1791,306 @@ print(json.dumps(r))'''
                 self.foreground_jobs[scratch_id] = max(0, self.foreground_jobs.get(scratch_id, 0) - 1)
                 self.touch_space(scratch_id)
             self.futures.pop(operation_id, None)
+
+    @staticmethod
+    def _check_background_start(result):
+        if result and result.get('error_code') in ('pod_process_limit', 'watcher_start_failed'):
+            raise ExecutionPodError(result['error_code'], result['message'])
+
+    def _start_background(self, record):
+        import json
+        import secrets
+        import time
+
+        start_by = time.monotonic() + BACKGROUND_START_SECONDS
+        operation = record['operation_id']
+        with self.lock:
+            proxy = self.process_proxies.pop(operation, None)
+            latest = self._read_command(operation)
+            if latest['status'] != 'running':
+                return self.command_result(operation, observe_late=False)
+            key = record.get('result_proof_key')
+            if not key and record['docker_enabled']:
+                key = secrets.token_hex(32)
+                self.left_result_keys[operation] = key.encode('ascii')
+        deadline = str(record['timeout_seconds']) if record['time_limited'] else 'background'
+        mode = 'docker' if record['docker_enabled'] else 'normal'
+        limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
+        args = helper_command('supervise', mode, 'background', operation, record['run_id'], record['cwd'],
+                              deadline, record['pod_uid'], record['code'], str(limit))
+        lines = []
+        if key:
+            args.append('proof-stdin')
+            lines.append(key)
+        if proxy:
+            args.append('proxy-stdin')
+            lines.append(proxy)
+        data = ''.join(line + '\n' for line in lines).encode() or None
+        argv = ['exec'] + (['-i'] if data else []) + [record['pod'], '-c', 'execution', '--'] + args
+        started = False
+        try:
+            arguments, bundle = self._prepare_exec(argv)
+            response = self.backend.kube(arguments, data=(bundle + (data or b'')) if bundle else data,
+                                         timeout=BACKGROUND_START_SECONDS)
+            receipt = json.loads(response.stdout)
+            limit = receipt.get('process_limit')
+            if receipt.get('error_code') == 'pod_process_limit' and type(limit) is int and limit > 0:
+                with self.lock:
+                    self.left_result_keys.pop(operation, None)
+                self._update_command(operation, status='failed', outcome='not_started',
+                                     error_code='pod_process_limit', message=(
+                                         f'The Execution Pod process limit (v2_processes = {limit}) was reached. '
+                                         'Stop a Background process and retry.'))
+                return self.command_result(operation, observe_late=False)
+            started = receipt.get('started') is True
+        except Exception as error:
+            self._log_background(f'start receipt unavailable for {operation}', error)
+        # A lost receipt may leave a supervisor running. Claim only if no supervisor
+        # acquired the operation yet, fencing delayed requests without replaying them.
+        self._watch_background(record, claim=not started,
+                               cleanup_timeout=min(BACKGROUND_POLL_SECONDS, start_by - time.monotonic()))
+        return self.command_result(operation, observe_late=False, retry_stop=False)
+
+    @staticmethod
+    def _log_background(message, error):
+        import sys
+        # Exception strings from exec may include command arguments or user output.
+        print(f'Execution Pod Background {message}: {type(error).__name__}', file=sys.stderr, flush=True)
+
+    def _watch_background(self, record, *, claim=False, cleanup_timeout=BACKGROUND_POLL_SECONDS):
+        pod = (record['pod'], record['pod_uid'])
+        operation = record['operation_id']
+        limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
+        state = {'claim': claim, 'output': BoundedOutput(limit), 'offsets': {'stdout': 0, 'stderr': 0},
+                 'missing_since': None, 'output_retry_at': None}
+        with self.lock:
+            active = self.background_watches.get(pod)
+            if active is not None:
+                active.setdefault(operation, state)
+                return
+            active = self.background_watches[pod] = {operation: state}
+            try:
+                Thread(target=self._watch_pod, args=(pod, active),
+                       name='execution-background-' + record['pod'], daemon=True).start()
+                return
+            except Exception as error:
+                del self.background_watches[pod]
+                self._log_background(f'watcher start failed for {operation}', error)
+        failed = self._update_command(operation, status='failed', outcome='unknown', stop_pending=True,
+                                      error_code='watcher_start_failed',
+                                      message='Runner could not start the Execution Pod Background watcher')
+        if failed['status'] == 'failed' and cleanup_timeout > 0:
+            try:
+                self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                  helper_command('stop', operation, record['pod_uid']), timeout=cleanup_timeout)
+                self._update_command(operation, status='failed', stop_pending=False)
+            except Exception as error:
+                self._log_background(f'cleanup failed for {operation}', error)
+        with self.lock:
+            self.left_result_keys.pop(operation, None)
+
+    def _watch_pod(self, pod, active):
+        import time
+        failures = 0
+        try:
+            while True:
+                next_poll = time.monotonic() + BACKGROUND_POLL_SECONDS
+                with self.lock:
+                    snapshot = tuple(active.items())
+                records = {}
+                retired = []
+                for operation, state in snapshot:
+                    try:
+                        record = self._read_command(operation)
+                        if (record['status'] == 'running' or state.get('collecting_exit_output')
+                                or (record.get('time_limited') and background_end_pending(record))):
+                            records[operation] = (record, state)
+                        else:
+                            retired.append(operation)
+                    except ExecutionPodError as error:
+                        if error.code == 'command_not_found':
+                            retired.append(operation)
+                        else:
+                            self._log_background(f'journal read failed for {operation}', error)
+                    except Exception as error:
+                        self._log_background(f'journal read failed for {operation}', error)
+                with self.lock:
+                    for operation in retired:
+                        del active[operation]
+                        self.left_result_keys.pop(operation, None)
+                        self.live_output.pop(operation, None)
+                    if not active:
+                        del self.background_watches[pod]
+                        return
+                    # Rotate output priority so every process advances when the
+                    # batch output budget runs out before the end of the list.
+                    first = next(iter(active))
+                    active[first] = active.pop(first)
+                if records:
+                    try:
+                        healthy = self._poll_background(pod, records, fallback=failures >= BACKGROUND_POLL_FAILURES)
+                        failures = 0 if healthy else failures + 1
+                    except Exception as error:
+                        failures += 1
+                        self._log_background(f'poll failed for Pod {pod[0]}', error)
+                    for record, state in records.values():
+                        if state.get('terminal_seen'):
+                            continue
+                        try:
+                            self._background_backstop(record)
+                        except Exception as error:
+                            self._log_background(f'deadline stop failed for {record["operation_id"]}', error)
+                time.sleep(max(0, next_poll - time.monotonic()))
+        finally:
+            with self.lock:
+                if self.background_watches.get(pod) is active:
+                    del self.background_watches[pod]
+
+    def _poll_background(self, pod, records, *, fallback=False):
+        import json
+        from sandbox_v2 import BACKGROUND_POLL_BYTES
+
+        name, uid = pod
+        current = self._get('pod', name)
+        if (not current or current.get('metadata', {}).get('uid') != uid
+                or current.get('status', {}).get('phase') in ('Failed', 'Succeeded')):
+            # Match the drain path: absence alone is not proof of termination.
+            proof = {'stop_reason': 'pod_lost', 'pod_stop_confirmed': True, 'stop_pending': False} if current else {}
+            for operation, (record, state) in records.items():
+                state['collecting_exit_output'] = False
+                if proof or record['status'] != 'interrupted':
+                    self._update_command(operation, status='interrupted', outcome='unknown', **proof,
+                                         **dict(state['output'].public(), truncated=True))
+            return True
+
+        def probe(batch, budget):
+            request = {operation: {'offsets': state['offsets'], 'claim': state['claim']}
+                       for operation, (_, state) in batch.items()}
+            response = self.backend.kube(['exec', '-i', name, '-c', 'execution', '--'] +
+                                         helper_command('results', uid, str(budget)),
+                                         data=json.dumps(request).encode(), timeout=BACKGROUND_POLL_SECONDS)
+            observations = json.loads(response.stdout)
+            if not isinstance(observations, dict) or set(observations) != set(batch):
+                raise ValueError('invalid Background poll response')
+            healthy = True
+            for operation, (record, state) in batch.items():
+                try:
+                    observed = observations[operation]
+                    if 'error' in observed:
+                        raise ValueError('Background helper could not read operation')
+                    budget -= self._observe_background(record, state, observed)
+                except Exception as error:
+                    self._log_background(f'observation failed for {operation}', error)
+                    state['missing_since'] = None
+                    healthy = False
+                    # A malformed response may have already spent the poll's read budget.
+                    budget = 0
+            return healthy, budget
+
+        if not fallback:
+            return probe(records, BACKGROUND_POLL_BYTES)[0]
+        healthy, budget = True, BACKGROUND_POLL_BYTES
+        for operation, item in records.items():
+            try:
+                success, budget = probe({operation: item}, budget)
+                healthy &= success
+            except Exception as error:
+                self._log_background(f'fallback probe failed for {operation}', error)
+                budget = 0
+                healthy = False
+        return healthy
+
+    def _observe_background(self, record, state, observed):
+        import base64
+        import time
+
+        operation = record['operation_id']
+        if observed.get('claimed') is True:
+            self._update_command(operation, allow_late=record['status'] == 'interrupted',
+                                 status='cancelled', outcome='not_started', stop_pending=False)
+            return 0
+        state['claim'] = False
+        outcome = observed.get('result')
+        valid = (isinstance(outcome, dict) and outcome.get('operation_id') == operation
+                 and outcome.get('run_id') == record['run_id']
+                 and outcome.get('status') in ('completed', 'timed_out', 'stopped')
+                 and self._background_proof_valid(record, outcome))
+        if outcome is not None and not valid:
+            self._log_background(f'result rejected for {operation}', ValueError())
+        state['terminal_seen'] = valid
+        self._refresh_background_start(record, observed)
+
+        output, offsets = state['output'], state['offsets']
+        incomplete = False
+        read = 0
+        for stream, offset in offsets.items():
+            chunk = observed['output'].get(stream)
+            if chunk is None:
+                incomplete = True
+                continue
+            data = base64.b64decode(chunk['data'], validate=True)
+            if chunk['next_offset'] != offset + len(data):
+                raise ValueError('invalid Background output offset')
+            offsets[stream] += len(data)
+            read += len(data)
+            output.add(stream, data)
+            incomplete |= not chunk['eof']
+        now = time.monotonic()
+        if read or valid:
+            preview = output.public()
+            if valid and record.get('notify_on_exit') and isinstance(outcome.get('output_tail'), str):
+                preview['output_tail'] = outcome['output_tail']
+            with self.lock:
+                self.live_output[operation] = dict(preview, output_fetched_at=time.time())
+        if valid:
+            if incomplete and not outcome.get('output_incomplete'):
+                if read or state['output_retry_at'] is None:
+                    state['output_retry_at'] = now + OUTPUT_RETRY_SECONDS
+                if now < state['output_retry_at']:
+                    if record.get('notify_on_exit') and not state.get('collecting_exit_output'):
+                        # Publish the signed exit on this poll. Continue filling the
+                        # journal's output in later polls under the same read budget.
+                        self._finish_command(record, outcome, dict(preview, truncated=True),
+                                             allow_late=record['status'] == 'interrupted')
+                        state['collecting_exit_output'] = True
+                    return read
+            preview['truncated'] |= incomplete or bool(outcome.get('output_truncated') or outcome.get('output_incomplete'))
+            if state.get('collecting_exit_output'):
+                preview.pop('output_tail', None)
+                self._update_command(operation, status=record['status'], **preview)
+                state['collecting_exit_output'] = False
+            else:
+                self._finish_command(record, outcome, dict(preview, output_incomplete=incomplete),
+                                     allow_late=record['status'] == 'interrupted')
+        elif state.get('collecting_exit_output'):
+            if now >= state['output_retry_at']:
+                state['collecting_exit_output'] = False
+        elif observed['running']:
+            state['missing_since'] = None
+        elif state['missing_since'] is None:
+            state['missing_since'] = now
+        elif now - state['missing_since'] >= 30 and record['status'] == 'running':
+            self._update_command(operation, status='interrupted', outcome='unknown', stop_pending=True,
+                                 **self._partial_output(record))
+            if not record.get('time_limited'):
+                self._stop_untracked_command(record)
+        return read
+
+    def _background_backstop(self, record):
+        import time
+        if not record.get('time_limited'):
+            return
+        operation = record['operation_id']
+        latest = self._read_command(operation)
+        end = background_deadline(latest)
+        if not background_end_pending(latest) or time.time() < end + BACKGROUND_STOP_GRACE_SECONDS:
+            return
+        if not latest.get('requested_stop_reason'):
+            self._update_command(operation, status=latest['status'], requested_stop_reason='deadline')
+        # The helper verifies the Pod UID before signaling; keep retrying if an
+        # exec loses its response or the supervisor has not published its marker.
+        self.backend.kube(['exec', latest['pod'], '-c', 'execution', '--'] +
+                          helper_command('stop', operation, latest['pod_uid']), timeout=BACKGROUND_POLL_SECONDS)
 
     def _await_normal_result(self, record, deadline, *, publish_saved=False):
         import json
@@ -1764,13 +2120,6 @@ print(json.dumps(r))'''
                                              helper_command('result', operation_id), check=False)
                 if observed.returncode == 0:
                     outcome = json.loads(observed.stdout)
-                    if record.get('kind') == 'left':
-                        proof_key = record.get('result_proof_key')
-                        if proof_key or record.get('docker_enabled'):
-                            with self.lock:
-                                key = proof_key.encode('ascii') if proof_key else self.left_result_keys.get(operation_id)
-                            if not verify_adopted_result(outcome, key):
-                                raise ValueError('unverified adopted result')
                     if not self._background_proof_valid(record, outcome):
                         raise ValueError('unverified Background result')
                     return outcome
@@ -1808,15 +2157,14 @@ print(json.dumps(r))'''
             if record['status'] != 'queued':
                 return
             session = record.get('kind') in ('python_session', 'mcp_session')
-            authenticate = session or record.get('time_limited') or (not record['background'] and record.get('kind') in ('shell', 'python_cell'))
+            authenticate = session or (not record['background'] and record.get('kind') in ('shell', 'python_cell'))
             proof_key = secrets.token_hex(32) if authenticate else None
             fields = {'result_proof_key': proof_key} if proof_key else {}
             record = self._update_command(operation_id, status='running', running_at=time.time(), **fields)
         name, uid = record['pod'], record['pod_uid']
         mode = 'docker' if record['docker_enabled'] else 'normal'
         deadline = 'background' if record['background'] and not record.get('time_limited') else str(record['timeout_seconds'])
-        kind = ('session' if record.get('kind') == 'python_session' else
-                'background' if record.get('time_limited') else 'command')
+        kind = 'session' if record.get('kind') == 'python_session' else 'command'
         limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         frame_token = secrets.token_hex(32) if record['docker_enabled'] else None
         arguments = ['exec'] + (['-i'] if frame_token or proof_key or proxy else []) + [name, '-c', 'execution', '--'] + helper_command(
@@ -1976,15 +2324,18 @@ print(json.dumps(r))'''
             public['output_incomplete'] = True
         return public
 
-    @staticmethod
-    def _background_proof_valid(record, outcome):
+    def _background_proof_valid(self, record, outcome):
         if not isinstance(outcome, dict) or not protocol_supported(
                 outcome.get('protocol_version', LEGACY_HELPER_PROTOCOL)):
             return False
-        key = record.get('result_proof_key')
-        if not record.get('time_limited') and not (record.get('kind') == 'left' and key):
+        proof = record.get('result_proof_key')
+        if not record.get('background') or record.get('kind') == 'python_session':
             return True
-        return bool(key and verify_adopted_result(outcome, key.encode('ascii')))
+        if not proof and not record.get('docker_enabled'):
+            return not record.get('time_limited')
+        with self.lock:
+            key = proof.encode('ascii') if proof else self.left_result_keys.get(record['operation_id'])
+        return verify_adopted_result(outcome, key)
 
     def _finish_command(self, record, outcome, output=None, *, allow_late=False, left_auth=None,
                         recover_output=False):
@@ -2064,12 +2415,7 @@ print(json.dumps(r))'''
                 self.journal_metadata[path.name] = self._prune_metadata(adopted)
                 if left_auth:
                     self.left_result_keys[operation_id] = left_auth
-                if scratch not in self.queues:
-                    self.queues[scratch] = CommandQueue()
-                future = self.queues[scratch].submit(record['run_id'], operation_id, self._resume_command,
-                                                     background=True)
-                self.futures[operation_id] = future
-                future.add_done_callback(lambda done: self._cancelled_command(operation_id, done))
+        self._watch_background(adopted)
 
     def _resume_command(self, operation_id):
         import json
@@ -2135,7 +2481,7 @@ print(json.dumps(r))'''
         gate = self.command_stop_locks[uuid.UUID(base).int % len(self.command_stop_locks)]
         with gate:
             current = self._read_command(operation_id)
-            if current.get('status') != 'interrupted' or not current.get('stop_pending'):
+            if current.get('status') not in ('interrupted', 'failed') or not current.get('stop_pending'):
                 return
             self._stop_untracked_command_locked(current)
 
@@ -2149,26 +2495,27 @@ print(json.dumps(r))'''
             return
         try:
             self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
-                              helper_command('stop', record['operation_id']))
+                              helper_command('stop', record['operation_id']),
+                              **({'timeout': BACKGROUND_POLL_SECONDS} if record['status'] == 'failed' else {}))
             with self.lock:
                 current = self._read_command(record['operation_id'])
-                if current.get('status') == 'interrupted':
-                    self._update_command(record['operation_id'], status='interrupted', stop_pending=False,
+                if current.get('status') in ('interrupted', 'failed'):
+                    self._update_command(record['operation_id'], status=current['status'], stop_pending=False,
                                          terminal_at=current['terminal_at'])
         except Exception:
             with self.lock:
                 latest = self._read_command(record['operation_id'])
-                if latest.get('status') != 'interrupted' or not latest.get('stop_pending'):
+                if latest.get('status') not in ('interrupted', 'failed') or not latest.get('stop_pending'):
                     return
                 since = latest.get('stop_failure_at')
                 if since is None:
                     since = time.time()
-                    self._update_command(record['operation_id'], status='interrupted', stop_failure_at=since,
+                    self._update_command(record['operation_id'], status=latest['status'], stop_failure_at=since,
                                          terminal_at=latest['terminal_at'])
                 if time.time() < since + STOP_RETRY_SECONDS:
                     return
             try:
-                if self.command_result(record['operation_id'], retry_stop=False)['status'] != 'interrupted':
+                if self.command_result(record['operation_id'], retry_stop=False)['status'] not in ('interrupted', 'failed'):
                     return
                 current = self._get('pod', record['pod'])
             except Exception:
@@ -2305,7 +2652,8 @@ print(json.dumps(r))'''
                         pod = self._get('pod', record['pod'])
                         uid = pod.get('metadata', {}).get('uid') if pod else None
                         if uid and uid != record['pod_uid']:
-                            self._update_command(operation, status='interrupted', stop_pending=False,
+                            self._update_command(operation, status=record['status'] if record['status'] == 'failed' else 'interrupted',
+                                                 stop_pending=False,
                                                  run_stop_confirmed=True, stop_reason='pod_lost', terminal_at=time.time())
                             resolved.add(operation)
                             continue
@@ -2323,7 +2671,7 @@ print(json.dumps(r))'''
                             if signaled:
                                 stopped.add(operation)
                             if done:
-                                self._update_command(operation, status='interrupted', stop_pending=False,
+                                self._update_command(operation, status=record['status'], stop_pending=False,
                                                      run_stop_confirmed=True, stop_reason=reason, terminal_at=time.time())
                                 resolved.add(operation)
                         except Exception as error:
@@ -2442,7 +2790,7 @@ print(json.dumps(r))'''
 
         scratch_resource_name(scratch_space_id)
         result = []
-        terminal = {'completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'}
+        terminal = {'completed', 'timed_out', 'stopped', 'cancelled', 'failed', 'interrupted'}
         for path in self._space_journal_paths(scratch_space_id):
             try:
                 record = json.loads(path.read_bytes())
@@ -2493,10 +2841,12 @@ print(json.dumps(r))'''
         command = {'operation_id': operation, 'scratch_space_id': request['scratch_space_id'],
                    'run_id': request['run_id'], 'background': True, 'code': 'exec ' + script,
                    'proxy_credential': request.get('proxy_credential')}
-        self.submit_command(command, kind='mcp_session')
         deadline = time.monotonic() + 300
+        status = self.submit_command(command, kind='mcp_session')
+        self._check_background_start(status)
         while time.monotonic() < deadline:
             status = self.command_result(operation)
+            self._check_background_start(status)
             if status.get('status') not in ('queued', 'running'):
                 break
             record = self._read_command(operation)
@@ -2632,11 +2982,13 @@ print(json.dumps(r))'''
         command = {key: request[key] for key in ('operation_id', 'scratch_space_id', 'run_id', 'code', 'proxy_credential')
                    if key in request}
         command.update(background=True, cwd=request.get('cwd') or '.')
-        self.submit_command(command, kind='preview')
-        original_uid = self._read_command(operation)['pod_uid']
         deadline = time.monotonic() + 60
+        status = self.submit_command(command, kind='preview')
+        self._check_background_start(status)
+        original_uid = self._read_command(operation)['pod_uid']
         while time.monotonic() < deadline:
             record = self.command_result(operation)
+            self._check_background_start(record)
             pod = self._get('pod', scratch_resource_name(scratch))
             if not pod or pod.get('status', {}).get('phase') != 'Running':
                 break
@@ -2731,7 +3083,8 @@ print(json.dumps(r))'''
         record = self._read_command(operation_id)
         if not record.get('background'):
             raise ExecutionPodError('not_background', 'Command is not a background process')
-        if record['status'] == 'interrupted' and not record.get('docker_enabled') and not record.get('time_limited'):
+        if (record['status'] == 'failed' or
+                (record['status'] == 'interrupted' and not record.get('docker_enabled') and not record.get('time_limited'))):
             return self.command_result(operation_id)
         return self._stop_command(operation_id, reason=reason)
 
@@ -2907,59 +3260,31 @@ print(json.dumps(r))'''
             self.touch_space(scratch_space_id, now=expiry)
         return {'active': True}
 
-    def _refresh_background_start(self, record):
-        """Use the signed supervisor start, when available, to schedule the backup stop."""
-        import json
+    def _refresh_background_start(self, record, state):
+        """Use the signed supervisor start to schedule the backup stop."""
+        if not record.get('time_limited') or record.get('helper_started'):
+            return
         operation = record['operation_id']
-        try:
-            reply = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
-                                      helper_command('running', operation), check=False, timeout=5)
-            state = json.loads(reply.stdout) if reply.returncode == 0 else {}
-            marker = state.get('supervisor')
-            key = record.get('result_proof_key')
-            if (state.get('running') is True and key and isinstance(marker, dict)
-                    and marker.get('operation_id') == operation and marker.get('pod_uid') == record['pod_uid']
-                    and verify_adopted_result(marker, key.encode('ascii'))):
-                return self._update_command(operation, status=record['status'], helper_started=True,
-                                            running_at=marker['running_at'], helper_protocol=marker['protocol_version'])
-        except Exception:
-            pass  # Keep the controller's provisional start until a signed observation arrives.
-        return record
+        marker = state.get('supervisor')
+        if (state.get('running') is True and isinstance(marker, dict)
+                and marker.get('operation_id') == operation and marker.get('pod_uid') == record['pod_uid']
+                and isinstance(marker.get('running_at'), (int, float))
+                and self._background_proof_valid(record, marker)):
+            self._update_command(operation, status=record['status'], helper_started=True,
+                                 running_at=marker['running_at'], helper_protocol=marker['protocol_version'])
 
-    def _background_hold(self, scratch_id, current, *, enforce=False):
-        """Reconcile timed commands and report whether the Space still needs its Pod."""
+    def _background_hold(self, scratch_id, current):
+        """Keep the Pod available for active timed Background commands and their backup stop."""
         paths = self._space_journal_paths(scratch_id)
         with self.lock:
-            candidates = [(path.stem, self.journal_metadata.get(path.name)) for path in paths]
-        hold = False
-        for operation, metadata in candidates:
+            candidates = [self.journal_metadata.get(path.name) for path in paths]
+        for metadata in candidates:
             if metadata is None:
                 continue
             _, _, _, _, end, pending, _, _ = metadata
-            if end is None or not pending:
-                continue
-            if enforce:
-                self.command_result(operation, retry_stop=False)
-                record = self._read_command(operation)
-                if not background_end_pending(record):
-                    continue
-                if not record.get('helper_started'):
-                    record = self._refresh_background_start(record)
-                    end = background_deadline(record)
-                if current >= end + BACKGROUND_STOP_GRACE_SECONDS:
-                    # On a lost reply, the next pass can recover the signed
-                    # result. Even at the deadline, keep the original Pod until
-                    # there is enough evidence to settle the stop.
-                    try:
-                        self.stop_background(operation, reason='deadline')
-                    except ExecutionPodError as error:
-                        import sys
-                        print('Execution Pod deadline stop is pending: ' + str(error), file=sys.stderr, flush=True)
-                    hold |= (current < end + BACKGROUND_STOP_GRACE_SECONDS + IDLE_MONITOR_SECONDS
-                             and background_end_pending(self._read_command(operation)))
-                    continue
-            hold |= current < end + BACKGROUND_STOP_GRACE_SECONDS
-        return hold
+            if end is not None and pending and current < end + BACKGROUND_STOP_GRACE_SECONDS + IDLE_MONITOR_SECONDS:
+                return True
+        return False
 
     def stop_idle(self, *, now=None):
         import json
@@ -2986,7 +3311,7 @@ print(json.dumps(r))'''
                         space = json.loads(path.read_bytes())
                         unconfirmed = space.get('termination_unconfirmed', False)
                         foreground = self.foreground_jobs.get(scratch_id, 0)
-                    held = self._background_hold(scratch_id, current, enforce=True)
+                    held = self._background_hold(scratch_id, current)
                     outdated = False
                     if not unconfirmed and scratch_id in self.helper_checks:
                         pod = self._get('pod', scratch_resource_name(scratch_id))

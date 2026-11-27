@@ -102,6 +102,16 @@ pub enum Error {
 	AccountSuspended { epoch: u64 },
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
+	#[error("media decoder slot was unavailable for 10 seconds")]
+	MediaDecoderBusy,
+	#[error("media decoding exceeded 20 seconds")]
+	MediaDecodeTimeout,
+	#[error(transparent)]
+	RunnerTimeout(aidash_application::ports::capabilities::execution_pod::RunnerTimeout),
+	#[error(transparent)]
+	McpListing(aidash_application::ports::tools::ListFailure),
+	#[error(transparent)]
+	McpSessionMemoryShort(aidash_application::ports::tools::McpSessionMemoryShort),
 	#[error("verified model media route unavailable for {model}{}", aidash_application::route_refusal::CandidateRefusals(.candidates))]
 	MediaRouteUnavailable {
 		model: String,
@@ -171,9 +181,16 @@ impl Error {
 	pub fn http_response(self) -> HttpResponse {
 		let transaction_pending =
 			matches!(&self, Self::TransactionPending) || self.has_database_code("55P03");
+		let pool_refusal = [
+			crate::database::fair_share::FAIR_SHARE_CODE,
+			crate::database::fair_share::POOL_BUSY_CODE,
+		]
+		.into_iter()
+		.find(|code| self.has_database_code(code));
 		let run_message_pending = self.has_database_code("A3301");
 		let (status, message) = match &self {
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
+			Self::McpListing(_) => (StatusCode::BAD_REQUEST, self.to_string()),
 			Self::ProjectionRetired(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::Conflict(s) => {
 				tracing::debug!(reason = s, "request conflicts with current state");
@@ -209,6 +226,12 @@ impl Error {
 				},
 				self.to_string(),
 			),
+			Self::MediaDecoderBusy | Self::McpSessionMemoryShort(_) => {
+				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+			}
+			Self::MediaDecodeTimeout | Self::RunnerTimeout(_) => {
+				(StatusCode::GATEWAY_TIMEOUT, self.to_string())
+			}
 			Self::IdentityStatusUnavailable
 			| Self::OAuthClientSecretsUnavailable
 			| Self::MediaRouteUnavailable { .. } => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
@@ -277,6 +300,14 @@ impl Error {
 				"atomic transaction visibility pending; retry after recovery".into(),
 			),
 			Self::PolicyBusy { .. } => (StatusCode::SERVICE_UNAVAILABLE, "POLICY_BUSY".into()),
+			Self::Framework(error) if pool_refusal.is_some() => (
+				StatusCode::SERVICE_UNAVAILABLE,
+				error
+					.database_error()
+					.expect("coded database error")
+					.message()
+					.to_owned(),
+			),
 			_ if self.is_transient_database() => {
 				tracing::warn!(error = %self, "request failed on a temporary database error");
 				(
@@ -307,6 +338,15 @@ impl Error {
 			}
 		};
 		let mut envelope = match &self {
+			Self::MediaDecoderBusy => json!({"error": message, "code": "media_decoder_busy"}),
+			Self::MediaDecodeTimeout => json!({"error": message, "code": "media_decode_timeout"}),
+			Self::RunnerTimeout(_) => {
+				json!({"error": message, "code": aidash_application::ports::capabilities::execution_pod::RunnerTimeout::CODE})
+			}
+			Self::McpListing(failure) => json!({"error": message, "code": failure.code()}),
+			Self::McpSessionMemoryShort(_) => {
+				json!({"error": message, "code": aidash_application::ports::tools::McpSessionMemoryShort::CODE})
+			}
 			Self::ProjectionRetired(_) => json!({"error": message, "code": "projection_retired"}),
 			Self::NodeUnreachable { node, after_effect } => {
 				json!({"error": message, "code": "node_unreachable", "node": node, "after_effect": after_effect})
@@ -320,6 +360,7 @@ impl Error {
 				"decided_by": decided_by,
 				"outcome": outcome,
 			}),
+			_ if pool_refusal.is_some() => json!({"error": message, "code": pool_refusal}),
 			_ => json!({"error": message}),
 		};
 		if let Self::RemoteExecutionRefused(
@@ -611,6 +652,33 @@ impl From<aidash_application::Error> for Error {
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
 			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
+			ApplicationError::Port(error)
+				if error
+					.is::<aidash_application::ports::capabilities::execution_pod::RunnerTimeout>(
+					) =>
+			{
+				Self::RunnerTimeout(*error.downcast().expect("checked RunnerTimeout type"))
+			}
+			ApplicationError::Port(error)
+				if error.is::<aidash_application::ports::tools::McpSessionMemoryShort>() =>
+			{
+				Self::McpSessionMemoryShort(
+					*error
+						.downcast()
+						.expect("checked McpSessionMemoryShort type"),
+				)
+			}
+			ApplicationError::Port(error)
+				if matches!(
+					error.downcast_ref::<aidash_application::ports::tools::ListFailure>(),
+					Some(
+						aidash_application::ports::tools::ListFailure::ListingTooLarge
+							| aidash_application::ports::tools::ListFailure::ListingTimeout
+					)
+				) =>
+			{
+				Self::McpListing(*error.downcast().expect("checked ListFailure type"))
+			}
 			ApplicationError::Port(error) | ApplicationError::TemporaryDatabase(error) => {
 				match error.downcast::<Self>() {
 					Ok(error) => *error,
@@ -663,6 +731,9 @@ impl From<Error> for aidash_application::Error {
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
 			Error::External(message) => Self::External(message),
+			Error::RunnerTimeout(error) => Self::Port(Box::new(error)),
+			Error::McpListing(error) => error.into(),
+			Error::McpSessionMemoryShort(error) => Self::Port(Box::new(error)),
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
 			Error::Context(reason) => Self::Context(reason),

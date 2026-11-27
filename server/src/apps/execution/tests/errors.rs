@@ -45,6 +45,17 @@ fn credential_refusals_keep_status_and_report_the_reason() {
 	}
 }
 
+#[test]
+fn mcp_session_share_refusal_reports_503_and_the_share() {
+	use aidash_application::ports::tools::McpSessionMemoryShort;
+	let error = aidash_application::Error::Port(Box::new(McpSessionMemoryShort { share: 4 }));
+	let response = Error::from(error).http_response();
+	assert_eq!(response.status.as_u16(), 503);
+	let body: Value = serde_json::from_slice(&response.body).unwrap();
+	assert_eq!(body["code"], "mcp_session_memory_short");
+	assert!(body["error"].as_str().unwrap().contains("4 sessions"));
+}
+
 #[fixture]
 fn database_error() -> DatabaseError {
 	DatabaseError::new(DatabaseErrorKind::Query, "private database diagnostic")

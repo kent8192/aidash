@@ -11,7 +11,7 @@ use uuid::Uuid;
 #[async_trait]
 pub trait AdmissionScope: Send {
 	fn node_id(&self) -> &str;
-	/// The seed that seals `manifest` (ADR 0146): the same for the same
+	/// The seed that seals `manifest` (ADR 0151): the same for the same
 	/// manifest.
 	fn seed(&self, manifest: &Manifest) -> Result<String>;
 	fn now(&self) -> DateTime<Utc>;
