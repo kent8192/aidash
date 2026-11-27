@@ -221,10 +221,24 @@ impl Api<'_> {
 				&format!("/api/workbench/drafts/{id}/register"),
 				json!({"expected_revision":saved["revision"]}),
 			)
-			.await?;
+			.await
+			.map_err(|error| match error {
+				Error::Invalid(reason) => Error::Invalid(format!(
+					"Draft {id} at revision {} was saved. Correct this draft and retry registration: {reason}",
+					saved["revision"]
+				)),
+				other => other,
+			})?;
 		let approved = self
 			.approve(&registered["entry"], input["approval"].clone())
-			.await?;
+			.await
+			.map_err(|error| match error {
+				Error::Invalid(reason) => Error::Invalid(format!(
+					"Draft {id} was registered as {}@{}. Retry approval of the registered version: {reason}",
+					registered["entry"]["id"], registered["entry"]["version"]
+				)),
+				other => other,
+			})?;
 		Ok(json!({"draft":id,"registered":registered,"approval":approved}))
 	}
 

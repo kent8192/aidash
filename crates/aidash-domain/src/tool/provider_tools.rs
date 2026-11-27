@@ -145,17 +145,31 @@ impl Declaration {
 		}
 	}
 
+	/// Include the closed authoring schema, with no caller-supplied values.
+	pub fn parameter_error(&self, reason: &str) -> Error {
+		Error::Invalid(format!(
+			"PROVIDER_TOOL_PARAMETERS: {}: {reason}. Set binding.narrow.provider_tool to an object matching this schema: {}",
+			self.tool_type,
+			self.binding_schema()
+		))
+	}
+
 	pub fn validate(&self, binding: &Parameters) -> Result<()> {
 		let bad = || {
-			Error::Invalid(format!(
-				"PROVIDER_TOOL_PARAMETERS: {} requires pinned parameters and caps within Aidash limits",
-				self.tool_type
-			))
+			self.parameter_error(match self.tool_type {
+			"openrouter:advisor" | "openrouter:subagent" | "openrouter:fusion" => "provide the required fields and caps; each model must be an explicit model id outside the openrouter/ namespace",
+			_ => "parameters do not meet the field requirements",
+		})
 		};
 		if binding.max_tool_calls == 0 || binding.max_tool_calls > MAX_TOOL_CALLS {
-			return Err(bad());
+			return Err(self.parameter_error(&format!(
+				"max_tool_calls must be an integer from 1 to {MAX_TOOL_CALLS}"
+			)));
 		}
-		let params = binding.parameters.as_object().ok_or_else(bad)?;
+		let params = binding
+			.parameters
+			.as_object()
+			.ok_or_else(|| self.parameter_error("parameters must be an object"))?;
 		let bounded = |key: &str, max: u64| {
 			params
 				.get(key)
@@ -166,12 +180,16 @@ impl Declaration {
 			"openrouter:web_search" => {
 				if !bounded("max_results", MAX_RESULTS)
 					|| !bounded("max_total_results", MAX_TOTAL_RESULTS)
-					|| params["max_total_results"].as_u64() < params["max_results"].as_u64()
 					|| !matches!(
 						params.get("engine").and_then(Value::as_str),
 						Some("exa" | "parallel" | "perplexity")
 					) {
 					return Err(bad());
+				}
+				if params["max_total_results"].as_u64() < params["max_results"].as_u64() {
+					return Err(
+						self.parameter_error("max_total_results must be at least max_results")
+					);
 				}
 				&[
 					"engine",
@@ -206,7 +224,9 @@ impl Declaration {
 							.bytes()
 							.all(|c| c.is_ascii_alphanumeric() || b"/_+-".contains(&c))
 					}) {
-					return Err(bad());
+					return Err(self.parameter_error(
+						"timezone must contain 1 to 128 ASCII letters, digits or /_+-",
+					));
 				}
 				&["timezone"]
 			}
@@ -296,8 +316,11 @@ impl Declaration {
 		{
 			return Err(bad());
 		}
-		if params.keys().any(|key| !fields.contains(&key.as_str())) {
-			return Err(bad());
+		if let Some(key) = params.keys().find(|key| !fields.contains(&key.as_str())) {
+			return Err(self.parameter_error(&format!(
+				"unknown parameter {key}; accepted fields are {}",
+				fields.join(", ")
+			)));
 		}
 		for key in ["allowed_domains", "excluded_domains", "blocked_domains"] {
 			if let Some(domains) = params.get(key) {
@@ -317,7 +340,9 @@ impl Declaration {
 			}
 		}
 		if params.contains_key("allowed_domains") && params.contains_key("excluded_domains") {
-			return Err(bad());
+			return Err(
+				self.parameter_error("supply only one of allowed_domains and excluded_domains")
+			);
 		}
 		Ok(())
 	}
@@ -623,9 +648,9 @@ pub fn valid_container_id(id: &str) -> bool {
 
 pub fn validate_network_policy(policy: &Value) -> Result<()> {
 	let bad = || {
-		Error::Invalid(
-			"PROVIDER_TOOL_NETWORK: use disabled or a bounded exact-host allowlist".into(),
-		)
+		Error::Invalid(format!(
+			"PROVIDER_TOOL_NETWORK: environment.network_policy requires type=disabled alone or type=allowlist and allowed_domains with 1 to {MAX_NETWORK_HOSTS} exact lowercase hostnames, each at most 253 bytes. Use letters, digits and internal hyphens in dot-separated labels."
+		))
 	};
 	let object = policy.as_object().ok_or_else(bad)?;
 	match policy["type"].as_str() {

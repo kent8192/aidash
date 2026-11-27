@@ -365,9 +365,9 @@ pub async fn resolve_with_model(
 				aidash_domain::tool::provider_tools::declaration(&descriptor.provider)
 			{
 				let parameters = effective_narrow.provider_tool.as_ref().ok_or_else(|| {
-					Error::Invalid(
-						"Provider tool Binding requires parameters and spending caps".into(),
-					)
+					Error::from(tool.parameter_error(
+						"missing provider_tool object with max_tool_calls and parameters",
+					))
 				})?;
 				tool.validate(parameters)?;
 				if let Some(reference) = model_ref {
