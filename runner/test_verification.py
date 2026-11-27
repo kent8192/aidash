@@ -583,6 +583,21 @@ class VerificationTest(unittest.TestCase):
                 runner.accept(request("publish"))
             self.assertEqual(rejected.exception.args[0], 400)
 
+    def test_manifest_admits_more_than_4096_files_within_the_byte_quota(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            runner.kube_json = Mock(side_effect=Admitted)
+            command = request("shell")
+            digest = hashlib.sha256(b"").hexdigest()
+            command["files"] = [
+                {"file_id": str(uuid.UUID(int=index + 1)), "path": f"file-{index}",
+                 "scope": "working", "size": 0, "digest": digest}
+                for index in range(4097)
+            ]
+
+            with self.assertRaises(Admitted):
+                runner.accept(command)
+
     def stopped(self, kind):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)

@@ -35,12 +35,13 @@ class ExportRefusalTest(unittest.TestCase):
             os.link(root / 'a', root / 'b')
             self.assertEqual(self.export(root), {'refused': {'reason': 'hard_link', 'path': 'a', 'limit': None}})
 
-    def test_file_count(self):
+    def test_exports_more_than_4096_files_within_the_byte_limit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for i in range(4097):
                 (root / f'{i:04}').touch()
-            self.assertEqual(self.export(root), {'refused': {'reason': 'file_count', 'path': '4096', 'limit': 4096}})
+            self.assertEqual([file['path'] for file in self.export(root)['files']],
+                             [f'{i:04}' for i in range(4097)])
 
     def test_unsafe_directory(self):
         with tempfile.TemporaryDirectory() as directory:
