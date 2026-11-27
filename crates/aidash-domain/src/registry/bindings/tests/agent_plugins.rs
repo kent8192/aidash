@@ -327,18 +327,14 @@ fn empty_instructions_need_a_plugin_that_carries_a_skill(
 }
 
 #[test]
-fn the_plugin_skills_of_one_agent_stay_within_what_a_run_pins() {
+fn an_agent_accepts_more_than_thirty_two_plugin_skills() {
 	let names = |from: usize, to: usize| (from..to).map(|n| format!("s{n:02}")).collect::<Vec<_>>();
 	let mut definition = agent();
 	definition.agent_plugins = vec![reference("first", &[]), reference("second", &[])];
-	definition.agent_plugins[0].skills = names(0, 16);
-	definition.agent_plugins[1].skills = names(16, 32);
+	definition.agent_plugins[0].skills = names(0, 17);
+	definition.agent_plugins[1].skills = names(17, 33);
+
 	definition.validate().unwrap();
-
-	definition.agent_plugins.push(reference("third", &[]));
-	definition.agent_plugins[2].skills = names(32, 33);
-
-	assert!(definition.validate().is_err());
 }
 
 #[test]
