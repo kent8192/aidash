@@ -1,4 +1,10 @@
 # syntax=docker/dockerfile:1
+# Crates for an offline build. Empty unless the build passes
+# `--build-context cargo-vendor=<dir>`, where <dir> holds the output of
+# `cargo vendor` and its source configuration as `config.toml`
+# (docs/orchestration.md, "Build without network access to crate sources").
+FROM scratch AS cargo-vendor
+
 FROM rust:1.96-bookworm AS rust
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
@@ -10,7 +16,14 @@ ARG CARGO_PROFILE=release
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --locked --profile "$CARGO_PROFILE" -p aidash-server --bin aidash --bin manage --bin local-dev-db && \
+    --mount=type=bind,from=cargo-vendor,target=/cargo-vendor \
+    if [ -f /cargo-vendor/config.toml ]; then \
+      set -- --offline --config /cargo-vendor/config.toml \
+        --config 'source.vendored-sources.directory="/cargo-vendor"'; \
+    else \
+      set --; \
+    fi && \
+    cargo build --locked "$@" --profile "$CARGO_PROFILE" -p aidash-server --bin aidash --bin manage --bin local-dev-db && \
     mkdir -p /out && \
     if [ "$CARGO_PROFILE" = dev ]; then \
       cp target/debug/aidash target/debug/manage target/debug/local-dev-db /out/; \
