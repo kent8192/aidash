@@ -2,7 +2,7 @@
 
 This document describes the implemented cross-Node transaction protocol for supported manifest mutations. The [accepted design](design/2026-09-28-transaction-acceptance.md) defines FR-TX-001's boundaries; the [evidence register](operations/transaction-acceptance.md) distinguishes executed checks from the remaining Issue #40 release gates.
 
-Each participant receives only its own part of a manifest ([ADR 0146](adr/0146-each-transaction-participant-receives-only-its-own-part.md)). Withdrawing a participant's permission therefore never exposes its targets to another participant.
+Each participant receives only its own part of a manifest ([ADR 0151](adr/0151-each-transaction-participant-receives-only-its-own-part.md)). Withdrawing a participant's permission therefore never exposes its targets to another participant.
 
 ## Protocol and isolation
 

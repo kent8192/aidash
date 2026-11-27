@@ -17,8 +17,9 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// The most asks one registration lists.
-const LIMIT: u64 = 100;
+/// Bound per-page Run hydration to the same 25 candidates as the Home scan.
+const RECEIVER_PAGE: usize = 25;
+pub(crate) type AskKey = (DateTime<Utc>, Uuid);
 
 /// `column -> 'a' -> 'b' …`, or `->>` for the last key when `as_text`: the JSON value at `path`
 /// in `column`, `NULL` where the path is missing, as `#>`/`#>>` read it.
@@ -55,7 +56,12 @@ crate::native_record!(PausedRow {
 /// receiving Node's lists lack, and nothing else holds: a person's pause or a Safety Stop laid
 /// over it replaces the `system` control source the pause left
 /// ([`aidash_domain::federation::tool_lists::may_answer`]).
-fn receiver_asks_query(tenant: &str, node: &str, source: &NodeAddress) -> SelectStatement {
+fn receiver_asks_query(
+	tenant: &str,
+	node: &str,
+	source: &NodeAddress,
+	before: Option<AskKey>,
+) -> SelectStatement {
 	let mut query = Query::select();
 	query
 		.column(Alias::new("id"))
@@ -84,8 +90,18 @@ fn receiver_asks_query(tenant: &str, node: &str, source: &NodeAddress) -> Select
 					.to_owned(),
 			),
 		)
-		.order_by(Alias::new("updated_at"), Order::Asc)
-		.limit(LIMIT);
+		.order_by(Alias::new("updated_at"), Order::Desc)
+		.order_by(Alias::new("id"), Order::Desc)
+		.limit(RECEIVER_PAGE as u64 + 1);
+	if let Some((updated_at, id)) = before {
+		query.and_where(
+			Expr::col(Alias::new("updated_at"))
+				.lt(Expr::value(updated_at))
+				.or(Expr::col(Alias::new("updated_at"))
+					.eq(Expr::value(updated_at))
+					.and(Expr::col(Alias::new("id")).lt(Expr::value(id)))),
+		);
+	}
 	query.to_owned()
 }
 
@@ -120,12 +136,19 @@ pub(crate) async fn receiver_asks(
 	tenant: &str,
 	node: &str,
 	source: &NodeAddress,
-) -> Result<Vec<ReceiverAsk>> {
-	let query = receiver_asks_query(tenant, node, source);
-	let rows: Vec<PausedRow> =
+	before: Option<AskKey>,
+) -> Result<(Vec<ReceiverAsk>, Option<AskKey>)> {
+	let query = receiver_asks_query(tenant, node, source, before);
+	let mut rows: Vec<PausedRow> =
 		crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
 			.fetch_all(&mut *tx)
 			.await?;
+	let more = rows.len() > RECEIVER_PAGE;
+	rows.truncate(RECEIVER_PAGE);
+	let next = rows
+		.last()
+		.filter(|_| more)
+		.map(|row| (row.updated_at, row.id));
 	let mut asks = Vec::new();
 	for row in rows {
 		let Some(paused) = row
@@ -166,7 +189,7 @@ pub(crate) async fn receiver_asks(
 			paused_since: row.updated_at,
 		});
 	}
-	Ok(asks)
+	Ok((asks, next))
 }
 
 /// Whether `run` is a remote Run of `node` admitted from `source`, whatever it waits for now.
@@ -417,7 +440,8 @@ mod tests {
 	/// source, so a Run another pause holds is not listed.
 	#[test]
 	fn receiver_asks_are_built_without_raw_sql() {
-		let sql = receiver_asks_query("acme", "default", &source()).to_string(PostgresQueryBuilder);
+		let sql =
+			receiver_asks_query("acme", "default", &source(), None).to_string(PostgresQueryBuilder);
 		assert_eq!(
 			sql,
 			"SELECT \"id\", \"updated_at\", \"pending\" -> 'recovery' -> 'paused_call' AS \"paused_call\" \
@@ -426,7 +450,7 @@ mod tests {
 			AND \"id\" IN (SELECT \"id\" FROM \"authorization_remote_admissions\" \
 			WHERE \"tenant\" = 'acme' AND \"node\" = 'default' \
 			AND \"source_node\" = 'aidash://calm-heron/able-oak-abcd1234' AND NOT \"cancelled\") \
-			ORDER BY \"updated_at\" ASC LIMIT 100"
+			ORDER BY \"updated_at\" DESC, \"id\" DESC LIMIT 26"
 		);
 	}
 

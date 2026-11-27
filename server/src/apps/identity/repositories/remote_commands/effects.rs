@@ -677,7 +677,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		let result: NativeResult<Value> = async {
 			let mut lease = crate::semantic::service::Lease::Inherited(self.access);
 			lease.lists();
-			let outcome = crate::apps::knowledge::services::remote_memory::tools::recall(
+			crate::apps::knowledge::services::remote_memory::tools::recall(
 				&self.runtime.store,
 				&mut lease,
 				grant,
@@ -686,8 +686,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 				query.clone(),
 				reflect,
 			)
-			.await?;
-			Ok(serde_json::to_value(outcome)?)
+			.await
 		}
 		.await;
 		result.map_err(Into::into)

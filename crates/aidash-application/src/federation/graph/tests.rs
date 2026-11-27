@@ -43,6 +43,7 @@ struct Scope {
 	fail: bool,
 	silent_row: Option<u128>,
 	row_silence: Option<String>,
+	activity_positions: Vec<(Vec<String>, Option<i64>)>,
 }
 impl Scope {
 	fn new(n: u128) -> Self {
@@ -56,6 +57,7 @@ impl Scope {
 			fail: false,
 			silent_row: None,
 			row_silence: None,
+			activity_positions: vec![],
 		}
 	}
 }
@@ -126,12 +128,36 @@ impl GraphProjectionScope for Scope {
 	async fn activity(
 		&mut self,
 		_: &GraphOptions,
-		_: &[GraphNode],
+		nodes: &[GraphNode],
 		_: i64,
-	) -> Result<Vec<GraphActivity>> {
-		Ok(vec![])
+		before: Option<i64>,
+	) -> Result<(Vec<GraphActivity>, Option<i64>)> {
+		self.activity_positions
+			.push((nodes.iter().map(|node| node.id.clone()).collect(), before));
+		Ok((vec![], before.is_none().then_some(100)))
 	}
 }
+
+#[tokio::test]
+async fn activity_continues_with_the_same_nodes_and_an_independent_cursor() {
+	let mut scope = Scope::new(4);
+	let mut options = options();
+	let first = project(&mut scope, "aidash://source", subject(), &options)
+		.await
+		.unwrap();
+	assert!(first.activity_more);
+	options.cursor = first.activity_cursor;
+	let second = project(&mut scope, "aidash://source", subject(), &options)
+		.await
+		.unwrap();
+	assert_eq!(second.next_cursor, first.next_cursor);
+	assert!(!second.activity_more);
+	assert_eq!(second.activity_cursor, None);
+	assert_eq!(scope.activity_positions[0].0, scope.activity_positions[1].0);
+	assert_eq!(scope.activity_positions[0].1, None);
+	assert_eq!(scope.activity_positions[1].1, Some(100));
+}
+
 #[tokio::test]
 async fn hidden_first_page_does_not_end_the_visible_scan() {
 	let mut s = Scope::new(72);
@@ -223,6 +249,7 @@ fn cursor() -> GraphCursor {
 	GraphCursor {
 		kind: 0,
 		offset: 0,
+		activity_before: None,
 		generation: "stable".into(),
 		binding: "scope".into(),
 		window_end: 1_000_000,

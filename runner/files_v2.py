@@ -295,17 +295,24 @@ class FileService:
                         if (expression.search(line) if expression else pattern in line):
                             if len(matches) == limit:
                                 return {'matches': matches, 'truncated': True}
-                            matches.append({'path': path, 'line': index, 'text': line[:2000]})
+                            # Keep long source lines from consuming the search response budget.
+                            snippet = line[:2000]
+                            match = {'path': path, 'line': index, 'text': snippet}
+                            if len(snippet) < len(line):
+                                match['truncated'] = True
+                            matches.append(match)
             except (UnicodeDecodeError, FileNotFoundError, InvalidPath):
                 continue
         return {'matches': matches, 'truncated': truncated}
 
     def manifest(self, request):
         root = request.get('root') or '.'
-        limit = request['max_files']
-        if type(limit) is not int or limit < 1:
-            raise ValueError('invalid max_files')
-        limit = min(limit, 10000)
+        limit = request.get('max_files')
+        if limit is not None:
+            if type(limit) is not int or limit < 1:
+                raise ValueError('invalid max_files')
+            # Bound path-search inventory work to at most 10,000 files per request.
+            limit = min(limit, 10000)
         include, exclude = request['include'], request['exclude']
         ignore_files = request['ignore_files']
         if (not isinstance(include, list) or not isinstance(exclude, list) or not isinstance(ignore_files, list)

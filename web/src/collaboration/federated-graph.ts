@@ -39,6 +39,8 @@ export type GraphPage = {
     layer: string;
   }[];
   activity: GraphActivity[];
+  activity_cursor?: string | null;
+  activity_more?: boolean;
   unconfirmed?: Unconfirmed[];
   next_cursor: string | null;
 };
@@ -68,6 +70,8 @@ export type RemoteExpansion = {
     | "invalid";
   page?: GraphPage;
   windowCursor?: string | null;
+  activityPages?: GraphActivity[];
+  activityCursor?: string | null;
   checkedAt?: number;
   scope?: string;
 };
@@ -130,6 +134,9 @@ export function validateGraphPage(page: GraphPage, peer: string): boolean {
     page.nodes.length > 80 ||
     page.edges.length > 600 ||
     page.activity.length > 80 ||
+    (page.activity_cursor != null &&
+      typeof page.activity_cursor !== "string") ||
+    (page.activity_more ?? false) !== Boolean(page.activity_cursor) ||
     (page.unconfirmed !== undefined &&
       (!Array.isArray(page.unconfirmed) ||
         page.unconfirmed.length > 4096 ||

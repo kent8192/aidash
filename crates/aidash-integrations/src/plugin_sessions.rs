@@ -7,7 +7,9 @@ use crate::{
 };
 use aidash_application::{ports::tools::PluginInputs, tenant_secrets::CallSecret};
 use aidash_application::{
-	ports::tools::{ListFailure, PluginServer, PluginSessions},
+	ports::tools::{
+		ListFailure, McpMemoryShortage, McpSessionMemoryShort, PluginServer, PluginSessions,
+	},
 	provider_access::KeylessAccess,
 };
 use aidash_domain::agent_plugin::interaction::{
@@ -160,23 +162,24 @@ impl ClientHandler for Inputs {
 	}
 }
 
+// Reclaim backing session resources after 10 minutes without use by a Run.
 const IDLE_LIMIT: Duration = Duration::from_secs(10 * 60);
-const MAX_SESSIONS: usize = 512;
-const MAX_PAGES: usize = 10;
-const MAX_LISTED_SCHEMA_BYTES: usize = 1 << 20;
 
 mod wire;
-use wire::{BoundedClient, call_error, initialization_error};
+use wire::{BoundedClient, call_error, initialization_error, listing_error};
 
 type Service = RunningService<RoleClient, Inputs>;
 type Failure = wire::Failure;
 type Attempt<T> = std::result::Result<T, Fault>;
 
 /// Every Run of the process shares one instance, through an `Arc`.
+#[derive(Clone)]
 pub struct McpPluginSessions {
 	origins: KeylessAccess,
 	clients: ToolClients,
 	state: Arc<Mutex<State>>,
+	tenant: Option<String>,
+	memory: Option<Arc<dyn McpMemoryShortage>>,
 }
 
 const _: () = {
@@ -194,6 +197,7 @@ enum Credential {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
+	tenant: String,
 	connection: Option<Credential>,
 	run: Uuid,
 	plugin: PluginName,
@@ -215,8 +219,9 @@ impl Key {
 		};
 		self
 	}
-	fn new(run: Uuid, server: &PluginServer) -> Self {
+	fn new(tenant: &str, run: Uuid, server: &PluginServer) -> Self {
 		Self {
+			tenant: tenant.to_owned(),
 			connection: None,
 			run,
 			plugin: server.plugin.clone(),
@@ -235,7 +240,6 @@ struct Entry {
 struct State {
 	entries: HashMap<Key, Entry>,
 	idle: Duration,
-	capacity: usize,
 	reaping: bool,
 }
 
@@ -258,31 +262,43 @@ impl State {
 	fn sweep(&mut self) {
 		let idle = self.idle;
 		self.entries.retain(|_, entry| {
-			entry.used.elapsed() <= idle || Arc::strong_count(&entry.service) > 1
+			(entry.used.elapsed() <= idle || Arc::strong_count(&entry.service) > 1)
+				&& !entry.service.is_closed()
+				&& !entry.service.is_transport_closed()
 		});
 	}
 
-	/// Keeps `service` unless another call opened a session for `key` first, then makes room by
-	/// dropping the least recently used sessions.
-	fn adopt(&mut self, key: Key, service: Arc<Service>) -> Result<Arc<Service>> {
+	/// When replica memory is short, a Tenant already holding more than the mean must wait
+	/// for its sessions to close or for memory to recover (ADR 0150).
+	fn admit(&self, tenant: &str, memory_short: bool) -> Result<()> {
+		if memory_short {
+			let tenants: std::collections::HashSet<_> =
+				self.entries.keys().map(|key| key.tenant.as_str()).collect();
+			let share = (self.entries.len() / tenants.len().max(1)).max(1);
+			let held = self
+				.entries
+				.keys()
+				.filter(|key| key.tenant == tenant)
+				.count();
+			if held > share {
+				return Err(Error::Port(Box::new(McpSessionMemoryShort { share })));
+			}
+		}
+		Ok(())
+	}
+
+	/// Keep the first live session. Recheck admission under the map lock after the handshake.
+	fn adopt(
+		&mut self,
+		key: Key,
+		service: Arc<Service>,
+		memory_short: bool,
+	) -> Result<Arc<Service>> {
 		self.sweep();
 		if let Some(existing) = self.live(&key) {
 			return Ok(existing);
 		}
-		while self.entries.len() >= self.capacity {
-			let Some(oldest) = self
-				.entries
-				.iter()
-				.filter(|(_, entry)| Arc::strong_count(&entry.service) == 1)
-				.min_by_key(|(_, entry)| entry.used)
-				.map(|(key, _)| key.clone())
-			else {
-				return Err(Error::External(
-					"MCP session capacity is occupied by active calls".into(),
-				));
-			};
-			self.entries.remove(&oldest);
-		}
+		self.admit(&key.tenant, memory_short)?;
 		self.entries.insert(
 			key,
 			Entry {
@@ -330,25 +346,47 @@ impl State {
 
 impl McpPluginSessions {
 	pub fn new(origins: KeylessAccess, clients: ToolClients) -> Self {
-		Self::with_limits(origins, clients, IDLE_LIMIT, MAX_SESSIONS)
+		Self::with_idle(origins, clients, IDLE_LIMIT)
 	}
 
-	fn with_limits(
-		origins: KeylessAccess,
-		clients: ToolClients,
-		idle: Duration,
-		capacity: usize,
-	) -> Self {
+	fn with_idle(origins: KeylessAccess, clients: ToolClients, idle: Duration) -> Self {
 		Self {
 			origins,
 			clients,
 			state: Arc::new(Mutex::new(State {
 				entries: HashMap::new(),
 				idle,
-				capacity: capacity.max(1),
 				reaping: false,
 			})),
+			tenant: None,
+			memory: None,
 		}
+	}
+
+	pub fn with_memory_shortage(mut self, memory: Arc<dyn McpMemoryShortage>) -> Self {
+		self.memory = Some(memory);
+		self
+	}
+
+	pub fn scoped(&self, tenant: &str) -> Self {
+		Self {
+			tenant: Some(tenant.to_owned()),
+			..self.clone()
+		}
+	}
+
+	fn key(&self, run: Uuid, server: &PluginServer, auth: Option<&CallSecret>) -> Result<Key> {
+		let tenant = self
+			.tenant
+			.as_deref()
+			.ok_or_else(|| Error::External("MCP session requires a Tenant scope".into()))?;
+		Ok(Key::new(tenant, run, server).with_auth(auth))
+	}
+
+	fn memory_short(&self) -> bool {
+		self.memory
+			.as_ref()
+			.is_some_and(|memory| memory.memory_short())
 	}
 
 	fn state(&self) -> MutexGuard<'_, State> {
@@ -364,18 +402,26 @@ impl McpPluginSessions {
 		previously_accepted: bool,
 	) -> Attempt<Arc<Service>> {
 		crate::tools::auth::validate(auth, config.url.as_str()).map_err(Fault::Early)?;
-		let live = self.state().live(key);
-		if let Some(service) = live {
-			return Ok(service);
+		{
+			let memory_short = self.memory_short();
+			let mut state = self.state();
+			if let Some(service) = state.live(key) {
+				return Ok(service);
+			}
+			state.sweep();
+			state
+				.admit(&key.tenant, memory_short)
+				.map_err(Fault::Early)?;
 		}
 		let client = self
 			.clients
 			.select_mcp(&self.origins, config.url.as_str(), auth)
 			.map_err(Fault::Early)?;
 		let service = open(client, config, auth, previously_accepted).await?;
+		let memory_short = self.memory_short();
 		let service = self
 			.state()
-			.adopt(key.clone(), Arc::new(service))
+			.adopt(key.clone(), Arc::new(service), memory_short)
 			.map_err(Fault::Early)?;
 		self.expire_when_idle();
 		Ok(service)
@@ -429,7 +475,7 @@ impl McpPluginSessions {
 		config: &RemoteServer,
 		auth: Option<&CallSecret>,
 	) -> Result<Vec<ListedTool>> {
-		let key = Key::new(run, server).with_auth(auth);
+		let key = self.key(run, server, auth)?;
 		let service = self
 			.session(&key, config, auth, false)
 			.await
@@ -466,7 +512,7 @@ impl McpPluginSessions {
 		let previously_accepted = checkpoint.is_some_and(|checkpoint| {
 			checkpoint.input.is_some() || checkpoint.continuation_sends > 0
 		});
-		let key = Key::new(run, server).with_auth(auth);
+		let key = self.key(run, server, auth)?;
 		let service = match self.session(&key, config, auth, previously_accepted).await {
 			Ok(service) => service,
 			Err(fault) => {
@@ -589,39 +635,34 @@ async fn open(
 	.map_err(|error| Fault::Init(Box::new(error)))
 }
 
-/// Every tool of the server, within the page and size limits.
+/// Every tool of the server, within the shared deadline and byte budget.
 async fn list_tools(service: &Service) -> Attempt<Vec<ListedTool>> {
-	let listing = async {
-		let mut tools = Vec::new();
-		let mut bytes = 0;
-		let mut cursor = None;
-		for _ in 0..MAX_PAGES {
-			let page = service
-				.list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
-				.await
-				.map_err(Fault::Service)?;
-			for tool in page.tools {
-				let input_schema = Value::Object((*tool.input_schema).clone());
-				bytes += input_schema.to_string().len();
-				if bytes > MAX_LISTED_SCHEMA_BYTES {
-					return Err(Fault::Limit);
+	let tools = aidash_application::mcp_listing::list(|cursor| async move {
+		let page = service
+			.list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+			.await
+			.map_err(|error| {
+				let mapped = listing_error(&error);
+				if matches!(&mapped, Error::Port(source) if source.is::<ListFailure>()) {
+					Fault::Early(mapped)
+				} else {
+					Fault::Service(error)
 				}
-				tools.push(ListedTool {
-					name: tool.name.into_owned(),
-					description: tool.description.map(std::borrow::Cow::into_owned),
-					input_schema,
-				});
-			}
-			cursor = page.next_cursor;
-			if cursor.is_none() {
-				return Ok(tools);
-			}
-		}
-		Err(Fault::Limit)
-	};
-	timeout(TOOL_TIMEOUT, listing)
-		.await
-		.map_err(|_| Fault::Timeout)?
+			})?;
+		Ok::<_, Fault>(aidash_application::mcp_listing::Page {
+			tools: page.tools,
+			next_cursor: page.next_cursor,
+		})
+	})
+	.await?;
+	Ok(tools
+		.into_iter()
+		.map(|tool| ListedTool {
+			name: tool.name.into_owned(),
+			description: tool.description.map(std::borrow::Cow::into_owned),
+			input_schema: Value::Object((*tool.input_schema).clone()),
+		})
+		.collect())
 }
 
 /// The tool the Run pinned must still be listed with the schema it pinned.
@@ -642,9 +683,13 @@ enum Fault {
 	Early(Error),
 	Init(Box<ClientInitializeError>),
 	Service(ServiceError),
-	/// The server listed more pages or schema bytes than a Run takes in.
-	Limit,
 	Timeout,
+}
+
+impl From<ListFailure> for Fault {
+	fn from(failure: ListFailure) -> Self {
+		Self::Early(failure.into())
+	}
 }
 
 impl Fault {
@@ -666,7 +711,6 @@ impl Fault {
 				error if crate::tools::auth::error_value(&error).is_some() => error,
 				_ => service_failure(&error).into(),
 			},
-			Self::Limit => ListFailure::InvalidResponse.into(),
 			Self::Timeout => ListFailure::Unreachable.into(),
 		}
 	}
@@ -677,7 +721,6 @@ impl Fault {
 			Self::Early(error) => error,
 			Self::Init(error) => initialization_error(&error),
 			Self::Service(error) => call_error(&error),
-			Self::Limit => Error::External("MCP tool list exceeds the listing limits".into()),
 			Self::Timeout => Error::External("MCP request timed out".into()),
 		}
 	}
@@ -725,6 +768,10 @@ fn service_failure(error: &ServiceError) -> ListFailure {
 
 #[async_trait]
 impl PluginSessions for McpPluginSessions {
+	fn for_tenant(&self, tenant: &str) -> Option<Arc<dyn PluginSessions>> {
+		Some(Arc::new(self.scoped(tenant)))
+	}
+
 	async fn list(
 		&self,
 		run: Uuid,

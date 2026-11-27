@@ -2656,6 +2656,8 @@ impl Store {
 					.await?;
 				}
 				Ok(ThreadSnapshot {
+					next_event_cursor: None,
+					partial: false,
 					thread: ThreadRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
 						.await?

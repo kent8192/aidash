@@ -12,16 +12,18 @@ pub const SCRATCH_ROOT: &str = "/scratch";
 pub const PLUGINS_DIR: &str = ".aidash/plugins";
 /// The live `${PLUGIN_DATA}` areas, by Run and plugin.
 pub const DATA_DIR: &str = ".aidash/plugin-data";
-/// The cap on all of one plugin's saved data.
+/// Bound each plugin snapshot read and stored as one value to 64 MiB of file content.
 pub const MAX_PLUGIN_DATA_BYTES: u64 = 64 * 1024 * 1024;
-pub const MAX_PLUGIN_DATA_FILES: u32 = 4096;
+/// Match storage's 72 MiB bound on the packed value, including paths and length fields.
+const MAX_PACKED_DATA_BYTES: u64 = 72 * 1024 * 1024;
+const ENTRY_HEADER_BYTES: u64 = 4 + 8;
 const MAX_DATA_PATH_BYTES: usize = 1024;
 
 /// A command that downloads packages, while no lockfile was pinned when the plugin was attached.
 /// Installing whatever is latest at session start is what ADR 0073 rejects.
 pub const DEPENDENCIES_NOT_PINNED: &str = "dependencies_not_pinned";
 pub const DATA_TOO_LARGE: &str = "plugin_data_too_large";
-pub const DATA_TOO_MANY_FILES: &str = "plugin_data_too_many_files";
+pub const DATA_INCOMPLETE: &str = "plugin_data_incomplete";
 pub const DATA_INVALID_PATH: &str = "plugin_data_invalid_path";
 
 /// Starts argv in the working directory given as `$1`. The directory is passed as an argument,
@@ -146,16 +148,16 @@ pub fn check_data<'a>(
 	truncated: bool,
 ) -> Result<(), &'static str> {
 	if truncated {
-		return Err(DATA_TOO_MANY_FILES);
+		return Err(DATA_INCOMPLETE);
 	}
-	let (mut count, mut total) = (0u32, 0u64);
+	let mut total = 0u64;
+	let mut packed = 0u64;
 	for (path, size) in files {
-		count += 1;
 		total = total.saturating_add(size);
-		if count > MAX_PLUGIN_DATA_FILES {
-			return Err(DATA_TOO_MANY_FILES);
-		}
-		if total > MAX_PLUGIN_DATA_BYTES {
+		packed = packed
+			.saturating_add(size)
+			.saturating_add(path.len() as u64 + ENTRY_HEADER_BYTES);
+		if total > MAX_PLUGIN_DATA_BYTES || packed > MAX_PACKED_DATA_BYTES {
 			return Err(DATA_TOO_LARGE);
 		}
 		if !data_path(path) {

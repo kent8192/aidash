@@ -1,5 +1,5 @@
 //! Current idle authority, bounded replay and per-frame authorization share policy rules.
-use super::projection::EVENT_SCAN_LIMIT;
+use super::projection::{EVENT_SCAN_LIMIT, EventRead};
 use crate::{
 	Error, Result,
 	authorization::Snapshot,
@@ -113,7 +113,7 @@ pub async fn read_events(
 	after: i64,
 	thread: Option<Uuid>,
 	limit: i64,
-) -> Result<(Vec<Event>, i64, Tally)> {
+) -> Result<EventRead> {
 	let visible = if let Some(id) = thread {
 		scope.require_thread(id, "thread.read").await?;
 		scope.require_thread(id, "thread.events").await?;
@@ -129,6 +129,7 @@ pub async fn read_events(
 	};
 	let limit = limit.clamp(1, 1000) as usize;
 	let mut cursor = after.max(0);
+	let mut partial = false;
 	let mut result = vec![];
 	let mut unconfirmed = Tally::new();
 	let mut scanned = 0;
@@ -138,7 +139,8 @@ pub async fn read_events(
 		let batch = scope.read_rows(cursor, thread, &visible, page_size).await?;
 		let exhausted = batch.len() < page_size;
 		scanned += batch.len();
-		for event in batch {
+		let mut batch = batch.into_iter().peekable();
+		while let Some(event) = batch.next() {
 			cursor = event.sequence;
 			scope.begin_row();
 			let visible = scope.event_visible(&event, &mut runs).await?;
@@ -147,14 +149,28 @@ pub async fn read_events(
 				result.push(event);
 			}
 			if result.len() == limit {
-				return Ok((result, cursor, unconfirmed));
+				partial = batch.peek().is_some();
+				break;
 			}
 		}
 		if exhausted {
 			break;
 		}
+		if result.len() == limit || scanned == EVENT_SCAN_LIMIT {
+			partial = partial
+				|| !scope
+					.read_rows(cursor, thread, &visible, 1)
+					.await?
+					.is_empty();
+			break;
+		}
 	}
-	Ok((result, cursor, unconfirmed))
+	Ok(EventRead {
+		events: result,
+		cursor,
+		partial,
+		unconfirmed,
+	})
 }
 
 pub async fn can_emit(scope: &mut dyn StreamSession, event: &Event) -> Result<bool> {

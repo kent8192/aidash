@@ -44,7 +44,7 @@ impl AtomicParticipant {
 		share: &Share,
 		phase: AtomicParticipantPhase,
 	) -> Result<Self> {
-		// A participant stores only its own share (ADR 0146).
+		// A participant stores only its own share (ADR 0151).
 		let row = Self::build()
 			.id(share.id)
 			.coordinator(&share.coordinator)

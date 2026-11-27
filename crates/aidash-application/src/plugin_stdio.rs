@@ -4,14 +4,14 @@
 //! when the Run's sessions close. `${PLUGIN_DATA}` is restored before a plugin's first session in
 //! the Run and saved, after a check, when they close.
 use crate::{
-	Error, Result,
+	Error, Result, mcp_listing,
 	ports::{
 		capabilities::execution_pod::{
 			CommandRefusal, CommandRequest, ExecutionPodError, ExecutionPodErrorCode,
 			FileManifestRequest, FileReadRequest, FileWriteRequest, McpCallRequest,
 			McpStartRequest,
 		},
-		tools::{PluginServer, StdioPluginHost, StdioPluginSessions, StdioPod},
+		tools::{ListFailure, PluginServer, StdioPluginHost, StdioPluginSessions, StdioPod},
 	},
 };
 use aidash_domain::agent_plugin::{
@@ -31,9 +31,8 @@ use uuid::Uuid;
 
 /// How long one tool call may take in the server.
 pub const CALL_SECONDS: u32 = 600;
-/// How long the handshake and each `tools/list` page may take.
+/// How long a handshake exchange may take while starting a stdio process.
 const SETUP_SECONDS: u32 = 60;
-const MAX_LIST_PAGES: usize = 16;
 /// The Runner's limit on one chunk of a file read or write.
 const CHUNK: usize = 1024 * 1024;
 /// How long the command that prepares directories may run.
@@ -106,10 +105,20 @@ impl From<Error> for Setup {
 		}
 	}
 }
+impl From<ListFailure> for Setup {
+	fn from(failure: ListFailure) -> Self {
+		Self(failure.to_string())
+	}
+}
 impl From<ExecutionPodError> for Setup {
 	fn from(error: ExecutionPodError) -> Self {
 		match error {
 			ExecutionPodError::Remote { code, .. } => Self(code.to_string()),
+			ExecutionPodError::Transport(Error::Port(error))
+				if error.is::<crate::ports::capabilities::execution_pod::RunnerTimeout>() =>
+			{
+				Self(format!("runner_timeout: {error}"))
+			}
 			ExecutionPodError::Transport(_) => Self::new(START_FAILED),
 		}
 	}
@@ -416,7 +425,15 @@ impl StdioPluginSessions for RunStdio {
 					state.pending.insert(session.operation_id);
 				}
 				tracing::warn!(%run, %error, "stdio MCP call outcome unknown");
-				Err(Error::External("MCP answer was lost after send".into()))
+				match error {
+					ExecutionPodError::Transport(Error::Port(source))
+						if source
+							.is::<crate::ports::capabilities::execution_pod::RunnerTimeout>() =>
+					{
+						Err(Error::Port(source))
+					}
+					_ => Err(Error::External("MCP answer was lost after send".into())),
+				}
 			}
 		}
 	}
@@ -603,49 +620,45 @@ async fn handshake(pod: &StdioPod, session: &mut Session) -> std::result::Result
 		json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
 	)
 	.await?;
-	let mut cursor: Option<String> = None;
-	for _ in 0..MAX_LIST_PAGES {
-		let params = match &cursor {
-			Some(cursor) => json!({"cursor": cursor}),
-			None => json!({}),
+	let operation_id = session.operation_id.clone();
+	let tools = mcp_listing::list(|cursor| {
+		let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor": cursor}));
+		let message = session.request("tools/list", params);
+		let request = McpCallRequest {
+			operation_id: operation_id.clone(),
+			message,
+			timeout_seconds: mcp_listing::MCP_LIST_TIMEOUT.as_secs() as u32,
 		};
-		let list = session.request("tools/list", params);
-		let answer = exchange(pod, session, list).await?;
-		let page = answer
-			.get("result")
-			.ok_or_else(|| Setup::new(INVALID_RESPONSE))?;
-		for tool in page
-			.get("tools")
-			.and_then(Value::as_array)
-			.ok_or_else(|| Setup::new(INVALID_RESPONSE))?
-		{
-			let listed = ListedTool {
-				name: tool
-					.get("name")
-					.and_then(Value::as_str)
-					.ok_or_else(|| Setup::new(INVALID_RESPONSE))?
-					.to_owned(),
-				description: tool
-					.get("description")
-					.and_then(Value::as_str)
-					.map(str::to_owned),
-				input_schema: tool.get("inputSchema").cloned().unwrap_or(Value::Null),
-			};
-			session.digests.insert(
-				listed.name.clone(),
-				aidash_domain::agent_plugin::schema_digest(&listed.input_schema),
-			);
-			session.listed.push(listed);
+		async move {
+			let mut answer = pod.runtime.mcp_call(&request).await?.message;
+			let page = answer
+				.get_mut("result")
+				.ok_or_else(|| Setup::new(INVALID_RESPONSE))?;
+			serde_json::from_value::<mcp_listing::Page<Value>>(page.take())
+				.map_err(|_| Setup::new(INVALID_RESPONSE))
 		}
-		cursor = page
-			.get("nextCursor")
-			.and_then(Value::as_str)
-			.map(str::to_owned);
-		if cursor.is_none() {
-			return Ok(());
-		}
+	})
+	.await?;
+	for tool in tools {
+		let listed = ListedTool {
+			name: tool
+				.get("name")
+				.and_then(Value::as_str)
+				.ok_or_else(|| Setup::new(INVALID_RESPONSE))?
+				.to_owned(),
+			description: tool
+				.get("description")
+				.and_then(Value::as_str)
+				.map(str::to_owned),
+			input_schema: tool.get("inputSchema").cloned().unwrap_or(Value::Null),
+		};
+		session.digests.insert(
+			listed.name.clone(),
+			aidash_domain::agent_plugin::schema_digest(&listed.input_schema),
+		);
+		session.listed.push(listed);
 	}
-	Err(Setup::new(INVALID_RESPONSE))
+	Ok(())
 }
 
 async fn exchange(
@@ -816,7 +829,7 @@ async fn save_data(
 			exclude: Vec::new(),
 			// `.git` is listed only when included.
 			include: vec!["**".into()],
-			max_files: stdio_session::MAX_PLUGIN_DATA_FILES,
+			max_files: None,
 			missing_ok: false,
 		})
 		.await

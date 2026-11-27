@@ -435,6 +435,11 @@ pub struct ThreadSnapshot {
 	pub tasks: Vec<Task>,
 	pub artifacts: Vec<Artifact>,
 	pub events: Vec<Event>,
+	/// Exclusive sequence boundary for older events, when the page is partial.
+	#[serde(default)]
+	pub next_event_cursor: Option<String>,
+	#[serde(default)]
+	pub partial: bool,
 	pub messages: Vec<Message>,
 	/// Rows this read scanned and could not confirm because a Node did not
 	/// answer (#770). Peers on an older build omit it.

@@ -260,28 +260,25 @@ fn text_stays_text_and_anything_else_is_base64() {
 }
 
 #[test]
-fn a_skill_md_of_the_size_limit_loads_and_one_byte_more_does_not() {
-	let head = "---\nname: alpha\ndescription: d\n---\n";
-	let at_limit = format!("{head}{}", "x".repeat(65_536 - head.len()));
-	assert_eq!(
-		plugin_with(vec![file("skills/alpha/SKILL.md", &at_limit)])
-			.skills
-			.len(),
-		1
+fn large_skill_packages_load_with_all_files_and_instructions() {
+	let text = format!(
+		"---\nname: alpha\ndescription: d\n---\n{}",
+		"x".repeat(65_536)
 	);
-	let over = format!("{at_limit}x");
-	assert_skipped(
-		vec![file("skills/alpha/SKILL.md", &over)],
-		Reason::SkillLimit,
-	);
+	let mut files = vec![file("skills/alpha/SKILL.md", &text)];
+	files.extend((0..64).map(|n| file(&format!("skills/alpha/f{n}.txt"), &"x".repeat(4_096))));
+	let plugin = plugin_with(files);
+	assert!(plugin.findings.is_empty());
+	assert_eq!(plugin.skills[0].instructions, text);
+	assert_eq!(plugin.skills[0].files.len(), 64);
 }
 
 #[test]
-fn nul_in_skill_md_is_over_the_limit() {
+fn nul_in_skill_md_is_invalid() {
 	let text = "---\nname: alpha\ndescription: d\n---\na\0b";
 	assert_skipped(
 		vec![file("skills/alpha/SKILL.md", text)],
-		Reason::SkillLimit,
+		Reason::SkillInvalid,
 	);
 }
 
@@ -292,38 +289,6 @@ fn frontmatter_is_limited_to_8192_bytes() {
 	assert_skipped(vec![skill_with(&frontmatter)], Reason::SkillLimit);
 	let fits = format!("name: alpha\ndescription: d\n# {}", "k".repeat(8000));
 	assert_eq!(plugin_with(vec![skill_with(&fits)]).skills.len(), 1);
-}
-
-#[test]
-fn sixty_three_other_files_load_and_sixty_four_do_not() {
-	let others = |count: usize| {
-		let mut files = vec![skill("alpha")];
-		files.extend((0..count).map(|n| file(&format!("skills/alpha/f{n}.txt"), "x")));
-		files
-	};
-	assert_eq!(plugin_with(others(63)).skills[0].files.len(), 63);
-	assert_skipped(others(64), Reason::SkillLimit);
-}
-
-#[test]
-fn a_skill_of_256000_bytes_loads_and_one_byte_more_does_not() {
-	let md = skill("alpha");
-	let room = 256_000 - md.bytes.len();
-	let sized = |extra: usize| {
-		vec![
-			md.clone(),
-			PluginFile {
-				path: "skills/alpha/a.bin".into(),
-				bytes: vec![b'a'; room / 2],
-			},
-			PluginFile {
-				path: "skills/alpha/b.bin".into(),
-				bytes: vec![b'b'; room - room / 2 + extra],
-			},
-		]
-	};
-	assert_eq!(plugin_with(sized(0)).skills.len(), 1);
-	assert_skipped(sized(1), Reason::SkillLimit);
 }
 
 #[rstest]
@@ -356,48 +321,11 @@ fn numbered(count: usize) -> Vec<PluginFile> {
 }
 
 #[test]
-fn sixteen_skills_load() {
-	let plugin = plugin_with(numbered(16));
-	assert_eq!((plugin.skills.len(), plugin.findings), (16, vec![]));
-}
-
-#[test]
-fn skills_past_the_sixteenth_are_skipped_in_directory_order() {
-	let mut files = numbered(18);
+fn skills_past_the_sixteenth_load_in_directory_order() {
+	let mut files = numbered(34);
 	files.reverse();
 	let plugin = plugin_with(files);
-	assert_eq!(plugin.skills.len(), 16);
-	assert_eq!(plugin.skills.last().unwrap().directory, "s15");
-	assert_eq!(
-		plugin
-			.findings
-			.iter()
-			.map(|f| (f.component.clone(), f.outcome, f.reason))
-			.collect::<Vec<_>>(),
-		["s16", "s17"].map(|dir| (
-			Component::Skill(dir.into()),
-			Outcome::Skipped,
-			Reason::SkillLimit
-		))
-	);
-}
-
-#[test]
-fn an_invalid_skill_still_counts_toward_the_sixteen() {
-	let mut files = numbered(17);
-	files[0] = file("skills/s00/SKILL.md", "no frontmatter");
-	let plugin = plugin_with(files);
-	assert_eq!(plugin.skills.len(), 15);
-	let reasons: Vec<_> = plugin
-		.findings
-		.iter()
-		.map(|f| (f.component.clone(), f.reason))
-		.collect();
-	assert_eq!(
-		reasons,
-		[
-			(Component::Skill("s00".into()), Reason::SkillInvalid),
-			(Component::Skill("s16".into()), Reason::SkillLimit),
-		]
-	);
+	assert!(plugin.findings.is_empty());
+	assert_eq!(plugin.skills.len(), 34);
+	assert_eq!(plugin.skills.last().unwrap().directory, "s33");
 }

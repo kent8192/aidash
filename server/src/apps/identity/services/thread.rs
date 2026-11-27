@@ -230,9 +230,18 @@ impl Access {
 	}
 
 	pub(crate) async fn thread_snapshot(&mut self, id: Uuid) -> Result<ThreadSnapshot> {
+		self.thread_snapshot_before(id, None).await
+	}
+
+	async fn thread_snapshot_before(
+		&mut self,
+		id: Uuid,
+		events_before: Option<i64>,
+	) -> Result<ThreadSnapshot> {
 		aidash_application::authorization::projection::snapshot(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
+			events_before,
 		)
 		.await
 		.map_err(Into::into)
@@ -403,9 +412,17 @@ impl Threads {
 	}
 
 	pub async fn snapshot(&self, id: Uuid) -> Result<ThreadSnapshot> {
+		self.snapshot_before(id, None).await
+	}
+
+	pub(crate) async fn snapshot_before(
+		&self,
+		id: Uuid,
+		events_before: Option<i64>,
+	) -> Result<ThreadSnapshot> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		access.lists = true;
-		let result = access.thread_snapshot(id).await;
+		let result = access.thread_snapshot_before(id, events_before).await;
 		access.finish(result).await
 	}
 
@@ -414,6 +431,7 @@ impl Threads {
 		deployment: DeploymentIdentity,
 		federation: &crate::federation::Federation,
 		node: Option<&str>,
+		events_before: Option<i64>,
 	) -> Result<StateResponse> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		access.lists = true;
@@ -423,6 +441,7 @@ impl Threads {
 				federation,
 			},
 			node,
+			events_before,
 		)
 		.await
 		.map(|state| StateResponse {
@@ -440,6 +459,7 @@ impl Threads {
 			human_requests: state.human_requests,
 			conversations: state.conversations,
 			events: state.events,
+			partial: state.partial,
 			unconfirmed: state.unconfirmed,
 			next_cursors: state.next_cursors,
 		})
@@ -450,7 +470,7 @@ impl Threads {
 	pub async fn events(&self, after: i64, thread: Option<Uuid>, limit: i64) -> Result<Vec<Event>> {
 		self.read_events(after, thread, limit, true)
 			.await
-			.map(|(events, _, _)| events)
+			.map(|page| page.events)
 	}
 
 	/// The events, the cursor to continue from, and the rows left out because a
@@ -460,7 +480,7 @@ impl Threads {
 		after: i64,
 		thread: Option<Uuid>,
 		limit: i64,
-	) -> Result<(Vec<Event>, i64, aidash_domain::unconfirmed::Tally)> {
+	) -> Result<aidash_application::authorization::projection::EventRead> {
 		self.read_events(after, thread, limit, true).await
 	}
 
@@ -475,7 +495,7 @@ impl Threads {
 		// The stream says nothing about a skipped event (ADR 0133).
 		self.read_events(after, thread, limit, false)
 			.await
-			.map(|(events, cursor, _)| (events, cursor))
+			.map(|page| (page.events, page.cursor))
 	}
 
 	/// Idle checks use one unlocked snapshot; each emitted frame still obtains a live lease.
@@ -514,7 +534,7 @@ impl Threads {
 		thread: Option<Uuid>,
 		limit: i64,
 		audit: bool,
-	) -> Result<(Vec<Event>, i64, aidash_domain::unconfirmed::Tally)> {
+	) -> Result<aidash_application::authorization::projection::EventRead> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		access.lists = true;
 		access.audit = audit;

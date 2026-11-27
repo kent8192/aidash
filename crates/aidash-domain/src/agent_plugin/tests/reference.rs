@@ -87,13 +87,10 @@ fn a_loaded_digest_is_a_valid_reference_digest() {
 }
 
 #[test]
-fn a_reference_carries_at_most_sixteen_skill_names() {
+fn a_reference_accepts_more_than_sixteen_skill_names() {
 	let mut reference = reference("acme-tools", &["lint"]);
-	reference.skills = (0..MAX_REFERENCE_SKILLS).map(|n| format!("s{n}")).collect();
-	assert!(reference.validate().is_ok());
-
-	reference.skills.push("one-more".into());
-	assert!(reference.validate().is_err());
+	reference.skills = (0..17).map(|n| format!("s{n}")).collect();
+	reference.validate().unwrap();
 }
 
 #[test]

@@ -12,6 +12,7 @@ pub mod execution;
 pub mod federation;
 pub mod flows;
 pub mod lifecycle;
+pub mod mcp_listing;
 pub mod memory;
 pub mod model_calls;
 pub mod nodes;

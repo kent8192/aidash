@@ -361,8 +361,8 @@ async fn latest_event_scan_counts_hidden_rows_and_reduces_the_last_batch_to_the_
 			.unwrap()
 			.is_empty()
 	);
-	assert_eq!(scope.event_pages.len(), 41);
-	assert_eq!(scope.event_pages.last(), Some(&(1001, 96, false)));
+	assert_eq!(scope.event_pages.len(), 42);
+	assert_eq!(scope.event_pages.last(), Some(&(905, 1, false)));
 	assert_eq!(
 		scope
 			.calls
@@ -378,16 +378,30 @@ async fn latest_event_scan_counts_hidden_rows_and_reduces_the_last_batch_to_the_
 #[case::full(100)]
 #[case::over(101)]
 #[tokio::test]
-async fn latest_visible_events_stop_at_the_first_exhausted_or_complete_batch(
+async fn latest_visible_events_continue_only_when_older_candidates_exist(
 	mut scope: Scope,
 	#[case] rows: i64,
 ) {
 	scope.events = (1..=rows).rev().map(|seq| event(seq, true)).collect();
-	let result = latest_visible_events(&mut scope, &[Uuid::from_u128(1)], false)
+	let page = latest_visible_events_counted(&mut scope, &[Uuid::from_u128(1)], false, i64::MAX)
 		.await
 		.unwrap();
-	assert_eq!(result.len(), (rows as usize).min(100));
-	assert_eq!(scope.event_pages.len(), 1);
+	assert_eq!(page.events.len(), (rows as usize).min(100));
+	assert_eq!(page.partial, rows > 100);
+	if page.partial {
+		let next =
+			latest_visible_events_counted(&mut scope, &[Uuid::from_u128(1)], false, page.cursor)
+				.await
+				.unwrap();
+		assert_eq!(
+			next.events
+				.iter()
+				.map(|event| event.sequence)
+				.collect::<Vec<_>>(),
+			[1]
+		);
+		assert!(!next.partial);
+	}
 }
 #[rstest]
 #[tokio::test]
@@ -434,7 +448,9 @@ async fn snapshot_rechecks_message_visibility_and_tracks_only_final_disclosure(m
 	scope.messages = vec![message(12, true), message(11, false)];
 	scope.events = vec![event(9, true), event(8, false)];
 	scope.second_message_denied = true;
-	let result = snapshot(&mut scope, Uuid::from_u128(1)).await.unwrap();
+	let result = snapshot(&mut scope, Uuid::from_u128(1), None)
+		.await
+		.unwrap();
 	assert_eq!(
 		result.tasks.iter().map(|row| row.id).collect::<Vec<_>>(),
 		vec![Uuid::from_u128(3), Uuid::from_u128(1)]
@@ -480,7 +496,7 @@ async fn denied_event_permission_keeps_other_resources_and_does_not_scan_events(
 	scope.events_allowed = false;
 	scope.events = vec![event(1, true)];
 	scope.tasks = vec![task(2, true)];
-	let result = snapshot_untracked(&mut scope, Uuid::from_u128(1))
+	let result = snapshot_untracked(&mut scope, Uuid::from_u128(1), None)
 		.await
 		.unwrap();
 	assert!(result.events.is_empty());
@@ -493,7 +509,7 @@ async fn denied_event_permission_keeps_other_resources_and_does_not_scan_events(
 async fn thread_read_denial_precedes_any_snapshot_rows_or_membership_write(mut scope: Scope) {
 	scope.require_allowed = false;
 	assert!(matches!(
-		snapshot(&mut scope, Uuid::from_u128(1)).await,
+		snapshot(&mut scope, Uuid::from_u128(1), None).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls, vec!["thread", "require"]);
@@ -597,7 +613,10 @@ async fn snapshot_adapter_failures_cannot_publish_partial_disclosure(
 	scope.messages = vec![message(1, true)];
 	scope.events = vec![event(1, true)];
 	scope.fail = Some(fail);
-	let Error::Port(error) = snapshot(&mut scope, Uuid::from_u128(1)).await.unwrap_err() else {
+	let Error::Port(error) = snapshot(&mut scope, Uuid::from_u128(1), None)
+		.await
+		.unwrap_err()
+	else {
 		panic!("expected opaque adapter error");
 	};
 	assert!(error.is::<std::io::Error>());
@@ -724,7 +743,7 @@ async fn a_snapshot_counts_tasks_artifacts_and_messages_a_silent_node_left_out(m
 		.into_iter()
 		.map(Uuid::from_u128)
 		.collect();
-	let snapshot = snapshot_untracked(&mut scope, Uuid::from_u128(1))
+	let snapshot = snapshot_untracked(&mut scope, Uuid::from_u128(1), None)
 		.await
 		.unwrap();
 	let counts: Vec<_> = snapshot

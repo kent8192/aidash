@@ -1,5 +1,5 @@
 //! What one participant receives: its own part, sealed, and every part's seal
-//! (ADR 0146, #1107).
+//! (ADR 0151, #1107).
 //!
 //! The coordinator holds the submitted [`Manifest`]. A participant holds a
 //! [`Share`]: the transaction header, every participant's [`Seal`] and only its

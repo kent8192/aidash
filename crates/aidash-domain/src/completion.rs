@@ -23,11 +23,10 @@ use uuid::Uuid;
 pub const CHECKS_V1: &str = "checks/1";
 /// The only capability a Check may invoke in this version.
 pub const SHELL: &str = "shell";
-pub const MAX_CHECKS: usize = 8;
-pub const MAX_REPAIR_ALLOWANCE: u32 = 16;
 /// A Check's own timeout never exceeds the runner's operation ceiling.
 pub const MAX_CHECK_SECONDS: u64 = 600;
 pub const MAX_VERIFICATION_SECONDS: u64 = 3600;
+// Keep the shell command argv below Linux MAX_ARG_STRLEN (128 KiB), including shell wrapping.
 pub const MAX_COMMAND_BYTES: usize = 65_536;
 /// Diagnostics kept per Check invocation: the tail of its output.
 pub const MAX_DIAGNOSTIC_BYTES: usize = 4096;
@@ -98,12 +97,10 @@ impl CompletionPolicy {
 	pub fn validate(&self) -> Result<()> {
 		let checks = self.checks();
 		if checks.is_empty()
-			|| checks.len() > MAX_CHECKS
-			|| self.repair_allowance() > MAX_REPAIR_ALLOWANCE
 			|| !(1..=MAX_VERIFICATION_SECONDS).contains(&self.verification_seconds())
 		{
 			return Err(Error::Invalid(format!(
-				"Completion Policy requires 1 to {MAX_CHECKS} Checks, repair_allowance <= {MAX_REPAIR_ALLOWANCE} and verification_seconds within 1..={MAX_VERIFICATION_SECONDS}"
+				"Completion Policy requires at least one Check and verification_seconds within 1..={MAX_VERIFICATION_SECONDS}"
 			)));
 		}
 		let mut names = std::collections::BTreeSet::new();
@@ -156,7 +153,7 @@ impl Check {
 				.is_some_and(|seconds| !(1..=MAX_CHECK_SECONDS).contains(&seconds))
 		{
 			return Err(Error::Invalid(format!(
-				"Check {:?} requires a lowercase name, capability \"shell\", a command of at most {MAX_COMMAND_BYTES} bytes and timeout_seconds within 1..={MAX_CHECK_SECONDS}",
+				"Check {:?} requires a lowercase name, capability \"shell\", a command of at most {MAX_COMMAND_BYTES} bytes (Linux MAX_ARG_STRLEN is 128 KiB) and timeout_seconds within 1..={MAX_CHECK_SECONDS}",
 				self.name
 			)));
 		}

@@ -683,7 +683,7 @@ async fn a_decision_for_another_seal_is_refused(manifest: Manifest) {
 }
 
 /// Each participant receives only its own part; no other participant's
-/// mutations ever reach it (ADR 0146).
+/// mutations ever reach it (ADR 0151).
 #[rstest]
 #[tokio::test]
 async fn each_participant_receives_only_its_own_share(mut manifest: Manifest) {

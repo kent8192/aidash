@@ -579,7 +579,8 @@ mod destinations {
 		let sessions = crate::plugin_sessions::McpPluginSessions::new(
 			KeylessAccess::default(),
 			tools.clients.clone(),
-		);
+		)
+		.scoped("fixture");
 		let listed = sessions
 			.list(
 				uuid::Uuid::new_v4(),
@@ -895,11 +896,32 @@ async fn serve(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
 }
 
 #[tokio::test]
+async fn an_early_mcp_hint_does_not_hide_an_oversized_later_page() {
+	let (endpoint, server) = serve(mcp_server(
+		std::iter::once(json!([{"name":"lookup","inputSchema":{},"annotations":{"readOnlyHint":true}}]))
+			.chain((0..6).map(|page| json!([{"name":format!("tool{page}"),"inputSchema":{},"description":"x".repeat(200_000)}])))
+			.collect(),
+		false,
+	)).await;
+	let error = mcp_read_only_hint(
+		&clients(),
+		&permitting([endpoint.as_str()]),
+		&endpoint,
+		"lookup",
+	)
+	.await
+	.unwrap_err();
+	server.abort();
+	assert!(matches!(error, Error::Port(source)
+		if source.downcast_ref::<aidash_application::ports::tools::ListFailure>() == Some(&aidash_application::ports::tools::ListFailure::ListingTooLarge)));
+}
+
+#[tokio::test]
 async fn an_mcp_servers_read_only_hint_is_read_from_its_tool_list() {
 	let (endpoint, server) = serve(mcp_server(
 		vec![
 			json!([
-				{"name":"lookup","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},
+				{"name":"lookup","inputSchema":{"type":"object"},"description":"x".repeat(320_000),"annotations":{"readOnlyHint":true}},
 				{"name":"write","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":false}}
 			]),
 			json!([
@@ -937,27 +959,6 @@ async fn an_mcp_servers_read_only_hint_is_read_from_its_tool_list() {
 	assert!(matches!(
 		mcp_read_only_hint(&clients, &permitting([unreachable]), unreachable, "lookup").await,
 		Err(Error::External(_))
-	));
-	server.abort();
-	let _ = server.await;
-}
-
-#[tokio::test]
-async fn a_server_that_never_ends_its_tool_list_is_read_a_bounded_number_of_pages() {
-	let (endpoint, server) = serve(mcp_server(
-		vec![json!([{"name":"other","inputSchema":{"type":"object"}}])],
-		true,
-	))
-	.await;
-	assert!(matches!(
-		mcp_read_only_hint(
-			&clients(),
-			&permitting([endpoint.as_str()]),
-			&endpoint,
-			"lookup"
-		)
-		.await,
-		Err(Error::Invalid(_))
 	));
 	server.abort();
 	let _ = server.await;

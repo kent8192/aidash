@@ -50,12 +50,43 @@ pub enum ListFailure {
 	InitializeFailed,
 	#[error("invalid_response")]
 	InvalidResponse,
+	#[error("mcp_listing_too_large: MCP tool listing exceeds 1 MiB")]
+	ListingTooLarge,
+	#[error("timeout: MCP tool listing exceeded 15 seconds")]
+	ListingTimeout,
+}
+
+impl ListFailure {
+	pub const fn code(self) -> &'static str {
+		match self {
+			Self::Unreachable => "unreachable",
+			Self::InitializeFailed => "initialize_failed",
+			Self::InvalidResponse => "invalid_response",
+			Self::ListingTooLarge => "mcp_listing_too_large",
+			Self::ListingTimeout => "timeout",
+		}
+	}
 }
 
 impl From<ListFailure> for crate::Error {
 	fn from(failure: ListFailure) -> Self {
 		Self::Port(Box::new(failure))
 	}
+}
+
+/// Replica memory pressure used to admit new MCP sessions.
+pub trait McpMemoryShortage: Send + Sync {
+	fn memory_short(&self) -> bool;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("MCP session fair share is {share} sessions per Tenant while replica memory is short")]
+pub struct McpSessionMemoryShort {
+	pub share: usize,
+}
+
+impl McpSessionMemoryShort {
+	pub const CODE: &str = "mcp_session_memory_short";
 }
 
 /// A Run's MCP sessions with the remote servers of its Agent Plugins. `auth` carries the
@@ -71,6 +102,11 @@ impl From<ListFailure> for crate::Error {
 /// application error type. `replay_safe` comes from the Run's pinned tool contract.
 #[async_trait]
 pub trait PluginSessions: Send + Sync {
+	/// A view that attributes new sessions to the Tenant holding them.
+	fn for_tenant(&self, _tenant: &str) -> Option<Arc<dyn PluginSessions>> {
+		None
+	}
+
 	/// `tools/list` over the Run's session, opening it when needed.
 	async fn list(
 		&self,

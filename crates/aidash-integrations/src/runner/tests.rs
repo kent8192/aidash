@@ -1,6 +1,7 @@
 use super::*;
 use aidash_application::ports::capabilities::execution_pod::{
-	CommandRequest, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime, RunStopReason,
+	CommandRequest, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime, McpCallRequest,
+	RunStopReason, RunnerTimeout,
 };
 use axum::{
 	Json, Router,
@@ -101,6 +102,42 @@ async fn fixture() -> (Server, RunnerHttp, Arc<Keys>) {
 	};
 	(server, client, keys)
 }
+#[tokio::test(start_paused = true)]
+async fn pod_timeout_remains_a_transport_error_with_route_and_deadline() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/v2/mcp/call",
+		post(|| async {
+			Response::new(Body::from_stream(futures_util::stream::pending::<
+				std::result::Result<axum::body::Bytes, std::io::Error>,
+			>()))
+		}),
+	);
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap()
+	}));
+	let client = RunnerHttp {
+		endpoint,
+		credential_env: "RUNNER_KEY".into(),
+		credentials: Arc::new(Keys(RwLock::new(Some("before-rotation".into())))),
+	};
+	let error = client
+		.mcp_call(&McpCallRequest {
+			operation_id: "fixture".into(),
+			message: json!({"jsonrpc":"2.0","id":1,"method":"tools/call"}),
+			timeout_seconds: 1,
+		})
+		.await
+		.unwrap_err();
+	let ExecutionPodError::Transport(Error::Port(source)) = error else {
+		panic!("the call may already have reached the server: {error:?}");
+	};
+	let timeout = source.downcast_ref::<RunnerTimeout>().unwrap();
+	assert_eq!(timeout.route, "/v2/mcp/call");
+	assert_eq!(timeout.seconds, 16);
+}
+
 #[rstest]
 #[tokio::test]
 async fn payload_bearer_header_and_per_request_credential_rotation_are_preserved() {

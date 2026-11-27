@@ -256,7 +256,7 @@ function RequestFiles({ thread }: { thread: string }) {
   const { locale } = useI18n();
   const query = useQuery({
     queryKey: ["thread", thread],
-    queryFn: ({ signal }) => threadGet(thread, { signal }),
+    queryFn: ({ signal }) => threadGet(thread, undefined, { signal }),
     retry: false,
   });
   return (

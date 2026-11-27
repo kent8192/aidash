@@ -31,7 +31,7 @@ use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementB
 use uuid::Uuid;
 
 /// The Node of this Deployment a share is for: a participant holds only its
-/// own part (ADR 0146), and an inbound request was checked to be for it.
+/// own part (ADR 0151), and an inbound request was checked to be for it.
 fn local_node(share: &Share) -> String {
 	share.part.node_id.clone()
 }

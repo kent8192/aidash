@@ -25,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from overlay import publish
 
 request = json.loads(base64.b64decode(sys.argv[1], validate=True))
-if not 1 <= len(request['wheels']) <= 16:
-    raise ValueError('wheel count limit')
+if not request['wheels']:
+    raise ValueError('at least one wheel is required')
 requirements, expected, sources = [], {}, []
 expanded = 0
 for wheel in request['wheels']:
@@ -41,25 +41,39 @@ for wheel in request['wheels']:
         raise ValueError('conflicting wheel versions')
     expected[name] = str(version)
     with zipfile.ZipFile(path) as archive:
-        if len(archive.infolist()) > 4096:
-            raise ValueError('wheel file count limit')
         for entry in archive.infolist():
             relative = PurePosixPath(entry.filename)
             mode = entry.external_attr >> 16
             if relative.is_absolute() or '..' in relative.parts or '\\' in entry.filename or stat.S_ISLNK(mode):
                 raise ValueError('unsafe wheel path')
             expanded += entry.file_size
-            if expanded > 128 << 20:
-                raise ValueError('wheel expansion limit')
     requirements.append(f'{path} --hash=sha256:{wheel["sha256"]}')
     sources.append(dict(wheel, name=name, version=str(version)))
 
+def require_wheel_space(target, needed):
+    free = shutil.disk_usage(target).free
+    if needed > free:
+        print(json.dumps({'code': 'wheel_disk_full',
+                          'message': f'Wheel extraction needs {needed} bytes on {target}; {free} bytes are free',
+                          'needed_bytes': needed, 'free_bytes': free}))
+        raise SystemExit(1)
+
+
 with tempfile.TemporaryDirectory(prefix='aidash-install-') as temporary:
     temporary = Path(temporary)
+    work = Path('/work')
+    # Pip stages one expanded tree and publication copies it. When both paths
+    # share a filesystem, both copies must fit until the overlay is published.
+    if temporary.stat().st_dev == work.stat().st_dev:
+        require_wheel_space(work, 2 * expanded)
+    else:
+        require_wheel_space(work, expanded)
+        require_wheel_space(temporary, expanded)
     requirements_file = temporary / 'requirements.txt'
     requirements_file.write_text('\n'.join(requirements) + '\n')
     target = temporary / 'site-packages'
-    environment = {k:v for k,v in os.environ.items() if k in ('PATH','HOME','LANG','TMPDIR')}
+    environment = {k:v for k,v in os.environ.items() if k in ('PATH','HOME','LANG')}
+    environment['TMPDIR'] = str(temporary)
     subprocess.run([sys.executable, '-I', '-m', 'pip', 'install', '--isolated', '--no-input',
                     '--disable-pip-version-check', '--no-cache-dir', '--no-index', '--no-deps',
                     '--only-binary=:all:', '--require-hashes', '--no-compile', '--ignore-installed',
