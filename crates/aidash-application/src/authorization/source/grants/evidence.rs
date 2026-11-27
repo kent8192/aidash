@@ -141,7 +141,7 @@ impl DependencyChecks {
 		let reply = match check {
 			Check::Confirmed(checked) => Some(checked),
 			Check::Refused => None,
-			Check::Unavailable | Check::NotAsked => return false,
+			Check::Unavailable | Check::ResponseTooLarge(_) | Check::NotAsked => return false,
 		};
 		self.cache.dependencies.put(
 			(self.revision.clone(), route, input.reference),
