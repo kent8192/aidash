@@ -91,7 +91,9 @@ export function catalogSections<T extends Model>(models: T[]) {
   const all = models.filter(eligibleModel).sort(compareModels);
   const newest = new Map<number, number>();
   for (const model of all) {
-    const { index, major } = rank(model.id);
+    const { index, major, shortcut } = rank(model.id);
+    // Only tiered models define a generation: `gpt-oss-120b` is not GPT-120.
+    if (!shortcut) continue;
     newest.set(index, Math.max(newest.get(index) ?? 0, major));
   }
   const seen = new Set<string>();

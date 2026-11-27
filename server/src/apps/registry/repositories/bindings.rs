@@ -376,7 +376,7 @@ async fn authorized_mode(
 		};
 		let reference = definition.identity.local();
 		let serial = access.decision_serial;
-		let current = match crate::authorization::catalog::closure_entry(
+		let mut current = match crate::authorization::catalog::closure_entry(
 			access,
 			&reference,
 			"registry.read",
@@ -392,7 +392,12 @@ async fn authorized_mode(
 				return Err(error);
 			}
 		};
-		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?)
+		// A Built-in agent is stored without binding normalization; admission
+		// normalized the same bindings, so compare it in that form (#1155).
+		if current.binding_normalization.is_none() && definition.identity == snapshot.agent {
+			current.binding_normalization = definition.definition.binding_normalization.clone();
+		}
+		if aidash_domain::registry::rules::digest(&serde_json::to_value(&current)?)
 			!= definition.digest
 		{
 			return Err(Error::Conflict(

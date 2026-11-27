@@ -163,7 +163,9 @@ export function RequestForm({
   const admin = useConfiguratorAccess(data.access);
   const { t } = useI18n();
   const where = useNodeChoice();
-  const [targetKey, setTargetKey] = useState("");
+  // A preselected agent (Tenant settings opens the Tenant Configurator) needs
+  // its Task Model picker before the person touches the select.
+  const [targetKey, setTargetKey] = useState(initialAgent ?? "");
   const taskModel = useTaskModel(
     data,
     data.registry.find((e) => e.id + "@" + e.version === targetKey),
