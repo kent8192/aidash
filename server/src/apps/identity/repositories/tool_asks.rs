@@ -43,11 +43,13 @@ fn paused_call() -> SimpleExpr {
 
 struct PausedRow {
 	id: Uuid,
+	created_at: DateTime<Utc>,
 	updated_at: DateTime<Utc>,
 	paused_call: Option<Value>,
 }
 crate::native_record!(PausedRow {
 	id,
+	created_at,
 	updated_at,
 	paused_call
 });
@@ -65,6 +67,7 @@ fn receiver_asks_query(
 	let mut query = Query::select();
 	query
 		.column(Alias::new("id"))
+		.column(Alias::new("created_at"))
 		.column(Alias::new("updated_at"))
 		.expr_as(paused_call(), Alias::new("paused_call"))
 		.from(Alias::new("task_executions"))
@@ -90,15 +93,15 @@ fn receiver_asks_query(
 					.to_owned(),
 			),
 		)
-		.order_by(Alias::new("updated_at"), Order::Desc)
+		.order_by(Alias::new("created_at"), Order::Desc)
 		.order_by(Alias::new("id"), Order::Desc)
 		.limit(RECEIVER_PAGE as u64 + 1);
-	if let Some((updated_at, id)) = before {
+	if let Some((created_at, id)) = before {
 		query.and_where(
-			Expr::col(Alias::new("updated_at"))
-				.lt(Expr::value(updated_at))
-				.or(Expr::col(Alias::new("updated_at"))
-					.eq(Expr::value(updated_at))
+			Expr::col(Alias::new("created_at"))
+				.lt(Expr::value(created_at))
+				.or(Expr::col(Alias::new("created_at"))
+					.eq(Expr::value(created_at))
 					.and(Expr::col(Alias::new("id")).lt(Expr::value(id)))),
 		);
 	}
@@ -148,7 +151,7 @@ pub(crate) async fn receiver_asks(
 	let next = rows
 		.last()
 		.filter(|_| more)
-		.map(|row| (row.updated_at, row.id));
+		.map(|row| (row.created_at, row.id));
 	let mut asks = Vec::new();
 	for row in rows {
 		let Some(paused) = row
@@ -444,13 +447,29 @@ mod tests {
 			receiver_asks_query("acme", "default", &source(), None).to_string(PostgresQueryBuilder);
 		assert_eq!(
 			sql,
-			"SELECT \"id\", \"updated_at\", \"pending\" -> 'recovery' -> 'paused_call' AS \"paused_call\" \
+			"SELECT \"id\", \"created_at\", \"updated_at\", \"pending\" -> 'recovery' -> 'paused_call' AS \"paused_call\" \
 			FROM \"task_executions\" WHERE \"control\" = 'PAUSED' AND \"control_source\" = 'system' \
 			AND \"pending\" -> 'recovery' -> 'paused_call' -> 'ask' -> 'lacking' ->> 'receiver' = 'true' \
 			AND \"id\" IN (SELECT \"id\" FROM \"authorization_remote_admissions\" \
 			WHERE \"tenant\" = 'acme' AND \"node\" = 'default' \
 			AND \"source_node\" = 'aidash://calm-heron/able-oak-abcd1234' AND NOT \"cancelled\") \
-			ORDER BY \"updated_at\" DESC, \"id\" DESC LIMIT 26"
+			ORDER BY \"created_at\" DESC, \"id\" DESC LIMIT 26"
+		);
+	}
+
+	#[test]
+	fn receiver_continuation_seeks_below_the_immutable_creation_key() {
+		let at = "2026-11-27T00:00:00.123456Z".parse().unwrap();
+		let id = Uuid::from_u128(7);
+		let sql = receiver_asks_query("acme", "default", &source(), Some((at, id)))
+			.to_string(PostgresQueryBuilder);
+		assert!(sql.contains(r#") AND ("created_at" < "#), "{sql}");
+		assert!(sql.contains(r#" OR ("created_at" = "#), "{sql}");
+		assert!(sql.contains(&format!(r#" AND "id" < '{id}'))"#)), "{sql}");
+		assert_eq!(sql.matches("00:00:00.123456").count(), 2, "{sql}");
+		assert!(
+			sql.ends_with(r#"ORDER BY "created_at" DESC, "id" DESC LIMIT 26"#),
+			"{sql}"
 		);
 	}
 
