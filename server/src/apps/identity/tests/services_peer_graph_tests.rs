@@ -50,6 +50,8 @@ fn source_rejects_cross_node_and_dangling_projection() {
 		}],
 		edges: vec![],
 		activity: vec![],
+		activity_cursor: None,
+		activity_more: false,
 		unconfirmed: vec![],
 		next_cursor: None,
 	};

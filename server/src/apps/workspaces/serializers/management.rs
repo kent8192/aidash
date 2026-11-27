@@ -49,3 +49,9 @@ pub(crate) struct AbandonInput {
 	pub(crate) revision: i64,
 	pub(crate) reason: String,
 }
+
+/// Continue the event history in a Thread snapshot.
+#[derive(Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ThreadSnapshotQuery {
+	pub events_before: Option<i64>,
+}

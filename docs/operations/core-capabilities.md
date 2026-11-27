@@ -427,7 +427,7 @@ ceiling leaves room for shell wrapping within Linux's `MAX_ARG_STRLEN` of
 | Inline read / search page              | 16 KiB / 50 matches                                            |
 | Command / patch input                  | 64 KiB / 256 KiB                                               |
 | Search response / duration             | 32 KiB / 5 seconds                                             |
-| Direct Skill package                   | 64 files / 256,000 bytes (existing import ceiling)             |
+| Direct Skill package                   | 64 files / 256,000 bytes (Deployment profile)                  |
 | Captured operation / broker output     | 8 MiB, with bounded continuation                               |
 | Run permission grant                   | At most 1 hour and no later than Run termination               |
 | Pending approval / uncommitted staging | 24 hours                                                       |
@@ -627,6 +627,9 @@ If retained storage fills after an operation executes, its poll result exposes
 `STORAGE_QUOTA`. The old file revision stays intact and the runner's result is
 retained. Restore capacity to reconcile that same operation ID; submitting the
 operation again does not reinstall packages or repeat code.
+
+Scratch `file_save` checks the Working Area's byte quota. Line searches show
+`truncated: true` on a match when the line exceeds the 2,000-character snippet limit.
 
 ### Working Area export restrictions
 

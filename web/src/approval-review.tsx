@@ -34,6 +34,7 @@ import {
   needsAnotherApprover,
   requestActionKey,
   requestChanged,
+  readApprovalRequests,
   requestForRoot,
   restrictionFor,
   reviewSubmission,
@@ -220,7 +221,9 @@ export function ApprovalReviewPanel({
   const mine = useQuery({
     queryKey: ["catalog-requests-mine", tenant, node],
     queryFn: () =>
-      authorizationCatalogRequestsMine(tenant, { node, limit: 100 }),
+      readApprovalRequests((offset) =>
+        authorizationCatalogRequestsMine(tenant, { node, limit: 100, offset }),
+      ),
     staleTime: 0,
     retry: false,
   });

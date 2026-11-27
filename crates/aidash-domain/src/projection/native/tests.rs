@@ -1372,6 +1372,8 @@ fn thread_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::ThreadSna
 		(0..own_events).map(|n| event(3 + n, "execution.thinking", json!({"run_id": own}))),
 	);
 	crate::ThreadSnapshot {
+		next_event_cursor: None,
+		partial: false,
 		thread: crate::Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			id: uuid::Uuid::from_u128(5),

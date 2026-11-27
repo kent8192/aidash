@@ -56,6 +56,10 @@ pub struct GraphPage {
 	pub nodes: Vec<GraphNode>,
 	pub edges: Vec<GraphEdge>,
 	pub activity: Vec<GraphActivity>,
+	#[serde(default)]
+	pub activity_cursor: Option<String>,
+	#[serde(default)]
+	pub activity_more: bool,
 	/// Rows the answering Node could not confirm; node identifies the answering Node.
 	#[serde(default)]
 	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
@@ -71,16 +75,20 @@ pub struct GraphActivity {
 pub struct GraphPeer {
 	pub node_id: String,
 }
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GraphCursor {
 	pub kind: u8,
 	pub offset: u64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub activity_before: Option<i64>,
 	pub generation: String,
 	pub binding: String,
 	pub window_end: i64,
 	pub expires_at: i64,
 }
+/// Bound graph reply markers to the same page size as projected nodes.
+pub const ACTIVITY_PAGE: usize = 80;
 pub const CANDIDATE_BATCH: u64 = 64;
 pub const CANDIDATE_KINDS: u8 = 6;
 pub fn direct_depth() -> u8 {
@@ -451,7 +459,8 @@ pub fn valid_remote_page(page: &GraphPage, node_id: &str, options: &GraphOptions
 		|| page.node_id != node_id
 		|| page.nodes.len() > 80
 		|| page.edges.len() > 600
-		|| page.activity.len() > 80
+		|| page.activity.len() > ACTIVITY_PAGE
+		|| page.activity_more != page.activity_cursor.is_some()
 		|| page
 			.next_cursor
 			.as_ref()

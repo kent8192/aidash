@@ -40,7 +40,7 @@ pub struct ToolAskPage {
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ToolAsks {
 	pub(crate) asks: Vec<ToolAskRecord>,
-	/// Resume scanning Home Grants, even if this page found no Home asks.
+	/// Resume scanning Receiver Asks or Home Grants, even when this page found no asks.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub(crate) next_cursor: Option<String>,
 }

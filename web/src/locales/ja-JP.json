@@ -810,7 +810,6 @@
   "agentPluginAdd": "Agentに追加",
   "agentPluginReplace": "Agentのプラグインを置き換える",
   "agentPluginRemove": "プラグインを外す",
-  "agentPluginLimit": "Agentに追加できるプラグインは8個までです。",
   "agentPluginAttached": "このAgentのプラグイン",
   "agentPluginLicense": "ライセンス",
   "agentPluginSource": "取得元",

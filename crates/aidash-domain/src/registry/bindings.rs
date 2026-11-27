@@ -348,12 +348,6 @@ impl AgentBindings {
 		Ok(())
 	}
 	fn validate_agent_plugins(&self) -> Result<()> {
-		use crate::{agent_plugin::MAX_AGENT_PLUGINS, capabilities::skills::MAX_RUN_SKILLS};
-		if self.agent_plugins.len() > MAX_AGENT_PLUGINS {
-			return Err(Error::Invalid(format!(
-				"AGENT_PLUGIN_LIMIT: an Agent takes in at most {MAX_AGENT_PLUGINS} plugins"
-			)));
-		}
 		let mut names = BTreeSet::new();
 		let mut digests = BTreeSet::new();
 		for plugin in &self.agent_plugins {
@@ -363,17 +357,6 @@ impl AgentBindings {
 					"AGENT_PLUGIN_DUPLICATE: plugin names and digests are unique".into(),
 				));
 			}
-		}
-		if self
-			.agent_plugins
-			.iter()
-			.map(|plugin| plugin.skills.len())
-			.sum::<usize>()
-			> MAX_RUN_SKILLS
-		{
-			return Err(Error::Invalid(format!(
-				"SKILL_BINDING_LIMIT: an Agent pins at most {MAX_RUN_SKILLS} plugin Skills"
-			)));
 		}
 		crate::agent_plugin::validate_settings(
 			&self.agent_plugin_settings,

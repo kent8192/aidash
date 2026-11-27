@@ -10,8 +10,7 @@ use aidash_domain::{
 		operations::{FileScope, MountedFile as FileEntry},
 		sessions::Area,
 		skills::{
-			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillMetadata, SkillRead, content_digest,
-			validate,
+			Pinned, SkillList, SkillLoad, SkillMetadata, SkillRead, content_digest, validate,
 		},
 	},
 	exposure::{DirectSkill, SkillOriginKind},
@@ -121,9 +120,6 @@ pub async fn pin(
 			validate(&a)?;
 			attachments.push(a);
 		}
-	}
-	if attachments.len() > MAX_RUN_SKILLS {
-		return Err(Error::Invalid("SKILL_BINDING_LIMIT".into()));
 	}
 	let mut pinned = vec![];
 	for a in attachments {

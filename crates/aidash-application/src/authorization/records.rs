@@ -18,6 +18,8 @@ pub async fn record(
 	let resource = scope.thread(thread_id).await?;
 	scope.require(&resource, "thread.read").await?;
 	let mut snapshot = ThreadSnapshot {
+		next_event_cursor: None,
+		partial: false,
 		thread: scope.thread_row(thread_id).await?,
 		tasks: vec![],
 		artifacts: vec![],

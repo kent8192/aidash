@@ -1346,6 +1346,7 @@ pub(super) async fn run_visible(
 			},
 			&federation,
 			None,
+			None,
 		)
 		.await
 		.unwrap();

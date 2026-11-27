@@ -168,6 +168,58 @@ impl Cron {
 		}
 		None
 	}
+
+	/// Distinct scheduled instants between the stored due time and now, newest first.
+	pub(super) fn catch_up(
+		&self,
+		zone: Tz,
+		due: DateTime<Utc>,
+		now: DateTime<Utc>,
+		count_limit: usize,
+	) -> Option<(DateTime<Utc>, usize)> {
+		let first = now.with_timezone(&zone).date_naive();
+		let due_day = due.with_timezone(&zone).date_naive();
+		let last = due_day.pred_opt().unwrap_or(due_day);
+		let dates = std::iter::successors(Some(first), |date| date.pred_opt());
+		let mut latest = None;
+		let mut previous = None;
+		let mut skipped = 0;
+		for date in dates.take_while(|date| *date >= last) {
+			if latest.is_none() && (first - date).num_days() >= SEARCH_DAYS {
+				break;
+			}
+			if !self.day_matches(date) {
+				continue;
+			}
+			for hour in (0..24).rev().filter(|hour| self.hours & (1 << hour) != 0) {
+				for minute in (0..60)
+					.rev()
+					.filter(|minute| self.minutes & (1 << minute) != 0)
+				{
+					let candidate = date.and_hms_opt(hour, minute, 0)?;
+					let Some(at) = local_instant(zone, candidate) else {
+						continue;
+					};
+					if at > now || previous == Some(at) {
+						continue;
+					}
+					if at < due {
+						return latest.map(|latest| (latest, skipped));
+					}
+					previous = Some(at);
+					if latest.is_some() {
+						skipped += 1;
+						if skipped == count_limit {
+							return latest.map(|latest| (latest, skipped));
+						}
+					} else {
+						latest = Some(at);
+					}
+				}
+			}
+		}
+		latest.map(|latest| (latest, skipped))
+	}
 }
 
 /// The instant a local time names. A repeated local time is its first

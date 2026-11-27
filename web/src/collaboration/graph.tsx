@@ -96,8 +96,14 @@ export function Graph({
   open,
   discovery,
   runs,
+  loadOlderEvents,
+  loadingOlderEvents,
+  olderEventsError,
 }: {
   data: State;
+  loadOlderEvents?: () => void;
+  loadingOlderEvents?: boolean;
+  olderEventsError?: boolean;
   channel: string;
   focus: string;
   discovery?: Discovery;
@@ -224,7 +230,12 @@ export function Graph({
     };
   }, [sendingNode, needsTenantAuthority]);
   const requestPeer = useCallback(
-    async (peer: string, cursor: string | null, requestScope: string) => {
+    async (
+      peer: string,
+      cursor: string | null,
+      requestScope: string,
+      activity = false,
+    ) => {
       if (document.hidden) return;
       const nonce = (requests.current.get(peer) ?? 0) + 1;
       requests.current.set(peer, nonce);
@@ -247,6 +258,7 @@ export function Graph({
       try {
         let page: GraphPage;
         let windowCursor = cursor;
+        let appendActivity = activity;
         const options = {
           node_id: peer,
           sending_node: sendingNode ?? null,
@@ -273,13 +285,35 @@ export function Graph({
           )
             throw error;
           windowCursor = null;
+          appendActivity = false;
           page = await graphPage({ ...options, cursor: null });
         }
         if (!validateGraphPage(page, peer))
           throw new Error("Invalid graph projection");
         if (requests.current.get(peer) !== nonce) return;
-        setExpansions((previous) =>
-          previous[peer]
+        setExpansions((previous) => {
+          const current = previous[peer];
+          if (appendActivity && current?.page) {
+            return {
+              ...previous,
+              [peer]: {
+                ...current,
+                state: "ready",
+                checkedAt: Date.now(),
+                activityPages: [
+                  ...(current.activityPages ?? []),
+                  ...page.activity,
+                ],
+                activityCursor: page.activity_cursor ?? null,
+              },
+            };
+          }
+          const sameWindow =
+            !activity &&
+            current?.scope === requestScope &&
+            current.windowCursor === windowCursor &&
+            current.page?.generation === page.generation;
+          return previous[peer]
             ? {
                 ...previous,
                 [peer]: {
@@ -288,10 +322,14 @@ export function Graph({
                   windowCursor,
                   checkedAt: Date.now(),
                   scope: requestScope,
+                  activityPages: sameWindow ? current.activityPages : undefined,
+                  activityCursor: sameWindow
+                    ? current.activityCursor
+                    : undefined,
                 },
               }
-            : previous,
-        );
+            : previous;
+        });
       } catch (error) {
         if (requests.current.get(peer) !== nonce) return;
         setExpansions((previous) =>
@@ -361,6 +399,22 @@ export function Graph({
           .map(([peer, value]) => [peer, value.page!] as const),
       ),
     [expansions, peerIds, scope, now],
+  );
+  const activityPages = useMemo(
+    () =>
+      new Map(
+        [...pages].map(([peer, page]) => [
+          peer,
+          {
+            ...page,
+            activity: [
+              ...page.activity,
+              ...(expansions[peer]?.activityPages ?? []),
+            ],
+          },
+        ]),
+      ),
+    [pages, expansions],
   );
   const merged = useMemo(
     () =>
@@ -577,7 +631,7 @@ export function Graph({
     });
   const events = mergeGraphTimeline(
     localEvents,
-    pages,
+    activityPages,
     full.nodes,
     hours,
     Date.now(),
@@ -781,6 +835,24 @@ export function Graph({
               : `${peer} could not confirm ${count} items.`}
           </Notice>
         ))}
+      {data.next_cursors.events && loadOlderEvents && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="self-start"
+          disabled={loadingOlderEvents}
+          onClick={loadOlderEvents}
+        >
+          {locale === "ja-JP" ? "以前のイベントを表示" : "Show older events"}
+        </Button>
+      )}
+      {olderEventsError && (
+        <Notice tone="warning" role="status">
+          {locale === "ja-JP"
+            ? "以前のイベントを取得できませんでした。"
+            : "Could not load older events."}
+        </Notice>
+      )}
       {data.next_cursors.conversations && (
         <p className="text-xs text-faint">
           {locale === "ja-JP"
@@ -1120,6 +1192,32 @@ export function Graph({
                                     {copy.refreshPeer}
                                   </Button>
                                 )}
+                                {expansion?.page &&
+                                  expansion.scope === scope &&
+                                  (expansion.activityCursor === undefined
+                                    ? expansion.page.activity_cursor
+                                    : expansion.activityCursor) && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      type="button"
+                                      disabled={expansion.state === "loading"}
+                                      onClick={() =>
+                                        void requestPeer(
+                                          peer,
+                                          expansion.activityCursor ??
+                                            expansion.page!.activity_cursor ??
+                                            null,
+                                          scope,
+                                          true,
+                                        )
+                                      }
+                                    >
+                                      {locale === "ja-JP"
+                                        ? "以前のアクティビティを表示"
+                                        : "Show older activity"}
+                                    </Button>
+                                  )}
                                 {expansion?.page?.next_cursor &&
                                   expansion.scope === scope && (
                                     <Button
@@ -1201,7 +1299,7 @@ export function Graph({
                 close={() => setClosed(true)}
                 open={open}
                 visitChannel={visitChannel}
-                remoteActivity={pages
+                remoteActivity={activityPages
                   .get(selected.nodeId)
                   ?.activity.filter(
                     (marker) => marker.reference === selected.id,
