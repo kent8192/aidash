@@ -57,6 +57,8 @@ pub trait ApprovalReviewScope: Send {
 	async fn require_read(&mut self, entry: &Entry) -> Result<()>;
 	/// `catalog.approve` on the definition's approval resource.
 	async fn can_approve(&mut self, entry: &Entry) -> Result<bool>;
+	/// Whether this caller can approve the entry on every live Node.
+	async fn can_approve_everywhere(&mut self, entry: &Entry) -> Result<bool>;
 	/// The Deployment offers the provider this definition needs.
 	async fn provider_available(&mut self, entry: &Entry) -> Result<bool>;
 	/// The Tenant Secret or connection this definition needs is present.

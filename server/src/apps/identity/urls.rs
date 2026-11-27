@@ -117,6 +117,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::data_protection::update_policy)
 			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::data_protection::impact_preview)
+			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::data_protection::impact)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::memory_scope::get)

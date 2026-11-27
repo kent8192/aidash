@@ -15,7 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const CATALOG_APPROVE: &str = "catalog.approve";
-const MAX_APPROVALS: usize = 128;
+pub fn validate_direct_count(count: usize) -> Result<()> {
+	if !(1..=128).contains(&count) {
+		return Err(Error::Invalid("CATALOG_APPROVALS_BOUNDS".into()));
+	}
+	Ok(())
+}
 
 pub fn default_carry_over() -> bool {
 	true
@@ -81,6 +86,17 @@ pub async fn approve_with_satisfied(
 	satisfied: &BTreeSet<(String, String)>,
 	extra_subjects: &BTreeSet<String>,
 ) -> Result<Vec<Binding>> {
+	validate_direct_count(approvals.len())?;
+	approve_reviewed_with_satisfied(scope, approvals, satisfied, extra_subjects).await
+}
+
+/// Internal transaction stage for a fenced review plan or an already size-checked direct batch.
+pub async fn approve_reviewed_with_satisfied(
+	scope: &mut dyn CatalogApprovalScope,
+	approvals: &[Approval],
+	satisfied: &BTreeSet<(String, String)>,
+	extra_subjects: &BTreeSet<String>,
+) -> Result<Vec<Binding>> {
 	if !scope.deployment_scope_orchestrated()
 		&& approvals
 			.iter()
@@ -90,7 +106,7 @@ pub async fn approve_with_satisfied(
 			"CATALOG_DEPLOYMENT_SCOPE_UNAVAILABLE".into(),
 		));
 	}
-	if approvals.is_empty() || approvals.len() > MAX_APPROVALS {
+	if approvals.is_empty() || approvals.len() > super::review::MAX_CLOSURE {
 		return Err(Error::Invalid("CATALOG_APPROVALS_BOUNDS".into()));
 	}
 	let mut definitions = BTreeMap::new();

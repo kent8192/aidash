@@ -22,6 +22,7 @@ REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
+    ("GET", "/api/tenants/{tenant}/data-protection/impact"): ("tenant-data-protection-impact-preview", "identity/data_protection"),
     ("POST", "/api/setting-requests/{id}/answer"): ("setting-request-answer", "execution/management"),
     ("POST", "/api/tasks/{id}/remote-grants/models"): ("remote-task-models", "remote_grants"),
     ("POST", "/federation/v0.1/scoped/task-models"): ("peer-task-models", "peer_mappings"),

@@ -243,12 +243,12 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::stop_flow, &["String", "Uuid"])?;
 	}
 	{
-		use super::data_protection::{Impact, Settings};
+		use super::data_protection::{Impact, Settings, Update};
 		use aidash_domain::data_protection::DataProtection;
 		use views::data_protection as view;
 		contracts.response::<_, Settings>(document, view::get_policy, 200, "application/json")?;
 		contracts.path(document, view::get_policy, &["String"])?;
-		contracts.request::<_, DataProtection>(document, view::update_policy)?;
+		contracts.request::<_, Update>(document, view::update_policy)?;
 		contracts.response::<_, Settings>(
 			document,
 			view::update_policy,
@@ -256,6 +256,9 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, view::update_policy, &["String"])?;
+		contracts.query::<_, DataProtection>(document, view::impact_preview)?;
+		contracts.response::<_, Impact>(document, view::impact_preview, 200, "application/json")?;
+		contracts.path(document, view::impact_preview, &["String"])?;
 		contracts.request::<_, DataProtection>(document, view::impact)?;
 		contracts.response::<_, Impact>(document, view::impact, 200, "application/json")?;
 		contracts.path(document, view::impact, &["String"])?;

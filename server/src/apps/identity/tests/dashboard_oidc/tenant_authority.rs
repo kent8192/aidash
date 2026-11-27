@@ -2092,36 +2092,24 @@ async fn budgets_are_set_by_their_people_in_a_browser(
 	assert_eq!(status, 204);
 }
 
-/// Exercise the worker boundary after admission, using its persisted grant
-/// and browser mapping. The test does not require inference or a provider key.
-#[rstest::rstest]
-#[tokio::test]
-async fn configurator_typed_tools_act_through_the_root_mapping(
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
-) {
+async fn configurator_context(
+	t: &Team,
+	person: &Person,
+	person_context: &str,
+) -> aidash_server::tool::ToolContext {
 	use aidash_application::registry::system::configurator::{ID, VERSION};
 	use aidash_server::{
 		federation::{Federation, Home},
-		tool::{ToolContext, builtins},
+		tool::ToolContext,
 	};
 	use reinhardt::Injectable;
-	let t = Team::new(runtime).await;
-	let (status, refused) = t.d.as_person(
-		&t.bob, "POST", "/api/threads", Some(&t.bob_context),
-		json!({"title":"Settings","request":"Configure this Tenant","target":{"id":ID,"version":VERSION},"target_kind":"agent"}),
-	).await;
-	assert_eq!(status, 403, "{refused}");
-	assert_eq!(
-		refused["code"],
-		"tenant_configurator_administrator_required"
-	);
 	let f = Federation::inject(&t.d.app.context).await.unwrap();
 	let (status, thread) =
 		t.d.as_person(
-			&t.alice,
+			person,
 			"POST",
 			"/api/threads",
-			Some(&t.alice_context),
+			Some(person_context),
 			json!({"title":"Tenant configuration"}),
 		)
 		.await;
@@ -2129,10 +2117,10 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	let thread: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
 	let (status, task) =
 		t.d.as_person(
-			&t.alice,
+			person,
 			"POST",
 			&format!("/api/threads/{thread}/tasks"),
-			Some(&t.alice_context),
+			Some(person_context),
 			json!({"title":"Configuration","description":"Change team settings"}),
 		)
 		.await;
@@ -2141,7 +2129,7 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	let id = Uuid::new_v4();
 	let home = format!("{}/{}", f.config.deployment, t.node);
 	let executor = aidash_domain::agent_subject(&home, ID, VERSION);
-	let mapping: Uuid = Team::mapping(&t.alice_context).parse().unwrap();
+	let mapping: Uuid = Team::mapping(person_context).parse().unwrap();
 	let mut tx = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query("SELECT set_config('aidash.input_ledger_worker','true',true)")
 		.execute(&mut *tx)
@@ -2159,12 +2147,35 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	tx.commit().await.unwrap();
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
 	let run = f.store.run(&scope, id).await.unwrap();
-	let context = ToolContext {
+	ToolContext {
 		home: Home::new(f.clone(), run.clone()),
 		store: f.store.clone(),
 		run,
 		scope,
-	};
+	}
+}
+
+/// Exercise the worker boundary after admission, using its persisted grant
+/// and browser mapping. The test does not require inference or a provider key.
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_typed_tools_act_through_the_root_mapping(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_application::registry::system::configurator::{ID, VERSION};
+	use aidash_server::tool::builtins;
+	let t = Team::new(runtime).await;
+	let (status, refused) = t.d.as_person(
+		&t.bob, "POST", "/api/threads", Some(&t.bob_context),
+		json!({"title":"Settings","request":"Configure this Tenant","target":{"id":ID,"version":VERSION},"target_kind":"agent"}),
+	).await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(
+		refused["code"],
+		"tenant_configurator_administrator_required"
+	);
+	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
+	let thread = context.run.thread_id;
 	let tools = builtins();
 	let updated = tools["tenant_instructions_set"]
 		.invoke(
@@ -2193,6 +2204,31 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 		protection["policy"]["forbid_keyless_endpoints"], true,
 		"{protection}"
 	);
+	let lowered = tools["data_protection_set"]
+		.invoke(
+			&context,
+			json!({"level":"no_restriction","allow_plan_connections":true}),
+			"lower",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		lowered["policy"],
+		json!({"level":"no_restriction","forbid_keyless_endpoints":true,"forbid_plan_connections":false})
+	);
+	assert_eq!(lowered["previous"], protection["policy"]);
+	assert_eq!(lowered["impact"]["effective"], lowered["policy"]);
+	assert_eq!(lowered["revision"], 2);
+	let (stale, _) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&format!("/api/tenants/{}/data-protection", t.tenant),
+			Some(&t.alice_context),
+			json!({"level":"no_training","expected_revision":1}),
+		)
+		.await;
+	assert_eq!(stale, 409);
 	let (status, read) =
 		t.d.as_person(
 			&t.alice,
@@ -2247,5 +2283,117 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 		operations[0]["request"]["properties"]["subject"]["type"],
 		"string"
 	);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_approval_covers_agent_and_tool(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
+	let tools = aidash_server::tool::builtins();
+	let node = t.d.federation.config.deployment.as_str();
+	let entry = |kind: &str, id: &str, config: Value| json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Team test definition"},"config":config});
+	let tool = entry(
+		"tool",
+		"review-tool",
+		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"review_tool","tier":"integration","transport":{"transport":"http","endpoint":"https://tools.example.com/lookup","replay":"read_only"}}),
+	);
+	let agent = entry(
+		"agent",
+		"review-agent",
+		json!({"schema_version":1,"instructions":"Use the review tool.","bindings":[{"kind":"tool","target":{"registry_deployment":node,"id":"review-tool","version":"1.0.0"},"alias":"review_tool"}]}),
+	);
+	for definition in [tool, agent] {
+		tools["registry_create"]
+			.invoke(&context, definition, "register")
+			.await
+			.unwrap();
+	}
+	let input = json!({"node":t.node,"entry":{"id":"review-agent","version":"1.0.0"}});
+	let member = configurator_context(&t, &t.bob, &t.bob_context).await;
+	let refused = tools["catalog_review_approve"]
+		.invoke(&member, input.clone(), "refused")
+		.await
+		.unwrap_err();
+	assert!(refused.to_string().contains("forbidden"), "{refused}");
+
+	let approved = tools["catalog_review_approve"]
+		.invoke(&context, input.clone(), "approve")
+		.await
+		.unwrap();
+	assert_eq!(approved["ready"], true, "{approved}");
+	assert_eq!(approved["blocked"], json!([]));
+	assert_eq!(
+		approved["approved"]["bindings"].as_array().unwrap().len(),
+		2,
+		"{approved}"
+	);
+	let (status, review) = t
+		.alice(
+			"GET",
+			&format!("/catalog/review?node={}&entry=review-agent@1.0.0", t.node),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{review}");
+	for id in ["review-agent", "review-tool"] {
+		let item = review["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|v| v["reference"]["id"] == id)
+			.unwrap();
+		assert_eq!(item["status"], "approved", "{item}");
+		assert_eq!(item["scope"], "deployment", "{item}");
+	}
+	let repeat = tools["catalog_review_approve"]
+		.invoke(&context, input, "again")
+		.await
+		.unwrap();
+	assert_eq!(repeat["approved"]["bindings"], json!([]));
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_reports_data_protection_floor(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use futures_util::FutureExt;
+	let t = Team::new(
+		runtime
+			.map(|mut r| {
+				r.federation.store.data_protection_floor =
+					aidash_domain::data_protection::Level::NoTraining;
+				r
+			})
+			.boxed()
+			.shared(),
+	)
+	.await;
+	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
+	let error = aidash_server::tool::builtins()["data_protection_set"]
+		.invoke(&context, json!({"level":"no_restriction"}), "lower")
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains("Deployment floor NoTraining"),
+		"{error}"
+	);
+	let (status, saved) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&format!("/api/tenants/{}/data-protection", t.tenant),
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200);
+	assert_eq!(saved["policy"]["level"], "no_training");
+	assert_eq!(saved["revision"], 0);
 	t.finish().await;
 }

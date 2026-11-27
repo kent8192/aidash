@@ -157,6 +157,14 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 	Ok(policy.with_floor(store.data_protection_floor))
 }
 
+pub(crate) async fn revision(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<u64> {
+	Ok(TenantDataProtectionHistory::objects()
+		.filter(TenantDataProtectionHistory::field_tenant().eq(tenant.to_owned()))
+		.count_with_executor(tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)? as u64)
+}
+
 pub(crate) async fn save(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
