@@ -33,8 +33,25 @@ spec:
         - name: postgres
           image: aidash-postgres:17-pg-jsonschema-0.3.4
           imagePullPolicy: IfNotPresent
-          args: [-c, max_connections=400]
+          resources:
+            requests: { memory: 256Mi }
+            limits: { memory: 8Gi }
+          command: [sh, -ec]
+          args:
+            - |
+              # Use the same benchmark inputs and 25% memory headroom as the GCP chart.
+              shared_mib=256
+              active_backend_mib=10
+              max_connections=$(( (3 * MEMORY_LIMIT_BYTES - 4 * shared_mib * 1048576) / (4 * active_backend_mib * 1048576) ))
+              if [ "$max_connections" -lt 1 ]; then
+                echo "PostgreSQL memory limit leaves no connections after shared_buffers and 25% headroom" >&2
+                exit 1
+              fi
+              exec docker-entrypoint.sh postgres -c "shared_buffers=${shared_mib}MB" -c "max_connections=$max_connections"
           env:
+            - name: MEMORY_LIMIT_BYTES
+              valueFrom:
+                resourceFieldRef: { resource: limits.memory, divisor: "1" }
             - { name: POSTGRES_USER, value: aidash }
             - { name: POSTGRES_DB, value: aidash_a }
             - name: POSTGRES_PASSWORD

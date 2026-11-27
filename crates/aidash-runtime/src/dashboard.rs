@@ -7,6 +7,7 @@ use tokio::sync::watch;
 pub async fn refresh_active(
 	authority: Arc<DashboardAuthority>,
 	mut stopping: watch::Receiver<bool>,
+	pool_size: usize,
 ) -> Result<()> {
 	if !authority.configured() {
 		return Ok(());
@@ -19,7 +20,8 @@ pub async fn refresh_active(
 						.into_iter()
 						.map(|account| authority.refresh(account)),
 				)
-				.buffer_unordered(8)
+				// Keep half the database pool available while accounts refresh.
+				.buffer_unordered((pool_size / 2).max(1))
 				.for_each(|_| async {})
 				.await;
 			}

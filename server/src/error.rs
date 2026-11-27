@@ -171,6 +171,12 @@ impl Error {
 	pub fn http_response(self) -> HttpResponse {
 		let transaction_pending =
 			matches!(&self, Self::TransactionPending) || self.has_database_code("55P03");
+		let pool_refusal = [
+			crate::database::fair_share::FAIR_SHARE_CODE,
+			crate::database::fair_share::POOL_BUSY_CODE,
+		]
+		.into_iter()
+		.find(|code| self.has_database_code(code));
 		let run_message_pending = self.has_database_code("A3301");
 		let (status, message) = match &self {
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
@@ -277,6 +283,14 @@ impl Error {
 				"atomic transaction visibility pending; retry after recovery".into(),
 			),
 			Self::PolicyBusy { .. } => (StatusCode::SERVICE_UNAVAILABLE, "POLICY_BUSY".into()),
+			Self::Framework(error) if pool_refusal.is_some() => (
+				StatusCode::SERVICE_UNAVAILABLE,
+				error
+					.database_error()
+					.expect("coded database error")
+					.message()
+					.to_owned(),
+			),
 			_ if self.is_transient_database() => {
 				tracing::warn!(error = %self, "request failed on a temporary database error");
 				(
@@ -320,6 +334,7 @@ impl Error {
 				"decided_by": decided_by,
 				"outcome": outcome,
 			}),
+			_ if pool_refusal.is_some() => json!({"error": message, "code": pool_refusal}),
 			_ => json!({"error": message}),
 		};
 		if let Self::RemoteExecutionRefused(

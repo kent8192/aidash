@@ -26,6 +26,7 @@
 {{- end -}}
 {{- $image := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- with .Values.image.digest -}}{{- $image = printf "%s@%s" $.Values.image.repository . -}}{{- end -}}
+{{- $databaseBudget := include "aidash.databaseConnectionBudget" . -}}
 {{- $runner := .Values.execution.runner -}}
 {{- $profile := "" -}}
 {{- if $runner.enabled -}}{{- $profile = include "aidash.capabilityProfile" . -}}{{- end -}}
@@ -168,6 +169,8 @@ spec:
             {{- if $.Values.memoryRecovery.existingClaim }}
             - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $.Values.memoryRecovery.directory | quote }} }
             {{- end }}
+            - { name: AIDASH_DATABASE_CONNECTION_BUDGET, value: {{ $databaseBudget | quote }} }
+            - { name: AIDASH_DATABASE_CONNECTION_REPLICAS, value: {{ add $.Values.server.replicas $.Values.worker.replicas | max 1 | toString | quote }} }
             - { name: AIDASH_DATABASE_STATEMENT_TIMEOUT_SECONDS, value: {{ $.Values.database.statementTimeoutSeconds | int64 | toString | quote }} }
             - { name: AIDASH_ACTIVATION_BOOTSTRAP, value: "false" }
             - { name: AIDASH_ACTIVATION_NAMESPACE, value: {{ $.Values.activation.namespace | quote }} }
