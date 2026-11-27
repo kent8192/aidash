@@ -16,6 +16,8 @@ use uuid::Uuid;
 pub enum Holder {
 	/// A thread message that cites the File version.
 	Message { message_id: Uuid },
+	/// An Artifact that references the exact File version published by a Run.
+	Artifact { artifact_id: Uuid },
 	/// A running Live preview that pinned the revision it mounts.
 	LivePreview { live_preview_id: Uuid },
 	/// A peer Deployment retaining on behalf of a delegated Run's subject.
@@ -31,6 +33,7 @@ impl Holder {
 	pub fn kind(&self) -> &'static str {
 		match self {
 			Self::Message { .. } => "message",
+			Self::Artifact { .. } => "artifact",
 			Self::LivePreview { .. } => "live_preview",
 			Self::Federation { .. } => "federation",
 		}
@@ -41,6 +44,7 @@ impl Holder {
 	pub fn id(&self) -> String {
 		match self {
 			Self::Message { message_id } => message_id.to_string(),
+			Self::Artifact { artifact_id } => artifact_id.to_string(),
 			Self::LivePreview { live_preview_id } => live_preview_id.to_string(),
 			Self::Federation { reference_id, .. } => reference_id.clone(),
 		}

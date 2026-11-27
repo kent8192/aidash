@@ -2359,6 +2359,40 @@ impl Store {
 		publication: Publication,
 	) -> Result<Artifact> {
 		input.validate()?;
+		if input.kind == "file_reference" {
+			return Err(Error::Invalid("Publish file_reference with artifact_publish in the Run that saved the Working Area file. Use thread_message with files to deliver it to a remote Thread.".into()));
+		}
+		self.write_artifact_in(tx, task_id, owner, key, input, publication)
+			.await
+	}
+
+	pub(crate) async fn artifact_by_key(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		key: &str,
+	) -> Result<Option<Artifact>> {
+		Ok(aidash_server::database::query_as(
+			&Query::select()
+				.expr(Expr::col(ColumnRef::Asterisk))
+				.from(Alias::new("artifacts"))
+				.and_where(Expr::col("idempotency_key").eq(Expr::value(key)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **tx)
+		.await?)
+	}
+
+	/// The caller has validated the input and resolved any private File version
+	/// inside this transaction.
+	pub(crate) async fn write_artifact_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		task_id: Uuid,
+		owner: &str,
+		key: &str,
+		input: &ArtifactInput,
+		publication: Publication,
+	) -> Result<Artifact> {
 		let thread: Uuid = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("thread_id"))
@@ -2476,21 +2510,10 @@ impl Store {
 				a
 			}
 			None => {
-				let a: Artifact = {
-					let query_bind_1 = key;
-					aidash_server::database::query_as(
-						&Query::select()
-							.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-							.from(Alias::new("artifacts"))
-							.and_where(SimpleExpr::CustomWithExpr(
-								"(idempotency_key = ?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_one(&mut **tx)
+				let a = self
+					.artifact_by_key(tx, key)
 					.await?
-				};
+					.ok_or_else(|| Error::NotFound("artifact unavailable".into()))?;
 				if a.task_id != task_id
 					|| a.kind != input.kind
 					|| a.name != input.name

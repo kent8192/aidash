@@ -361,13 +361,12 @@ async fn download_file(
 		offset += bytes.len() as u64;
 		upload.write_block(&bytes).await?;
 	}
-	Ok(media_type(&prefix))
+	Ok(media_type(&file.path, &prefix))
 }
 
-/// The media type a saved file records: an image the models accept is
-/// recognized by its signature, so `file_read` can give it to a model.
-fn media_type(prefix: &[u8]) -> &'static str {
-	aidash_domain::provider::detect_image(prefix).unwrap_or("application/octet-stream")
+fn media_type(path: &str, prefix: &[u8]) -> &'static str {
+	aidash_domain::provider::generated_file_media_type(path, prefix)
+		.unwrap_or("application/octet-stream")
 }
 
 /// Remove registered files, or every registered file under a directory.

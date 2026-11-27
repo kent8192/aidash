@@ -2517,15 +2517,14 @@ test("shared files can be inspected without leaving the thread", async ({
     files.getByRole("button", { name: "Download attachment: evidence.txt" }),
   ).toBeVisible();
   await files.getByRole("button", { name: "Preview: evidence.txt" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("complementary", { name: "File preview" });
   await expect(
     dialog.getByRole("heading", { name: "evidence.txt" }),
   ).toBeVisible();
   await expect(dialog.locator("pre")).toHaveText("Source evidence");
   await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(1);
-  await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
+  await expect(files).toBeVisible();
   expect(errors).toEqual([]);
 });
 

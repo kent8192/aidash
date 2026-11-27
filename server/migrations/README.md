@@ -70,6 +70,9 @@ backfill. Receipts follow their scope through Node and Tenant purge. Forced
 Tenant row security uses SQL assets because Reinhardt cannot express policies.
 `execution/0163_scope_host_debit_state` registers the receipt model state.
 Execution migrations 0164 and 0165 admit Setting Requests and track their enum state.
+`execution/0166_artifact_file_retention` lets a file-reference Artifact hold its
+exact File version. Its deletion trigger uses a SQL asset because Reinhardt
+cannot express triggers. Rollback requires releasing all Artifact holds first.
 
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.

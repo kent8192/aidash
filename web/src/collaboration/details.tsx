@@ -70,6 +70,7 @@ import { EntityDetails } from "../entity-details";
 import { ApprovalReviewPanel } from "../approval-review";
 import { RunSubnodes } from "./subnodes";
 import { ArtifactList } from "./channel";
+import { FilePreviewHost } from "../capabilities/file-preview-pane";
 import {
   answeredAtDeadline,
   closedWhenRunEnded,
@@ -523,11 +524,13 @@ export function OperationsDialog({
                   <Disclosure summary={t("requirements")}>
                     <JsonView value={task.requirements} />
                   </Disclosure>
-                  <ArtifactList
-                    artifacts={(taskSnapshot.data?.artifacts ?? []).filter(
-                      (artifact) => artifact.task_id === task.id,
-                    )}
-                  />
+                  <FilePreviewHost>
+                    <ArtifactList
+                      artifacts={(taskSnapshot.data?.artifacts ?? []).filter(
+                        (artifact) => artifact.task_id === task.id,
+                      )}
+                    />
+                  </FilePreviewHost>
                 </>
               ) : (
                 <Hint role="status">

@@ -1384,7 +1384,7 @@ pub async fn snapshot_message_files(
 	let mut result = Vec::with_capacity(paths.len());
 	let mut total = 0_u64;
 	for path in paths {
-		let file = entries
+		let mut file = entries
 			.iter()
 			.find(|file| file.path == *path && !reference_digests.contains(file.digest.as_str()))
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?
@@ -1397,6 +1397,12 @@ pub async fn snapshot_message_files(
 		let bytes = object.read_range(0, file.size).await?;
 		if bytes.len() as u64 != file.size {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+		}
+		if file.media_type == "application/octet-stream"
+			&& let Some(media_type) =
+				aidash_domain::provider::generated_file_media_type(&file.path, &bytes)
+		{
+			file.media_type = media_type.into();
 		}
 		result.push((file, bytes));
 	}
@@ -1426,7 +1432,9 @@ pub(crate) async fn publish_with_known_media(
 		{
 			let mut reader = scope.open(file).await?;
 			let prefix = reader.read_range(0, file.size.min(12)).await?;
-			if let Some(media_type) = aidash_domain::provider::detect_image(&prefix) {
+			if let Some(media_type) =
+				aidash_domain::provider::generated_file_media_type(&file.path, &prefix)
+			{
 				file.media_type = media_type.into();
 			}
 		}

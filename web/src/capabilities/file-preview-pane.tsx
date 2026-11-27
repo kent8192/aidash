@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -9,6 +10,7 @@ import {
 } from "react";
 import { Alert, Loading, Notice } from "../components/patterns";
 import { Button } from "../components/ui/button";
+import { useQuery } from "@tanstack/react-query";
 import { useFileCitations } from "../collaboration/file-citations";
 import {
   MAX_FILE_CITATIONS,
@@ -24,8 +26,13 @@ import {
   isImageKind,
   isSpreadsheetKind,
 } from "../file-preview";
-import { corePreviewTicket } from "../generated/aidash";
+import {
+  corePreviewAvailability,
+  corePreviewTicket,
+  getChannelAttachmentDownloadUrl,
+} from "../generated/aidash";
 import type { PreviewAvailability } from "../generated/models";
+import { authenticatedFetch } from "../transport";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
 import { createCurrentManifestResolver } from "./file-preview-source";
@@ -38,6 +45,8 @@ import { issueRemotePreview } from "./remote-preview";
 export interface FilePreviewSelection {
   /** Source Run whose File versions live on another Node. */
   run?: string;
+  /** A Thread Attachment is itself an immutable snapshot. */
+  attachment?: { thread: string; id: string };
   area: string;
   file: CoreFile;
   /** The Working Area revision the file list was read at, when known. */
@@ -106,6 +115,49 @@ export function FilePreviewContextProvider({
   );
 }
 
+/** Hosts the existing pane inside a dialog or sheet that is outside the Thread view. */
+export function FilePreviewHost({ children }: { children: ReactNode }) {
+  const [selection, setSelection] = useState<FilePreviewSelection | null>(null);
+  const trigger = useRef<HTMLElement | null>(null);
+  const availability = useQuery({
+    queryKey: ["preview-availability"],
+    queryFn: ({ signal }) => corePreviewAvailability({ signal }),
+    enabled: selection !== null,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const open = useCallback((file: FilePreviewSelection) => {
+    trigger.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setSelection(file);
+  }, []);
+  const close = useCallback(() => {
+    setSelection(null);
+    trigger.current?.focus();
+  }, []);
+  return (
+    <FilePreviewContextProvider
+      open={open}
+      openLive={() => undefined}
+      manifestFor={() => undefined}
+      availability={
+        availability.data ?? (availability.isError ? unavailable : null)
+      }
+    >
+      {children}
+      {selection && (
+        <FilePreviewPane
+          key={`${selection.area}:${selection.file.file_id}:${selection.file.digest}`}
+          selection={selection}
+          onClose={close}
+        />
+      )}
+    </FilePreviewContextProvider>
+  );
+}
+
 type PreviewState =
   | { status: "loading" }
   | { status: "ready"; version: FilePreviewVersion }
@@ -141,10 +193,18 @@ export function FilePreviewPane({
   const [downloadError, setDownloadError] = useState("");
 
   const path = `/working-areas/${selection.area}/files/${selection.file.file_id}/download`;
-  const kind = classifyFilePreview(
+  const attachmentPath = selection.attachment
+    ? getChannelAttachmentDownloadUrl(
+        selection.attachment.thread,
+        selection.attachment.id,
+      )
+    : null;
+  const fileKind = classifyFilePreview(
     selection.file.path,
     selection.file.media_type,
   );
+  const kind =
+    attachmentPath && fileKind === "preview-domain" ? "unsupported" : fileKind;
   const fallback =
     kind === "preview-domain" && availability
       ? filePreviewFallback(
@@ -156,10 +216,17 @@ export function FilePreviewPane({
   const needsBytes =
     !selection.run &&
     (isImageKind(kind) ||
+      kind === "video" ||
       kind === "markdown" ||
       isSpreadsheetKind(kind) ||
       fallback !== null);
-  const tooLarge = needsBytes && selection.file.size > FILE_PREVIEW_BYTE_LIMIT;
+  const attachmentText =
+    attachmentPath !== null &&
+    kind === "unsupported" &&
+    (/^text\//.test(selection.file.media_type) ||
+      selection.file.media_type === "application/json");
+  const loadBytes = needsBytes || attachmentText;
+  const tooLarge = loadBytes && selection.file.size > FILE_PREVIEW_BYTE_LIMIT;
   const siblingFiles = useMemo(
     () => selection.files ?? manifestFor(selection.area),
     [manifestFor, selection.area, selection.files],
@@ -192,25 +259,39 @@ export function FilePreviewPane({
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      event.preventDefault();
       event.stopPropagation();
       onClose();
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [onClose]);
 
   useEffect(() => {
-    if (!needsBytes || tooLarge) return;
+    if (!loadBytes || tooLarge) return;
     let cancelled = false;
+    const controller = new AbortController();
     void (async () => {
       try {
-        const { blob, file } = await download(path);
+        const { blob, file } = attachmentPath
+          ? {
+              blob: await (
+                await authenticatedFetch(attachmentPath, {
+                  signal: controller.signal,
+                })
+              ).blob(),
+              file: selection.file,
+            }
+          : await download(path);
         if (cancelled) return;
-        if (file.digest !== selection.file.digest) {
+        if (
+          file.digest !== selection.file.digest ||
+          blob.size !== selection.file.size
+        ) {
           setState({ status: "error", code: "changed" });
           return;
         }
-        if (file.size > FILE_PREVIEW_BYTE_LIMIT) {
+        if (blob.size > FILE_PREVIEW_BYTE_LIMIT) {
           setState({ status: "error", code: "too-large" });
           return;
         }
@@ -230,8 +311,9 @@ export function FilePreviewPane({
     })();
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [needsBytes, path, retry, selection.file.digest, tooLarge]);
+  }, [attachmentPath, loadBytes, path, retry, selection.file, tooLarge]);
 
   const retryLoad = () => {
     setState({ status: "loading" });
@@ -240,7 +322,15 @@ export function FilePreviewPane({
   const downloadFile = async () => {
     setDownloadError("");
     try {
-      await saveFile(path);
+      if (attachmentPath) {
+        const response = await authenticatedFetch(attachmentPath);
+        const url = URL.createObjectURL(await response.blob());
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = selection.file.path;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } else await saveFile(path);
     } catch {
       setDownloadError(t("filePreviewPaneDownloadError"));
     }
@@ -279,7 +369,7 @@ export function FilePreviewPane({
     } else {
       body = <PreviewDomainView selection={selection} />;
     }
-  } else if (kind === "unsupported") {
+  } else if (kind === "unsupported" && !attachmentText) {
     body = (
       <FilePreviewRenderer
         bytes={EMPTY_BYTES}
@@ -311,6 +401,12 @@ export function FilePreviewPane({
           </Button>
         )}
       </div>
+    );
+  } else if (attachmentText) {
+    body = (
+      <pre className="whitespace-pre-wrap break-words">
+        {new TextDecoder().decode(state.version.bytes)}
+      </pre>
     );
   } else if (fallback === "pdf") {
     body = <PdfFallback bytes={state.version.bytes} />;
@@ -349,15 +445,17 @@ export function FilePreviewPane({
           {selection.file.path}
         </h2>
         <dl className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-          <div className="flex min-w-0 gap-1">
-            <dt>{t("filePreviewPaneDigest")}</dt>
-            <dd
-              className="truncate font-mono tabular"
-              title={selection.file.digest}
-            >
-              {selection.file.digest.slice(0, 12)}
-            </dd>
-          </div>
+          {!attachmentPath && (
+            <div className="flex min-w-0 gap-1">
+              <dt>{t("filePreviewPaneDigest")}</dt>
+              <dd
+                className="truncate font-mono tabular"
+                title={selection.file.digest}
+              >
+                {selection.file.digest.slice(0, 12)}
+              </dd>
+            </div>
+          )}
           <div className="flex gap-1">
             <dt className="sr-only">{t("filePreviewPaneSize")}</dt>
             <dd>{selection.file.size.toLocaleString()} bytes</dd>
@@ -382,16 +480,18 @@ export function FilePreviewPane({
         {downloadError && <Alert className="mt-2">{downloadError}</Alert>}
       </div>
       <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border px-4 py-3">
-        <Button
-          variant="outline"
-          size="sm"
-          type="button"
-          disabled={alreadyCited || citationLimit}
-          title={citationLimit ? t("fileCitationLimit") : undefined}
-          onClick={quote}
-        >
-          {alreadyCited ? t("fileCitationAlready") : t("fileCitationQuote")}
-        </Button>
+        {!attachmentPath && (
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            disabled={alreadyCited || citationLimit}
+            title={citationLimit ? t("fileCitationLimit") : undefined}
+            onClick={quote}
+          >
+            {alreadyCited ? t("fileCitationAlready") : t("fileCitationQuote")}
+          </Button>
+        )}
         {!selection.run && (
           <Button
             variant="outline"

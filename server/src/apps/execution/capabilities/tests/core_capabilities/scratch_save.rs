@@ -1,10 +1,12 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 
 #[derive(Clone, Default)]
 struct StreamingSave {
+	verify_video: Arc<AtomicBool>,
 	entered: Arc<Notify>,
 	release: Arc<Notify>,
 }
@@ -14,9 +16,28 @@ fn streaming_save() -> StreamingSave {
 	StreamingSave::default()
 }
 
+const VIDEO: &[u8] = include_bytes!(concat!(
+	env!("CARGO_MANIFEST_DIR"),
+	"/../web/tests/fixtures/preview.mp4"
+));
+const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\npreview";
+
+fn saved_fixture(verify_video: &AtomicBool) -> (&'static str, &'static [u8], &'static str) {
+	if verify_video.load(Ordering::Relaxed) {
+		("preview.mp4", VIDEO, "video/mp4")
+	} else {
+		("preview.png", IMAGE, "image/png")
+	}
+}
+
 #[rstest::fixture]
 fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter> {
-	let StreamingSave { entered, release } = streaming_save;
+	let StreamingSave {
+		entered, release, ..
+	} = streaming_save;
+	let behavior = streaming_save.verify_video.clone();
+	let manifest_behavior = behavior.clone();
+	let read_behavior = behavior.clone();
 	let requests = AtomicUsize::new(0);
 	let key = Uuid::new_v4();
 	let router = reinhardt::test::stub::StubRouter::new()
@@ -24,8 +45,9 @@ fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter>
 			"/v1/chat/completions",
 			move |request: reinhardt::Request| {
 				let input = request.json::<Value>().unwrap();
-				let first = requests.fetch_add(1, Ordering::SeqCst) == 0;
-				if first {
+				let step = requests.fetch_add(1, Ordering::SeqCst);
+				let (path, _, _) = saved_fixture(&behavior);
+				if step == 0 {
 					assert!(
 						input["tools"]
 							.as_array()
@@ -35,15 +57,39 @@ fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter>
 					);
 				}
 				async move {
-					let (reason, message) = if first {
-						let arguments = json!({
-							"paths":["preview.png"],"expected_revision":1,"idempotency_key":key,
-						});
+					let call = match (step, path) {
+						(0, _) => Some((
+							"file_save",
+							json!({
+								"paths":[path],"expected_revision":1,"idempotency_key":key,
+							}),
+						)),
+						(1, "preview.mp4") => Some((
+							"artifact_publish",
+							json!({
+								"kind":"file_reference","name":"Missing video","content":"missing.mp4",
+							}),
+						)),
+						(2, "preview.mp4") => Some((
+							"artifact_publish",
+							json!({
+								"kind":"file_reference","name":"Saved video","content":path,
+							}),
+						)),
+						(3, "preview.mp4") => Some((
+							"thread_message",
+							json!({
+								"content":"Here is the video.","files":[path],
+							}),
+						)),
+						_ => None,
+					};
+					let (reason, message) = if let Some((name, arguments)) = call {
 						(
 							"tool_calls",
 							json!({"role":"assistant","content":null,"tool_calls":[{
-								"id":"save","type":"function","function":{
-									"name":"file_save","arguments":arguments.to_string(),
+								"id":format!("call-{step}"),"type":"function","function":{
+									"name":name,"arguments":arguments.to_string(),
 								},
 							}]}),
 						)
@@ -59,24 +105,27 @@ fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter>
 				}
 			},
 		)
-		.post("/v2/files/manifest", |_| async {
-			let digest = aidash_server::capabilities::objects::digest(b"\x89PNG\r\n\x1a\npreview");
-			Ok(reinhardt::Response::ok()
-				.with_json(
-					&json!({"files":[{"path":"preview.png","size":15,"sha256":digest}],
-					"skipped_symlinks":[],"truncated":false}),
-				)
-				.unwrap())
+		.post("/v2/files/manifest", move |_| {
+			let (path, bytes, _) = saved_fixture(&manifest_behavior);
+			async move {
+				let digest = aidash_server::capabilities::objects::digest(bytes);
+				Ok(reinhardt::Response::ok()
+					.with_json(
+						&json!({"files":[{"path":path,"size":bytes.len(),"sha256":digest}],
+						"skipped_symlinks":[],"truncated":false}),
+					)
+					.unwrap())
+			}
 		})
 		.post("/v2/files/read", move |_| {
 			let (entered, release) = (entered.clone(), release.clone());
+			let (_, bytes, _) = saved_fixture(&read_behavior);
 			async move {
 				entered.notify_one();
 				release.notified().await;
 				Ok(reinhardt::Response::ok()
-					.with_json(
-						&json!({"data":"iVBORw0KGgpwcmV2aWV3","size":15,"next_offset":15,"eof":true}),
-					)
+					.with_json(&json!({"data":STANDARD.encode(bytes),"size":bytes.len(),
+						"next_offset":bytes.len(),"eof":true}))
 					.unwrap())
 			}
 		})
@@ -155,6 +204,9 @@ async fn scratch_save_releases_authority_while_streaming(
 		with_runner_profile().await;
 		return;
 	}
+	streaming_save
+		.verify_video
+		.store(matches!(change, Change::None), Ordering::Relaxed);
 	let c = core.await;
 	let run = admit(&c).await;
 	let membership = if matches!(change, Change::Membership) {
@@ -327,12 +379,13 @@ async fn scratch_save_releases_authority_while_streaming(
 		assert_eq!(area["manifest"], json!([]));
 	} else {
 		assert_eq!(area["revision"], 2);
-		let image = &area["manifest"][0];
-		assert_eq!(image["path"], "preview.png");
-		assert_eq!(image["media_type"], "image/png");
+		let (path, bytes, media_type) = saved_fixture(&streaming_save.verify_video);
+		let file = &area["manifest"][0];
+		assert_eq!(file["path"], path);
+		assert_eq!(file["media_type"], media_type);
 		assert_eq!(
-			image["digest"],
-			aidash_server::capabilities::objects::digest(b"\x89PNG\r\n\x1a\npreview")
+			file["digest"],
+			aidash_server::capabilities::objects::digest(bytes)
 		);
 		let receipt = current
 			.context
@@ -346,11 +399,11 @@ async fn scratch_save_releases_authority_while_streaming(
 				_ => None,
 			})
 			.expect("file_save receipt");
-		assert_eq!(receipt["saved"], json!(["preview.png"]));
+		assert_eq!(receipt["saved"], json!([path]));
 		assert_eq!(
 			receipt["files"],
 			json!([{
-				"path": "preview.png", "file_id": image["file_id"], "digest": image["digest"],
+				"path": path, "file_id": file["file_id"], "digest": file["digest"],
 			}])
 		);
 		let (status, result) = request(
@@ -358,19 +411,82 @@ async fn scratch_save_releases_authority_while_streaming(
 			&c.token,
 			"POST",
 			&format!("/api/executions/{}/files/search", run.id),
-			json!({"query":"preview.png","mode":"path","scope":"working"}),
+			json!({"query":path,"mode":"path","scope":"working"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{result}");
-		assert_eq!(result["matches"][0]["file_id"], image["file_id"]);
-		assert_eq!(result["matches"][0]["digest"], image["digest"]);
+		assert_eq!(result["matches"][0]["file_id"], file["file_id"]);
+		assert_eq!(result["matches"][0]["digest"], file["digest"]);
+		if matches!(change, Change::None) {
+			assert!(
+				current.context.events().any(|event| matches!(
+					event, aidash_server::context::ContextEvent::Tool { call, result }
+						if call.name == "artifact_publish" && call.arguments["content"] == "missing.mp4"
+							&& result.to_string().contains("file_save")
+				)),
+				"missing Scratch Space file should get actionable save instructions"
+			);
+			let (status, thread) = request(
+				&c.app,
+				&c.token,
+				"GET",
+				&format!("/api/threads/{}", run.thread_id),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{thread}");
+			let artifacts = thread["artifacts"].as_array().unwrap();
+			assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+			let artifact = &artifacts[0];
+			assert_eq!(
+				artifact["content"],
+				json!({
+					"area_id":area["id"],"file_id":file["file_id"],"path":path,
+					"digest":file["digest"],"size":bytes.len(),"media_type":media_type,
+				})
+			);
+			let hold: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM core_retention_holds h JOIN core_retention_files f ON f.hold_id = h.id WHERE h.holder_kind = 'artifact' AND h.holder_id = $1 AND f.file_id = $2)")
+				.bind(artifact["id"].as_str().unwrap())
+				.bind(serde_json::from_value::<Uuid>(file["file_id"].clone()).unwrap())
+				.fetch_one(c.f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+			assert!(
+				hold,
+				"the published artifact must retain its exact File version"
+			);
+			let (status, messages) = request(
+				&c.app,
+				&c.token,
+				"GET",
+				&format!("/api/threads/{}/message-history", run.thread_id),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{messages}");
+			assert!(
+				messages["messages"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.any(|message| message["attachments"]
+						.as_array()
+						.unwrap()
+						.iter()
+						.any(|attachment| attachment["filename"] == path
+							&& attachment["media_type"] == media_type)),
+				"{messages}"
+			);
+		}
 	}
 	c.close().await;
 }
 
 #[rstest::fixture]
 fn patch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter> {
-	let StreamingSave { entered, release } = streaming_save;
+	let StreamingSave {
+		entered, release, ..
+	} = streaming_save;
 	let receipt = std::sync::Mutex::new(None);
 	Arc::new(
 		reinhardt::test::stub::StubRouter::new()

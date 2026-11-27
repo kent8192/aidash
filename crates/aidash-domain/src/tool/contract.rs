@@ -44,6 +44,9 @@ pub fn describe_scratch_paths(
 		("aidash.apply_patch", "1.0.0") => {
 			"In an Execution Pod, patch paths are relative to /scratch (also mounted at /work)."
 		}
+		("aidash.artifact_publish", "1.0.0") => {
+			"For kind=file_reference, save the file with file_save, then give the Working Area relative path as content. The artifact points to the exact saved version."
+		}
 		_ => return,
 	};
 	spec.description.push(' ');

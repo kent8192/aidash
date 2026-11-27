@@ -17,6 +17,22 @@ export type Area = {
   generation: number;
   manifest: CoreFile[];
 };
+
+export async function threadWorkingAreas(thread: string, signal: AbortSignal) {
+  const items: Area[] = [];
+  let cursor: string | null = null;
+  do {
+    const params = new URLSearchParams({ thread_id: thread });
+    if (cursor) params.set("cursor", cursor);
+    const page: { items: Area[]; next_cursor: string | null } = await apiFetch(
+      `/api/working-areas?${params}`,
+      { signal },
+    );
+    items.push(...page.items);
+    cursor = page.next_cursor;
+  } while (cursor);
+  return { items };
+}
 export type Operation = {
   operation_id: string;
   area_id?: string;
