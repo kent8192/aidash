@@ -1,5 +1,6 @@
 use super::*;
-use axum::{Router, routing::post};
+use aidash_application::{mcp_listing::MAX_LISTED_SCHEMA_BYTES, ports::tools::ListFailure};
+use axum::{Router, body::Body, routing::post};
 use serde_json::json;
 
 #[rstest::rstest]
@@ -9,10 +10,20 @@ async fn oversized_json_and_unterminated_sse_are_rejected_before_decoding() {
 		let app = Router::new().route(
 			"/mcp",
 			post(move || async move {
-				(
-					[("content-type", content_type)],
-					format!("data: {}", "x".repeat(LIMIT + 1)),
-				)
+				// Listing pages have a schema budget and a separate wire framing allowance.
+				let description = "x".repeat(MAX_LISTED_SCHEMA_BYTES + LIMIT + 1);
+				let response = json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": [
+					{"name": "search", "description": description, "inputSchema": {"type": "object"}}
+				]}});
+				let body = if content_type == "application/json" {
+					Body::from(response.to_string())
+				} else {
+					let event = bytes::Bytes::from(format!("data: {response}"));
+					let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(event)])
+						.chain(futures_util::stream::pending());
+					Body::from_stream(stream)
+				};
+				([("content-type", content_type)], body)
 			}),
 		);
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -28,17 +39,30 @@ async fn oversized_json_and_unterminated_sse_are_rejected_before_decoding() {
 		let result = client
 			.post_message(uri, message, None, None, HashMap::new())
 			.await;
-		if content_type == "application/json" {
-			assert!(result.is_err());
+		let error = if content_type == "application/json" {
+			let Err(Failure::Client(McpError::App(error))) = result else {
+				panic!("expected a typed listing failure");
+			};
+			error
 		} else {
 			let StreamableHttpPostResponse::Sse(mut stream, _) = result.unwrap() else {
 				panic!("expected SSE")
 			};
-			let item = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+			let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
 				.await
-				.unwrap();
-			assert!(item.unwrap().is_err());
-		}
+				.expect("reject the open SSE stream without waiting for a terminator")
+				.expect("surface the oversized listing to the pending request")
+				.expect("the SSE adapter emits a synthetic JSON-RPC failure");
+			let message: rmcp::model::ServerJsonRpcMessage =
+				serde_json::from_str(event.data.as_deref().unwrap()).unwrap();
+			let rmcp::model::ServerJsonRpcMessage::Error(reply) = message else {
+				panic!("expected a JSON-RPC error");
+			};
+			assert_eq!(reply.id, rmcp::model::RequestId::Number(1));
+			listing_error(&ServiceError::McpError(reply.error))
+		};
+		assert!(matches!(error, Error::Port(source)
+			if source.downcast_ref::<ListFailure>() == Some(&ListFailure::ListingTooLarge)));
 		server.abort();
 	}
 }

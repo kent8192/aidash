@@ -64,6 +64,7 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
     the controller, which must stop the Pod rather than replay the command.
     """
     import base64
+    import errno
     import signal
     import subprocess
     import time
@@ -98,9 +99,11 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
         process = subprocess.Popen(argv, start_new_session=True,
                                    stdout=subprocess.PIPE if output_directory is not None else None,
                                    stderr=subprocess.PIPE if output_directory is not None else None)
-    except OSError:
+    except OSError as error:
         for stream in streams.values():
             stream.close()
+        if on_started is not None and error.errno == errno.EAGAIN:
+            return process_limit_refusal()
         raise
     def drain(name, source, target):
         forwarding = on_started is None
@@ -416,17 +419,11 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
             marker.update(operation_id=operation_id, running_at=time.time(), protocol_version=HELPER_PROTOCOL)
             marker['auth'] = sign_result(marker, left_auth)
             publish_running(marker)
-        try:
-            result = run_supervised(argv, timeout, stop_requested=stopping,
-                                    output_directory=OUTPUT_DIRECTORY,
-                                    operation_id=operation_id, output_limit=output_limit,
-                                    on_left=adopt if notify_left else None, capture_tail=capture_tail,
-                                    on_started=notify_started)
-        except BlockingIOError as error:
-            import errno
-            if notify_started is None or error.errno != errno.EAGAIN:
-                raise
-            result = process_limit_refusal()
+        result = run_supervised(argv, timeout, stop_requested=stopping,
+                                output_directory=OUTPUT_DIRECTORY,
+                                operation_id=operation_id, output_limit=output_limit,
+                                on_left=adopt if notify_left else None, capture_tail=capture_tail,
+                                on_started=notify_started)
     finally:
         if tracking_started:
             interval_stop.set()

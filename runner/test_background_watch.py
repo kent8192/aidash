@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+import mcp_session
 import sandbox_v2
 from helper_transport import bundle_frame, prepare_helper_exec
 from execution_pod import ExecutionPodController, ExecutionPodError
@@ -25,6 +26,7 @@ def response(value):
 def controller(tmp_path, monkeypatch):
     pod = {'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
            'spec': {'containers': [{'name': 'execution',
+                                    'env': [{'name': 'AIDASH_PROCESS_LIMIT', 'value': '32'}],
                                     'securityContext': {'capabilities': {'add': ['NET_RAW', 'NET_ADMIN']}}}]}}
     class Backend(SimpleNamespace):
         prepare_helper_exec = staticmethod(prepare_helper_exec)
@@ -55,8 +57,9 @@ def observe(controller, *, sleep=lambda _: None, monkeypatch):
 def signed_result(controller, operation, *, output_incomplete=True, **fields):
     result = dict(operation_id=operation, run_id='run', status='completed',
                   output_incomplete=output_incomplete, **fields)
-    key = controller._read_command(operation)['result_proof_key']
-    result['auth'] = sandbox_v2.sign_result(result, key.encode())
+    key = controller._read_command(operation).get('result_proof_key')
+    result['auth'] = sandbox_v2.sign_result(
+        result, key.encode() if key else controller.left_result_keys[operation])
     return {'running': False, 'result': result, 'output': {}}
 
 
@@ -174,16 +177,32 @@ def test_watcher_start_failure_is_recorded_and_signals_process(controller):
 
 
 @pytest.mark.parametrize('kind', ['preview', 'stdio MCP'])
-def test_background_start_reports_the_pod_process_limit(controller, monkeypatch, kind):
+@pytest.mark.parametrize('phase', ['fork', 'supervisor Popen'])
+def test_background_start_reports_the_pod_process_limit(controller, monkeypatch, tmp_path, kind, phase):
+    import subprocess
+    import sys
+
     controller, thread = controller
     monkeypatch.setenv('AIDASH_PROCESS_LIMIT', '64')
 
-    def fork():
-        raise BlockingIOError(errno.EAGAIN, 'fork limit')
+    def exhausted(*args, **kwargs):
+        raise BlockingIOError(errno.EAGAIN, 'process limit')
 
-    monkeypatch.setattr('sandbox_v2.os.fork', fork)
-    controller.backend.kube.side_effect = lambda *args, **kwargs: response(sandbox_v2.supervise_background())
     request = command(1)
+    if phase == 'fork':
+        monkeypatch.setattr(sandbox_v2.os, 'fork', exhausted)
+        controller.backend.kube.side_effect = lambda *args, **kwargs: response(sandbox_v2.supervise_background())
+    else:
+        if sys.platform != 'linux':
+            pytest.skip('the supervisor uses Linux prctl')
+        monkeypatch.setenv('AIDASH_POD_UID', 'uid')
+        monkeypatch.setattr(sandbox_v2, 'OPERATION_DIRECTORY', tmp_path)
+        monkeypatch.setattr(sandbox_v2, 'OUTPUT_DIRECTORY', tmp_path)
+        monkeypatch.setattr(subprocess, 'Popen', exhausted)
+        controller.backend.kube.side_effect = lambda *args, **kwargs: response(
+            sandbox_v2.supervise_background(request['operation_id'], request['run_id'], '.', 'true',
+                                            None, False, expected_pod_uid='uid', record_changes=False))
+
     with pytest.raises(ExecutionPodError) as caught:
         if kind == 'preview':
             controller.start_preview(dict(request, port=8080))
@@ -192,6 +211,59 @@ def test_background_start_reports_the_pod_process_limit(controller, monkeypatch,
     assert caught.value.code == 'pod_process_limit'
     assert 'v2_processes = 64' in caught.value.message
     thread.assert_not_called()
+
+
+@pytest.mark.parametrize('docker_enabled', [False, True])
+def test_mcp_bridge_spawn_failure_reports_the_running_pods_process_limit(
+        controller, monkeypatch, tmp_path, docker_enabled):
+    controller, _ = controller
+    controller.config['v2_processes'] = 64
+    if not docker_enabled:
+        execution = controller._get.return_value['spec']['containers'][0]
+        execution['securityContext']['capabilities']['add'] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mcp_session.signal, 'signal', lambda *_: None)
+
+    def exhausted(*args, **kwargs):
+        raise BlockingIOError(errno.EAGAIN, 'process limit')
+
+    monkeypatch.setattr(mcp_session.subprocess, 'Popen', exhausted)
+    config = {'install': '', 'command': ['mcp'], 'env': {}, 'plugin_data': 'data'}
+    request = command(1)
+    operation = request['operation_id']
+
+    def publish_bridge_exit(_delay):
+        exit_code = mcp_session.serve(str(tmp_path / 'mcp.sock'), config)
+        record = controller._read_command(operation)
+        _, active = next(iter(controller.background_watches.items()))
+        observed = signed_result(controller, operation, exit_code=exit_code)
+        controller._observe_background(record, active[operation], observed)
+        assert controller.command_result(operation)['status'] == 'completed'
+
+    monkeypatch.setattr('time.sleep', publish_bridge_exit)
+    with pytest.raises(ExecutionPodError) as caught:
+        controller.start_mcp(dict(request, **config))
+    assert caught.value.code == 'pod_process_limit'
+    assert 'v2_processes = 32' in caught.value.message
+    assert controller.command_result(operation)['error_code'] == 'pod_process_limit'
+
+
+def test_preview_exit_status_does_not_impersonate_the_mcp_spawn_refusal(controller, monkeypatch):
+    controller, _ = controller
+    request = dict(command(1), port=8080)
+    operation = request['operation_id']
+
+    def publish_preview_exit(_delay):
+        record = controller._read_command(operation)
+        _, active = next(iter(controller.background_watches.items()))
+        observed = signed_result(controller, operation, exit_code=mcp_session.SPAWN_PROCESS_LIMIT_EXIT)
+        controller._observe_background(record, active[operation], observed)
+        assert controller.command_result(operation)['status'] == 'completed'
+
+    monkeypatch.setattr('time.sleep', publish_preview_exit)
+    with pytest.raises(ExecutionPodError) as caught:
+        controller.start_preview(request)
+    assert caught.value.code == 'preview_start_failed'
 
 
 def test_saved_output_poll_is_bounded_and_resumes_at_previous_offsets(tmp_path, monkeypatch):
