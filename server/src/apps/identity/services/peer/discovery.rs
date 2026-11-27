@@ -93,7 +93,8 @@ pub(crate) async fn discover_in(
 			(target, response)
 		}
 	}))
-	.buffer_unordered(8);
+	// In-process peer requests also borrow this process's Work connections.
+	.buffer_unordered((f.store.pool.usage().max as usize / 2).max(1));
 	while let Some((node, response)) = responses.next().await {
 		let entries = match response {
 			Ok(entries) => entries,

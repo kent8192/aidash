@@ -25,6 +25,7 @@ pub async fn submit(
 pub async fn list(
 	repository: &dyn ManagementRepository,
 	identity: &ExecutionPrincipal,
+	authority_pool_size: usize,
 ) -> Result<Vec<Status>> {
 	let mut visible = Vec::new();
 	let mut cursor = None;
@@ -37,7 +38,8 @@ pub async fn list(
 				.await;
 			(row, result)
 		}))
-		.buffered(8);
+		// Each authority check can open a control transaction. Leave half for other transitions.
+		.buffered((authority_pool_size / 2).max(1));
 		while let Some((row, result)) = checked.next().await {
 			cursor = Some((row.created_at, row.id));
 			match result {

@@ -51,6 +51,9 @@ impl Repository {
 
 #[async_trait]
 impl ActivationRepository for Repository {
+	fn publication_pool_size(&self) -> usize {
+		self.harness.federation.store.pool.usage().max as usize
+	}
 	fn node_id(&self) -> &str {
 		self.harness.federation.store.deployment.as_str()
 	}
