@@ -1595,7 +1595,7 @@ def render():
         if path == "/api/tasks":
             checks += 'expect(res.getBody().tasks.map(value=>value.id)).to.include(bru.getVar("task_id"));'
         if path == "/api/events":
-            checks += 'expect(res.getBody().events).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
+            checks += 'expect(res.getBody().events).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);expect(res.getBody().partial).to.be.a("boolean");expect(res.getBody().cursor).to.equal(Number(res.getHeader("x-aidash-event-cursor")));expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
         if path == "/api/events/stream":
             add(
                 endpoint,

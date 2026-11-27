@@ -20,6 +20,7 @@ pub struct StateResponse {
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
+	pub partial: bool,
 	pub artifacts: Vec<Artifact>,
 	/// Rows this read scanned and could not confirm because a Node did not
 	/// answer, for each Node, kind and Thread. `[]` when none.
@@ -30,6 +31,7 @@ pub struct StateResponse {
 #[derive(Default, serde::Deserialize, JsonSchema)]
 pub struct StateQuery {
 	pub node: Option<String>,
+	pub events_before: Option<i64>,
 }
 #[derive(Default, serde::Deserialize, JsonSchema)]
 pub struct ThreadPageQuery {

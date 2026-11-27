@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::domain::RunMetadata;
+use aidash_application::authorization::projection::EVENT_SCAN_LIMIT;
 use aidash_domain::federation::graph::*;
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
 /// Holds the sender's registration of `node` until the transaction ends.
@@ -66,8 +67,6 @@ impl GraphAuthority<'_> {
 		self.0.event_visible(event).await
 	}
 }
-
-const ACTIVITY_SCAN_LIMIT: usize = 4096;
 
 pub(crate) async fn candidates(
 	authority: &mut GraphAuthority<'_>,
@@ -424,14 +423,23 @@ pub(crate) async fn project_activity(
 	options: &GraphOptions,
 	nodes: &[GraphNode],
 	window_end: i64,
+	before: Option<i64>,
 	(source_node, node): (&str, &str),
-) -> Result<Vec<GraphActivity>> {
+) -> Result<(Vec<GraphActivity>, Option<i64>)> {
 	if nodes.is_empty() {
-		return Ok(vec![]);
+		return Ok((vec![], None));
 	}
 	if let Some(thread) = options.scope_thread {
 		let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
-		return scoped::activity(authority, options, nodes, end, (source_node, node), thread).await;
+		return scoped::activity(
+			authority,
+			options,
+			nodes,
+			(end, before),
+			(source_node, node),
+			thread,
+		)
+		.await;
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
 	let mut threads = Vec::new();
@@ -445,7 +453,7 @@ pub(crate) async fn project_activity(
 		}
 	}
 	if threads.is_empty() {
-		return Ok(vec![]);
+		return Ok((vec![], None));
 	}
 	let tenant = authority.tenant().to_owned();
 	let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
@@ -490,8 +498,7 @@ pub(crate) async fn project_activity(
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("message.%"))
 				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("thread.%")),
 		)
-		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
-		.limit(512);
+		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc);
 	if let Some(start) = start {
 		query.and_where(
 			Expr::col((Alias::new("e"), Alias::new("created_at"))).gte(Expr::value(start)),
@@ -499,44 +506,47 @@ pub(crate) async fn project_activity(
 	}
 
 	let mut markers = Vec::new();
-	let mut before = None;
+	let mut before = before;
 	let mut scanned = 0;
 	loop {
 		let mut page = query.clone();
 		if let Some(sequence) = before {
 			page.and_where(
-				Expr::col((Alias::new("e"), Alias::new("sequence")))
-					.lt(reinhardt::query::Expr::value(sequence)),
+				Expr::col((Alias::new("e"), Alias::new("sequence"))).lt(Expr::value(sequence)),
 			);
 		}
-		let sql = page.to_string(PostgresQueryBuilder);
-		let events = aidash_server::database::query_as::<Event>(&sql)
+		// Fetch one lookahead row so a full batch at the end has no continuation.
+		let size = (EVENT_SCAN_LIMIT - scanned).min(512);
+		let sql = page.limit(size as u64 + 1).to_string(PostgresQueryBuilder);
+		let mut events = aidash_server::database::query_as::<Event>(&sql)
 			.fetch_all(authority.connection())
-			.await?;
-		scanned += events.len();
-		let exhausted = events.len() < 512;
-		before = events.last().map(|event| event.sequence);
-		for event in events {
-			let Some(reference) = event_reference(&event, node) else {
-				continue;
-			};
-			if !visible.contains(reference.as_str()) || !authority.event_visible(&event).await? {
-				continue;
-			}
-			markers.push(GraphActivity {
-				kind: event.kind,
-				at: event.created_at,
-				reference,
-			});
-			if markers.len() == 80 {
+			.await?
+			.into_iter()
+			.peekable();
+		for _ in 0..size {
+			let Some(event) = events.next() else {
 				break;
+			};
+			scanned += 1;
+			before = Some(event.sequence);
+			if let Some(reference) = event_reference(&event, node)
+				&& visible.contains(reference.as_str())
+				&& authority.event_visible(&event).await?
+			{
+				markers.push(GraphActivity {
+					kind: event.kind,
+					at: event.created_at,
+					reference,
+				});
+			}
+			if markers.len() == ACTIVITY_PAGE || scanned == EVENT_SCAN_LIMIT {
+				return Ok((markers, before.filter(|_| events.peek().is_some())));
 			}
 		}
-		if markers.len() == 80 || exhausted || scanned >= ACTIVITY_SCAN_LIMIT {
-			break;
+		if events.peek().is_none() {
+			return Ok((markers, None));
 		}
 	}
-	Ok(markers)
 }
 
 pub(crate) async fn candidate_visible(

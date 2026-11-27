@@ -6,6 +6,8 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 fn snapshot() -> ThreadSnapshot {
 	ThreadSnapshot {
+		next_event_cursor: None,
+		partial: false,
 		thread: Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),

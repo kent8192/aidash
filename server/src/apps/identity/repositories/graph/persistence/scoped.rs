@@ -231,14 +231,14 @@ pub(super) async fn activity(
 	authority: &mut GraphAuthority<'_>,
 	options: &GraphOptions,
 	nodes: &[GraphNode],
-	window_end: DateTime<Utc>,
+	(window_end, before): (DateTime<Utc>, Option<i64>),
 	(source_node, node): (&str, &str),
 	thread: Uuid,
-) -> Result<Vec<GraphActivity>> {
+) -> Result<(Vec<GraphActivity>, Option<i64>)> {
 	let mut visible_nodes: Vec<&GraphNode> =
 		nodes.iter().filter(|node| node.kind == "run").collect();
 	if visible_nodes.is_empty() {
-		return Ok(vec![]);
+		return Ok((vec![], None));
 	}
 	{
 		let tenant = authority.tenant().to_owned();
@@ -278,7 +278,7 @@ pub(super) async fn activity(
 		}
 		visible_nodes = allowed;
 		if visible_nodes.is_empty() {
-			return Ok(vec![]);
+			return Ok((vec![], None));
 		}
 	}
 	let ids: Vec<&str> = visible_nodes
@@ -296,7 +296,12 @@ pub(super) async fn activity(
 			Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(window_end)),
 		)
 		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
-		.limit(80);
+		.limit(super::EVENT_SCAN_LIMIT as u64 + 1);
+	if let Some(sequence) = before {
+		query.and_where(
+			Expr::col((Alias::new("e"), Alias::new("sequence"))).lt(Expr::value(sequence)),
+		);
+	}
 	if options.hours > 0 {
 		query.and_where(
 			Expr::col((Alias::new("e"), Alias::new("created_at"))).gte(Expr::value(
@@ -308,21 +313,32 @@ pub(super) async fn activity(
 	let request = aidash_server::database::query_as::<Event>(&sql);
 	// These run nodes already passed admission binding and all current read gates.
 	// Do not re-enter local-thread authorization for their source-owned UUIDs.
-	let events = request.fetch_all(authority.connection()).await?;
-	Ok(events
+	let mut events = request
+		.fetch_all(authority.connection())
+		.await?
 		.into_iter()
-		.filter_map(|event| {
-			let reference = event_reference(&event, node)?;
-			visible_nodes
-				.iter()
-				.any(|node| node.id == reference)
-				.then_some(GraphActivity {
-					kind: event.kind,
-					at: event.created_at,
-					reference,
-				})
-		})
-		.collect())
+		.peekable();
+	let mut activity = Vec::new();
+	let mut cursor = None;
+	for _ in 0..super::EVENT_SCAN_LIMIT {
+		let Some(event) = events.next() else {
+			break;
+		};
+		cursor = Some(event.sequence);
+		if let Some(reference) = event_reference(&event, node)
+			&& visible_nodes.iter().any(|node| node.id == reference)
+		{
+			activity.push(GraphActivity {
+				kind: event.kind,
+				at: event.created_at,
+				reference,
+			});
+		}
+		if activity.len() == super::ACTIVITY_PAGE {
+			break;
+		}
+	}
+	Ok((activity, cursor.filter(|_| events.peek().is_some())))
 }
 
 use reinhardt::query::QueryStatementBuilder as _;

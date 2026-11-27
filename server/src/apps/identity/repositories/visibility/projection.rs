@@ -3,6 +3,7 @@ use super::Reads;
 use crate::Result as NativeResult;
 use aidash_application::{
 	Result,
+	authorization::projection::{EVENT_SCAN_LIMIT, EventRead},
 	ports::authorization::{projection::ThreadProjection, visibility::RunVerdicts},
 };
 use aidash_domain::{
@@ -283,7 +284,8 @@ impl ThreadProjection for Reads<'_> {
 pub(crate) async fn state_events(
 	reads: &mut Reads<'_>,
 	node: Option<&str>,
-) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
+	before: i64,
+) -> Result<EventRead> {
 	use aidash_application::ports::authorization::visibility::RowOutcome as _;
 	use aidash_domain::unconfirmed::{Kind, Tally};
 	use std::collections::HashMap;
@@ -301,11 +303,11 @@ pub(crate) async fn state_events(
 	let mut unconfirmed = Tally::new();
 	let mut checked = HashMap::new();
 	let mut runs = RunVerdicts::default();
-	let mut cursor = i64::MAX;
+	let mut cursor = before;
+	let mut partial = false;
 	let mut scanned = 0;
-	while scanned < aidash_application::authorization::projection::EVENT_SCAN_LIMIT {
-		let size =
-			(aidash_application::authorization::projection::EVENT_SCAN_LIMIT - scanned).min(100);
+	while scanned < EVENT_SCAN_LIMIT {
+		let size = (EVENT_SCAN_LIMIT - scanned).min(100);
 		let mut query = Query::select();
 		query
 			.column(ColumnRef::Asterisk)
@@ -314,9 +316,7 @@ pub(crate) async fn state_events(
 			.and_where(
 				Expr::col(Alias::new("kind")).not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
 			)
-			.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
-			.order_by(Alias::new("sequence"), Order::Desc)
-			.limit(size as u64);
+			.order_by(Alias::new("sequence"), Order::Desc);
 		if let Some(node) = node {
 			query.cond_where(
 				Condition::any()
@@ -324,11 +324,15 @@ pub(crate) async fn state_events(
 					.add(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned()))),
 			);
 		}
-		let rows: Vec<Event> =
-			aidash_server::database::query_as(&query.to_string(PostgresQueryBuilder))
-				.fetch_all(&mut **reads.access.tx)
-				.await
-				.map_err(aidash_application::Error::from)?;
+		let page = query
+			.clone()
+			.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
+			.limit(size as u64)
+			.to_string(PostgresQueryBuilder);
+		let rows: Vec<Event> = aidash_server::database::query_as(&page)
+			.fetch_all(&mut **reads.access.tx)
+			.await
+			.map_err(aidash_application::Error::from)?;
 		let exhausted = rows.len() < size;
 		scanned += rows.len();
 		reads
@@ -396,7 +400,8 @@ pub(crate) async fn state_events(
 				.await
 				.map_err(aidash_application::Error::from)?;
 		}
-		for row in rows {
+		let mut rows = rows.into_iter().peekable();
+		while let Some(row) = rows.next() {
 			cursor = row.sequence;
 			if let Some(id) = row.thread_id {
 				let allowed = if let Some(value) = checked.get(&id) {
@@ -428,13 +433,33 @@ pub(crate) async fn state_events(
 				result.push(row);
 			}
 			if result.len() == 100 {
+				partial = rows.peek().is_some();
 				break;
 			}
 		}
-		if exhausted || result.len() == 100 {
+		if exhausted {
+			break;
+		}
+		if result.len() == 100 || scanned == EVENT_SCAN_LIMIT {
+			if !partial {
+				let lookahead = query
+					.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
+					.limit(1)
+					.to_string(PostgresQueryBuilder);
+				partial = aidash_server::database::query_as::<Event>(&lookahead)
+					.fetch_optional(&mut **reads.access.tx)
+					.await
+					.map_err(aidash_application::Error::from)?
+					.is_some();
+			}
 			break;
 		}
 	}
 	result.reverse();
-	Ok((result, unconfirmed))
+	Ok(EventRead {
+		events: result,
+		cursor,
+		partial,
+		unconfirmed,
+	})
 }

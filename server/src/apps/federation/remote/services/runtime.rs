@@ -673,6 +673,8 @@ impl Home {
 				.await
 		} else {
 			let mut snapshot = ThreadSnapshot {
+				next_event_cursor: None,
+				partial: false,
 				thread: self.command("snapshot_thread", json!({})).await?,
 				tasks: self.snapshot_collection("tasks").await?,
 				artifacts: self.snapshot_collection("artifacts").await?,

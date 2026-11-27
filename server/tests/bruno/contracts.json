@@ -3558,6 +3558,14 @@
                 },
                 "type": "array"
               },
+              "activity_cursor": {
+                "type": ["string", "null"],
+                "default": null
+              },
+              "activity_more": {
+                "type": "boolean",
+                "default": false
+              },
               "checked_at": {
                 "format": "date-time",
                 "type": "string"
@@ -3599,6 +3607,8 @@
               "nodes",
               "edges",
               "activity",
+              "activity_cursor",
+              "activity_more",
               "unconfirmed",
               "next_cursor"
             ],
@@ -3754,6 +3764,14 @@
                 },
                 "type": "array"
               },
+              "activity_cursor": {
+                "type": ["string", "null"],
+                "default": null
+              },
+              "activity_more": {
+                "type": "boolean",
+                "default": false
+              },
               "checked_at": {
                 "format": "date-time",
                 "type": "string"
@@ -3795,6 +3813,8 @@
               "nodes",
               "edges",
               "activity",
+              "activity_cursor",
+              "activity_more",
               "unconfirmed",
               "next_cursor"
             ],
@@ -12636,7 +12656,7 @@
     "method": "GET",
     "name": "thread-get",
     "path": "/api/threads/{id}",
-    "query_parameters": [],
+    "query_parameters": ["events_before"],
     "responses": {
       "200": {
         "definitions": {
@@ -12951,11 +12971,20 @@
                 },
                 "type": "array"
               },
+              "partial": {
+                "type": "boolean",
+                "default": false
+              },
               "messages": {
                 "items": {
                   "$ref": "#/components/schemas/Message"
                 },
                 "type": "array"
+              },
+              "next_event_cursor": {
+                "type": ["string", "null"],
+                "default": null,
+                "description": "Exclusive sequence boundary for older events, when the page is partial."
               },
               "tasks": {
                 "items": {
@@ -12980,6 +13009,8 @@
               "tasks",
               "artifacts",
               "events",
+              "next_event_cursor",
+              "partial",
               "messages",
               "unconfirmed"
             ],
@@ -30650,7 +30681,7 @@
     "method": "GET",
     "name": "state",
     "path": "/api/state",
-    "query_parameters": ["node"],
+    "query_parameters": ["events_before", "node"],
     "responses": {
       "200": {
         "definitions": {
@@ -31781,6 +31812,9 @@
               "conversations": {
                 "type": ["string", "null"]
               },
+              "events": {
+                "type": ["string", "null"]
+              },
               "human_requests": {
                 "type": ["string", "null"]
               },
@@ -31800,7 +31834,8 @@
               "runs",
               "artifacts",
               "human_requests",
-              "conversations"
+              "conversations",
+              "events"
             ],
             "type": "object"
           },
@@ -32431,6 +32466,9 @@
                 },
                 "type": "array"
               },
+              "partial": {
+                "type": "boolean"
+              },
               "human_requests": {
                 "items": {
                   "$ref": "#/components/schemas/HumanRequest"
@@ -32462,16 +32500,16 @@
                 },
                 "type": "array"
               },
+              "threads": {
+                "items": {
+                  "$ref": "#/components/schemas/Thread"
+                },
+                "type": "array"
+              },
               "unconfirmed": {
                 "description": "Rows this read scanned and could not confirm because a Node did not\nanswer, for each Node, kind and Thread. `[]` when none.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
-                },
-                "type": "array"
-              },
-              "threads": {
-                "items": {
-                  "$ref": "#/components/schemas/Thread"
                 },
                 "type": "array"
               }
@@ -32487,6 +32525,7 @@
               "human_requests",
               "conversations",
               "events",
+              "partial",
               "artifacts",
               "unconfirmed",
               "next_cursors"
@@ -39052,13 +39091,20 @@
             "type": "string"
           },
           "EventPage": {
-            "description": "One read of the events, with the rows it could not confirm because a Node\ndid not answer (#770). The cursor to continue from is in a header.",
+            "description": "One read of the events, with the rows it could not confirm because a Node\ndid not answer (#770). The cursor also appears in the response header.",
             "properties": {
+              "cursor": {
+                "format": "int64",
+                "type": "integer"
+              },
               "events": {
                 "items": {
                   "$ref": "#/components/schemas/Event"
                 },
                 "type": "array"
+              },
+              "partial": {
+                "type": "boolean"
               },
               "unconfirmed": {
                 "items": {
@@ -39067,7 +39113,7 @@
                 "type": "array"
               }
             },
-            "required": ["events", "unconfirmed"],
+            "required": ["cursor", "partial", "events", "unconfirmed"],
             "type": "object"
           },
           "Unconfirmed": {
@@ -44024,7 +44070,7 @@
                 "type": "array"
               },
               "next_cursor": {
-                "description": "Resume scanning Home Grants, even if this page found no Home asks.",
+                "description": "Resume scanning Receiver Asks or Home Grants, even when this page found no asks.",
                 "type": ["string", "null"]
               }
             },

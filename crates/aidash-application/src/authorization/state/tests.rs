@@ -162,8 +162,17 @@ impl ThreadStateScope for Scope {
 	async fn conversation_candidates(&mut self, _: Option<&str>) -> Result<Vec<Conversation>> {
 		Ok(vec![])
 	}
-	async fn latest_visible_events(&mut self, _: Option<&str>) -> Result<(Vec<Event>, Tally)> {
-		Ok((vec![], Tally::new()))
+	async fn latest_visible_events(
+		&mut self,
+		_: Option<&str>,
+		before: i64,
+	) -> Result<crate::authorization::projection::EventRead> {
+		Ok(crate::authorization::projection::EventRead {
+			events: vec![],
+			cursor: before,
+			partial: false,
+			unconfirmed: Tally::new(),
+		})
 	}
 	async fn task_visible(&mut self, _: &Task) -> Result<bool> {
 		Ok(true)
@@ -226,7 +235,7 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_threads
 		tasks: vec![other, repeated, denied, task(1003)],
 		..Default::default()
 	};
-	let result = state(&mut scope, None).await.unwrap();
+	let result = state(&mut scope, None, None).await.unwrap();
 	assert_eq!(result.next_cursors.threads, Some(id(99).to_string()));
 	assert_eq!(result.next_cursors.tasks, None);
 	assert_eq!(
@@ -258,7 +267,7 @@ async fn pending_requests_of_an_older_run_remain_visible_and_share_its_decision(
 		deadline: Some(deadline),
 		..Default::default()
 	};
-	let output = state(&mut scope, None).await.unwrap();
+	let output = state(&mut scope, None, None).await.unwrap();
 	assert!(output.runs.is_empty());
 	assert_eq!(output.human_requests.len(), 2);
 	assert_eq!(output.human_requests[0].answer_by, Some(deadline));
@@ -277,7 +286,7 @@ async fn policy_failure_does_not_return_partial_state() {
 		..Default::default()
 	};
 	assert!(matches!(
-		state(&mut scope, None).await,
+		state(&mut scope, None, None).await,
 		Err(crate::Error::Forbidden)
 	));
 }
@@ -294,7 +303,7 @@ async fn hidden_task_candidates_still_advance_the_page() {
 			.collect(),
 		..Default::default()
 	};
-	let output = state(&mut scope, None).await.unwrap();
+	let output = state(&mut scope, None, None).await.unwrap();
 	assert!(output.tasks.is_empty());
 	assert_eq!(output.next_cursors.tasks, Some(id(50).to_string()));
 	assert_eq!(scope.calls, [id(99)]);
@@ -328,7 +337,7 @@ async fn malformed_visible_run_does_not_hide_its_neighbors_and_hidden_run_is_omi
 		runs: vec![malformed, hidden, run(3, true)],
 		..Default::default()
 	};
-	let output = state(&mut scope, None).await.unwrap();
+	let output = state(&mut scope, None, None).await.unwrap();
 	assert_eq!(
 		output.runs.iter().map(|row| row.id).collect::<Vec<_>>(),
 		[id(8), id(3)]
@@ -352,7 +361,7 @@ async fn requests_of_a_run_left_out_for_a_silent_node_are_counted_after_human_re
 		..Default::default()
 	};
 	// Act
-	let state = state(&mut scope, None).await.unwrap();
+	let state = state(&mut scope, None, None).await.unwrap();
 	// Assert: the surviving Run's request is returned, the other Run is counted,
 	// and only the request the reader may read is counted under the same Node.
 	assert_eq!(state.runs.len(), 1);
@@ -393,6 +402,6 @@ async fn a_state_with_nothing_left_out_has_an_empty_unconfirmed_list() {
 		humans: vec![human(5, true)],
 		..Default::default()
 	};
-	let state = state(&mut scope, None).await.unwrap();
+	let state = state(&mut scope, None, None).await.unwrap();
 	assert!(state.unconfirmed.is_empty());
 }

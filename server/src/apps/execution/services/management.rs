@@ -167,6 +167,7 @@ impl HarnessManagement {
 					crate::apps::federation::peer::services::identity::publication(&f).await?,
 					&f,
 					query.node.as_deref(),
+					query.events_before,
 				)
 				.await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
@@ -184,6 +185,7 @@ impl HarnessManagement {
 			human_requests: Vec::new(),
 			conversations: Vec::new(),
 			events: Vec::new(),
+			partial: false,
 			artifacts: Vec::new(),
 			unconfirmed: Vec::new(),
 			next_cursors: Default::default(),
@@ -408,15 +410,10 @@ impl HarnessManagement {
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		let (events, cursor, unconfirmed) =
-			scope.events_with_cursor(q.after, q.thread_id, 500).await?;
-		let mut response = crate::marketplace::events::response(
-			&scope.store,
-			&scope.identity,
-			events,
-			unconfirmed,
-		)
-		.await?;
+		let page = scope.events_with_cursor(q.after, q.thread_id, 500).await?;
+		let cursor = page.cursor;
+		let mut response =
+			crate::marketplace::events::response(&scope.store, &scope.identity, page).await?;
 		response
 			.headers
 			.insert("x-aidash-event-cursor", cursor.into());

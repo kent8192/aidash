@@ -99,12 +99,17 @@ impl CollaborationManagement {
 			)),
 		}
 	}
-	pub(crate) async fn thread_get(&self, actor: Actor, id: Uuid) -> Result<ThreadSnapshot> {
+	pub(crate) async fn thread_get(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		events_before: Option<i64>,
+	) -> Result<ThreadSnapshot> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		scope.snapshot(id).await
+		scope.snapshot_before(id, events_before).await
 	}
 	pub(crate) async fn thread_update(
 		&self,

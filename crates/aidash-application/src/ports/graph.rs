@@ -32,7 +32,8 @@ pub trait GraphProjectionScope: Send + super::authorization::visibility::RowOutc
 		options: &GraphOptions,
 		nodes: &[GraphNode],
 		window_end: i64,
-	) -> Result<Vec<GraphActivity>>;
+		before: Option<i64>,
+	) -> Result<(Vec<GraphActivity>, Option<i64>)>;
 }
 
 /// Candidate routing uses the current viewer's caller-owned authority scope.

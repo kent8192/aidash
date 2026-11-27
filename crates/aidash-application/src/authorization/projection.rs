@@ -10,7 +10,16 @@ use aidash_domain::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+/// Bound raw visibility work to 4096 candidates before returning a continuation.
 pub const EVENT_SCAN_LIMIT: usize = 4096;
+
+#[derive(Debug)]
+pub struct EventRead {
+	pub events: Vec<Event>,
+	pub cursor: i64,
+	pub partial: bool,
+	pub unconfirmed: Tally,
+}
 pub async fn task_page(
 	scope: &mut dyn ThreadProjection,
 	threads: &[Uuid],
@@ -52,17 +61,19 @@ pub async fn latest_visible_events(
 	threads: &[Uuid],
 	include_marketplace: bool,
 ) -> Result<Vec<Event>> {
-	latest_visible_events_counted(scope, threads, include_marketplace)
+	latest_visible_events_counted(scope, threads, include_marketplace, i64::MAX)
 		.await
-		.map(|(events, _)| events)
+		.map(|page| page.events)
 }
 /// The latest visible events and the events left out because a Node did not answer (#770).
 pub async fn latest_visible_events_counted(
 	scope: &mut dyn ThreadProjection,
 	threads: &[Uuid],
 	include_marketplace: bool,
-) -> Result<(Vec<Event>, Tally)> {
-	let mut cursor = i64::MAX;
+	before: i64,
+) -> Result<EventRead> {
+	let mut cursor = before;
+	let mut partial = false;
 	let mut result = vec![];
 	let mut unconfirmed = Tally::new();
 	let mut scanned = 0;
@@ -75,7 +86,8 @@ pub async fn latest_visible_events_counted(
 			.await?;
 		let exhausted = rows.len() < page_size;
 		scanned += rows.len();
-		for event in rows {
+		let mut rows = rows.into_iter().peekable();
+		while let Some(event) = rows.next() {
 			cursor = event.sequence;
 			scope.begin_row();
 			let visible = scope.event_visible(&event, &mut runs).await?;
@@ -84,15 +96,29 @@ pub async fn latest_visible_events_counted(
 				result.push(event);
 			}
 			if result.len() == 100 {
+				partial = rows.peek().is_some();
 				break;
 			}
 		}
-		if exhausted || result.len() == 100 {
+		if exhausted {
+			break;
+		}
+		if result.len() == 100 || scanned == EVENT_SCAN_LIMIT {
+			partial = partial
+				|| !scope
+					.event_rows(threads, include_marketplace, cursor, 1)
+					.await?
+					.is_empty();
 			break;
 		}
 	}
 	result.reverse();
-	Ok((result, unconfirmed))
+	Ok(EventRead {
+		events: result,
+		cursor,
+		partial,
+		unconfirmed,
+	})
 }
 pub async fn latest_visible_messages(
 	scope: &mut dyn ThreadProjection,
@@ -135,16 +161,19 @@ pub async fn latest_visible_messages_counted(
 pub async fn snapshot_untracked(
 	scope: &mut dyn ThreadProjection,
 	id: Uuid,
+	events_before: Option<i64>,
 ) -> Result<ThreadSnapshot> {
 	let thread = scope.thread(id).await?;
 	scope.require(&thread, "thread.read").await?;
 	let mut unconfirmed = Tally::new();
-	let events = if scope.decide(&thread, "thread.events").await? {
-		let (events, left_out) = latest_visible_events_counted(scope, &[id], false).await?;
-		unconfirmed.merge(left_out);
-		events
+	let (events, next_event_cursor) = if scope.decide(&thread, "thread.events").await? {
+		let page =
+			latest_visible_events_counted(scope, &[id], false, events_before.unwrap_or(i64::MAX))
+				.await?;
+		unconfirmed.merge(page.unconfirmed);
+		(page.events, page.partial.then(|| page.cursor.to_string()))
 	} else {
-		vec![]
+		(vec![], None)
 	};
 	let thread_row = scope.thread_row(id).await?;
 	let thread_tasks = scope.thread_tasks(id).await?;
@@ -157,6 +186,8 @@ pub async fn snapshot_untracked(
 		artifacts: thread_artifacts,
 		messages,
 		events,
+		partial: next_event_cursor.is_some(),
+		next_event_cursor,
 		unconfirmed: vec![],
 	};
 	let mut tasks = vec![];
@@ -195,8 +226,12 @@ pub async fn snapshot_untracked(
 	snapshot.unconfirmed = unconfirmed.into_entries();
 	Ok(snapshot)
 }
-pub async fn snapshot(scope: &mut dyn ThreadProjection, id: Uuid) -> Result<ThreadSnapshot> {
-	let snapshot = snapshot_untracked(scope, id).await?;
+pub async fn snapshot(
+	scope: &mut dyn ThreadProjection,
+	id: Uuid,
+	events_before: Option<i64>,
+) -> Result<ThreadSnapshot> {
+	let snapshot = snapshot_untracked(scope, id, events_before).await?;
 	scope.track(&snapshot).await?;
 	Ok(snapshot)
 }
@@ -225,7 +260,7 @@ async fn fitted<F>(
 where
 	F: FnMut(usize, &Value) -> Result<bool>,
 {
-	let mut snapshot = snapshot_untracked(scope, id).await?;
+	let mut snapshot = snapshot_untracked(scope, id, None).await?;
 	if let Some(run) = exclude_run {
 		aidash_domain::context::observation::without_run_events(&mut snapshot, run);
 	}
@@ -267,6 +302,8 @@ where
 	};
 	enrich(&mut output);
 	let dependencies = ThreadSnapshot {
+		next_event_cursor: None,
+		partial: false,
 		thread: snapshot.thread.clone(),
 		tasks: snapshot
 			.tasks
