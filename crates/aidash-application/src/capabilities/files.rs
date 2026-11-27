@@ -301,7 +301,7 @@ fn scratch_read(input: Value) -> Result<ScratchRead> {
 			None | Some("text") => {}
 			Some(_) => {
 				return Err(Error::Invalid(
-					"a Scratch Space file is read as text; save it to the Working Area for other representations".into(),
+					"Scratch Space paths support text reads. For metadata or model_input, save the file with file_save and call file_read with its file_id. For model_input, also pass its digest as expected_digest. Use file_search with scope=working and mode=path to find an already saved file.".into(),
 				));
 			}
 		}

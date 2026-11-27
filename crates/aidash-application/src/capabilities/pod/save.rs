@@ -296,9 +296,11 @@ impl<U: Send> Downloaded<U> {
 		}
 		let mut entries = kept;
 		let mut known_media = BTreeSet::new();
+		let mut saved_files = Vec::with_capacity(saved.len());
 		for (file, (upload, media)) in saved.iter().zip(self.uploads) {
 			let (file_id, saved_digest) = scope.publish_scratch_upload(upload).await?;
 			known_media.insert(file_id);
+			saved_files.push(json!({"path":file.path,"file_id":file_id,"digest":saved_digest}));
 			entries.push(MountedFile {
 				file_id,
 				path: file.path.clone(),
@@ -314,6 +316,7 @@ impl<U: Send> Downloaded<U> {
 		let result = json!({
 			"area_id":area.id, "revision":area.revision,
 			"saved":saved.iter().map(|file| &file.path).collect::<Vec<_>>(),
+			"files":saved_files,
 			"unchanged":unchanged.len(), "removed":removed, "skipped_symlinks":self.skipped,
 		});
 		scope

@@ -244,6 +244,7 @@ fn agent_specification(
 	{
 		spec.description = description.into();
 	}
+	aidash_domain::tool::contract::describe_scratch_paths(&binding.identity, &mut spec);
 	spec
 }
 

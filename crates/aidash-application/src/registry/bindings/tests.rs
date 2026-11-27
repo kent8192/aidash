@@ -200,6 +200,75 @@ async fn configurator_pins_offered_sandbox_tools_and_their_lifecycle() {
 		}
 	}
 }
+
+#[tokio::test]
+async fn configurator_tool_specs_explain_scratch_paths_and_saved_images() {
+	use crate::registry::system::configurator::{self, SANDBOX};
+	let [guide, agent] = configurator::definitions(NODE).unwrap();
+	let mut catalog = Catalog::new();
+	catalog.insert(guide);
+	for name in SANDBOX.iter().copied().chain([
+		"shell_poll",
+		"shell_cancel",
+		"python_poll",
+		"python_cancel",
+	]) {
+		catalog.core(name);
+	}
+	for name in ["shell", "code_interpreter"] {
+		let id = QualifiedRef::builtin(NODE, name);
+		catalog.entries.get_mut(&id).unwrap().schema = json!({
+			"type": "object",
+			"properties": {"timeout_seconds": {"description": "Changes under /work are saved."}},
+		});
+	}
+	let root = QualifiedRef {
+		registry_deployment: NODE.into(),
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	};
+	let snapshot = resolve(&mut catalog, &providers(), root, &agent, false)
+		.await
+		.unwrap();
+	let specs = execution::bound_specifications(&snapshot, |binding, descriptor| {
+		Ok(ToolSpec {
+			name: descriptor.operation,
+			description: String::new(),
+			parameters: binding.definition.schema.clone(),
+		})
+	})
+	.unwrap();
+	for name in ["shell", "code_interpreter"] {
+		let spec = &specs[name];
+		assert!(
+			spec.description
+				.contains("initial working directory is /scratch")
+		);
+		assert!(
+			spec.description
+				.contains("/work is another mount of the same Scratch Space")
+		);
+		assert!(spec.description.contains("file_save"));
+		let timeout = spec.parameters["properties"]["timeout_seconds"]["description"]
+			.as_str()
+			.unwrap();
+		assert!(timeout.contains("Time limit"));
+		assert!(!timeout.contains("saved"));
+	}
+	let save = &specs["file_save"].description;
+	assert!(save.contains("paths relative to the Scratch Space root"));
+	for term in [
+		"file_read",
+		"file_id",
+		"expected_digest",
+		"representation=model_input",
+	] {
+		assert!(save.contains(term), "{term}: {save}");
+	}
+	for name in ["file_read", "file_search"] {
+		assert!(specs[name].description.contains("relative to /scratch"));
+	}
+}
 fn agent_config() -> AgentBindings {
 	serde_json::from_value(
 		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test"}),

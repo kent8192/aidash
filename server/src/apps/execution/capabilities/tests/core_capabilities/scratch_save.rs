@@ -37,7 +37,7 @@ fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter>
 				async move {
 					let (reason, message) = if first {
 						let arguments = json!({
-							"paths":["hello.txt"],"expected_revision":1,"idempotency_key":key,
+							"paths":["preview.png"],"expected_revision":1,"idempotency_key":key,
 						});
 						(
 							"tool_calls",
@@ -60,10 +60,10 @@ fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter>
 			},
 		)
 		.post("/v2/files/manifest", |_| async {
-			let digest = aidash_server::capabilities::objects::digest(b"hello");
+			let digest = aidash_server::capabilities::objects::digest(b"\x89PNG\r\n\x1a\npreview");
 			Ok(reinhardt::Response::ok()
 				.with_json(
-					&json!({"files":[{"path":"hello.txt","size":5,"sha256":digest}],
+					&json!({"files":[{"path":"preview.png","size":15,"sha256":digest}],
 					"skipped_symlinks":[],"truncated":false}),
 				)
 				.unwrap())
@@ -74,7 +74,9 @@ fn scratch_runner(streaming_save: StreamingSave) -> Arc<reinhardt::ServerRouter>
 				entered.notify_one();
 				release.notified().await;
 				Ok(reinhardt::Response::ok()
-					.with_json(&json!({"data":"aGVsbG8=","size":5,"next_offset":5,"eof":true}))
+					.with_json(
+						&json!({"data":"iVBORw0KGgpwcmV2aWV3","size":15,"next_offset":15,"eof":true}),
+					)
 					.unwrap())
 			}
 		})
@@ -325,11 +327,43 @@ async fn scratch_save_releases_authority_while_streaming(
 		assert_eq!(area["manifest"], json!([]));
 	} else {
 		assert_eq!(area["revision"], 2);
-		assert_eq!(area["manifest"][0]["path"], "hello.txt");
+		let image = &area["manifest"][0];
+		assert_eq!(image["path"], "preview.png");
+		assert_eq!(image["media_type"], "image/png");
 		assert_eq!(
-			area["manifest"][0]["digest"],
-			aidash_server::capabilities::objects::digest(b"hello")
+			image["digest"],
+			aidash_server::capabilities::objects::digest(b"\x89PNG\r\n\x1a\npreview")
 		);
+		let receipt = current
+			.context
+			.events()
+			.find_map(|event| match event {
+				aidash_server::context::ContextEvent::Tool { call, result }
+					if call.name == "file_save" =>
+				{
+					Some(result)
+				}
+				_ => None,
+			})
+			.expect("file_save receipt");
+		assert_eq!(receipt["saved"], json!(["preview.png"]));
+		assert_eq!(
+			receipt["files"],
+			json!([{
+				"path": "preview.png", "file_id": image["file_id"], "digest": image["digest"],
+			}])
+		);
+		let (status, result) = request(
+			&c.app,
+			&c.token,
+			"POST",
+			&format!("/api/executions/{}/files/search", run.id),
+			json!({"query":"preview.png","mode":"path","scope":"working"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+		assert_eq!(result["matches"][0]["file_id"], image["file_id"]);
+		assert_eq!(result["matches"][0]["digest"], image["digest"]);
 	}
 	c.close().await;
 }
