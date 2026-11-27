@@ -253,11 +253,13 @@ impl Bounded {
 		Box::pin(
 			futures_util::stream::once(async move {
 				let permit = self.admit().await?;
-				Ok(bounded_stream(self.deadline, stream).map(move |result| {
-					// The stream owns admission until terminated or dropped.
-					let _permit = &permit;
-					result.map_err(|error| named_acquire_error(self.name, self.size, error))
-				}))
+				Ok::<_, reinhardt::core::exception::Error>(
+					bounded_stream(self.deadline, stream).map(move |result| {
+						// The stream owns admission until terminated or dropped.
+						let _permit = &permit;
+						result.map_err(|error| named_acquire_error(self.name, self.size, error))
+					}),
+				)
 			})
 			.try_flatten(),
 		)

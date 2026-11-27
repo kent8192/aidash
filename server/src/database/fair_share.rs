@@ -99,7 +99,7 @@ impl FairShare {
 		}
 	}
 
-	async fn wait(self: &Arc<Self>, waiter: &Waiter) -> Permit {
+	async fn wait(self: &Arc<Self>, waiter: &Waiter<'_>) -> Permit {
 		loop {
 			let changed = self.changed.notified();
 			tokio::pin!(changed);
