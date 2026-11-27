@@ -125,7 +125,7 @@ pub async fn search(
 			ignore_files: aidash_domain::capabilities::files::default_ignore_files(),
 			exclude: vec![],
 			include: vec![],
-			max_files: 10_000,
+			max_files: Some(10_000),
 			missing_ok: false,
 		};
 		let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
@@ -150,9 +150,14 @@ pub async fn search(
 	};
 	let found = in_pod!(context, context.runtime.file_search(&request))?;
 	let (page, cut) = within_bytes(
-		found.matches.iter().map(
-			|item| json!({"path": item.path, "location": {"line": item.line}, "snippet": item.text}),
-		),
+		found.matches.iter().map(|item| {
+			let mut result =
+				json!({"path": item.path, "location": {"line": item.line}, "snippet": item.text});
+			if item.truncated {
+				result["truncated"] = json!(true);
+			}
+			result
+		}),
 		max_bytes,
 	);
 	Ok(json!({"matches": page, "truncated": cut || found.truncated}))

@@ -4,7 +4,6 @@
  * Rust `AgentPluginRef`. Fields the server fills in when absent are optional
  * here, because a definition registered through the API may omit them.
  */
-export const MAX_AGENT_PLUGINS = 8;
 
 const BARE_COMMANDS = ["node", "npm", "npx", "python3", "uv", "uvx"] as const;
 export type BareCommand = (typeof BARE_COMMANDS)[number];
@@ -265,23 +264,11 @@ function attached(config: Config): unknown[] {
 const nameOf = (plugin: unknown) =>
   isRecord(plugin) && isString(plugin.name) ? plugin.name : null;
 
-export function canAttach(config: Config, name: string): boolean {
-  const current = attached(config);
-  return (
-    current.length < MAX_AGENT_PLUGINS ||
-    current.some((plugin) => nameOf(plugin) === name)
-  );
-}
-
 /**
  * `config` with `reference` attached. A plugin of the same name is replaced in
  * place, because the order of plugins is the order of their Skills.
  */
 export function withPlugin(config: Config, reference: AgentPluginRef): Config {
-  if (!canAttach(config, reference.name))
-    throw new RangeError(
-      `an Agent takes in at most ${MAX_AGENT_PLUGINS} plugins`,
-    );
   const current = attached(config);
   const at = current.findIndex((plugin) => nameOf(plugin) === reference.name);
   return {

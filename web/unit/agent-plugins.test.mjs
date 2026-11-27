@@ -1,9 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  MAX_AGENT_PLUGINS,
   agentPlugins,
-  canAttach,
   describeComponent,
   describeServer,
   hasPluginSkills,
@@ -245,23 +243,16 @@ test("attaching a plugin of the same name replaces it in place", () => {
   ]);
 });
 
-test("an Agent takes in at most eight plugins", () => {
-  const names = Array.from(
-    { length: MAX_AGENT_PLUGINS },
-    (_, index) => `plugin-${index}`,
+test("a ninth plugin can be attached and replacing one keeps its position", () => {
+  const plugins = Array.from({ length: 9 }, (_, index) =>
+    plugin(`plugin-${index}`),
   );
-  const full = names.reduce(
-    (config, name) => withPlugin(config, plugin(name)),
-    {},
-  );
-  assert.equal(full.agent_plugins.length, MAX_AGENT_PLUGINS);
-  assert.equal(canAttach(full, "plugin-9"), false);
-  assert.throws(() => withPlugin(full, plugin("plugin-9")), RangeError);
-  assert.equal(canAttach(full, "plugin-3"), true);
-  assert.equal(
-    withPlugin(full, plugin("plugin-3", { version: "3.0.0" })).agent_plugins
-      .length,
-    MAX_AGENT_PLUGINS,
+  const config = plugins.reduce(withPlugin, {});
+  assert.deepEqual(config.agent_plugins, plugins);
+  const updated = plugin("plugin-3", { version: "3.0.0" });
+  assert.deepEqual(
+    withPlugin(config, updated).agent_plugins,
+    plugins.with(3, updated),
   );
 });
 

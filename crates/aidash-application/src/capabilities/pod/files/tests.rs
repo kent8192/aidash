@@ -65,6 +65,7 @@ async fn a_line_search_is_bounded_and_keeps_the_runners_matches() {
 			path: "src/main.rs".into(),
 			line: 3,
 			text: "fn main() {}".into(),
+			truncated: true,
 		}],
 		truncated: true,
 	});
@@ -89,6 +90,7 @@ async fn a_line_search_is_bounded_and_keeps_the_runners_matches() {
 	assert_eq!(request.path.as_deref(), Some("src"));
 	assert_eq!(result["matches"][0]["path"], "src/main.rs");
 	assert_eq!(result["matches"][0]["location"]["line"], 3);
+	assert_eq!(result["matches"][0]["truncated"], true);
 	assert_eq!(result["truncated"], true);
 }
 
@@ -102,6 +104,7 @@ async fn line_matches_stop_before_the_deployments_byte_ceiling() {
 					path: "big.txt".into(),
 					line,
 					text: "x".repeat(2000),
+					truncated: false,
 				},
 			)
 			.collect(),

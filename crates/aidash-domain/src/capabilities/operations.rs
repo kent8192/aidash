@@ -125,8 +125,6 @@ pub fn request_validation_failure(
 /// a hard-link alias, a quota or an unsafe name. Nothing is published, so the
 /// Area keeps its previous revision and only this operation fails.
 pub const WORKING_EXPORT_REFUSED: &str = "WORKING_EXPORT_REFUSED";
-/// Most entries one Working Area manifest holds, mounted inputs included.
-pub const MAX_AREA_FILES: usize = 4096;
 impl MountedFile {
 	/// A Reference file stays in the manifest for the file tools, but no Pod
 	/// receives it and it uses none of the Working Area's capacity.
@@ -134,7 +132,7 @@ impl MountedFile {
 		matches!(self.scope, FileScope::References) && self.provenance["kind"] == "reference"
 	}
 }
-/// The files that count against a Working Area's file and byte limits.
+/// The files that count against a Working Area's byte limit.
 pub fn counted_files(files: &[MountedFile]) -> impl Iterator<Item = &MountedFile> {
 	files.iter().filter(|file| !file.is_reference_file())
 }

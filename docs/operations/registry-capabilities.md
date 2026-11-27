@@ -379,7 +379,7 @@ unknown top-level field is ignored. The response reports every component as
 accepted, skipped or ignored with its reason.
 
 The copy is stored in the Tenant under its tree digest and never changes. The
-Agent definition holds up to 8 references in `agent_plugins`, each equal to the
+Agent definition holds references in `agent_plugins`, each equal to the
 stored copy. Registering the Agent compares the reference with the copy
 (`AGENT_PLUGIN_MISSING`, `AGENT_PLUGIN_CHANGED`), so changing a plugin needs a
 new Agent version.

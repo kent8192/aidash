@@ -106,24 +106,21 @@ fn a_selection_over_the_byte_limit_is_refused_whole_naming_the_first_path_over_i
 }
 
 #[test]
-fn a_selection_over_the_file_limit_is_refused_naming_the_first_path_over_it() {
-	let existing = (0..MAX_AREA_FILES)
+fn saving_can_exceed_four_thousand_files_within_the_byte_quota() {
+	let existing = (0..4096)
 		.map(|n| registered(&format!("f{n}"), "d", 0))
 		.collect();
-	let error = plan(
+	let plan = plan(
 		existing,
-		BTreeMap::from([found("new.txt", "n", 0)]),
+		BTreeMap::from([found("new.txt", "n", 1)]),
 		&["new.txt".into()],
 		false,
-		u64::MAX,
+		1,
 		0,
 	)
-	.unwrap_err();
-	let Error::Conflict(message) = error else {
-		panic!("expected a refusal");
-	};
-	assert!(message.contains("new.txt"));
-	assert!(message.contains(&MAX_AREA_FILES.to_string()));
+	.unwrap();
+	assert_eq!(plan.kept.len(), 4096);
+	assert_eq!(plan.saved[0].path, "new.txt");
 }
 
 #[test]

@@ -810,7 +810,6 @@
   "agentPluginAdd": "Add to Agent",
   "agentPluginReplace": "Replace plugin in Agent",
   "agentPluginRemove": "Remove plugin",
-  "agentPluginLimit": "An Agent takes in at most 8 plugins.",
   "agentPluginAttached": "Plugins in this Agent",
   "agentPluginLicense": "License",
   "agentPluginSource": "Source",

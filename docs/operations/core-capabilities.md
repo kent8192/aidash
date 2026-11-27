@@ -613,6 +613,9 @@ If retained storage fills after an operation executes, its poll result exposes
 retained. Restore capacity to reconcile that same operation ID; submitting the
 operation again does not reinstall packages or repeat code.
 
+Scratch `file_save` checks the Working Area's byte quota. Line searches show
+`truncated: true` on a match when the line exceeds the 2,000-character snippet limit.
+
 ### Working Area export restrictions
 
 After each shell command or Python cell, the runner exports `/work` as the next

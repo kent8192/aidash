@@ -1,8 +1,7 @@
 use super::*;
 use crate::agent_plugin::stdio_session::{
-	DATA_INVALID_PATH, DATA_TOO_LARGE, DATA_TOO_MANY_FILES, DEPENDENCIES_NOT_PINNED,
-	MAX_PLUGIN_DATA_BYTES, MAX_PLUGIN_DATA_FILES, check_data, launch, pack_data, plugin_data,
-	plugin_root, unpack_data,
+	DATA_INCOMPLETE, DATA_INVALID_PATH, DATA_TOO_LARGE, DEPENDENCIES_NOT_PINNED,
+	MAX_PLUGIN_DATA_BYTES, check_data, launch, pack_data, plugin_data, plugin_root, unpack_data,
 };
 use rstest::rstest;
 use std::collections::BTreeMap;
@@ -102,7 +101,7 @@ fn a_digest_names_a_single_directory() {
 #[case::empty(vec![], false, Ok(()))]
 #[case::fits(vec![("notes/a.txt", 10), ("b", MAX_PLUGIN_DATA_BYTES - 10)], false, Ok(()))]
 #[case::over_the_cap(vec![("a", MAX_PLUGIN_DATA_BYTES), ("b", 1)], false, Err(DATA_TOO_LARGE))]
-#[case::truncated_listing(vec![("a", 1)], true, Err(DATA_TOO_MANY_FILES))]
+#[case::truncated_listing(vec![("a", 1)], true, Err(DATA_INCOMPLETE))]
 #[case::absolute(vec![("/etc/passwd", 1)], false, Err(DATA_INVALID_PATH))]
 #[case::climbing(vec![("a/../../b", 1)], false, Err(DATA_INVALID_PATH))]
 #[case::dot(vec![("./a", 1)], false, Err(DATA_INVALID_PATH))]
@@ -115,12 +114,12 @@ fn saved_data_must_fit_the_cap_and_hold_plain_relative_paths(
 }
 
 #[test]
-fn saved_data_holds_a_bounded_number_of_files() {
-	let names: Vec<String> = (0..=MAX_PLUGIN_DATA_FILES).map(|n| n.to_string()).collect();
+fn saved_data_can_hold_more_than_four_thousand_empty_files() {
+	let names: Vec<String> = (0..=4096).map(|n| n.to_string()).collect();
 
 	let checked = check_data(names.iter().map(|name| (name.as_str(), 0)), false);
 
-	assert_eq!(checked, Err(DATA_TOO_MANY_FILES));
+	assert_eq!(checked, Ok(()));
 }
 
 #[test]

@@ -275,6 +275,8 @@ pub struct FileMatch {
 	pub path: String,
 	pub line: u64,
 	pub text: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub truncated: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileSearchResult {
@@ -316,7 +318,9 @@ pub struct FileManifestRequest {
 	pub ignore_files: Vec<String>,
 	pub exclude: Vec<String>,
 	pub include: Vec<String>,
-	pub max_files: u32,
+	/// Search asks for a bounded listing; saves need the complete inventory.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_files: Option<u32>,
 	/// A `root` that does not exist lists no files instead of failing, so a
 	/// sync save can select a deleted path.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
