@@ -27,6 +27,26 @@ docker build --target frontend -t your-registry/aidash-frontend:0.1.0 .
 docker push your-registry/aidash-frontend:0.1.0
 ```
 
+### Build without network access to crate sources
+
+The Rust stage downloads every crate from crates.io and from the pinned Git
+sources. Where the build host reaches them slowly or not at all, fetch the crates
+once on a host that does and pass them to the build as the `cargo-vendor` build
+context. Cargo then builds with `--offline` and reads only that directory.
+
+```sh
+mkdir -p target/cargo-vendor
+cargo vendor --locked --versioned-dirs target/cargo-vendor > target/cargo-vendor/config.toml
+docker build --build-context cargo-vendor=target/cargo-vendor -t your-registry/aidash:0.1.0 .
+```
+
+`config.toml` is the source configuration `cargo vendor` prints. The build
+replaces the directory it names with the mounted one, so the context may be
+created anywhere. Vendor again whenever `Cargo.lock` changes: an offline build
+fails on a crate the directory lacks. A build without the context is unchanged.
+The image's toolchain and the dashboard's npm packages still come from the
+network.
+
 Provision a namespace and an existing Secret for each node. The Secret supplies
 `DATABASE_URL`, `NATS_URL`, `AIDASH_API_TOKEN`, and each required `AIDASH_SECRET_*`
 variable. Mount each node's Deployment Key file where `deployment.key.file` points. Model
