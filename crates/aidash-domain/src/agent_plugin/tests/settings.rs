@@ -410,7 +410,7 @@ fn only_a_remote_server_authenticates_with_a_secret(#[case] server: &str, #[case
 		},
 	);
 
-	assert!(accepted(settings, false));
+	assert_eq!(accepted(settings, false), ok);
 }
 
 #[rstest]
