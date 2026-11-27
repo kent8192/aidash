@@ -18,7 +18,10 @@ export async function readApprovalRequests(
   while (offset !== null) {
     const page = await read(offset);
     requests.push(...page.requests);
-    offset = page.next_offset ?? null;
+    const next = page.next_offset ?? null;
+    if (next !== null && (!Number.isSafeInteger(next) || next <= offset))
+      throw new Error("Approval request pagination did not advance");
+    offset = next;
   }
   return { requests };
 }

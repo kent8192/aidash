@@ -414,6 +414,12 @@ The Execution Pod receives the command as an argument. Its 64 KiB input
 ceiling leaves room for shell wrapping within Linux's `MAX_ARG_STRLEN` of
 128 KiB on 4 KiB pages.
 
+## Activity polling
+
+Every successful `GET /api/events` response returns a `cursor`. Use it as
+the next `after` value even when the page is empty or `partial` is false.
+When `partial` is true, another page is available immediately.
+
 ## Initial ceilings
 
 | Resource                               | Default                                                        |
@@ -427,7 +433,6 @@ ceiling leaves room for shell wrapping within Linux's `MAX_ARG_STRLEN` of
 | Inline read / search page              | 16 KiB / 50 matches                                            |
 | Command / patch input                  | 64 KiB / 256 KiB                                               |
 | Search response / duration             | 32 KiB / 5 seconds                                             |
-| Direct Skill package                   | 64 files / 256,000 bytes (Deployment profile)                  |
 | Captured operation / broker output     | 8 MiB, with bounded continuation                               |
 | Run permission grant                   | At most 1 hour and no later than Run termination               |
 | Pending approval / uncommitted staging | 24 hours                                                       |
@@ -441,7 +446,8 @@ The profile can lower applicable ceilings. Agent input cannot raise them. Disk
 and process enforcement is probed rather than inferred from manifest settings.
 Content budgets live in the same profile's `limits` object. Omitted keys retain
 their defaults; unknown keys, zero values and values above the supported wire
-ceilings are rejected. For example, this fragment lowers content budgets while
+ceilings are rejected. Legacy `skill_files` and `skill_bytes` keys are accepted
+and ignored. For example, this fragment lowers content budgets while
 keeping the deployment's existing runner, storage and resource settings:
 
 ```json
@@ -453,8 +459,6 @@ keeping the deployment's existing runner, storage and resource settings:
     "search_bytes": 16384,
     "search_seconds": 3,
     "read_bytes": 8192,
-    "skill_files": 32,
-    "skill_bytes": 128000,
     "reference_files": 4,
     "reference_bytes": 5242880,
     "reference_pages": 100,
@@ -628,8 +632,10 @@ If retained storage fills after an operation executes, its poll result exposes
 retained. Restore capacity to reconcile that same operation ID; submitting the
 operation again does not reinstall packages or repeat code.
 
-Scratch `file_save` checks the Working Area's byte quota. Line searches show
-`truncated: true` on a match when the line exceeds the 2,000-character snippet limit.
+Scratch `file_save` checks the Working Area's byte quota. An incomplete Runner
+manifest refuses the whole save with `save_manifest_incomplete`. Line searches
+show `truncated: true` on a match when the line exceeds the 2,000-character
+snippet limit.
 
 ### Working Area export restrictions
 
@@ -639,8 +645,6 @@ refuses to export:
 
 - a symbolic link, such as the `node_modules/.bin` links npm writes;
 - a hard-link alias, such as the files pnpm links from its store;
-- more than 4096 files in the Working Area manifest, not counting Reference
-  files;
 - more bytes than the configured Working Area quota leaves writable;
 - a directory or file whose name is not a printable relative path, or a special
   file.

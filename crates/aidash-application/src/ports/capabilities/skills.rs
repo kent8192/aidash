@@ -8,13 +8,8 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
-pub struct Limits {
-	pub files: usize,
-	pub bytes: usize,
-}
 #[async_trait]
 pub trait SkillScope: FileScopePort {
-	fn skill_limits(&self) -> Result<Limits>;
 	async fn read_skill_file(&mut self, file: &MountedFile) -> Result<Vec<u8>>;
 	async fn put_skill(&mut self, area: Uuid, bytes: &[u8]) -> Result<(Uuid, String)>;
 	async fn skill_record(&mut self, run: Uuid) -> Result<Record>;

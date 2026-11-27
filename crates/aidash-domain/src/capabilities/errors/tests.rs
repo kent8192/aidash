@@ -148,3 +148,11 @@ fn a_refusal_past_the_limit_reads_as_two_sentences(#[case] message: &str) {
 		"nothing was saved. The command had also reached its 5 s time limit."
 	);
 }
+
+#[test]
+fn an_incomplete_save_manifest_has_its_own_non_retryable_code() {
+	let error =
+		CapabilityError::message(409, "save_manifest_incomplete: incomplete manifest for src");
+	assert_eq!(error.code, "save_manifest_incomplete");
+	assert!(!error.retryable);
+}

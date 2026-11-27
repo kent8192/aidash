@@ -70,6 +70,51 @@ async fn thread(c: &CoreFixture) -> Uuid {
 
 #[rstest::rstest]
 #[tokio::test]
+async fn catch_up_writes_one_mark_at_the_first_missed_grid_tick(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let duty = register(&c, thread(&c).await, definition("Catch-up digest", 3600)).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let anchor: chrono::DateTime<Utc> = "2026-11-27T00:00:00Z".parse().unwrap();
+	let due = anchor + Span::seconds(1);
+	sqlx::query(
+		"UPDATE duties SET anchor = $1, next_scheduled_at = $2, next_fire_at = $2 WHERE id = $3",
+	)
+	.bind(anchor)
+	.bind(due)
+	.bind(id)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+
+	let latest = anchor + Span::hours(3);
+	let now = latest + Span::seconds(10);
+	assert_eq!(pass(&c.f, now).await.unwrap().started.len(), 1);
+	assert!(pass(&c.f, now).await.unwrap().started.is_empty());
+
+	let recorded: Vec<(chrono::DateTime<Utc>, String, Option<String>, Option<Uuid>)> =
+		sqlx::query_as("SELECT scheduled_at, status, reason, task_id FROM duty_ticks WHERE duty_id = $1 ORDER BY scheduled_at")
+			.bind(id)
+			.fetch_all(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(recorded.len(), 2);
+	assert_eq!(
+		recorded[0],
+		(
+			anchor + Span::hours(1),
+			"skipped".into(),
+			Some("catch_up: 2 skipped ticks".into()),
+			None
+		)
+	);
+	assert_eq!((recorded[1].0, recorded[1].1.as_str()), (latest, "started"));
+	assert!(recorded[1].3.is_some());
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 	#[future] capability_fixture: CoreFixture,
 ) {

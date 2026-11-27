@@ -19,6 +19,8 @@ fn bounded(value: &str) -> String {
 pub const BACKGROUND_LIMIT_PREFIX: &str =
 	"BACKGROUND_TIME_LIMIT_EXCEEDED: the Background time limit ceiling is ";
 
+pub const SAVE_MANIFEST_INCOMPLETE: &str = "save_manifest_incomplete";
+
 const REVISION_PREFIX: &str = "AREA_REVISION_CHANGED: the working area is at revision ";
 /// Refusal text for a stale `expected_revision`; it carries the revision the
 /// model must send next so it can recover without guessing.
@@ -32,6 +34,9 @@ fn current_revision(message: &str) -> Option<i64> {
 /// The code a message opens with, as in `AREA_BUSY: a command is running`.
 fn leading_code(message: &str) -> Option<&str> {
 	let prefix = message.split([':', ' ']).next().unwrap_or_default();
+	if prefix == SAVE_MANIFEST_INCOMPLETE {
+		return Some(prefix);
+	}
 	(!prefix.is_empty()
 		&& prefix
 			.bytes()

@@ -10,7 +10,7 @@ use crate::apps::execution::capabilities::{
 use crate::{Result as NativeResult, store::Store};
 use aidash_application::{
 	Error, Result,
-	ports::capabilities::skills::{Limits, SkillHeadroom, SkillScope},
+	ports::capabilities::skills::{SkillHeadroom, SkillScope},
 };
 use aidash_domain::{
 	RunMetadata,
@@ -37,13 +37,6 @@ impl From<NativePinned> for Pinned {
 }
 #[async_trait]
 impl SkillScope for Scope<'_> {
-	fn skill_limits(&self) -> Result<Limits> {
-		let l = &self.store.ok_or_else(missing)?.capabilities.0.limits;
-		Ok(Limits {
-			files: l.skill_files,
-			bytes: l.skill_bytes,
-		})
-	}
 	async fn read_skill_file(&mut self, file: &MountedFile) -> Result<Vec<u8>> {
 		self.store
 			.ok_or_else(missing)?

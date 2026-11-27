@@ -4,6 +4,7 @@ import {
   continuation,
   emptyPages,
   landPage,
+  mergeEventWindow,
   mergeWindow,
   olderRows,
   rereadPages,
@@ -186,4 +187,18 @@ test("a show-more page lands only on the pages it continued", () => {
   assert.equal(landPage(moved, "node-a", 1, "w7", page).items, moved.items);
   // Another Node's pages are left alone.
   assert.equal(landPage(pages, "node-b", 1, "w7", page), pages);
+});
+
+test("a fresh event wins overlaps and older pages precede it by sequence", () => {
+  const fresh = [{ id: "new", sequence: 8, kind: "fresh" }];
+  const older = [
+    { id: "new", sequence: 8, kind: "stale" },
+    { id: "oldest", sequence: 2, kind: "older" },
+    { id: "middle", sequence: 5, kind: "older" },
+  ];
+  assert.deepEqual(mergeEventWindow(fresh, older), [
+    older[1],
+    older[2],
+    fresh[0],
+  ]);
 });

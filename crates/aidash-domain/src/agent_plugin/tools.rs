@@ -3,7 +3,7 @@
 use super::{
 	AgentPluginRef, Component, Finding, McpServer, Outcome, PluginName, PluginSettings, Reason,
 	ServerName, ServerSettings, model_alias,
-	settings::{MAX_SERVER_TOOLS, MAX_TOOL_NAME, valid_tool_name},
+	settings::{MAX_TOOL_NAME, valid_tool_name},
 };
 use crate::exposure::BindingExposure;
 use schemars::JsonSchema;
@@ -11,9 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const MAX_RUN_TOOLS: usize = 128;
-pub const MAX_SCHEMA_BYTES: usize = 16_384;
-pub const MAX_DESCRIPTION_BYTES: usize = 8_192;
 /// The cause of a stdio server no session listed: no Execution Pod, or no host for stdio sessions.
 pub const STDIO_UNAVAILABLE: &str = "stdio_session_unavailable";
 
@@ -158,21 +155,9 @@ pub fn pin(
 	listed: &BTreeMap<(PluginName, ServerName), Listing>,
 	taken: &BTreeSet<String>,
 ) -> PluginTools {
-	pin_additional(plugins, settings, listed, taken, 0)
-}
-
-/// Apply the same admission rules while retaining tools already pinned by a Run.
-pub fn pin_additional(
-	plugins: &[AgentPluginRef],
-	settings: &PluginSettings,
-	listed: &BTreeMap<(PluginName, ServerName), Listing>,
-	taken: &BTreeSet<String>,
-	existing_count: usize,
-) -> PluginTools {
 	let mut pinner = Pinner {
 		taken,
 		aliases: BTreeSet::new(),
-		count: existing_count,
 		pinned: PluginTools::default(),
 	};
 	let unchosen = ServerSettings::default();
@@ -223,7 +208,6 @@ struct Pinner<'a> {
 	taken: &'a BTreeSet<String>,
 	/// Aliases given to plugin tools of this Run so far.
 	aliases: BTreeSet<String>,
-	count: usize,
 	pinned: PluginTools,
 }
 
@@ -290,8 +274,6 @@ impl Pinner<'_> {
 				Some(Reason::ReservedAlias)
 			} else if self.aliases.contains(&alias) {
 				Some(Reason::AliasCollision)
-			} else if pinned.len() >= MAX_SERVER_TOOLS || self.count >= MAX_RUN_TOOLS {
-				Some(Reason::ToolLimit)
 			} else {
 				None
 			};
@@ -300,7 +282,6 @@ impl Pinner<'_> {
 				continue;
 			}
 			self.aliases.insert(alias.clone());
-			self.count += 1;
 			let digest = schema_digest(&tool.input_schema);
 			let read_only = match choice.read_only.iter().find(|d| d.name == tool.name) {
 				Some(declared) if declared.schema_digest == digest => true,
@@ -341,14 +322,6 @@ fn refusal(tool: &ListedTool) -> Option<&'static str> {
 		Some("name")
 	} else if !tool.input_schema.is_object() {
 		Some("schema_not_object")
-	} else if tool.input_schema.to_string().len() > MAX_SCHEMA_BYTES {
-		Some("schema_too_large")
-	} else if tool
-		.description
-		.as_ref()
-		.is_some_and(|description| description.len() > MAX_DESCRIPTION_BYTES)
-	{
-		Some("description_too_large")
 	} else if jsonschema::validator_for(&tool.input_schema).is_err() {
 		// Check the complete schema before it reaches the model provider or argument validation.
 		// External schema retrieval is disabled in this crate.

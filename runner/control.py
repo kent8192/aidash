@@ -70,7 +70,6 @@ def scratch_resource_name(scratch_space_id):
 EXPORT_GUIDANCE = {
     'symlink': 'symlinks are not supported in /work: {path}; use npm install --no-bin-links, or keep dependency trees under /tmp',
     'hard_link': 'hard-link aliases are not supported in /work: {path}; write independent copies, or keep dependency trees under /tmp',
-    'file_count': 'the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp',
     'bytes': 'the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp',
     'unsafe_directory': 'unsupported directory in /work: {path}; rename or remove it, or use /tmp',
     'unsafe_file': 'unsupported file in /work: {path}; keep only regular files with printable names, or use /tmp',
@@ -554,8 +553,8 @@ class Runner(AllocationJournal):
         # "shell" stays for Reference extraction.
         if kind not in ("shell", "verify", "journal") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
-        if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
-            raise Rejected(400, "command or file limit")
+        if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536):
+            raise Rejected(400, "command byte limit")
         if not isinstance(request["epoch"], int) or request["epoch"] < 1:
             raise Rejected(400, "invalid epoch")
         maximum = self.config["maximum_seconds"]

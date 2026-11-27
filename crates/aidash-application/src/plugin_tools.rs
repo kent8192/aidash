@@ -321,12 +321,11 @@ pub async fn reconnect_for_run(
 				.flat_map(|server| server.tools.iter().map(|tool| tool.alias.clone())),
 		)
 		.collect();
-	let added = agent_plugin::pin_additional(
+	let added = agent_plugin::pin(
 		&agent.agent_plugins,
 		&agent.agent_plugin_settings,
 		&listed,
 		&taken,
-		pinned.servers.iter().map(|server| server.tools.len()).sum(),
 	);
 	let mut result = pinned.clone();
 	result.findings.retain(|finding| {
