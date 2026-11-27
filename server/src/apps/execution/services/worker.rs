@@ -1,7 +1,7 @@
 //! Native management command for a worker process with optional probe and metrics listeners.
 use super::lifecycle::{ProbeServer, ProcessLifecycle};
 use crate::bootstrap::{self, RuntimeTasks};
-use crate::config::{Config, startup::load_settings};
+use crate::config::startup::load_settings;
 use async_trait::async_trait;
 use reinhardt::commands::{
 	BaseCommand, CommandArgument, CommandContext, CommandError, CommandResult,
@@ -87,20 +87,13 @@ pub async fn run(address: Option<SocketAddr>) -> crate::Result<()> {
 	let settings = load_settings()?;
 	// The worker's login cannot change the schema; `migrate` runs first as its owner.
 	bootstrap::require_migrated(&settings).await?;
-	let config = Config::from_settings(&settings)?;
 	let address = address.or(settings.deployment.probe_listen);
-	let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let shutdown = ShutdownCoordinator::new(Duration::from_secs(30));
 	let mut stopped = shutdown.subscribe();
 	ProcessLifecycle::register(&context, shutdown.clone());
-	let federation = bootstrap::initialize_as(
-		&context,
-		&settings,
-		connection,
-		bootstrap::ProcessRole::Worker,
-	)
-	.await?;
+	let federation =
+		bootstrap::initialize_process(&context, &settings, bootstrap::ProcessRole::Worker).await?;
 	let probes = match address {
 		Some(address) => Some(ProbeServer::start(address, context, shutdown.clone()).await?),
 		None => None,

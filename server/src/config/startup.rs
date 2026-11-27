@@ -60,11 +60,12 @@ impl RunserverHook for AidashRuntime {
 		let settings = load_settings()?;
 		// The server's login cannot change the schema; `migrate` runs first as its owner.
 		bootstrap::require_migrated(&settings).await?;
-		let config = crate::config::Config::from_settings(&settings)?;
-		// The application keeps admission/control capacity separate from native
-		// command connections; no migration runs implicitly during startup.
-		let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
-		let federation = bootstrap::initialize(&context.di_context, &settings, connection).await?;
+		let federation = bootstrap::initialize_process(
+			&context.di_context,
+			&settings,
+			bootstrap::ProcessRole::Serve,
+		)
+		.await?;
 		ProcessLifecycle::register(&context.di_context, context.shutdown_coordinator.clone());
 		let probes = if let Some(address) = settings.deployment.probe_listen {
 			Some(
