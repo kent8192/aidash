@@ -47602,6 +47602,17 @@
               "approved": {
                 "type": "boolean"
               },
+              "available_scope": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalScope"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Widest scope the caller can make usable, including this item's dependencies.\nAbsent when a prerequisite or this version cannot be made ready."
+              },
               "can_approve": {
                 "description": "Whether this principal can decide it with the visible review information.",
                 "type": "boolean"
@@ -50999,9 +51010,14 @@
               },
               "policy": {
                 "$ref": "#/components/schemas/DataProtection"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
-            "required": ["policy", "effective", "deployment_floor"],
+            "required": ["revision", "policy", "effective", "deployment_floor"],
             "type": "object"
           }
         },
@@ -51082,9 +51098,14 @@
               },
               "policy": {
                 "$ref": "#/components/schemas/DataProtection"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
-            "required": ["policy", "effective", "deployment_floor"],
+            "required": ["revision", "policy", "effective", "deployment_floor"],
             "type": "object"
           }
         },
@@ -65763,6 +65784,125 @@
       }
     },
     "source": "server/src/apps/identity/views/peer_mappings.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-data-protection-impact-preview",
+    "path": "/api/tenants/{tenant}/data-protection/impact",
+    "query_parameters": [
+      "forbid_keyless_endpoints",
+      "forbid_plan_connections",
+      "level"
+    ],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DataProtection": {
+            "additionalProperties": false,
+            "description": "The Tenant policy.",
+            "properties": {
+              "forbid_keyless_endpoints": {
+                "default": false,
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "type": "boolean"
+              },
+              "forbid_plan_connections": {
+                "default": false,
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "type": "boolean"
+              },
+              "level": {
+                "$ref": "#/components/schemas/Level"
+              }
+            },
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
+            "type": "object"
+          },
+          "DataProtectionAffected": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "version": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["id", "version", "reason"],
+            "type": "object"
+          },
+          "DataProtectionImpact": {
+            "properties": {
+              "agents": {
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                },
+                "type": "array"
+              },
+              "catalog_approvals": {
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                },
+                "type": "array"
+              },
+              "destinations": {
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                },
+                "type": "array"
+              },
+              "effective": {
+                "$ref": "#/components/schemas/DataProtection"
+              }
+            },
+            "required": [
+              "effective",
+              "agents",
+              "catalog_approvals",
+              "destinations"
+            ],
+            "type": "object"
+          },
+          "Level": {
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter.",
+            "oneOf": [
+              {
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"],
+                "type": "string"
+              },
+              {
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"],
+                "type": "string"
+              },
+              {
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"],
+                "type": "string"
+              },
+              {
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"],
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DataProtectionImpact"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/data_protection.rs",
     "uuid_parameters": []
   }
 ]
