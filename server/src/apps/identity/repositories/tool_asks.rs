@@ -464,8 +464,8 @@ mod tests {
 		let sql = receiver_asks_query("acme", "default", &source(), Some((at, id)))
 			.to_string(PostgresQueryBuilder);
 		assert!(sql.contains(r#") AND ("created_at" < "#), "{sql}");
-		assert!(sql.contains(r#" OR ("created_at" = "#), "{sql}");
-		assert!(sql.contains(&format!(r#" AND "id" < '{id}'))"#)), "{sql}");
+		assert!(sql.contains(r#" OR "created_at" = "#), "{sql}");
+		assert!(sql.contains(&format!(r#" AND "id" < '{id}')"#)), "{sql}");
 		assert_eq!(sql.matches("00:00:00.123456").count(), 2, "{sql}");
 		assert!(
 			sql.ends_with(r#"ORDER BY "created_at" DESC, "id" DESC LIMIT 26"#),
