@@ -145,6 +145,26 @@ pub(crate) async fn for_owner(
 /// The API process uses the same memory pressure signal as the Egress replica.
 struct SessionMemory(aidash_integrations::egress::ReplicaMemoryPressure);
 
+impl SessionMemory {
+	fn start() -> Arc<Self> {
+		let memory = Arc::new(Self(Default::default()));
+		memory.0.sample();
+		// Sample at the Egress replica's cadence (ADR 0150) for the lifetime of the signal.
+		// The process owns the signal across Tokio runtime shutdowns.
+		let sampled = Arc::downgrade(&memory);
+		std::thread::spawn(move || {
+			loop {
+				std::thread::sleep(std::time::Duration::from_secs(1));
+				let Some(memory) = sampled.upgrade() else {
+					break;
+				};
+				memory.0.sample();
+			}
+		});
+		memory
+	}
+}
+
 impl aidash_application::ports::tools::McpMemoryShortage for SessionMemory {
 	fn memory_short(&self) -> bool {
 		self.0.is_short()
@@ -155,25 +175,11 @@ pub(crate) fn session_manager(
 	store: &crate::store::Store,
 ) -> aidash_integrations::plugin_sessions::McpPluginSessions {
 	static SIGNAL: std::sync::OnceLock<Arc<SessionMemory>> = std::sync::OnceLock::new();
-	let memory = SIGNAL.get_or_init(|| {
-		let memory = Arc::new(SessionMemory(Default::default()));
-		memory.0.sample();
-		// The process owns this sampler even when there are no live MCP sessions.
-		let sampled = memory.clone();
-		tokio::spawn(async move {
-			let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-			loop {
-				interval.tick().await;
-				sampled.0.sample();
-			}
-		});
-		memory
-	});
 	store
 		.plugin_sessions
 		.as_ref()
 		.clone()
-		.with_memory_shortage(memory.clone())
+		.with_memory_shortage(SIGNAL.get_or_init(SessionMemory::start).clone())
 }
 
 /// The application uses one session port for listing and dispatch; this decorator binds both to
@@ -497,5 +503,16 @@ impl PluginSessions for Sessions {
 	}
 	fn stdio(&self) -> Option<Arc<dyn aidash_application::ports::tools::StdioPluginSessions>> {
 		self.stdio.clone()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::SessionMemory;
+
+	#[test]
+	fn mcp_session_memory_sampler_starts_without_a_tokio_runtime() {
+		let initialize = std::thread::spawn(SessionMemory::start);
+		assert!(initialize.join().is_ok());
 	}
 }
