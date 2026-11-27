@@ -130,9 +130,16 @@ with one command is attributed to its Run; overlapping commands produce an
 `ambiguous` record listing the Runs. The index does not capture every possible
 metadata-only change, and a sudden Pod loss can lose the latest interval.
 
-The Runner queues foreground commands beyond eight simultaneous commands per
-Pod; Background processes have a separate pool of 16. The foreground
-`maximum_seconds` profile ceiling may be set as high as 86400. The Runner's
+Foreground commands and Python sessions each start on their own Runner thread.
+A Background start waits up to 25 seconds for the detached Pod supervisor to
+report startup. One Runner thread per Pod polls Background results and saved logs
+every five seconds. Each poll reads up to 256 KiB per process per stream and
+4 MiB in total, then continues from the saved offsets. After three consecutive
+failed polls, the watcher probes operations individually. Live preview and stdio
+MCP starts that hit `v2_processes` return `pod_process_limit` with the effective
+limit. A watcher that cannot start records `watcher_start_failed`.
+
+The foreground `maximum_seconds` profile ceiling may be set as high as 86400. The Runner's
 command transport allows a further 180 seconds to collect the outcome.
 
 To start a Background process, pass `background: true` and `timeout_seconds`
@@ -144,8 +151,8 @@ setting. The server returns `BACKGROUND_TIME_LIMIT_EXCEEDED` and the effective
 `maximum_seconds` when an Agent exceeds the ceiling.
 
 The supervisor ends a command at its limit even during a Runner outage. The
-Runner checks the Space journal and backs up the stop after 60 seconds. A
-time-limited Background process keeps the Pod running until it ends or its
+Pod watcher sends a backup stop 60 seconds after the deadline. A time-limited
+Background process keeps the Pod running until it ends or its
 time limit elapses. A foreground command's `.left` process does not keep
 the Pod running past 30 idle minutes. Run cancellation and Read Recheck
 revocation stop the Run's processes. Normal completion leaves its Background
@@ -157,8 +164,10 @@ The process list retains terminal entries for seven days and includes
 `pod_reset`, `pod_lost` and `space_purged`. Set `notify_on_exit: true`
 to deliver the exit status, exit code, stop reason and last 4 KiB of output
 as a Task input. A closed Task retains the operation record.
-Unsettled stops are kept while the Runner needs to confirm them. Each Space
-is limited to 4096 command records.
+Unsettled stops are kept while the Runner needs to confirm them. The Runner
+retains terminal foreground command records for 24 hours and 15 minutes. When
+its state volume is more than 90% used, the Runner refuses new commands with
+`runner_disk_full` and reports the used percentage.
 
 Python interpreters are per Run. Pass the last result's `session_id` as
 `expected_session_id` when a cell depends on that interpreter's state. If that
@@ -600,6 +609,8 @@ Skill scripts or package requests.
 Git repositories can be cloned through an approved Egress gateway service; see
 [GitHub repository access](../tenant-secrets.md#clone-a-github-repository).
 
+The offline wheel installer checks available disk space before extraction.
+Insufficient space returns `wheel_disk_full` with the needed and free bytes.
 Additional Python dependencies use explicitly authorized, hash-pinned wheel
 objects fetched by the broker from permitted package origins. Installation is
 offline in the sandbox, with no dependency auto-download or source build. It

@@ -56,7 +56,7 @@ def sign_result(result, key):
 
 
 def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None, operation_id=None, output_limit=8388608,
-                   on_left=None, capture_tail=False):
+                   on_left=None, capture_tail=False, on_started=None):
     """Run one command in a dedicated supervisor and reap escaped descendants.
 
     This must be called in a single-purpose process: becoming a subreaper also
@@ -94,11 +94,16 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                 streams[name] = os.fdopen(fd, 'wb', buffering=0)
         except OSError:
             output_state['incomplete'] = True
-    process = subprocess.Popen(argv, start_new_session=True,
-                               stdout=subprocess.PIPE if output_directory is not None else None,
-                               stderr=subprocess.PIPE if output_directory is not None else None)
+    try:
+        process = subprocess.Popen(argv, start_new_session=True,
+                                   stdout=subprocess.PIPE if output_directory is not None else None,
+                                   stderr=subprocess.PIPE if output_directory is not None else None)
+    except OSError:
+        for stream in streams.values():
+            stream.close()
+        raise
     def drain(name, source, target):
-        forwarding = True
+        forwarding = on_started is None
         save = streams.get(name)
         try:
             while not reader_stop.is_set():
@@ -164,11 +169,24 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                 except OSError:
                     output_state['incomplete'] = True
             source.close()
+    reader_start_failed = False
     if output_directory is not None:
         for name, source, target in (('stdout', process.stdout, 1), ('stderr', process.stderr, 2)):
             reader = threading.Thread(target=drain, args=(name, source, target), daemon=True)
-            reader.start()
+            try:
+                reader.start()
+            except RuntimeError:
+                if on_started is None:
+                    raise
+                reader_start_failed = True
+                output_state['incomplete'] = True
+                source.close()
+                if name in streams:
+                    streams[name].close()
+                continue
             readers.append(reader)
+    if on_started is not None and not reader_start_failed:
+        on_started()
     def finish(result):
         if readers:
             deadline = time.monotonic() + FORWARD_GRACE_SECONDS
@@ -207,7 +225,7 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
     expires = None if timeout is None else time.monotonic() + timeout
     exited_at = None
     while expires is None or time.monotonic() < expires:
-        if stop_requested is not None and stop_requested.is_set():
+        if reader_start_failed or (stop_requested is not None and stop_requested.is_set()):
             break
         exit_code = process.poll()
         if exit_code is not None:
@@ -228,7 +246,7 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                 on_left = None
         time.sleep(0.02)
 
-    stopped = stop_requested is not None and stop_requested.is_set()
+    stopped = reader_start_failed or (stop_requested is not None and stop_requested.is_set())
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         # poll reaps the original process before the general waitpid loop.
@@ -290,7 +308,8 @@ def disk_tolerant_track(action, reserve, on_full=None):
 
 
 def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, *, expected_pod_uid,
-                      record_changes=True, output_limit=8388608, notify_left=None, left_auth=None, capture_tail=False):
+                      record_changes=True, output_limit=8388608, notify_left=None, left_auth=None, capture_tail=False,
+                      notify_started=None):
     """Execute once, persist its outcome, and record its observed system changes."""
     import json
     from pathlib import Path
@@ -397,10 +416,17 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
             marker.update(operation_id=operation_id, running_at=time.time(), protocol_version=HELPER_PROTOCOL)
             marker['auth'] = sign_result(marker, left_auth)
             publish_running(marker)
-        result = run_supervised(argv, timeout, stop_requested=stopping,
-                                output_directory=OUTPUT_DIRECTORY,
-                                operation_id=operation_id, output_limit=output_limit,
-                                on_left=adopt if notify_left else None, capture_tail=capture_tail)
+        try:
+            result = run_supervised(argv, timeout, stop_requested=stopping,
+                                    output_directory=OUTPUT_DIRECTORY,
+                                    operation_id=operation_id, output_limit=output_limit,
+                                    on_left=adopt if notify_left else None, capture_tail=capture_tail,
+                                    on_started=notify_started)
+        except BlockingIOError as error:
+            import errno
+            if notify_started is None or error.errno != errno.EAGAIN:
+                raise
+            result = process_limit_refusal()
     finally:
         if tracking_started:
             interval_stop.set()
@@ -426,6 +452,66 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
 
 def supervise_foreground(*args, **kwargs):
     return supervise_detached(*args, adopt_left=True, **kwargs)
+
+
+def process_limit_refusal():
+    limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
+    return {'status': 'completed', 'exit_code': 1, 'error_code': 'pod_process_limit',
+            'message': f'The Execution Pod process limit (v2_processes = {limit}) was reached. '
+                       'Stop a Background process and retry.', 'process_limit': limit,
+            'output_incomplete': True}
+
+
+def supervise_background(*args, **kwargs):
+    """Return a startup receipt while the supervisor retains its deadline and output files."""
+    import errno
+    import json
+    read_fd, write_fd = os.pipe()
+    try:
+        child = os.fork()
+    except OSError as error:
+        os.close(read_fd)
+        os.close(write_fd)
+        if error.errno == errno.EAGAIN:
+            return process_limit_refusal()
+        raise
+    if child:
+        os.close(write_fd)
+        with os.fdopen(read_fd, 'rb') as stream:
+            # Bound the supervisor receipt like the foreground startup pipe.
+            data = stream.readline(65537)
+        if not data or len(data) > 65536:
+            raise RuntimeError('Background supervisor startup receipt unavailable')
+        receipt = json.loads(data)
+        if not receipt.get('started'):
+            os.waitpid(child, 0)
+        return receipt
+    os.close(read_fd)
+    sent = False
+
+    def notify(receipt):
+        nonlocal sent
+        sent = True
+        try:
+            os.write(write_fd, json.dumps(receipt, separators=(',', ':')).encode() + b'\n')
+        except BrokenPipeError:
+            pass  # The Runner can recover through the supervisor's journal.
+        finally:
+            os.close(write_fd)
+
+    try:
+        os.setsid()
+        with open('/dev/null', 'rb+') as null:
+            for target in (0, 1, 2):
+                os.dup2(null.fileno(), target)
+        result = supervise_command(*args, notify_started=lambda: notify({'started': True}), **kwargs)
+        if not sent:
+            notify(result if result.get('error_code') == 'pod_process_limit' else {'started': False})
+    except BaseException:
+        if not sent:
+            notify({'started': False})
+    finally:
+        os._exit(0)
 
 
 def supervise_detached(*args, adopt_left=False, **kwargs):
@@ -593,6 +679,46 @@ def read_result(operation_id):
     return json.loads(data)
 
 
+# Bound saved output per exec to 4 MiB, in 256 KiB chunks, so large logs can
+# advance across polls without exhausting the watcher transport or starving other operations.
+BACKGROUND_POLL_BYTES = 4 << 20
+BACKGROUND_STREAM_BYTES = 256 << 10
+
+
+def read_background_results(operations, expected_pod_uid, budget=BACKGROUND_POLL_BYTES):
+    if os.environ.get('AIDASH_POD_UID') != expected_pod_uid:
+        raise ValueError('Execution Pod identity changed')
+    if not 0 <= budget <= BACKGROUND_POLL_BYTES:
+        raise ValueError('invalid Background output budget')
+    remaining = budget
+    results = {}
+    for operation, request in operations.items():
+        try:
+            if request['claim'] and claim_operation(operation, OPERATION_DIRECTORY):
+                results[operation] = {'claimed': True}
+                continue
+            try:
+                result = read_result(operation)
+            except FileNotFoundError:
+                result = None
+            observed = dict(operation_state(operation), result=result, output={})
+            for stream in ('stdout', 'stderr'):
+                if not remaining:
+                    break
+                limit = min(remaining, BACKGROUND_STREAM_BYTES)
+                try:
+                    chunk = operation_output(operation, stream, request['offsets'][stream], limit,
+                                             directory=OUTPUT_DIRECTORY)
+                except FileNotFoundError:
+                    continue
+                remaining -= chunk['next_offset'] - request['offsets'][stream]
+                observed['output'][stream] = chunk
+            results[operation] = observed
+        except (OSError, ValueError) as error:
+            results[operation] = {'error': str(error)}
+    return results
+
+
 if __name__ == '__main__':
     import sys
     if sys.argv[1:] == ['protocol']:
@@ -695,6 +821,7 @@ if __name__ == '__main__':
         raise SystemExit(0)
     if (len(sys.argv) in (11, 12, 13) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session', 'background')):
+        background = sys.argv[3] == 'background'
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
         token = None
         options = sys.argv[11:]
@@ -713,7 +840,7 @@ if __name__ == '__main__':
                 if not re.fullmatch(b'[0-9a-f]{64}', key):
                     raise ValueError('invalid result nonce')
                 return key
-            token = read_key() if docker else None
+            token = read_key() if docker and not background else None
             left_auth = read_key() if proof else token
         else:
             left_auth = None
@@ -728,20 +855,28 @@ if __name__ == '__main__':
             os.dup2(null, 0)
             os.close(null)
         supervise = supervise_foreground if seconds is not None and sys.argv[3] == 'command' else supervise_command
-        background = sys.argv[3] == 'background'
         if background:
-            if seconds is None or not proof:
-                raise ValueError('Background process requires a deadline and result proof')
-            supervise = supervise_detached
+            if (seconds is not None or docker) and not proof:
+                raise ValueError('Background process requires result proof')
+            supervise = supervise_background
         outcome = supervise(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
                                     record_changes=sys.argv[3] != 'session', output_limit=int(sys.argv[10]),
                                     left_auth=left_auth, capture_tail=background)
+        if background:
+            import json
+            print(json.dumps(outcome, separators=(',', ':')))
+            raise SystemExit(0)
         if token is not None:
             import json
             frame = b'\x1eaidash-result:' + token + b':' + json.dumps(outcome, separators=(',', ':')).encode() + b'\n'
             os.write(2, frame)
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
+    if len(sys.argv) == 4 and sys.argv[1] == 'results':
+        import json
+        operations = json.load(sys.stdin)
+        print(json.dumps(read_background_results(operations, sys.argv[2], int(sys.argv[3])), separators=(',', ':')))
+        raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'claim':
         import json
         print(json.dumps({'created': claim_operation(sys.argv[2])}))
@@ -751,7 +886,9 @@ if __name__ == '__main__':
         offset = None if sys.argv[4] == 'tail' else int(sys.argv[4])
         print(json.dumps(operation_output(sys.argv[2], sys.argv[3], offset, int(sys.argv[5]))))
         raise SystemExit(0)
-    if len(sys.argv) == 3 and sys.argv[1] == 'stop':
+    if len(sys.argv) in (3, 4) and sys.argv[1] == 'stop':
+        if len(sys.argv) == 4 and os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
+            raise ValueError('Execution Pod identity changed')
         stop_operation(sys.argv[2])
         raise SystemExit(0)
     if len(sys.argv) == 4 and sys.argv[1] == 'changes':

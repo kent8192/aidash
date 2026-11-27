@@ -23,52 +23,24 @@ class ScratchResourceNameTest(unittest.TestCase):
 
 
 class CommandQueueTest(unittest.TestCase):
-    def test_queued_foreground_cancellation_and_concurrency_limit(self):
+    def test_more_than_eight_commands_and_python_sessions_start_in_the_same_space(self):
         import threading
-        import time
         from execution_pod import CommandQueue
 
-        started = []
-        release = threading.Event()
-        queue = CommandQueue()
+        queue, release = CommandQueue(), threading.Event()
+        started = threading.Barrier(21)
 
         def run(command):
-            started.append(command)
-            release.wait(3)
+            started.wait(timeout=5)
+            release.wait(5)
             return command
 
         try:
-            futures = [queue.submit('run-a', str(i), run) for i in range(8)]
-            deadline = time.monotonic() + 2
-            while len(started) < 8 and time.monotonic() < deadline:
-                time.sleep(.01)
-            self.assertEqual(len(started), 8)
-            waiting = queue.submit('run-b', 'waiting', run)
-            queue.cancel_waiting('run-b')
-            self.assertTrue(waiting.cancelled())
+            commands = [queue.submit('run', index, run) for index in range(10)]
+            sessions = [queue.submit_session(index, run) for index in range(10)]
+            started.wait(timeout=5)
             release.set()
-            self.assertEqual([f.result(timeout=3) for f in futures], [str(i) for i in range(8)])
-            self.assertNotIn('waiting', started)
-        finally:
-            release.set()
-            queue.close()
-
-    def test_cancelling_run_preserves_queued_background_work(self):
-        import threading
-        from execution_pod import CommandQueue
-
-        release = threading.Event()
-        queue = CommandQueue()
-        try:
-            running = [queue.submit('run-a', i, lambda value: (release.wait(3), value)[1])
-                       for i in range(8)]
-            background = queue.submit('run-b', 'background', lambda value: value, background=True)
-            queue.cancel_waiting('run-b')
-            self.assertFalse(background.cancelled())
-            release.set()
-            self.assertEqual(background.result(timeout=3), 'background')
-            for future in running:
-                future.result(timeout=3)
+            self.assertEqual([job.result(timeout=5) for job in commands + sessions], list(range(10)) * 2)
         finally:
             release.set()
             queue.close()
@@ -519,33 +491,26 @@ class ExecutionPodControllerTest(unittest.TestCase):
             controller.ensure({'scratch_space_id': 'example'})
 
     def test_cancel_run_only_cancels_the_named_scratch_space(self):
-        import threading
-        from execution_pod import CommandQueue, ExecutionPodController
-
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        controller = ExecutionPodController(SimpleNamespace(root=Path(directory.name)), {}, admitted=True)
-        release = threading.Event()
-        queues = {space: CommandQueue() for space in ('one', 'two')}
-        controller.queues.update(queues)
-        try:
-            for queue in queues.values():
-                for _ in range(8):
-                    queue.submit('active', None, lambda _: release.wait(5))
-            first = queues['one'].submit('same-run', 'one', lambda value: value)
-            second = queues['two'].submit('same-run', 'two', lambda value: value)
+        from unittest.mock import Mock, patch
+        from execution_pod import CommandQueue, ExecutionPodController
+
+        with tempfile.TemporaryDirectory() as directory, patch('execution_pod.Thread') as thread:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory)), {}, admitted=True)
+            controller.queues.update(one=CommandQueue(), two=CommandQueue())
+            execute = Mock(return_value='executed')
+            first = controller.queues['one'].submit('same-run', 'one', execute)
+            first_target = thread.call_args.kwargs['target']
+            second = controller.queues['two'].submit('same-run', 'two', execute)
+            second_target = thread.call_args.kwargs['target']
             controller.cancel_run('one', 'same-run')
+            first_target()
+            second_target()
             self.assertTrue(first.cancelled())
-            self.assertFalse(second.cancelled())
-            release.set()
-            self.assertEqual(second.result(timeout=5), 'two')
-        finally:
-            release.set()
-            for queue in queues.values():
-                queue.close()
+            self.assertEqual(second.result(timeout=1), 'executed')
+            execute.assert_called_once_with('two')
 
     def test_credential_is_not_exposed_by_pod_creation_failure(self):
         import contextlib
@@ -2426,22 +2391,6 @@ class ReviewThreadRegressionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             quantity_bytes('1banana')
 
-    def test_python_session_capacity_is_per_space(self):
-        import threading
-        from execution_pod import CommandQueue
-        first, second = CommandQueue(), CommandQueue()
-        release = threading.Event()
-        started = threading.Barrier(9)
-        try:
-            for _ in range(8):
-                first.submit_session('hold', lambda _: (started.wait(timeout=3), release.wait(3)))
-            started.wait(timeout=3)
-            self.assertEqual(second.submit_session('other', lambda value: value).result(timeout=2), 'other')
-        finally:
-            release.set()
-            first.close()
-            second.close()
-
     def test_stopping_a_space_retires_its_executor_without_waiting_for_workers(self):
         import tempfile
         from pathlib import Path
@@ -2673,6 +2622,32 @@ class RecoveryRegressionTest(unittest.TestCase):
 
 
 class JournalRetentionTest(unittest.TestCase):
+    def test_a_space_with_4096_active_records_can_admit_a_new_command(self):
+        import json
+        import tempfile
+        from concurrent.futures import Future
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from uuid import UUID
+        from execution_pod import ExecutionPodController
+
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory)), {}, admitted=True)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+                'spec': {'containers': [{'name': 'execution'}]}})
+            controller._admitted_uid = Mock(return_value='uid')
+            controller.queues['s'] = SimpleNamespace(submit=Mock(return_value=Future()))
+            record = {'scratch_space_id': 's', 'run_id': 'r', 'status': 'running'}
+            for index in range(4096):
+                operation = str(UUID(int=index))
+                controller._command_path(operation).write_text(json.dumps(dict(record, operation_id=operation)))
+            operation = str(UUID(int=4096))
+            with patch('shutil.disk_usage', return_value=SimpleNamespace(used=30, total=100)):
+                result = controller.submit_command({'operation_id': operation, 'scratch_space_id': 's',
+                                                    'run_id': 'r', 'code': 'true'})
+            self.assertEqual((result['operation_id'], result['status']), (operation, 'queued'))
+
     def test_two_hundred_sequential_commands_in_a_day_are_accepted(self):
         import tempfile
         import uuid
@@ -2784,7 +2759,7 @@ class JournalRetentionTest(unittest.TestCase):
                 controller.prune_space('s', now=101)
             self.assertTrue(path.exists())
 
-    def test_full_space_rejects_new_work_without_rejecting_retry(self):
+    def test_full_runner_volume_rejects_new_work_without_rejecting_retry(self):
         import hashlib
         import json
         import tempfile
@@ -2792,6 +2767,7 @@ class JournalRetentionTest(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import Mock, patch
         from execution_pod import ExecutionPodController, ExecutionPodError, JOURNAL_RETENTION_SECONDS
+        from types import SimpleNamespace
         op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
         request = {'operation_id': op, 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -2799,11 +2775,15 @@ class JournalRetentionTest(unittest.TestCase):
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
                 'run_id': 'r', 'status': 'completed', 'terminal_at': 1_000_000, 'request_digest': digest}))
-            with patch('execution_pod.JOURNAL_MAX_RECORDS_PER_SPACE', 1), patch('time.time', return_value=1_000_001):
+            with patch('shutil.disk_usage', return_value=SimpleNamespace(used=91, total=100)) as usage, \
+                    patch('time.time', return_value=1_000_001):
                 self.assertEqual(controller.submit_command(request)['status'], 'completed')
                 with self.assertRaises(ExecutionPodError) as refused:
                     controller.submit_command(dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2'))
-                self.assertEqual(refused.exception.code, 'journal_full')
+                self.assertEqual(refused.exception.code, 'runner_disk_full')
+                self.assertIn('91.00%', refused.exception.message)
+                self.assertIn('90%', refused.exception.message)
+                usage.assert_called_once_with(controller._command_path(op).parent)
             controller.backend.kube.assert_not_called()
             controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
                 'spec': {'containers': [{'name': 'execution'}]}})
@@ -2811,7 +2791,7 @@ class JournalRetentionTest(unittest.TestCase):
             queue = Mock()
             queue.submit.return_value = Future()
             controller.queues['s'] = queue
-            with patch('execution_pod.JOURNAL_MAX_RECORDS_PER_SPACE', 1), \
+            with patch('shutil.disk_usage', return_value=SimpleNamespace(used=90, total=100)), \
                     patch('time.time', return_value=1_000_000 + JOURNAL_RETENTION_SECONDS + 1):
                 new_request = dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2')
                 self.assertEqual(controller.submit_command(new_request)['status'], 'queued')
@@ -2973,6 +2953,11 @@ class LongRunningBackgroundTest(unittest.TestCase):
         if args[0] == 'delete':
             self.deletions.append(args[2])
             self.pod = None
+        if 'results' in args:
+            output = {stream: {'data': '', 'eof': True, 'next_offset': 0} for stream in ('stdout', 'stderr')}
+            results = {operation: {'result': self.replies.get(operation), 'running': operation not in self.replies,
+                                   'output': output} for operation in json.loads(data)}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(results).encode())
         if 'result' in args:
             result = self.replies.get(args[-1])
             return SimpleNamespace(returncode=int(result is None), stdout=json.dumps(result).encode())
@@ -2981,7 +2966,7 @@ class LongRunningBackgroundTest(unittest.TestCase):
         if 'running' in args:
             return SimpleNamespace(returncode=0, stdout=b'{"running":true}')
         if 'stop' in args:
-            self.signals.append(args[-1])
+            self.signals.append(args[args.index('stop') + 1])
         if 'output' in args:
             return SimpleNamespace(returncode=0, stdout=b'{"data":"","eof":true,"next_offset":0}')
         return SimpleNamespace(returncode=0, stdout=b'')
@@ -3018,13 +3003,23 @@ class LongRunningBackgroundTest(unittest.TestCase):
         space['guard'] = {'pod_uid': 'original', 'terminated': False}
         path.write_text(json.dumps(space))
         self.controller = ExecutionPodController(self, self.controller.config, admitted=True)
-        with patch('time.time', return_value=self.now):
+        with patch('time.time', return_value=self.now), patch('execution_pod.Thread'):
             self.controller.recover_commands()
 
     def observe(self, now):
         from unittest.mock import patch
         self.now = now
         with patch('time.time', return_value=now):
+            for pod, states in self.controller.background_watches.items():
+                records = {}
+                for operation, state in states.items():
+                    record = self.controller._read_command(operation)
+                    if record['status'] == 'running':
+                        records[operation] = record, state
+                if records:
+                    self.controller._poll_background(pod, records)
+                    for record, _ in records.values():
+                        self.controller._background_backstop(record)
             self.controller.stop_idle(now=now)
             return {item['operation_id']: item for item in self.controller.background_processes('space')['processes']}
 
@@ -4146,19 +4141,6 @@ class DockerAdmissionTest(unittest.TestCase):
             verify_user_probe(dict(report, raw_socket=False), docker=True, processes=128)
 
 class ReviewRegressionTest(unittest.TestCase):
-    def test_background_does_not_consume_foreground_slots(self):
-        import threading
-        from execution_pod import CommandQueue
-        queue, release = CommandQueue(), threading.Event()
-        try:
-            jobs = [queue.submit('r', i, lambda _: release.wait(5), background=True) for i in range(8)]
-            self.assertEqual(queue.submit('r', 'foreground', lambda value: value).result(timeout=1), 'foreground')
-        finally:
-            release.set()
-            for job in jobs:
-                job.result(timeout=5)
-            queue.close()
-
     def test_concurrent_intervals_are_ambiguous(self):
         import tempfile
         from pathlib import Path
