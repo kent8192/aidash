@@ -12,6 +12,8 @@ use serde_json::Value;
 use uuid::Uuid;
 /// Bound raw visibility work to 4096 candidates before returning a continuation.
 pub const EVENT_SCAN_LIMIT: usize = 4096;
+/// Match the 100-item Thread message window and bound the projected response size.
+pub const EVENT_PROJECTION_PAGE: usize = 100;
 
 #[derive(Debug)]
 pub struct EventRead {
@@ -80,7 +82,7 @@ pub async fn latest_visible_events_counted(
 	// Every event of a Run would otherwise repeat that Run's full disclosure check (#292).
 	let mut runs = RunVerdicts::default();
 	while scanned < EVENT_SCAN_LIMIT {
-		let page_size = (EVENT_SCAN_LIMIT - scanned).min(100);
+		let page_size = (EVENT_SCAN_LIMIT - scanned).min(EVENT_PROJECTION_PAGE);
 		let rows = scope
 			.event_rows(threads, include_marketplace, cursor, page_size)
 			.await?;
@@ -95,7 +97,7 @@ pub async fn latest_visible_events_counted(
 			if unconfirmed.settle_in(silence, Kind::Event, event.thread_id, visible) {
 				result.push(event);
 			}
-			if result.len() == 100 {
+			if result.len() == EVENT_PROJECTION_PAGE {
 				partial = rows.peek().is_some();
 				break;
 			}
@@ -103,7 +105,7 @@ pub async fn latest_visible_events_counted(
 		if exhausted {
 			break;
 		}
-		if result.len() == 100 || scanned == EVENT_SCAN_LIMIT {
+		if result.len() == EVENT_PROJECTION_PAGE || scanned == EVENT_SCAN_LIMIT {
 			partial = partial
 				|| !scope
 					.event_rows(threads, include_marketplace, cursor, 1)

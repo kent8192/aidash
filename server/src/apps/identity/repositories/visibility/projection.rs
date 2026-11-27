@@ -3,7 +3,7 @@ use super::Reads;
 use crate::Result as NativeResult;
 use aidash_application::{
 	Result,
-	authorization::projection::{EVENT_SCAN_LIMIT, EventRead},
+	authorization::projection::{EVENT_PROJECTION_PAGE, EVENT_SCAN_LIMIT, EventRead},
 	ports::authorization::{projection::ThreadProjection, visibility::RunVerdicts},
 };
 use aidash_domain::{
@@ -307,7 +307,7 @@ pub(crate) async fn state_events(
 	let mut partial = false;
 	let mut scanned = 0;
 	while scanned < EVENT_SCAN_LIMIT {
-		let size = (EVENT_SCAN_LIMIT - scanned).min(100);
+		let size = (EVENT_SCAN_LIMIT - scanned).min(EVENT_PROJECTION_PAGE);
 		let mut query = Query::select();
 		query
 			.column(ColumnRef::Asterisk)
@@ -432,7 +432,7 @@ pub(crate) async fn state_events(
 			if unconfirmed.settle_in(silence, Kind::Event, row.thread_id, visible) {
 				result.push(row);
 			}
-			if result.len() == 100 {
+			if result.len() == EVENT_PROJECTION_PAGE {
 				partial = rows.peek().is_some();
 				break;
 			}
@@ -440,7 +440,7 @@ pub(crate) async fn state_events(
 		if exhausted {
 			break;
 		}
-		if result.len() == 100 || scanned == EVENT_SCAN_LIMIT {
+		if result.len() == EVENT_PROJECTION_PAGE || scanned == EVENT_SCAN_LIMIT {
 			if !partial {
 				let lookahead = query
 					.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
