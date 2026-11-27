@@ -82,6 +82,13 @@ pub(crate) async fn connect_egress(url: &str) -> Result<Pool> {
 	Ok(pool)
 }
 
+pub(crate) async fn connect_preview(url: &str) -> Result<Pool> {
+	// The Helm connection budget reserves eight slots per standalone Preview replica.
+	let pool = open(url, 8, limits::statement_limit()?, Some("preview"), false).await?;
+	require_unprivileged(&pool.connection()).await?;
+	Ok(pool)
+}
+
 /// Open the server's pool, refusing a login that row-level security would not bind.
 ///
 /// The pool settings mirror Reinhardt's PostgreSQL defaults. Every connection
