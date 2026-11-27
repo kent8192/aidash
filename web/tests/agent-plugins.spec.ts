@@ -245,7 +245,7 @@ test.describe("Agent form", () => {
     await importer.getByRole("button", { name: "Skip", exact: true }).click();
     await importer.getByRole("button", { name: "Add to Agent" }).click();
     await expect(
-      importer.getByText("Plugins in this Agent (1/8)"),
+      importer.getByText("Plugins in this Agent (1)", { exact: true }),
     ).toBeVisible();
     await expect(
       importer.getByRole("button", { name: "Add to Agent" }),

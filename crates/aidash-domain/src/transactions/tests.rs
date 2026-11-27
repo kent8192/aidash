@@ -12,7 +12,7 @@ fn check(manifest: &Manifest) -> crate::Result<()> {
 fn manifest_encoding_and_digest_preserve_the_original_wire_bytes(manifest: Manifest) {
 	check(&manifest).unwrap();
 	assert_eq!(serde_json::to_string(&manifest).unwrap(), GOLDEN);
-	// Pins the sealed digest every participant agrees on (ADR 0146).
+	// Pins the sealed digest every participant agrees on (ADR 0151).
 	assert_eq!(
 		manifest.sealed_digest(&"5e".repeat(32)).unwrap(),
 		GOLDEN_DIGEST

@@ -6,59 +6,27 @@ use crate::{Error, Result, federation::Federation};
 use aidash_application::federation::inbound::Admitted;
 use aidash_application::transactions::management as application;
 use aidash_domain::identity::execution::ExecutionPrincipal;
-use reinhardt::{Depends, injectable};
-use std::sync::Arc;
-use tokio::sync::Semaphore;
+use reinhardt::injectable;
 
 use uuid::Uuid;
 
 use crate::apps::federation::transactions::serializers::protocol::TransactionDetails;
 
 #[derive(Clone)]
-pub struct SubmissionCapacity {
-	slots: Arc<Semaphore>,
-}
-
-#[injectable(scope = "singleton")]
-pub async fn provide_submission_capacity() -> SubmissionCapacity {
-	SubmissionCapacity {
-		slots: Arc::new(Semaphore::new(8)),
-	}
-}
-
-#[derive(Clone)]
 pub struct Transactions {
 	runtime: Federation,
-	submissions: Arc<Semaphore>,
 }
 
 #[injectable(scope = "request")]
-pub async fn provide(
-	#[inject] runtime: Federation,
-	#[inject] submissions: Depends<SubmissionCapacity>,
-) -> Transactions {
-	Transactions {
-		runtime,
-		submissions: submissions.slots.clone(),
-	}
+pub async fn provide(#[inject] runtime: Federation) -> Transactions {
+	Transactions { runtime }
 }
 
 impl Transactions {
-	/// The service for in-process Federation, which never submits.
 	pub(crate) fn for_peers(runtime: Federation) -> Self {
-		Self {
-			runtime,
-			submissions: Arc::new(Semaphore::new(1)),
-		}
+		Self { runtime }
 	}
 	pub async fn submit(&self, actor: Actor, manifest: Manifest) -> Result<Status> {
-		// Router clones share eight DI-scoped slots, leaving control capacity
-		// for inbound preflights from independent Nodes.
-		let _permit = self
-			.submissions
-			.acquire()
-			.await
-			.map_err(|_| Error::TransactionPending)?;
 		application::submit(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
 			&principal(&actor)?,
@@ -73,6 +41,7 @@ impl Transactions {
 		application::list(
 			&crate::bootstrap::transaction_management_repository(&self.runtime),
 			&principal(&actor)?,
+			self.runtime.store.control_pool.usage().max as usize,
 		)
 		.await
 		.map(|rows| rows.into_iter().map(Into::into).collect())

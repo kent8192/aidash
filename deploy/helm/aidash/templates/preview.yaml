@@ -37,7 +37,7 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: preview
 spec:
-  replicas: 1
+  replicas: {{ include "aidash.previewReplicas" . }}
   revisionHistoryLimit: 3
   progressDeadlineSeconds: 300
   selector:

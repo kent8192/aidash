@@ -351,7 +351,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 #[rstest::rstest]
 #[case::transaction_action("transaction.submit", 403)]
 #[case::underlying_action("thread.update", 403)]
-// No `transaction.disclose` permission exists any more (ADR 0146): denying it
+// No `transaction.disclose` permission exists any more (ADR 0151): denying it
 // changes nothing.
 #[case::removed_disclosure_permission("transaction.disclose", 202)]
 #[tokio::test]

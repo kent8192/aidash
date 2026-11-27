@@ -54,11 +54,13 @@ pub struct AreaSnapshot {
 impl ShellRequest {
 	pub fn seconds(&self, limits: AdmissionLimits) -> Result<u64> {
 		let seconds = self.timeout_seconds.unwrap_or(limits.operation_seconds);
-		if self.command.is_empty()
-			|| self.command.len() > limits.command_bytes
-			|| seconds == 0
-			|| seconds > limits.maximum_seconds
-		{
+		if self.command.len() > limits.command_bytes {
+			return Err(Error::Invalid(format!(
+				"INVALID_SHELL_LIMIT: command exceeds {} bytes (Linux MAX_ARG_STRLEN is 128 KiB)",
+				limits.command_bytes
+			)));
+		}
+		if self.command.is_empty() || seconds == 0 || seconds > limits.maximum_seconds {
 			return Err(Error::Invalid("INVALID_SHELL_LIMIT".into()));
 		}
 		Ok(seconds)
@@ -125,8 +127,6 @@ pub fn request_validation_failure(
 /// a hard-link alias, a quota or an unsafe name. Nothing is published, so the
 /// Area keeps its previous revision and only this operation fails.
 pub const WORKING_EXPORT_REFUSED: &str = "WORKING_EXPORT_REFUSED";
-/// Most entries one Working Area manifest holds, mounted inputs included.
-pub const MAX_AREA_FILES: usize = 4096;
 impl MountedFile {
 	/// A Reference file stays in the manifest for the file tools, but no Pod
 	/// receives it and it uses none of the Working Area's capacity.
@@ -134,35 +134,9 @@ impl MountedFile {
 		matches!(self.scope, FileScope::References) && self.provenance["kind"] == "reference"
 	}
 }
-/// The files that count against a Working Area's file and byte limits.
+/// The files that count against a Working Area's byte limit.
 pub fn counted_files(files: &[MountedFile]) -> impl Iterator<Item = &MountedFile> {
 	files.iter().filter(|file| !file.is_reference_file())
-}
-/// A Working Area quota an export can exceed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportQuota {
-	Files,
-	Bytes,
-}
-/// The stored tool error refusing an export over `quota`, in the same shape the
-/// runner reports: the first offending relative `path` and the `limit`.
-pub fn export_quota_refusal(quota: ExportQuota, path: &str, limit: u64) -> Value {
-	let (reason, message) = match quota {
-		ExportQuota::Files => (
-			"file_count",
-			format!(
-				"the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp"
-			),
-		),
-		ExportQuota::Bytes => (
-			"bytes",
-			format!(
-				"the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp"
-			),
-		),
-	};
-	json!({"code":WORKING_EXPORT_REFUSED,"message":message,"retryable":false,
-		"details":{"reason":reason,"path":path,"limit":limit}})
 }
 /// Operation kind of a Completion Gate Check (#112). It runs under the bound
 /// shell capability, and its files are never exported into the Working Area.

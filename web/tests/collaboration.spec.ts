@@ -3943,3 +3943,98 @@ test("a successor can edit the Duty immediately when takeover succeeds and resum
     duties.getByRole("button", { name: "Resume", exact: true }),
   ).toBeEnabled();
 });
+
+test("channel activity keeps its fresh events while paging through an empty candidate page", async ({
+  page,
+}) => {
+  await setup(page, { subject: true, locale: "en-US" });
+  const data = fixture();
+  const seen: Array<string | null> = [];
+  const event = (sequence: number, kind: string) => ({
+    id: `event-${sequence}`,
+    sequence,
+    kind,
+    data: {},
+    created_at: new Date().toISOString(),
+    node: defaultNode.name,
+    thread_id: "thread-one",
+  });
+  await page.route("**/api/threads/thread-one*", (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/threads/thread-one") return route.fallback();
+    const cursor = url.searchParams.get("events_before");
+    seen.push(cursor);
+    return route.fulfill({
+      json: {
+        thread: data.threads[0],
+        tasks: data.tasks,
+        artifacts: [],
+        messages: [],
+        events:
+          cursor === "10"
+            ? []
+            : cursor === "5"
+              ? [event(2, "older.event")]
+              : [event(12, "fresh.event")],
+        next_event_cursor:
+          cursor === null ? "10" : cursor === "10" ? "5" : null,
+      },
+    });
+  });
+
+  await page.goto("/collaboration?channel=thread-one");
+  await page.getByRole("button", { name: "Show channel status" }).click();
+  await page.getByRole("tab", { name: "Execution history" }).click();
+  const activity = page.getByRole("tabpanel", { name: "Execution history" });
+  const older = activity.getByRole("button", { name: "Show older events" });
+  await expect(
+    activity.getByText("fresh.event", { exact: true }),
+  ).toBeVisible();
+  await older.click();
+  await expect.poll(() => seen).toContain("10");
+  await older.click();
+  await expect(
+    activity.getByText("older.event", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    activity.getByText("fresh.event", { exact: true }),
+  ).toBeVisible();
+  await expect(activity.locator("summary span:first-of-type")).toHaveText([
+    "fresh.event",
+    "older.event",
+  ]);
+  await expect(older).toHaveCount(0);
+  expect(seen.filter((cursor) => cursor !== null)).toEqual(["10", "5"]);
+});
+
+test("the graph follows State event cursors through empty pages", async ({
+  page,
+}) => {
+  await setup(page, { subject: true, locale: "en-US" });
+  const data = fixture();
+  const requests: string[] = [];
+  await page.route("**/api/state**", (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get(
+      "events_before",
+    );
+    if (cursor !== null) requests.push(cursor);
+    return route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: {
+          ...data.next_cursors,
+          events: cursor === null ? "10" : cursor === "10" ? "5" : null,
+        },
+      },
+    });
+  });
+
+  await page.goto("/graph");
+  const older = page.getByRole("button", { name: "Show older events" });
+  await older.click();
+  await expect.poll(() => requests).toEqual(["10"]);
+  await older.click();
+  await expect(older).toHaveCount(0);
+  expect(requests).toEqual(["10", "5"]);
+});

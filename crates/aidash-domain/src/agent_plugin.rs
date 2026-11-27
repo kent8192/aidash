@@ -28,20 +28,16 @@ pub use mcp::{
 	secret_header_valid,
 };
 pub use paths::tree_digest;
-pub use reference::{
-	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, MarketplaceSource,
-	PinnedAgentPlugin,
-};
+pub use reference::{AgentPluginRef, MAX_SOURCE_BYTES, MarketplaceSource, PinnedAgentPlugin};
 pub(crate) use settings::validate as validate_settings;
 pub use settings::{
-	MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, SECRET_HEADER, SecretForm,
-	ServerSecret, ServerSettings, server_secrets,
+	MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, SECRET_HEADER, SecretForm, ServerSecret,
+	ServerSettings, server_secrets,
 };
 pub use skills::PluginSkill;
 pub use tools::{
-	ConnectionCause, ListedTool, Listing, MAX_DESCRIPTION_BYTES, MAX_RUN_TOOLS, MAX_SCHEMA_BYTES,
-	PinnedServer, PinnedTool, PluginFinding, PluginTools, STDIO_UNAVAILABLE, Skipped, pin,
-	pin_additional, schema_digest,
+	ConnectionCause, ListedTool, Listing, PinnedServer, PinnedTool, PluginFinding, PluginTools,
+	STDIO_UNAVAILABLE, Skipped, pin, schema_digest,
 };
 
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
@@ -136,6 +132,7 @@ pub enum Reason {
 	/// The Agent's allowlist names a tool the server did not list.
 	ToolNotListed,
 	ToolInvalid,
+	/// A historical finding from before tool count limits were removed.
 	ToolLimit,
 	/// The tool's alias is one the Run's Bindings or the reserved names already use.
 	ReservedAlias,

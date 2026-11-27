@@ -94,7 +94,16 @@ Missing, foreign and unreadable resources/dependencies return generic 403; inval
 
 An event belongs to one Tenant, and row-level security shows a subject only its own Tenant's events. A change of a package's audience therefore writes one event for each Tenant it reaches. The owner's transaction writes the owner's `marketplace.published` and `marketplace.distribution_changed`. After it commits, a second transaction writes the copies for the other Tenants under the Deployment Scope reason `marketplace-distribution`, which may write nothing else. Each Tenant that joins the audience gets a `marketplace.published` copy, and each Tenant in the new audience gets a `marketplace.distribution_changed` copy. A copy carries only what a member reads in the package's summary and detail, which are the key, the owner and the audience revision. A name with no Tenant root record, or under a Tenant Deletion, gets no copy. A consent change reaches only the owner, because only the owner reads a consent's revision. A Tenant that leaves the audience keeps its copies, and every read rechecks the audience, so they stay hidden. A crash between the two commits leaves a recipient without its copies. They are notifications, and the package stays readable.
 
-Subject event queries select tenant/audience candidates before loading documents; audit and unrelated-tenant events do not consume the scan budget. Snapshot and polling requests evaluate at most 4,096 candidates. Polling advances its cursor across denied candidates. HTTP `/api/events` keeps its array body and returns `x-aidash-event-cursor`; clients must use that header as the next `after` value even on an empty page. SSE maintains its own cursor across hidden history. Indexed tenant/package event references and audience membership support this filtering.
+Subject event queries select Tenant and audience candidates before loading documents.
+Snapshot and polling requests evaluate at most 4,096 candidates per page. A cursor
+advances across denied candidates, including when a page contains no visible events.
+`GET /api/events` returns `cursor` and `partial` in its response and keeps the
+`x-aidash-event-cursor` header. Use that cursor as the next `after` value on
+every poll. A `partial` response can be followed immediately. SSE maintains its
+own cursor across hidden history. For older
+events, pass `next_cursors.events` from State or `next_event_cursor` from a Thread
+snapshot as `events_before`. Indexed Tenant and package event references and
+audience membership support this filtering.
 
 The lock deliberately serializes Marketplace mutations for one database. It keeps the first implementation's ordering auditable; it is not a claim of unbounded publication throughput. Source content, retained revisions and provenance are not garbage-collected by this feature.
 

@@ -7,6 +7,8 @@ fn snapshot(rows: usize) -> ThreadSnapshot {
 	let thread_id = Uuid::new_v4();
 	let now = Utc::now();
 	ThreadSnapshot {
+		next_event_cursor: None,
+		partial: false,
 		thread: Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			id: thread_id,

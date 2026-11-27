@@ -127,6 +127,7 @@ pub trait VisibilityScope: Send {
 
 #[async_trait]
 pub trait ActivationRepository: Send + Sync {
+	fn publication_pool_size(&self) -> usize;
 	fn node_id(&self) -> &str;
 	fn lease_seconds(&self) -> i32;
 	async fn visibility(&self) -> Result<Box<dyn VisibilityScope>>;

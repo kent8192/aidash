@@ -46,15 +46,26 @@ impl Harness {
 		token: Uuid,
 		visibility: crate::transactions::gate::ReadLease,
 	) -> Result<bool> {
+		let tenancy = self
+			.federation
+			.store
+			.run_tenancy(run.id)
+			.await
+			.unwrap_or_else(|_| crate::apps::execution::repositories::worker::claimed());
 		let scope = crate::bootstrap::worker_step(&self.federation, run, visibility);
 		let leases = crate::bootstrap::worker_leases(&self.federation.store);
-		aidash_harness::execution::advance(
-			scope,
-			&leases,
-			token,
-			self.federation.config.lease_seconds,
-		)
-		.await?;
+		self.federation
+			.store
+			.pool
+			.operation(&tenancy, || {
+				aidash_harness::execution::advance(
+					scope,
+					&leases,
+					token,
+					self.federation.config.lease_seconds,
+				)
+			})
+			.await?;
 		Ok(true)
 	}
 

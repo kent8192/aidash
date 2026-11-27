@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
 	agent_plugin::{
-		AgentPluginRef, MAX_AGENT_PLUGINS, PinnedAgentPlugin,
+		AgentPluginRef, PinnedAgentPlugin,
 		fixtures::{SOURCE, plugin, reference},
 	},
 	capabilities::skills,
@@ -282,16 +282,14 @@ fn a_definition_records_its_plugins_and_the_settings_view_returns_them() {
 	assert_eq!(serde_json::to_value(&config).unwrap(), stored);
 }
 
-#[rstest]
-#[case::at_the_limit(MAX_AGENT_PLUGINS, true)]
-#[case::past_the_limit(MAX_AGENT_PLUGINS + 1, false)]
-fn an_agent_takes_in_a_bounded_number_of_plugins(#[case] count: usize, #[case] accepted: bool) {
+#[test]
+fn an_agent_can_attach_more_than_eight_plugins() {
 	let mut definition = agent();
-	definition.agent_plugins = (0..count)
+	definition.agent_plugins = (0..9)
 		.map(|n| reference(&format!("plugin-{n}"), &[]))
 		.collect();
 
-	assert_eq!(definition.validate().is_ok(), accepted);
+	definition.validate().unwrap();
 }
 
 #[test]
@@ -329,18 +327,14 @@ fn empty_instructions_need_a_plugin_that_carries_a_skill(
 }
 
 #[test]
-fn the_plugin_skills_of_one_agent_stay_within_what_a_run_pins() {
+fn an_agent_accepts_more_than_thirty_two_plugin_skills() {
 	let names = |from: usize, to: usize| (from..to).map(|n| format!("s{n:02}")).collect::<Vec<_>>();
 	let mut definition = agent();
 	definition.agent_plugins = vec![reference("first", &[]), reference("second", &[])];
-	definition.agent_plugins[0].skills = names(0, 16);
-	definition.agent_plugins[1].skills = names(16, 32);
+	definition.agent_plugins[0].skills = names(0, 17);
+	definition.agent_plugins[1].skills = names(17, 33);
+
 	definition.validate().unwrap();
-
-	definition.agent_plugins.push(reference("third", &[]));
-	definition.agent_plugins[2].skills = names(32, 33);
-
-	assert!(definition.validate().is_err());
 }
 
 #[test]

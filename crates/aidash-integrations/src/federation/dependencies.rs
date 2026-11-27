@@ -2,12 +2,15 @@
 use super::{HttpTransport, unavailable};
 use aidash_application::{
 	Error,
-	ports::federation::dependencies::{Check, DependencyTransport},
+	ports::federation::dependencies::{Check, DependencyTransport, ResponseTooLarge},
 };
 use aidash_domain::federation::{dependencies::Input, route::Route};
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
+
+// Protect local decode memory. 128 KiB covers the verdict and its disclosed dependency frontier.
+const MAX_RESPONSE_BYTES: usize = 128 * 1024;
 
 #[async_trait]
 impl DependencyTransport for HttpTransport {
@@ -39,7 +42,18 @@ impl DependencyTransport for HttpTransport {
 				}
 				return check;
 			}
-			match crate::response::json(reply, 131072).await {
+			let body = match crate::response::within(reply, MAX_RESPONSE_BYTES).await {
+				Ok(Ok(body)) => body,
+				Ok(Err(crate::response::Oversized)) => {
+					unavailable(route, &ResponseTooLarge);
+					return Check::ResponseTooLarge(ResponseTooLarge);
+				}
+				Err(error) => {
+					unavailable(route, &error);
+					return Check::Unavailable;
+				}
+			};
+			match serde_json::from_slice(&body) {
 				Ok(checked) => Check::Confirmed(checked),
 				Err(error) => {
 					unavailable(route, &error);

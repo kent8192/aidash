@@ -1,5 +1,5 @@
 //! Native migration and HTTP launch paths used by the compatibility binary.
-use super::{ProcessRole, RuntimeTasks, initialize, initialize_as};
+use super::{DatabaseSource, ProcessRole, RuntimeTasks, initialize_as, initialize_process};
 use crate::apps::execution::services::lifecycle::{ProbeServer, ProcessLifecycle};
 use crate::{
 	Error, Result,
@@ -37,20 +37,17 @@ pub async fn require_migrated(settings: &ProjectSettings) -> Result<()> {
 pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	// The server's login cannot change the schema; `migrate` runs first as its owner.
 	require_migrated(&settings).await?;
-	let config = Config::from_settings(&settings)?;
 	let address: std::net::SocketAddr = std::env::var("AIDASH_LISTEN")
 		.unwrap_or_else(|_| "127.0.0.1:8080".into())
 		.parse()
 		.map_err(|_| Error::Invalid("invalid AIDASH_LISTEN".into()))?;
-	let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
 	let mut stopped = coordinator.subscribe();
 	ProcessLifecycle::register(&context, coordinator.clone());
-	let federation = initialize_as(
+	let federation = initialize_process(
 		&context,
 		&settings,
-		connection,
 		if workers {
 			ProcessRole::Serve
 		} else {
@@ -129,12 +126,17 @@ pub async fn preview_gateway(settings: ProjectSettings) -> Result<()> {
 	let preview = config.preview.clone().ok_or_else(|| {
 		Error::Invalid("preview.domain is required for the preview-gateway role".into())
 	})?;
-	let connection = crate::database::runtime::connect(&config.database_url, 8).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
 	let mut stopped = coordinator.subscribe();
 	ProcessLifecycle::register(&context, coordinator.clone());
-	let federation = initialize(&context, &settings, connection).await?;
+	let federation = initialize_as(
+		&context,
+		&settings,
+		DatabaseSource::Preview,
+		ProcessRole::Serve,
+	)
+	.await?;
 	let listener = tokio::net::TcpListener::bind(preview.listen).await?;
 	let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
 		store: federation.store.clone(),
@@ -164,11 +166,8 @@ pub async fn preview_gateway(settings: ProjectSettings) -> Result<()> {
 pub async fn egress_gateway(settings: ProjectSettings) -> Result<()> {
 	require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
-	let pool = crate::database::runtime::connect(&config.database_url, 8)
-		.await?
-		.into_postgres()
-		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
-	let mut store = crate::store::Store::from_pool_for_role(pool, config.deployment.clone(), true)
+	let pool = crate::database::runtime::connect_egress(&config.database_url).await?;
+	let mut store = crate::store::Store::from_gateway_pool(pool, config.deployment.clone())
 		.await?
 		.with_data_protection_floor(settings.deployment.data_protection_floor);
 	super::configure_provider_credentials(&mut store, &settings.provider_credentials).await?;

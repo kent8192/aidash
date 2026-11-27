@@ -10,7 +10,7 @@ use crate::{
 	transactions::gate::ReadLease,
 };
 use aidash_application::{
-	federation::inbound::{Inbound, Proof, accept},
+	federation::inbound::{Inbound, Proof},
 	tenancy::TenancyScope,
 };
 use aidash_capability::federation::FederationClaims;
@@ -326,7 +326,7 @@ async fn admit_peer(runtime: &Federation, request: &Request) -> Result<()> {
 	) else {
 		return Err(Error::Unauthorized);
 	};
-	let admitted = accept(
+	let admitted = crate::apps::federation::remote::services::inbound::accept(
 		Inbound {
 			receiver,
 			sender: sender.clone(),

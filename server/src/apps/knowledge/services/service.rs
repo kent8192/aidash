@@ -109,11 +109,16 @@ pub async fn search(
 	thread: Uuid,
 	input: Search,
 ) -> Result<SearchResult> {
-	let mut lease = Lease::begin(store, actor, thread).await?;
-	lease.durable();
-	lease.lists();
-	let result = search_in(store, &mut lease, thread, input, None, None).await;
-	lease.finish(result).await
+	store
+		.pool
+		.operation(&actor.tenancy()?, || async {
+			let mut lease = Lease::begin(store, actor, thread).await?;
+			lease.durable();
+			lease.lists();
+			let result = search_in(store, &mut lease, thread, input, None, None).await;
+			lease.finish(result).await
+		})
+		.await
 }
 pub(crate) async fn search_in(
 	store: &Store,

@@ -20,7 +20,6 @@ use aidash_domain::federation::tool_lists::{
 };
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{NodeAddress, NodeName};
-use chrono::{DateTime, Utc};
 use futures_util::{StreamExt as _, future, stream};
 use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
@@ -88,13 +87,31 @@ fn parse_address(source_node: &str) -> Result<NodeAddress> {
 	Ok(NodeAddress::parse(&source_node)?)
 }
 
-fn parse_cursor(cursor: &str) -> Result<(DateTime<Utc>, Uuid)> {
-	let invalid = || Error::Invalid("invalid tool asks cursor".into());
-	let (expires_at, id) = cursor.split_once(',').ok_or_else(invalid)?;
-	Ok((
-		expires_at.parse().map_err(|_| invalid())?,
-		id.parse().map_err(|_| invalid())?,
-	))
+#[derive(Debug, PartialEq, Eq)]
+enum AskCursor {
+	Receiver(Option<asks::AskKey>),
+	Home(Option<asks::AskKey>),
+}
+
+impl AskCursor {
+	fn parse(cursor: Option<&str>) -> Result<Self> {
+		let invalid = || Error::Invalid("invalid tool asks cursor".into());
+		let parse_key = |value: &str| -> Result<asks::AskKey> {
+			let (at, id) = value.split_once(',').ok_or_else(invalid)?;
+			Ok((
+				at.parse().map_err(|_| invalid())?,
+				id.parse().map_err(|_| invalid())?,
+			))
+		};
+		match cursor {
+			None => Ok(Self::Receiver(None)),
+			Some("home") => Ok(Self::Home(None)),
+			Some(value) => match value.strip_prefix("receiver,") {
+				Some(key) => Ok(Self::Receiver(Some(parse_key(key)?))),
+				None => Ok(Self::Home(Some(parse_key(value)?))),
+			},
+		}
+	}
 }
 
 /// Record the answer as the tenant administration audit event of a list change (decision 29).
@@ -177,9 +194,9 @@ impl NodeRegistrations {
 	) -> Result<ToolAsks> {
 		let node = NodeName::parse(&node)?;
 		let source = parse_address(&source_node)?;
-		let after = cursor.as_deref().map(parse_cursor).transpose()?;
+		let cursor = AskCursor::parse(cursor.as_deref())?;
 		let f = self.runtime.clone();
-		let (hosted, (issued, next)) = self
+		let (hosted, issued, next_cursor) = self
 			.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				f.store
@@ -187,9 +204,28 @@ impl NodeRegistrations {
 					.atomic(&administrator.scope()?, async |tx| {
 						require_manage(administrator, tx, (tenant.as_str(), &node, &source))
 							.await?;
-						let hosted =
-							asks::receiver_asks(tx, &tenant, node.as_str(), &source).await?;
-						let issued = asks::home_grant_page(
+						let after = match cursor {
+							AskCursor::Receiver(before) => {
+								let (hosted, next) = asks::receiver_asks(
+									tx,
+									&tenant,
+									node.as_str(),
+									&source,
+									before,
+								)
+								.await?;
+								if let Some((at, id)) = next {
+									let cursor = format!("receiver,{},{id}", at.to_rfc3339());
+									return Ok((hosted, Vec::new(), Some(cursor)));
+								}
+								if !hosted.is_empty() {
+									return Ok((hosted, Vec::new(), Some("home".to_owned())));
+								}
+								None
+							}
+							AskCursor::Home(after) => after,
+						};
+						let (issued, next) = asks::home_grant_page(
 							tx,
 							&tenant,
 							node.as_str(),
@@ -198,7 +234,8 @@ impl NodeRegistrations {
 							HOME_GRANT_PAGE,
 						)
 						.await?;
-						Ok((hosted, issued))
+						let next_cursor = next.map(|(at, id)| format!("{},{id}", at.to_rfc3339()));
+						Ok((Vec::new(), issued, next_cursor))
 					})
 					.await
 			})
@@ -249,7 +286,7 @@ impl NodeRegistrations {
 		records.extend(waiting);
 		Ok(ToolAsks {
 			asks: records,
-			next_cursor: next.map(|(expires_at, id)| format!("{},{id}", expires_at.to_rfc3339())),
+			next_cursor,
 		})
 	}
 
@@ -582,5 +619,31 @@ impl NodeRegistrations {
 			pattern: listed,
 			resumed: true,
 		})
+	}
+}
+
+#[cfg(test)]
+mod pagination_tests {
+	use super::*;
+
+	#[test]
+	fn continuation_keeps_the_receiver_and_home_positions_distinct() {
+		let at = "2026-11-27T10:30:00Z";
+		let id = Uuid::from_u128(42);
+		let key = (at.parse().unwrap(), id);
+		assert_eq!(AskCursor::parse(None).unwrap(), AskCursor::Receiver(None));
+		assert_eq!(
+			AskCursor::parse(Some("home")).unwrap(),
+			AskCursor::Home(None)
+		);
+		assert_eq!(
+			AskCursor::parse(Some(&format!("receiver,{at},{id}"))).unwrap(),
+			AskCursor::Receiver(Some(key))
+		);
+		assert_eq!(
+			AskCursor::parse(Some(&format!("{at},{id}"))).unwrap(),
+			AskCursor::Home(Some(key))
+		);
+		assert!(AskCursor::parse(Some("receiver,broken")).is_err());
 	}
 }

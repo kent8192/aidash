@@ -430,8 +430,16 @@
     },
     "database": {
       "type": "object",
-      "required": ["statementTimeoutSeconds"],
+      "required": [
+        "postgresMemoryLimit",
+        "sharedBuffersMiB",
+        "activeBackendMiB",
+        "statementTimeoutSeconds"
+      ],
       "properties": {
+        "postgresMemoryLimit": { "type": "string" },
+        "sharedBuffersMiB": { "type": "integer", "minimum": 1 },
+        "activeBackendMiB": { "type": "integer", "minimum": 1 },
         "statementTimeoutSeconds": {
           "type": "integer",
           "minimum": 0,

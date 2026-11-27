@@ -87,6 +87,13 @@ impl InProcess {
 }
 
 impl Federation {
+	/// Keep protocol work on the pool available to callers holding Work connections.
+	pub(crate) fn using_control_pool(&self) -> Self {
+		let mut runtime = self.clone();
+		runtime.store.pool = runtime.store.control_pool.clone();
+		runtime
+	}
+
 	/// Let every clone of this Federation's `Store` reach the other Nodes of
 	/// its Deployment. The first binding wins; a second is ignored.
 	pub fn bind_in_process(self) -> Self {
@@ -210,9 +217,7 @@ impl Federation {
 		.map_err(Into::into)
 	}
 
-	/// Workers need reserved database capacity to finish an effect while API
-	/// revocations wait for its authority lease. Embedded runners must use this
-	/// separate pool too; otherwise waiting API requests can exhaust the pool.
+	/// Reuse process pools when moving work to an embedded worker.
 	pub async fn for_workers(&self) -> Result<Self> {
 		let store = self.store.isolated_pool().await?;
 		Ok(Self {
@@ -270,7 +275,7 @@ impl Federation {
 			return Ok(None);
 		}
 		self.store
-			.pool
+			.control_pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				crate::apps::identity::repositories::node_registrations::name_tenant(
 					tx,
@@ -299,13 +304,16 @@ impl Federation {
 	) -> Result<Route> {
 		let target =
 			aidash_domain::nodes::NodeAddress::parse(node).map_err(|_| routes::unregistered())?;
-		self.store
-			.pool
-			.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
-				routes::route_delivery(tx, &self.config.deployment, sender, &target, request).await
-			})
-			.await?
-			.ok_or_else(routes::unregistered)
+		let pool = if super::inbound::is_transaction_protocol(request) {
+			&self.store.control_pool
+		} else {
+			&self.store.pool
+		};
+		pool.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
+			routes::route_delivery(tx, &self.config.deployment, sender, &target, request).await
+		})
+		.await?
+		.ok_or_else(routes::unregistered)
 	}
 	/// Every Node the sender addresses.
 	pub async fn routes(&self, sender: &Sender) -> Result<Vec<Route>> {
@@ -673,6 +681,8 @@ impl Home {
 				.await
 		} else {
 			let mut snapshot = ThreadSnapshot {
+				next_event_cursor: None,
+				partial: false,
 				thread: self.command("snapshot_thread", json!({})).await?,
 				tasks: self.snapshot_collection("tasks").await?,
 				artifacts: self.snapshot_collection("artifacts").await?,

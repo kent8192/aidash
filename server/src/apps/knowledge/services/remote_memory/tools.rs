@@ -22,8 +22,50 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
-/// The most Units one tool recall returns, as for a local Run's shared recall.
-const MAX_UNITS: usize = 8;
+struct RecallSelection {
+	units: Vec<Unit>,
+	bytes: usize,
+	budget: usize,
+	truncated: bool,
+}
+
+impl RecallSelection {
+	fn new(budget: usize) -> Result<Self> {
+		// Protect the tool result's byte budget, including the Ready envelope and Unit delimiters.
+		let bytes =
+			serde_json::to_vec(&memory::Outcome::Recall(Recall::Ready { units: vec![] }))?.len();
+		Ok(Self {
+			units: Vec::new(),
+			bytes,
+			budget,
+			truncated: false,
+		})
+	}
+
+	fn keep(&mut self, unit: &Unit) -> Result<bool> {
+		let size = serde_json::to_vec(unit)?.len() + usize::from(!self.units.is_empty());
+		if self.bytes.saturating_add(size) > self.budget {
+			self.truncated = true;
+			return Ok(false);
+		}
+		self.bytes += size;
+		self.units.push(unit.clone());
+		Ok(true)
+	}
+
+	fn finish(self) -> Result<serde_json::Value> {
+		let outcome = memory::Outcome::Recall(if self.units.is_empty() {
+			Recall::Empty
+		} else {
+			Recall::Ready { units: self.units }
+		});
+		let mut result = serde_json::to_value(outcome)?;
+		if self.truncated {
+			result["truncated"] = serde_json::json!(true);
+		}
+		Ok(result)
+	}
+}
 
 /// The grant's native binding, still current on the Home.
 async fn binding(store: &Store, lease: &mut Lease<'_>, grant: Uuid) -> Result<NativeBinding> {
@@ -74,7 +116,7 @@ pub(crate) async fn recall(
 	key: &str,
 	query: RecallQuery,
 	reflect: bool,
-) -> Result<memory::Outcome> {
+) -> Result<serde_json::Value> {
 	let binding = binding(store, lease, grant).await?;
 	if reflect {
 		// A reflection is the Agent's own synthesis over its participant bank.
@@ -84,7 +126,7 @@ pub(crate) async fn recall(
 			.find(|declared| declared.bank == *binding.write_bank())
 			.ok_or(Error::Forbidden)?;
 		units::authorize(lease, &declared.bank, "memory.disclose").await?;
-		return memory::operate_in(
+		let outcome = memory::operate_in(
 			store,
 			lease,
 			memory::Operation {
@@ -95,9 +137,10 @@ pub(crate) async fn recall(
 			},
 			None,
 		)
-		.await;
+		.await?;
+		return Ok(serde_json::to_value(outcome)?);
 	}
-	let mut selected: Vec<Unit> = Vec::new();
+	let mut selected = RecallSelection::new(query.max_tokens)?;
 	let mut context = NativeContext { banks: vec![] };
 	for declared in binding.read_banks() {
 		let own = declared.bank == *binding.write_bank();
@@ -129,15 +172,7 @@ pub(crate) async fn recall(
 		let mut kept = Vec::new();
 		if let memory::Outcome::Recall(Recall::Ready { units }) = outcome {
 			for unit in units {
-				if selected.len() >= MAX_UNITS {
-					break;
-				}
-				let mut candidate = selected.clone();
-				candidate.push(unit.clone());
-				if serde_json::to_vec(&memory::Outcome::Recall(Recall::Ready { units: candidate }))?
-					.len() <= query.max_tokens
-				{
-					selected.push(unit.clone());
+				if selected.keep(&unit)? {
 					kept.push(unit);
 				}
 			}
@@ -152,15 +187,11 @@ pub(crate) async fn recall(
 			},
 		});
 	}
-	if !selected.is_empty() {
+	if !selected.units.is_empty() {
 		let capacity = remote_memory_reads::capacity(lease, &binding).await?;
 		remote_memory_reads::record(lease.tx(), grant, &binding, &context, capacity).await?;
 	}
-	Ok(memory::Outcome::Recall(if selected.is_empty() {
-		Recall::Empty
-	} else {
-		Recall::Ready { units: selected }
-	}))
+	selected.finish()
 }
 
 /// A write, to the Agent's participant bank only. The Home holds no Journal of a Run that
@@ -221,4 +252,59 @@ pub(crate) async fn mutate(
 	}
 	memory::validate_direct_mutation(lease, &mutation, &policy).await?;
 	repository::mutate(lease, &mutation, &policy.bounds).await
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use aidash_domain::memory::{Bank, Content, Kind, Learning};
+
+	fn unit(index: u128) -> Unit {
+		let now = chrono::DateTime::from_timestamp(0, 0).unwrap();
+		Unit {
+			id: Uuid::from_u128(index),
+			bank: Bank {
+				home: "home".into(),
+				tenant: "tenant".into(),
+				thread: Uuid::from_u128(1),
+				participant: None,
+			},
+			revision: 1,
+			content: Content {
+				mental_model: None,
+				text: format!("Unit {index}"),
+				kind: Kind::World,
+				learning: Learning::Fact,
+				verification: Verification::default(),
+				occurred: None,
+				entities: vec![],
+				evidence: vec![],
+				links: vec![],
+			},
+			learned_at: now,
+			updated_at: now,
+			deleted: false,
+			stale: false,
+		}
+	}
+
+	#[test]
+	fn recall_marks_the_byte_cut_and_keeps_more_than_eight_units_when_they_fit() {
+		let units: Vec<_> = (1..=9).map(unit).collect();
+		let expected = memory::Outcome::Recall(Recall::Ready {
+			units: units.clone(),
+		});
+		let binding_bytes = serde_json::to_vec(&expected).unwrap().len();
+		let mut selection = RecallSelection::new(binding_bytes).unwrap();
+		for unit in &units {
+			assert!(selection.keep(unit).unwrap());
+		}
+		assert!(!selection.keep(&unit(10)).unwrap());
+		let mut result = selection.finish().unwrap();
+		assert_eq!(
+			result.as_object_mut().unwrap().remove("truncated"),
+			Some(serde_json::json!(true))
+		);
+		assert_eq!(result, serde_json::to_value(expected).unwrap());
+	}
 }

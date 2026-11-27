@@ -6,7 +6,7 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 use std::sync::{
 	Arc, Mutex,
-	atomic::{AtomicBool, Ordering},
+	atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use uuid::Uuid;
 
@@ -41,6 +41,9 @@ impl EventOutbox for Outbox {
 }
 #[async_trait]
 impl EventOutboxBatch for Batch {
+	fn publication_pool_size(&self) -> usize {
+		4
+	}
 	fn events(&self) -> Vec<Event> {
 		self.events.clone()
 	}
@@ -52,12 +55,13 @@ impl EventOutboxBatch for Batch {
 }
 struct Publisher {
 	failing: Option<Uuid>,
-	pending: bool,
+	pending: Option<AtomicUsize>,
 }
 #[async_trait]
 impl EventPublisher for Publisher {
 	async fn publish(&self, event: &Event) -> Result<()> {
-		if self.pending {
+		if let Some(started) = &self.pending {
+			started.fetch_add(1, Ordering::SeqCst);
 			return std::future::pending().await;
 		}
 		if self.failing == Some(event.id) {
@@ -91,7 +95,7 @@ async fn one_failed_event_is_retained_while_later_events_are_published(outbox: O
 	let failed = outbox.events[0].id;
 	let publisher = Publisher {
 		failing: Some(failed),
-		pending: false,
+		pending: None,
 	};
 	// Act
 	let count = publish(&outbox, &publisher).await.unwrap();
@@ -111,7 +115,7 @@ async fn stale_claim_acknowledgements_are_not_counted_as_publication(mut outbox:
 		&outbox,
 		&Publisher {
 			failing: None,
-			pending: false,
+			pending: None,
 		},
 	)
 	.await
@@ -121,13 +125,23 @@ async fn stale_claim_acknowledgements_are_not_counted_as_publication(mut outbox:
 }
 #[rstest]
 #[tokio::test]
-async fn cancelled_publication_releases_the_owned_visibility_lease(outbox: Outbox) {
+async fn publication_leaves_half_the_pool_free_and_releases_visibility_on_cancellation(
+	mut outbox: Outbox,
+) {
+	let mut third = outbox.events[1].clone();
+	third.id = Uuid::new_v4();
+	third.sequence += 1;
+	outbox.events.push(third);
 	let publisher = Publisher {
 		failing: None,
-		pending: true,
+		pending: Some(AtomicUsize::new(0)),
 	};
 	let mut work = Box::pin(publish(&outbox, &publisher));
 	assert!(futures_util::poll!(work.as_mut()).is_pending());
+	assert_eq!(
+		publisher.pending.as_ref().unwrap().load(Ordering::SeqCst),
+		2
+	);
 	assert!(outbox.state.held.load(Ordering::SeqCst));
 	drop(work);
 	assert!(!outbox.state.held.load(Ordering::SeqCst));

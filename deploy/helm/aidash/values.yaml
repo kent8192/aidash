@@ -147,6 +147,11 @@ tolerations: []
 affinity: {}
 
 database:
+  # Match the PostgreSQL settings used by the database deployment.
+  postgresMemoryLimit: 8Gi
+  sharedBuffersMiB: 256
+  # Round the measured peak active backend (pgvector + PGroonga) up to 10 MiB.
+  activeBackendMiB: 10
   # Longest a server or worker statement may run, lock waits included; 0 turns
   # it off. ADR 0113 lists the statements that are exempt and why.
   statementTimeoutSeconds: 300

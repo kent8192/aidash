@@ -15,9 +15,9 @@ use crate::{
 use aidash_domain::{
 	RunMetadata,
 	capabilities::{
-		errors::area_revision_changed,
+		errors::{SAVE_MANIFEST_INCOMPLETE, area_revision_changed},
 		files::{ScratchSave, WorkingCopy, WorkingRemove},
-		operations::{FileScope, MAX_AREA_FILES, MountedFile, counted_files},
+		operations::{FileScope, MountedFile, counted_files},
 		sessions::Area,
 	},
 	registry::rules::{digest, validate_path},
@@ -121,17 +121,9 @@ pub fn plan(
 		.filter(|file| !unchanged_paths.contains(&file.path))
 		.collect();
 	removed.retain(|path| !saved.iter().any(|file| file.path == *path));
-	let mut count = counted_files(&kept).count();
 	let mut bytes = counted_files(&kept).map(|file| file.size).sum::<u64>() + retained_bytes;
 	for file in &saved {
-		count += 1;
 		bytes = bytes.saturating_add(file.size);
-		if count > MAX_AREA_FILES {
-			return Err(Error::Conflict(format!(
-				"SAVE_LIMIT: saving {} would hold more than the Working Area's {MAX_AREA_FILES} files; nothing was saved",
-				file.path
-			)));
-		}
 		if bytes > working_bytes {
 			return Err(Error::Conflict(format!(
 				"SAVE_LIMIT: saving {} would exceed the Working Area's {working_bytes} bytes; nothing was saved",
@@ -208,13 +200,13 @@ impl Save {
 				ignore_files: input.ignore_files.clone(),
 				exclude: input.exclude.clone(),
 				include: input.include.clone(),
-				max_files: u32::try_from(MAX_AREA_FILES + 1).expect("bounded"),
+				max_files: None,
 				missing_ok: input.sync,
 			};
 			let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
 			if manifest.truncated {
 				return Err(Error::Conflict(format!(
-					"SAVE_LIMIT: {root} holds more than the Working Area's {MAX_AREA_FILES} files; narrow it with exclude or ignore_files. Nothing was saved"
+					"{SAVE_MANIFEST_INCOMPLETE}: incomplete manifest for {root}. Nothing was saved."
 				)));
 			}
 			skipped.extend(manifest.skipped_symlinks);

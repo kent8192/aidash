@@ -9122,16 +9122,11 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 	p.step().await;
 	let home = Home::new(p.b.clone(), p.run().await);
 	let key = format!("{}:binding-human", p.admission);
+	let prompt = "Proceed with the saved task? ".repeat(2_300);
 	*p.drop_reply.lock().await = Some("human_request".into());
-	assert!(
-		home.human_request("QUESTION", "Proceed with the saved task?", &key)
-			.await
-			.is_err()
-	);
-	let saved = home
-		.human_request("QUESTION", "Proceed with the saved task?", &key)
-		.await
-		.unwrap();
+	assert!(home.human_request("QUESTION", &prompt, &key).await.is_err());
+	let saved = home.human_request("QUESTION", &prompt, &key).await.unwrap();
+	assert_eq!(saved.prompt, prompt);
 	assert_eq!(saved.run_id, p.admission);
 	assert_eq!(
 		saved.thread_id,
@@ -9142,7 +9137,7 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 			.thread_id
 	);
 	assert_eq!(
-		home.human_request("QUESTION", "Proceed with the saved task?", &key)
+		home.human_request("QUESTION", &prompt, &key)
 			.await
 			.unwrap()
 			.id,

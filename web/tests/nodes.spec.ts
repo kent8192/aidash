@@ -73,6 +73,7 @@ async function setup(
     lab?: { request?: boolean };
     member?: boolean;
     updateOnly?: boolean;
+    toolAsks?: boolean;
     administrator?: boolean;
     retained?: NodeRecord[];
     restoreConflict?: boolean;
@@ -186,6 +187,7 @@ async function setup(
                   "node.update",
                   "node_registration.read",
                   "node_registration.update",
+                  ...(options.toolAsks ? ["node.federation_tools.manage"] : []),
                 ],
           assignable_groups: [],
           policy_revision: 1,
@@ -1164,3 +1166,50 @@ for (const [offering, notice] of [
     }
   });
 }
+
+test("an empty receiver Tool Ask page continues to Home asks", async ({
+  page,
+}) => {
+  await setup(page, { toolAsks: true });
+  const source = `${deployment}/sibling`;
+  const cursors: Array<string | null> = [];
+  await page.route("**/tool-asks**", (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get("cursor");
+    cursors.push(cursor);
+    return route.fulfill({
+      json:
+        cursor === "home"
+          ? {
+              asks: [
+                {
+                  side: "home",
+                  id: "grant-id",
+                  run_id: "run-id",
+                  grant_id: "grant-id",
+                  task_id: "task-id",
+                  task_title: "Home task",
+                  tool: "fetch_records",
+                  key: "fetch_records",
+                  call: "call-id",
+                  paused_since: null,
+                },
+              ],
+            }
+          : { asks: [], next_cursor: "home" },
+    });
+  });
+
+  await page.goto("/settings?view=nodes");
+  const registration = page.locator(`[data-registration="${source}"]`);
+  await registration.getByText("Federation tools", { exact: true }).click();
+  const asks = registration.locator("[data-tool-asks]");
+  await expect(
+    asks.getByText("No waiting calls found on this page."),
+  ).toBeVisible();
+  await asks.getByRole("button", { name: "Next page", exact: true }).click();
+  await expect(asks.getByText("fetch_records", { exact: true })).toBeVisible();
+  await expect(
+    asks.getByRole("button", { name: "Next page", exact: true }),
+  ).toBeDisabled();
+  expect(cursors).toEqual([null, "home"]);
+});

@@ -8,6 +8,7 @@ use crate::ports::capabilities::execution_pod::{
 };
 use aidash_domain::agent_plugin::{Command, Cwd, Executable};
 use std::collections::VecDeque;
+use tokio::time::Instant;
 
 type PodFiles = BTreeMap<String, (Vec<u8>, Option<u32>)>;
 
@@ -28,6 +29,9 @@ struct Pod {
 	/// How the next MCP start ends: `None` answers, `Some(None)` never answers, and
 	/// `Some(Some(error))` fails after the Runner may have started the process.
 	start_outcome: Mutex<Option<Option<ExecutionPodError>>>,
+	/// Delay the selected phase only for a server with MODE=slow.
+	slow: Mutex<Option<(&'static str, Duration)>>,
+	listed_at: Mutex<Vec<(String, Instant)>>,
 	/// Answers to refusals, in order; none left answers with a transport error.
 	refusals: Mutex<VecDeque<CommandRefusal>>,
 	refused: Mutex<Vec<String>>,
@@ -60,6 +64,15 @@ impl Pod {
 	}
 	fn answer(&self, answer: PodResult<Value>) {
 		self.call_answers.lock().unwrap().push_back(answer);
+	}
+	async fn delay(&self, mode: &str, phase: &str) {
+		let slow = *self.slow.lock().unwrap();
+		if let Some((target, delay)) = slow
+			&& mode == "slow"
+			&& phase == target
+		{
+			tokio::time::sleep(delay).await;
+		}
 	}
 }
 
@@ -200,6 +213,8 @@ impl ExecutionPodRuntime for Pod {
 	async fn mcp_start(&self, request: &McpStartRequest) -> PodResult<McpSession> {
 		self.call("mcp_start");
 		self.starts.lock().unwrap().push(request.clone());
+		self.delay(request.env.get("MODE").map_or("", String::as_str), "start")
+			.await;
 		let outcome = self.start_outcome.lock().unwrap().take();
 		match outcome {
 			None => Ok(McpSession {
@@ -218,7 +233,19 @@ impl ExecutionPodRuntime for Pod {
 			Some("notifications/initialized") => {
 				return Ok(McpCallResult { message: json!({}) });
 			}
-			Some("tools/list") => json!({"tools": self.tools.lock().unwrap().clone()}),
+			Some("tools/list") => {
+				let mode = self
+					.starts
+					.lock()
+					.unwrap()
+					.iter()
+					.find(|start| start.operation_id == request.operation_id)
+					.and_then(|start| start.env.get("MODE").cloned())
+					.unwrap_or_default();
+				self.delay(&mode, "list").await;
+				self.listed_at.lock().unwrap().push((mode, Instant::now()));
+				json!({"tools": self.tools.lock().unwrap().clone()})
+			}
 			Some("tools/call") => {
 				assert_eq!(request.timeout_seconds, CALL_SECONDS);
 				match self.call_answers.lock().unwrap().pop_front() {
@@ -402,6 +429,110 @@ fn setup() -> (
 	let sessions = Arc::new(StdioSessions::default());
 	let bound = sessions.bind(run(), host.clone());
 	(pod, host, sessions, bound)
+}
+
+#[rstest::rstest]
+#[case::slow_start("start", Duration::from_secs(331), Duration::from_secs(330))]
+#[case::slow_listing("list", Duration::from_secs(2), Duration::from_secs(2))]
+#[tokio::test(start_paused = true)]
+async fn fast_stdio_servers_list_while_another_server_is_slow(
+	#[case] phase: &'static str,
+	#[case] delay: Duration,
+	#[case] elapsed: Duration,
+) {
+	use crate::{
+		plugin_tools::{agent_bindings, list_servers},
+		test_support::{FakeSessions, plugin_snapshot, stored_plugin_with_servers},
+	};
+	use aidash_domain::agent_plugin::Listing;
+
+	let (pod, _, _, bound) = setup();
+	*pod.slow.lock().unwrap() = Some((phase, delay));
+	let definitions = json!({
+		"a-slow": {"type": "stdio", "command": "node", "env": {"MODE": "slow"}},
+		"b-fast": {"type": "stdio", "command": "node", "env": {"MODE": "first"}},
+		"c-fast": {"type": "stdio", "command": "node", "env": {"MODE": "second"}},
+	});
+	let plugin = stored_plugin_with_servers("acme-tools", definitions, &[]);
+	let snapshot = plugin_snapshot(vec![plugin], Value::Null);
+	let agent = agent_bindings(&snapshot).unwrap();
+	let sessions = FakeSessions::default().with_stdio(bound);
+	let began = Instant::now();
+
+	let listings = list_servers(&sessions, run(), &agent).await;
+
+	assert_eq!(listings.len(), 3, "{listings:?}");
+	let listed_at = pod.listed_at.lock().unwrap();
+	let listing = |name| {
+		listings
+			.iter()
+			.find(|((_, server), _)| server.as_str() == name)
+			.map(|(_, listing)| listing)
+			.unwrap()
+	};
+	for (name, mode) in [("b-fast", "first"), ("c-fast", "second")] {
+		assert!(
+			matches!(listing(name), Listing::Listed(tools) if tools[0].name == "search"),
+			"{listings:?}"
+		);
+		assert!(
+			listed_at
+				.iter()
+				.any(|(server, time)| server == mode && *time == began),
+			"{listed_at:?}"
+		);
+	}
+	assert_eq!(began.elapsed(), elapsed);
+	if phase == "start" {
+		assert!(
+			matches!(listing("a-slow"), Listing::Unavailable(reason) if reason == "timeout: stdio MCP server listing exceeded 330 seconds")
+		);
+	} else {
+		assert!(matches!(listing("a-slow"), Listing::Listed(tools) if tools[0].name == "search"));
+	}
+}
+
+#[tokio::test(start_paused = true)]
+async fn concurrent_lists_of_the_same_stdio_server_start_once() {
+	let (pod, _, _, bound) = setup();
+	*pod.slow.lock().unwrap() = Some(("start", Duration::from_secs(1)));
+	let server = server();
+	let mut config = node();
+	config.env.insert("MODE".into(), "slow".into());
+
+	let (first, second) = tokio::join!(
+		bound.list(run(), &server, &config),
+		bound.list(run(), &server, &config),
+	);
+
+	assert_eq!(first.unwrap()[0].name, "search");
+	assert_eq!(second.unwrap()[0].name, "search");
+	assert_eq!(pod.starts.lock().unwrap().len(), 1);
+	assert_eq!(pod.listed_at.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_waits_for_a_stdio_listing_before_stopping_its_process() {
+	let (pod, _, sessions, bound) = setup();
+	*pod.slow.lock().unwrap() = Some(("list", Duration::from_secs(1)));
+	let server = server();
+	let mut config = node();
+	config.env.insert("MODE".into(), "slow".into());
+	let listing = bound.list(run(), &server, &config);
+	tokio::pin!(listing);
+	let brief = Duration::from_millis(1);
+	assert!(tokio::time::timeout(brief, &mut listing).await.is_err());
+	let operation_id = pod.starts.lock().unwrap()[0].operation_id.clone();
+
+	let closing = sessions.close(run());
+	tokio::pin!(closing);
+	assert!(tokio::time::timeout(brief, &mut closing).await.is_err());
+	assert!(pod.stopped.lock().unwrap().is_empty());
+	assert!(pod.run_stops.lock().unwrap().is_empty());
+
+	assert_eq!(listing.await.unwrap()[0].name, "search");
+	closing.await;
+	assert_eq!(*pod.stopped.lock().unwrap(), [operation_id]);
 }
 
 #[tokio::test]
@@ -972,7 +1103,7 @@ async fn a_call_waiting_while_the_run_closes_starts_a_fresh_session_after_the_cl
 	let (pod, host, sessions, bound) = setup();
 	bound.list(run(), &server(), &node()).await.unwrap();
 	let state = sessions.runs.lock().unwrap()[&run()].clone();
-	let held = state.lock().await;
+	let held = state.activity.write().await;
 
 	// Act: a close and a call both wait for the Run's lock; the close was first.
 	let closing = tokio::spawn({
@@ -1066,4 +1197,38 @@ async fn a_session_whose_pod_was_replaced_is_accounted_for_by_the_runs_stop() {
 	assert_eq!(pod.starts.lock().unwrap().len(), 2);
 	assert!(!pod.run_stops.lock().unwrap().is_empty());
 	assert_eq!(*host.saves.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn run_wide_recovery_reopens_a_sibling_session_it_stopped() {
+	let (pod, _, _, bound) = setup();
+	let first = server();
+	let second = PluginServer {
+		server: ServerName::try_from("other".to_owned()).unwrap(),
+		..server()
+	};
+	bound.list(run(), &first, &node()).await.unwrap();
+
+	*pod.start_outcome.lock().unwrap() = Some(Some(ExecutionPodError::Transport(Error::External(
+		"connection reset".into(),
+	))));
+	*pod.stop_fails.lock().unwrap() = true;
+	for _ in 0..2 {
+		pod.refusals.lock().unwrap().push_back(CommandRefusal {
+			refused: false,
+			status: Some("interrupted".into()),
+		});
+	}
+	assert!(bound.list(run(), &second, &node()).await.is_err());
+	assert_eq!(
+		bound.list(run(), &second, &node()).await.unwrap()[0].name,
+		"search"
+	);
+	assert_eq!(
+		bound.list(run(), &first, &node()).await.unwrap()[0].name,
+		"search"
+	);
+
+	assert_eq!(*pod.run_stops.lock().unwrap(), [run().to_string()]);
+	assert_eq!(pod.starts.lock().unwrap().len(), 4);
 }

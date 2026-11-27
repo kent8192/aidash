@@ -401,6 +401,7 @@ pub(crate) struct SessionCall {
 /// Sessions with scripted servers. A server nobody scripted refuses its destination.
 #[derive(Default)]
 pub(crate) struct FakeSessions {
+	stdio: Option<std::sync::Arc<dyn crate::ports::tools::StdioPluginSessions>>,
 	servers: std::sync::Mutex<
 		std::collections::BTreeMap<String, (std::time::Duration, std::sync::Arc<Listed>)>,
 	>,
@@ -412,6 +413,14 @@ pub(crate) struct FakeSessions {
 	peak: std::sync::atomic::AtomicUsize,
 }
 impl FakeSessions {
+	pub(crate) fn with_stdio(
+		mut self,
+		stdio: std::sync::Arc<dyn crate::ports::tools::StdioPluginSessions>,
+	) -> Self {
+		self.stdio = Some(stdio);
+		self
+	}
+
 	pub(crate) fn script(&self, server: &str, listed: Listed) -> &Self {
 		self.script_after(server, std::time::Duration::ZERO, listed)
 	}
@@ -522,6 +531,9 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 	}
 	async fn close(&self, run: uuid::Uuid) {
 		self.closed.lock().unwrap().push(run);
+	}
+	fn stdio(&self) -> Option<std::sync::Arc<dyn crate::ports::tools::StdioPluginSessions>> {
+		self.stdio.clone()
 	}
 }
 

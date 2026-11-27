@@ -193,11 +193,54 @@ fn ticks_missed_while_down_run_once_late_at_the_latest_missed_time() {
 	assert_eq!(
 		claim,
 		Claim {
+			skipped: 2,
 			scheduled_at: at("2026-11-13T03:00:00Z"),
 			late: false,
 			next: Some(at("2026-11-13T04:00:00Z")),
 		}
 	);
+}
+
+#[rstest]
+#[case::interval(Trigger::Interval { every_seconds: 60 })]
+#[case::cron(cron("* * * * *", "UTC"))]
+fn catch_up_uses_the_latest_tick_after_more_than_one_hundred_thousand_misses(
+	#[case] trigger: Trigger,
+) {
+	let due = at("2025-01-01T00:00:00Z");
+	let timing = Timing {
+		trigger: Some(trigger),
+		anchor: due,
+		max_lateness_seconds: 5,
+	};
+	let claim = timing
+		.claim(due, at("2025-05-01T00:00:10Z"))
+		.unwrap()
+		.unwrap();
+	assert_eq!(claim.scheduled_at, at("2025-05-01T00:00:00Z"));
+	assert_eq!(claim.next, Some(at("2025-05-01T00:01:00Z")));
+	assert!(claim.late);
+	assert_eq!(
+		claim.skipped_mark().as_deref(),
+		Some("catch_up: >= 100000 skipped ticks")
+	);
+}
+
+#[test]
+fn catch_up_counts_coalesced_daylight_saving_ticks_once() {
+	let due = at("2026-03-08T07:00:00Z");
+	let timing = Timing {
+		trigger: Some(cron("0,30 2,3 * * *", "America/New_York")),
+		anchor: due,
+		max_lateness_seconds: 600,
+	};
+	let claim = timing
+		.claim(due, at("2026-03-08T07:31:00Z"))
+		.unwrap()
+		.unwrap();
+	assert_eq!(claim.scheduled_at, at("2026-03-08T07:30:00Z"));
+	assert_eq!(claim.skipped, 1);
+	assert!(!claim.late);
 }
 
 #[rstest]
@@ -234,6 +277,32 @@ fn nothing_is_claimed_before_the_tick() {
 			.unwrap(),
 		None
 	);
+}
+
+#[test]
+fn an_off_grid_interval_waits_for_the_next_tick_and_counts_only_grid_ticks() {
+	let timing = Timing {
+		trigger: Some(Trigger::Interval { every_seconds: 60 }),
+		anchor: at("2026-11-13T00:00:00Z"),
+		max_lateness_seconds: 10,
+	};
+	let due = timing.anchor + Duration::microseconds(1);
+	let first = timing.anchor + Duration::minutes(1);
+	assert_eq!(timing.scheduled_due(due).unwrap(), first);
+	assert_eq!(
+		timing
+			.claim(due, first - Duration::microseconds(1))
+			.unwrap(),
+		None
+	);
+
+	let claim = timing
+		.claim(due, first + Duration::minutes(2))
+		.unwrap()
+		.unwrap();
+	assert_eq!(claim.scheduled_at, first + Duration::minutes(2));
+	assert_eq!(claim.skipped, 2);
+	assert_eq!(claim.next, Some(first + Duration::minutes(3)));
 }
 
 #[rstest]

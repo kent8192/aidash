@@ -18,7 +18,7 @@ pub struct Status {
 
 	#[schemars(with = "Manifest")]
 	pub manifest: Value,
-	/// The secret that seals every part (ADR 0146). It is read from the
+	/// The secret that seals every part (ADR 0151). It is read from the
 	/// coordinator's records but never leaves its Deployment, so no response
 	/// carries it.
 	#[serde(default, skip_serializing)]
@@ -43,7 +43,7 @@ crate::native_record!(Status {
 });
 
 /// The coordinator's decision as a participant receives it: bound to the
-/// transaction digest, without the manifest (ADR 0146).
+/// transaction digest, without the manifest (ADR 0151).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "TransactionDecision")]
 #[serde(deny_unknown_fields)]
@@ -90,7 +90,7 @@ pub struct LocalStatus {
 	pub coordinator: String,
 	pub digest: String,
 
-	/// The participant's own share (ADR 0146).
+	/// The participant's own share (ADR 0151).
 	#[schemars(with = "Share")]
 	pub manifest: Value,
 	pub phase: String,

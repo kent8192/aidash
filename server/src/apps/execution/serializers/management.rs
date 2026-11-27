@@ -131,9 +131,11 @@ impl SuspendedRunResume {
 	}
 }
 /// One read of the events, with the rows it could not confirm because a Node
-/// did not answer (#770). The cursor to continue from is in a header.
+/// did not answer (#770). The cursor also appears in the response header.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct EventPage {
+	pub(crate) cursor: i64,
+	pub(crate) partial: bool,
 	pub(crate) events: Vec<crate::apps::workspaces::serializers::entities::Event>,
 	pub(crate) unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
 }

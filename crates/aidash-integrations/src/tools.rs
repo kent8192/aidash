@@ -55,11 +55,6 @@ fn brokered_send_error(error: reqwest::Error) -> Error {
 const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub(crate) const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const TOOL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-/// Total budget for reading a server's tool list: handshake and every page.
-const MCP_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-/// Most `tools/list` pages read while looking for one tool.
-const MCP_LIST_PAGES: usize = 20;
-
 async fn resolve_within<I>(
 	deadline: tokio::time::Instant,
 	lookup: impl Future<Output = std::io::Result<I>>,
@@ -497,6 +492,16 @@ pub(crate) fn tool_service_failure(error: Error, replay_safe: bool) -> Result<Va
 /// setup answer cannot make the tool's effect uncertain.
 pub(crate) fn tool_setup_failure(error: Error, replay_safe: bool) -> Result<Value> {
 	match error {
+		Error::Port(source)
+			if source.downcast_ref::<aidash_application::ports::tools::ListFailure>()
+				== Some(&aidash_application::ports::tools::ListFailure::ListingTimeout) =>
+		{
+			Err(Error::ToolNotDelivered {
+				message: source.to_string(),
+				retry_after: None,
+			})
+		}
+
 		Error::External(message) => Err(Error::ToolNotDelivered {
 			message,
 			retry_after: None,
@@ -584,6 +589,18 @@ fn mcp_final_prefix_id(bytes: &[u8]) -> Option<Value> {
 	} else {
 		None
 	}
+}
+
+/// Leave space for JSON-RPC framing and wire formatting around a bounded listing page.
+pub(crate) async fn mcp_listing_json(
+	response: reqwest::Response,
+	wire_overhead: usize,
+) -> Result<Value> {
+	let limit = aidash_application::mcp_listing::MAX_LISTED_SCHEMA_BYTES + wire_overhead;
+	let bytes = crate::response::within(response, limit)
+		.await?
+		.map_err(|_| aidash_application::ports::tools::ListFailure::ListingTooLarge)?;
+	serde_json::from_slice(&bytes).map_err(Into::into)
 }
 
 pub(crate) async fn mcp_json_body(
@@ -857,7 +874,7 @@ pub async fn mcp_read_only_hint(
 	let client = clients.keyless(tool_destination(origins, endpoint)?)?;
 	// One budget covers the handshake and every page; dropping the session on
 	// timeout closes it.
-	tokio::time::timeout(MCP_LIST_TIMEOUT, async {
+	tokio::time::timeout(aidash_application::mcp_listing::MCP_LIST_TIMEOUT, async {
 		let service = mcp_session(client, endpoint, None)
 			.await
 			.map_err(|error| match error {
@@ -871,36 +888,37 @@ pub async fn mcp_read_only_hint(
 		hint
 	})
 	.await
-	.map_err(|_| Error::External("MCP tool listing timed out".into()))?
+	.map_err(|_| Error::from(aidash_application::ports::tools::ListFailure::ListingTimeout))?
 }
 
-/// Page through `tools/list` until `tool_name` appears, reading at most
-/// `MCP_LIST_PAGES` pages so a server cannot keep the request open.
 async fn listed_hint(
 	service: &RunningService<RoleClient, ()>,
 	tool_name: &str,
 ) -> Result<Option<bool>> {
-	let mut cursor = None;
-	for _ in 0..MCP_LIST_PAGES {
+	let tools = aidash_application::mcp_listing::list(|cursor| async move {
 		let page = service
 			.list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
 			.await
-			.map_err(|e| {
-				Error::External(format!("MCP tool listing failed: {}", mcp::call_error(&e)))
+			.map_err(|error| {
+				let error = mcp::listing_error(&error);
+				if matches!(&error, Error::Port(source) if source.is::<aidash_application::ports::tools::ListFailure>()) {
+					error
+				} else {
+					Error::External(format!("MCP tool listing failed: {error}"))
+				}
 			})?;
-		if let Some(tool) = page.tools.into_iter().find(|tool| tool.name == tool_name) {
-			return Ok(tool
-				.annotations
-				.and_then(|annotations| annotations.read_only_hint));
-		}
-		cursor = page.next_cursor;
-		if cursor.is_none() {
-			break;
-		}
-	}
-	Err(Error::Invalid(
-		"the MCP server lists no tool with that name".into(),
-	))
+		Ok::<_, Error>(aidash_application::mcp_listing::Page {
+			tools: page.tools,
+			next_cursor: page.next_cursor,
+		})
+	}).await?;
+	let tool = tools
+		.into_iter()
+		.find(|tool| tool.name == tool_name)
+		.ok_or_else(|| Error::Invalid("the MCP server lists no tool with that name".into()))?;
+	Ok(tool
+		.annotations
+		.and_then(|annotations| annotations.read_only_hint))
 }
 
 async fn web_fetch_response(mut response: reqwest::Response, url: &reqwest::Url) -> Result<Value> {

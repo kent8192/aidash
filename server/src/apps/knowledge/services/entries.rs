@@ -61,19 +61,8 @@ impl SemanticEntries {
 		service::change(&f.store, &actor, thread, id, input.expected_revision, false).await
 	}
 	pub async fn search(&self, actor: Actor, thread: Uuid, input: Search) -> Result<SearchResult> {
-		let f = self.runtime.clone();
-		// Reserve effect/audit capacity independently from API revokers waiting on
-		// this search's credential and policy lease.
-		static SEARCH_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-		let _permit = SEARCH_CAPACITY
-			.acquire()
-			.await
-			.expect("search capacity stays open");
-		let worker = f.for_workers().await?;
-		let result = service::search(&worker.store, &actor, thread, input).await;
-		worker.store.pool.close().await;
-		worker.store.control_pool.close().await;
-		result
+		// Retrieval issues reads serially under one Work admission.
+		service::search(&self.runtime.store, &actor, thread, input).await
 	}
 	pub async fn history(&self, actor: Actor, thread: Uuid) -> Result<Vec<History>> {
 		let f = self.runtime.clone();

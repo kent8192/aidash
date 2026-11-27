@@ -5,9 +5,10 @@
 //! no TCP keepalive, so a reply from a server that vanished would be awaited for
 //! ever. The deadline is read from the pool's own connect options, so derived
 //! pools inherit it and a pool without a limit has no deadline either.
+use super::fair_share::{FairShare, Permit, pool_busy};
 use crate::{Error, Result};
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
 use reinhardt::db::backends::error::{PgvectorOperationKind, Result as DriverResult};
 use reinhardt::db::backends::types::{RowLockCapabilities, RowStream};
@@ -74,13 +75,26 @@ fn deadline(options: &PgConnectOptions) -> Option<Duration> {
 	Some(Duration::from_millis(limit) + MARGIN)
 }
 
-/// The Reinhardt backend for `pool`, bounded when the pool has a statement limit.
-pub(super) fn backend(pool: sqlx::PgPool) -> Arc<dyn DatabaseBackend> {
+/// Compose the same Reinhardt backend with acquisition diagnostics and, for
+/// Work, a process-wide gate covering transaction and statement borrows.
+pub(super) fn pool_backend(
+	pool: sqlx::PgPool,
+	name: Option<&'static str>,
+	fair: Option<Arc<FairShare>>,
+) -> Arc<dyn DatabaseBackend> {
 	let deadline = deadline(pool.connect_options().as_ref());
+	let size = pool.options().get_max_connections() as usize;
 	let inner = PostgresBackend::new(pool);
-	match deadline {
-		Some(deadline) => Arc::new(Bounded { inner, deadline }),
-		None => Arc::new(inner),
+	if deadline.is_some() || name.is_some() {
+		Arc::new(Bounded {
+			inner,
+			deadline,
+			name,
+			size,
+			fair,
+		})
+	} else {
+		Arc::new(inner)
 	}
 }
 
@@ -141,17 +155,19 @@ fn unanswered() -> reinhardt::core::exception::Error {
 }
 
 async fn timed<T>(
-	deadline: Duration,
+	deadline: impl Into<Option<Duration>>,
 	work: impl Future<Output = DriverResult<T>>,
 ) -> std::result::Result<DriverResult<T>, tokio::time::error::Elapsed> {
-	if UNLIMITED.try_with(|_| ()).is_ok() {
-		return Ok(work.await);
+	match deadline.into() {
+		Some(deadline) if UNLIMITED.try_with(|_| ()).is_err() => {
+			tokio::time::timeout(deadline, work).await
+		}
+		_ => Ok(work.await),
 	}
-	tokio::time::timeout(deadline, work).await
 }
 
 async fn bounded<T>(
-	deadline: Duration,
+	deadline: impl Into<Option<Duration>>,
 	work: impl Future<Output = DriverResult<T>>,
 ) -> DriverResult<T> {
 	timed(deadline, work)
@@ -159,7 +175,7 @@ async fn bounded<T>(
 		.unwrap_or_else(|_| Err(unanswered()))
 }
 
-fn bounded_stream<'a>(deadline: Duration, stream: RowStream<'a>) -> RowStream<'a> {
+fn bounded_stream<'a>(deadline: Option<Duration>, stream: RowStream<'a>) -> RowStream<'a> {
 	Box::pin(futures_util::stream::unfold(
 		Some(stream),
 		move |state| async move {
@@ -175,16 +191,75 @@ fn bounded_stream<'a>(deadline: Duration, stream: RowStream<'a>) -> RowStream<'a
 
 struct Bounded {
 	inner: PostgresBackend,
-	deadline: Duration,
+	deadline: Option<Duration>,
+	name: Option<&'static str>,
+	size: usize,
+	fair: Option<Arc<FairShare>>,
+}
+
+fn named_acquire_error(
+	name: Option<&str>,
+	size: usize,
+	error: reinhardt::core::exception::Error,
+) -> reinhardt::core::exception::Error {
+	use std::error::Error as _;
+
+	if let Some(name) = name
+		&& let Some(source) = error.database_error().and_then(|error| error.source())
+		&& matches!(
+			source.downcast_ref::<sqlx::Error>(),
+			Some(sqlx::Error::PoolTimedOut)
+		) {
+		return pool_busy(name, size);
+	}
+	error
 }
 
 impl Bounded {
-	fn transaction(&self, inner: Box<dyn TransactionExecutor>) -> Box<dyn TransactionExecutor> {
-		Box::new(BoundedTransaction {
+	async fn admit(&self) -> DriverResult<Option<Permit>> {
+		match &self.fair {
+			Some(fair) => Ok(Some(fair.borrow().await?)),
+			None => Ok(None),
+		}
+	}
+
+	async fn run<T>(&self, work: impl Future<Output = DriverResult<T>>) -> DriverResult<T> {
+		let _permit = self.admit().await?;
+		bounded(self.deadline, work)
+			.await
+			.map_err(|error| named_acquire_error(self.name, self.size, error))
+	}
+
+	async fn start(
+		&self,
+		work: impl Future<Output = DriverResult<Box<dyn TransactionExecutor>>>,
+	) -> DriverResult<Box<dyn TransactionExecutor>> {
+		let permit = self.admit().await?;
+		let inner = bounded(self.deadline, work)
+			.await
+			.map_err(|error| named_acquire_error(self.name, self.size, error))?;
+		Ok(Box::new(BoundedTransaction {
 			inner,
 			deadline: self.deadline,
 			unanswered: false,
-		})
+			_permit: permit,
+		}))
+	}
+
+	fn stream<'a>(&'a self, stream: RowStream<'a>) -> RowStream<'a> {
+		Box::pin(
+			futures_util::stream::once(async move {
+				let permit = self.admit().await?;
+				Ok::<_, reinhardt::core::exception::Error>(
+					bounded_stream(self.deadline, stream).map(move |result| {
+						// The stream owns admission until terminated or dropped.
+						let _permit = &permit;
+						result.map_err(|error| named_acquire_error(self.name, self.size, error))
+					}),
+				)
+			})
+			.try_flatten(),
+		)
 	}
 }
 
@@ -201,7 +276,7 @@ impl DatabaseBackend for Bounded {
 		let stream = self
 			.inner
 			.fetch_stream_generated(built, chunk_size, context)?;
-		Ok(bounded_stream(self.deadline, stream))
+		Ok(self.stream(stream))
 	}
 	fn database_type(&self) -> DatabaseType {
 		self.inner.database_type()
@@ -229,43 +304,34 @@ impl DatabaseBackend for Bounded {
 		built: (String, Values),
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<QueryResult> {
-		bounded(self.deadline, self.inner.execute_generated(built, context)).await
+		self.run(self.inner.execute_generated(built, context)).await
 	}
 	async fn fetch_one_generated(
 		&self,
 		built: (String, Values),
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<Row> {
-		bounded(
-			self.deadline,
-			self.inner.fetch_one_generated(built, context),
-		)
-		.await
+		self.run(self.inner.fetch_one_generated(built, context))
+			.await
 	}
 	async fn fetch_all_generated(
 		&self,
 		built: (String, Values),
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<Vec<Row>> {
-		bounded(
-			self.deadline,
-			self.inner.fetch_all_generated(built, context),
-		)
-		.await
+		self.run(self.inner.fetch_all_generated(built, context))
+			.await
 	}
 	async fn fetch_optional_generated(
 		&self,
 		built: (String, Values),
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<Option<Row>> {
-		bounded(
-			self.deadline,
-			self.inner.fetch_optional_generated(built, context),
-		)
-		.await
+		self.run(self.inner.fetch_optional_generated(built, context))
+			.await
 	}
 	async fn execute(&self, sql: &str, params: Vec<QueryValue>) -> DriverResult<QueryResult> {
-		bounded(self.deadline, self.inner.execute(sql, params)).await
+		self.run(self.inner.execute(sql, params)).await
 	}
 	async fn execute_with_context(
 		&self,
@@ -273,14 +339,11 @@ impl DatabaseBackend for Bounded {
 		params: Vec<QueryValue>,
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<QueryResult> {
-		bounded(
-			self.deadline,
-			self.inner.execute_with_context(sql, params, context),
-		)
-		.await
+		self.run(self.inner.execute_with_context(sql, params, context))
+			.await
 	}
 	async fn fetch_one(&self, sql: &str, params: Vec<QueryValue>) -> DriverResult<Row> {
-		bounded(self.deadline, self.inner.fetch_one(sql, params)).await
+		self.run(self.inner.fetch_one(sql, params)).await
 	}
 	async fn fetch_one_with_context(
 		&self,
@@ -288,14 +351,11 @@ impl DatabaseBackend for Bounded {
 		params: Vec<QueryValue>,
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<Row> {
-		bounded(
-			self.deadline,
-			self.inner.fetch_one_with_context(sql, params, context),
-		)
-		.await
+		self.run(self.inner.fetch_one_with_context(sql, params, context))
+			.await
 	}
 	async fn fetch_all(&self, sql: &str, params: Vec<QueryValue>) -> DriverResult<Vec<Row>> {
-		bounded(self.deadline, self.inner.fetch_all(sql, params)).await
+		self.run(self.inner.fetch_all(sql, params)).await
 	}
 	async fn fetch_all_with_context(
 		&self,
@@ -303,11 +363,8 @@ impl DatabaseBackend for Bounded {
 		params: Vec<QueryValue>,
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<Vec<Row>> {
-		bounded(
-			self.deadline,
-			self.inner.fetch_all_with_context(sql, params, context),
-		)
-		.await
+		self.run(self.inner.fetch_all_with_context(sql, params, context))
+			.await
 	}
 	fn fetch_stream<'a>(
 		&'a self,
@@ -316,7 +373,7 @@ impl DatabaseBackend for Bounded {
 		chunk_size: usize,
 	) -> DriverResult<RowStream<'a>> {
 		let stream = self.inner.fetch_stream(sql, params, chunk_size)?;
-		Ok(bounded_stream(self.deadline, stream))
+		Ok(self.stream(stream))
 	}
 	fn fetch_stream_with_context<'a>(
 		&'a self,
@@ -328,14 +385,14 @@ impl DatabaseBackend for Bounded {
 		let stream = self
 			.inner
 			.fetch_stream_with_context(sql, params, chunk_size, context)?;
-		Ok(bounded_stream(self.deadline, stream))
+		Ok(self.stream(stream))
 	}
 	async fn fetch_optional(
 		&self,
 		sql: &str,
 		params: Vec<QueryValue>,
 	) -> DriverResult<Option<Row>> {
-		bounded(self.deadline, self.inner.fetch_optional(sql, params)).await
+		self.run(self.inner.fetch_optional(sql, params)).await
 	}
 	async fn fetch_optional_with_context(
 		&self,
@@ -343,39 +400,32 @@ impl DatabaseBackend for Bounded {
 		params: Vec<QueryValue>,
 		context: Option<PgvectorOperationKind>,
 	) -> DriverResult<Option<Row>> {
-		bounded(
-			self.deadline,
-			self.inner.fetch_optional_with_context(sql, params, context),
-		)
-		.await
+		self.run(self.inner.fetch_optional_with_context(sql, params, context))
+			.await
 	}
 	async fn __execute_generated(&self, sql: &str, values: Values) -> DriverResult<QueryResult> {
-		bounded(self.deadline, self.inner.__execute_generated(sql, values)).await
+		self.run(self.inner.__execute_generated(sql, values)).await
 	}
 	async fn __fetch_one_generated(&self, sql: &str, values: Values) -> DriverResult<Row> {
-		bounded(self.deadline, self.inner.__fetch_one_generated(sql, values)).await
+		self.run(self.inner.__fetch_one_generated(sql, values))
+			.await
 	}
 	async fn __fetch_all_generated(&self, sql: &str, values: Values) -> DriverResult<Vec<Row>> {
-		bounded(self.deadline, self.inner.__fetch_all_generated(sql, values)).await
+		self.run(self.inner.__fetch_all_generated(sql, values))
+			.await
 	}
 	async fn begin(&self) -> DriverResult<Box<dyn TransactionExecutor>> {
-		let inner = bounded(self.deadline, self.inner.begin()).await?;
-		Ok(self.transaction(inner))
+		self.start(self.inner.begin()).await
 	}
 	async fn begin_write(&self) -> DriverResult<Box<dyn TransactionExecutor>> {
-		let inner = bounded(self.deadline, self.inner.begin_write()).await?;
-		Ok(self.transaction(inner))
+		self.start(self.inner.begin_write()).await
 	}
 	async fn begin_with_isolation(
 		&self,
 		isolation_level: IsolationLevel,
 	) -> DriverResult<Box<dyn TransactionExecutor>> {
-		let inner = bounded(
-			self.deadline,
-			self.inner.begin_with_isolation(isolation_level),
-		)
-		.await?;
-		Ok(self.transaction(inner))
+		self.start(self.inner.begin_with_isolation(isolation_level))
+			.await
 	}
 	/// `DatabaseConnection::into_postgres` finds the pool through this.
 	fn as_any(&self) -> &dyn std::any::Any {
@@ -385,15 +435,16 @@ impl DatabaseBackend for Bounded {
 
 struct BoundedTransaction {
 	inner: Box<dyn TransactionExecutor>,
-	deadline: Duration,
+	deadline: Option<Duration>,
 	/// Once the deadline passed, the connection is gone in all but name: nothing
 	/// more is sent on it, and dropping it returns its pool slot.
 	unanswered: bool,
+	_permit: Option<Permit>,
 }
 
 impl BoundedTransaction {
 	async fn call<T>(
-		deadline: Duration,
+		deadline: Option<Duration>,
 		gone: &mut bool,
 		work: impl Future<Output = DriverResult<T>>,
 	) -> DriverResult<T> {

@@ -6,7 +6,7 @@ fn oidc_public_origin_uses_canonical_origin_serialization() {
 
 /// A coordinator derives the same seed for the same manifest, so a
 /// resubmission after a crash matches the preflights it already sent; another
-/// Deployment's key, or another manifest, derives another (ADR 0146).
+/// Deployment's key, or another manifest, derives another (ADR 0151).
 #[rstest::rstest]
 fn a_transaction_seed_is_stable_per_manifest_and_secret() {
 	use crate::apps::federation::transactions::services::seed_with;

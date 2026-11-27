@@ -8,17 +8,13 @@ use std::collections::BTreeMap;
 
 const SKILLS_DIR: &str = "skills";
 const SKILL_FILE: &str = "SKILL.md";
-const MAX_SKILLS: usize = 16;
 const MAX_NAME_LEN: usize = 64;
 const MAX_DESCRIPTION_CHARS: usize = 1024;
 const MAX_COMPATIBILITY_CHARS: usize = 500;
 
 // The limits of a direct Skill (capabilities::skills::validate), so that an accepted plugin Skill
 // is accepted again when it becomes one.
-const MAX_INSTRUCTIONS_BYTES: usize = 65_536;
 const MAX_FRONTMATTER_BYTES: usize = 8192;
-const MAX_OTHER_FILES: usize = 63;
-const MAX_TOTAL_BYTES: usize = 256_000;
 
 /// A Skill as the plugin carries it. `allowed-tools` and `metadata` are checked for type and
 /// dropped; `allowed-tools` never grants anything.
@@ -70,7 +66,7 @@ impl Refusal {
 	}
 }
 
-/// Skills in directory order; those past the 16th are reported without being read.
+/// Skills in directory order.
 pub(super) fn discover(files: &[PluginFile]) -> (Vec<PluginSkill>, Vec<Finding>) {
 	let mut definitions: BTreeMap<&str, &PluginFile> = BTreeMap::new();
 	for file in files {
@@ -86,16 +82,8 @@ pub(super) fn discover(files: &[PluginFile]) -> (Vec<PluginSkill>, Vec<Finding>)
 	}
 	let mut skills = Vec::new();
 	let mut findings = Vec::new();
-	for (index, (directory, definition)) in definitions.into_iter().enumerate() {
+	for (directory, definition) in definitions {
 		let component = Component::Skill(directory.to_owned());
-		if index >= MAX_SKILLS {
-			findings.push(Finding::skipped(
-				component,
-				Reason::SkillLimit,
-				format!("a plugin carries at most {MAX_SKILLS} Skills"),
-			));
-			continue;
-		}
 		match load_skill(directory, definition, files) {
 			Ok(skill) => skills.push(skill),
 			Err(Refusal { reason, detail }) => {
@@ -118,7 +106,19 @@ fn load_skill(
 		.filter_map(|file| Some((file.path.strip_prefix(&prefix)?, file)))
 		.collect();
 	others.sort_by_key(|(relative, _)| *relative);
-	check_limits(definition, &others)?;
+	if definition.bytes.contains(&0) {
+		return Err(Refusal::invalid(
+			"SKILL.md must be text without NUL characters",
+		));
+	}
+	if let Some((relative, _)) = others
+		.iter()
+		.find(|(relative, _)| !valid_skill_file_path(relative))
+	{
+		return Err(Refusal::limit(format!(
+			"{relative} is not a valid Skill file path"
+		)));
+	}
 	let instructions = String::from_utf8(definition.bytes.clone())
 		.map_err(|_| Refusal::invalid("SKILL.md is not valid UTF-8"))?;
 	let front = frontmatter(&instructions)?;
@@ -135,38 +135,6 @@ fn load_skill(
 			.map(|(relative, file)| skill_file(relative, &file.bytes))
 			.collect(),
 	})
-}
-
-fn check_limits(definition: &PluginFile, others: &[(&str, &PluginFile)]) -> Result<(), Refusal> {
-	if definition.bytes.len() > MAX_INSTRUCTIONS_BYTES || definition.bytes.contains(&0) {
-		return Err(Refusal::limit(format!(
-			"SKILL.md must be text of at most {MAX_INSTRUCTIONS_BYTES} bytes"
-		)));
-	}
-	if others.len() > MAX_OTHER_FILES {
-		return Err(Refusal::limit(format!(
-			"a Skill has at most {MAX_OTHER_FILES} files besides SKILL.md"
-		)));
-	}
-	if let Some((relative, _)) = others
-		.iter()
-		.find(|(relative, _)| !valid_skill_file_path(relative))
-	{
-		return Err(Refusal::limit(format!(
-			"{relative} is not a valid Skill file path"
-		)));
-	}
-	let total = others
-		.iter()
-		.fold(definition.bytes.len(), |sum, (_, file)| {
-			sum + file.bytes.len()
-		});
-	if total > MAX_TOTAL_BYTES {
-		return Err(Refusal::limit(format!(
-			"a Skill has at most {MAX_TOTAL_BYTES} bytes"
-		)));
-	}
-	Ok(())
 }
 
 fn frontmatter(instructions: &str) -> Result<Frontmatter, Refusal> {

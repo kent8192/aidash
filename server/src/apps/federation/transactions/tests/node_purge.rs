@@ -583,7 +583,7 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	}
 }
 
-/// What the participant at `node` receives (ADR 0146): sealed with the seed
+/// What the participant at `node` receives (ADR 0151): sealed with the seed
 /// the coordinator stored, or with a fixed seed when none admitted it.
 async fn share_for(
 	coordinator: &aidash_server::federation::Federation,

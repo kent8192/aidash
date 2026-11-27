@@ -34,3 +34,10 @@ that no Mapping has ever named; those belong to the Tenant and outlive whoever i
   and self-issued credentials are never bound.
 - Listing and revoking across the Tenant need `credential.read` and `credential.revoke`; a member
   lists and revokes its own with any enabled Mapping.
+
+## Amendment (2026-11-27, #1117)
+
+The cap of 20 active self-issued credentials per Mapping, and the cap of 100 active children per
+credential, are removed under [ADR 0146](0146-a-limit-names-what-it-protects-counts-at-its-scope-and-says-so-when-hit.md):
+neither protects a resource. Revocation, expiry within 30 days and Mapping disablement remain the
+controls over leaked or forgotten credentials.

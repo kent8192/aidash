@@ -478,7 +478,11 @@ async fn replay_continues_past_hidden_pages_and_returns_the_last_scanned_event(
 	mut session: Session,
 ) {
 	session.events = (1..=1100).map(|seq| event(seq, seq >= 1050)).collect();
-	let (rows, cursor, _) = read_events(&mut session, -9, Some(Uuid::from_u128(1)), 2)
+	let EventRead {
+		events: rows,
+		cursor,
+		..
+	} = read_events(&mut session, -9, Some(Uuid::from_u128(1)), 2)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -518,12 +522,21 @@ async fn replay_scan_budget_includes_hidden_rows_and_keeps_an_advancing_resume_c
 	mut session: Session,
 ) {
 	session.events = (1..=5000).map(|seq| event(seq, false)).collect();
-	let (rows, cursor, _) = read_events(&mut session, 0, None, 1000).await.unwrap();
+	let EventRead {
+		events: rows,
+		cursor,
+		partial,
+		..
+	} = read_events(&mut session, 0, None, 1000).await.unwrap();
 	assert!(rows.is_empty());
 	assert_eq!(cursor, 4096);
-	assert_eq!(session.queries.len(), 9);
+	assert!(partial);
+	assert_eq!(session.queries.len(), 10);
 	assert_eq!(session.queries[8].0, 4000);
 	assert_eq!(session.queries[8].1, 96);
+	let resumed = read_events(&mut session, cursor, None, 1000).await.unwrap();
+	assert_eq!(resumed.cursor, 5000);
+	assert!(!resumed.partial);
 	assert_eq!(
 		session.queries[0].3,
 		vec![Uuid::from_u128(3), Uuid::from_u128(1)]
@@ -542,7 +555,11 @@ async fn replay_keeps_the_existing_limit_bounds_and_sequence_order(
 	#[case] count: usize,
 ) {
 	session.events = (1..=1100).map(|seq| event(seq, true)).collect();
-	let (rows, cursor, _) = read_events(&mut session, 0, Some(Uuid::from_u128(1)), limit)
+	let EventRead {
+		events: rows,
+		cursor,
+		..
+	} = read_events(&mut session, 0, Some(Uuid::from_u128(1)), limit)
 		.await
 		.unwrap();
 	assert_eq!(rows.len(), count);
@@ -626,7 +643,12 @@ async fn replay_counts_the_events_a_silent_node_left_out_and_not_the_hidden_ones
 		})
 		.collect();
 	// Act
-	let (rows, cursor, unconfirmed) = read_events(&mut session, 0, Some(Uuid::from_u128(1)), 100)
+	let EventRead {
+		events: rows,
+		cursor,
+		unconfirmed,
+		..
+	} = read_events(&mut session, 0, Some(Uuid::from_u128(1)), 100)
 		.await
 		.unwrap();
 	// Assert

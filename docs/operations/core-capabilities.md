@@ -130,9 +130,16 @@ with one command is attributed to its Run; overlapping commands produce an
 `ambiguous` record listing the Runs. The index does not capture every possible
 metadata-only change, and a sudden Pod loss can lose the latest interval.
 
-The Runner queues foreground commands beyond eight simultaneous commands per
-Pod; Background processes have a separate pool of 16. The foreground
-`maximum_seconds` profile ceiling may be set as high as 86400. The Runner's
+Foreground commands and Python sessions each start on their own Runner thread.
+A Background start waits up to 25 seconds for the detached Pod supervisor to
+report startup. One Runner thread per Pod polls Background results and saved logs
+every five seconds. Each poll reads up to 256 KiB per process per stream and
+4 MiB in total, then continues from the saved offsets. After three consecutive
+failed polls, the watcher probes operations individually. Live preview and stdio
+MCP starts that hit `v2_processes` return `pod_process_limit` with the effective
+limit. A watcher that cannot start records `watcher_start_failed`.
+
+The foreground `maximum_seconds` profile ceiling may be set as high as 86400. The Runner's
 command transport allows a further 180 seconds to collect the outcome.
 
 To start a Background process, pass `background: true` and `timeout_seconds`
@@ -144,8 +151,8 @@ setting. The server returns `BACKGROUND_TIME_LIMIT_EXCEEDED` and the effective
 `maximum_seconds` when an Agent exceeds the ceiling.
 
 The supervisor ends a command at its limit even during a Runner outage. The
-Runner checks the Space journal and backs up the stop after 60 seconds. A
-time-limited Background process keeps the Pod running until it ends or its
+Pod watcher sends a backup stop 60 seconds after the deadline. A time-limited
+Background process keeps the Pod running until it ends or its
 time limit elapses. A foreground command's `.left` process does not keep
 the Pod running past 30 idle minutes. Run cancellation and Read Recheck
 revocation stop the Run's processes. Normal completion leaves its Background
@@ -157,8 +164,10 @@ The process list retains terminal entries for seven days and includes
 `pod_reset`, `pod_lost` and `space_purged`. Set `notify_on_exit: true`
 to deliver the exit status, exit code, stop reason and last 4 KiB of output
 as a Task input. A closed Task retains the operation record.
-Unsettled stops are kept while the Runner needs to confirm them. Each Space
-is limited to 4096 command records.
+Unsettled stops are kept while the Runner needs to confirm them. The Runner
+retains terminal foreground command records for 24 hours and 15 minutes. When
+its state volume is more than 90% used, the Runner refuses new commands with
+`runner_disk_full` and reports the used percentage.
 
 Python interpreters are per Run. Pass the last result's `session_id` as
 `expected_session_id` when a cell depends on that interpreter's state. If that
@@ -401,6 +410,16 @@ accounted separately. Identical bytes in different Tenants remain physically
 separate. Tenant purge removes committed and orphaned blob keys, temporary
 keys, and local upload intents.
 
+The Execution Pod receives the command as an argument. Its 64 KiB input
+ceiling leaves room for shell wrapping within Linux's `MAX_ARG_STRLEN` of
+128 KiB on 4 KiB pages.
+
+## Activity polling
+
+Every successful `GET /api/events` response returns a `cursor`. Use it as
+the next `after` value even when the page is empty or `partial` is false.
+When `partial` is true, another page is available immediately.
+
 ## Initial ceilings
 
 | Resource                               | Default                                                        |
@@ -414,7 +433,6 @@ keys, and local upload intents.
 | Inline read / search page              | 16 KiB / 50 matches                                            |
 | Command / patch input                  | 64 KiB / 256 KiB                                               |
 | Search response / duration             | 32 KiB / 5 seconds                                             |
-| Direct Skill package                   | 64 files / 256,000 bytes (existing import ceiling)             |
 | Captured operation / broker output     | 8 MiB, with bounded continuation                               |
 | Run permission grant                   | At most 1 hour and no later than Run termination               |
 | Pending approval / uncommitted staging | 24 hours                                                       |
@@ -428,7 +446,8 @@ The profile can lower applicable ceilings. Agent input cannot raise them. Disk
 and process enforcement is probed rather than inferred from manifest settings.
 Content budgets live in the same profile's `limits` object. Omitted keys retain
 their defaults; unknown keys, zero values and values above the supported wire
-ceilings are rejected. For example, this fragment lowers content budgets while
+ceilings are rejected. Legacy `skill_files` and `skill_bytes` keys are accepted
+and ignored. For example, this fragment lowers content budgets while
 keeping the deployment's existing runner, storage and resource settings:
 
 ```json
@@ -440,8 +459,6 @@ keeping the deployment's existing runner, storage and resource settings:
     "search_bytes": 16384,
     "search_seconds": 3,
     "read_bytes": 8192,
-    "skill_files": 32,
-    "skill_bytes": 128000,
     "reference_files": 4,
     "reference_bytes": 5242880,
     "reference_pages": 100,
@@ -600,6 +617,8 @@ Skill scripts or package requests.
 Git repositories can be cloned through an approved Egress gateway service; see
 [GitHub repository access](../tenant-secrets.md#clone-a-github-repository).
 
+The offline wheel installer checks available disk space before extraction.
+Insufficient space returns `wheel_disk_full` with the needed and free bytes.
 Additional Python dependencies use explicitly authorized, hash-pinned wheel
 objects fetched by the broker from permitted package origins. Installation is
 offline in the sandbox, with no dependency auto-download or source build. It
@@ -613,6 +632,11 @@ If retained storage fills after an operation executes, its poll result exposes
 retained. Restore capacity to reconcile that same operation ID; submitting the
 operation again does not reinstall packages or repeat code.
 
+Scratch `file_save` checks the Working Area's byte quota. An incomplete Runner
+manifest refuses the whole save with `save_manifest_incomplete`. Line searches
+show `truncated: true` on a match when the line exceeds the 2,000-character
+snippet limit.
+
 ### Working Area export restrictions
 
 After each shell command or Python cell, the runner exports `/work` as the next
@@ -621,8 +645,6 @@ refuses to export:
 
 - a symbolic link, such as the `node_modules/.bin` links npm writes;
 - a hard-link alias, such as the files pnpm links from its store;
-- more than 4096 files in the Working Area manifest, not counting Reference
-  files;
 - more bytes than the configured Working Area quota leaves writable;
 - a directory or file whose name is not a printable relative path, or a special
   file.

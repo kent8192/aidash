@@ -22,6 +22,7 @@ pub struct ThreadState {
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
+	pub partial: bool,
 	pub next_cursors: NextCursors,
 	/// Rows this read scanned and could not confirm because a Node did not
 	/// answer (#770). Counted within each window, so a window's count covers
@@ -40,6 +41,7 @@ pub struct NextCursors {
 	pub artifacts: Option<String>,
 	pub human_requests: Option<String>,
 	pub conversations: Option<String>,
+	pub events: Option<String>,
 }
 
 fn cursor<T>(rows: &[T], id: impl Fn(&T) -> Uuid) -> Option<String> {
@@ -60,7 +62,11 @@ async fn thread_ok(
 	Ok(allowed)
 }
 
-pub async fn state(scope: &mut dyn ThreadStateScope, node: Option<&str>) -> Result<ThreadState> {
+pub async fn state(
+	scope: &mut dyn ThreadStateScope,
+	node: Option<&str>,
+	events_before: Option<i64>,
+) -> Result<ThreadState> {
 	let mut cache = HashMap::new();
 	let mut thread_ids = Vec::new();
 	let thread_candidates = scope.thread_candidates(node, None).await?;
@@ -200,8 +206,11 @@ pub async fn state(scope: &mut dyn ThreadStateScope, node: Option<&str>) -> Resu
 			conversations.push(row);
 		}
 	}
-	let (events, left_out) = scope.latest_visible_events(node).await?;
-	unconfirmed.merge(left_out);
+	let page = scope
+		.latest_visible_events(node, events_before.unwrap_or(i64::MAX))
+		.await?;
+	unconfirmed.merge(page.unconfirmed);
+	cursors.events = page.partial.then(|| page.cursor.to_string());
 	// A Thread that only an unconfirmed row belongs to is returned too, so
 	// the Web's Node filter keeps that row's warning (#664 decision 9, #770).
 	// Every window and the event scan are bounded, so this is bounded as well.
@@ -217,7 +226,8 @@ pub async fn state(scope: &mut dyn ThreadStateScope, node: Option<&str>) -> Resu
 		runs,
 		human_requests,
 		conversations,
-		events,
+		events: page.events,
+		partial: page.partial,
 		next_cursors: cursors,
 		unconfirmed: unconfirmed_entries,
 	})

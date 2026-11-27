@@ -120,7 +120,6 @@ fn valid_shell_requests_keep_default_and_explicit_seconds(
 }
 #[rstest]
 #[case::empty("", None)]
-#[case::too_long("01234567890123456", None)]
 #[case::zero("ok", Some(0))]
 #[case::too_long_timeout("ok", Some(21))]
 fn invalid_shell_bounds_keep_the_same_contract_code(
@@ -134,6 +133,14 @@ fn invalid_shell_bounds_keep_the_same_contract_code(
 	assert!(
 		matches!(input.seconds(limits),Err(Error::Invalid(code)) if code=="INVALID_SHELL_LIMIT")
 	);
+}
+#[rstest]
+fn oversized_shell_command_names_the_argv_limit(mut input: ShellRequest, limits: AdmissionLimits) {
+	input.command = "x".repeat(limits.command_bytes);
+	assert!(input.seconds(limits).is_ok());
+	input.command.push('x');
+	assert!(matches!(input.seconds(limits), Err(Error::Invalid(message))
+		if message.contains("16 bytes") && message.contains("MAX_ARG_STRLEN")));
 }
 #[rstest]
 fn operation_identity_binds_kind_run_and_complete_request_metadata(input: ShellRequest) {

@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const MAX_AGENT_PLUGINS: usize = 8;
-pub const MAX_REFERENCE_SKILLS: usize = 16;
 const SOURCE_PREFIX: &str = "https://github.com/";
 const SKILL_ORIGIN_LIMIT: usize = 2048;
 const SKILL_ORIGIN_SEGMENT: &str = "/skills/";
@@ -72,11 +70,6 @@ impl AgentPluginRef {
 		{
 			return Err(invalid(&format!(
 				"the source must be a GitHub URL or marketplace://UUID/semver of at most {MAX_SOURCE_BYTES} bytes"
-			)));
-		}
-		if self.skills.len() > MAX_REFERENCE_SKILLS {
-			return Err(invalid(&format!(
-				"a plugin carries at most {MAX_REFERENCE_SKILLS} Skills"
 			)));
 		}
 		Ok(())

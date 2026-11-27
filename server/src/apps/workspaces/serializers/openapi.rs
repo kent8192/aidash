@@ -170,6 +170,10 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::management::thread_get, &["Uuid"])?;
+	contracts.query::<_, super::management::ThreadSnapshotQuery>(
+		document,
+		views::management::thread_get,
+	)?;
 	contracts.response::<_, Thread>(
 		document,
 		views::management::thread_update,

@@ -9,7 +9,7 @@ pub mod gate;
 #[path = "participant.rs"]
 pub mod participant;
 
-/// The seed that seals `manifest`'s parts (ADR 0146): an HMAC of the
+/// The seed that seals `manifest`'s parts (ADR 0151): an HMAC of the
 /// transaction under this Deployment's transaction seed key. The same manifest
 /// always gets the same seed, so a resubmission after a crash matches the
 /// preflights already sent, and no participant can derive it.

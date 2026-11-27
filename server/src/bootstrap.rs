@@ -1,4 +1,5 @@
 //! Native application startup and background task supervision.
+use crate::database::runtime::ProcessPools;
 use crate::{
 	Error, Result,
 	bus::EventBus,
@@ -79,20 +80,40 @@ pub enum ProcessRole {
 	Worker,
 }
 
+enum DatabaseSource {
+	Process,
+	Preview,
+	Provided(BackendConnection),
+}
+
 /// Populate the same request container used by native runserver and HTTP fixtures.
 pub async fn initialize(
 	context: &InjectionContext,
 	settings: &ProjectSettings,
 	connection: BackendConnection,
 ) -> Result<Federation> {
-	initialize_as(context, settings, connection, ProcessRole::Serve).await
+	initialize_as(
+		context,
+		settings,
+		DatabaseSource::Provided(connection),
+		ProcessRole::Serve,
+	)
+	.await
 }
 
-/// [`initialize`] for a process that knows which role it serves.
-pub async fn initialize_as(
+/// Open and register the fixed pools for one server or worker process.
+pub(crate) async fn initialize_process(
 	context: &InjectionContext,
 	settings: &ProjectSettings,
-	connection: BackendConnection,
+	role: ProcessRole,
+) -> Result<Federation> {
+	initialize_as(context, settings, DatabaseSource::Process, role).await
+}
+
+async fn initialize_as(
+	context: &InjectionContext,
+	settings: &ProjectSettings,
+	database: DatabaseSource,
 	role: ProcessRole,
 ) -> Result<Federation> {
 	// Native runserver/worker also need the application response logs. An
@@ -122,14 +143,28 @@ pub async fn initialize_as(
 		None => tracing::warn!("no Cache Salt Key configured; Native Runs will be rejected"),
 	}
 	crate::apps::execution::services::metrics::initialize_recorder()?;
-	let pool = connection
-		.into_postgres()
-		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
+	let store = match database {
+		DatabaseSource::Process => {
+			let pools = ProcessPools::connect(&config.database_url).await?;
+			Store::from_process_pools(pools, config.deployment.clone()).await?
+		}
+		DatabaseSource::Preview => {
+			let pool = crate::database::runtime::connect_preview(&config.database_url).await?;
+			Store::from_gateway_pool(pool, config.deployment.clone()).await?
+		}
+		DatabaseSource::Provided(connection) => {
+			let pool = connection
+				.into_postgres()
+				.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
+			Store::from_pool(pool, config.deployment.clone()).await?
+		}
+	};
 	let keys = configure_deployment_keys(
 		settings.deployment.key.as_ref(),
 		&settings.core.base_dir,
 		config.deployment.clone(),
-		crate::database::native::Pool::from(pool.clone()),
+		// Federation signs protocol requests while a submission holds Work.
+		store.control_pool.clone(),
 	)
 	.await?;
 	if let Some(keys) = &keys {
@@ -140,8 +175,7 @@ pub async fn initialize_as(
 				.key,
 		);
 	}
-	let mut store = Store::from_pool(pool, config.deployment.clone())
-		.await?
+	let mut store = store
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
@@ -375,10 +409,18 @@ impl RuntimeTasks {
 			"metrics",
 			runtime_task(crate::apps::execution::services::metrics::run(
 				coordinator.clone(),
-				vec![
-					("main", federation.store.pool.clone()),
-					("control", federation.store.control_pool.clone()),
-				],
+				[
+					Some(("work", federation.store.pool.clone())),
+					Some(("control", federation.store.control_pool.clone())),
+					federation
+						.store
+						.process_recovery_pool
+						.clone()
+						.map(|pool| ("recovery", pool)),
+				]
+				.into_iter()
+				.flatten()
+				.collect(),
 			)),
 		);
 		if let Some(service) = event_streams.clone() {
@@ -390,11 +432,9 @@ impl RuntimeTasks {
 				runtime_task(async move { service.run(&url, &node, stopping).await }),
 			);
 		}
-		// Acquire pools before detaching tasks. A startup error drops both JoinSets.
-		let coordinator_runtime = federation.for_recovery().await?;
+		let recovery_runtime = federation.for_recovery().await?;
 		let (active_recovery, aborted_recovery) =
-			transaction_recovery_coordinators(&coordinator_runtime).await?;
-		let participant_runtime = federation.for_recovery().await?;
+			transaction_recovery_coordinators(&recovery_runtime).await?;
 		let worker_runtime = federation.for_runtime_workers().await?;
 		tasks.spawn_service(
 			"transaction coordinator",
@@ -403,7 +443,7 @@ impl RuntimeTasks {
 		tasks.spawn_service(
 			"transaction participant",
 			aidash_runtime::transactions::run_participant(transaction_participant(
-				&participant_runtime,
+				&recovery_runtime,
 			)),
 		);
 		tasks.spawn_service(
@@ -523,7 +563,7 @@ impl RuntimeTasks {
 				let repository = operation_processing_repository(&jobs);
 				aidash_runtime::capabilities::read_recheck_loop(&repository, stopping).await
 			});
-			let (jobs, stopping) = (store.clone(), receiver.clone());
+			let (jobs, stopping) = (recovery_runtime.store.clone(), receiver.clone());
 			tasks.spawn_service("capabilities.read_recheck_maintenance", async move {
 				crate::apps::execution::capabilities::services::operations::read_recheck_maintenance(
 					&jobs, stopping,
@@ -538,11 +578,11 @@ impl RuntimeTasks {
 			tasks.spawn_service("capabilities.references", async move {
 				capability_background_jobs(&jobs).references(stopping).await
 			});
-			let (jobs, stopping) = (store.clone(), receiver.clone());
+			let (jobs, stopping) = (recovery_runtime.store.clone(), receiver.clone());
 			tasks.spawn_service("capabilities.cleanup", async move {
 				capability_background_jobs(&jobs).cleanup(stopping).await
 			});
-			let (jobs, stopping) = (store, receiver.clone());
+			let (jobs, stopping) = (recovery_runtime.store.clone(), receiver.clone());
 			tasks.spawn_service("capabilities.reclamation", async move {
 				capability_background_jobs(&jobs)
 					.reclamation(stopping)
@@ -561,7 +601,7 @@ impl RuntimeTasks {
 			tasks.spawn_service(
 				"dashboard session refresh",
 				runtime_task(crate::dashboard_auth::refresh_active(
-					federation.clone(),
+					recovery_runtime.clone(),
 					receiver.clone(),
 				)),
 			);
@@ -569,7 +609,7 @@ impl RuntimeTasks {
 			tasks.spawn_service(
 				"dashboard display retention",
 				runtime_task(crate::dashboard_auth::enforce_display_retention(
-					federation.clone(),
+					recovery_runtime.clone(),
 					receiver.clone(),
 				)),
 			);
@@ -644,7 +684,7 @@ impl RuntimeTasks {
 				},
 			)),
 		);
-		let retention = federation.store.clone();
+		let retention = recovery_runtime.store.clone();
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		let serving = event_streams.is_some();
 		tasks.spawn_service(

@@ -89,7 +89,6 @@ fn policy_defaults_and_bounds() {
 	for invalid in [
 		json!({"version": "checks/1", "checks": []}),
 		json!({"version": "checks/2", "checks": [{"name": "t", "capability": "shell", "command": "x"}]}),
-		json!({"version": "checks/1", "checks": [{"name": "t", "capability": "shell", "command": "x"}], "repair_allowance": 17}),
 		json!({"version": "checks/1", "checks": [{"name": "t", "capability": "shell", "command": "x"}], "verification_seconds": 0}),
 		json!({"version": "checks/1", "checks": [{"name": "t", "capability": "shell", "command": "x"}, {"name": "t", "capability": "shell", "command": "y"}]}),
 		check(json!({"capability": "code_interpreter"})),
@@ -730,4 +729,19 @@ fn a_time_exhausted_review_does_not_offer_retry() {
 		.prompt()
 		.contains("retry")
 	);
+}
+
+#[test]
+fn completion_accepts_more_than_eight_checks_and_sixteen_repairs() {
+	let checks: Vec<_> = (0..9)
+		.map(|index| {
+			json!({
+				"name": format!("check-{index}"), "capability": "shell", "command": "make test"
+			})
+		})
+		.collect();
+	let policy =
+		policy(json!({"version":"checks/1", "checks":checks, "repair_allowance":17})).unwrap();
+	assert_eq!(policy.checks().len(), 9);
+	assert_eq!(policy.repair_allowance(), 17);
 }

@@ -44,8 +44,6 @@ def collect(root, maximum, open_file):
                 return refusal('unsafe_file', relative)
             if info.st_nlink != 1:
                 return refusal('hard_link', relative)
-            if len(files) >= 4096:
-                return refusal('file_count', relative, 4096)
             total += info.st_size
             if total > maximum:
                 return refusal('bytes', relative, maximum)

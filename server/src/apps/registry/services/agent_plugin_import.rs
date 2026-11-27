@@ -308,11 +308,13 @@ pub async fn list_tools(
 		}
 		(None, None) => None,
 	};
-	Ok(list_for_attach(
-		store.plugin_sessions.as_ref(),
+	list_for_attach(
+		&crate::apps::execution::repositories::mcp_connections::session_manager(store)
+			.scoped(&identity.tenant),
 		&server,
 		&config,
 		auth.as_ref(),
 	)
-	.await)
+	.await
+	.map_err(Into::into)
 }

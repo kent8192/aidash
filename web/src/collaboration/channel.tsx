@@ -1,3 +1,4 @@
+import { useWindowPages } from "../use-window-pages";
 import { ThreadCapabilities } from "../capabilities/thread";
 import { ReferenceName, RecordView } from "../record-view";
 import { skippedServers } from "../agent-plugins";
@@ -6,7 +7,7 @@ import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { uniqueById } from "../window-pages";
+import { mergeEventWindow, uniqueById } from "../window-pages";
 import {
   ChevronRight,
   FileText,
@@ -277,6 +278,8 @@ const channelState = {
   preparing: "OPEN",
 } as const;
 
+const noEvents: MeshEvent[] = [];
+
 export function Channel({
   thread,
   data,
@@ -359,7 +362,7 @@ export function Channel({
       : null);
   const query = useQuery({
     queryKey: ["thread", thread.id],
-    queryFn: ({ signal }) => threadGet(thread.id, { signal }),
+    queryFn: ({ signal }) => threadGet(thread.id, undefined, { signal }),
     refetchInterval: 2000,
     retry: false,
   });
@@ -417,7 +420,28 @@ export function Channel({
       ? "completed"
       : "preparing";
   const artifacts = query.isError ? [] : (query.data?.artifacts ?? []);
-  const events = query.isError ? [] : (query.data?.events ?? []);
+  const eventPages = useWindowPages<MeshEvent>({
+    key: thread.id,
+    windowCursor: query.isError
+      ? null
+      : (query.data?.next_event_cursor ?? null),
+    freshAt: query.dataUpdatedAt,
+    readPage: async (cursor, signal) => {
+      const page = await threadGet(
+        thread.id,
+        { events_before: Number(cursor) },
+        { signal },
+      );
+      return {
+        items: page.events,
+        next_cursor: page.next_event_cursor ?? null,
+      };
+    },
+    none: noEvents,
+  });
+  const events = query.isError
+    ? noEvents
+    : mergeEventWindow(query.data?.events ?? noEvents, eventPages.older);
   // Tasks, Artifacts and events are read with the snapshot; Runs and requests
   // come from State. Until the snapshot answers, Tasks fall back to State.
   const missing = (kinds: UnconfirmedKind[], fromSnapshot: boolean) =>
@@ -1108,6 +1132,25 @@ export function Channel({
                 </ul>
               )}
               <UnconfirmedNotice lines={missingEvents} />
+              {eventPages.cursor && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={eventPages.loading}
+                  onClick={() => void eventPages.loadMore()}
+                >
+                  {locale === "ja-JP"
+                    ? "以前のイベントを表示"
+                    : "Show older events"}
+                </Button>
+              )}
+              {eventPages.error && (
+                <p role="status">
+                  {locale === "ja-JP"
+                    ? "以前のイベントを取得できませんでした。"
+                    : "Could not load older events."}
+                </p>
+              )}
               {events.length > 0 && (
                 <ul className="divide-y divide-border rounded-md border border-border">
                   {[...events].reverse().map((event) => (

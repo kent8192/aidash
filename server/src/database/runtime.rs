@@ -6,7 +6,9 @@
 //! `memory-recovery` and `demo-data`, run under that owner and so open
 //! [`connect_maintenance`], which accepts the owner but nothing else that
 //! bypasses row-level security.
-use super::limits;
+mod budget;
+
+use super::{fair_share, limits, native::Pool};
 use crate::{Error, Result};
 use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::db::orm::execution::convert_values;
@@ -17,14 +19,96 @@ use reinhardt::query::{
 use sqlx::Executor as _;
 use std::time::Duration;
 
+/// Each API or worker process constructs one set and clones the pool handles.
+pub(crate) struct ProcessPools {
+	pub work: Pool,
+	pub control: Pool,
+	pub recovery: Pool,
+}
+
+impl ProcessPools {
+	#[allow(clippy::disallowed_methods)] // Startup reads PostgreSQL catalogs and connection settings.
+	pub(crate) async fn connect(url: &str) -> Result<Self> {
+		let budget = budget::Budget::from_env()?;
+		let statement_limit = limits::statement_limit()?;
+		let work = open(url, budget.work, statement_limit, Some("work"), true).await?;
+		let connection = work.connection();
+		require_unprivileged(&connection).await?;
+		let (sql, values) = Query::select()
+			.expr_as(
+				Expr::cust("current_setting('max_connections')::integer"),
+				Alias::new("max_connections"),
+			)
+			.build(PostgresQueryBuilder);
+		let max_connections = connection
+			.fetch_one(&sql, convert_values(values))
+			.await?
+			.get::<i32>("max_connections")
+			.map_err(reinhardt::core::exception::Error::from)?;
+		if budget.planned_connections() > max_connections as u64 {
+			tracing::warn!(
+				planned_connections = budget.planned_connections(),
+				replicas = budget.replicas,
+				max_connections,
+				"Configured database pools across server and worker replicas exceed PostgreSQL max_connections"
+			);
+		}
+		let control = open(url, budget.control, statement_limit, Some("control"), false).await?;
+		let recovery = open(
+			url,
+			budget.recovery,
+			statement_limit,
+			Some("recovery"),
+			false,
+		)
+		.await?;
+		tracing::info!(
+			control = budget.control,
+			work = budget.work,
+			recovery = budget.recovery,
+			"Database pool sizes"
+		);
+		Ok(Self {
+			work,
+			control,
+			recovery,
+		})
+	}
+}
+
+#[allow(clippy::disallowed_methods)] // The startup login check reads only PostgreSQL catalogs.
+pub(crate) async fn connect_egress(url: &str) -> Result<Pool> {
+	// The Helm connection budget reserves eight slots per Egress gateway replica.
+	let pool = open(url, 8, limits::statement_limit()?, Some("egress"), false).await?;
+	require_unprivileged(&pool.connection()).await?;
+	Ok(pool)
+}
+
+#[allow(clippy::disallowed_methods)] // The startup login check reads only PostgreSQL catalogs.
+pub(crate) async fn connect_preview(url: &str) -> Result<Pool> {
+	// The Helm connection budget reserves eight slots per standalone Preview replica.
+	let pool = open(url, 8, limits::statement_limit()?, Some("preview"), false).await?;
+	require_unprivileged(&pool.connection()).await?;
+	Ok(pool)
+}
+
 /// Open the server's pool, refusing a login that row-level security would not bind.
 ///
 /// The pool settings mirror Reinhardt's PostgreSQL defaults. Every connection
 /// is reset when it returns to the pool, so a session-level setting made by
 /// mistake cannot reach the next borrower; derived pools clone these options
 /// and inherit the reset.
+#[allow(clippy::disallowed_methods)] // Verify the login against PostgreSQL catalogs before returning the connection.
 pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
-	let connection = open(url, max_connections, limits::statement_limit()?).await?;
+	let connection = open(
+		url,
+		max_connections,
+		limits::statement_limit()?,
+		None,
+		false,
+	)
+	.await?
+	.connection();
 	require_unprivileged(&connection).await?;
 	Ok(connection)
 }
@@ -35,8 +119,11 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 /// The login check is the server's: a login that row-level security would not
 /// bind is refused. The statement limit is not applied, because a command is not
 /// a request or a worker and may legitimately run a long statement (ADR 0113).
+#[allow(clippy::disallowed_methods)] // Verify the login against PostgreSQL catalogs before returning the connection.
 pub async fn connect_command(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
-	let connection = open(url, max_connections, None).await?;
+	let connection = open(url, max_connections, None, None, false)
+		.await?
+		.connection();
 	require_unprivileged(&connection).await?;
 	Ok(connection)
 }
@@ -51,9 +138,12 @@ pub async fn connect_command(url: &str, max_connections: u32) -> Result<Database
 /// still refused: a superuser, `BYPASSRLS`, `REPLICATION`, a session that
 /// switched roles, a role that can `SET ROLE` to one of those, and membership
 /// in a role that reaches the server's files or programs.
+#[allow(clippy::disallowed_methods)] // Verify the migration owner using only PostgreSQL catalogs.
 pub async fn connect_maintenance(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
 	// A maintenance command is long by design and has no statement limit.
-	let connection = open(url, max_connections, None).await?;
+	let connection = open(url, max_connections, None, None, false)
+		.await?
+		.connection();
 	refuse_bypass(&connection, Login::Maintenance).await?;
 	Ok(connection)
 }
@@ -62,13 +152,15 @@ async fn open(
 	url: &str,
 	max_connections: u32,
 	statement_limit: Option<Duration>,
-) -> Result<DatabaseConnection> {
+	name: Option<&'static str>,
+	fair: bool,
+) -> Result<Pool> {
 	let options =
 		limits::with_statement_limit(limits::with_server_keepalive(url.parse()?), statement_limit);
 	let pool = sqlx::postgres::PgPoolOptions::new()
 		.max_connections(max_connections)
 		.min_connections(1)
-		.acquire_timeout(Duration::from_secs(10))
+		.acquire_timeout(fair_share::ACQUIRE_TIMEOUT)
 		.idle_timeout(Some(Duration::from_secs(10)))
 		.max_lifetime(Some(Duration::from_secs(30 * 60)))
 		.after_release(|connection, _| {
@@ -89,8 +181,14 @@ async fn open(
 			})
 		})
 		.connect_with(options)
-		.await?;
-	Ok(DatabaseConnection::new(limits::backend(pool)))
+		.await
+		.map_err(|error| match (name, error) {
+			(Some(name), sqlx::Error::PoolTimedOut) => {
+				Error::from(fair_share::pool_busy(name, max_connections as usize))
+			}
+			(_, error) => Error::from(error),
+		})?;
+	Ok(Pool::new(pool, name, fair))
 }
 
 /// Which logins a check accepts.

@@ -493,7 +493,7 @@ impl AuthorityRepository for Repository {
 	async fn binding(&self, _: Uuid) -> Result<Option<Binding>> {
 		Ok(self.state.lock().unwrap().binding.clone())
 	}
-	async fn source(&self, origin: &Origin) -> Result<Box<dyn ControlScope>> {
+	async fn source(&self, origin: &Origin, _: SourcePurpose) -> Result<Box<dyn ControlScope>> {
 		self.event("source")?;
 		self.state
 			.lock()

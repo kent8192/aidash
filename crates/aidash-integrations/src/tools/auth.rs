@@ -82,6 +82,10 @@ pub(crate) fn repeat(error: &Error) -> Option<Error> {
 		return Some(Error::Port(Box::new(refused.clone())));
 	}
 	match error {
+		Error::Port(source) => source
+			.downcast_ref::<aidash_application::ports::tools::ListFailure>()
+			.copied()
+			.map(Error::from),
 		Error::Connection(cause) => Some(Error::Connection(cause.clone())),
 		Error::Invalid(message) => Some(Error::Invalid(message.clone())),
 		_ => None,

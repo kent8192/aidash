@@ -18,16 +18,13 @@ use std::{
 	collections::{BTreeMap, BTreeSet},
 	time::Duration,
 };
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::timeout;
 use uuid::Uuid;
 
-pub const SERVER_TIMEOUT: Duration = Duration::from_secs(15);
-pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
-pub const CONCURRENCY: usize = 4;
-/// A stdio server starts a process in the Run's Execution Pod before it lists, which can take
-/// far longer than a remote listing (ADR 0073).
+pub const SERVER_TIMEOUT: Duration = crate::mcp_listing::MCP_LIST_TIMEOUT;
+/// Bounds how long a Run waits for one stdio server, allowing for Runner startup and
+/// listing in its Execution Pod (ADR 0073).
 pub const STDIO_SERVER_TIMEOUT: Duration = Duration::from_secs(330);
-pub const STDIO_TOTAL_TIMEOUT: Duration = Duration::from_secs(600);
 /// The cause code of a server that did not answer in time.
 const TIMEOUT: &str = "timeout";
 
@@ -57,7 +54,7 @@ pub async fn pin_for_run(
 }
 
 /// The network half of [`pin_for_run`]: every remote server of the Agent's plugins, listed within
-/// the per-server and total deadlines, and, where `sessions` runs them, every stdio server within
+/// its own deadline, and, where `sessions` runs them, every stdio server within
 /// its own. A server that did not answer in time reports so.
 pub async fn list_servers(
 	sessions: &dyn PluginSessions,
@@ -72,34 +69,46 @@ pub async fn list_servers(
 	listed
 }
 
-/// Stdio servers start one after another, since a Run's sessions share its Execution Pod.
 async fn list_stdio(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBindings) -> Listings {
-	let mut listed = BTreeMap::new();
 	let Some(stdio) = sessions.stdio() else {
-		return listed;
+		return Listings::new();
 	};
-	let deadline = Instant::now() + STDIO_TOTAL_TIMEOUT;
-	for plugin in &agent.agent_plugins {
-		for (name, server) in &plugin.servers {
-			let McpServer::Stdio(config) = server else {
-				continue;
-			};
-			let server = PluginServer {
-				plugin: plugin.name.clone(),
-				digest: plugin.digest.clone(),
-				server: name.clone(),
-			};
-			let limit = (Instant::now() + STDIO_SERVER_TIMEOUT).min(deadline);
-			let listing = match timeout_at(limit, stdio.list(run, &server, config)).await {
-				Ok(Ok(tools)) => Listing::Listed(tools),
-				Ok(Err(Error::Invalid(cause))) => Listing::Unavailable(cause),
-				Ok(Err(error)) => Listing::Unavailable(cause(&error)),
-				Err(_) => Listing::Unavailable(TIMEOUT.into()),
-			};
-			listed.insert(key(&server), listing);
-		}
-	}
-	listed
+	let stdio = stdio.as_ref();
+	let servers: Vec<_> = agent
+		.agent_plugins
+		.iter()
+		.flat_map(|plugin| {
+			plugin.servers.iter().filter_map(move |(name, server)| {
+				let McpServer::Stdio(config) = server else {
+					return None;
+				};
+				let server = PluginServer {
+					plugin: plugin.name.clone(),
+					digest: plugin.digest.clone(),
+					server: name.clone(),
+				};
+				Some((server, config.clone()))
+			})
+		})
+		.collect();
+	let parallelism = servers.len().max(1);
+	stream::iter(servers)
+		.map(|(server, config)| async move {
+			let listing =
+				match timeout(STDIO_SERVER_TIMEOUT, stdio.list(run, &server, &config)).await {
+					Ok(Ok(tools)) => Listing::Listed(tools),
+					Ok(Err(Error::Invalid(cause))) => Listing::Unavailable(cause),
+					Ok(Err(error)) => Listing::Unavailable(cause(&error)),
+					Err(_) => Listing::Unavailable(format!(
+						"{TIMEOUT}: stdio MCP server listing exceeded {} seconds",
+						STDIO_SERVER_TIMEOUT.as_secs()
+					)),
+				};
+			(key(&server), listing)
+		})
+		.buffer_unordered(parallelism)
+		.collect()
+		.await
 }
 
 async fn list_remote(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBindings) -> Listings {
@@ -123,61 +132,60 @@ async fn list_remote(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBind
 				})
 		})
 		.collect();
-	let keys: Vec<_> = servers.iter().map(|(server, _)| key(server)).collect();
-	let deadline = Instant::now() + TOTAL_TIMEOUT;
-	// The stream owns its servers and `key` is a function: with borrowing closures here, the
-	// compiler cannot prove this future `Send` inside a route handler that awaits it.
-	let mut answers = stream::iter(servers)
+	let parallelism = servers.len().max(1);
+	stream::iter(servers)
 		.map(|(server, config)| async move {
-			let listing = list_one(sessions, run, &server, &config, None).await;
+			let answer = list_one(sessions, run, &server, &config, None).await;
+			let listing = remote_listing(answer, &config);
 			(key(&server), listing)
 		})
-		.buffer_unordered(CONCURRENCY);
-	let mut listed = BTreeMap::new();
-	while let Ok(Some((server, listing))) = timeout_at(deadline, answers.next()).await {
-		listed.insert(server, listing);
-	}
-	drop(answers);
-	for server in keys {
-		listed
-			.entry(server)
-			.or_insert_with(|| Listing::Unavailable(TIMEOUT.into()));
-	}
-	listed
+		.buffer_unordered(parallelism)
+		.collect()
+		.await
 }
 
-/// One server's listing within [`SERVER_TIMEOUT`], with every failure reduced to a typed cause.
-/// The Run-start pin and the attach-time listing share it, so both report the same causes.
+/// Reduce a remote listing to the same causes for Run starts and attach-time listings.
+fn remote_listing(
+	answer: Result<Vec<aidash_domain::agent_plugin::ListedTool>>,
+	config: &RemoteServer,
+) -> Listing {
+	match answer {
+		Ok(tools) => Listing::Listed(tools),
+		Err(error) => connection_cause(&error, config.url.as_str())
+			.map(Listing::Connection)
+			.unwrap_or_else(|| Listing::Unavailable(cause(&error))),
+	}
+}
+
 async fn list_one(
 	sessions: &dyn PluginSessions,
 	run: Uuid,
 	server: &PluginServer,
 	config: &RemoteServer,
 	auth: Option<&CallSecret>,
-) -> Listing {
-	match timeout(SERVER_TIMEOUT, sessions.list(run, server, config, auth)).await {
-		Ok(Ok(tools)) => Listing::Listed(tools),
-		Ok(Err(error)) => connection_cause(&error, config.url.as_str())
-			.map(Listing::Connection)
-			.unwrap_or_else(|| Listing::Unavailable(cause(&error))),
-		Err(_) => Listing::Unavailable(TIMEOUT.into()),
-	}
+) -> Result<Vec<aidash_domain::agent_plugin::ListedTool>> {
+	timeout(SERVER_TIMEOUT, sessions.list(run, server, config, auth))
+		.await
+		.map_err(|_| crate::ports::tools::ListFailure::ListingTimeout)?
 }
 
 /// What one remote server lists for the person attaching or editing its Agent Plugin, so they can
 /// declare Read-only tools (ADR 0073, amended 2026-11-16). `auth` is that person's OAuth
-/// Connection or personal secret; the caller resolves it and never passes a shared one. The listing uses its own session key and
-/// ends it before returning, so it never becomes a Run's session.
+/// Connection or personal secret. The listing ends its session before returning.
 pub async fn list_for_attach(
 	sessions: &dyn PluginSessions,
 	server: &PluginServer,
 	config: &RemoteServer,
 	auth: Option<&CallSecret>,
-) -> AttachListing {
+) -> Result<AttachListing> {
 	let listing = Uuid::new_v4();
-	let listed = list_one(sessions, listing, server, config, auth).await;
+	let answer = list_one(sessions, listing, server, config, auth).await;
 	sessions.close(listing).await;
-	AttachListing::from(listed)
+	if matches!(&answer, Err(Error::Port(source)) if source.is::<crate::ports::tools::McpSessionMemoryShort>())
+	{
+		return answer.map(|tools| AttachListing::from(Listing::Listed(tools)));
+	}
+	Ok(remote_listing(answer, config).into())
 }
 
 /// One tool an attach-time listing returned: its name and the `inputSchema` digest a Read-only
@@ -189,7 +197,7 @@ pub struct AttachTool {
 }
 
 /// The answer of an attach-time listing. When it is `unavailable`, Read-only cannot be declared
-/// for the server; `reason` is a typed cause code, never a URL or a response body:
+/// for the server; `reason` names a typed cause and any limit it hit:
 /// `connection_required` or `connection_scope_insufficient` (no usable OAuth Connection),
 /// `secret_unavailable` (the person has no personal secret of the named secret's name; the
 /// shared Tenant Secret is never used here), `secret_rejected` (the server refused the person's
@@ -313,12 +321,11 @@ pub async fn reconnect_for_run(
 				.flat_map(|server| server.tools.iter().map(|tool| tool.alias.clone())),
 		)
 		.collect();
-	let added = agent_plugin::pin_additional(
+	let added = agent_plugin::pin(
 		&agent.agent_plugins,
 		&agent.agent_plugin_settings,
 		&listed,
 		&taken,
-		pinned.servers.iter().map(|server| server.tools.len()).sum(),
 	);
 	let mut result = pinned.clone();
 	result.findings.retain(|finding| {
@@ -361,6 +368,12 @@ fn cause(error: &Error) -> String {
 			aidash_domain::tenant_secrets::REJECTED.into()
 		}
 		Error::Invalid(_) => "invalid_response".into(),
+		Error::Port(source) if source.is::<crate::ports::tools::McpSessionMemoryShort>() => {
+			format!(
+				"{}: {source}",
+				crate::ports::tools::McpSessionMemoryShort::CODE
+			)
+		}
 		Error::Port(source) => source
 			.downcast_ref::<crate::ports::tools::ListFailure>()
 			.map_or_else(|| "unreachable".into(), ToString::to_string),

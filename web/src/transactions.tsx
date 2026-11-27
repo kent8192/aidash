@@ -48,7 +48,7 @@ export function TransactionsPage({
 }) {
   const { t, locale } = useI18n();
   const nodeLabel = useNodeLabel();
-  // A participant's record holds its share, which has the same header (ADR 0146).
+  // A participant's record holds its share, which has the same header (ADR 0151).
   const transactionLabel = (
     manifest: Pick<TransactionManifest, "coordinator" | "deadline">,
   ) =>

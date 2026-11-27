@@ -279,6 +279,7 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+// Protect API memory: 128 concurrent requests × 16 MiB largest override = the 2 GiB API memory limit.
 pub const BODY_LIMIT: usize = 1024 * 1024;
 
 fn request_body_limit(method: &http::Method, path: &str) -> usize {

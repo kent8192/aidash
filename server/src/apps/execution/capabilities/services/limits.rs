@@ -3,14 +3,14 @@
 impl Default for ContentLimits {
 	fn default() -> Self {
 		Self {
-			command_bytes: 65536,
+			command_bytes: aidash_domain::completion::MAX_COMMAND_BYTES,
 			patch_bytes: 256 << 10,
 			search_matches: 50,
 			search_bytes: 32 << 10,
 			search_seconds: 5,
 			read_bytes: 16 << 10,
-			skill_files: 64,
-			skill_bytes: 256_000,
+			_legacy_skill_files: None,
+			_legacy_skill_bytes: None,
 			reference_files: aidash_domain::capabilities::references::MAX_REFERENCE_FILES,
 			reference_bytes: 10 << 20,
 			reference_pages: 200,

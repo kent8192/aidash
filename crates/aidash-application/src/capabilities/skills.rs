@@ -10,8 +10,7 @@ use aidash_domain::{
 		operations::{FileScope, MountedFile as FileEntry},
 		sessions::Area,
 		skills::{
-			MAX_RUN_SKILLS, Pinned, SkillList, SkillLoad, SkillMetadata, SkillRead, content_digest,
-			validate,
+			Pinned, SkillList, SkillLoad, SkillMetadata, SkillRead, content_digest, validate,
 		},
 	},
 	exposure::{DirectSkill, SkillOriginKind},
@@ -78,14 +77,7 @@ pub async fn pin(
 			}
 			let prefix = format!("{root}/{name}/");
 			let mut files = vec![];
-			let mut total = 0;
 			for file in manifest.iter().filter(|f| f.path.starts_with(&prefix)) {
-				total += file.size;
-				if total > scope.skill_limits()?.bytes as u64
-					|| files.len() >= scope.skill_limits()?.files
-				{
-					return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
-				}
 				let bytes = scope.read_skill_file(file).await?;
 				let (text, encoding) = match String::from_utf8(bytes) {
 					Ok(text) => (text, None),
@@ -122,15 +114,8 @@ pub async fn pin(
 			attachments.push(a);
 		}
 	}
-	if attachments.len() > MAX_RUN_SKILLS {
-		return Err(Error::Invalid("SKILL_BINDING_LIMIT".into()));
-	}
 	let mut pinned = vec![];
 	for a in attachments {
-		if a.files.len() + 1 > scope.skill_limits()?.files {
-			return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
-		}
-		let mut package_bytes = 0;
 		let metadata = validate(&a)?;
 		let mut files = vec![];
 		let mut instruction_json_len = None;
@@ -154,10 +139,6 @@ pub async fn pin(
 				instruction_json_len = Some(escaped_instruction_len(
 					std::str::from_utf8(&bytes).map_err(|_| Error::Forbidden)?,
 				)?);
-			}
-			package_bytes += bytes.len();
-			if package_bytes > scope.skill_limits()?.bytes {
-				return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
 			}
 			let (id, digest) = scope.put_skill(area.id, &bytes).await?;
 			let mut provenance = json!({"kind":"skill","skill_id":a.skill_id,"origin":a.origin});

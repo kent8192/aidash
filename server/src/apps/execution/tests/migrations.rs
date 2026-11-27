@@ -195,6 +195,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0164_model_call_recovery"),
 	("execution", "0165_background_time_limit"),
 	("execution", "0166_scope_connection_debits"),
+	("execution", "0167_plugin_data_file_count"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -208,6 +209,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0032_transaction_parts_state"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
+	("registry", "0083_remove_plugin_and_completion_limits"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -274,6 +276,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0164_model_call_recovery"),
 	("execution", "0165_background_time_limit"),
 	("execution", "0166_scope_connection_debits"),
+	("execution", "0167_plugin_data_file_count"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -315,6 +318,7 @@ async fn reverse_task_executions(
 		"0164_model_call_recovery",
 		"0165_background_time_limit",
 		"0166_scope_connection_debits",
+		"0167_plugin_data_file_count",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -391,8 +395,11 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0032_transaction_parts_state"]);
-	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0166_scope_connection_debits"]);
+	assert_eq!(
+		head("registry"),
+		["0083_remove_plugin_and_completion_limits"]
+	);
+	assert_eq!(head("execution"), ["0167_plugin_data_file_count"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -674,14 +681,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0167_policy_probe")
+		.get_migration("execution", "0168_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0166_scope_connection_debits".to_owned()
+			"0167_plugin_data_file_count".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -785,6 +792,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -2549,6 +2557,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -2562,6 +2571,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("federation", "0032_transaction_parts_state"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
+			("registry", "0083_remove_plugin_and_completion_limits"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -3266,8 +3276,12 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		"exception":true,"checks":[
 			{"name":"build","capability":"shell","command":"make","timeout_seconds":600,"when":"always"},
 			{"name":"unit-tests_2","capability":"shell","command":"make test","timeout_seconds":null,"when":"content_changed"}]});
+	let many_checks = json!({"version":"checks/1","repair_allowance":17,
+		"checks":(0..9).map(|index| json!({
+			"name":format!("check-{index}"),"capability":"shell","command":"make test"
+		})).collect::<Vec<_>>()});
 	// Assert: the contract mirrors CompletionPolicy::validate beside the 0022 keys.
-	for valid in [full.clone(), check(json!({})), json!(null)] {
+	for valid in [full.clone(), many_checks, check(json!({})), json!(null)] {
 		assert!(
 			contract_accepts(
 				&pool,
@@ -3282,7 +3296,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		json!("checks/1"),
 		json!({"version":"checks/2","checks":[{"name":"t","capability":"shell","command":"x"}]}),
 		json!({"version":"checks/1","checks":[]}),
-		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"repair_allowance":17}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"repair_allowance":4294967296_u64}),
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"verification_seconds":0}),
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"exception":"yes"}),
 		// CompletionPolicy has no Option for these, so an explicit null is not
@@ -3433,7 +3447,7 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 		json!([plugin(json!({}))]),
 		json!([plugin(json!({"version":"1.2.0","license":"MIT"}))]),
 		json!(
-			(0..8)
+			(0..9)
 				.map(|n| plugin(json!({"name":format!("tools-{n}")})))
 				.collect::<Vec<_>>()
 		),
@@ -3466,11 +3480,6 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 		json!([plugin(json!({"skills":{}}))]),
 		json!([plugin(json!({"findings":"none"}))]),
 		json!([plugin(json!({"servers":[]}))]),
-		json!(
-			(0..9)
-				.map(|n| plugin(json!({"name":format!("tools-{n}")})))
-				.collect::<Vec<_>>()
-		),
 	] {
 		assert!(
 			!contract_accepts(
@@ -5255,6 +5264,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0164_model_call_recovery"),
 	("execution", "0165_background_time_limit"),
 	("execution", "0166_scope_connection_debits"),
+	("execution", "0167_plugin_data_file_count"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5829,6 +5839,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5941,6 +5952,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6061,6 +6073,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6607,6 +6620,7 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6734,6 +6748,7 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6995,6 +7010,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7338,7 +7354,9 @@ async fn thread_source_scope_migration_admits_thread_and_reverses(
 ) {
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[("registry", "0083_remove_plugin_and_completion_limits")])
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let accepts = async |scope: &str| {
 		contract_accepts(
@@ -7393,6 +7411,7 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0167_plugin_data_file_count"),
 		])
 		.await;
 	let tenant = "call-owner";

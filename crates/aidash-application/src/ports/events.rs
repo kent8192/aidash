@@ -9,6 +9,7 @@ use uuid::Uuid;
 /// overwrite a newer publisher's result.
 #[async_trait]
 pub trait EventOutboxBatch: Send + Sync {
+	fn publication_pool_size(&self) -> usize;
 	fn events(&self) -> Vec<Event>;
 	async fn finish(&self, event: Uuid, error: Option<String>) -> Result<bool>;
 }

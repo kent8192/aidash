@@ -9,6 +9,7 @@ import {
   needsAction,
   needsAnotherApprover,
   requestChanged,
+  readApprovalRequests,
   requestForRoot,
   restrictionFor,
   reviewSubmission,
@@ -245,4 +246,31 @@ test("visible consumers explain the proposed restriction", () => {
     consumers: ["node/agents/a@1", "node/agents/b@1"],
   });
   assert.equal(consumerLabel(model), "node/agents/a@1, node/agents/b@1");
+});
+
+test("approval review reads past a full page and an empty continuation", async () => {
+  const target = { id: "target" };
+  const first = Array.from({ length: 100 }, (_, id) => ({ id }));
+  const pages = new Map([
+    [0, { requests: first, next_offset: 100 }],
+    [100, { requests: [], next_offset: 200 }],
+    [200, { requests: [target], next_offset: null }],
+  ]);
+  const result = await readApprovalRequests(async (offset) =>
+    pages.get(offset),
+  );
+  assert.deepEqual(result.requests, [...first, target]);
+});
+
+test("approval review refuses a repeated offset without rereading its page", async () => {
+  const offsets = [];
+  await assert.rejects(
+    readApprovalRequests(async (offset) => {
+      offsets.push(offset);
+      if (offsets.length > 2) throw new Error("repeated page was fetched");
+      return { requests: [], next_offset: 100 };
+    }),
+    /Approval request pagination did not advance/,
+  );
+  assert.deepEqual(offsets, [0, 100]);
 });

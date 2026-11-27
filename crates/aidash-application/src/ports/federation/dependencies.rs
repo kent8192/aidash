@@ -60,6 +60,11 @@ pub trait DependencyScope: Send + crate::ports::authorization::visibility::RowOu
 	fn answered(&mut self, _node: &str) {}
 }
 
+/// The peer answered with a body beyond the memory budget for a dependency check.
+#[derive(Debug, thiserror::Error)]
+#[error("dependency_response_too_large: federation dependency response exceeds 128 KiB")]
+pub struct ResponseTooLarge;
+
 /// What asking another Node about a reference came to (#751).
 #[derive(Debug)]
 pub enum Check {
@@ -71,6 +76,7 @@ pub enum Check {
 	/// A timeout, `5xx`, a transport error, an unreadable answer or a pending
 	/// transaction: the verdict is unknown.
 	Unavailable,
+	ResponseTooLarge(ResponseTooLarge),
 	/// Nobody was asked: a same-Deployment route with no in-process runtime.
 	NotAsked,
 }

@@ -741,7 +741,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	let mut forged = admitted.clone();
 	forged.coordinator = b.address.clone();
 	let client = &b.peer_client;
-	// What a participant receives is a share (ADR 0146).
+	// What a participant receives is a share (ADR 0151).
 	let forged = share_for(&a.f, &forged, &b.address).await;
 	let body = serde_json::to_vec(&forged).unwrap();
 	let token = crate::fixtures::peering::token(
@@ -967,7 +967,7 @@ async fn next_frame(response: &mut reqwest::Response) -> String {
 #[path = "node_purge.rs"]
 mod node_purge_recovery;
 
-/// What the participant at `node` receives (ADR 0146): sealed with the seed
+/// What the participant at `node` receives (ADR 0151): sealed with the seed
 /// the coordinator stored, or with a fixed seed when none admitted it.
 async fn share_for(
 	coordinator: &aidash_server::federation::Federation,

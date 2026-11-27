@@ -8,7 +8,7 @@ use reinhardt::db::backends::{DatabaseConnection, QueryValue, TransactionExecuto
 use reinhardt::db::orm::AtomicTransaction;
 use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
-use std::{marker::PhantomData, sync::Arc};
+use std::{future::Future, marker::PhantomData, sync::Arc};
 
 /// A pool's connection counts at one moment, for metrics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub struct PoolUsage {
 pub struct Pool {
 	connection: DatabaseConnection,
 	driver: sqlx::PgPool,
+	fair: Option<Arc<super::fair_share::FairShare>>,
 	memory_recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
 	memory_recovery_bypass: bool,
 	dashboard_policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
@@ -32,9 +33,24 @@ pub struct Pool {
 }
 impl From<sqlx::PgPool> for Pool {
 	fn from(driver: sqlx::PgPool) -> Self {
+		Self::new(driver, None, false)
+	}
+}
+impl Pool {
+	pub(super) fn new(driver: sqlx::PgPool, name: Option<&'static str>, fair: bool) -> Self {
+		let fair = fair.then(|| {
+			Arc::new(super::fair_share::FairShare::new(
+				driver.options().get_max_connections() as usize,
+			))
+		});
 		Self {
-			connection: DatabaseConnection::new(super::limits::backend(driver.clone())),
+			connection: DatabaseConnection::new(super::limits::pool_backend(
+				driver.clone(),
+				name,
+				fair.clone(),
+			)),
 			driver,
+			fair,
 			memory_recovery: None,
 			memory_recovery_bypass: false,
 			dashboard_policy: None,
@@ -42,8 +58,6 @@ impl From<sqlx::PgPool> for Pool {
 			fixture_driver: Default::default(),
 		}
 	}
-}
-impl Pool {
 	pub(crate) fn with_dashboard_policy(
 		mut self,
 		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
@@ -110,11 +124,31 @@ impl Pool {
 			)
 		})
 	}
+	/// Admit the first Work borrow for a unit that may open several transactions.
+	/// Construct the future on a separate frame before storing it on the heap.
+	/// Its type can contain an entire worker step or several nested ORM calls.
+	#[inline(never)]
+	pub(crate) fn operation<F: Future, Make: FnOnce() -> F>(
+		&self,
+		scope: &TenancyScope,
+		work: Make,
+	) -> impl Future<Output = F::Output> + use<F, Make> {
+		let fair = self.fair.clone();
+		let tenant = fair.as_ref().and_then(|_| scope.tenant_name().cloned());
+		let work = Box::pin(work());
+		async move {
+			match fair {
+				Some(fair) => fair.operation(tenant, work).await,
+				None => work.await,
+			}
+		}
+	}
+
 	/// Open a transaction in `scope`. The scope is fixed for the transaction's
 	/// lifetime; savepoints inherit it.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin(&self, scope: &TenancyScope) -> Result<Transaction> {
-		let mut executor = self.connection.begin().await?;
+		let mut executor = self.operation(scope, || self.connection.begin()).await?;
 		super::scope::enter(executor.as_mut(), scope).await?;
 		Ok(Transaction(
 			Some(executor),
@@ -129,8 +163,10 @@ impl Pool {
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin_serializable(&self, scope: &TenancyScope) -> Result<Transaction> {
 		let mut executor = self
-			.connection
-			.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable)
+			.operation(scope, || {
+				self.connection
+					.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable)
+			})
 			.await?;
 		super::scope::enter(executor.as_mut(), scope).await?;
 		Ok(Transaction(
@@ -149,10 +185,13 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut Transaction) -> Result<T>,
 	) -> Result<T> {
-		let mut tx = self.begin(scope).await?;
-		let value = work(&mut tx).await?;
-		tx.commit().await?;
-		Ok(value)
+		self.operation(scope, || async {
+			let mut tx = self.begin(scope).await?;
+			let value = work(&mut tx).await?;
+			tx.commit().await?;
+			Ok(value)
+		})
+		.await
 	}
 	/// Run `work` in a Reinhardt ORM transaction opened in `scope`.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
@@ -161,14 +200,17 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
 	) -> Result<T> {
-		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
-		lease
-			.handle()
-			.atomic(async |tx| {
-				super::scope::enter(tx, scope).await?;
-				work(tx).await
-			})
-			.await
+		self.operation(scope, || async {
+			let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+			lease
+				.handle()
+				.atomic(async |tx| {
+					super::scope::enter(tx, scope).await?;
+					work(tx).await
+				})
+				.await
+		})
+		.await
 	}
 	/// Like [`Self::atomic`], acquiring write intent before the first read.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
@@ -177,14 +219,17 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
 	) -> Result<T> {
-		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
-		lease
-			.handle()
-			.atomic_write(async |tx| {
-				super::scope::enter(tx, scope).await?;
-				work(tx).await
-			})
-			.await
+		self.operation(scope, || async {
+			let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+			lease
+				.handle()
+				.atomic_write(async |tx| {
+					super::scope::enter(tx, scope).await?;
+					work(tx).await
+				})
+				.await
+		})
+		.await
 	}
 	/// An executor that runs each statement in its own transaction opened in
 	/// `scope`, for a single statement that needs no surrounding transaction.

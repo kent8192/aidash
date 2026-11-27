@@ -6,7 +6,7 @@ use serde_json::json;
 /// Preparation and commit invoke this same workflow; storage alone owns the
 /// rollback-only savepoint and the visibility gate around the caller's transaction.
 pub async fn apply(scope: &mut dyn MutationScope, node: &str, share: &Share) -> Result<()> {
-	// A participant holds only its own part (ADR 0146).
+	// A participant holds only its own part (ADR 0151).
 	if share.part.node_id != node {
 		return Err(Error::Forbidden);
 	}

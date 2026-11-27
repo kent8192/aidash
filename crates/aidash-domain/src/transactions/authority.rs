@@ -39,7 +39,7 @@ pub struct Status {
 	/// The submitted manifest, which only the coordinator holds.
 	pub manifest: serde_json::Value,
 	/// The coordinator's per-transaction secret that seals every part
-	/// (ADR 0146). It never leaves the coordinator's Deployment.
+	/// (ADR 0151). It never leaves the coordinator's Deployment.
 	pub seed: String,
 	pub decision: Option<String>,
 	pub visible: bool,
