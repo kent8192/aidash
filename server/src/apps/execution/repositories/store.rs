@@ -543,11 +543,11 @@ impl Store {
 		.await
 	}
 
-	pub(crate) async fn from_egress_pool(
+	pub(crate) async fn from_gateway_pool(
 		pool: Pool,
 		deployment: aidash_domain::nodes::DeploymentId,
 	) -> Result<Self> {
-		Self::from_pools(
+		let mut store = Self::from_pools(
 			pool.clone(),
 			pool.clone(),
 			pool.clone(),
@@ -555,7 +555,11 @@ impl Store {
 			None,
 			deployment,
 		)
-		.await
+		.await?;
+		// Standalone gateways share one pool across all handles, including
+		// derived runtimes. They do not run the execution worker.
+		store.process_recovery_pool = Some(store.pool.clone());
+		Ok(store)
 	}
 
 	async fn from_pools(
@@ -6185,3 +6189,6 @@ mod store_tool_parallelism;
 #[cfg(test)]
 #[path = "../tests/declined_calls.rs"]
 mod declined_calls;
+
+#[cfg(test)]
+mod gateway_pool_tests;

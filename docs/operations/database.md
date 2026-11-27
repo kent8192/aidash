@@ -1,13 +1,17 @@
 # Operating PostgreSQL connections
 
-The application chart uses `database.maxConnections` to set
-`AIDASH_DATABASE_CONNECTION_BUDGET` on each server and worker. Match that
-value to PostgreSQL's configured `max_connections`. After reserving three
-connections for PostgreSQL superusers, twenty for jobs and commands,
-and eight per maximum Egress replica, the chart divides the remainder by
-the sum of server and worker replicas and rounds down. Egress reserves
-include the shared group and every configured IP group, each with an
-autoscaler maximum of ten. Helm refuses an allocation below twelve
+The application chart derives PostgreSQL's connection capacity from
+`database.postgresMemoryLimit`, `database.sharedBuffersMiB` and
+`database.activeBackendMiB`. Match these to the database deployment. The
+chart reserves three connections for PostgreSQL superusers, twenty for
+jobs and commands, and eight per maximum standalone Egress and Preview
+replica. Egress reserves cover the shared group and every configured IP
+group, each with an autoscaler maximum of ten. Standalone Preview runs
+one replica. Its database work shares the replica's pool of eight.
+
+The chart divides the remaining connections by the sum of server and
+worker replicas, rounds down, and sets `AIDASH_DATABASE_CONNECTION_BUDGET`
+on each server and worker. Helm refuses an allocation below twelve
 connections per process.
 
 Each process uses three pools. Control receives 25% for state transitions
@@ -41,11 +45,11 @@ returns HTTP 503 `database_pool_busy` with the pool name and its size.
 
 ## PostgreSQL memory sizing
 
-The GCP Environment chart derives PostgreSQL's `max_connections` from the
-container memory limit. It subtracts explicit `shared_buffers` and reserves
-25% of the limit for other PostgreSQL memory and workload variation. It
-divides the remaining memory by the active backend allowance and rounds
-down. The default 8 GiB memory limit, 256 MiB of shared buffers and 10 MiB
+The application and GCP Environment charts derive PostgreSQL's
+`max_connections` from the container memory limit. They subtract
+`shared_buffers` and reserve 25% of the limit for other PostgreSQL memory
+and workload variation. They divide the remaining memory by the active
+backend allowance and round down. The default 8 GiB memory limit, 256 MiB of shared buffers and 10 MiB
 per backend yield 588 connections. The backend allowance rounds up the
 peak observed in the local PostgreSQL 17 benchmark with both pgvector and
 PGroonga loaded. The PostgreSQL memory request is 256 MiB. Local Kubernetes

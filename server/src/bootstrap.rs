@@ -82,6 +82,7 @@ pub enum ProcessRole {
 
 enum DatabaseSource {
 	Process,
+	Preview,
 	Provided(BackendConnection),
 }
 
@@ -146,6 +147,10 @@ async fn initialize_as(
 		DatabaseSource::Process => {
 			let pools = ProcessPools::connect(&config.database_url).await?;
 			Store::from_process_pools(pools, config.deployment.clone()).await?
+		}
+		DatabaseSource::Preview => {
+			let pool = crate::database::runtime::connect_preview(&config.database_url).await?;
+			Store::from_gateway_pool(pool, config.deployment.clone()).await?
 		}
 		DatabaseSource::Provided(connection) => {
 			let pool = connection
