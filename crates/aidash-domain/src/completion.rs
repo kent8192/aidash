@@ -28,6 +28,7 @@ pub const MAX_REPAIR_ALLOWANCE: u32 = 16;
 /// A Check's own timeout never exceeds the runner's operation ceiling.
 pub const MAX_CHECK_SECONDS: u64 = 600;
 pub const MAX_VERIFICATION_SECONDS: u64 = 3600;
+// Keep the shell command argv below Linux MAX_ARG_STRLEN (128 KiB), including shell wrapping.
 pub const MAX_COMMAND_BYTES: usize = 65_536;
 /// Diagnostics kept per Check invocation: the tail of its output.
 pub const MAX_DIAGNOSTIC_BYTES: usize = 4096;
@@ -156,7 +157,7 @@ impl Check {
 				.is_some_and(|seconds| !(1..=MAX_CHECK_SECONDS).contains(&seconds))
 		{
 			return Err(Error::Invalid(format!(
-				"Check {:?} requires a lowercase name, capability \"shell\", a command of at most {MAX_COMMAND_BYTES} bytes and timeout_seconds within 1..={MAX_CHECK_SECONDS}",
+				"Check {:?} requires a lowercase name, capability \"shell\", a command of at most {MAX_COMMAND_BYTES} bytes (Linux MAX_ARG_STRLEN is 128 KiB) and timeout_seconds within 1..={MAX_CHECK_SECONDS}",
 				self.name
 			)));
 		}

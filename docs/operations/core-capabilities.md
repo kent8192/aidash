@@ -410,6 +410,10 @@ accounted separately. Identical bytes in different Tenants remain physically
 separate. Tenant purge removes committed and orphaned blob keys, temporary
 keys, and local upload intents.
 
+The Execution Pod receives the command as an argument. Its 64 KiB input
+ceiling leaves room for shell wrapping within Linux's `MAX_ARG_STRLEN` of
+128 KiB on 4 KiB pages.
+
 ## Initial ceilings
 
 | Resource                               | Default                                                        |

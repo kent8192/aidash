@@ -404,13 +404,13 @@ async fn bind() -> (tokio::net::TcpListener, String) {
 	(listener, origin)
 }
 
-fn sessions(permitted: &[&str], idle: Duration, capacity: usize) -> McpPluginSessions {
-	McpPluginSessions::with_limits(
+fn sessions(permitted: &[&str], idle: Duration) -> McpPluginSessions {
+	McpPluginSessions::with_idle(
 		KeylessAccess::permitting(PermittedOrigins::parse(permitted).unwrap()),
 		ToolClients::new().unwrap(),
 		idle,
-		capacity,
 	)
+	.scoped("fixture")
 }
 
 /// A fake MCP server at a permitted loopback origin, and the sessions that reach it.
@@ -424,16 +424,16 @@ struct Fixture {
 
 impl Fixture {
 	async fn start() -> Self {
-		Self::start_with(&[], IDLE_LIMIT, MAX_SESSIONS).await
+		Self::start_with(&[], IDLE_LIMIT).await
 	}
 
-	async fn start_with(headers: &[(&str, &str)], idle: Duration, capacity: usize) -> Self {
+	async fn start_with(headers: &[(&str, &str)], idle: Duration) -> Self {
 		let fake = Fake::new(vec![alpha(), beta()]);
 		let (listener, origin) = bind().await;
 		let app = router(fake.clone());
 		Self {
 			config: remote(&origin, headers),
-			sessions: sessions(&[&origin], idle, capacity),
+			sessions: sessions(&[&origin], idle),
 			fake,
 			run: Uuid::new_v4(),
 			server: tokio::spawn(async move { axum::serve(listener, app).await.unwrap() }),
@@ -775,12 +775,8 @@ async fn arguments_must_be_an_object() {
 
 #[tokio::test]
 async fn the_servers_headers_accompany_every_request() {
-	let fixture = Fixture::start_with(
-		&[("x-plugin", "demo"), ("X-Region", "eu")],
-		IDLE_LIMIT,
-		MAX_SESSIONS,
-	)
-	.await;
+	let fixture =
+		Fixture::start_with(&[("x-plugin", "demo"), ("X-Region", "eu")], IDLE_LIMIT).await;
 
 	fixture.list().await.unwrap();
 	fixture
@@ -829,7 +825,7 @@ async fn a_pasted_secret_accompanies_every_request_in_its_header(
 	#[case] header: &str,
 	#[case] value: &str,
 ) {
-	let fixture = Fixture::start_with(&[("X-Region", "eu")], IDLE_LIMIT, MAX_SESSIONS).await;
+	let fixture = Fixture::start_with(&[("X-Region", "eu")], IDLE_LIMIT).await;
 	let secret = pasted("s3cret", attach);
 
 	fixture
@@ -912,7 +908,7 @@ async fn a_brokered_secret_sends_every_request_to_the_broker_with_its_token_and_
 	// The fake plays the broker; the server itself is public and never reached directly.
 	let fixture = Fixture::start().await;
 	let broker = fixture.config.url.clone();
-	let sessions = sessions(&[], IDLE_LIMIT, MAX_SESSIONS);
+	let sessions = sessions(&[], IDLE_LIMIT);
 	let config = remote("https://docs.example.com", &[]);
 	let secret = CallSecret::Brokered {
 		record: aidash_application::tenant_secrets::SecretRecord {
@@ -1024,7 +1020,7 @@ async fn a_secret_that_cannot_be_a_header_value_is_refused_before_any_request() 
 #[tokio::test]
 async fn an_origin_the_deployment_did_not_permit_is_refused_before_any_connection() {
 	let (listener, origin) = bind().await;
-	let sessions = sessions(&[], IDLE_LIMIT, MAX_SESSIONS);
+	let sessions = sessions(&[], IDLE_LIMIT);
 	let config = remote(&origin, &[]);
 
 	let listed = sessions
@@ -1078,7 +1074,7 @@ async fn a_server_that_rejects_initialization_is_reported_as_initialize_failed()
 async fn a_server_nobody_answers_for_is_reported_as_unreachable() {
 	let (listener, origin) = bind().await;
 	drop(listener);
-	let sessions = sessions(&[&origin], IDLE_LIMIT, MAX_SESSIONS);
+	let sessions = sessions(&[&origin], IDLE_LIMIT);
 
 	let listed = sessions
 		.list(Uuid::new_v4(), &server("demo"), &remote(&origin, &[]), None)
@@ -1115,32 +1111,21 @@ async fn a_listing_that_is_not_mcp_is_an_invalid_response() {
 }
 
 #[tokio::test]
-async fn a_listing_beyond_ten_pages_or_one_mebibyte_of_schemas_is_an_invalid_response() {
-	for (mode, pages) in [
-		(Mode::Endless { schema_bytes: 0 }, 10),
-		(
-			Mode::Endless {
-				schema_bytes: 200_000,
-			},
-			6,
-		),
-	] {
-		let fixture = Fixture::start().await;
-		fixture.fake.set_mode(mode);
+async fn a_large_listing_reports_the_shared_byte_limit() {
+	let fixture = Fixture::start().await;
+	fixture.fake.set_mode(Mode::Endless {
+		schema_bytes: 200_000,
+	});
 
-		let listed = fixture.list().await;
-
-		assert_eq!(
-			failure(listed.unwrap_err()),
-			Some(ListFailure::InvalidResponse)
-		);
-		assert_eq!(fixture.fake.count("tools/list"), pages);
-	}
+	let error = fixture.list().await.unwrap_err();
+	assert!(error.to_string().contains("1 MiB"));
+	assert_eq!(failure(error), Some(ListFailure::ListingTooLarge));
+	assert_eq!(fixture.fake.count("tools/list"), 6);
 }
 
 #[tokio::test]
 async fn a_session_idle_for_too_long_is_closed_and_opened_again() {
-	let fixture = Fixture::start_with(&[], Duration::from_millis(100), MAX_SESSIONS).await;
+	let fixture = Fixture::start_with(&[], Duration::from_millis(100)).await;
 	fixture.list().await.unwrap();
 
 	// No subsequent session operation may be needed to close a quiet session.
@@ -1151,37 +1136,49 @@ async fn a_session_idle_for_too_long_is_closed_and_opened_again() {
 }
 
 #[tokio::test]
-async fn a_full_map_drops_the_least_recently_used_session() {
-	let fixture = Fixture::start_with(&[], IDLE_LIMIT, 2).await;
-	let (first, second, third) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-	for run in [first, second, third] {
+async fn memory_shortage_refuses_only_new_sessions_for_an_over_share_tenant() {
+	use std::sync::atomic::{AtomicBool, Ordering};
+	struct Pressure(AtomicBool);
+	impl McpMemoryShortage for Pressure {
+		fn memory_short(&self) -> bool {
+			self.0.load(Ordering::Relaxed)
+		}
+	}
+	let mut fixture = Fixture::start().await;
+	let pressure = Arc::new(Pressure(AtomicBool::new(false)));
+	fixture.sessions = fixture
+		.sessions
+		.clone()
+		.with_memory_shortage(pressure.clone());
+	let light = fixture.sessions.scoped("light");
+	let identity = server("demo");
+	for run in [fixture.run, Uuid::new_v4(), Uuid::new_v4()] {
 		fixture.list_for(run).await.unwrap();
 	}
-	assert_eq!(fixture.fake.count("initialize"), 3);
+	light
+		.list(Uuid::new_v4(), &identity, &fixture.config, None)
+		.await
+		.unwrap();
 
-	fixture.list_for(second).await.unwrap();
-	fixture.list_for(third).await.unwrap();
-	assert_eq!(
-		fixture.fake.count("initialize"),
-		3,
-		"the newest sessions are kept"
-	);
-
-	fixture.list_for(first).await.unwrap();
+	pressure.0.store(true, Ordering::Relaxed);
+	let new_run = Uuid::new_v4();
+	let error = fixture.list_for(new_run).await.unwrap_err();
+	assert!(matches!(error, Error::Port(source)
+		if source.downcast_ref::<McpSessionMemoryShort>().is_some_and(|error| error.share == 2)));
+	fixture.list().await.unwrap();
 	assert_eq!(
 		fixture.fake.count("initialize"),
 		4,
-		"the oldest session was dropped"
+		"the refusal started no handshake"
 	);
-}
+	light
+		.list(Uuid::new_v4(), &identity, &fixture.config, None)
+		.await
+		.unwrap();
 
-#[test]
-fn sessions_idle_for_ten_minutes_are_dropped_and_at_most_512_are_kept() {
-	let sessions = McpPluginSessions::new(KeylessAccess::default(), ToolClients::new().unwrap());
-
-	let state = sessions.state();
-	assert_eq!(state.idle, Duration::from_secs(600));
-	assert_eq!(state.capacity, 512);
+	pressure.0.store(false, Ordering::Relaxed);
+	fixture.list_for(new_run).await.unwrap();
+	assert_eq!(fixture.fake.count("initialize"), 6);
 }
 
 #[tokio::test]
@@ -1342,7 +1339,7 @@ async fn legacy_inputs_are_answered_inside_the_live_call_and_overlaps_are_refuse
 }
 
 #[tokio::test]
-async fn a_live_input_wait_is_not_evicted_by_idle_or_session_capacity_and_can_still_be_cancelled() {
+async fn a_live_input_wait_is_not_evicted_when_idle_and_can_still_be_cancelled() {
 	struct Waiting {
 		entered: tokio::sync::Notify,
 		released: tokio::sync::Notify,
@@ -1357,7 +1354,7 @@ async fn a_live_input_wait_is_not_evicted_by_idle_or_session_capacity_and_can_st
 			)
 		}
 	}
-	let fixture = Fixture::start_with(&[], Duration::from_millis(10), 1).await;
+	let fixture = Fixture::start_with(&[], Duration::from_millis(10)).await;
 	fixture.fake.set_mode(Mode::Callbacks);
 	fixture.list().await.unwrap();
 	let input = Arc::new(Waiting {
@@ -1386,10 +1383,7 @@ async fn a_live_input_wait_is_not_evicted_by_idle_or_session_capacity_and_can_st
 		_ = tokio::time::sleep(Duration::from_secs(3)) => panic!("no input request"),
 	}
 	tokio::time::sleep(Duration::from_millis(30)).await;
-	assert!(
-		fixture.list_for(Uuid::new_v4()).await.is_err(),
-		"active calls occupy capacity"
-	);
+	fixture.list_for(Uuid::new_v4()).await.unwrap();
 	assert!(!fixture.fake.deleted().contains(&"s1".to_owned()));
 	fixture.sessions.close(fixture.run).await;
 	assert!(

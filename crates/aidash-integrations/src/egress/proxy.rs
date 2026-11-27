@@ -1,5 +1,6 @@
 //! Scope-authenticated forward proxy.
 
+use super::resources::under_pressure;
 use aidash_application::egress::{Direction, EgressScopes, RefusalTally, ScopeSettings};
 use http_body_util::BodyExt;
 use hyper::body::Body as _;
@@ -164,16 +165,6 @@ impl CapacityCounts {
 	fn shortage(&self) -> bool {
 		self.files_short || self.memory_short
 	}
-}
-
-fn under_pressure(previous: bool, fraction: Option<f64>) -> bool {
-	fraction.map_or(previous, |fraction| {
-		if previous {
-			fraction >= 0.70
-		} else {
-			fraction > 0.80
-		}
-	})
 }
 
 #[derive(Default)]

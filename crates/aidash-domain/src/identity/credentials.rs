@@ -24,10 +24,6 @@ pub const MAX_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// Default and absolute ceiling for Tenant-owned credentials.
 pub const DEFAULT_TENANT_LIFETIME_SECONDS: i64 = 90 * 24 * 60 * 60;
 pub const MAX_TENANT_LIFETIME_SECONDS: i64 = 365 * 24 * 60 * 60;
-/// The most Subject Credentials one Mapping may hold active for its own
-/// subject (ADR 0063).
-pub const MAX_ACTIVE_PER_MAPPING: usize = 20;
-pub const MAX_ACTIVE_CHILDREN: usize = 100;
 
 /// Lifetimes run from one second to 30 days.
 pub fn validate_lifetime(seconds: i64) -> crate::Result<()> {

@@ -179,7 +179,7 @@ pub async fn verify_all(
 					return Ok(false);
 				}
 				Check::NotAsked => return Ok(false),
-				Check::Unavailable => {
+				Check::Unavailable | Check::ResponseTooLarge(_) => {
 					scope.mark_unavailable(input.reference.node());
 					if let Some(node) = scope.take_row_silence() {
 						silent.get_or_insert(node);

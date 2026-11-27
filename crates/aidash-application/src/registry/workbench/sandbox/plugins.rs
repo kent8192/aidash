@@ -27,8 +27,8 @@ pub(super) fn remote_plugins(draft: &Draft) -> Option<AgentBindings> {
 		.then_some(agent)
 }
 
-/// What the remote servers of the draft's plugins list. Listing waits on other hosts for up to
-/// 30 s, so admission commits a reserved slot and releases its locks before listing. The answers
+/// Each remote listing waits up to 15 s. Admission commits a reserved slot and releases
+/// its locks before listing. The answers
 /// are pinned only after authority and the draft revision are checked again. The listing's sessions
 /// end before this returns.
 pub(super) async fn list(sessions: &Arc<dyn PluginSessions>, agent: &AgentBindings) -> Listings {

@@ -133,6 +133,18 @@ pub enum ExecutionPodError {
 	#[error("execution pod transport: {0}")]
 	Transport(#[from] crate::Error),
 }
+/// Local transport deadline. The Runner may already have accepted the request.
+#[derive(Debug, thiserror::Error)]
+#[error("Runner route {route} did not answer within {seconds} seconds")]
+pub struct RunnerTimeout {
+	pub route: String,
+	pub seconds: u64,
+}
+
+impl RunnerTimeout {
+	pub const CODE: &str = "runner_timeout";
+}
+
 pub type Result<T> = std::result::Result<T, ExecutionPodError>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

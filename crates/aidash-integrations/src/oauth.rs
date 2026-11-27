@@ -23,6 +23,7 @@ use url::Url;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Discovery and token bodies are small; anything larger is refused.
+// Bound memory used to read untrusted OAuth token and metadata JSON; 64 KiB allows token and metadata fields.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 /// The MCP revision this probe announces.
 const PROTOCOL_VERSION: &str = "2025-06-18";

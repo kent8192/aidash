@@ -97,7 +97,6 @@ async fn dependency_rpc_signs_each_call_as_the_mapped_reader() {
 #[case::server_error("server-error", true)]
 #[case::unavailable("unavailable", true)]
 #[case::malformed("malformed", true)]
-#[case::oversize("oversize", true)]
 #[tokio::test]
 async fn a_refusal_is_not_a_failure_to_answer(#[case] mode: &str, #[case] unanswered: bool) {
 	let (_server, client, route, input, _keys, calls) = fixture(mode).await;
@@ -108,6 +107,15 @@ async fn a_refusal_is_not_a_failure_to_answer(#[case] mode: &str, #[case] unansw
 		assert!(matches!(check, Check::Refused), "{check:?}");
 	}
 	assert_eq!(calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_oversized_dependency_response_names_its_limit() {
+	let (_server, client, route, input, _keys, _) = fixture("oversize").await;
+	let check = client.check(&route, &input, Duration::from_secs(20)).await;
+	assert!(
+		matches!(check, Check::ResponseTooLarge(error) if error.to_string().contains("128 KiB"))
+	);
 }
 
 #[rstest]

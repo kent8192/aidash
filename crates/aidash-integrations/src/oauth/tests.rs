@@ -677,7 +677,7 @@ async fn an_oversized_metadata_body_is_refused() {
 		.await
 		.err()
 		.expect("metadata must be refused");
-	assert!(matches!(error, Error::External(_)));
+	assert!(matches!(error, Error::External(message) if message.contains("64 KiB")));
 }
 
 #[tokio::test]
@@ -969,6 +969,7 @@ async fn oversized_streamed_token_responses_are_refused_without_leaking_the_body
 		.err()
 		.expect("oversized token response must be refused");
 	assert!(matches!(error, Error::External(_)));
+	assert!(error.to_string().contains("64 KiB"));
 	assert!(!error.to_string().contains("token-canary"));
 	let result = adapter
 		.refresh(

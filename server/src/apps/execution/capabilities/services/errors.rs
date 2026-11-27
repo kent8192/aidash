@@ -35,6 +35,13 @@ impl reinhardt::http::Middleware for CapabilityErrors {
 				response.status.as_u16(),
 				value["error"].as_str().unwrap_or(&text),
 			);
+			if value["code"]
+				== aidash_application::ports::capabilities::execution_pod::RunnerTimeout::CODE
+			{
+				error.code =
+					aidash_application::ports::capabilities::execution_pod::RunnerTimeout::CODE
+						.into();
+			}
 			// A decision that came too late says who decided first and how
 			// (ADR 0135).
 			if value["code"] == "approval_already_decided" {
@@ -54,3 +61,45 @@ impl reinhardt::http::Middleware for CapabilityErrors {
 }
 
 pub use crate::apps::execution::capabilities::serializers::errors::CapabilityError;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use aidash_application::ports::capabilities::execution_pod::RunnerTimeout;
+	use reinhardt::http::{Handler, Middleware, ViewResult};
+	use reinhardt::{Request, Response};
+	use std::sync::Arc;
+
+	struct NoRunnerReply;
+
+	#[async_trait::async_trait]
+	impl Handler for NoRunnerReply {
+		async fn handle(&self, _request: Request) -> ViewResult<Response> {
+			let error = aidash_application::Error::Port(Box::new(RunnerTimeout {
+				route: "/v2/previews/start".into(),
+				seconds: 75,
+			}));
+			Ok(crate::Error::from(error).http_response())
+		}
+	}
+
+	#[tokio::test]
+	async fn capability_error_preserves_runner_timeout_code_and_details() {
+		let request = Request::builder()
+			.uri("/api/core/previews")
+			.build()
+			.unwrap();
+		let response = CapabilityErrors
+			.process(request, Arc::new(NoRunnerReply))
+			.await
+			.unwrap();
+		assert_eq!(response.status.as_u16(), 504);
+		let body: Value = serde_json::from_slice(&response.body).unwrap();
+		assert_eq!(body["error"]["code"], "runner_timeout");
+		assert_eq!(
+			body["error"]["message"],
+			"Runner route /v2/previews/start did not answer within 75 seconds"
+		);
+		assert_eq!(body["error"]["retryable"], false);
+	}
+}
