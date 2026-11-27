@@ -1,6 +1,7 @@
 """Execution Pod process privilege reduction, called in a child before exec."""
 import ctypes
 import os
+import re
 
 # Script mode under -I has no script directory on sys.path. Streamed
 # modules resolve through the launcher's in-memory importer first.
@@ -35,6 +36,46 @@ def run_admission_probe(root, docker_enabled, kind, targets):
 
 
 FORWARD_GRACE_SECONDS = 5
+PROCESS_CGROUP_ROOT = Path('/sys/fs/cgroup')
+# Match the preview startup log's 4 KiB tail without spending its saved-output budget.
+STARTUP_DIAGNOSTIC_BYTES = 4096
+FORK_FAILURE = re.compile(
+    rb"^(?:[^\s:][^:\r\n]*:[ \t]+)*(?:(?:cannot|can't) fork"
+    rb"(?::[ \t]+(?:resource temporarily unavailable|eagain))?|"
+    rb"fork(?: failed)?(?:: retry)?:[ \t]+(?:resource temporarily unavailable|eagain))[ \t\r]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _process_cgroup_limit(guest_limit):
+    """Return whether the guest ceiling can be checked, and any reached cgroup limit."""
+    comparable = False
+    for group in (PROCESS_CGROUP_ROOT, PROCESS_CGROUP_ROOT / 'pids'):
+        try:
+            current = int((group / 'pids.current').read_text())
+            maximum = int((group / 'pids.max').read_text())
+        except (OSError, ValueError):
+            continue
+        if current < 0 or maximum < 0:
+            continue
+        if current >= maximum:
+            return True, maximum
+        # A wider cgroup ceiling cannot rule out a tighter guest RLIMIT_NPROC.
+        comparable |= maximum <= guest_limit
+    return comparable, None
+
+
+def _poll_startup(process, guest_limit):
+    # Reaping the failed shell can free the last cgroup slot. Read the counters first.
+    try:
+        status = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except OSError:
+        exit_code = process.poll()
+        return exit_code, _process_cgroup_limit(guest_limit) if exit_code and exit_code > 0 else None
+    if status is None:
+        return None, None
+    evidence = _process_cgroup_limit(guest_limit) if status.si_code == os.CLD_EXITED and status.si_status > 0 else None
+    return process.poll(), evidence
 
 
 def validate_operation_id(operation_id):
@@ -82,6 +123,12 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
     readers = []
     output_state = {'used': 0, 'incomplete': False, 'truncated': False, 'forward_incomplete': False}
     tail = bytearray()
+    stderr_tail = bytearray()
+    # Detached operations without a command deadline are Live previews or stdio MCP sessions.
+    configured_limit = os.environ.get('AIDASH_PROCESS_LIMIT', '')
+    startup_limit = (int(configured_limit) if on_started is not None and timeout is None
+                     and configured_limit.isascii() and configured_limit.isdecimal() else 0)
+    cgroup_evidence = None
     output_lock = threading.Lock()
     forward_lock = threading.Lock()
     reader_stop = threading.Event()
@@ -120,6 +167,9 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                     if capture_tail:
                         tail.extend(data[-4096:])
                         del tail[:-4096]
+                    if startup_limit and name == 'stderr':
+                        stderr_tail.extend(data[-STARTUP_DIAGNOSTIC_BYTES:])
+                        del stderr_tail[:-STARTUP_DIAGNOSTIC_BYTES]
                     chunk = data[:max(0, output_limit - output_state['used'])]
                     output_state['used'] += len(chunk)
                     if len(chunk) < len(data):
@@ -214,6 +264,15 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
         if capture_tail:
             with output_lock:
                 result['output_tail'] = base64.b64encode(tail).decode('ascii')
+        if cgroup_evidence is not None and result['status'] == 'completed':
+            comparable, reached = cgroup_evidence
+            if reached is not None:
+                resource = 'v2_processes' if reached == startup_limit else 'pids.max'
+                result.update(_process_limit_error(reached, resource))
+            elif not comparable:
+                with output_lock:
+                    if FORK_FAILURE.search(stderr_tail):
+                        result.update(_process_limit_error(startup_limit))
         return result
     def stop_forwarding():
         forward_stop.set()
@@ -230,11 +289,15 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
     while expires is None or time.monotonic() < expires:
         if reader_start_failed or (stop_requested is not None and stop_requested.is_set()):
             break
-        exit_code = process.poll()
+        if startup_limit and exited_at is None:
+            exit_code, cgroup_evidence = _poll_startup(process, startup_limit)
+        else:
+            exit_code = process.poll()
         if exit_code is not None:
-            if on_left is not None and exited_at is None:
+            if exited_at is None:
                 exited_at = time.monotonic()
-                expires = None
+                if on_left is not None:
+                    expires = None
             # Orphaned descendants are adopted by this supervisor, even after
             # the shell has exited. Keep them tracked until they have stopped.
             try:
@@ -451,12 +514,16 @@ def supervise_foreground(*args, **kwargs):
     return supervise_detached(*args, adopt_left=True, **kwargs)
 
 
+def _process_limit_error(limit, resource='v2_processes'):
+    return {'error_code': 'pod_process_limit',
+            'message': f'The Execution Pod process limit ({resource} = {limit}) was reached. '
+                       'Stop a Background process and retry.',
+            'process_limit': limit}
+
+
 def process_limit_refusal():
-    limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
-    return {'status': 'completed', 'exit_code': 1, 'error_code': 'pod_process_limit',
-            'message': f'The Execution Pod process limit (v2_processes = {limit}) was reached. '
-                       'Stop a Background process and retry.', 'process_limit': limit,
-            'output_incomplete': True}
+    return dict(status='completed', exit_code=1, output_incomplete=True,
+                **_process_limit_error(int(os.environ['AIDASH_PROCESS_LIMIT'])))
 
 
 def supervise_background(*args, **kwargs):
@@ -829,7 +896,6 @@ if __name__ == '__main__':
         for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY'):
             os.environ.pop(key, None)
         if docker or proof:
-            import re
             if ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
                 raise OSError(ctypes.get_errno(), 'prctl')
             def read_key():
