@@ -291,6 +291,11 @@ fn events(
 	} else {
 		LIMIT
 	};
+	let oversized = if listing {
+		"MCP tool listing exceeds 1 MiB"
+	} else {
+		"MCP SSE event exceeds 256 KB"
+	};
 	let signal = Arc::new(std::sync::Mutex::new(None));
 	let signal_writer = signal.clone();
 	let expected = request_id.clone();
@@ -326,7 +331,7 @@ fn events(
 							let mut outcome = crate::tools::mcp_sse_signal(&prefix, expected.as_ref());
 							if let Some((_, final_result)) = &mut outcome { *final_result = false; }
 							*signal_writer.lock().expect("SSE signal") = outcome;
-							Err(std::io::Error::other(format!("MCP SSE event exceeds {limit} bytes")))?;
+							Err(std::io::Error::other(oversized))?;
 						}
 					}
 					continue;
@@ -342,7 +347,7 @@ fn events(
 						*final_result = if matches!(*byte, b'\r' | b'\n') { false } else { crate::tools::mcp_sse_complete(&mut response, &chunk[offset + 1..]).await };
 					}
 					*signal_writer.lock().expect("SSE signal") = outcome;
-					Err(std::io::Error::other(format!("MCP SSE event exceeds {limit} bytes")))?;
+					Err(std::io::Error::other(oversized))?;
 				}
 				if matches!(*byte, b'\r' | b'\n') {
 					let comment = comment_bytes.take().is_some();

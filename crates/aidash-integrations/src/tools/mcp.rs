@@ -347,6 +347,11 @@ fn events(
 	} else {
 		LIMIT
 	};
+	let oversized = if listing {
+		"MCP tool listing exceeds 1 MiB"
+	} else {
+		"MCP response exceeds 256 KB"
+	};
 	let signal = Arc::new(std::sync::Mutex::new(None));
 	let signal_writer = signal.clone();
 	let expected = request_id.clone();
@@ -363,7 +368,7 @@ fn events(
 					*final_result = crate::tools::mcp_sse_complete(&mut response, &chunk[remaining..]).await;
 				}
 				*signal_writer.lock().expect("SSE signal") = outcome;
-				Err(std::io::Error::other(format!("MCP response exceeds {limit} bytes")))?;
+				Err(std::io::Error::other(oversized))?;
 			}
 			yield chunk;
 		}
