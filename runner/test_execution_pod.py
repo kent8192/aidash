@@ -83,6 +83,7 @@ class SystemTreeTest(unittest.TestCase):
             root = Path(directory)
             (root / 'etc').mkdir()
             (root / 'scratch').mkdir()
+            (root / 'work').mkdir()
             (root / 'etc' / 'edited').write_text('old')
             (root / 'etc' / 'removed').write_text('gone')
             before = system_tree_index(root)
@@ -90,6 +91,7 @@ class SystemTreeTest(unittest.TestCase):
             (root / 'etc' / 'removed').unlink()
             (root / 'etc' / 'added').write_text('new')
             (root / 'scratch' / 'work').write_text('ignored')
+            (root / 'work' / 'output').write_text('ignored via the other mount')
             after = system_tree_index(root)
             self.assertEqual(system_tree_diff(before, after), {
                 'added': ['etc/added'], 'modified': ['etc', 'etc/edited'],
@@ -174,6 +176,65 @@ class SystemTreeTest(unittest.TestCase):
             initialize_system_root(image, store, reset=True)
             self.assertFalse((root / 'usr' / 'bin' / 'installed').exists())
             self.assertEqual((root / 'usr' / 'bin' / 'base').read_text(), 'image')
+
+
+class ScratchMountTest(unittest.TestCase):
+    @unittest.skipUnless(__import__('os').environ.get('AIDASH_EXECUTION_MOUNTS_TEST') == '1',
+                         'requires a disposable Linux container with mount capabilities')
+    def test_first_command_and_file_helper_share_work_and_scratch(self):
+        import base64
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import shutil
+        import subprocess
+        import sys
+
+        from sandbox_v2 import mount_rootfs, save_image_environment
+
+        scratch = Path('/scratch-system/scratch')
+        scratch.mkdir(parents=True)
+        root = scratch.parent / 'image-root' / 'rootfs'
+        (root / 'work').mkdir(parents=True)
+        for name in ('bin', 'lib', 'usr'):
+            source = Path('/') / name
+            if source.is_symlink():
+                (root / name).symlink_to(source.readlink())
+            else:
+                shutil.copytree(source, root / name, symlinks=True)
+        Path('/.aidash-helpers').mkdir()
+        save_image_environment(root.parent, {'PATH': '/bin:/usr/bin'})
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        environment = dict(os.environ, AIDASH_PROCESS_LIMIT='128', AIDASH_POD_UID='scratch-mount-test')
+
+        mount_rootfs(False)
+        subprocess.run(
+            [sys.executable, '-I', str(helper), 'chroot', 'normal', str(root), '.', '/bin/sh', '-ec',
+             'mkdir /work/nested; printf absolute > /work/nested/absolute.txt; printf relative > relative.txt'],
+            env=environment, check=True,
+        )
+
+        def files(operation, request):
+            output = subprocess.check_output(
+                [sys.executable, '-I', str(helper), 'files', operation, environment['AIDASH_POD_UID']],
+                input=json.dumps(request), text=True, env=environment,
+            )
+            response = json.loads(output)
+            self.assertIn('result', response)
+            return response['result']
+
+        for path, content in [('nested/absolute.txt', b'absolute'), ('relative.txt', b'relative')]:
+            with self.subTest(path=path):
+                read = files('read', {'path': path, 'limit': 64})
+                self.assertEqual(base64.b64decode(read['data']), content)
+                search = files('search', {'pattern': content.decode(), 'regex': False, 'max_results': 2})
+                self.assertEqual([match['path'] for match in search['matches']], [path])
+                manifest = files('manifest', {'root': path, 'max_files': 1, 'include': [],
+                                              'exclude': [], 'ignore_files': []})
+                self.assertEqual(manifest['files'], [{
+                    'path': path, 'size': len(content), 'sha256': hashlib.sha256(content).hexdigest(),
+                }])
 
 
 class FullDiskRegressionTest(unittest.TestCase):

@@ -107,7 +107,7 @@ def system_tree_index(root):
 
     root = Path(root)
     index = {}
-    excluded = {'scratch', 'proc', 'dev', 'tmp', 'sys', '.aidash-helpers'}
+    excluded = {'scratch', 'work', 'proc', 'dev', 'tmp', 'sys', '.aidash-helpers'}
     for directory, dirs, files, fd in os.fwalk(root, follow_symlinks=False):
         relative = Path(directory).relative_to(root)
         if relative == Path('.'):

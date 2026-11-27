@@ -11,6 +11,7 @@ _PR_SET_NO_NEW_PRIVS = 38
 _PR_CAP_AMBIENT = 47
 _PR_CAP_AMBIENT_CLEAR_ALL = 4
 _CAP_VERSION_3 = 0x20080522
+SCRATCH_ROOT = '/scratch-system/scratch'
 
 
 class _Header(ctypes.Structure):
@@ -173,7 +174,8 @@ def mount_rootfs(docker_enabled):
         if not stat.S_ISDIR(os.lstat(runtime).st_mode):
             raise ValueError('Python session directory must not be a symlink')
     mounts = [('/proc', 'proc'), ('/dev', 'dev'), ('/tmp', 'tmp'),
-              ('/scratch-system/scratch', 'scratch'), ('/.aidash-helpers', '.aidash-helpers')]
+              (SCRATCH_ROOT, 'scratch'), (SCRATCH_ROOT, 'work'),
+              ('/.aidash-helpers', '.aidash-helpers')]
     if docker_enabled:
         mounts.append(('/docker-storage', 'var/lib/docker'))
     for source, relative in mounts:
@@ -847,7 +849,7 @@ if __name__ == '__main__':
         from files_v2 import FileService, InvalidPath, PatchReceiptUnavailable, run_bounded
         try:
             request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
-            service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
+            service = FileService(SCRATCH_ROOT, '/scratch-system/file-writes')
             operation = sys.argv[2]
             if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
                 raise ValueError('invalid file operation')
