@@ -1139,3 +1139,5 @@ physical `scope` default is retained for existing write paths.
 Issue #1154 adds three migrations. `registry/0083_optional_agent_model` lets an Agent defer its model choice to Task start and omits the corresponding foreign key row. `workspaces/0068_task_models` records the selected model version and reasoning effort as nullable JSONB on Tasks and Duties. `identity/0116_model_approval_scope` materializes each model approval on every live Node in its Tenant and records each revision in the approval history. When old Node decisions differ, enabled consent takes precedence and the source Node name breaks ties. Agent subjects in a restriction are translated to the target Node. Reversal retains the recorded consent history.
 
 `registry/0085_configurator_review_tool` extends the descriptor validator with the Configurator’s closure approval operation.
+
+`registry/0086_configurator_scratch_tool` admits the Configurator's Scratch Space settings operation. Reversal requires removing definitions that use it.

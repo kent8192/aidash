@@ -2211,8 +2211,42 @@ async fn configurator_worker_dispatches_consecutive_bound_calls(
 		.into_iter()
 		.find(|run| run.agent_id == ID)
 		.unwrap();
+	let (status, review) = t
+		.alice(
+			"GET",
+			&format!("/catalog/review?node={}&root={ID}@{VERSION}", t.node),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{review}");
+	let patch = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "aidash.apply_patch")
+		.unwrap();
+	assert_eq!(patch["status"], "approvable", "{patch}");
+
 	let calls = [
 		("tenant_overview", json!({}), "/nodes/0/name", json!(t.node)),
+		(
+			"scratch_space_configure",
+			json!({}),
+			"/id",
+			thread["scratch_space_id"].clone(),
+		),
+		(
+			"catalog_review_approve",
+			json!({"entry":{"id":ID,"version":VERSION},"node":t.node,"scope":"node"}),
+			"/hidden",
+			json!(0),
+		),
+		(
+			"apply_patch",
+			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"verified.txt":null},"patch":"*** Begin Patch\n*** Add File: verified.txt\n+verified\n*** End Patch"}),
+			"/changed_paths/0",
+			json!("verified.txt"),
+		),
 		(
 			"aidash_api_catalog",
 			json!({"query":"POST registrations/{id}/approve"}),
@@ -2266,6 +2300,16 @@ async fn configurator_worker_dispatches_consecutive_bound_calls(
 					current.error
 				)
 			});
+		if name == "catalog_review_approve" {
+			assert!(
+				result["approved"]["bindings"]
+					.as_array()
+					.is_some_and(|bindings| bindings
+						.iter()
+						.any(|b| b["entry_id"] == "aidash.apply_patch" && b["enabled"] == true)),
+				"{result}"
+			);
+		}
 		assert_eq!(result.pointer(field), Some(&expected), "{name}: {result}");
 	}
 	let (status, saved) =
@@ -2409,6 +2453,135 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	assert_eq!(
 		operations[0]["request"]["properties"]["subject"]["type"],
 		"string"
+	);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_configures_and_reuses_a_tenant_scratch_space(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
+	let tools = aidash_server::tool::builtins();
+	let configure = &tools["scratch_space_configure"];
+	let space = configure.invoke(&context, json!({}), "read").await.unwrap();
+	let id = &space["id"];
+	assert!(id.is_string());
+	let hosts = json!({"kind":"hosts","hosts":[]});
+	let edit = json!({"scratch_space_id":id,"expected_revision":space["revision"],"allowed_hosts":hosts,"execution_image":null,"external_services":[]});
+	let updated = configure
+		.invoke(&context, edit.clone(), "edit")
+		.await
+		.unwrap();
+	assert_eq!(
+		updated["revision"].as_i64(),
+		Some(space["revision"].as_i64().unwrap() + 1)
+	);
+	let mut settings = space["settings"].clone();
+	settings["allowed_hosts"] = hosts;
+	assert_eq!(updated["settings"], settings);
+	assert!(
+		configure
+			.invoke(&context, edit, "stale")
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("409")
+	);
+
+	let service = json!({"id":"source-service","version":"1.0.0","kind":"external_service","name":{"en":"Source"},"description":{"en":"Read source data"},"config":{"base_url":"https://source.example.test/data/","methods":["GET"]}});
+	tools["registry_create"]
+		.invoke(&context, service, "service")
+		.await
+		.unwrap();
+	let services = json!({"external_services":["source-service"]});
+	assert!(
+		configure
+			.invoke(&context, services.clone(), "unapproved")
+			.await
+			.is_err()
+	);
+	tools["catalog_approve"].invoke(&context,json!({"node":t.node,"entry":{"id":"source-service","version":"1.0.0"},"scope":"node","enabled":true,"expected_revision":0}),"approve-service").await.unwrap();
+	let active = configure
+		.invoke(&context, services, "attach")
+		.await
+		.unwrap();
+	assert_eq!(
+		active["external_service_status"][0]["usable"], true,
+		"{active}"
+	);
+	assert_eq!(
+		active["settings"]["allowed_hosts"],
+		settings["allowed_hosts"]
+	);
+	let image = format!("images.example.test/tool@sha256:{}", "a".repeat(64));
+	let refused = configure
+		.invoke(&context, json!({"execution_image":image}), "image")
+		.await
+		.unwrap_err();
+	assert!(refused.to_string().contains("403"), "{refused}");
+
+	let api = &tools["aidash_api"];
+	let thread = api.invoke(&context, json!({"method":"POST","path":"/api/threads","body":{"title":"Prepared workspace","scratch_space_id":id}}),"thread").await.unwrap();
+	assert_eq!(&thread["scratch_space_id"], id);
+	for (kind, name, config) in [
+		(
+			"model",
+			"reporter-model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"reporter",
+			json!({"schema_version":1,"model":{"id":"reporter-model","version":"1.0.0"},"instructions":"Report","bindings":[]}),
+		),
+	] {
+		tools["registry_create"].invoke(&context,json!({"id":name,"kind":kind,"version":"1.0.0","name":{"en":name},"description":{"en":"Duty fixture"},"config":config}),name).await.unwrap();
+	}
+	tools["catalog_review_approve"]
+		.invoke(
+			&context,
+			json!({"node":t.node,"entry":{"id":"reporter","version":"1.0.0"}}),
+			"approval",
+		)
+		.await
+		.unwrap();
+	let duty = api.invoke(&context, json!({"method":"POST","path":format!("/api/threads/{}/duties",thread["id"].as_str().unwrap()),"body":{"title":"Report","mission":"Use the prepared workspace","agent":{"id":"reporter","version":"1.0.0"},"trigger":{"kind":"interval","every_seconds":3600}}}),"duty").await.unwrap();
+	let duty_thread = api
+		.invoke(
+			&context,
+			json!({"method":"GET","path":format!("/api/threads/{}", duty["thread_id"].as_str().unwrap())}),
+			"duty-thread",
+		)
+		.await
+		.unwrap();
+	assert_eq!(&duty_thread["thread"]["scratch_space_id"], id);
+
+	let (_, other_context) = t.d.tenant_of(&t.alice, "Other workspace").await;
+	let (status, other) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			"/api/threads",
+			Some(&other_context),
+			json!({"title":"Other"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{other}");
+	let refused = configure
+		.invoke(
+			&context,
+			json!({"scratch_space_id":other["scratch_space_id"],"allowed_hosts":settings["allowed_hosts"]}),
+			"other",
+		)
+		.await
+		.unwrap_err()
+		.to_string();
+	assert!(
+		refused.contains("404") || refused.contains("403"),
+		"{refused}"
 	);
 	t.finish().await;
 }

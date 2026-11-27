@@ -1273,6 +1273,14 @@ impl BindingSnapshot {
 			for (reference, kind) in
 				definition_references(&definition.identity, &definition.definition)?
 			{
+				// An unavailable Configurator sandbox operation has no snapshot
+				// definition or dispatch. All retained edges must match their type.
+				if definition.identity == self.agent
+					&& crate::tool::configurator::sandbox_operation(&self.agent, &reference)
+						.is_some() && !definitions.contains_key(&reference)
+				{
+					continue;
+				}
 				if definitions
 					.get(&reference)
 					.is_none_or(|target| !reference_kind_matches(&kind, &target.definition.kind))

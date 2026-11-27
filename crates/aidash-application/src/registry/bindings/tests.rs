@@ -150,9 +150,54 @@ impl ProviderCatalog for Providers {
 	}
 	fn implementation(&self, descriptor: &ToolDescriptor) -> Result<String> {
 		if self.unavailable.as_deref() == Some(&descriptor.operation) {
-			return Err(Error::Invalid("PROVIDER_UNAVAILABLE".into()));
+			return Err(Error::Invalid(format!(
+				"PROVIDER_UNAVAILABLE: {}",
+				descriptor.operation
+			)));
 		}
 		Ok("test-implementation".into())
+	}
+}
+#[tokio::test]
+async fn configurator_pins_offered_sandbox_tools_and_their_lifecycle() {
+	use crate::registry::system::configurator::{self, SANDBOX};
+	let [guide, agent] = configurator::definitions(NODE).unwrap();
+	let mut catalog = Catalog::new();
+	catalog.insert(guide);
+	let companions = ["shell_poll", "shell_cancel", "python_poll", "python_cancel"];
+	for name in SANDBOX.iter().copied().chain(companions) {
+		catalog.core(name);
+	}
+	let root = QualifiedRef {
+		registry_deployment: NODE.into(),
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	};
+	for unavailable in [None, Some("shell")] {
+		let providers = Providers {
+			unavailable: unavailable.map(str::to_owned),
+		};
+		if unavailable.is_some() {
+			catalog
+				.entries
+				.remove(&QualifiedRef::builtin(NODE, "shell"));
+		}
+		let snapshot = resolve(&mut catalog, &providers, root.clone(), &agent, false)
+			.await
+			.unwrap();
+		snapshot.validate().unwrap();
+		for name in SANDBOX.iter().copied().chain(companions) {
+			let offered =
+				unavailable.is_none() || !matches!(name, "shell" | "shell_poll" | "shell_cancel");
+			assert_eq!(
+				snapshot
+					.bindings
+					.iter()
+					.any(|b| b.alias.as_deref() == Some(name)),
+				offered,
+				"{name}"
+			);
+		}
 	}
 }
 fn agent_config() -> AgentBindings {

@@ -129,7 +129,14 @@ async fn check_binding(
 		{
 			return Ok(UseRecheck::EmbeddingUnavailable(saved.identity.local()));
 		}
-		let current = if aidash_domain::registry::bindings::sources::is_selection_decider(
+		let current = if crate::registry::system::configurator::sandbox_operation(
+			&snapshot.agent,
+			&saved.identity,
+		)
+		.is_some()
+		{
+			scope.sandbox_metadata(&saved.identity.local()).await
+		} else if aidash_domain::registry::bindings::sources::is_selection_decider(
 			&saved.definition,
 		) {
 			// Dispatch approval may be deferred; readable immutable metadata may not.

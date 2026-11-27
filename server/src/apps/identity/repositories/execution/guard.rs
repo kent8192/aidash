@@ -59,6 +59,11 @@ impl UseRecheckScope for UseGuard<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn sandbox_metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::readable(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn binding_snapshot(
 		&mut self,
 		run: &RunMetadata,
@@ -222,6 +227,11 @@ impl UseRecheckScope for RunGuard<'_> {
 	}
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
 		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
+	async fn sandbox_metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::readable(self.access, reference)
 			.await
 			.map_err(Into::into)
 	}
