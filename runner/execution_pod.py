@@ -326,6 +326,11 @@ def v2_process_limit(settings, config):
     return config.get('v2_processes', max(32, min(128, settings['memory_bytes'] // (16 << 20))))
 
 
+def _pod_process_limit_message(limit):
+    return (f'The Execution Pod process limit (v2_processes = {limit}) was reached. '
+            'Stop a Background process and retry.')
+
+
 def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
@@ -1733,6 +1738,12 @@ print(json.dumps(r))'''
                       'request_digest': digest, 'accepted_at': time.time(), 'kind': kind,
                       'time_limited': time_limited, 'notify_on_exit': notify_on_exit,
                       'helper_protocol': HELPER_PROTOCOL}
+            if kind == 'mcp_session':
+                # The admitted Pod can still have a different limit from the current Runner config.
+                limit = next((item.get('value') for item in execution.get('env', [])
+                              if item.get('name') == 'AIDASH_PROCESS_LIMIT'), None)
+                if isinstance(limit, str) and limit.isascii() and limit.isdecimal():
+                    record['process_limit'] = int(limit)
             detached = background and kind != 'python_session'
             if detached:
                 record.update(status='running', running_at=time.time())
@@ -1838,9 +1849,7 @@ print(json.dumps(r))'''
                 with self.lock:
                     self.left_result_keys.pop(operation, None)
                 self._update_command(operation, status='failed', outcome='not_started',
-                                     error_code='pod_process_limit', message=(
-                                         f'The Execution Pod process limit (v2_processes = {limit}) was reached. '
-                                         'Stop a Background process and retry.'))
+                                     error_code='pod_process_limit', message=_pod_process_limit_message(limit))
                 return self.command_result(operation, observe_late=False)
             started = receipt.get('started') is True
         except Exception as error:
@@ -2370,6 +2379,11 @@ print(json.dumps(r))'''
                 raise ValueError('invalid adopted operation ID')
             self._adopt_left(record, left, left_auth)
         fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message', 'left_running') if key in outcome}
+        if record.get('kind') == 'mcp_session' and outcome['status'] == 'completed' and not fields.get('error_code'):
+            from mcp_session import SPAWN_PROCESS_LIMIT_EXIT
+            limit = record.get('process_limit')
+            if fields.get('exit_code') == SPAWN_PROCESS_LIMIT_EXIT and type(limit) is int and limit > 0:
+                fields.update(error_code='pod_process_limit', message=_pod_process_limit_message(limit))
         if output.get('truncated') and not fields.get('message') and incomplete:
             fields['message'] = 'Output was lost to a Runner restart or a full disk'
         if outcome['status'] == 'timed_out':

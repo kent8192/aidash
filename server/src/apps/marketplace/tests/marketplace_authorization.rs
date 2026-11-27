@@ -2059,9 +2059,13 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 		"replay admitted before withdrawal must not newly queue a protected frame"
 	);
 	drop(frames);
+	let polled = request(&app, &b, "GET", "/api/events", Value::Null).await;
 	assert_eq!(
-		request(&app, &b, "GET", "/api/events", Value::Null).await.1,
-		json!({"events": [], "unconfirmed": []})
+		polled,
+		(
+			200,
+			json!({"cursor": 0, "partial": false, "events": [], "unconfirmed": []})
+		)
 	);
 	assert_eq!(
 		request(
@@ -2835,20 +2839,23 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		response.headers["x-aidash-event-cursor"],
 		denied_cursor.to_string()
 	);
-	let bytes = finite_body(response).await;
+	let first: Value = serde_json::from_slice(&finite_body(response).await).unwrap();
 	assert_eq!(
-		serde_json::from_slice::<Value>(&bytes).unwrap(),
-		json!({"events": [], "unconfirmed": []})
+		first,
+		json!({"cursor": denied_cursor, "partial": true, "events": [], "unconfirmed": []})
 	);
+	let cursor = first["cursor"].as_i64().unwrap();
 	let page = request(
 		&app,
 		&a,
 		"GET",
-		&format!("/api/events?after={denied_cursor}"),
+		&format!("/api/events?after={cursor}"),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(page.0, 200, "{page:?}");
+	assert_eq!(page.1["cursor"], visible.sequence);
+	assert_eq!(page.1["partial"], false);
 	assert_eq!(page.1["events"][0]["sequence"], visible.sequence);
 	let (events, cursor) = reader.poll_events(after, None, 1000).await.unwrap();
 	assert!(

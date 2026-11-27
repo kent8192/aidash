@@ -614,3 +614,60 @@ test("compact Japanese view replaces page windows and clears outages and forged 
     page.locator(".mesh-node-label").filter({ hasText: "B次ページ" }),
   ).toBeVisible();
 });
+
+test("the graph continues peer activity after an empty page and retains the node window", async ({
+  page,
+}) => {
+  const scene = meshScene();
+  scene.data.access = { kind: "subject", tenant: "acme", subject: "ryota" };
+  await installBearerDashboard(page, "synthetic-federated-activity", {
+    tenant: "acme",
+    name: "ryota",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const continuation: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/federation/graph/peers")
+      return route.fulfill({ json: [{ node_id: firstPeer }] });
+    if (path === "/api/federation/graph") {
+      const { cursor } = route.request().postDataJSON();
+      if (cursor !== null) continuation.push(cursor);
+      return route.fulfill({
+        json: {
+          ...projected,
+          activity: cursor === "older" ? [] : projected.activity,
+          activity_cursor:
+            cursor === null ? "older" : cursor === "older" ? "oldest" : null,
+          activity_more: cursor !== "oldest",
+        },
+      });
+    }
+    return route.fulfill({
+      json:
+        path === "/api/session"
+          ? { access: scene.data.access, node_id: scene.data.deployment.id }
+          : path === "/api/state"
+            ? scene.data
+            : path === "/api/discover"
+              ? scene.discovery
+              : [],
+    });
+  });
+
+  await page.goto("/graph");
+  await page.getByLabel("Graph thread").selectOption("");
+  await page.getByRole("button", { name: "Expand node" }).click();
+  const older = page.getByRole("button", { name: "Show older activity" });
+  await older.click();
+  await expect.poll(() => continuation).toEqual(["older"]);
+  await older.click();
+  await expect(older).toHaveCount(0);
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
+  ).toBeVisible();
+  expect(continuation).toEqual(["older", "oldest"]);
+});

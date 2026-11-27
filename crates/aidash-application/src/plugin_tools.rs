@@ -22,8 +22,8 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 pub const SERVER_TIMEOUT: Duration = crate::mcp_listing::MCP_LIST_TIMEOUT;
-/// A stdio server starts a process in the Run's Execution Pod before it lists, which can take
-/// far longer than a remote listing (ADR 0073).
+/// Bounds how long a Run waits for one stdio server, allowing for Runner startup and
+/// listing in its Execution Pod (ADR 0073).
 pub const STDIO_SERVER_TIMEOUT: Duration = Duration::from_secs(330);
 /// The cause code of a server that did not answer in time.
 const TIMEOUT: &str = "timeout";
@@ -69,33 +69,46 @@ pub async fn list_servers(
 	listed
 }
 
-/// Stdio servers start one after another, since a Run's sessions share its Execution Pod.
 async fn list_stdio(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBindings) -> Listings {
-	let mut listed = BTreeMap::new();
 	let Some(stdio) = sessions.stdio() else {
-		return listed;
+		return Listings::new();
 	};
-	for plugin in &agent.agent_plugins {
-		for (name, server) in &plugin.servers {
-			let McpServer::Stdio(config) = server else {
-				continue;
-			};
-			let server = PluginServer {
-				plugin: plugin.name.clone(),
-				digest: plugin.digest.clone(),
-				server: name.clone(),
-			};
+	let stdio = stdio.as_ref();
+	let servers: Vec<_> = agent
+		.agent_plugins
+		.iter()
+		.flat_map(|plugin| {
+			plugin.servers.iter().filter_map(move |(name, server)| {
+				let McpServer::Stdio(config) = server else {
+					return None;
+				};
+				let server = PluginServer {
+					plugin: plugin.name.clone(),
+					digest: plugin.digest.clone(),
+					server: name.clone(),
+				};
+				Some((server, config.clone()))
+			})
+		})
+		.collect();
+	let parallelism = servers.len().max(1);
+	stream::iter(servers)
+		.map(|(server, config)| async move {
 			let listing =
-				match timeout(STDIO_SERVER_TIMEOUT, stdio.list(run, &server, config)).await {
+				match timeout(STDIO_SERVER_TIMEOUT, stdio.list(run, &server, &config)).await {
 					Ok(Ok(tools)) => Listing::Listed(tools),
 					Ok(Err(Error::Invalid(cause))) => Listing::Unavailable(cause),
 					Ok(Err(error)) => Listing::Unavailable(cause(&error)),
-					Err(_) => Listing::Unavailable(TIMEOUT.into()),
+					Err(_) => Listing::Unavailable(format!(
+						"{TIMEOUT}: stdio MCP server listing exceeded {} seconds",
+						STDIO_SERVER_TIMEOUT.as_secs()
+					)),
 				};
-			listed.insert(key(&server), listing);
-		}
-	}
-	listed
+			(key(&server), listing)
+		})
+		.buffer_unordered(parallelism)
+		.collect()
+		.await
 }
 
 async fn list_remote(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBindings) -> Listings {
@@ -308,12 +321,11 @@ pub async fn reconnect_for_run(
 				.flat_map(|server| server.tools.iter().map(|tool| tool.alias.clone())),
 		)
 		.collect();
-	let added = agent_plugin::pin_additional(
+	let added = agent_plugin::pin(
 		&agent.agent_plugins,
 		&agent.agent_plugin_settings,
 		&listed,
 		&taken,
-		pinned.servers.iter().map(|server| server.tools.len()).sum(),
 	);
 	let mut result = pinned.clone();
 	result.findings.retain(|finding| {

@@ -11,6 +11,14 @@ export function mergeWindow<T extends { id: string }>(
   return [...fresh, ...older.filter((row) => !ids.has(row.id))];
 }
 
+/** Event snapshots and their continuations form one chronological stream. */
+export function mergeEventWindow<T extends { id: string; sequence: number }>(
+  fresh: readonly T[],
+  older: readonly T[],
+): T[] {
+  return mergeWindow(fresh, older).sort((a, b) => a.sequence - b.sequence);
+}
+
 /**
  * One copy of each id, in the order ids first appear; the last copy read
  * wins. Keyset pages ordered by a changing column can return a row twice.

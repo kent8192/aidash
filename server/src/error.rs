@@ -1,3 +1,4 @@
+use aidash_application::ports::tools::ListFailure;
 use aidash_domain::identity::tenancy::CreationRefusal;
 use http::{HeaderValue, header::RETRY_AFTER};
 use reinhardt::core::exception::{DatabaseErrorKind, Error as FrameworkError};
@@ -190,7 +191,14 @@ impl Error {
 		let run_message_pending = self.has_database_code("A3301");
 		let (status, message) = match &self {
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
-			Self::McpListing(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+			Self::McpListing(failure) => {
+				let status = match failure {
+					ListFailure::ListingTimeout => StatusCode::GATEWAY_TIMEOUT,
+					ListFailure::ListingTooLarge => StatusCode::BAD_GATEWAY,
+					_ => StatusCode::BAD_REQUEST,
+				};
+				(status, self.to_string())
+			}
 			Self::ProjectionRetired(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::Conflict(s) => {
 				tracing::debug!(reason = s, "request conflicts with current state");

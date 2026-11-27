@@ -403,9 +403,8 @@ it adds no dependency to approve first.
 
 ### Skills
 
-A plugin's Skills behave as direct Skills of the Agent. They are pinned with the
-Run, within the direct Skill limits of 64 files and 256 KiB per Skill, and they
-are Discoverable capabilities under `deferred@1`. Loading a Skill never executes
+A plugin's Skills behave as direct Skills of the Agent. The Run pins them,
+and they are Discoverable capabilities under `deferred@1`. Loading a Skill never executes
 anything, `allowed-tools` never raises authority, and an Agent with plugin
 Skills may have empty instructions, as one with a Skill Binding may.
 
@@ -425,9 +424,9 @@ The tools a server listed are pinned as follows.
   characters, `_` and eight hex digits of a hash. A tool whose alias another
   Binding, a reserved name or an earlier plugin tool already uses is skipped
   and reported.
-- A server contributes at most 64 tools, a Run at most 128, and a tool's input
-  schema must be an object of at most 16,384 bytes with a description of at
-  most 8,192 bytes. A tool beyond a limit is skipped and reported.
+- A tool's input schema must be a valid JSON Schema object. Plugin tools
+  exposed to the model count toward its context window. If the mandatory
+  request cannot fit after compaction, the Run reports `context_unreducible`.
 - `agent_plugin_settings` holds the Agent's choices, plugin name then server
   name. `tools` is an allowlist that can only narrow what the server lists.
   `exposure` is `eager` or `deferred` under `deferred@1`, like a Binding's;
@@ -521,10 +520,10 @@ left out with a typed cause and the Run continues without its tools. The event
 `reason` codes, and no URL, header, detail or server answer. The Run channel
 shows which servers could not be reached.
 
-Remote servers list concurrently and have 15 seconds each. A stdio server has
-330 seconds for setup and listing. Once listing starts, every transport has
-15 seconds to read all pages and reports `mcp_listing_too_large` if the
-listing exceeds 1 MiB.
+Servers list concurrently. Each remote server has 15 seconds, and each stdio
+server has 330 seconds for setup and listing. Once listing starts, every
+transport has 15 seconds to read all pages and reports `mcp_listing_too_large`
+if the listing exceeds 1 MiB.
 
 A Run keeps one MCP session per server. If a session is lost the next call
 opens another, lists the tools again and answers `CAPABILITY_CHANGED` for a

@@ -7,7 +7,7 @@ import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { mergeWindow, uniqueById } from "../window-pages";
+import { mergeEventWindow, uniqueById } from "../window-pages";
 import {
   ChevronRight,
   FileText,
@@ -441,9 +441,7 @@ export function Channel({
   });
   const events = query.isError
     ? noEvents
-    : mergeWindow(query.data?.events ?? noEvents, eventPages.older).sort(
-        (a, b) => a.sequence - b.sequence,
-      );
+    : mergeEventWindow(query.data?.events ?? noEvents, eventPages.older);
   // Tasks, Artifacts and events are read with the snapshot; Runs and requests
   // come from State. Until the snapshot answers, Tasks fall back to State.
   const missing = (kinds: UnconfirmedKind[], fromSnapshot: boolean) =>

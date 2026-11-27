@@ -302,7 +302,10 @@ async fn subject_credentials_enforce_thread_isolation_and_live_revocation(
 	}
 	assert_eq!(
 		scoped_request(&app, other, "GET", "/api/events", Value::Null).await,
-		(200, json!({"events": [], "unconfirmed": []}))
+		(
+			200,
+			json!({"cursor": 0, "partial": false, "events": [], "unconfirmed": []})
+		)
 	);
 	assert_eq!(
 		scoped_request(

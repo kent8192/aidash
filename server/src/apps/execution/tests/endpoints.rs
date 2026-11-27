@@ -1,6 +1,6 @@
 use crate::endpoint::{EndpointFixture, assert_json, endpoint, thread};
 use rstest::rstest;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[rstest]
 #[tokio::test]
@@ -188,10 +188,13 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 		.unwrap();
 	let status = response.status();
 	let body = response.text().await.unwrap();
-	assert!(
-		!status.is_success() || body == r#"{"events":[],"unconfirmed":[]}"#,
-		"{status}: {body}"
-	);
+	if status.is_success() {
+		let page: Value = serde_json::from_str(&body).unwrap();
+		assert_eq!(
+			page,
+			json!({"cursor": 0, "partial": false, "events": [], "unconfirmed": []})
+		);
+	}
 	assert!(!body.contains(id), "{body}");
 	// The authorized Tenant Subject still reads them.
 	let events = assert_json(

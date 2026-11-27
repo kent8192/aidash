@@ -10,8 +10,13 @@ pub struct ContentLimits {
 	pub search_bytes: usize,
 	pub search_seconds: u64,
 	pub read_bytes: usize,
-	pub skill_files: usize,
-	pub skill_bytes: usize,
+	// Accept legacy Deployment profiles without publishing or enforcing the removed limits.
+	#[serde(rename = "skill_files", skip_serializing)]
+	#[schemars(skip)]
+	pub(crate) _legacy_skill_files: Option<usize>,
+	#[serde(rename = "skill_bytes", skip_serializing)]
+	#[schemars(skip)]
+	pub(crate) _legacy_skill_bytes: Option<usize>,
 	pub reference_files: usize,
 	pub reference_bytes: u64,
 	pub reference_pages: usize,

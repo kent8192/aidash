@@ -6,7 +6,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const MAX_SERVER_TOOLS: usize = 64;
 pub const MAX_TOOL_NAME: usize = 128;
 
 /// The per-server choices of an Agent definition, keyed by plugin name and server name.
@@ -124,9 +123,9 @@ impl ServerSettings {
 			return Err("exposure requires the deferred@1 policy");
 		}
 		if let Some(tools) = &self.tools
-			&& (tools.len() > MAX_SERVER_TOOLS || !tools.iter().all(|name| valid_tool_name(name)))
+			&& !tools.iter().all(|name| valid_tool_name(name))
 		{
-			return Err("the tool allowlist holds at most 64 names of 1 to 128 characters");
+			return Err("the tool allowlist requires names of 1 to 128 characters");
 		}
 		if let Some(secret) = &self.secret {
 			if !remote {
@@ -141,15 +140,12 @@ impl ServerSettings {
 			return Err("only a remote server can declare Read-only tools");
 		}
 		let mut names = BTreeSet::new();
-		if self.read_only.len() > MAX_SERVER_TOOLS
-			|| !self
-				.read_only
-				.iter()
-				.all(|tool| valid_tool_name(&tool.name) && names.insert(tool.name.as_str()))
+		if !self
+			.read_only
+			.iter()
+			.all(|tool| valid_tool_name(&tool.name) && names.insert(tool.name.as_str()))
 		{
-			return Err(
-				"Read-only declarations hold at most 64 distinct names of 1 to 128 characters",
-			);
+			return Err("Read-only declarations require distinct names of 1 to 128 characters");
 		}
 		if !self
 			.read_only
