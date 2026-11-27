@@ -52,8 +52,8 @@ async fn fair_share_wait_returns_503_with_the_current_share() {
 	assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
 	assert_eq!(body["code"], FAIR_SHARE_CODE);
 	let message = body["error"].as_str().unwrap();
-	assert!(message.contains("work pool: 10"));
-	assert!(message.contains("Tenant share: 5"));
+	assert!(message.contains("Work pool has 10 connections"));
+	assert!(message.contains("Tenant's share is 5"));
 	drop(first);
 }
 

@@ -35,7 +35,7 @@ never pull or acknowledge activation messages. No consumer is tied to a Pod name
 | `AIDASH_ACTIVATION_MAX_BYTES`        | `1073741824`    | File/WorkQueue capacity with DiscardNew.                                                                                                                                                               |
 | `AIDASH_ACTIVATION_REPLICAS`         | `1`             | Broker replicas, 1–5; whoever runs the Deployment must provision matching JetStream capacity.                                                                                                          |
 | `AIDASH_WORKER_SLOTS`                | `4`             | 1–4 execution slots per process, preserving the existing database pool budget. Scale replicas for more capacity.                                                                                       |
-| `AIDASH_TOOL_PARALLELISM`            | `1`             | 1–4 concurrent [read batch](../features/parallel-read-batches.md) calls per process; each holds one data connection. Each call beyond the first needs headroom in the shared [Work pool](database.md). |
+| `AIDASH_TOOL_PARALLELISM`            | `1`             | 1–4 concurrent [read batch](../features/parallel-read-batches.md) calls per process. Each holds one data connection. Each call beyond the first needs headroom in the shared [Work pool](database.md). |
 
 The Helm chart exposes `activation.*`, `worker.slots`, and optional
 `server.existingSecret` / `worker.existingSecret`. Role secrets may contain a

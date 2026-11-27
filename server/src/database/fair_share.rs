@@ -20,7 +20,7 @@ tokio::task_local! {
 pub(super) fn pool_busy(name: &str, size: usize) -> Error {
 	DatabaseError::new(
 		DatabaseErrorKind::Timeout,
-		format!("The {name} database pool is busy ({size} connections); retry"),
+		format!("The {name} database pool is busy ({size} connections). Retry."),
 	)
 	.with_code(POOL_BUSY_CODE)
 	.into()
@@ -174,7 +174,7 @@ impl FairShare {
 					Err(DatabaseError::new(
 						DatabaseErrorKind::Timeout,
 						format!(
-							"Database fair share wait expired (work pool: {} connections, Tenant share: {share}); retry",
+							"Database fair share wait expired. The Work pool has {} connections and this Tenant's share is {share}.",
 							self.size
 						),
 					)
