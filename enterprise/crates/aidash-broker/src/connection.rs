@@ -75,6 +75,17 @@ impl ConnectionBroker {
 		}
 		Ok(server)
 	}
+	async fn grant_server(
+		&self,
+		issuer: &str,
+		configured: bool,
+	) -> Result<AuthorizationServer, &'static str> {
+		if configured {
+			AuthorizationServer::configured(issuer).map_err(|_| DESTINATION_REFUSED)
+		} else {
+			self.metadata(issuer).await
+		}
+	}
 	fn resource(&self, broker: &TenantSecretBroker, id: Uuid) -> String {
 		format!(
 			"projects/{}/secrets/{}oauth-{id}",
@@ -106,42 +117,49 @@ impl ConnectionBroker {
 		client_id: &str,
 		redirect: Option<&str>,
 		reference: &Option<ClientSecretRef>,
+		configured_resource: Option<&str>,
 	) -> Result<ClientCredentials, &'static str> {
-		let secret = if let Some(c) = reference {
-			let (_, bytes) = self
-				.source
-				.latest(&self.resource(broker, c.id))
-				.await
-				.map_err(store_error)?;
-			let payload = sealed::open(&bytes).map_err(|_| SECRET_UNAVAILABLE)?;
-			match (payload, &c.kind) {
-				(
-					Payload::RegisteredClient {
-						issuer: i,
-						client_id: id,
-						client_secret,
-					},
-					ClientKind::Registered,
-				) if i == issuer && id == client_id => Some(client_secret),
-				(
-					Payload::DynamicClient {
-						issuer: i,
-						client_id: id,
-						redirect_uri,
-						client_secret,
-					},
-					ClientKind::Dynamic,
-				) if i == issuer
-					&& id == client_id
-					&& redirect.is_some_and(|r| r == redirect_uri) =>
-				{
-					Some(client_secret)
+		let secret =
+			if let Some(c) = reference {
+				let (_, bytes) = self
+					.source
+					.latest(&self.resource(broker, c.id))
+					.await
+					.map_err(store_error)?;
+				let payload = sealed::open(&bytes).map_err(|_| SECRET_UNAVAILABLE)?;
+				match (payload, &c.kind) {
+					(
+						Payload::RegisteredClient {
+							configured_resource: bound_resource,
+							issuer: i,
+							client_id: id,
+							client_secret,
+						},
+						ClientKind::Registered,
+					) if i == issuer
+						&& id == client_id && bound_resource.as_deref() == configured_resource =>
+					{
+						Some(client_secret)
+					}
+					(
+						Payload::DynamicClient {
+							issuer: i,
+							client_id: id,
+							redirect_uri,
+							client_secret,
+						},
+						ClientKind::Dynamic,
+					) if i == issuer
+						&& id == client_id && configured_resource.is_none()
+						&& redirect.is_some_and(|r| r == redirect_uri) =>
+					{
+						Some(client_secret)
+					}
+					_ => return Err(DESTINATION_REFUSED),
 				}
-				_ => return Err(DESTINATION_REFUSED),
-			}
-		} else {
-			None
-		};
+			} else {
+				None
+			};
 		Ok(ClientCredentials {
 			client_id: client_id.into(),
 			client_secret: secret,
@@ -181,6 +199,7 @@ impl ConnectionBroker {
 	) -> Result<Option<Receipt>, &'static str> {
 		match &c.operation {
 			ConnectionOperation::Exchange {
+				configured,
 				issuer,
 				resource,
 				client_id,
@@ -189,9 +208,16 @@ impl ConnectionBroker {
 				..
 			} => {
 				let credentials = self
-					.credentials(broker, issuer, client_id, Some(redirect_uri), client)
+					.credentials(
+						broker,
+						issuer,
+						client_id,
+						Some(redirect_uri),
+						client,
+						configured.then_some(resource.as_str()),
+					)
 					.await?;
-				let server = self.metadata(issuer).await?;
+				let server = self.grant_server(issuer, *configured).await?;
 				audit.entry.host = server.token_endpoint.host_str().unwrap_or_default().into();
 				audit.entry.path_sha256 = path_digest(server.token_endpoint.path());
 				let body = body.ok_or(BROKER_REJECTED)?;
@@ -213,6 +239,7 @@ impl ConnectionBroker {
 				let scope = tokens.scope.clone();
 				let expires_in = tokens.expires_in;
 				let payload = Payload::Connection {
+					configured: *configured,
 					issuer: issuer.clone(),
 					resource: resource.clone(),
 					client_id: client_id.clone(),
@@ -238,6 +265,8 @@ impl ConnectionBroker {
 				if latest != *version {
 					if let Payload::Connection {
 						ref issuer,
+						configured,
+						ref resource,
 						ref client_id,
 						ref client,
 						ref redirect_uri,
@@ -254,6 +283,7 @@ impl ConnectionBroker {
 							client_id,
 							redirect_uri.as_deref(),
 							client,
+							configured.then_some(resource.as_str()),
 						)
 						.await?;
 						audit.entry.host = url::Url::parse(issuer)
@@ -281,6 +311,7 @@ impl ConnectionBroker {
 					return Err("connection_required");
 				}
 				let Payload::Connection {
+					configured,
 					issuer,
 					resource,
 					client_id,
@@ -301,9 +332,10 @@ impl ConnectionBroker {
 						&client_id,
 						redirect_uri.as_deref(),
 						&client,
+						configured.then_some(resource.as_str()),
 					)
 					.await?;
-				let server = self.metadata(&issuer).await?;
+				let server = self.grant_server(&issuer, configured).await?;
 				audit.entry.host = server.token_endpoint.host_str().unwrap_or_default().into();
 				audit.entry.path_sha256 = path_digest(server.token_endpoint.path());
 				let tokens = self
@@ -318,6 +350,7 @@ impl ConnectionBroker {
 				let scope = tokens.scope.or(old_scope);
 				let expires_in = tokens.expires_in;
 				let payload = Payload::Connection {
+					configured,
 					issuer,
 					resource,
 					client_id,
@@ -337,7 +370,9 @@ impl ConnectionBroker {
 				// Validate the latest client binding before revoking upstream.
 				// AS failure is reported, and the caller still destroys local grant versions.
 				let Payload::Connection {
+					configured,
 					issuer,
+					resource,
 					client_id,
 					client,
 					redirect_uri,
@@ -355,9 +390,10 @@ impl ConnectionBroker {
 						&client_id,
 						redirect_uri.as_deref(),
 						&client,
+						configured.then_some(resource.as_str()),
 					)
 					.await?;
-				let server = self.metadata(&issuer).await?;
+				let server = self.grant_server(&issuer, configured).await?;
 				if let Some(endpoint) = &server.revocation_endpoint {
 					audit.entry.host = endpoint.host_str().unwrap_or_default().into();
 					audit.entry.path_sha256 = path_digest(endpoint.path());

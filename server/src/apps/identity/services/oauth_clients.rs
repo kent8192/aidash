@@ -153,9 +153,53 @@ impl Management {
 		} else {
 			issuer.clone()
 		};
-		let access = self
+		let mut access = self
 			.authorize(&actor, &tenant, "secret", &stored_issuer, &[action])
 			.await?;
+		let client_id = match (
+			super::configurator::current(identity),
+			input.client_id_request,
+			input.client_id,
+		) {
+			(Some(caller), Some(id), None) if input.client_secret.is_none() => {
+				let request = crate::apps::execution::models::HumanRequest::read_in(
+					access.tx.as_mut(),
+					id,
+					false,
+				)
+				.await?
+				.ok_or(Error::Forbidden)?;
+				if request.run_id != caller.run
+					|| request.thread_id != caller.thread
+					|| request.kind != aidash_domain::setting_requests::KIND
+					|| request.answered_by.as_deref() != Some(identity.subject.as_str())
+				{
+					return Err(Error::Forbidden);
+				}
+				let form: aidash_domain::setting_requests::Form =
+					serde_json::from_str(&request.prompt)?;
+				if !matches!(form, aidash_domain::setting_requests::Form::Text { .. }) {
+					return Err(Error::Forbidden);
+				}
+				request
+					.response
+					.as_ref()
+					.and_then(|answer| answer["person_data"]["client_id"].as_str())
+					.ok_or_else(|| {
+						Error::Invalid(
+							"Ask the person for the client ID using a text field named client_id."
+								.into(),
+						)
+					})?
+					.to_owned()
+			}
+			(None, None, Some(id)) => id,
+			_ => {
+				return Err(Error::Invalid(
+                    "Supply the client ID through an answered text Setting Request and the secret through a secret form.".into(),
+                ));
+			}
+		};
 		let result = service
 			.put(
 				&tenant,
@@ -163,8 +207,9 @@ impl Management {
 				id,
 				Put {
 					owner: input.owner,
+					provider: input.provider,
 					issuer,
-					client_id: input.client_id,
+					client_id,
 					client_secret: input.client_secret,
 					expected_revision: input.expected_revision,
 				},

@@ -23,6 +23,8 @@ pub trait KeyValidator: Send + Sync {
 /// Public metadata sealed alongside a stored OAuth Client secret on Cloud.
 #[derive(Clone, Debug)]
 pub struct ClientBinding {
+	/// Protected resource for an explicitly configured provider.
+	pub configured_resource: Option<String>,
 	pub issuer: String,
 	pub client_id: String,
 	pub redirect_uri: Option<String>,

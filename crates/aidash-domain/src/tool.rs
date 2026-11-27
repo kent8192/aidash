@@ -61,6 +61,8 @@ pub enum ToolConfig {
 	/// to the hosts recorded with that Tenant Secret (ADR 0051), or with an MCP
 	/// OAuth Connection (ADR 0100).
 	Http {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		oauth_connection: Option<String>,
 		endpoint: String,
 		replay: String,
 		#[serde(default, skip_serializing_if = "Option::is_none")]

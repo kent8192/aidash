@@ -66,6 +66,7 @@ fn authorization_document(base: &str, issuer: &str, s256: bool) -> Value {
 /// An authorization server metadata value as discovery would produce it.
 fn discovered(base: &str) -> AuthorizationServer {
 	AuthorizationServer {
+		configured: false,
 		issuer: base.to_owned(),
 		authorization_endpoint: Url::parse(&format!("{base}/authorize")).unwrap(),
 		token_endpoint: Url::parse(&format!("{base}/token")).unwrap(),
@@ -495,8 +496,11 @@ async fn an_exchange_sends_the_resource_verifier_and_client_secret() {
 	assert_eq!(form["client_secret"], "secret-canary");
 }
 
+#[rstest::rstest]
+#[case::discovered(false)]
+#[case::configured(true)]
 #[tokio::test]
-async fn a_public_client_sends_only_its_client_id() {
+async fn a_public_client_sends_only_its_client_id(#[case] configured: bool) {
 	let (base, listener) = bind().await;
 	let seen = Arc::new(Mutex::new(Seen::default()));
 	let app = Router::new().route(
@@ -514,10 +518,12 @@ async fn a_public_client_sends_only_its_client_id() {
 	);
 	let _server = serve(listener, app);
 	let redirect = Url::parse("https://app.example/auth/connections/callback").unwrap();
+	let mut server = discovered(&base);
+	server.configured = configured;
 	McpOAuth::for_test()
 		.unwrap()
 		.exchange(
-			&discovered(&base),
+			&server,
 			&client(None),
 			"code-canary",
 			&verifier(),
@@ -527,6 +533,7 @@ async fn a_public_client_sends_only_its_client_id() {
 		.await
 		.unwrap();
 	let form = &seen.lock().unwrap().token_forms[0];
+	assert_eq!(form.contains_key("resource"), !configured);
 	assert_eq!(form["client_id"], "client-1");
 	assert!(!form.contains_key("client_secret"));
 }

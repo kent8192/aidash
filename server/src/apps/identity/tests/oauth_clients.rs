@@ -23,6 +23,7 @@ use std::{sync::Arc, time::Duration};
 
 fn input(owner: Ownership, secret: Option<&str>) -> Put {
 	Put {
+		provider: None,
 		owner,
 		issuer: "https://AUTH.example.test/issuer/".into(),
 		client_id: "client-id".into(),

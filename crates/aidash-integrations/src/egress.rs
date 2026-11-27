@@ -1032,6 +1032,26 @@ pub async fn serve_with_scopes(
 	serve_with_clients(listener, scopes, limits, stopping, client, public).await
 }
 
+/// A test listener whose permitted-origin client trusts the local fixture CA.
+#[cfg(feature = "test-support")]
+pub async fn serve_with_test_client(
+	listener: TcpListener,
+	scopes: Arc<dyn EgressScopes>,
+	stopping: watch::Receiver<bool>,
+	client: reqwest::Client,
+) -> crate::Result<()> {
+	let public = crate::keyless::public_client(IDLE, IDLE)?;
+	serve_with_clients(
+		listener,
+		scopes,
+		ProxyLimits::default(),
+		stopping,
+		client,
+		public,
+	)
+	.await
+}
+
 /// The serving loop, with the upstream clients supplied. Tests give it clients
 /// that reach a local stand-in for the package registries.
 async fn serve_with_clients(
@@ -1191,6 +1211,9 @@ fn target(admission: &Admission, path: &str, query: Option<&str>) -> Result<Url,
 	{
 		return Err(io_error("invalid_egress_path"));
 	}
+	if let Some(resource) = &admission.definition.oauth_connection {
+		aidash_domain::oauth_connections::validate_destination(resource, url.as_str())?;
+	}
 	url.set_query(query);
 	url.set_fragment(None);
 	Ok(url)
@@ -1299,6 +1322,19 @@ async fn forward_service(
 	let admission_ms = millis(admitting.elapsed());
 	let admission = match admitted {
 		Ok(ExternalAdmission::Admitted(value)) => *value,
+		Ok(ExternalAdmission::Reconnect { resource }) => {
+			let body = serde_json::json!({"error":"connection_required","resource":resource,"hint":aidash_domain::oauth_connections::reconnect(&resource)});
+			return Response::builder()
+				.status(StatusCode::FAILED_DEPENDENCY)
+				.header("content-type", "application/json")
+				.header("cache-control", "no-store")
+				.body(
+					Full::new(Bytes::from(body.to_string()))
+						.map_err(|never| match never {})
+						.boxed_unsync(),
+				)
+				.unwrap();
+		}
 		Ok(ExternalAdmission::Refused(refusal)) => return service_refused(&refusal),
 		Err(aidash_application::Error::Unauthorized) => return proxy::auth_required(),
 		Err(aidash_application::Error::Forbidden) => {

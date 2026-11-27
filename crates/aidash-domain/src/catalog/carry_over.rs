@@ -148,12 +148,14 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 			match (&a, &b) {
 				(
 					Some(ToolConfig::Http {
+						oauth_connection: ac,
 						endpoint: ae,
 						secret: as_,
 						replay: ar,
 						secret_owner: ao,
 					}),
 					Some(ToolConfig::Http {
+						oauth_connection: bc,
 						endpoint: be,
 						secret: bs,
 						replay: br,
@@ -161,6 +163,7 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 					}),
 				) => {
 					add(host_changed(ae, be), "endpoint host");
+					add(ac != bc, "OAuth Connection");
 					add(as_ != bs, "secret");
 					add(secret_owner_widened(*ao, *bo), "secret owner");
 					add(

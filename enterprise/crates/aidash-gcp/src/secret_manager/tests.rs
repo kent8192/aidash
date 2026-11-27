@@ -338,6 +338,7 @@ async fn oauth_client_writes_seal_binding_and_raw_writes_cannot_forge_connection
 				"tenant",
 				&resource,
 				ClientBinding {
+					configured_resource: None,
 					issuer: "https://auth.example".into(),
 					client_id: "client".into(),
 					redirect_uri: redirect,

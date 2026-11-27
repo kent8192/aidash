@@ -498,6 +498,19 @@ impl DefinitionValidation {
 			} => {
 				validate_endpoint(endpoint)?;
 				self.validate_tool_endpoint(endpoint)?;
+				if let ToolConfig::Http {
+					oauth_connection: Some(resource),
+					secret_owner,
+					..
+				} = &cfg
+				{
+					aidash_domain::oauth_connections::validate_destination(resource, endpoint)?;
+					if secret.is_some() || !secret_owner.is_any() {
+						return Err(Error::Invalid(
+							"Choose either an OAuth Connection or a Tenant Secret.".into(),
+						));
+					}
+				}
 				if let Some(name) = secret {
 					if !self.tenant_secrets_enabled {
 						return Err(Error::Invalid(

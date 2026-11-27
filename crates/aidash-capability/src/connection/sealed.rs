@@ -20,6 +20,8 @@ fn serialize_optional<S: serde::Serializer>(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Payload {
 	RegisteredClient {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		configured_resource: Option<String>,
 		issuer: String,
 		client_id: String,
 		#[serde(serialize_with = "serialize_secret")]
@@ -33,6 +35,8 @@ pub enum Payload {
 		client_secret: SecretString,
 	},
 	Connection {
+		#[serde(default)]
+		configured: bool,
 		issuer: String,
 		resource: String,
 		client_id: String,
@@ -79,8 +83,19 @@ pub fn open(bytes: &[u8]) -> Result<Payload, Invalid> {
 fn validate(v: &Payload) -> Result<(), Invalid> {
 	let (issuer, client_id) = match v {
 		Payload::RegisteredClient {
-			issuer, client_id, ..
-		} => (issuer, client_id),
+			issuer,
+			client_id,
+			configured_resource,
+			..
+		} => {
+			if configured_resource
+				.as_deref()
+				.is_some_and(|r| !secure_uri(r))
+			{
+				return Err(Invalid);
+			}
+			(issuer, client_id)
+		}
 		Payload::DynamicClient {
 			issuer,
 			client_id,

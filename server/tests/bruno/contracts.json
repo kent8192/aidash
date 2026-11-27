@@ -49550,6 +49550,16 @@
               "owner": {
                 "$ref": "#/components/schemas/SecretOwnership"
               },
+              "provider": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OAuthProvider"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -49563,6 +49573,7 @@
               }
             },
             "required": [
+              "provider",
               "id",
               "tenant",
               "owner",
@@ -49572,6 +49583,34 @@
               "created_at",
               "updated_at",
               "revision"
+            ],
+            "type": "object"
+          },
+          "OAuthProvider": {
+            "additionalProperties": false,
+            "description": "Endpoints and scopes for a registered client without MCP discovery.",
+            "properties": {
+              "authorization_endpoint": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "token_endpoint": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorization_endpoint",
+              "token_endpoint",
+              "resource",
+              "scopes"
             ],
             "type": "object"
           },
@@ -49623,6 +49662,16 @@
               "owner": {
                 "$ref": "#/components/schemas/SecretOwnership"
               },
+              "provider": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OAuthProvider"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -49636,6 +49685,7 @@
               }
             },
             "required": [
+              "provider",
               "id",
               "tenant",
               "owner",
@@ -49645,6 +49695,34 @@
               "created_at",
               "updated_at",
               "revision"
+            ],
+            "type": "object"
+          },
+          "OAuthProvider": {
+            "additionalProperties": false,
+            "description": "Endpoints and scopes for a registered client without MCP discovery.",
+            "properties": {
+              "authorization_endpoint": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "token_endpoint": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorization_endpoint",
+              "token_endpoint",
+              "resource",
+              "scopes"
             ],
             "type": "object"
           },
@@ -49693,6 +49771,16 @@
               "owner": {
                 "$ref": "#/components/schemas/SecretOwnership"
               },
+              "provider": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OAuthProvider"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -49706,6 +49794,7 @@
               }
             },
             "required": [
+              "provider",
               "id",
               "tenant",
               "owner",
@@ -49715,6 +49804,34 @@
               "created_at",
               "updated_at",
               "revision"
+            ],
+            "type": "object"
+          },
+          "OAuthProvider": {
+            "additionalProperties": false,
+            "description": "Endpoints and scopes for a registered client without MCP discovery.",
+            "properties": {
+              "authorization_endpoint": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "token_endpoint": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorization_endpoint",
+              "token_endpoint",
+              "resource",
+              "scopes"
             ],
             "type": "object"
           },
@@ -49763,6 +49880,16 @@
               "owner": {
                 "$ref": "#/components/schemas/SecretOwnership"
               },
+              "provider": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OAuthProvider"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "revision": {
                 "format": "int64",
                 "type": "integer"
@@ -49776,6 +49903,7 @@
               }
             },
             "required": [
+              "provider",
               "id",
               "tenant",
               "owner",
@@ -49785,6 +49913,34 @@
               "created_at",
               "updated_at",
               "revision"
+            ],
+            "type": "object"
+          },
+          "OAuthProvider": {
+            "additionalProperties": false,
+            "description": "Endpoints and scopes for a registered client without MCP discovery.",
+            "properties": {
+              "authorization_endpoint": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "token_endpoint": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorization_endpoint",
+              "token_endpoint",
+              "resource",
+              "scopes"
             ],
             "type": "object"
           },
@@ -49978,6 +50134,9 @@
                 "format": "date-time",
                 "type": ["string", "null"]
               },
+              "configured": {
+                "type": "boolean"
+              },
               "created_at": {
                 "format": "date-time",
                 "type": "string"
@@ -50002,6 +50161,10 @@
                 },
                 "type": "array"
               },
+              "scratch_space": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
               "state": {
                 "$ref": "#/components/schemas/ConnectionState"
               },
@@ -50017,6 +50180,8 @@
               }
             },
             "required": [
+              "configured",
+              "scratch_space",
               "id",
               "tenant",
               "subject",
@@ -50105,6 +50270,9 @@
                 "format": "date-time",
                 "type": ["string", "null"]
               },
+              "configured": {
+                "type": "boolean"
+              },
               "created_at": {
                 "format": "date-time",
                 "type": "string"
@@ -50129,6 +50297,10 @@
                 },
                 "type": "array"
               },
+              "scratch_space": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
               "state": {
                 "$ref": "#/components/schemas/ConnectionState"
               },
@@ -50144,6 +50316,8 @@
               }
             },
             "required": [
+              "configured",
+              "scratch_space",
               "id",
               "tenant",
               "subject",

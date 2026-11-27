@@ -254,9 +254,75 @@ impl ServiceSecrets {
 		Ok((route, secret))
 	}
 
-	/// The value, broker route and Tenant Secret identity a request for
-	/// `definition` carries. With a broker configured the value never reaches
-	/// this node; a self-hosted node reads the pinned version (ADR 0095).
+	async fn connection_material(
+		&self,
+		tx: &mut Transaction,
+		scope: &ScopeId,
+		run: Uuid,
+		resource: &str,
+		definition: &ExternalService,
+	) -> Result<(Option<secrecy::SecretString>, Option<SecretRoute>)> {
+		// Use the admission transaction for Run and grant reads. Concurrent
+		// admissions must not wait for another slot in the execution pool.
+		use crate::apps::identity::models::{AuthorizationBundle, AuthorizationExecution};
+		let run = crate::apps::execution::models::Run::read_in(&mut **tx, run, None)
+			.await?
+			.filter(|r| r.is_local(self.store.deployment.as_str()) && r.node.as_str() == scope.node)
+			.ok_or(Error::Forbidden)?;
+		let grant = AuthorizationExecution::objects()
+			.filter(AuthorizationExecution::field_run_id().eq(run.id))
+			.filter(AuthorizationExecution::field_tenant().eq(scope.tenant.clone()))
+			.all_with_executor(&mut **tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?
+			.pop()
+			.ok_or(Error::Forbidden)?;
+		let policy = AuthorizationBundle::lock_snapshot(&mut **tx, &scope.tenant, false).await?;
+		if !crate::apps::identity::repositories::approval_preferences::is_person(
+			&policy.bundle,
+			&grant.root_subject,
+		) {
+			return Err(Error::Forbidden);
+		}
+		let owner = aidash_application::oauth_connections::Owner {
+			tenant: scope.tenant.clone(),
+			subject: grant.root_subject,
+		};
+		let oauth = self
+			.store
+			.oauth_connections
+			.as_ref()
+			.ok_or(Error::Forbidden)?;
+		if oauth.calls.is_some() {
+			let call = SecretCall {
+				destination: aidash_application::tenant_secrets::endpoint_destination(
+					&definition.base_url,
+				)?,
+				methods: definition.methods.clone(),
+				attach: Attach::Bearer,
+				subject: SecretSubject::ScratchSpace {
+					tenant: scope.tenant.clone(),
+					node: scope.node.clone(),
+					space: scope.scratch_space,
+				},
+				max_response_bytes: None,
+			};
+			return Ok((
+				None,
+				Some(oauth.brokered_route(&owner, resource, call).await?),
+			));
+		}
+		Ok((
+			Some(
+				oauth
+					.space_bearer(&owner, resource, scope.scratch_space)
+					.await?
+					.access_token,
+			),
+			None,
+		))
+	}
+
 	async fn material(
 		&self,
 		scope: &ScopeId,
@@ -293,7 +359,7 @@ impl ServiceSecrets {
 	}
 
 	/// Admits one request from `scope` to `service` and writes its request
-	/// record. Nothing here reads or locks the Run row (ADR 0112); a revoked
+	/// record. OAuth reads the Run to resolve its owner without locking it. A revoked
 	/// Run is refused, and so is a scope whose daily allowance or the
 	/// service's daily share is spent (`egress_budget_exhausted`).
 	pub(crate) async fn admit(
@@ -359,7 +425,21 @@ impl ServiceSecrets {
 		)
 		.await?;
 		let key = format!("{service}@{}", entry.version);
-		let (credential, route, secret) = self.material(&scope.id, &key, &definition).await?;
+		let (credential, route, secret) = if let Some(resource) = &definition.oauth_connection {
+			match self
+				.connection_material(&mut tx, &scope.id, run, resource, &definition)
+				.await
+			{
+				Ok((token, route)) => (token, route, None),
+				Err(_) => {
+					return Ok(ExternalAdmission::Reconnect {
+						resource: resource.clone(),
+					});
+				}
+			}
+		} else {
+			self.material(&scope.id, &key, &definition).await?
+		};
 		let id = Uuid::now_v7();
 		let record = RequestRecord::build()
 			.id(id)

@@ -837,6 +837,7 @@ async fn schema_rejection_precedes_every_tool_effect(fixture: Fixture) {
 	// Arrange
 	let tool = plugin(
 		ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: "http://fixture.invalid".into(),
 			replay: "idempotent".into(),
 			secret: None,
@@ -1062,6 +1063,7 @@ async fn native_memory_model_tool_cannot_attest_claim_verification(
 fn secret_tool(secret: Option<&str>) -> Plugin {
 	plugin(
 		ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: "https://api.example.com/run".into(),
 			replay: "idempotent".into(),
 			secret: secret.map(str::to_owned),
@@ -1223,6 +1225,7 @@ async fn personal_only_tools_never_use_an_ownerless_shared_secret(
 		}
 	} else {
 		ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: "https://api.example.com/tool".into(),
 			replay: "idempotent".into(),
 			secret: Some("search".into()),
@@ -1295,6 +1298,7 @@ async fn a_home_personal_call_returns_its_result_before_any_local_secret_or_tran
 		}
 	} else {
 		ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: "https://api.example.com/run".into(),
 			replay: "idempotent".into(),
 			secret: Some("personal".into()),

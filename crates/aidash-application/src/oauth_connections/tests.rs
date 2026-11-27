@@ -232,6 +232,7 @@ struct OAuth {
 }
 fn server() -> AuthorizationServer {
 	AuthorizationServer {
+		configured: false,
 		issuer: "https://auth.example".into(),
 		authorization_endpoint: Url::parse("https://auth.example/authorize").unwrap(),
 		token_endpoint: Url::parse("https://auth.example/token").unwrap(),
@@ -302,6 +303,8 @@ impl OAuthTokens for OAuth {
 	) -> std::result::Result<Tokens, RefreshFailure> {
 		assert_eq!(token.expose_secret(), "refresh-1");
 		self.refreshed.fetch_add(1, Ordering::SeqCst);
+		// Give the concurrent caller a turn while the provider request is in flight.
+		tokio::task::yield_now().await;
 		match self.mode.load(Ordering::SeqCst) {
 			1 => Err(RefreshFailure::Ambiguous(unavailable())),
 			2 => Err(RefreshFailure::Unavailable(unavailable())),
@@ -463,11 +466,40 @@ async fn oauth_connections_owner_refresh_and_disconnect_lifecycle() {
 	assert!(
 		matches!(f.service.bearer(&other,"https://mcp.example/mcp").await,Err(Error::Invalid(s)) if s==domain::CONNECTION_REQUIRED)
 	);
-	let bearer = f
-		.service
-		.bearer(&f.owner, "https://mcp.example/mcp")
+	let resource = "https://mcp.example/mcp";
+	f.repo
+		.rows
+		.lock()
 		.await
-		.unwrap();
+		.rows
+		.get_mut(&id)
+		.unwrap()
+		.access_expires_at = Some(Utc::now() + Duration::seconds(120));
+	assert_eq!(
+		f.service
+			.bearer(&f.owner, resource)
+			.await
+			.unwrap()
+			.access_token
+			.expose_secret(),
+		"access-1"
+	);
+	assert_eq!(f.oauth.refreshed.load(Ordering::SeqCst), 0);
+	f.repo
+		.rows
+		.lock()
+		.await
+		.rows
+		.get_mut(&id)
+		.unwrap()
+		.access_expires_at = Some(Utc::now() + Duration::seconds(60));
+	let (first, second) = tokio::join!(
+		f.service.bearer(&f.owner, resource),
+		f.service.bearer(&f.owner, resource)
+	);
+	assert_eq!(second.unwrap().access_token.expose_secret(), "access-2");
+	assert_eq!(f.oauth.refreshed.load(Ordering::SeqCst), 1);
+	let bearer = first.unwrap();
 	assert_eq!(bearer.access_token.expose_secret(), "access-2");
 	assert_eq!(bearer.connection, id);
 	let row = f.repo.rows.lock().await.rows[&id].clone();

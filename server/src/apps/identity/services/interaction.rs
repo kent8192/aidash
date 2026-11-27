@@ -474,6 +474,63 @@ async fn answer_setting_locked(
 		}
 		return Err(Error::Conflict("Setting Request already answered.".into()));
 	}
+	if let (
+		Form::Secret {
+			oauth_client: Some(client),
+			hosts,
+			..
+		},
+		Action::Accept,
+	) = (&form, answer.action)
+	{
+		let service = crate::apps::identity::services::oauth_clients::service(&f.store);
+		let row = service
+			.get(&identity.tenant, &identity.subject, *client)
+			.await?;
+		let provider = row.provider.as_ref().ok_or_else(|| {
+			Error::Invalid("The client needs a registered token endpoint.".into())
+		})?;
+		let host = reqwest::Url::parse(&provider.token_endpoint)
+			.ok()
+			.and_then(|u| u.host_str().map(str::to_owned))
+			.ok_or(Error::Forbidden)?;
+		if hosts.as_slice() != [host] {
+			return Err(Error::Invalid(
+				"The form must show the OAuth Client token endpoint host.".into(),
+			));
+		}
+		let resource = access.resource("secret", &row.issuer, json!({"name":row.issuer}));
+		use aidash_application::tenant_secrets::Ownership;
+		use aidash_domain::identity::tenant_administration::{SECRET_MANAGE, SECRET_USE};
+		let (action, owner) = if row.owner.is_some() {
+			(SECRET_USE, Ownership::Me)
+		} else {
+			(SECRET_MANAGE, Ownership::Tenant)
+		};
+		access.require(&resource, action).await?;
+		let Some(Value::String(value)) = answer.value else {
+			return Err(Error::Invalid("Enter the client secret.".into()));
+		};
+		service
+			.put_with_setting(
+				&identity.tenant,
+				&identity.subject,
+				Some(row.id),
+				aidash_application::oauth_clients::Put {
+					provider: row.provider,
+					owner,
+					issuer: row.issuer,
+					client_id: row.client_id,
+					client_secret: Some(value.into()),
+					expected_revision: row.revision,
+				},
+				Some(id),
+			)
+			.await?;
+		return HumanRequestRecord::read_in(access.tx.as_mut(), id, false)
+			.await?
+			.ok_or(Error::Forbidden);
+	}
 	if let (Form::Secret { name, hosts, .. }, Action::Accept) = (form, answer.action) {
 		let secret = access.resource("secret", &name, json!({"name":name}));
 		access

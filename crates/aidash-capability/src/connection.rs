@@ -28,6 +28,8 @@ pub struct ClientSecretRef {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConnectionOperation {
 	Exchange {
+		#[serde(default)]
+		configured: bool,
 		issuer: String,
 		resource: String,
 		client_id: String,
@@ -80,6 +82,7 @@ impl ConnectionClaims {
 				client,
 				redirect_uri,
 				sub,
+				..
 			} => {
 				if !secure_uri(issuer)
 					|| !secure_uri(resource)
@@ -118,7 +121,9 @@ impl ConnectionClaims {
 			} => {
 				if !matches!(
 					sub,
-					SecretSubject::Run { .. } | SecretSubject::Workbench { .. }
+					SecretSubject::Run { .. }
+						| SecretSubject::Workbench { .. }
+						| SecretSubject::ScratchSpace { .. }
 				) {
 					return Err(Failure::ClaimViolation);
 				}

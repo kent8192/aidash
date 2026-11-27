@@ -4282,3 +4282,51 @@ test("Setting Request keeps a Japanese node purge pending until the person's ope
     submissions.find((item) => item.path.endsWith("/answer"))?.body,
   ).toEqual({ action: "done", language: "ja" });
 });
+
+test("Setting Request connects a configured OAuth provider for the displayed Scratch Space", async ({
+  page,
+}) => {
+  const space = "88a71e17-19be-4fd6-9fd1-1155aa000011";
+  const target = {
+    type: "connection",
+    issuer: "https://api.x.com",
+    resource: "https://api.x.com/2",
+    scopes: ["tweet.read", "offline.access"],
+    scratch_space: space,
+  };
+  const { submissions } = await setup(page, {
+    subject: true,
+    setting: { kind: "oauth", label: "X account", target },
+  });
+  await page.route("**/connections/authorizations", async (route) => {
+    const { type: _type, ...expected } = target;
+    expect(route.request().postDataJSON()).toMatchObject(expected);
+    await route.fulfill({
+      json: {
+        authorization_url: new URL(
+          "/fixture-oauth-return",
+          route.request().url(),
+        ).href,
+      },
+    });
+  });
+  await page.context().route("**/fixture-oauth-return", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<script>opener.postMessage({type:"aidash.connection",outcome:"connected"}, location.origin)</script>',
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button").filter({ hasText: "X account" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(space);
+  await dialog.getByRole("button", { name: "Connect to X account" }).click();
+  await expect
+    .poll(
+      () =>
+        submissions.find(
+          (item) => item.path === "/api/setting-requests/question-one/answer",
+        )?.body,
+    )
+    .toEqual({ action: "done", language: "en" });
+});

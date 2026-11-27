@@ -75,6 +75,7 @@ async fn application_adapter_sends_connection_tokens_and_returns_only_receipts()
 			"tenant",
 			id,
 			ExchangeGrant {
+				configured: false,
 				issuer: "https://auth.example".into(),
 				resource: "https://mcp.example/mcp".into(),
 				client_id: "public".into(),
@@ -130,6 +131,7 @@ async fn broker_store_resolves_latest_with_checksum_and_writes_only_oauth_connec
 	let id = Uuid::now_v7();
 	let resource = format!("projects/123/secrets/aidash-dev-oauth-{id}");
 	let payload = sealed::seal(sealed::Payload::Connection {
+		configured: false,
 		issuer: "https://auth.example".into(),
 		resource: "https://mcp.example/mcp".into(),
 		client_id: "public".into(),
@@ -193,6 +195,7 @@ async fn broker_store_resolves_latest_with_checksum_and_writes_only_oauth_connec
 			.is_err()
 	);
 	let client = sealed::seal(sealed::Payload::RegisteredClient {
+		configured_resource: None,
 		issuer: "https://auth.example".into(),
 		client_id: "client".into(),
 		client_secret: "canary".into(),

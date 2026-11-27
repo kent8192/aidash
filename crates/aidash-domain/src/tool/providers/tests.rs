@@ -37,6 +37,7 @@ fn only_a_descriptors_read_only_declaration_lifts_the_tool_call_approval() {
 			narrow: Narrowing::default(),
 			lifecycle: None,
 			transport: Some(ToolConfig::Http {
+				oauth_connection: None,
 				endpoint: "https://example.invalid".into(),
 				replay: replay.into(),
 				secret: None,
@@ -84,6 +85,7 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 		narrow: Narrowing::default(),
 		lifecycle: None,
 		transport: Some(ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: "https://example.invalid".into(),
 			replay: "read_only".into(),
 			secret: None,

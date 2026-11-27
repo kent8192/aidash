@@ -377,7 +377,9 @@ impl EgressScopes for DurableScopes {
 			.await?
 		{
 			ExternalAdmission::Admitted(admission) => *admission,
-			refused @ ExternalAdmission::Refused(_) => return Ok(refused),
+			refused @ (ExternalAdmission::Refused(_) | ExternalAdmission::Reconnect { .. }) => {
+				return Ok(refused);
+			}
 		};
 		if admission.service != service {
 			return Err(aidash_application::Error::Forbidden);

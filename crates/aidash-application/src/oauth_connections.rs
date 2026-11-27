@@ -71,6 +71,8 @@ impl Outcome {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "OAuthConnectionMetadata")]
 pub struct Metadata {
+	pub configured: bool,
+	pub scratch_space: Option<Uuid>,
 	pub id: Uuid,
 	pub tenant: String,
 	pub subject: String,
@@ -85,7 +87,13 @@ pub struct Metadata {
 }
 impl From<OAuthConnection> for Metadata {
 	fn from(r: OAuthConnection) -> Self {
+		let (configured, scratch_space) = match r.client {
+			ClientRef::Configured { scratch_space, .. } => (true, scratch_space),
+			_ => (false, None),
+		};
 		Self {
+			configured,
+			scratch_space,
 			id: r.id,
 			tenant: r.tenant,
 			subject: r.subject,
@@ -178,6 +186,14 @@ fn seal<T: Serialize>(v: &T) -> Result<SecretString> {
 }
 fn unavailable() -> Error {
 	Error::External(domain::CONNECTION_UNAVAILABLE.into())
+}
+fn require_space(row: &OAuthConnection, space: Uuid) -> Result<()> {
+	if matches!(&row.client,ClientRef::Configured{scratch_space:Some(approved),..} if *approved==space)
+	{
+		Ok(())
+	} else {
+		Err(required())
+	}
 }
 fn required() -> Error {
 	Error::Invalid(domain::CONNECTION_REQUIRED.into())
@@ -300,7 +316,92 @@ impl Service {
 			prm.scopes_supported.as_deref(),
 			ceiling.as_deref(),
 		)?;
-		let (client_ref, credentials) = self.pick_client(owner, &server, redirect_uri).await?;
+		let client = self.pick_client(owner, &server, redirect_uri).await?;
+		self.begin_grant(
+			owner,
+			resource,
+			server,
+			scopes,
+			client,
+			redirect_uri,
+			return_to,
+		)
+		.await
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	pub async fn begin_configured(
+		&self,
+		owner: &Owner,
+		issuer: &str,
+		scratch_space: Option<Uuid>,
+		resource: &str,
+		requested: &[String],
+		redirect_uri: &Url,
+		return_to: &str,
+	) -> Result<Begin> {
+		let (person, tenant) = self
+			.policy
+			.registered_clients(&owner.tenant, &owner.subject, issuer)
+			.await?;
+		let client = domain::pick_client(person.as_ref(), tenant.as_ref())
+			.ok_or_else(|| Error::Invalid("Register the OAuth Client before connecting.".into()))?;
+		let provider = client
+			.provider
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("The OAuth Client needs provider endpoints.".into()))?;
+		let resource = domain::canonical_resource(resource)?;
+		if resource != domain::canonical_resource(&provider.resource)? {
+			return Err(Error::Forbidden);
+		}
+		let ceiling = self.policy.scope_ceiling(&owner.tenant, &resource).await?;
+		let scopes = domain::admissible_scopes(
+			if requested.is_empty() {
+				&provider.scopes
+			} else {
+				requested
+			},
+			Some(&provider.scopes),
+			None,
+			ceiling.as_deref(),
+		)?;
+		let mut server = AuthorizationServer::configured(&provider.token_endpoint)?;
+		server.issuer = client.issuer.clone();
+		server.authorization_endpoint =
+			Url::parse(&provider.authorization_endpoint).map_err(|_| unavailable())?;
+		let reference = ClientRef::Configured {
+			scratch_space,
+			client: client.id,
+			token_endpoint: provider.token_endpoint.clone(),
+		};
+		let credentials = ClientCredentials {
+			client_id: client.client_id.clone(),
+			client_secret: None,
+		};
+		self.begin_grant(
+			owner,
+			resource,
+			server,
+			scopes,
+			(reference, credentials),
+			redirect_uri,
+			return_to,
+		)
+		.await
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	async fn begin_grant(
+		&self,
+		owner: &Owner,
+		resource: String,
+		server: AuthorizationServer,
+		scopes: Vec<String>,
+		(client_ref, credentials): (ClientRef, ClientCredentials),
+		redirect_uri: &Url,
+		return_to: &str,
+	) -> Result<Begin> {
+		let issuer = &server.issuer;
 		let mut scope = self.repository.begin(owner).await?;
 		let existing = scope
 			.list()
@@ -344,8 +445,10 @@ impl Service {
 			.append_pair("state", state.expose_secret())
 			.append_pair("code_challenge", &challenge(&verifier))
 			.append_pair("code_challenge_method", "S256")
-			.append_pair("resource", &resource)
 			.append_pair("scope", &scopes.join(" "));
+		if !server.configured {
+			url.query_pairs_mut().append_pair("resource", &resource);
+		}
 		Ok(Begin {
 			authorization_url: url.into(),
 			state,
@@ -375,6 +478,11 @@ impl Service {
 			.registered_clients(&owner.tenant, &owner.subject, &server.issuer)
 			.await?;
 		if let Some(client) = domain::pick_client(person.as_ref(), tenant.as_ref()) {
+			if client.provider.is_some() {
+				return Err(Error::Invalid(
+					"Start this OAuth Connection with its configured issuer.".into(),
+				));
+			}
 			let secret = match (&client.secret_resource, &client.pinned_version) {
 				(Some(r), Some(v)) if self.calls.is_none() => {
 					Some(self.reader()?.read(&owner.tenant, r, v).await?)
@@ -414,6 +522,7 @@ impl Service {
 						&owner.tenant,
 						&resource,
 						ClientBinding {
+							configured_resource: None,
 							issuer: server.issuer.clone(),
 							client_id: issued.client_id.clone(),
 							redirect_uri: Some(redirect_uri.to_string()),
@@ -475,7 +584,7 @@ impl Service {
 	async fn exchange_grant(&self, owner: &Owner, p: &Pending) -> Result<ExchangeGrant> {
 		use aidash_capability::connection::{ClientKind, ClientSecretRef};
 		let (client_id, client) = match &p.client {
-			ClientRef::Registered { client: id } => {
+			ClientRef::Registered { client: id } | ClientRef::Configured { client: id, .. } => {
 				let (person, tenant) = self
 					.policy
 					.registered_clients(&owner.tenant, &owner.subject, &p.issuer)
@@ -514,7 +623,11 @@ impl Service {
 			}
 		};
 		Ok(ExchangeGrant {
-			issuer: p.issuer.clone(),
+			configured: matches!(p.client, ClientRef::Configured { .. }),
+			issuer: match &p.client {
+				ClientRef::Configured { token_endpoint, .. } => token_endpoint.clone(),
+				_ => p.issuer.clone(),
+			},
 			resource: p.resource.clone(),
 			client_id,
 			client,
@@ -558,6 +671,11 @@ impl Service {
 		let calls = self.calls.as_ref().ok_or_else(unavailable)?;
 		let resource = domain::canonical_resource(resource)?;
 		let (mut scope, mut row) = self.active_scope(owner, &resource).await?;
+		if let aidash_capability::tenant_secret::SecretSubject::ScratchSpace { space, .. } =
+			&call.subject
+		{
+			require_space(&row, *space)?;
+		}
 		if expected.is_some_and(|id| id != row.id) {
 			return Err(required());
 		}
@@ -597,6 +715,14 @@ impl Service {
 		Ok(route)
 	}
 
+	async fn grant_server(&self, issuer: &str, client: &ClientRef) -> Result<AuthorizationServer> {
+		match client {
+			ClientRef::Configured { token_endpoint, .. } => {
+				AuthorizationServer::configured(token_endpoint)
+			}
+			_ => self.discovery.authorization_server(issuer).await,
+		}
+	}
 	async fn credentials(
 		&self,
 		owner: &Owner,
@@ -605,7 +731,7 @@ impl Service {
 		redirect_uri: &str,
 	) -> Result<ClientCredentials> {
 		match client {
-			ClientRef::Registered { client: id } => {
+			ClientRef::Registered { client: id } | ClientRef::Configured { client: id, .. } => {
 				let (person, tenant) = self
 					.policy
 					.registered_clients(&owner.tenant, &owner.subject, issuer)
@@ -729,7 +855,7 @@ impl Service {
 				Outcome::Connected
 			});
 		}
-		let server = self.discovery.authorization_server(&pending.issuer).await?;
+		let server = self.grant_server(&pending.issuer, &pending.client).await?;
 		let client = self
 			.credentials(
 				&owner,
@@ -948,19 +1074,30 @@ impl Service {
 		scope.commit().await
 	}
 	pub async fn bearer(&self, owner: &Owner, resource: &str) -> Result<Bearer> {
-		self.bearer_inner(owner, resource)
+		self.bearer_inner(owner, resource, None)
 			.await
 			.map_err(|e| match e {
 				Error::Invalid(ref code) if code == domain::CONNECTION_REQUIRED => e,
 				_ => unavailable(),
 			})
 	}
-	async fn bearer_inner(&self, owner: &Owner, resource: &str) -> Result<Bearer> {
+	pub async fn space_bearer(&self, owner: &Owner, resource: &str, space: Uuid) -> Result<Bearer> {
+		self.bearer_inner(owner, resource, Some(space)).await
+	}
+	async fn bearer_inner(
+		&self,
+		owner: &Owner,
+		resource: &str,
+		space: Option<Uuid>,
+	) -> Result<Bearer> {
 		if self.calls.is_some() {
 			return Err(unavailable());
 		}
 		let resource = domain::canonical_resource(resource)?;
 		let (mut scope, mut row) = self.active_scope(owner, &resource).await?;
+		if let Some(space) = space {
+			require_space(&row, space)?;
+		}
 		let Journal::Tokens(old) = self.read(&row, &row.pinned_version).await? else {
 			return Err(unavailable());
 		};
@@ -984,8 +1121,7 @@ impl Service {
 			return Err(required());
 		};
 		let server = self
-			.discovery
-			.authorization_server(&row.issuer)
+			.grant_server(&row.issuer, &row.client)
 			.await
 			.map_err(|_| unavailable())?;
 		// The callback URI is persisted with the encrypted token payload's client cache key.
@@ -1149,7 +1285,7 @@ impl Service {
 			return Ok(Disconnection { revoked });
 		}
 		let mut revoked = true;
-		let server = self.discovery.authorization_server(&row.issuer).await;
+		let server = self.grant_server(&row.issuer, &row.client).await;
 		let redirect = self.redirect_for(&row).await;
 		let client = match redirect {
 			Ok(ref r) => self.credentials(owner, &row.issuer, &row.client, r).await,

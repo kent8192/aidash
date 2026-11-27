@@ -19,6 +19,8 @@ pub enum Form {
 		label: String,
 		name: String,
 		hosts: Vec<String>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		oauth_client: Option<uuid::Uuid>,
 	},
 	Text {
 		fields: Vec<TextField>,
@@ -46,6 +48,14 @@ pub enum Form {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "SettingOAuth")]
 pub enum OAuth {
+	Connection {
+		#[serde(default)]
+		scratch_space: Option<uuid::Uuid>,
+		issuer: String,
+		resource: String,
+		#[serde(default)]
+		scopes: Vec<String>,
+	},
 	Tool {
 		resource: String,
 		#[serde(default)]
@@ -156,6 +166,7 @@ impl Form {
 				label: l,
 				name,
 				hosts,
+				..
 			} => {
 				label(l)?;
 				tenant_secrets::validate_name(name)?;
@@ -223,6 +234,16 @@ impl Form {
 			Self::Oauth { label: l, target } => {
 				label(l)?;
 				match target {
+					OAuth::Connection {
+						issuer,
+						resource,
+						scopes,
+						..
+					} => {
+						crate::oauth_connections::canonical_resource(issuer)?;
+						crate::oauth_connections::canonical_resource(resource)?;
+						crate::oauth_connections::admissible_scopes(scopes, None, None, None)?;
+					}
 					OAuth::Tool { resource, scopes } => {
 						crate::oauth_connections::canonical_resource(resource)
 							.map_err(|_| Error::Invalid("Invalid tool resource URL.".into()))?;

@@ -8,10 +8,13 @@ use serde::Deserialize;
 pub struct Write {
 	#[serde(default)]
 	pub owner: Ownership,
+	pub provider: Option<aidash_domain::oauth_connections::OAuthProvider>,
 	/// Canonical issuer. Existing registrations cannot change issuer (409
 	/// oauth_client_issuer_immutable); create a new registration to retarget.
 	pub issuer: String,
-	pub client_id: String,
+	pub client_id: Option<String>,
+	/// For a Configurator call, the answered text Setting Request with field client_id.
+	pub client_id_request: Option<uuid::Uuid>,
 	#[serde(default)]
 	#[schemars(with = "Option<String>")]
 	pub client_secret: Option<SecretString>,

@@ -1545,6 +1545,7 @@ mod tests {
 		let digest = crate::registry::rules::digest(&legacy);
 		for config in [
 			ToolConfig::Http {
+				oauth_connection: None,
 				endpoint: "https://example.invalid".into(),
 				replay: "read_only".into(),
 				secret: None,
@@ -1596,6 +1597,7 @@ mod tests {
 		] {
 			for config in [
 				ToolConfig::Http {
+					oauth_connection: None,
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
 					secret: None,

@@ -35,6 +35,7 @@ async fn connection_tokens_round_trip_all_operations_and_are_separate_from_other
 	};
 	let operations = vec![
 		ConnectionOperation::Exchange {
+			configured: false,
 			issuer: "https://auth.example".into(),
 			resource: "https://mcp.example/mcp".into(),
 			client_id: "client".into(),
@@ -113,6 +114,7 @@ async fn connection_tokens_round_trip_all_operations_and_are_separate_from_other
 #[test]
 fn exchange_cannot_hide_endpoints_or_use_a_run_subject() {
 	let mut c = claims(ConnectionOperation::Exchange {
+		configured: false,
 		issuer: "https://auth.example".into(),
 		resource: "https://mcp.example/mcp".into(),
 		client_id: "c".into(),
@@ -174,8 +176,8 @@ fn sealed_clients_bind_issuer_client_id_redirect_and_refuse_unknown_kinds_versio
 }
 
 #[test]
-fn scratch_scope_cannot_authorize_connection_forwarding() {
-	let claim = claims(ConnectionOperation::Forward {
+fn scratch_scope_authorizes_forwarding_only_in_its_tenant() {
+	let mut claim = claims(ConnectionOperation::Forward {
 		version: "3".into(),
 		destination: Destination {
 			origin: "https://mcp.example".into(),
@@ -189,5 +191,7 @@ fn scratch_scope_cannot_authorize_connection_forwarding() {
 		},
 		max_response_bytes: None,
 	});
+	assert!(claim.validate().is_ok());
+	claim.tenant = "other".into();
 	assert!(claim.validate().is_err());
 }

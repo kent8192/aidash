@@ -135,6 +135,7 @@ reinhardt-test = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a
   "e2e",
 ] }
 rcgen = "0.14"
+tokio-rustls = "0.26"
 tokio-stream = { version = "0.1", features = ["net"] }
 flate2 = "1"
 # Test-only Provider Credential write port and fake-provider constructors

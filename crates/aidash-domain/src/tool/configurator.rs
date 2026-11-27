@@ -94,7 +94,6 @@ pub fn permits(tenant: &str, method: &str, uri: &str) -> bool {
 				| "deletion" | "credentials"
 				| "registration-keys"
 				| "authorizations"
-				| "oauth-clients"
 				| "provider-authorizations"
 				| "human-requests"
 				| "setting-requests"
@@ -124,6 +123,7 @@ mod tests {
 	fn configurator_routes_stay_within_the_requesters_tenant() {
 		for path in [
 			"/api/tenants/mine/nodes",
+			"/api/tenants/mine/oauth-clients",
 			"/api/registry",
 			"/api/scratch-spaces/123/settings",
 			"/api/authorization/mine/catalog?node=a",

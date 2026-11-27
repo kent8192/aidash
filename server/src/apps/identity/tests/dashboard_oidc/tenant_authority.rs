@@ -2335,7 +2335,9 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 ) {
 	use aidash_application::registry::system::configurator::{ID, VERSION};
 	use aidash_server::tool::builtins;
-	let t = Team::new(runtime).await;
+	let mut t = Team::new(runtime).await;
+	crate::personal_credentials::configure(&mut t.d.federation).await;
+	t.d.app = common::application(t.d.federation.clone()).await;
 	let (status, refused) = t.d.as_person(
 		&t.bob, "POST", "/api/threads", Some(&t.bob_context),
 		json!({"title":"Settings","request":"Configure this Tenant","target":{"id":ID,"version":VERSION},"target_kind":"agent"}),
@@ -2348,6 +2350,97 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
 	let thread = context.run.thread_id;
 	let tools = builtins();
+	let requested = tools["setting_request"]
+		.invoke(
+			&context,
+			json!({"kind":"text","fields":[{"name":"client_id","label":"OAuth client ID"}]}),
+			"oauth-client-id",
+		)
+		.await
+		.unwrap();
+	let client_request: Uuid =
+		serde_json::from_value(requested["human_request_id"].clone()).unwrap();
+	let (status, answered) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			&format!("/api/setting-requests/{client_request}/answer"),
+			Some(&t.alice_context),
+			json!({"action":"accept","value":{"client_id":"person-provided"}}),
+		)
+		.await;
+	assert_eq!(status, 200, "{answered}");
+	let path = format!("/api/tenants/{}/oauth-clients", t.tenant);
+	let mut body = json!({"issuer":"https://api.x.com","client_id":"invented"});
+	assert!(
+		tools["aidash_api"]
+			.invoke(
+				&context,
+				json!({"method":"PUT","path":path,"body":body}),
+				"invented-id"
+			)
+			.await
+			.is_err()
+	);
+	body.as_object_mut().unwrap().remove("client_id");
+	body["client_id_request"] = json!(client_request);
+	body["provider"] = json!({"authorization_endpoint":"https://twitter.com/i/oauth2/authorize","token_endpoint":"https://api.x.com/2/oauth2/token","resource":"https://api.x.com/2","scopes":["tweet.read","offline.access"]});
+	let mut invented_secret = body.clone();
+	invented_secret["client_secret"] = json!("model-supplied-value");
+	let refused = tools["aidash_api"]
+		.invoke(
+			&context,
+			json!({"method":"PUT","path":path,"body":invented_secret}),
+			"invented-secret",
+		)
+		.await
+		.unwrap_err();
+	assert!(refused.to_string().contains("secret form"), "{refused}");
+	let registered = tools["aidash_api"]
+		.invoke(
+			&context,
+			json!({"method":"PUT","path":path,"body":body}),
+			"register-client",
+		)
+		.await
+		.unwrap();
+	assert_eq!(registered["client_id"], "person-provided");
+	assert_eq!(registered["has_secret"], false);
+	let requested = tools["setting_request"]
+		.invoke(
+			&context,
+			json!({"kind":"secret","label":"X client secret","name":"x-client","hosts":["api.x.com"],"oauth_client":registered["id"]}),
+			"oauth-client-secret",
+		)
+		.await
+		.unwrap();
+	let request: Uuid = serde_json::from_value(requested["human_request_id"].clone()).unwrap();
+	let (status, saved) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			&format!("/api/setting-requests/{request}/answer"),
+			Some(&t.alice_context),
+			json!({"action":"accept","value":"person-provided-secret"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(
+		saved["response"],
+		json!({"outcome":"saved","name":"x-client"})
+	);
+	assert!(!saved.to_string().contains("person-provided-secret"));
+	let (status, client) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&format!("{path}/{}", registered["id"].as_str().unwrap()),
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{client}");
+	assert_eq!(client["has_secret"], true);
 	let updated = tools["tenant_instructions_set"]
 		.invoke(
 			&context,

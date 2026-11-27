@@ -141,6 +141,7 @@ impl Fixture {
 	}
 	fn exchange(&self, issuer: &str) -> ConnectionOperation {
 		ConnectionOperation::Exchange {
+			configured: false,
 			issuer: issuer.into(),
 			resource: "https://mcp.example/mcp".into(),
 			client_id: "registered".into(),
@@ -185,6 +186,7 @@ async fn exchange_refresh_pinned_forward_and_revoke_keep_all_tokens_inside_broke
 	metadata(&server).await;
 	let f = Fixture::new(&server.uri());
 	let payload = sealed::seal(Payload::RegisteredClient {
+		configured_resource: None,
 		issuer: server.uri(),
 		client_id: "registered".into(),
 		client_secret: "client-canary".into(),
@@ -222,6 +224,7 @@ async fn exchange_refresh_pinned_forward_and_revoke_keep_all_tokens_inside_broke
 	// Replacing the registered secret removes its old pin, as the management
 	// service does. The existing connection must use the validated latest one.
 	let rotated = sealed::seal(Payload::RegisteredClient {
+		configured_resource: None,
 		issuer: server.uri(),
 		client_id: "registered".into(),
 		client_secret: "rotated-client-canary".into(),
@@ -368,6 +371,7 @@ async fn sealed_bindings_refuse_a_forged_exchange_or_forward_destination() {
 		assert_eq!(json(response).await["error"], DESTINATION_REFUSED);
 	}
 	let payload = sealed::seal(Payload::Connection {
+		configured: false,
 		issuer: server.uri(),
 		resource: "https://mcp.example/mcp".into(),
 		client_id: "public".into(),
@@ -410,6 +414,7 @@ async fn invalid_grant_requires_reconnection_and_public_clients_read_no_client_s
 	metadata(&server).await;
 	let f = Fixture::new(&server.uri());
 	let payload = sealed::seal(Payload::Connection {
+		configured: false,
 		issuer: server.uri(),
 		resource: "https://mcp.example/mcp".into(),
 		client_id: "public".into(),
@@ -464,6 +469,7 @@ async fn refresh_refuses_a_pin_superseded_by_an_unrelated_exchange() {
 	let f = Fixture::new(&server.uri());
 	for version in ["1", "2"] {
 		let payload = sealed::seal(Payload::Connection {
+			configured: false,
 			issuer: server.uri(),
 			resource: "https://mcp.example/mcp".into(),
 			client_id: "public".into(),
@@ -502,6 +508,7 @@ async fn a_replaced_client_bound_to_another_issuer_cannot_receive_existing_grant
 	let server = MockServer::start().await;
 	let f = Fixture::new(&server.uri());
 	let connection = sealed::seal(Payload::Connection {
+		configured: false,
 		issuer: server.uri(),
 		resource: "https://mcp.example/mcp".into(),
 		client_id: "registered".into(),
@@ -518,6 +525,7 @@ async fn a_replaced_client_bound_to_another_issuer_cannot_receive_existing_grant
 	})
 	.unwrap();
 	let client = sealed::seal(Payload::RegisteredClient {
+		configured_resource: None,
 		issuer: "https://evil.example".into(),
 		client_id: "registered".into(),
 		client_secret: "evil-secret".into(),
@@ -577,6 +585,7 @@ async fn revocation_reports_upstream_failure(#[case] discovery_succeeds: bool) {
 	}
 	let f = Fixture::new(&server.uri());
 	let payload = sealed::seal(Payload::Connection {
+		configured: false,
 		issuer: server.uri(),
 		resource: "https://mcp.example/mcp".into(),
 		client_id: "public".into(),
@@ -604,4 +613,92 @@ async fn revocation_reports_upstream_failure(#[case] discovery_succeeds: bool) {
 		)
 		.await;
 	assert!(!response.status().is_success());
+}
+
+#[tokio::test]
+async fn configured_provider_refreshes_and_forwards_to_the_scratch_space_service() {
+	let server = MockServer::start().await;
+	let f = Fixture::new(&server.uri());
+	let endpoint = format!("{}/token", server.uri());
+	let resource = "https://api.example.com/2";
+	let payload = sealed::seal(Payload::RegisteredClient {
+		configured_resource: Some(resource.into()),
+		issuer: endpoint.clone(),
+		client_id: "registered".into(),
+		client_secret: "secret".into(),
+	})
+	.unwrap();
+	f.store
+		.0
+		.lock()
+		.unwrap()
+		.insert((f.resource(f.client), "1".into()), payload.to_vec());
+	for (grant, access) in [("authorization_code", "first"), ("refresh_token", "fresh")] {
+		Mock::given(method("POST")).and(path("/token")).and(header("authorization","Basic cmVnaXN0ZXJlZDpzZWNyZXQ="))
+            .and(body_string_contains(format!("grant_type={grant}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token":access,"refresh_token":"rotating","token_type":"Bearer","expires_in":3600})))
+            .expect(1).mount(&server).await;
+	}
+	let exchange = |target: &str| {
+		let mut op = f.exchange(&endpoint);
+		if let ConnectionOperation::Exchange {
+			configured,
+			resource,
+			..
+		} = &mut op
+		{
+			*configured = true;
+			*resource = target.into();
+		}
+		op
+	};
+	let body = r#"{"code":"code","verifier":"verifier"}"#;
+	let refused = f
+		.call(
+			"/v1/connections/exchange",
+			exchange("https://another.example"),
+			body,
+		)
+		.await;
+	assert!(!refused.status().is_success());
+	let response = f
+		.call("/v1/connections/exchange", exchange(resource), body)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+	let receipt = json(response).await;
+	let response = f
+		.call(
+			"/v1/connections/refresh",
+			ConnectionOperation::Refresh {
+				version: receipt["version"].as_str().unwrap().to_owned(),
+				sub: f.sub(),
+			},
+			"",
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+	let receipt = json(response).await;
+	let mut call = f.forward(
+		receipt["version"].as_str().unwrap(),
+		"https://api.example.com",
+		"/2/",
+	);
+	if let ConnectionOperation::Forward { sub, .. } = &mut call {
+		*sub = SecretSubject::ScratchSpace {
+			tenant: "tenant".into(),
+			node: "node".into(),
+			space: Uuid::new_v4(),
+		};
+	}
+	Mock::given(method("POST"))
+		.and(path("/2/items"))
+		.and(header("authorization", "Bearer fresh"))
+		.respond_with(ResponseTemplate::new(200).set_body_string("sent"))
+		.expect(1)
+		.mount(&server)
+		.await;
+	assert_eq!(
+		f.call("/v1/forward/items", call, "{}").await.status(),
+		StatusCode::OK
+	);
 }

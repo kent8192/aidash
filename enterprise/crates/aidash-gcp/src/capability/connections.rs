@@ -261,6 +261,7 @@ impl ConnectionCalls for ConnectionCallsAdapter {
 			tenant,
 			connection,
 			ConnectionOperation::Exchange {
+				configured: grant.configured,
 				issuer: grant.issuer,
 				resource: grant.resource,
 				client_id: grant.client_id,

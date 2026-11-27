@@ -315,6 +315,8 @@ impl Authentication {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalService {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub oauth_connection: Option<String>,
 	pub base_url: String,
 	pub methods: Vec<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -344,6 +346,12 @@ impl ExternalService {
 				!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].contains(&m.as_str())
 			}) {
 			return Err(Error::Invalid("External service methods must be unique HTTP methods; CONNECT and TRACE are forbidden".into()));
+		}
+		if let Some(resource) = &self.oauth_connection {
+			crate::oauth_connections::validate_destination(resource, &self.base_url)?;
+			if self.secret.is_some() || self.authentication != Authentication::Bearer {
+				return Err(Error::Invalid("OAuth Connections require bearer authentication and cannot also specify a Tenant Secret.".into()));
+			}
 		}
 		if let Some(secret) = &self.secret {
 			crate::tenant_secrets::validate_name(secret)?;
