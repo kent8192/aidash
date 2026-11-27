@@ -96,9 +96,6 @@ pub(crate) async fn create_in(
 	key: &str,
 ) -> Result<HumanRequest> {
 	crate::apps::execution::services::human_interaction::validate_request(kind, prompt)?;
-	if prompt.len() > 64_000 {
-		return Err(Error::Invalid("human prompt exceeds 64 KiB".into()));
-	}
 	let mut journal = records(tx, grant, true).await?;
 	if journal.admission != admission {
 		return Err(Error::Forbidden);
