@@ -703,6 +703,58 @@ test("Live preview background status is quiet when absent or unavailable", async
   expect(errors).toEqual([]);
 });
 
+test("Results opens a running Live preview in the Thread", async ({ page }) => {
+  await core(page);
+  const previewId = randomUUID();
+  await page.route("**/api/previews/availability", (route) =>
+    route.fulfill({
+      json: { available: true, preview_domain: "preview.example.test" },
+    }),
+  );
+  await page.route("**/api/executions/run-0/live-preview", (route) =>
+    route.fulfill({
+      json: {
+        may_stop: false,
+        live_preview: {
+          id: previewId,
+          area_id: "area-one",
+          revision: 7,
+          port: 3000,
+          state: "running",
+          started_at: "2026-09-24T01:34:00Z",
+          last_request_at: "2026-09-24T01:34:00Z",
+          expires_at: "2099-01-01T00:00:00Z",
+          idle_seconds: 600,
+          absolute_seconds: 3600,
+          stop_reason: null,
+        },
+      },
+    }),
+  );
+  const previewUrl = "https://preview.example.test/run-ticket";
+  await page.route(previewUrl, (route) =>
+    route.fulfill({ contentType: "text/html", body: "<h1>Video page</h1>" }),
+  );
+  const issued: unknown[] = [];
+  await page.route("**/api/previews/live-tickets", (route) => {
+    issued.push(route.request().postDataJSON());
+    return route.fulfill({
+      json: { url: previewUrl, expires_at: "2099-01-01T00:00:00Z" },
+    });
+  });
+  await openThread(page);
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  const pane = page.getByRole("complementary", {
+    name: "Live preview",
+    exact: true,
+  });
+  await expect(pane.locator("iframe")).toHaveAttribute("src", previewUrl);
+  await expect(
+    pane.frameLocator("iframe").getByRole("heading", { name: "Video page" }),
+  ).toBeVisible();
+  expect(issued).toEqual([{ live_preview_id: previewId }]);
+});
+
 test("retained-work Files link keeps the originating request instead of the first thread", async ({
   page,
 }) => {

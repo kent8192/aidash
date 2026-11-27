@@ -834,21 +834,21 @@ export function Channel({
                 {canvas}
               </TabsContent>
             )}
-            {preview?.kind === "file" &&
-              (shownTab === "conversation" || shownTab === "results") && (
+            {(shownTab === "conversation" || shownTab === "results") &&
+              preview &&
+              (preview.kind === "file" ? (
                 <FilePreviewPane
                   key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}
                   selection={preview.selection}
                   onClose={closeFilePreview}
                 />
-              )}
-            {preview?.kind === "live" && shownTab === "conversation" && (
-              <LivePreviewPane
-                key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
-                selection={preview.selection}
-                onClose={closeFilePreview}
-              />
-            )}
+              ) : (
+                <LivePreviewPane
+                  key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
+                  selection={preview.selection}
+                  onClose={closeFilePreview}
+                />
+              ))}
             <aside
               aria-label={view.details}
               hidden={desktop ? !dockOpen : tab === "canvas"}
