@@ -109,6 +109,7 @@ impl Api<'_> {
 						.map_err(|_| Error::Invalid(format!("{status} {path}: expected JSON")))?
 				};
 				if !status.is_success() {
+					// Keep the complete error envelope in the tool failure, including code and details.
 					return Err(Error::Invalid(format!("{status} {path}: {value}")));
 				}
 				Ok(value)
@@ -159,7 +160,7 @@ impl Api<'_> {
 			}
 		};
 		let path = format!("/api/scratch-spaces/{id}");
-		let space = self.call("GET", &path, Value::Null).await?;
+		let mut space = self.call("GET", &path, Value::Null).await?;
 		let mut settings = space["settings"].clone();
 		let mut update = false;
 		for field in ["allowed_hosts", "external_services", "execution_image"] {
@@ -169,6 +170,15 @@ impl Api<'_> {
 			}
 		}
 		if !update {
+			let node: aidash_domain::nodes::NodeName =
+				serde_json::from_value(space["node"].clone())?;
+			space["limits"] = self
+				.call(
+					"GET",
+					&format!("/api/scratch-spaces/limits?node={node}"),
+					Value::Null,
+				)
+				.await?;
 			return Ok(space);
 		}
 		let revision = input.get("expected_revision").unwrap_or(&space["revision"]);
@@ -192,6 +202,16 @@ impl Api<'_> {
 			));
 		}
 		let config = &mut draft["entry"]["config"];
+		if name == "agent_create" {
+			const LANGUAGE: &str = "Reply in the requesting person's language from your first message, unless they ask for another language. For recurring work without a new message, use the language specified in the assignment.";
+			config["instructions"] = match config.get("instructions") {
+				Some(Value::String(instructions)) if !instructions.is_empty() => {
+					json!(format!("{LANGUAGE}\n\n{instructions}"))
+				}
+				None | Some(Value::String(_)) => json!(LANGUAGE),
+				Some(_) => return Err(Error::Invalid("agent instructions must be text".into())),
+			};
+		}
 		let management = crate::apps::registry::services::management::RegistryManagement {
 			runtime: self.runtime.clone(),
 		};

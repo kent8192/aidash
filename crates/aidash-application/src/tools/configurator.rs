@@ -14,7 +14,7 @@ pub fn route(name: &str) -> Option<Route> {
 		"scratch_space_configure" => (
 			"GET",
 			"/api/scratch-spaces/{scratch_space_id}",
-			"Read a Scratch Space or change its allowed hosts, External services or execution image. Defaults to this Thread's space. Omitted settings are preserved. Use the returned id when opening a Thread for an agent or Duty.",
+			r#"Read a Scratch Space and its current limits without settings arguments. Defaults to this Thread's space. To change allowed_hosts, use {"kind":"hosts","hosts":[...]} with hosts permitted by limits.tenant_hosts, or {"kind":"all"} when limits.ceilings.all_hosts_allowed is true and limits.tenant_hosts.kind is all. You can also change External services or the execution image. Omitted settings are preserved. Use the returned id when opening a Thread for an agent or Duty."#,
 		),
 		"node_update" => (
 			"PATCH",

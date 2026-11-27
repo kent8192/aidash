@@ -17,7 +17,7 @@ use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::management::ThreadInput;
 use crate::apps::workspaces::serializers::management::TitleInput;
 use crate::apps::workspaces::serializers::scratch::{
-	ScratchCreate, ScratchLimits, ScratchList, ScratchMember, ScratchView,
+	ScratchCreate, ScratchLimits, ScratchList, ScratchMember, ScratchSettingsError, ScratchView,
 };
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::apps::workspaces::serializers::tasks::TaskPage;
@@ -89,6 +89,12 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
+	contracts.response::<_, ScratchSettingsError<'_>>(
+		document,
+		views::scratch::create,
+		400,
+		"application/json",
+	)?;
 	contracts.query::<_, ScratchList>(document, views::scratch::limits)?;
 	contracts.response::<_, ScratchLimits>(
 		document,
@@ -119,6 +125,12 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::scratch::settings,
 		200,
+		"application/json",
+	)?;
+	contracts.response::<_, ScratchSettingsError<'_>>(
+		document,
+		views::scratch::settings,
+		400,
 		"application/json",
 	)?;
 	contracts.path(document, views::scratch::add_member, &["Uuid"])?;

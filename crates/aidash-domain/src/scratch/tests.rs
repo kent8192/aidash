@@ -88,6 +88,18 @@ fn ceilings_and_operator_control_bound_settings() {
 	settings.allowed_hosts = HostAllowlist::All;
 	assert!(settings.validate(&ceilings, &hosts).is_err());
 	ceilings.all_hosts_allowed = true;
+	let restricted = HostAllowlist::Hosts(default_public_hosts());
+	let Err(Error::ScratchSettings(refusal)) = settings.validate(&ceilings, &restricted) else {
+		panic!("an all-hosts Deployment switch cannot override the Tenant's host list");
+	};
+	assert!(!refusal.all_hosts_allowed);
+	assert_eq!(
+		refusal.violations,
+		vec![ScratchSettingsViolation::AllHostsNotAllowed {
+			deployment_all_hosts_allowed: true,
+			tenant_policy_allows_all_hosts: false,
+		}]
+	);
 	assert!(settings.validate(&ceilings, &hosts).is_ok());
 	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024 + 1;
 	assert!(settings.validate(&ceilings, &hosts).is_err());
@@ -96,6 +108,54 @@ fn ceilings_and_operator_control_bound_settings() {
 	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024;
 	settings.idle_expiry_days = None;
 	assert!(settings.validate(&ceilings, &hosts).is_ok());
+}
+
+#[test]
+fn refusal_reports_every_numeric_violation_with_current_bounds() {
+	let ceilings = ScratchCeilings {
+		capacity_bytes: 100,
+		cpu_millis: 1500,
+		memory_bytes: 200,
+		daily_sent_bytes: 300,
+		daily_received_bytes: 400,
+		all_hosts_allowed: true,
+		..ScratchCeilings::default()
+	};
+	let settings = ScratchSettings {
+		capacity_bytes: MAX_CAPACITY_BYTES + 1,
+		cpu_millis: 2000,
+		memory_bytes: 0,
+		daily_sent_bytes: 301,
+		daily_received_bytes: 401,
+		idle_expiry_days: Some(366),
+		..ScratchSettings::default()
+	};
+	let Err(Error::ScratchSettings(refusal)) = settings.validate(&ceilings, &HostAllowlist::All)
+	else {
+		panic!("expected a structured refusal for out-of-range settings");
+	};
+	assert!(refusal.all_hosts_allowed);
+	for (field, value, max, deployment_admin_can_raise) in [
+		("capacity_bytes", MAX_CAPACITY_BYTES + 1, 100, false),
+		("cpu_millis", 2000, 1500, true),
+		("memory_bytes", 0, 200, false),
+		("daily_sent_bytes", 301, 300, true),
+		("daily_received_bytes", 401, 400, true),
+		("idle_expiry_days", 366, 365, false),
+	] {
+		assert!(
+			refusal
+				.violations
+				.contains(&ScratchSettingsViolation::NumericLimit {
+					field,
+					value,
+					min: 1,
+					max,
+					deployment_admin_can_raise,
+				})
+		);
+	}
+	assert_eq!(refusal.violations.len(), 6);
 }
 
 #[test]

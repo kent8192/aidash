@@ -46,6 +46,8 @@ pub enum Error {
 	Framework(#[from] FrameworkError),
 	#[error("{0}")]
 	Invalid(String),
+	#[error(transparent)]
+	ScratchSettings(Box<aidash_domain::scratch::ScratchSettingsRefusal>),
 	#[error("PROJECTION_RETIRED: {0}")]
 	ProjectionRetired(String),
 	#[error("{0}")]
@@ -185,6 +187,7 @@ impl Error {
 				(StatusCode::FORBIDDEN, s.clone())
 			}
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
+			Self::ScratchSettings(refusal) => (StatusCode::BAD_REQUEST, refusal.to_string()),
 			Self::ProjectionRetired(_) => (StatusCode::CONFLICT, self.to_string()),
 			Self::Conflict(s) => {
 				tracing::debug!(reason = s, "request conflicts with current state");
@@ -319,6 +322,10 @@ impl Error {
 			}
 		};
 		let mut envelope = match &self {
+			Self::ScratchSettings(refusal) => {
+				use crate::apps::workspaces::serializers::scratch::ScratchSettingsError;
+				json!(ScratchSettingsError::new(&message, refusal))
+			}
 			Self::Invalid(s)
 				if matches!(
 					s.as_str(),
@@ -538,6 +545,7 @@ impl From<aidash_domain::Error> for Error {
 	fn from(error: aidash_domain::Error) -> Self {
 		match error {
 			aidash_domain::Error::Invalid(message) => Self::Invalid(message),
+			aidash_domain::Error::ScratchSettings(refusal) => Self::ScratchSettings(refusal),
 			aidash_domain::Error::Conflict(message) => Self::Conflict(message),
 			error @ aidash_domain::Error::UnsupportedState(_) => Self::Conflict(error.to_string()),
 		}
@@ -653,6 +661,9 @@ impl From<Error> for aidash_application::Error {
 		match error {
 			Error::Connection(cause) => Self::Connection(cause),
 			Error::Invalid(message) => Self::Invalid(message),
+			Error::ScratchSettings(refusal) => {
+				aidash_domain::Error::ScratchSettings(refusal).into()
+			}
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::QueueLimit => Self::QueueLimit,
 			Error::ApprovalDecided {

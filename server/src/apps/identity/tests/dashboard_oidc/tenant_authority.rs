@@ -2562,6 +2562,58 @@ async fn configurator_configures_and_reuses_a_tenant_scratch_space(
 	let space = configure.invoke(&context, json!({}), "read").await.unwrap();
 	let id = &space["id"];
 	assert!(id.is_string());
+	let limits_path = format!(
+		"/api/scratch-spaces/limits?node={}",
+		space["node"].as_str().unwrap()
+	);
+	let (status, limits) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&limits_path,
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{limits}");
+	let forbidden_hosts = json!({"kind":"hosts","hosts":["outside.example.test"]});
+	let settings_path = format!("/api/scratch-spaces/{}/settings", id.as_str().unwrap());
+	let mut rejected_settings = space["settings"].clone();
+	rejected_settings["allowed_hosts"] = forbidden_hosts.clone();
+	let (status, refusal) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&settings_path,
+			Some(&t.alice_context),
+			json!({"revision":space["revision"],"settings":rejected_settings}),
+		)
+		.await;
+	assert_eq!(status, 400, "{refusal}");
+	assert_eq!(refusal["code"], "scratch_settings_invalid", "{refusal}");
+	let message = refusal["error"].as_str().unwrap();
+	assert!(message.contains("outside.example.test"), "{message}");
+	assert!(message.contains("Deployment Administrator"), "{message}");
+	assert_eq!(refusal["details"]["all_hosts_allowed"], false);
+	assert_eq!(
+		refusal["details"]["violations"],
+		json!([{"kind":"outside_tenant_hosts","hosts":["outside.example.test"]}])
+	);
+	let error = configure
+		.invoke(
+			&context,
+			json!({"allowed_hosts":forbidden_hosts}),
+			"disallowed-host",
+		)
+		.await
+		.unwrap_err()
+		.to_string();
+	let payload = error
+		.strip_prefix(&format!("400 Bad Request {settings_path}: "))
+		.unwrap();
+	assert_eq!(serde_json::from_str::<Value>(payload).unwrap(), refusal);
+	assert_eq!(space["limits"], limits);
+
 	let hosts = json!({"kind":"hosts","hosts":[]});
 	let edit = json!({"scratch_space_id":id,"expected_revision":space["revision"],"allowed_hosts":hosts,"execution_image":null,"external_services":[]});
 	let updated = configure

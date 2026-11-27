@@ -45,6 +45,8 @@ pub use entities::*;
 /// An invariant rejected before any external effect is performed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+	#[error(transparent)]
+	ScratchSettings(Box<scratch::ScratchSettingsRefusal>),
 	#[error("{0}")]
 	Invalid(String),
 	#[error("{0}")]
