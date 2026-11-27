@@ -2371,7 +2371,7 @@ impl Store {
 		tx: &mut crate::database::native::Transaction,
 		key: &str,
 	) -> Result<Option<Artifact>> {
-		Ok(aidash_server::database::query_as(
+		aidash_server::database::query_as(
 			&Query::select()
 				.expr(Expr::col(ColumnRef::Asterisk))
 				.from(Alias::new("artifacts"))
@@ -2379,7 +2379,7 @@ impl Store {
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_optional(&mut **tx)
-		.await?)
+		.await
 	}
 
 	/// The caller has validated the input and resolved any private File version
