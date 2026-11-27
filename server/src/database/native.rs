@@ -24,6 +24,7 @@ pub struct PoolUsage {
 pub struct Pool {
 	connection: DatabaseConnection,
 	driver: sqlx::PgPool,
+	fair: Option<Arc<super::fair_share::FairShare>>,
 	memory_recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
 	memory_recovery_bypass: bool,
 	dashboard_policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
@@ -37,13 +38,19 @@ impl From<sqlx::PgPool> for Pool {
 }
 impl Pool {
 	pub(super) fn new(driver: sqlx::PgPool, name: Option<&'static str>, fair: bool) -> Self {
+		let fair = fair.then(|| {
+			Arc::new(super::fair_share::FairShare::new(
+				driver.options().get_max_connections() as usize,
+			))
+		});
 		Self {
 			connection: DatabaseConnection::new(super::limits::pool_backend(
 				driver.clone(),
 				name,
-				fair,
+				fair.clone(),
 			)),
 			driver,
+			fair,
 			memory_recovery: None,
 			memory_recovery_bypass: false,
 			dashboard_policy: None,
@@ -117,13 +124,23 @@ impl Pool {
 			)
 		})
 	}
+	/// Admit the first Work borrow for a unit that may open several transactions.
+	pub(crate) async fn operation<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl Future<Output = T>,
+	) -> T {
+		match &self.fair {
+			Some(fair) => fair.operation(scope.tenant_name().cloned(), work).await,
+			None => work.await,
+		}
+	}
+
 	/// Open a transaction in `scope`. The scope is fixed for the transaction's
 	/// lifetime; savepoints inherit it.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin(&self, scope: &TenancyScope) -> Result<Transaction> {
-		let mut executor = super::fair_share::TENANT
-			.scope(scope.tenant_name().cloned(), self.connection.begin())
-			.await?;
+		let mut executor = self.operation(scope, self.connection.begin()).await?;
 		super::scope::enter(executor.as_mut(), scope).await?;
 		Ok(Transaction(
 			Some(executor),
@@ -137,9 +154,9 @@ impl Pool {
 	/// Like [`Self::begin`], at the serializable isolation level.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin_serializable(&self, scope: &TenancyScope) -> Result<Transaction> {
-		let mut executor = super::fair_share::TENANT
-			.scope(
-				scope.tenant_name().cloned(),
+		let mut executor = self
+			.operation(
+				scope,
 				self.connection
 					.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable),
 			)
@@ -161,10 +178,13 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut Transaction) -> Result<T>,
 	) -> Result<T> {
-		let mut tx = self.begin(scope).await?;
-		let value = work(&mut tx).await?;
-		tx.commit().await?;
-		Ok(value)
+		self.operation(scope, async {
+			let mut tx = self.begin(scope).await?;
+			let value = work(&mut tx).await?;
+			tx.commit().await?;
+			Ok(value)
+		})
+		.await
 	}
 	/// Run `work` in a Reinhardt ORM transaction opened in `scope`.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
@@ -173,21 +193,17 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
 	) -> Result<T> {
-		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
-		super::fair_share::TENANT
-			.scope(
-				scope.tenant_name().cloned(),
-				lease.handle().atomic(async |tx| {
-					// Nested borrows select their own scope; this one is already admitted.
-					super::fair_share::TENANT
-						.scope(None, async {
-							super::scope::enter(tx, scope).await?;
-							work(tx).await
-						})
-						.await
-				}),
-			)
-			.await
+		self.operation(scope, async {
+			let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+			lease
+				.handle()
+				.atomic(async |tx| {
+					super::scope::enter(tx, scope).await?;
+					work(tx).await
+				})
+				.await
+		})
+		.await
 	}
 	/// Like [`Self::atomic`], acquiring write intent before the first read.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
@@ -196,21 +212,17 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
 	) -> Result<T> {
-		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
-		super::fair_share::TENANT
-			.scope(
-				scope.tenant_name().cloned(),
-				lease.handle().atomic_write(async |tx| {
-					// Nested borrows select their own scope; this one is already admitted.
-					super::fair_share::TENANT
-						.scope(None, async {
-							super::scope::enter(tx, scope).await?;
-							work(tx).await
-						})
-						.await
-				}),
-			)
-			.await
+		self.operation(scope, async {
+			let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+			lease
+				.handle()
+				.atomic_write(async |tx| {
+					super::scope::enter(tx, scope).await?;
+					work(tx).await
+				})
+				.await
+		})
+		.await
 	}
 	/// An executor that runs each statement in its own transaction opened in
 	/// `scope`, for a single statement that needs no surrounding transaction.

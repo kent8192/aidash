@@ -53,7 +53,7 @@ const Configuration = lazy(() =>
 );
 
 import type { TenantState, HumanRequest, MeshEvent, Thread } from "./types";
-import { mergeWindow } from "./window-pages";
+import { mergeEventWindow, mergeWindow } from "./window-pages";
 import { useWindowPages } from "./use-window-pages";
 
 const noThreads: Thread[] = [];
@@ -558,7 +558,7 @@ function Dashboard({
     return {
       ...fresh,
       threads: mergeWindow(fresh.threads, olderThreads),
-      events: mergeWindow(fresh.events, olderEvents),
+      events: mergeEventWindow(fresh.events, olderEvents),
       next_cursors: {
         ...fresh.next_cursors,
         threads: threadCursor,

@@ -15,7 +15,7 @@ use crate::{
 use aidash_domain::{
 	RunMetadata,
 	capabilities::{
-		errors::area_revision_changed,
+		errors::{SAVE_MANIFEST_INCOMPLETE, area_revision_changed},
 		files::{ScratchSave, WorkingCopy, WorkingRemove},
 		operations::{FileScope, MountedFile, counted_files},
 		sessions::Area,
@@ -205,8 +205,8 @@ impl Save {
 			};
 			let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
 			if manifest.truncated {
-				return Err(Error::External(format!(
-					"incomplete manifest for {root}; nothing was saved"
+				return Err(Error::Conflict(format!(
+					"{SAVE_MANIFEST_INCOMPLETE}: incomplete manifest for {root}. Nothing was saved."
 				)));
 			}
 			skipped.extend(manifest.skipped_symlinks);

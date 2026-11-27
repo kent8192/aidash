@@ -138,9 +138,8 @@ fn metadata() -> SkillMetadata {
 
 mod exposure {
 	use super::*;
-	use crate::ports::capabilities::{
-		files::{Action, FileScopePort, Limits as FileLimits, VerifiedFile},
-		skills::Limits,
+	use crate::ports::capabilities::files::{
+		Action, FileScopePort, Limits as FileLimits, VerifiedFile,
 	};
 	use aidash_domain::{
 		RunControl, RunPhase,
@@ -289,12 +288,6 @@ mod exposure {
 	}
 	#[async_trait::async_trait]
 	impl SkillScope for Scope {
-		fn skill_limits(&self) -> Result<Limits> {
-			Ok(Limits {
-				files: 64,
-				bytes: 256_000,
-			})
-		}
 		async fn read_skill_file(&mut self, file: &FileEntry) -> Result<Vec<u8>> {
 			self.reads.push(file.file_id);
 			if self.denied.contains(&file.file_id) {
@@ -489,6 +482,73 @@ mod exposure {
 		assert_eq!(scope.updates, 0);
 	}
 
+	fn area(manifest: Value) -> Area {
+		serde_json::from_value(json!({
+			"id": Uuid::new_v4(), "tenant": "tenant", "home_node": NODE,
+			"thread_id": Uuid::new_v4(), "agent_id": "agent",
+			"owner": "owner", "generation": 0, "revision": 0, "epoch": 0, "state": "ready",
+			"manifest": manifest, "constraints": {}, "next_sequence": 0,
+		}))
+		.unwrap()
+	}
+
+	#[rstest::rstest]
+	#[case::attached(false)]
+	#[case::mounted(true)]
+	#[tokio::test]
+	async fn direct_skills_pin_packages_larger_than_the_old_limits(#[case] mounted: bool) {
+		let mut scope = scope(true, &metadata());
+		let instructions = "---\nname: test\ndescription: Fixture\n---\nRead this.";
+		let assets: Vec<_> = (0..65)
+			.map(|index| SkillFile {
+				path: format!("asset-{index}.txt"),
+				content: "x".repeat(4_000),
+				encoding: None,
+			})
+			.collect();
+		let mut config = AgentConfig::from_snapshot(&scope.snapshot).unwrap();
+		config.core_capabilities.skills = true;
+		let area = if mounted {
+			let root = ".agents/skills";
+			config.skill_roots = vec![root.into()];
+			let entries: Vec<_> = std::iter::once(("SKILL.md", instructions))
+				.chain(
+					assets
+						.iter()
+						.map(|asset| (asset.path.as_str(), asset.content.as_str())),
+				)
+				.map(|(path, content)| {
+					let path = format!("{root}/test/{path}");
+					let file = file(&path, content.as_bytes());
+					scope.files.insert(path, content.as_bytes().to_vec());
+					file
+				})
+				.collect();
+			area(json!(entries))
+		} else {
+			let mut attachment = SkillAttachment {
+				skill_id: Uuid::new_v4(),
+				origin: "fixture".into(),
+				digest: String::new(),
+				instructions: instructions.into(),
+				files: assets,
+			};
+			attachment.digest = content_digest(&attachment);
+			config.skill_attachments = vec![attachment];
+			area(json!([]))
+		};
+
+		pin(&mut scope, run().id, &area, &config).await.unwrap();
+
+		let pinned: Vec<Pinned> = serde_json::from_value(scope.pinned).unwrap();
+		assert_eq!(pinned.len(), 1);
+		assert_eq!(pinned[0].files.len(), 66);
+		assert_eq!(
+			pinned[0].files.iter().map(|file| file.size).sum::<u64>(),
+			260_000 + instructions.len() as u64
+		);
+	}
+
 	#[tokio::test]
 	async fn declared_binary_attachment_files_stay_binary_after_pinning() {
 		// Arrange: base64 content whose decoded bytes happen to be UTF-8.
@@ -508,13 +568,7 @@ mod exposure {
 		let mut config = AgentConfig::from_snapshot(&scope.snapshot).unwrap();
 		config.core_capabilities.skills = true;
 		config.skill_attachments = vec![attachment.clone()];
-		let area: Area = serde_json::from_value(json!({
-			"id": Uuid::new_v4(), "tenant": "tenant", "home_node": NODE,
-			"thread_id": Uuid::new_v4(), "agent_id": "agent",
-			"owner": "owner", "generation": 0, "revision": 0, "epoch": 0, "state": "ready",
-			"manifest": [], "constraints": {}, "next_sequence": 0,
-		}))
-		.unwrap();
+		let area = area(json!([]));
 		pin(&mut scope, run.id, &area, &config).await.unwrap();
 		// Act
 		let mut read = async |path| {

@@ -565,6 +565,28 @@ impl Claim {
 }
 
 impl Timing {
+	/// The first interval tick at or after a stored due time.
+	pub fn scheduled_due(&self, due: DateTime<Utc>) -> Result<DateTime<Utc>> {
+		let Some(Trigger::Interval { every_seconds }) = &self.trigger else {
+			return Ok(due);
+		};
+		if !(1..=MAX_INTERVAL_SECONDS).contains(every_seconds) {
+			return Err(Error::Invalid(
+				"a Duty's interval must be between one second and one year".into(),
+			));
+		}
+		if due <= self.anchor {
+			return Ok(self.anchor);
+		}
+		let elapsed = (due - self.anchor).num_seconds();
+		let preceding = self.anchor + Duration::seconds(elapsed / every_seconds * every_seconds);
+		Ok(if preceding == due {
+			due
+		} else {
+			preceding + Duration::seconds(*every_seconds)
+		})
+	}
+
 	/// The tick to handle at `now`, given the stored next scheduled time.
 	/// None while that time is still in the future.
 	pub fn claim(&self, due: DateTime<Utc>, now: DateTime<Utc>) -> Result<Option<Claim>> {
@@ -574,25 +596,17 @@ impl Timing {
 		let Some(trigger) = &self.trigger else {
 			return Ok(None);
 		};
+		let due = self.scheduled_due(due)?;
+		if due > now {
+			return Ok(None);
+		}
 		let (scheduled_at, skipped) = match trigger {
-			Trigger::Interval { every_seconds }
-				if (1..=MAX_INTERVAL_SECONDS).contains(every_seconds) =>
-			{
+			Trigger::Interval { every_seconds } => {
 				let elapsed = (now - self.anchor).num_seconds();
 				let scheduled =
 					self.anchor + Duration::seconds(elapsed / every_seconds * every_seconds);
-				if scheduled < due {
-					return Err(Error::Invalid(
-						"stored Duty tick precedes no scheduled interval".into(),
-					));
-				}
 				let skipped = (scheduled - due).num_seconds() / every_seconds;
 				(scheduled, skipped.min(CATCH_UP_LIMIT as i64 + 1) as usize)
-			}
-			Trigger::Interval { .. } => {
-				return Err(Error::Invalid(
-					"a Duty's interval must be between one second and one year".into(),
-				));
 			}
 			Trigger::Cron {
 				expression,

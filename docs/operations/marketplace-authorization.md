@@ -98,8 +98,9 @@ Subject event queries select Tenant and audience candidates before loading docum
 Snapshot and polling requests evaluate at most 4,096 candidates per page. A cursor
 advances across denied candidates, including when a page contains no visible events.
 `GET /api/events` returns `cursor` and `partial` in its response and keeps the
-`x-aidash-event-cursor` header. Use that cursor as the next `after` value when
-`partial` is true. SSE maintains its own cursor across hidden history. For older
+`x-aidash-event-cursor` header. Use that cursor as the next `after` value on
+every poll. A `partial` response can be followed immediately. SSE maintains its
+own cursor across hidden history. For older
 events, pass `next_cursors.events` from State or `next_event_cursor` from a Thread
 snapshot as `events_before`. Indexed Tenant and package event references and
 audience membership support this filtering.

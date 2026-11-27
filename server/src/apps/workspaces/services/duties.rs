@@ -1045,18 +1045,28 @@ async fn fire(
 	// Set when the tick shows the Duty must stop, before the start rolls back.
 	let mut stopping: Option<(Halt, String, TickStatus)> = None;
 	let result: Result<Fired> = async {
-		let Some(duty) = repository::claim(lease.tx(), tenant, id, now).await? else {
+		let Some(mut duty) = repository::claim(lease.tx(), tenant, id, now).await? else {
 			return Ok(Fired::Nothing);
 		};
 		let Some(due) = duty.next_scheduled_at else {
 			return Ok(Fired::Nothing);
 		};
-		let Some(claim) = duty.timing().claim(due, now)? else {
+		let timing = duty.timing();
+		let aligned = timing.scheduled_due(due)?;
+		if aligned != due {
+			duty.next_scheduled_at = Some(aligned);
+			if duty.next_fire_at().is_some_and(|fire_at| fire_at > now) {
+				duty.updated_at = now;
+				repository::save(lease.tx(), tenant, &duty).await?;
+				return Ok(Fired::Nothing);
+			}
+		}
+		let Some(claim) = timing.claim(aligned, now)? else {
 			return Ok(Fired::Nothing);
 		};
 		claimed = Some((claim.clone(), duty.revision));
 		if let Some(mark) = claim.skipped_mark() {
-			skipped_tick(lease.tx(), tenant, &duty, due, &mark, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, aligned, &mark, now).await?;
 		}
 		// While the previous Task is open the tick is skipped: the default
 		// a Router may later replace (#1011).
@@ -1269,7 +1279,8 @@ async fn record_miss(
 		};
 		if let Some(claim) = claim {
 			if let (Some(due), Some(mark)) = (duty.next_scheduled_at, claim.skipped_mark()) {
-				skipped_tick(&mut tx, tenant, &duty, due, &mark, now).await?;
+				let aligned = duty.timing().scheduled_due(due)?;
+				skipped_tick(&mut tx, tenant, &duty, aligned, &mark, now).await?;
 			}
 			duty.next_scheduled_at = claim.next;
 		}

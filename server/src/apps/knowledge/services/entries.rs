@@ -61,8 +61,7 @@ impl SemanticEntries {
 		service::change(&f.store, &actor, thread, id, input.expected_revision, false).await
 	}
 	pub async fn search(&self, actor: Actor, thread: Uuid, input: Search) -> Result<SearchResult> {
-		// Retrieval issues reads serially. The authority lease and any nested
-		// vector reads borrow from the same Tenant's Work share.
+		// Retrieval issues reads serially under one Work admission.
 		service::search(&self.runtime.store, &actor, thread, input).await
 	}
 	pub async fn history(&self, actor: Actor, thread: Uuid) -> Result<Vec<History>> {

@@ -1,5 +1,5 @@
 //! Native migration and HTTP launch paths used by the compatibility binary.
-use super::{ProcessRole, RuntimeTasks, initialize, initialize_process};
+use super::{DatabaseSource, ProcessRole, RuntimeTasks, initialize_as, initialize_process};
 use crate::apps::execution::services::lifecycle::{ProbeServer, ProcessLifecycle};
 use crate::{
 	Error, Result,
@@ -126,12 +126,17 @@ pub async fn preview_gateway(settings: ProjectSettings) -> Result<()> {
 	let preview = config.preview.clone().ok_or_else(|| {
 		Error::Invalid("preview.domain is required for the preview-gateway role".into())
 	})?;
-	let connection = crate::database::runtime::connect(&config.database_url, 8).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
 	let mut stopped = coordinator.subscribe();
 	ProcessLifecycle::register(&context, coordinator.clone());
-	let federation = initialize(&context, &settings, connection).await?;
+	let federation = initialize_as(
+		&context,
+		&settings,
+		DatabaseSource::Preview,
+		ProcessRole::Serve,
+	)
+	.await?;
 	let listener = tokio::net::TcpListener::bind(preview.listen).await?;
 	let authority = Arc::new(crate::apps::execution::repositories::previews::Gateway {
 		store: federation.store.clone(),
@@ -162,7 +167,7 @@ pub async fn egress_gateway(settings: ProjectSettings) -> Result<()> {
 	require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
 	let pool = crate::database::runtime::connect_egress(&config.database_url).await?;
-	let mut store = crate::store::Store::from_egress_pool(pool, config.deployment.clone())
+	let mut store = crate::store::Store::from_gateway_pool(pool, config.deployment.clone())
 		.await?
 		.with_data_protection_floor(settings.deployment.data_protection_floor);
 	super::configure_provider_credentials(&mut store, &settings.provider_credentials).await?;

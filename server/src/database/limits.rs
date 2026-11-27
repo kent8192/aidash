@@ -5,7 +5,7 @@
 //! no TCP keepalive, so a reply from a server that vanished would be awaited for
 //! ever. The deadline is read from the pool's own connect options, so derived
 //! pools inherit it and a pool without a limit has no deadline either.
-use super::fair_share::{FairShare, Permit, TENANT, pool_busy};
+use super::fair_share::{FairShare, Permit, pool_busy};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
@@ -80,7 +80,7 @@ fn deadline(options: &PgConnectOptions) -> Option<Duration> {
 pub(super) fn pool_backend(
 	pool: sqlx::PgPool,
 	name: Option<&'static str>,
-	fair: bool,
+	fair: Option<Arc<FairShare>>,
 ) -> Arc<dyn DatabaseBackend> {
 	let deadline = deadline(pool.connect_options().as_ref());
 	let size = pool.options().get_max_connections() as usize;
@@ -91,7 +91,7 @@ pub(super) fn pool_backend(
 			deadline,
 			name,
 			size,
-			fair: fair.then(|| Arc::new(FairShare::new(size))),
+			fair,
 		})
 	} else {
 		Arc::new(inner)
@@ -218,10 +218,7 @@ fn named_acquire_error(
 impl Bounded {
 	async fn admit(&self) -> DriverResult<Option<Permit>> {
 		match &self.fair {
-			Some(fair) => Ok(Some(
-				fair.acquire(TENANT.try_with(Clone::clone).unwrap_or_default())
-					.await?,
-			)),
+			Some(fair) => Ok(Some(fair.borrow().await?)),
 			None => Ok(None),
 		}
 	}

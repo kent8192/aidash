@@ -39,17 +39,49 @@ class ChartsTest(unittest.TestCase):
     base = {'deployment': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
             'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
-    def test_database_budget_accepts_twelve_per_process_and_refuses_eleven(self):
-        values = dict(self.base, server={'replicas': 2}, database={'maxConnections': 59})
+    def database_budgets(self, values):
         objects = render(self.aidash, values)
+        budgets = []
         for role in ('server', 'worker'):
             workload = select(objects, 'Deployment', '-aidash-' + role)
             environment = workload['spec']['template']['spec']['containers'][0]['env']
-            budget = next(item['value'] for item in environment
-                          if item['name'] == 'AIDASH_DATABASE_CONNECTION_BUDGET')
-            self.assertEqual(budget, '12')
+            budgets.append(int(next(item['value'] for item in environment
+                                    if item['name'] == 'AIDASH_DATABASE_CONNECTION_BUDGET')))
+        return budgets
+
+    def test_database_budget_accepts_twelve_per_process_and_refuses_eleven(self):
+        # 1 GiB with 25% headroom and 98 MiB shared buffers supports 67
+        # connections. Jobs, superusers and one Preview replica reserve 31.
+        database = {'postgresMemoryLimit': '1Gi', 'sharedBuffersMiB': 98}
+        preview = {'enabled': True, 'inProcess': False, 'domain': 'preview.fixture.example'}
+        values = dict(self.base, server={'replicas': 2}, database=database, preview=preview)
+        self.assertEqual(self.database_budgets(values), [12, 12])
+        self.assertEqual(self.database_budgets(dict(values, preview=dict(preview, inProcess=True))),
+                         [14, 14])
         with self.assertRaises(subprocess.CalledProcessError):
-            render(self.aidash, dict(values, database={'maxConnections': 58}))
+            self.database_budgets(dict(values, database=dict(database, sharedBuffersMiB=108)))
+
+    def test_database_sizing_agrees_across_application_and_environment_charts(self):
+        values = {'postgres': POSTGRES,
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        for memory, shared in ((None, None), ('5G', 128)):
+            with self.subTest(memory=memory):
+                environment = values
+                application = dict(self.base, server={'replicas': 0})
+                if memory is not None:
+                    environment = dict(values, postgres=dict(POSTGRES, sharedBuffersMiB=shared,
+                                                              resources={'limits': {'memory': memory}}))
+                    application['database'] = {'postgresMemoryLimit': memory, 'sharedBuffersMiB': shared}
+                objects = render(self.environment, environment)
+                postgres = select(objects, 'StatefulSet', '-postgres')
+                args = postgres['spec']['template']['spec']['containers'][0]['args']
+                max_connections = int(next(arg.split('=')[1] for arg in args
+                                           if arg.startswith('max_connections=')))
+                # With only one worker and both gateways disabled, the rendered
+                # budget plus the jobs and superuser reserves is max_connections.
+                self.assertEqual(self.database_budgets(application)[1] + 23, max_connections)
 
     def test_protected_memory_schedules_backup_and_independent_prune(self):
         gcip = {'dashboard': {'gcip': {'project_id': 'fixture', 'web_api_key': 'public',

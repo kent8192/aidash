@@ -279,6 +279,32 @@ fn nothing_is_claimed_before_the_tick() {
 	);
 }
 
+#[test]
+fn an_off_grid_interval_waits_for_the_next_tick_and_counts_only_grid_ticks() {
+	let timing = Timing {
+		trigger: Some(Trigger::Interval { every_seconds: 60 }),
+		anchor: at("2026-11-13T00:00:00Z"),
+		max_lateness_seconds: 10,
+	};
+	let due = timing.anchor + Duration::microseconds(1);
+	let first = timing.anchor + Duration::minutes(1);
+	assert_eq!(timing.scheduled_due(due).unwrap(), first);
+	assert_eq!(
+		timing
+			.claim(due, first - Duration::microseconds(1))
+			.unwrap(),
+		None
+	);
+
+	let claim = timing
+		.claim(due, first + Duration::minutes(2))
+		.unwrap()
+		.unwrap();
+	assert_eq!(claim.scheduled_at, first + Duration::minutes(2));
+	assert_eq!(claim.skipped, 2);
+	assert_eq!(claim.next, Some(first + Duration::minutes(3)));
+}
+
 #[rstest]
 fn jitter_is_hidden_bounded_and_stable() {
 	// Arrange
