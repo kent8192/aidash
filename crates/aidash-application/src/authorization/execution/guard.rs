@@ -149,11 +149,16 @@ async fn check_binding(
 				}
 			}
 		};
-		let current = match current {
+		let mut current = match current {
 			Ok(current) => current,
 			Err(Error::Forbidden) => return Ok(UseRecheck::Blocked(saved.identity.local())),
 			Err(error) => return Err(error),
 		};
+		// A Built-in agent is stored without binding normalization; admission
+		// saved the same bindings normalized, so compare it in that form (#1155).
+		if current.binding_normalization.is_none() && current.kind == "agent" {
+			current.binding_normalization = saved.definition.binding_normalization.clone();
+		}
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != saved.digest {
 			return Err(if is_reference_embedding {
 				embedding_unavailable()

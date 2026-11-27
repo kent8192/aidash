@@ -109,7 +109,7 @@ export function useTaskModel(
   requestedNode?: string,
   initial?: TaskModel,
 ) {
-  const { locale, t } = useI18n();
+  const { locale, t, local } = useI18n();
   const { selected } = useNodes();
   const node = requestedNode ?? selected?.name ?? data.node.id;
   const ja = locale === "ja-JP";
@@ -234,6 +234,16 @@ export function useTaskModel(
       onChoice={(choice) => setPicked({ identity, choice })}
     />
   );
+  // People recognise a model by its name, not its registry id.
+  const registered =
+    pending &&
+    data.registry.find(
+      (e) => e.id === pending.model.id && e.version === pending.model.version,
+    );
+  const modelName =
+    (registered && local(registered.name)) ||
+    choice?.catalog?.name ||
+    pending?.model.id;
   const dialog = pending?.identity === identity && tenant && (
     <Dialog
       open
@@ -245,8 +255,8 @@ export function useTaskModel(
         <DialogTitle>
           {pending.approve
             ? ja
-              ? `このモデル(${pending.model.id})はこの Tenant でまだ承認されていません。承認しますか？`
-              : `Approve ${pending.model.id} for this Tenant?`
+              ? `このモデル(${modelName})はこの Tenant でまだ承認されていません。承認しますか？`
+              : `Approve ${modelName} for this Tenant?`
             : ja
               ? "承認依頼を送る"
               : "Request model approval"}

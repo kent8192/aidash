@@ -6,6 +6,8 @@ import { catalogSections } from "../src/model-order.ts";
 const snapshot = [
   ["google/gemini-4-neon", 1795006977, "text"],
   ["openai/gpt-6.2-astra-pro", 1794938432, "text"],
+  // An untiered OpenAI model must not raise the ChatGPT generation (#1154).
+  ["openai/gpt-oss-120b", 1754000000, "text"],
   ["openai/gpt-6.2-astra", 1794938423, "text"],
   ["openai/gpt-6.2-sol-pro", 1794938409, "text"],
   ["openai/gpt-6.2-sol", 1794938371, "text"],
