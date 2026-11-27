@@ -1,8 +1,39 @@
 //! Tools reserved for the Tenant Configurator and the local API surface it can call.
+use crate::registry::bindings::QualifiedRef;
+
+// The command providers bring their poll and cancellation operations as lifecycle companions.
+pub const SANDBOX: &[&str] = &[
+	"shell",
+	"code_interpreter",
+	"file_save",
+	"file_remove",
+	"file_copy",
+	"file_share",
+	"outbound_get",
+	"apply_patch",
+	"process_list",
+	"process_log",
+	"process_stop",
+];
+pub fn sandbox_operation<'a>(agent: &QualifiedRef, target: &'a QualifiedRef) -> Option<&'a str> {
+	let operation = target.id.strip_prefix("aidash.")?;
+	(agent.id == crate::identity::tenant_administration::CONFIGURATOR_ID
+		&& agent.version == env!("CARGO_PKG_VERSION")
+		&& target.version == "1.0.0"
+		&& agent.registry_deployment == target.registry_deployment
+		&& (SANDBOX.contains(&operation)
+			|| matches!(
+				operation,
+				"shell_poll" | "shell_cancel" | "python_poll" | "python_cancel"
+			)))
+	.then_some(operation)
+}
+
 pub const TOOLS: &[&str] = &[
 	"aidash_api",
 	"aidash_api_catalog",
 	"tenant_overview",
+	"scratch_space_configure",
 	"node_update",
 	"member_invite",
 	"member_set_groups",
@@ -79,7 +110,7 @@ pub fn permits(tenant: &str, method: &str, uri: &str) -> bool {
 		["marketplace", "packages", _, "consents", owner] => *owner == tenant,
 		[
 			"registry" | "marketplace" | "duties" | "workbench" | "references" | "agents"
-			| "threads" | "tasks",
+			| "threads" | "tasks" | "scratch-spaces",
 			..,
 		] => true,
 		_ => false,
@@ -94,6 +125,7 @@ mod tests {
 		for path in [
 			"/api/tenants/mine/nodes",
 			"/api/registry",
+			"/api/scratch-spaces/123/settings",
 			"/api/authorization/mine/catalog?node=a",
 			"/api/workbench/test-profiles/mine",
 		] {

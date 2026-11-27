@@ -257,6 +257,20 @@ pub async fn resolve_with_model(
 			continue;
 		}
 		target.validate()?;
+		// Sandboxed operations are offered by this Deployment. The Configurator
+		// can still configure the Tenant on a Deployment without a runner.
+		if let Some(op) = super::system::configurator::sandbox_operation(&agent, &target) {
+			let descriptor =
+				aidash_domain::tool::providers::core_descriptor(&target.registry_deployment, op)?;
+			match providers.implementation(&descriptor) {
+				Err(Error::Invalid(message)) if message.starts_with("PROVIDER_UNAVAILABLE:") => {
+					continue;
+				}
+				result => {
+					result?;
+				}
+			}
+		}
 		let entry = if let Some(entry) = definitions.get(&target) {
 			entry.clone()
 		} else {
@@ -365,9 +379,9 @@ pub async fn resolve_with_model(
 				aidash_domain::tool::provider_tools::declaration(&descriptor.provider)
 			{
 				let parameters = effective_narrow.provider_tool.as_ref().ok_or_else(|| {
-					Error::Invalid(
-						"Provider tool Binding requires parameters and spending caps".into(),
-					)
+					Error::from(tool.parameter_error(
+						"missing provider_tool object with max_tool_calls and parameters",
+					))
 				})?;
 				tool.validate(parameters)?;
 				if let Some(reference) = model_ref {
@@ -602,6 +616,12 @@ pub async fn resolve_with_model(
 			continue;
 		}
 		for (reference, kind) in definition_references(&identity, &entry)? {
+			if identity == agent
+				&& super::system::configurator::sandbox_operation(&agent, &reference).is_some()
+				&& !resolved.contains_key(&reference)
+			{
+				continue;
+			}
 			let dependency = if let Some(entry) = definitions.get(&reference) {
 				entry.clone()
 			} else {

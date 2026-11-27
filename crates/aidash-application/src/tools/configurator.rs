@@ -11,6 +11,11 @@ pub struct Route {
 
 pub fn route(name: &str) -> Option<Route> {
 	let (method, path, description) = match name {
+		"scratch_space_configure" => (
+			"GET",
+			"/api/scratch-spaces/{scratch_space_id}",
+			"Read a Scratch Space or change its allowed hosts, External services or execution image. Defaults to this Thread's space. Omitted settings are preserved. Use the returned id when opening a Thread for an agent or Duty.",
+		),
 		"node_update" => (
 			"PATCH",
 			"/api/tenants/{tenant}/nodes/{node}",
@@ -144,6 +149,13 @@ fn inputs(name: &str) -> Value {
 		),
 		"aidash_api_catalog" => (json!({"query":string}), vec!["query"]),
 		"tenant_overview" => (json!({}), vec![]),
+		"scratch_space_configure" => (
+			json!({"scratch_space_id":{"type":"string","format":"uuid"},
+				"allowed_hosts":schemas.subschema_for::<aidash_domain::scratch::HostAllowlist>(),
+				"external_services":strings,"execution_image":{"type":["string","null"],"description":"A digest-pinned image, or null to use the default."},
+				"expected_revision":integer}),
+			vec![],
+		),
 		"node_update" => (
 			json!({"node":string,"action":{"enum":["label","default","instructions"]},"label":string,"text":string,"expected_revision":integer}),
 			vec!["node", "action"],
