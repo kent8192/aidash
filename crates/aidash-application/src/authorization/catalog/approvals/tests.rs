@@ -520,3 +520,29 @@ async fn deployment_scope_is_rejected_without_atomic_node_orchestration() {
 	);
 	assert!(fixture.writes.is_empty());
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_reviewed_closure_can_exceed_the_direct_batch_limit() {
+	let definitions: Vec<_> = (0..129)
+		.map(|index| {
+			let mut entry = model();
+			entry.id = format!("review-model-{index}");
+			entry
+		})
+		.collect();
+	let decisions: Vec<_> = definitions
+		.iter()
+		.map(|entry| approval(&entry.id, true))
+		.collect();
+	let mut scope = Fixture::new(definitions);
+	assert!(
+		matches!(approve(&mut scope,&decisions).await, Err(Error::Invalid(code)) if code == "CATALOG_APPROVALS_BOUNDS")
+	);
+	assert!(scope.writes.is_empty());
+	let bindings =
+		approve_reviewed_with_satisfied(&mut scope, &decisions, &BTreeSet::new(), &BTreeSet::new())
+			.await
+			.unwrap();
+	assert_eq!(bindings.len(), 129);
+}

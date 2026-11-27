@@ -230,7 +230,7 @@ async fn approve_scoped(
 	access.set_node(source.clone());
 	let source_address = deployment.node(source.clone());
 	let source_bindings =
-		aidash_application::authorization::catalog::approvals::approve_with_satisfied(
+		aidash_application::authorization::catalog::approvals::approve_reviewed_with_satisfied(
 			&mut TenantCatalog {
 				access,
 				node: source_address.clone(),
@@ -333,7 +333,7 @@ async fn approve_scoped(
 		}
 		let subjects = extra_subjects.iter().map(&translate).collect();
 		access.set_node(node);
-		aidash_application::authorization::catalog::approvals::approve_with_satisfied(
+		aidash_application::authorization::catalog::approvals::approve_reviewed_with_satisfied(
 			&mut TenantCatalog {
 				access,
 				node: address,
@@ -1015,7 +1015,7 @@ impl PolicyAdministration {
 				let set = aidash_application::authorization::catalog::review::restriction_set(
 					&tenant, &node, &current, &plan,
 				)?;
-				aidash_application::marketplace::operations::restriction::restrict_active(
+				aidash_application::marketplace::operations::restriction::restrict_reviewed(
 					&mut crate::bootstrap::marketplace_tenant_activation_scope_at(
 						&f.store,
 						&mut access.tx,
@@ -1033,7 +1033,7 @@ impl PolicyAdministration {
 					&tenant, &node, &current, &plan,
 				)?;
 				installations =
-					aidash_application::marketplace::operations::approval_set::approve_and_activate(
+					aidash_application::marketplace::operations::approval_set::activate_reviewed(
 						&mut crate::bootstrap::marketplace_tenant_activation_scope_at(
 							&f.store,
 							&mut access.tx,
@@ -1834,6 +1834,9 @@ impl PolicyAdministration {
 			return access.finish(Err(error)).await;
 		}
 		let result = async {
+			aidash_application::authorization::catalog::approvals::validate_direct_count(
+				approvals.len(),
+			)?;
 			if let Some(options) = options {
 				for (first, (carry, scope)) in approvals.iter_mut().zip(options) {
 					let row = AuthorizationCatalog::objects()
@@ -2079,7 +2082,7 @@ impl PolicyAdministration {
 							.collect();
 						for chunk in withdrawals.chunks(128) {
 							access.set_node(other.clone());
-							aidash_application::authorization::catalog::approvals::approve_with_satisfied(
+							aidash_application::authorization::catalog::approvals::approve_reviewed_with_satisfied(
 								&mut TenantCatalog {
 									access: &mut access,
 									node: f.config.deployment.node(other.clone()),

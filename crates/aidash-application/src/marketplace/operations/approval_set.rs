@@ -42,13 +42,35 @@ pub async fn approve_and_activate(
 	input: &ApprovalSet,
 	node: &str,
 ) -> Result<Vec<Installation>> {
+	apply(scope, validation, input, node, 32, 128).await
+}
+
+/// All members have already been matched to the bounded Approval Review.
+pub async fn activate_reviewed(
+	scope: &mut dyn DeploymentAdministratorScope,
+	validation: &DefinitionValidation,
+	input: &ApprovalSet,
+	node: &str,
+) -> Result<Vec<Installation>> {
+	let limit = crate::authorization::catalog::review::MAX_CLOSURE;
+	apply(scope, validation, input, node, limit, limit).await
+}
+
+async fn apply(
+	scope: &mut dyn DeploymentAdministratorScope,
+	validation: &DefinitionValidation,
+	input: &ApprovalSet,
+	node: &str,
+	max_installations: usize,
+	max_approvals: usize,
+) -> Result<Vec<Installation>> {
 	aidash_domain::nodes::DeploymentId::parse(node)?;
 	aidash_domain::policy::identifier(&input.tenant)?;
 	super::require_approving(scope, &input.tenant)?;
 	if input.installations.is_empty()
-		|| input.installations.len() > 32
+		|| input.installations.len() > max_installations
 		|| input.approvals.is_empty()
-		|| input.approvals.len() > 128
+		|| input.approvals.len() > max_approvals
 	{
 		return Err(Error::Invalid(
 			"approval set exceeds bounds or is empty".into(),

@@ -35,9 +35,29 @@ pub async fn restrict_active(
 	scope: &mut dyn DeploymentAdministratorScope,
 	input: &RestrictionSet,
 ) -> Result<()> {
+	apply(scope, input, 32).await
+}
+
+pub async fn restrict_reviewed(
+	scope: &mut dyn DeploymentAdministratorScope,
+	input: &RestrictionSet,
+) -> Result<()> {
+	apply(
+		scope,
+		input,
+		crate::authorization::catalog::review::MAX_CLOSURE,
+	)
+	.await
+}
+
+async fn apply(
+	scope: &mut dyn DeploymentAdministratorScope,
+	input: &RestrictionSet,
+	limit: usize,
+) -> Result<()> {
 	aidash_domain::policy::identifier(&input.tenant)?;
 	super::require_approving(scope, &input.tenant)?;
-	if input.installations.is_empty() || input.installations.len() > 32 {
+	if input.installations.is_empty() || input.installations.len() > limit {
 		return Err(Error::Invalid(
 			"restriction set exceeds bounds or is empty".into(),
 		));

@@ -19,7 +19,7 @@ use aidash_domain::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAX_CLOSURE: usize = 512;
+pub const MAX_CLOSURE: usize = 512;
 
 /// Whether one exact version can be used now, and if not, what stands in the
 /// way. `Approved` means the Node's approval is enabled; a separate `widen`
