@@ -41,10 +41,53 @@ pub(super) fn sample(manager: &super::proxy::TunnelManager, memory_limit: Option
 	let files = files
 		.zip(open_file_limits())
 		.map(|(used, (limit, _))| used as f64 / limit as f64);
-	let memory = rss
-		.zip(memory_limit)
-		.map(|(used, limit)| used as f64 / limit as f64);
-	manager.update_pressure(files, memory);
+	manager.update_pressure(files, fraction(rss, memory_limit));
+}
+
+fn fraction(rss: Option<u64>, limit: Option<u64>) -> Option<f64> {
+	rss.zip(limit)
+		.map(|(used, limit)| used as f64 / limit as f64)
+}
+
+pub(super) fn under_pressure(previous: bool, fraction: Option<f64>) -> bool {
+	fraction.map_or(previous, |fraction| {
+		if previous {
+			fraction >= 0.70
+		} else {
+			fraction > 0.80
+		}
+	})
+}
+
+/// The API runs separately from the Egress gateway. Sample its own process with the same
+/// memory signal and hysteresis the gateway uses (ADR 0150).
+pub struct ReplicaMemoryPressure {
+	limit: Option<u64>,
+	short: std::sync::atomic::AtomicBool,
+}
+
+impl Default for ReplicaMemoryPressure {
+	fn default() -> Self {
+		Self {
+			limit: memory_limit(None),
+			short: std::sync::atomic::AtomicBool::new(false),
+		}
+	}
+}
+
+impl ReplicaMemoryPressure {
+	pub fn sample(&self) {
+		use std::sync::atomic::Ordering::Relaxed;
+		let previous = self.short.load(Relaxed);
+		self.short.store(
+			under_pressure(previous, fraction(rss_bytes(), self.limit)),
+			Relaxed,
+		);
+	}
+
+	pub fn is_short(&self) -> bool {
+		self.short.load(std::sync::atomic::Ordering::Relaxed)
+	}
 }
 
 fn rss_bytes() -> Option<u64> {

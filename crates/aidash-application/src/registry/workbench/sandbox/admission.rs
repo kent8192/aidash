@@ -122,7 +122,8 @@ pub fn admit<'a>(
 		let Some(agent) = plugins::remote_plugins(&reserved.job.pinned_draft) else {
 			return Ok(reserved);
 		};
-		let listed = plugins::list(sessions, &agent).await;
+		let scoped = sessions.for_tenant(&reserved.job.pinned_draft.tenant);
+		let listed = plugins::list(scoped.as_ref().unwrap_or(sessions), &agent).await;
 		let session_id = reserved.session.id;
 		let conversation = reserved.session.conversation.clone();
 		let result = prepare(

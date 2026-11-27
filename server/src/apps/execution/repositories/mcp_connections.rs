@@ -1,6 +1,6 @@
 //! Resolve MCP authentication only from the local Run's chain-root person.
 use aidash_application::oauth_connections::{Owner, Service};
-use aidash_application::ports::tools::{PluginInputs, PluginServer, PluginSessions};
+use aidash_application::ports::tools::{ListFailure, PluginInputs, PluginServer, PluginSessions};
 use aidash_application::tenant_secrets::{
 	BearerSource, CallSecret, ConnectionRecord, SecretCall, SecretRoute, SecretRouteSource,
 };
@@ -142,6 +142,40 @@ pub(crate) async fn for_owner(
 	})
 }
 
+/// The API process uses the same memory pressure signal as the Egress replica.
+struct SessionMemory(aidash_integrations::egress::ReplicaMemoryPressure);
+
+impl aidash_application::ports::tools::McpMemoryShortage for SessionMemory {
+	fn memory_short(&self) -> bool {
+		self.0.is_short()
+	}
+}
+
+pub(crate) fn session_manager(
+	store: &crate::store::Store,
+) -> aidash_integrations::plugin_sessions::McpPluginSessions {
+	static SIGNAL: std::sync::OnceLock<Arc<SessionMemory>> = std::sync::OnceLock::new();
+	let memory = SIGNAL.get_or_init(|| {
+		let memory = Arc::new(SessionMemory(Default::default()));
+		memory.0.sample();
+		// The process owns this sampler even when there are no live MCP sessions.
+		let sampled = memory.clone();
+		tokio::spawn(async move {
+			let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+			loop {
+				interval.tick().await;
+				sampled.0.sample();
+			}
+		});
+		memory
+	});
+	store
+		.plugin_sessions
+		.as_ref()
+		.clone()
+		.with_memory_shortage(memory.clone())
+}
+
 /// The application uses one session port for listing and dispatch; this decorator binds both to
 /// the same Run. Workbench keeps the undecorated port and has no person's credentials.
 pub(crate) struct Sessions {
@@ -153,6 +187,11 @@ pub(crate) struct Sessions {
 	pub stdio: Option<Arc<dyn aidash_application::ports::tools::StdioPluginSessions>>,
 }
 impl Sessions {
+	fn local_sessions(&self) -> Result<aidash_integrations::plugin_sessions::McpPluginSessions> {
+		let tenant = self.scope.tenant_name().ok_or(Error::Forbidden)?;
+		Ok(session_manager(&self.store).scoped(tenant.as_str()))
+	}
+
 	#[allow(clippy::too_many_arguments)] // Mirrors the pinned server and complete logical wire round.
 	async fn proxy(
 		&self,
@@ -334,14 +373,20 @@ impl PluginSessions for Sessions {
 			)
 			.await?
 		{
+			if let Some(code) = value["error"].as_str() {
+				for failure in [ListFailure::ListingTooLarge, ListFailure::ListingTimeout] {
+					if code == failure.code() {
+						return Err(failure.into());
+					}
+				}
+			}
 			if value.get("error").is_some() {
 				return Err(Error::Invalid(value.to_string()));
 			}
 			return Ok(serde_json::from_value(value)?);
 		}
 		let (auth, config) = self.auth(run, server, config, "").await?;
-		self.store
-			.plugin_sessions
+		self.local_sessions()?
 			.list(run, server, &config, auth.as_ref())
 			.await
 	}
@@ -376,8 +421,7 @@ impl PluginSessions for Sessions {
 			Ok(auth) => auth,
 			Err(error) => return secret_refusal(error),
 		};
-		self.store
-			.plugin_sessions
+		self.local_sessions()?
 			.call(
 				run,
 				server,
@@ -431,8 +475,7 @@ impl PluginSessions for Sessions {
 			Ok(auth) => auth,
 			Err(error) => return secret_refusal(error).map(ToolRound::Complete),
 		};
-		self.store
-			.plugin_sessions
+		self.local_sessions()?
 			.round(
 				run,
 				server,

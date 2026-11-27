@@ -290,6 +290,15 @@ pub(crate) fn call_error(error: &ServiceError) -> Error {
 	}
 }
 
+pub(crate) fn listing_error(error: &ServiceError) -> Error {
+	if let ServiceError::McpError(error) = error
+		&& crate::tools::mcp_sse_outcome(&error.message).is_some()
+	{
+		return aidash_application::ports::tools::ListFailure::ListingTooLarge.into();
+	}
+	call_error(error)
+}
+
 /// An MCP error result is data for the model; any other result is passed on whole.
 pub(crate) fn result_value(result: CallToolResult) -> aidash_application::Result<Value> {
 	if result.is_error == Some(true) {
@@ -329,9 +338,15 @@ fn request(
 fn events(
 	mut response: reqwest::Response,
 	request_id: Option<Value>,
+	listing: bool,
 ) -> BoxStream<'static, Result<Sse, SseError>> {
 	// A session is only used for one tool invocation. Cap its entire response,
 	// including unterminated SSE fields, before the parser can buffer them.
+	let limit = if listing {
+		aidash_application::mcp_listing::MAX_LISTED_SCHEMA_BYTES + LIMIT
+	} else {
+		LIMIT
+	};
 	let signal = Arc::new(std::sync::Mutex::new(None));
 	let signal_writer = signal.clone();
 	let expected = request_id.clone();
@@ -339,16 +354,16 @@ fn events(
 		let mut received = 0_usize;
 		let mut prefix = Vec::new();
 		while let Some(chunk) = response.chunk().await.map_err(std::io::Error::other)? {
-			let remaining = LIMIT.saturating_sub(prefix.len());
+			let remaining = limit.saturating_sub(prefix.len());
 			prefix.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
 			received = received.saturating_add(chunk.len());
-			if received > LIMIT {
+			if received > limit {
 				let mut outcome = crate::tools::mcp_sse_signal(&prefix, expected.as_ref());
-				if let Some((_, final_result)) = &mut outcome && *final_result {
+				if let Some((_, final_result)) = &mut outcome && *final_result && !listing {
 					*final_result = crate::tools::mcp_sse_complete(&mut response, &chunk[remaining..]).await;
 				}
 				*signal_writer.lock().expect("SSE signal") = outcome;
-				Err(std::io::Error::other("MCP response exceeds 256 KB"))?;
+				Err(std::io::Error::other(format!("MCP response exceeds {limit} bytes")))?;
 			}
 			yield chunk;
 		}
@@ -371,6 +386,10 @@ impl StreamableHttpClient for BoundedClient {
 			if matches!(request.request, rmcp::model::ClientRequest::CallToolRequest(_)));
 		let (target, bearer, secret_call) = self.target(&uri, token).await?;
 		let request_value = serde_json::to_value(&message).ok();
+		let listing = request_value
+			.as_ref()
+			.and_then(|value| value["method"].as_str())
+			== Some("tools/list");
 		let request_id = request_value
 			.as_ref()
 			.filter(|value| value.get("method").and_then(Value::as_str) == Some("tools/call"))
@@ -426,14 +445,33 @@ impl StreamableHttpClient for BoundedClient {
 			.unwrap_or("");
 		if content_type.starts_with("text/event-stream") {
 			return Ok(StreamableHttpPostResponse::Sse(
-				events(response, request_id),
+				events(
+					response,
+					if listing {
+						request_value
+							.as_ref()
+							.and_then(|value| value.get("id"))
+							.cloned()
+					} else {
+						request_id
+					},
+					listing,
+				),
 				session,
 			));
 		}
 		if !content_type.starts_with("application/json") {
 			return Err(invalid("unsupported MCP content type"));
 		}
-		let value: Value = if request_id.is_some() {
+		let value: Value = if listing {
+			crate::tools::mcp_listing_json(response, LIMIT).await.map_err(|error| {
+				if matches!(&error, Error::Port(source) if source.is::<aidash_application::ports::tools::ListFailure>()) {
+					Failure::Client(McpError::App(error))
+				} else {
+					invalid(&error.to_string())
+				}
+			})?
+		} else if request_id.is_some() {
 			crate::tools::mcp_json_body(response, request_id.as_ref(), LIMIT)
 				.await
 				.map_err(|error| invalid(&error))?
@@ -527,6 +565,7 @@ impl StreamableHttpClient for BoundedClient {
 				.error_for_status()
 				.map_err(|error| Failure::Client(McpError::Http(error)))?,
 			None,
+			false,
 		))
 	}
 }

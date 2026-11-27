@@ -1696,3 +1696,4 @@ mod proxy;
 
 mod buffers;
 mod resources;
+pub use resources::ReplicaMemoryPressure;

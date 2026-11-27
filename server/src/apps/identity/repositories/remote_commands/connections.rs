@@ -2,7 +2,7 @@
 use aidash_application::{
 	Error, Result,
 	oauth_connections::Owner,
-	ports::tools::{PluginServer, PluginSessions, ToolTransport},
+	ports::tools::{ListFailure, PluginServer, PluginSessions, ToolTransport},
 	tenant_secrets::{CallSecret, SecretCall, endpoint_destination},
 };
 use aidash_domain::{
@@ -282,6 +282,12 @@ fn error_value(error: &Error, resource: &str) -> Value {
 	if matches!(error, Error::External(message) if message == "connection_unavailable") {
 		return json!({"error":"connection_unavailable","resource":resource});
 	}
+	if let Error::Port(source) = error
+		&& let Some(failure @ (ListFailure::ListingTooLarge | ListFailure::ListingTimeout)) =
+			source.downcast_ref::<ListFailure>()
+	{
+		return json!({"error":failure.code(),"message":failure.to_string()});
+	}
 	// Adapter errors may contain HTTP details. Do not return those over Federation.
 	json!({"error":"mcp_connection_call_failed"})
 }
@@ -330,10 +336,9 @@ pub(super) async fn execute(
 				schema_digest,
 			} => {
 				// A fresh session per call; it is always ended before returning across Nodes.
-				let sessions = aidash_integrations::plugin_sessions::McpPluginSessions::new(
-					store.keyless.clone(),
-					store.tool_clients.clone(),
-				);
+				let sessions =
+					crate::apps::execution::repositories::mcp_connections::session_manager(store)
+						.scoped(&owner.tenant);
 				let session = Uuid::now_v7();
 				let result = if list {
 					sessions
@@ -392,6 +397,14 @@ pub(super) async fn execute(
 				journal::abandon(store, owner, id).await?;
 			}
 			return Ok(json!({"outcome":"connection","cause":cause}));
+		}
+		Err(Error::Port(error))
+			if error.is::<aidash_application::ports::tools::McpSessionMemoryShort>() =>
+		{
+			if let Some(id) = journal {
+				journal::abandon(store, owner, id).await?;
+			}
+			return Err(Error::Port(error));
 		}
 		Err(error) => (error_value(&error, &call.resource), true),
 	};

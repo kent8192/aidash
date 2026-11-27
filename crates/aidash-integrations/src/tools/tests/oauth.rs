@@ -185,7 +185,8 @@ async fn plugin_cached_session_reads_the_current_bearer_for_every_request(#[case
 	let sessions = crate::plugin_sessions::McpPluginSessions::new(
 		permitting([endpoint.as_str()]),
 		ToolClients::new().unwrap(),
-	);
+	)
+	.scoped("fixture");
 	let run = uuid::Uuid::new_v4();
 	let identity = PluginServer {
 		plugin: "demo".to_owned().try_into().unwrap(),
@@ -262,7 +263,8 @@ async fn plugin_mcp_auth_challenges_preserve_context_and_retry_only_one_refused_
 	let sessions = crate::plugin_sessions::McpPluginSessions::new(
 		permitting([endpoint.as_str()]),
 		ToolClients::new().unwrap(),
-	);
+	)
+	.scoped("fixture");
 	let run = uuid::Uuid::new_v4();
 	let identity = PluginServer {
 		plugin: "demo".to_owned().try_into().unwrap(),
@@ -390,7 +392,8 @@ async fn plugin_auth_refusal_after_an_accepted_input_round_is_not_replayed(#[cas
 	let sessions = crate::plugin_sessions::McpPluginSessions::new(
 		permitting([endpoint.as_str()]),
 		ToolClients::new().unwrap(),
-	);
+	)
+	.scoped("fixture");
 	let run = uuid::Uuid::new_v4();
 	let identity = PluginServer {
 		plugin: "demo".to_owned().try_into().unwrap(),
@@ -523,7 +526,8 @@ async fn brokered_connections_use_only_the_broker_and_preserve_replay_guards(
 		let sessions = crate::plugin_sessions::McpPluginSessions::new(
 			permitting([endpoint]),
 			ToolClients::new().unwrap(),
-		);
+		)
+		.scoped("fixture");
 		let run = uuid::Uuid::new_v4();
 		let identity = PluginServer {
 			plugin: "demo".to_owned().try_into().unwrap(),
@@ -609,7 +613,8 @@ async fn a_public_endpoint_brokered_connection_reaches_a_private_broker(#[case] 
 		let sessions = crate::plugin_sessions::McpPluginSessions::new(
 			KeylessAccess::default(),
 			ToolClients::new().unwrap(),
-		);
+		)
+		.scoped("fixture");
 		let run = uuid::Uuid::new_v4();
 		let identity = PluginServer {
 			plugin: "demo".to_owned().try_into().unwrap(),
