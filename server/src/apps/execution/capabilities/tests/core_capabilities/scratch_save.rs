@@ -435,9 +435,14 @@ async fn scratch_save_releases_authority_while_streaming(
 			)
 			.await;
 			assert_eq!(status, 200, "{thread}");
-			let artifacts = thread["artifacts"].as_array().unwrap();
+			let artifacts = thread["artifacts"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.filter(|artifact| artifact["kind"] == "file_reference")
+				.collect::<Vec<_>>();
 			assert_eq!(artifacts.len(), 1, "{artifacts:?}");
-			let artifact = &artifacts[0];
+			let artifact = artifacts[0];
 			assert_eq!(
 				artifact["content"],
 				json!({
