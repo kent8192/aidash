@@ -383,7 +383,6 @@ fn schema_of_size(bytes: usize) -> Value {
 #[case::schema_that_is_a_string(json!("object"), "schema_not_object")]
 #[case::schema_that_is_an_array(json!([]), "schema_not_object")]
 #[case::schema_that_is_null(Value::Null, "schema_not_object")]
-#[case::schema_one_byte_over(schema_of_size(MAX_SCHEMA_BYTES + 1), "schema_too_large")]
 #[case::invalid_type(json!({"type": 7}), "schema_invalid")]
 #[case::invalid_nested_type(json!({"type": "object", "properties": {"q": {"type": 7}}}), "schema_invalid")]
 #[case::invalid_required(json!({"type": "object", "required": "q"}), "schema_invalid")]
@@ -419,11 +418,12 @@ fn a_tool_with_an_unusable_schema_is_skipped(#[case] input_schema: Value, #[case
 }
 
 #[test]
-fn a_schema_at_the_size_limit_is_pinned() {
+fn pinning_preserves_large_tool_definitions() {
 	let plugin = acme();
 	let mut large = tool("large");
-	large.input_schema = schema_of_size(MAX_SCHEMA_BYTES);
-	let listed = listings(&[(&plugin, "docs", Listing::Listed(vec![large]))]);
+	large.input_schema = schema_of_size(20_000);
+	large.description = Some("d".repeat(10_000));
+	let listed = listings(&[(&plugin, "docs", Listing::Listed(vec![large.clone()]))]);
 
 	let pinned = run(
 		std::slice::from_ref(&plugin),
@@ -431,36 +431,10 @@ fn a_schema_at_the_size_limit_is_pinned() {
 		&listed,
 	);
 
-	assert_eq!(
-		pinned_names(&pinned),
-		[("acme-tools".into(), "docs".into(), vec!["large"])]
-	);
-}
-
-#[rstest]
-#[case::at_the_limit(MAX_DESCRIPTION_BYTES, true)]
-#[case::one_byte_over(MAX_DESCRIPTION_BYTES + 1, false)]
-fn a_tool_description_is_bounded(#[case] bytes: usize, #[case] pinned: bool) {
-	let plugin = acme();
-	let mut described = tool("described");
-	described.description = Some("d".repeat(bytes));
-	let listed = listings(&[(&plugin, "docs", Listing::Listed(vec![described]))]);
-
-	let result = run(
-		std::slice::from_ref(&plugin),
-		&PluginSettings::new(),
-		&listed,
-	);
-
-	assert_eq!(!result.servers[0].tools.is_empty(), pinned);
-	assert_eq!(
-		reasons(&result),
-		if pinned {
-			vec![]
-		} else {
-			vec![Reason::ToolInvalid]
-		}
-	);
+	let tool = &pinned.servers[0].tools[0];
+	assert_eq!(tool.input_schema, large.input_schema);
+	assert_eq!(Some(&tool.description), large.description.as_ref());
+	assert!(pinned.findings.is_empty());
 }
 
 #[rstest]
@@ -513,41 +487,14 @@ fn listing_of(names: &[String]) -> Listing {
 }
 
 #[test]
-fn a_server_pins_at_most_64_tools_in_name_order() {
-	let plugin = acme();
-	let names = numbered(MAX_SERVER_TOOLS + 3);
-	let listed = listings(&[(&plugin, "docs", listing_of(&names))]);
-
-	let pinned = run(
-		std::slice::from_ref(&plugin),
-		&PluginSettings::new(),
-		&listed,
-	);
-
-	let kept: Vec<_> = pinned.servers[0]
-		.tools
-		.iter()
-		.map(|t| t.name.clone())
-		.collect();
-	assert_eq!(kept, names[..MAX_SERVER_TOOLS]);
-	assert_eq!(
-		pinned.findings,
-		names[MAX_SERVER_TOOLS..]
-			.iter()
-			.map(|name| finding(&plugin, "docs", Outcome::Skipped, Reason::ToolLimit, name))
-			.collect::<Vec<_>>()
-	);
-}
-
-#[test]
-fn a_run_pins_at_most_128_tools_and_a_server_over_the_limit_keeps_an_empty_entry() {
-	let plugin = plugin_with("acme-tools", &["a", "b", "c", "d"]);
-	let names = numbered(MAX_SERVER_TOOLS);
+fn pinning_keeps_every_listed_tool_in_name_order() {
+	let plugin = plugin_with("acme-tools", &["a", "b"]);
+	let names = numbered(70);
+	let mut reversed = names.clone();
+	reversed.reverse();
 	let listed = listings(&[
-		(&plugin, "a", listing_of(&names)),
-		(&plugin, "b", listing_of(&names[..60])),
-		(&plugin, "c", listing_of(&names)),
-		(&plugin, "d", listing_of(&names[..1])),
+		(&plugin, "a", listing_of(&reversed)),
+		(&plugin, "b", listing_of(&names)),
 	]);
 
 	let pinned = run(
@@ -556,42 +503,11 @@ fn a_run_pins_at_most_128_tools_and_a_server_over_the_limit_keeps_an_empty_entry
 		&listed,
 	);
 
-	let counts: Vec<_> = pinned
-		.servers
-		.iter()
-		.map(|server| (server.server.to_string(), server.tools.len()))
-		.collect();
-	assert_eq!(
-		counts,
-		[("a", 64), ("b", 60), ("c", 4), ("d", 0)]
-			.map(|(server, count)| (server.to_owned(), count))
-	);
-	assert_eq!(pinned.findings.len(), 60 + 1);
-	assert!(
-		reasons(&pinned)
-			.iter()
-			.all(|reason| *reason == Reason::ToolLimit)
-	);
-	assert_eq!(pinned.findings[0].finding.detail, names[4]);
-}
-
-#[test]
-fn a_tool_refused_for_its_alias_does_not_use_a_slot() {
-	let plugin = acme();
-	let names = numbered(MAX_SERVER_TOOLS + 1);
-	let taken = BTreeSet::from([model_alias(&plugin.name, &server_name("docs"), &names[0])]);
-	let listed = listings(&[(&plugin, "docs", listing_of(&names))]);
-
-	let pinned = pin(
-		std::slice::from_ref(&plugin),
-		&PluginSettings::new(),
-		&listed,
-		&taken,
-	);
-
-	assert_eq!(pinned.servers[0].tools.len(), MAX_SERVER_TOOLS);
-	assert_eq!(reasons(&pinned), [Reason::ReservedAlias]);
-	assert_eq!(pinned.findings[0].finding.detail, names[0]);
+	assert_eq!(pinned.servers.len(), 2);
+	for server in &pinned.servers {
+		assert!(server.tools.iter().map(|tool| &tool.name).eq(&names));
+	}
+	assert!(pinned.findings.is_empty());
 }
 
 #[test]

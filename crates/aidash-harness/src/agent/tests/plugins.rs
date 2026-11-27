@@ -4,8 +4,8 @@ use super::*;
 use aidash_application::capabilities::approvals::Refusal;
 use aidash_domain::{
 	agent_plugin::{
-		PinnedAgentPlugin, PinnedServer, PinnedTool, PluginName, PluginTools, ServerName,
-		schema_digest,
+		self, AgentPluginRef, ListedTool, Listing, McpServer, PinnedAgentPlugin, PinnedServer,
+		PinnedTool, PluginName, PluginTools, RemoteServer, ServerName, schema_digest,
 	},
 	tool::{AgentPluginTool, ToolContract},
 };
@@ -112,6 +112,71 @@ async fn the_first_step_pins_the_plugin_tools_once_before_the_run_starts(mut fix
 	assert_eq!(started.context.plugin_tools, Some(pinned(false)));
 	assert!(matches!(started.state, RunState::Thinking(_)));
 	assert!(fixture.backend.0.closed_sessions.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn oversized_plugin_tool_definitions_stop_before_inference(mut fixture: Fixture) {
+	let plugin = AgentPluginRef {
+		digest: digest(),
+		name: plugin(),
+		source: "https://github.com/example/tools".into(),
+		version: None,
+		license: None,
+		skills: vec![],
+		servers: BTreeMap::from([(
+			server(),
+			McpServer::Remote(RemoteServer {
+				url: "https://example.invalid/mcp".parse().unwrap(),
+				headers: vec![],
+			}),
+		)]),
+		findings: vec![],
+	};
+	let schema = json!({"type": "object", "description": "search results ".repeat(12_000)});
+	let listed = BTreeMap::from([(
+		(plugin.name.clone(), server()),
+		Listing::Listed(vec![ListedTool {
+			name: "search".into(),
+			description: Some("Searches.".into()),
+			input_schema: schema,
+		}]),
+	)]);
+	let pinned = agent_plugin::pin(&[plugin], &Default::default(), &listed, &Default::default());
+	let window = 16_000;
+	let state = state(&mut fixture);
+	state.summarizer_window = window;
+	for tool in pinned.servers.iter().flat_map(|server| &server.tools) {
+		let spec = ToolSpec {
+			name: tool.alias.clone(),
+			description: tool.description.clone(),
+			parameters: tool.input_schema.clone(),
+		};
+		assert!(context::estimated_tokens(&serde_json::to_string(&spec).unwrap()) > window);
+		state.tools_by_alias.insert(
+			tool.alias.clone(),
+			Arc::new(Advertised {
+				specification: spec,
+				contract: ToolContract::agent_plugin(identity(), false),
+			}),
+		);
+	}
+	with_plugin(&mut fixture, Some(pinned));
+	let snapshot = fixture.run.context.binding_snapshot.as_mut().unwrap();
+	let agent = snapshot
+		.definitions
+		.iter_mut()
+		.find(|definition| definition.identity == snapshot.agent)
+		.unwrap();
+	agent.definition.config["exposure"] = json!({"version": "legacy@1"});
+
+	advance(&mut fixture).await.unwrap();
+	let Err(Error::Context(failure)) = advance(&mut fixture).await else {
+		panic!("mandatory plugin tools must exhaust the context window");
+	};
+
+	assert_eq!(failure.label(), "context_unreducible");
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 
 #[rstest]

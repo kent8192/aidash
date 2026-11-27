@@ -425,9 +425,9 @@ The tools a server listed are pinned as follows.
   characters, `_` and eight hex digits of a hash. A tool whose alias another
   Binding, a reserved name or an earlier plugin tool already uses is skipped
   and reported.
-- A server contributes at most 64 tools, a Run at most 128, and a tool's input
-  schema must be an object of at most 16,384 bytes with a description of at
-  most 8,192 bytes. A tool beyond a limit is skipped and reported.
+- A tool's input schema must be a valid JSON Schema object. Plugin tools
+  exposed to the model count toward its context window. If the mandatory
+  request cannot fit after compaction, the Run reports `context_unreducible`.
 - `agent_plugin_settings` holds the Agent's choices, plugin name then server
   name. `tools` is an allowlist that can only narrow what the server lists.
   `exposure` is `eager` or `deferred` under `deferred@1`, like a Binding's;
