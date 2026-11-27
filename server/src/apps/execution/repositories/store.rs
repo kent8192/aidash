@@ -78,6 +78,8 @@ pub struct Store {
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
+	/// Shared maintenance capacity in a long-running server or worker process.
+	pub(crate) process_recovery_pool: Option<Pool>,
 	/// Restoration claims survive external retirement without consuming the
 	/// control connections retirement itself needs. Shared across Store clones.
 	pub restoration_pool: Pool,
@@ -498,22 +500,7 @@ impl Store {
 		pool: sqlx::PgPool,
 		deployment: aidash_domain::nodes::DeploymentId,
 	) -> Result<Self> {
-		Self::from_pool_for_role(pool, deployment, false).await
-	}
-
-	/// Egress shares its pool across all adapters, including Tenant Secrets.
-	pub(crate) async fn from_pool_for_role(
-		pool: sqlx::PgPool,
-		deployment: aidash_domain::nodes::DeploymentId,
-		egress_only: bool,
-	) -> Result<Self> {
-		let tool_slots = aidash_application::ports::execution::ToolSlots::new(tool_parallelism(
-			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
-			pool.options().get_max_connections() as usize,
-		)?);
-		let (control_pool, restoration_pool, scratch_upload_pool) = if egress_only {
-			(pool.clone(), pool.clone(), pool.clone())
-		} else {
+		let (control_pool, restoration_pool, scratch_upload_pool) = {
 			let control = pool
 				.options()
 				.clone()
@@ -530,6 +517,72 @@ impl Store {
 			};
 			(control, lazy(4), lazy(MAX_WORKER_SLOTS as u32 + 1))
 		};
+		Self::from_pools(
+			pool.into(),
+			control_pool.into(),
+			restoration_pool.into(),
+			scratch_upload_pool.into(),
+			None,
+			deployment,
+		)
+		.await
+	}
+
+	pub(crate) async fn from_process_pools(
+		pools: crate::database::runtime::ProcessPools,
+		deployment: aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
+		Self::from_pools(
+			pools.work.clone(),
+			pools.control,
+			pools.work.clone(),
+			pools.work,
+			Some(pools.recovery),
+			deployment,
+		)
+		.await
+	}
+
+	pub(crate) async fn from_egress_pool(
+		pool: Pool,
+		deployment: aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
+		Self::from_pools(
+			pool.clone(),
+			pool.clone(),
+			pool.clone(),
+			pool,
+			None,
+			deployment,
+		)
+		.await
+	}
+
+	async fn from_pools(
+		pool: Pool,
+		control_pool: Pool,
+		restoration_pool: Pool,
+		scratch_upload_pool: Pool,
+		process_recovery_pool: Option<Pool>,
+		deployment: aidash_domain::nodes::DeploymentId,
+	) -> Result<Self> {
+		let ceiling = tool_parallelism(
+			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
+			pool.usage().max as usize,
+		)?;
+		// Parallel tool calls must fit beside each worker slot's authority and
+		// step connection in the same Work pool.
+		if process_recovery_pool.is_some()
+			&& ceiling > 1
+			&& worker_pool_connections(ceiling) > pool.usage().max as usize
+		{
+			return Err(Error::Invalid(format!(
+				"AIDASH_TOOL_PARALLELISM={ceiling} requires {} work pool connections, configured {}",
+				worker_pool_connections(ceiling),
+				pool.usage().max
+			)));
+		}
+		let tool_slots = aidash_application::ports::execution::ToolSlots::new(ceiling);
 		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::from_env(
@@ -551,10 +604,11 @@ impl Store {
 		// an origin permitted later reaches both.
 		let keyless = aidash_application::provider_access::KeylessAccess::default();
 		Ok(Self {
-			pool: pool.into(),
-			control_pool: control_pool.into(),
-			restoration_pool: restoration_pool.into(),
-			scratch_upload_pool: scratch_upload_pool.into(),
+			pool,
+			control_pool,
+			process_recovery_pool,
+			restoration_pool,
+			scratch_upload_pool,
 			scratch_upload_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
 				MAX_WORKER_SLOTS,
 			)),
@@ -600,7 +654,10 @@ impl Store {
 		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Self {
 		self.pool = self.pool.with_dashboard_policy(policy.clone());
-		self.control_pool = self.control_pool.with_dashboard_policy(policy);
+		self.control_pool = self.control_pool.with_dashboard_policy(policy.clone());
+		self.process_recovery_pool = self
+			.process_recovery_pool
+			.map(|pool| pool.with_dashboard_policy(policy));
 		self
 	}
 	/// Attach this node's Cache Salt Keys for salted Run creation and inference.
@@ -666,12 +723,19 @@ impl Store {
 		recovery: Option<std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
 	) -> Self {
 		self.pool = self.pool.with_memory_recovery(recovery.clone());
-		self.control_pool = self.control_pool.with_memory_recovery(recovery);
+		self.control_pool = self.control_pool.with_memory_recovery(recovery.clone());
+		self.process_recovery_pool = self
+			.process_recovery_pool
+			.map(|pool| pool.with_memory_recovery(recovery));
 		self
 	}
 
-	/// Share the database and connection settings without sharing pool capacity.
+	/// Production runtimes share the fixed Work and Control pools. Embedded
+	/// fixtures can still open a separately closable handle to simulate restarts.
 	pub async fn isolated_pool(&self) -> Result<Self> {
+		if self.process_recovery_pool.is_some() {
+			return Ok(self.clone());
+		}
 		let mut store = self.worker_pool().await?;
 		store.control_pool = self
 			.control_pool
@@ -689,9 +753,11 @@ impl Store {
 		Ok(store)
 	}
 
-	/// Runtime workers reserve data capacity while sharing visibility leases.
-	/// Callers must not explicitly close the shared control pool.
+	/// Reuse the process Work and Control pools in a runtime worker.
 	pub async fn worker_pool(&self) -> Result<Self> {
+		if self.process_recovery_pool.is_some() {
+			return Ok(self.clone());
+		}
 		let pool = self
 			.pool
 			.options()
@@ -705,6 +771,7 @@ impl Store {
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
+			process_recovery_pool: None,
 			restoration_pool: self.restoration_pool.clone(),
 			scratch_upload_pool: self.scratch_upload_pool.clone(),
 			scratch_upload_slots: self.scratch_upload_slots.clone(),
@@ -743,10 +810,15 @@ impl Store {
 		})
 	}
 
-	/// Transaction recovery needs independent control capacity even while
-	/// ordinary work retains visibility leases. Other isolated workers share
-	/// the node's visibility pool instead of multiplying idle connections.
+	/// Use independent Recovery capacity for maintenance data operations.
+	/// State transitions and visibility locks still use the process Control pool.
 	pub async fn recovery_pool(&self) -> Result<Self> {
+		if let Some(pool) = &self.process_recovery_pool {
+			return Ok(Self {
+				pool: pool.clone(),
+				..self.clone()
+			});
+		}
 		let pool = self
 			.pool
 			.options()
@@ -768,6 +840,7 @@ impl Store {
 			pool: Pool::from(pool)
 				.with_memory_recovery(self.pool.memory_recovery())
 				.with_dashboard_policy(self.pool.dashboard_policy()),
+			process_recovery_pool: None,
 			restoration_pool: self.restoration_pool.clone(),
 			scratch_upload_pool: self.scratch_upload_pool.clone(),
 			scratch_upload_slots: self.scratch_upload_slots.clone(),
@@ -2583,6 +2656,8 @@ impl Store {
 					.await?;
 				}
 				Ok(ThreadSnapshot {
+					next_event_cursor: None,
+					partial: false,
 					thread: ThreadRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
 						.await?

@@ -3,9 +3,7 @@ import { useRef, useState } from "react";
 import { AgentPluginSummary } from "./agent-plugin-summary";
 import { AgentPluginServerSettings } from "./agent-plugin-server-settings";
 import {
-  MAX_AGENT_PLUGINS,
   agentPlugins,
-  canAttach,
   pluginSettings,
   readImport,
   withPlugin,
@@ -46,7 +44,6 @@ export function AgentPluginImport({
   const attached = agentPlugins({ kind: "agent", config }) ?? [];
   const name = imported?.reference.name;
   const replaces = attached.some((plugin) => plugin.name === name);
-  const room = name !== undefined && canAttach(config, name);
 
   const load = async (pluginPath?: string) => {
     const current = ++request.current;
@@ -166,7 +163,7 @@ export function AgentPluginImport({
             variant="outline"
             type="button"
             className="justify-self-start"
-            disabled={!room}
+            disabled={name === undefined}
             onClick={() => {
               change(withPlugin(config, imported.reference));
               setImported(null);
@@ -174,13 +171,12 @@ export function AgentPluginImport({
           >
             {t(replaces ? "agentPluginReplace" : "agentPluginAdd")}
           </Button>
-          {!room && <Hint>{t("agentPluginLimit")}</Hint>}
         </div>
       )}
       {attached.length > 0 && (
         <div className="grid min-w-0 gap-1.5">
           <span className="text-xs font-semibold text-foreground">
-            {t("agentPluginAttached")} ({attached.length}/{MAX_AGENT_PLUGINS})
+            {t("agentPluginAttached")} ({attached.length})
           </span>
           <ul className="grid min-w-0 gap-2">
             {attached.map((plugin) => (

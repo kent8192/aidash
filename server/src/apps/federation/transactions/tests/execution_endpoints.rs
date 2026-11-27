@@ -278,7 +278,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	assert!(refused.get("artifacts").is_none(), "{refused}");
 }
 
-/// What the participant at `node` receives (ADR 0146): sealed with the seed
+/// What the participant at `node` receives (ADR 0151): sealed with the seed
 /// the coordinator stored, or with a fixed seed when none admitted it.
 async fn share_for(
 	coordinator: &aidash_server::federation::Federation,

@@ -559,7 +559,7 @@ async fn peer_preflight(source: &Node, target: &Node, manifest: &Manifest) -> (u
 }
 
 /// Every participant that recorded `manifest` holds only its own part
-/// (ADR 0146): no other participant's mutation reached its records.
+/// (ADR 0151): no other participant's mutation reached its records.
 async fn assert_only_own_parts(nodes: &[&Node], manifest: &Manifest) {
 	use aidash_server::apps::federation::transactions::models::AtomicParticipant;
 	use reinhardt::db::orm::Model;

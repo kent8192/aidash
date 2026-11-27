@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
 	agent_plugin::{
-		AgentPluginRef, MAX_AGENT_PLUGINS, PinnedAgentPlugin,
+		AgentPluginRef, PinnedAgentPlugin,
 		fixtures::{SOURCE, plugin, reference},
 	},
 	capabilities::skills,
@@ -282,16 +282,14 @@ fn a_definition_records_its_plugins_and_the_settings_view_returns_them() {
 	assert_eq!(serde_json::to_value(&config).unwrap(), stored);
 }
 
-#[rstest]
-#[case::at_the_limit(MAX_AGENT_PLUGINS, true)]
-#[case::past_the_limit(MAX_AGENT_PLUGINS + 1, false)]
-fn an_agent_takes_in_a_bounded_number_of_plugins(#[case] count: usize, #[case] accepted: bool) {
+#[test]
+fn an_agent_can_attach_more_than_eight_plugins() {
 	let mut definition = agent();
-	definition.agent_plugins = (0..count)
+	definition.agent_plugins = (0..9)
 		.map(|n| reference(&format!("plugin-{n}"), &[]))
 		.collect();
 
-	assert_eq!(definition.validate().is_ok(), accepted);
+	definition.validate().unwrap();
 }
 
 #[test]

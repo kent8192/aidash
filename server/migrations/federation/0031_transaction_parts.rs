@@ -1,6 +1,6 @@
 // reinhardt-migration-source: 1
 //! A coordinator keeps the seed that seals every participant's part (#1107,
-//! ADR 0146). Former journals hold whole manifests and no seed, so they are
+//! ADR 0151). Former journals hold whole manifests and no seed, so they are
 //! discarded first: Aidash is undeployed, and new cross-Deployment submissions
 //! were refused while that shape was current. Changing rows has no Reinhardt
 //! operation, so the statements are Reinhardt Query output of

@@ -32,6 +32,9 @@ impl EventOutbox for Outbox {
 }
 #[async_trait]
 impl EventOutboxBatch for Batch {
+	fn publication_pool_size(&self) -> usize {
+		self.pool.usage().max as usize
+	}
 	fn events(&self) -> Vec<Event> {
 		self.records.iter().cloned().map(Event::from).collect()
 	}

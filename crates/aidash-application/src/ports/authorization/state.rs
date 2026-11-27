@@ -1,9 +1,9 @@
 //! Authorized state pages share one live policy snapshot and transaction.
 use super::visibility::RowOutcome;
 use crate::Result;
-use aidash_domain::unconfirmed::Tally;
+use crate::authorization::projection::EventRead;
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
+	Artifact, Conversation, HumanRequest, RunInspection, RunMetadata, Task, Thread,
 	policy::Resource, registry::Entry, run_state::RawRun, threads::TaskPage,
 };
 use async_trait::async_trait;
@@ -40,7 +40,8 @@ pub trait ThreadStateScope: Send + RowOutcome {
 	async fn conversation_candidates(&mut self, node: Option<&str>) -> Result<Vec<Conversation>>;
 	/// The latest visible events, and the events left out because a Node did
 	/// not answer (#770).
-	async fn latest_visible_events(&mut self, node: Option<&str>) -> Result<(Vec<Event>, Tally)>;
+	async fn latest_visible_events(&mut self, node: Option<&str>, before: i64)
+	-> Result<EventRead>;
 	async fn prepare_tasks(&mut self, _tasks: &[Task]) -> Result<()> {
 		Ok(())
 	}

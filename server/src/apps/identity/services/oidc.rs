@@ -185,6 +185,7 @@ pub async fn refresh_active(
 	aidash_runtime::dashboard::refresh_active(
 		std::sync::Arc::new(crate::bootstrap::dashboard_authority(&f)),
 		stopping,
+		f.store.pool.usage().max as usize,
 	)
 	.await
 	.map_err(Into::into)

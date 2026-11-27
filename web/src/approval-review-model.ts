@@ -7,6 +7,22 @@ import type {
 } from "./generated/models";
 import { restrictionRequest } from "./catalog-approval-model.ts";
 
+export async function readApprovalRequests(
+  read: (offset: number) => Promise<{
+    requests: CatalogApprovalRequestView[];
+    next_offset?: number | null;
+  }>,
+) {
+  const requests: CatalogApprovalRequestView[] = [];
+  let offset: number | null = 0;
+  while (offset !== null) {
+    const page = await read(offset);
+    requests.push(...page.requests);
+    offset = page.next_offset ?? null;
+  }
+  return { requests };
+}
+
 export type RestrictionEdits = Record<string, CatalogRestriction | null>;
 
 /** Visible consumers are qualified subjects returned by the review. */

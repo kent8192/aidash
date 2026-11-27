@@ -1055,6 +1055,9 @@ async fn fire(
 			return Ok(Fired::Nothing);
 		};
 		claimed = Some((claim.clone(), duty.revision));
+		if let Some(mark) = claim.skipped_mark() {
+			skipped_tick(lease.tx(), tenant, &duty, due, &mark, now).await?;
+		}
 		// While the previous Task is open the tick is skipped: the default
 		// a Router may later replace (#1011).
 		let skip = if claim.late {
@@ -1066,7 +1069,7 @@ async fn fire(
 		};
 		if let Some(reason) = skip {
 			advance(lease.tx(), tenant, &duty, &claim, now).await?;
-			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, claim.scheduled_at, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
 		// The Requester must still be able to register it and start Tasks
@@ -1129,12 +1132,12 @@ async fn fire(
 		{
 			let reason = format!("{}: {}", duties::skip::LIMIT, refusal.code);
 			advance(lease.tx(), tenant, &duty, &claim, now).await?;
-			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, claim.scheduled_at, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
 		if let Some(reason) = budget_skip(&mut lease, tenant, &duty, now).await? {
 			advance(lease.tx(), tenant, &duty, &claim, now).await?;
-			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, claim.scheduled_at, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
 		let task = start(f, &mut lease, &duty, (claim.scheduled_at, "")).await?;
@@ -1212,7 +1215,7 @@ async fn skipped_tick(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	duty: &Duty,
-	claim: &Claim,
+	scheduled_at: DateTime<Utc>,
 	reason: &str,
 	now: DateTime<Utc>,
 ) -> Result<()> {
@@ -1223,7 +1226,7 @@ async fn skipped_tick(
 		&Tick {
 			id: Uuid::new_v4(),
 			duty_id: duty.id,
-			scheduled_at: claim.scheduled_at,
+			scheduled_at,
 			recorded_at: now,
 			status: TickStatus::Skipped,
 			reason: Some(reason.to_owned()),
@@ -1265,6 +1268,9 @@ async fn record_miss(
 			Miss::Stop(_, reason, status) => (*status, reason.clone()),
 		};
 		if let Some(claim) = claim {
+			if let (Some(due), Some(mark)) = (duty.next_scheduled_at, claim.skipped_mark()) {
+				skipped_tick(&mut tx, tenant, &duty, due, &mark, now).await?;
+			}
 			duty.next_scheduled_at = claim.next;
 		}
 		match miss {

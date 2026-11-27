@@ -147,6 +147,9 @@ tolerations: []
 affinity: {}
 
 database:
+  # Match PostgreSQL max_connections. Default matches the GCP chart's 8 GiB
+  # limit, 256 MiB shared_buffers and 10 MiB measured active backend allowance.
+  maxConnections: 588
   # Longest a server or worker statement may run, lock waits included; 0 turns
   # it off. ADR 0113 lists the statements that are exempt and why.
   statementTimeoutSeconds: 300

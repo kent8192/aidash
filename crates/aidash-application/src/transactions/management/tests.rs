@@ -238,7 +238,7 @@ async fn list_suppresses_only_existing_disclosure_failures(
 		.unwrap()
 		.denials
 		.insert(Uuid::from_u128(1), category);
-	assert!(list(&repository, &identity).await.unwrap().is_empty());
+	assert!(list(&repository, &identity, 16).await.unwrap().is_empty());
 	assert_eq!(
 		repository.calls(),
 		["candidates:subject", "transaction.read"]
@@ -262,7 +262,7 @@ async fn unexpected_contract_and_database_failures_are_not_hidden(
 		.unwrap()
 		.denials
 		.insert(Uuid::from_u128(1), category);
-	let error = list(&repository, &identity).await.unwrap_err();
+	let error = list(&repository, &identity, 16).await.unwrap_err();
 	assert_eq!(error.to_string(), failure(category).to_string());
 	if category == "opaque" {
 		assert!(matches!(error, Error::Port(_)));
@@ -286,7 +286,7 @@ async fn keyset_paging_fills_200_visible_rows_in_order_with_eight_live_checks(
 			.map(|id| (Uuid::from_u128(id), "forbidden"))
 			.collect();
 	}
-	let rows = list(&repository, &identity).await.unwrap();
+	let rows = list(&repository, &identity, 16).await.unwrap();
 	assert_eq!(
 		rows.iter().map(|row| row.id).collect::<Vec<_>>(),
 		(101..=300).rev().map(Uuid::from_u128).collect::<Vec<_>>()

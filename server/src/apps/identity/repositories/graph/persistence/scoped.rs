@@ -231,14 +231,14 @@ pub(super) async fn activity(
 	authority: &mut GraphAuthority<'_>,
 	options: &GraphOptions,
 	nodes: &[GraphNode],
-	window_end: DateTime<Utc>,
+	(window_end, before): (DateTime<Utc>, Option<i64>),
 	(source_node, node): (&str, &str),
 	thread: Uuid,
-) -> Result<Vec<GraphActivity>> {
+) -> Result<(Vec<GraphActivity>, Option<i64>)> {
 	let mut visible_nodes: Vec<&GraphNode> =
 		nodes.iter().filter(|node| node.kind == "run").collect();
 	if visible_nodes.is_empty() {
-		return Ok(vec![]);
+		return Ok((vec![], None));
 	}
 	{
 		let tenant = authority.tenant().to_owned();
@@ -278,7 +278,7 @@ pub(super) async fn activity(
 		}
 		visible_nodes = allowed;
 		if visible_nodes.is_empty() {
-			return Ok(vec![]);
+			return Ok((vec![], None));
 		}
 	}
 	let ids: Vec<&str> = visible_nodes
@@ -295,8 +295,7 @@ pub(super) async fn activity(
 		.and_where(
 			Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::value(window_end)),
 		)
-		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
-		.limit(80);
+		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc);
 	if options.hours > 0 {
 		query.and_where(
 			Expr::col((Alias::new("e"), Alias::new("created_at"))).gte(Expr::value(
@@ -304,25 +303,47 @@ pub(super) async fn activity(
 			)),
 		);
 	}
-	let sql = query.to_string(PostgresQueryBuilder);
-	let request = aidash_server::database::query_as::<Event>(&sql);
 	// These run nodes already passed admission binding and all current read gates.
-	// Do not re-enter local-thread authorization for their source-owned UUIDs.
-	let events = request.fetch_all(authority.connection()).await?;
-	Ok(events
-		.into_iter()
-		.filter_map(|event| {
-			let reference = event_reference(&event, node)?;
-			visible_nodes
-				.iter()
-				.any(|node| node.id == reference)
-				.then_some(GraphActivity {
+	let mut activity = Vec::new();
+	let mut cursor = before;
+	let mut scanned = 0;
+	loop {
+		let size = (super::EVENT_SCAN_LIMIT - scanned).min(super::ACTIVITY_PAGE);
+		let mut page = query.clone();
+		if let Some(sequence) = cursor {
+			page.and_where(
+				Expr::col((Alias::new("e"), Alias::new("sequence"))).lt(Expr::value(sequence)),
+			);
+		}
+		let sql = page.limit(size as u64 + 1).to_string(PostgresQueryBuilder);
+		let mut events = aidash_server::database::query_as::<Event>(&sql)
+			.fetch_all(authority.connection())
+			.await?
+			.into_iter()
+			.peekable();
+		for _ in 0..size {
+			let Some(event) = events.next() else {
+				break;
+			};
+			cursor = Some(event.sequence);
+			scanned += 1;
+			if let Some(reference) = event_reference(&event, node)
+				&& visible_nodes.iter().any(|node| node.id == reference)
+			{
+				activity.push(GraphActivity {
 					kind: event.kind,
 					at: event.created_at,
 					reference,
-				})
-		})
-		.collect())
+				});
+			}
+			if activity.len() == super::ACTIVITY_PAGE || scanned == super::EVENT_SCAN_LIMIT {
+				return Ok((activity, cursor.filter(|_| events.peek().is_some())));
+			}
+		}
+		if events.peek().is_none() {
+			return Ok((activity, None));
+		}
+	}
 }
 
 use reinhardt::query::QueryStatementBuilder as _;

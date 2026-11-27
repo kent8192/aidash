@@ -181,6 +181,7 @@ pub async fn project(
 			GraphCursor {
 				kind: 0,
 				offset: 0,
+				activity_before: None,
 				generation: generation.clone(),
 				binding: binding.clone(),
 				window_end: now,
@@ -188,6 +189,8 @@ pub async fn project(
 			}
 		}
 	};
+	let activity_start = cursor.clone();
+	cursor.activity_before = None;
 	let mut nodes: Vec<GraphNode> = Vec::new();
 	let mut records: Vec<Candidate> = Vec::new();
 	let mut bytes = 0_usize;
@@ -299,7 +302,22 @@ pub async fn project(
 		}
 	}
 	let edges = build_edges(&node_id, &records, &nodes, options);
-	let activity = scope.activity(options, &nodes, cursor.window_end).await?;
+	let (activity, activity_before) = scope
+		.activity(
+			options,
+			&nodes,
+			cursor.window_end,
+			activity_start.activity_before,
+		)
+		.await?;
+	let activity_cursor = activity_before
+		.map(|before| {
+			scope.encode_cursor(&GraphCursor {
+				activity_before: Some(before),
+				..activity_start
+			})
+		})
+		.transpose()?;
 	if scope.generation(options).await? != generation {
 		return Err(Error::Conflict("graph projection changed".into()));
 	}
@@ -310,6 +328,8 @@ pub async fn project(
 		nodes,
 		edges,
 		activity,
+		activity_more: activity_cursor.is_some(),
+		activity_cursor,
 		unconfirmed: unconfirmed.into_entries(),
 		next_cursor,
 	};

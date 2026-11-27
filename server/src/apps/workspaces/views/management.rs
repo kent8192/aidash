@@ -51,8 +51,9 @@ pub async fn thread_get(
 	#[inject] service: Depends<CollaborationManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
+	Query(query): Query<crate::apps::workspaces::serializers::management::ThreadSnapshotQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.thread_get(actor, id).await)
+	crate::http::json(service.thread_get(actor, id, query.events_before).await)
 }
 
 #[patch("/api/threads/{id}", name = "thread-update", auth = "protected")]

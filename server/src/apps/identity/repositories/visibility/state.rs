@@ -5,7 +5,7 @@ use aidash_application::{
 	ports::authorization::state::{ThreadListingScope, ThreadStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
+	Artifact, Conversation, HumanRequest, RunInspection, RunMetadata, Task, Thread,
 	policy::Resource,
 	registry::{Entry, Search},
 	run_state::RawRun,
@@ -101,10 +101,12 @@ impl ThreadStateScope for StateReads<'_> {
 	async fn latest_visible_events(
 		&mut self,
 		node: Option<&str>,
-	) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
+		before: i64,
+	) -> Result<aidash_application::authorization::projection::EventRead> {
 		super::projection::state_events(
 			&mut crate::bootstrap::run_visibility_scope(self.access),
 			node,
+			before,
 		)
 		.await
 	}

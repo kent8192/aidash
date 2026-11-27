@@ -430,8 +430,9 @@
     },
     "database": {
       "type": "object",
-      "required": ["statementTimeoutSeconds"],
+      "required": ["maxConnections", "statementTimeoutSeconds"],
       "properties": {
+        "maxConnections": { "type": "integer", "minimum": 1 },
         "statementTimeoutSeconds": {
           "type": "integer",
           "minimum": 0,

@@ -26,9 +26,14 @@ pub(crate) async fn visible(access: &mut Access, event: &Event, node: &str) -> R
 pub(crate) async fn response(
 	store: &Store,
 	identity: &SubjectIdentity,
-	events: Vec<Event>,
-	mut unconfirmed: aidash_domain::unconfirmed::Tally,
+	page: aidash_application::authorization::projection::EventRead,
 ) -> Result<Response> {
+	let aidash_application::authorization::projection::EventRead {
+		events,
+		cursor,
+		partial,
+		mut unconfirmed,
+	} = page;
 	let mut access = Access::begin(store, identity).await?;
 	access.lists = true;
 	// Distribution precedes catalog reads; repeat candidate filtering at handoff.
@@ -45,6 +50,8 @@ pub(crate) async fn response(
 		unconfirmed.merge(left_out);
 		crate::apps::execution::serializers::management::EventPage {
 			events,
+			cursor,
+			partial,
 			unconfirmed: unconfirmed.into_entries(),
 		}
 	})

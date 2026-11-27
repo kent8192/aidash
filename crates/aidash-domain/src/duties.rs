@@ -39,7 +39,7 @@ pub const MAX_JITTER_SECONDS: i64 = 30;
 pub const TITLE_MAX: usize = 200;
 pub const MISSION_MAX: usize = 16_000;
 pub const PROCEDURE_MAX: usize = 16_000;
-/// Missed fire times walked while catching up after downtime.
+/// Bound scheduler counting work per Duty; the history marks larger counts as a lower bound.
 const CATCH_UP_LIMIT: usize = 100_000;
 
 /// When a Duty fires.
@@ -540,6 +540,8 @@ pub struct Tick {
 /// What the scheduler does with a Duty whose next tick is due.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
+	/// Earlier ticks folded into this one, saturated one above the history threshold.
+	pub skipped: usize,
 	/// The tick handled: the latest scheduled time not after `now`. Earlier
 	/// ticks missed while Aidash was down are folded into it, so a Duty
 	/// runs once, late, rather than once per missed tick.
@@ -548,6 +550,18 @@ pub struct Claim {
 	pub late: bool,
 	/// The scheduled time after it, if the trigger fires again.
 	pub next: Option<DateTime<Utc>>,
+}
+
+impl Claim {
+	pub fn skipped_mark(&self) -> Option<String> {
+		match self.skipped {
+			0 => None,
+			count if count > CATCH_UP_LIMIT => {
+				Some(format!("catch_up: >= {CATCH_UP_LIMIT} skipped ticks"))
+			}
+			count => Some(format!("catch_up: {count} skipped ticks")),
+		}
+	}
 }
 
 impl Timing {
@@ -560,23 +574,44 @@ impl Timing {
 		let Some(trigger) = &self.trigger else {
 			return Ok(None);
 		};
-		let mut scheduled_at = due;
-		let mut next = trigger.next_after(self.anchor, scheduled_at)?;
-		let mut walked = 0;
-		while let Some(candidate) = next.filter(|candidate| *candidate <= now) {
-			walked += 1;
-			if walked > CATCH_UP_LIMIT {
-				// Never loop without bound on a corrupt row: jump to now.
-				next = trigger.next_after(self.anchor, now)?;
-				scheduled_at = now;
-				break;
+		let (scheduled_at, skipped) = match trigger {
+			Trigger::Interval { every_seconds }
+				if (1..=MAX_INTERVAL_SECONDS).contains(every_seconds) =>
+			{
+				let elapsed = (now - self.anchor).num_seconds();
+				let scheduled =
+					self.anchor + Duration::seconds(elapsed / every_seconds * every_seconds);
+				if scheduled < due {
+					return Err(Error::Invalid(
+						"stored Duty tick precedes no scheduled interval".into(),
+					));
+				}
+				let skipped = (scheduled - due).num_seconds() / every_seconds;
+				(scheduled, skipped.min(CATCH_UP_LIMIT as i64 + 1) as usize)
 			}
-			scheduled_at = candidate;
-			next = trigger.next_after(self.anchor, candidate)?;
-		}
+			Trigger::Interval { .. } => {
+				return Err(Error::Invalid(
+					"a Duty's interval must be between one second and one year".into(),
+				));
+			}
+			Trigger::Cron {
+				expression,
+				time_zone,
+			} => cron::Cron::parse(expression)?
+				.catch_up(cron::time_zone(time_zone)?, due, now, CATCH_UP_LIMIT + 1)
+				.ok_or_else(|| {
+					Error::Invalid(
+						"no scheduled Duty tick between the stored due time and now".into(),
+					)
+				})?,
+		};
+		let next = trigger.next_after(self.anchor, now)?;
+		let tolerance = Duration::try_seconds(self.max_lateness_seconds)
+			.ok_or_else(|| Error::Invalid("invalid Duty lateness duration".into()))?;
 		Ok(Some(Claim {
+			skipped,
 			scheduled_at,
-			late: (now - scheduled_at).num_seconds() > self.max_lateness_seconds,
+			late: now - scheduled_at > tolerance,
 			next,
 		}))
 	}

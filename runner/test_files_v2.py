@@ -134,6 +134,21 @@ def test_search_reads_large_text_files_in_bounded_chunks_and_skips_binary(tmp_pa
     assert result == {'matches': [{'path': 'large', 'line': 600001, 'text': 'target'}], 'truncated': False}
 
 
+def test_search_marks_a_shortened_line_even_when_all_matches_fit(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    snippet = 'é' * 2000
+    (scratch / 'long.txt').write_text(snippet + ' target\n', encoding='utf-8')
+    service = FileService(scratch, tmp_path / 'state')
+
+    result = service.search({'pattern': 'target', 'regex': False, 'max_results': 10})
+
+    assert result == {
+        'matches': [{'path': 'long.txt', 'line': 1, 'text': snippet, 'truncated': True}],
+        'truncated': False,
+    }
+
+
 def test_gitignore_parent_negation_and_character_classes(tmp_path):
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
@@ -239,3 +254,17 @@ def test_a_sync_manifest_of_a_deleted_path_lists_nothing(tmp_path):
         service.manifest(request)
     assert service.manifest(dict(request, missing_ok=True)) == {
         'files': [], 'skipped_symlinks': [], 'truncated': False}
+
+def test_manifest_save_discovers_more_than_the_previous_file_count_cap(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    for index in range(4097):
+        (scratch / str(index)).touch()
+    service = FileService(scratch, tmp_path / 'state')
+    request = {'root': '.', 'ignore_files': [], 'exclude': [], 'include': []}
+
+    manifest = service.manifest(request)
+
+    assert len(manifest['files']) == 4097
+    assert not manifest['truncated']
+    assert service.manifest({**request, 'max_files': 4})['truncated']

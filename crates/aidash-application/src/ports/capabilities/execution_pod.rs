@@ -33,6 +33,10 @@ pub enum ExecutionPodErrorCode {
 	SessionReset,
 	InvalidPath,
 	PreviewStartFailed,
+	WatcherStartFailed,
+	WheelDiskFull,
+	RunnerDiskFull,
+	PodProcessLimit,
 	/// The operation id was refused before the Runner accepted it.
 	CommandRefused,
 	Unknown(String),
@@ -68,6 +72,10 @@ impl From<&str> for ExecutionPodErrorCode {
 			"session_reset" => Self::SessionReset,
 			"invalid_path" => Self::InvalidPath,
 			"preview_start_failed" => Self::PreviewStartFailed,
+			"pod_process_limit" => Self::PodProcessLimit,
+			"runner_disk_full" => Self::RunnerDiskFull,
+			"wheel_disk_full" => Self::WheelDiskFull,
+			"watcher_start_failed" => Self::WatcherStartFailed,
 			"command_refused" => Self::CommandRefused,
 			other => Self::Unknown(other.into()),
 		}
@@ -104,6 +112,10 @@ impl std::fmt::Display for ExecutionPodErrorCode {
 			Self::SessionReset => "session_reset",
 			Self::InvalidPath => "invalid_path",
 			Self::PreviewStartFailed => "preview_start_failed",
+			Self::PodProcessLimit => "pod_process_limit",
+			Self::RunnerDiskFull => "runner_disk_full",
+			Self::WheelDiskFull => "wheel_disk_full",
+			Self::WatcherStartFailed => "watcher_start_failed",
 			Self::CommandRefused => "command_refused",
 			Self::Unknown(value) => value,
 		};
@@ -287,6 +299,8 @@ pub struct FileMatch {
 	pub path: String,
 	pub line: u64,
 	pub text: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub truncated: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileSearchResult {
@@ -328,7 +342,9 @@ pub struct FileManifestRequest {
 	pub ignore_files: Vec<String>,
 	pub exclude: Vec<String>,
 	pub include: Vec<String>,
-	pub max_files: u32,
+	/// Search asks for a bounded listing; saves need the complete inventory.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_files: Option<u32>,
 	/// A `root` that does not exist lists no files instead of failing, so a
 	/// sync save can select a deleted path.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -500,6 +516,13 @@ mod tests {
 			(
 				"preview_start_failed",
 				ExecutionPodErrorCode::PreviewStartFailed,
+			),
+			("pod_process_limit", ExecutionPodErrorCode::PodProcessLimit),
+			("runner_disk_full", ExecutionPodErrorCode::RunnerDiskFull),
+			("wheel_disk_full", ExecutionPodErrorCode::WheelDiskFull),
+			(
+				"watcher_start_failed",
+				ExecutionPodErrorCode::WatcherStartFailed,
 			),
 			("command_refused", ExecutionPodErrorCode::CommandRefused),
 		] {

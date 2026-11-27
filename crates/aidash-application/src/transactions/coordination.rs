@@ -143,7 +143,7 @@ impl Coordinator {
 		self.status(id).await
 	}
 
-	/// Send one participant its own share, never the manifest (ADR 0146).
+	/// Send one participant its own share, never the manifest (ADR 0151).
 	async fn send(
 		&self,
 		state: &Status,

@@ -223,8 +223,8 @@ impl TenantDeletions {
 		let steward = self.restorer(&headers, &tenant).await?;
 		let f = &self.runtime;
 		let scope = TenancyScope::tenant(&tenant)?;
-		// The dedicated claim pool cannot exhaust retirement's control pool.
-		// Policy and deletion locks stay in their own short transactions.
+		// The serialization claim borrows Work capacity. Retirement keeps its
+		// separate Control capacity while the claim is held.
 		let mut serialization = f.store.restoration_pool.begin(&scope).await?;
 		tenant_deletions::lock_restore(&mut serialization, &tenant).await?;
 		let result = async {

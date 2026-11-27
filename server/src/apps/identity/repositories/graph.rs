@@ -81,12 +81,14 @@ impl GraphProjectionScope for Projection<'_, '_> {
 		options: &GraphOptions,
 		nodes: &[GraphNode],
 		window_end: i64,
-	) -> Result<Vec<GraphActivity>> {
+		before: Option<i64>,
+	) -> Result<(Vec<GraphActivity>, Option<i64>)> {
 		graph::project_activity(
 			self.authority,
 			options,
 			nodes,
 			window_end,
+			before,
 			(self.source_node, self.node),
 		)
 		.await

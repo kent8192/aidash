@@ -19,7 +19,8 @@ pub async fn publish(outbox: &dyn EventOutbox, broker: &dyn EventPublisher) -> R
 			}
 		}
 	}))
-	.buffer_unordered(8);
+	// Leave half of the publication pool for other work.
+	.buffer_unordered((batch.publication_pool_size() / 2).max(1));
 	let mut published = 0;
 	while let Some(result) = attempts.next().await {
 		published += result?;

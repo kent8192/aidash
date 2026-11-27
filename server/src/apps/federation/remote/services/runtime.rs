@@ -210,9 +210,7 @@ impl Federation {
 		.map_err(Into::into)
 	}
 
-	/// Workers need reserved database capacity to finish an effect while API
-	/// revocations wait for its authority lease. Embedded runners must use this
-	/// separate pool too; otherwise waiting API requests can exhaust the pool.
+	/// Reuse process pools when moving work to an embedded worker.
 	pub async fn for_workers(&self) -> Result<Self> {
 		let store = self.store.isolated_pool().await?;
 		Ok(Self {
@@ -673,6 +671,8 @@ impl Home {
 				.await
 		} else {
 			let mut snapshot = ThreadSnapshot {
+				next_event_cursor: None,
+				partial: false,
 				thread: self.command("snapshot_thread", json!({})).await?,
 				tasks: self.snapshot_collection("tasks").await?,
 				artifacts: self.snapshot_collection("artifacts").await?,

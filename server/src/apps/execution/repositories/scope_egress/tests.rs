@@ -527,12 +527,16 @@ async fn reversing_connection_accounting_restores_the_scoped_receipt_table(
 		.get_migration("execution", "0166_scope_connection_debits")
 		.await
 		.unwrap();
+	let plugin_data_bounds = source
+		.get_migration("execution", "0167_plugin_data_file_count")
+		.await
+		.unwrap();
 	let owner = database.owner_connection.clone();
 	let history = source.all_migrations().await.unwrap();
 	let mut executor =
 		DatabaseMigrationExecutor::new(owner.clone()).with_migration_history(history.clone());
 	executor
-		.rollback_migrations(std::slice::from_ref(&migration))
+		.rollback_migrations(&[migration, plugin_data_bounds])
 		.await
 		.unwrap();
 	let sql = owner.into_postgres().unwrap();

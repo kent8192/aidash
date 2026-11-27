@@ -78,6 +78,9 @@ async fn requester<R: HomeRepository>(
 	.await;
 	finish(scope, result).await
 }
+// A remote status pass can query a page of Home grants concurrently.
+const HOME_GRANT_PAGE: usize = 25;
+
 pub async fn message<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
@@ -632,7 +635,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			execution,
 		})
 	}))
-	.buffered(4)
+	.buffered(HOME_GRANT_PAGE)
 	.collect()
 	.await;
 	let mut result: Vec<Status> = results.into_iter().collect::<Result<_>>()?;
@@ -687,7 +690,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				},
 			}))
 		}))
-		.buffered(4)
+		.buffered(HOME_GRANT_PAGE)
 		.collect()
 		.await;
 	match holders.into_iter().collect::<Result<Vec<_>>>() {

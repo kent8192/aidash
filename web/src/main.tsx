@@ -52,11 +52,12 @@ const Configuration = lazy(() =>
   })),
 );
 
-import type { TenantState, HumanRequest, Thread } from "./types";
+import type { TenantState, HumanRequest, MeshEvent, Thread } from "./types";
 import { mergeWindow } from "./window-pages";
 import { useWindowPages } from "./use-window-pages";
 
 const noThreads: Thread[] = [];
+const noEvents: MeshEvent[] = [];
 
 /** One page of a Node's Threads beyond the `/api/state` window. */
 async function readThreadPage(
@@ -529,6 +530,25 @@ function Dashboard({
     readPage: (cursor, signal) => readHumanPage(selectedNode, cursor, signal),
     none: noHumanRequests,
   });
+  const eventPages = useWindowPages<MeshEvent>({
+    key: pagesKey,
+    windowCursor: state.data?.next_cursors.events ?? null,
+    freshAt: state.dataUpdatedAt,
+    readPage: async (cursor, signal) => {
+      const params = new URLSearchParams({ events_before: cursor });
+      if (selectedNode) params.set("node", selectedNode);
+      const response = await apiFetch<TenantState>(`/api/state?${params}`, {
+        signal,
+      });
+      return {
+        items: response.events,
+        next_cursor: response.next_cursors.events,
+      };
+    },
+    none: noEvents,
+  });
+  const olderEvents = eventPages.older;
+  const eventCursor = eventPages.cursor;
   const olderHumans = humanPages.older;
   const humanCursor = humanPages.cursor;
   // State is scoped to the selected Node.
@@ -538,13 +558,23 @@ function Dashboard({
     return {
       ...fresh,
       threads: mergeWindow(fresh.threads, olderThreads),
+      events: mergeWindow(fresh.events, olderEvents),
       next_cursors: {
         ...fresh.next_cursors,
         threads: threadCursor,
+        events: eventCursor,
         human_requests: humanCursor,
       },
     };
-  }, [state.isError, state.data, olderThreads, threadCursor, humanCursor]);
+  }, [
+    state.isError,
+    state.data,
+    olderThreads,
+    threadCursor,
+    humanCursor,
+    olderEvents,
+    eventCursor,
+  ]);
   const selectedThread = useQuery({
     queryKey: ["thread", route.channel],
     queryFn: () => threadGet(route.channel),
@@ -1416,6 +1446,9 @@ function Dashboard({
                   runs={runs}
                   channel={currentChannel}
                   focus={route.focus}
+                  loadOlderEvents={() => void eventPages.loadMore()}
+                  loadingOlderEvents={eventPages.loading}
+                  olderEventsError={eventPages.error}
                   setFocus={(focus) => go("graph", { focus })}
                   visitChannel={(channel) => go("collaboration", { channel })}
                   open={open}

@@ -61,3 +61,26 @@ async fn an_exempt_statement_has_no_deadline() {
 	assert_eq!(result.unwrap(), 7);
 	assert_eq!(started.elapsed(), long);
 }
+
+#[rstest]
+#[case(sqlx::Error::PoolTimedOut, Some("database_pool_busy"))]
+#[case(sqlx::Error::PoolClosed, None)]
+fn only_pool_acquire_timeout_returns_the_named_busy_refusal(
+	#[case] cause: sqlx::Error,
+	#[case] code: Option<&str>,
+) {
+	let framework = DatabaseError::new(DatabaseErrorKind::Timeout, "pool acquire error")
+		.with_source(cause)
+		.into();
+	let error = named_acquire_error(Some("control"), 16, framework);
+	let response = crate::Error::from(error).http_response();
+	let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+
+	assert_eq!(body["code"].as_str(), code);
+	if code.is_some() {
+		assert_eq!(response.status, reinhardt::StatusCode::SERVICE_UNAVAILABLE);
+		let message = body["error"].as_str().unwrap();
+		assert!(message.contains("control"));
+		assert!(message.contains("16 connections"));
+	}
+}

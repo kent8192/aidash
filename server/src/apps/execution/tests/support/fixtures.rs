@@ -515,7 +515,7 @@ pub async fn map_subject(
 	assert_eq!(status, 200, "{mapping}");
 }
 
-/// What the participant at `node` receives for `manifest` (ADR 0146): sealed
+/// What the participant at `node` receives for `manifest` (ADR 0151): sealed
 /// with the seed the coordinator stored, or with a fixed seed when no
 /// coordinator admitted it.
 #[allow(dead_code)]

@@ -53,23 +53,14 @@ fn metadata(attachment: &SkillAttachment) -> Result<SkillMetadata> {
 	})
 }
 
-/// The most direct Skills one Run pins, from any origin.
-pub const MAX_RUN_SKILLS: usize = 32;
-
 pub fn content_digest(a: &SkillAttachment) -> String {
 	crate::registry::rules::digest(&json!({"instructions":a.instructions,"files":a.files}))
 }
 
 pub fn validate(a: &SkillAttachment) -> Result<SkillMetadata> {
-	if a.origin.is_empty()
-		|| a.origin.len() > 2048
-		|| a.instructions.len() > 65536
-		|| a.instructions.contains('\0')
-		|| a.files.len() + 1 > 64
-	{
+	if a.origin.is_empty() || a.origin.len() > 2048 || a.instructions.contains('\0') {
 		return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
 	}
-	let mut total = a.instructions.len();
 	let mut paths = BTreeSet::from(["SKILL.md".to_owned()]);
 	for file in &a.files {
 		if !crate::registry::rules::valid_skill_file_path(&file.path)
@@ -78,10 +69,7 @@ pub fn validate(a: &SkillAttachment) -> Result<SkillMetadata> {
 		{
 			return Err(Error::Invalid("INVALID_SKILL_PATH".into()));
 		}
-		total += file.byte_len()?;
-	}
-	if total > 256_000 {
-		return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
+		file.byte_len()?;
 	}
 	if a.digest != content_digest(a) {
 		return Err(Error::Conflict("SKILL_CONTENT_CHANGED".into()));
@@ -90,7 +78,7 @@ pub fn validate(a: &SkillAttachment) -> Result<SkillMetadata> {
 }
 
 pub fn validate_config(config: &AgentConfig) -> Result<()> {
-	if config.skill_attachments.len() > MAX_RUN_SKILLS || config.skill_roots.len() > 8 {
+	if config.skill_roots.len() > 8 {
 		return Err(Error::Invalid("SKILL_BINDING_LIMIT".into()));
 	}
 	if (!config.skill_attachments.is_empty() || !config.skill_roots.is_empty())

@@ -243,8 +243,12 @@ impl ExecutionPodRuntime for Runtime {
 				sha256: format!("{:x}", sha2::Sha256::digest(bytes)),
 			})
 			.collect();
-		let truncated = listed.len() > request.max_files as usize;
-		listed.truncate(request.max_files as usize);
+		let truncated = request
+			.max_files
+			.is_some_and(|limit| listed.len() > limit as usize);
+		if let Some(limit) = request.max_files {
+			listed.truncate(limit as usize);
+		}
 		Ok(FileManifestResult {
 			files: listed,
 			skipped_symlinks: vec![],

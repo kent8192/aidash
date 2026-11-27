@@ -28,10 +28,7 @@ pub use mcp::{
 	secret_header_valid,
 };
 pub use paths::tree_digest;
-pub use reference::{
-	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, MarketplaceSource,
-	PinnedAgentPlugin,
-};
+pub use reference::{AgentPluginRef, MAX_SOURCE_BYTES, MarketplaceSource, PinnedAgentPlugin};
 pub(crate) use settings::validate as validate_settings;
 pub use settings::{
 	MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, SECRET_HEADER, SecretForm,
