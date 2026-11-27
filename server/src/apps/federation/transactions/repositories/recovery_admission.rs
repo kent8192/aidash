@@ -15,7 +15,7 @@ use reinhardt::{
 use serde_json::json;
 use uuid::Uuid;
 
-/// A finish request carries the receiving participant's own share (ADR 0146).
+/// A finish request carries the receiving participant's own share (ADR 0151).
 fn finish(request: &RequestDigest<'_>) -> Option<Share> {
 	if request.method != "POST" || request.path != "/transactions/finish" {
 		return None;

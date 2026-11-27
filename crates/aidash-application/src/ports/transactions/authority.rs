@@ -50,7 +50,7 @@ pub trait AuthorityRepository: Send + Sync {
 	/// The Tenant that holds `node`, when `node` is a Node of this Deployment.
 	async fn node_tenant(&self, node: &str) -> Result<Option<String>>;
 	fn validate(&self, manifest: &Manifest) -> Result<()>;
-	/// The seed that seals `manifest` (ADR 0146): the same for the same
+	/// The seed that seals `manifest` (ADR 0151): the same for the same
 	/// manifest, so a resubmission matches the preflights already sent.
 	fn seed(&self, manifest: &Manifest) -> Result<String>;
 	async fn origin(&self, id: Uuid) -> Result<Option<Origin>>;

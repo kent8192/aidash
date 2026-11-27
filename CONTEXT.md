@@ -1137,7 +1137,7 @@ _Avoid_: digest, dashboard, status report (a message an Agent writes)
 A set of Thread, Task and Run changes on one or more Nodes that a coordinator Node commits on all of them or on none. The submitter's manifest names every change; only the coordinator holds it.
 _Avoid_: distributed transaction (fine in prose), saga, batch
 
-**Transaction Share** (#1107, ADR 0146):
+**Transaction Share** (#1107, ADR 0151):
 What one participant of an Atomic Transaction holds: the transaction header, every participant's Seal and only its own changes. A participant never receives another participant's changes.
 _Avoid_: manifest (the coordinator's whole list), slice
 
