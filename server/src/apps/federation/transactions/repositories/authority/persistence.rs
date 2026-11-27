@@ -47,14 +47,8 @@ pub(crate) async fn control(tx: &mut crate::database::native::Transaction) -> Re
 	Ok(())
 }
 
-pub(crate) fn control_federation(f: &Federation) -> Federation {
-	let mut f = f.clone();
-	f.store.pool = f.store.control_pool.clone();
-	f
-}
-
 pub(crate) async fn access(f: &Federation, origin: &Origin) -> Result<Access> {
-	let mut access = Access::begin(&control_federation(f).store, &origin.identity()).await?;
+	let mut access = Access::begin(&f.store, &origin.identity()).await?;
 	control(&mut access.tx).await?;
 	Ok(access)
 }
@@ -189,10 +183,10 @@ pub(crate) async fn mapped(
 	input: &Preflight,
 ) -> Result<Access> {
 	if aidash_domain::nodes::same_deployment(&input.coordinator, f.config.deployment.as_str()) {
-		return access(f, &input.origin).await;
+		return access(&f.using_control_pool(), &input.origin).await;
 	}
 	let admitted = admitted.ok_or(Error::Forbidden)?;
-	let control_runtime = control_federation(f);
+	let control_runtime = f.using_control_pool();
 	let mut access = match admitted.acting {
 		// A coordinator reserves, prepares and finishes as its Node. The subject
 		// is the one the submission's preflight bound, which its Tenant mapped.

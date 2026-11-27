@@ -4,7 +4,7 @@ use crate::{
 	Error, Result,
 	ports::transactions::{
 		TransactionAuthorityScope,
-		authority::{AuthorityRepository, ControlScope, SubmissionScope},
+		authority::{AuthorityRepository, ControlScope, SourcePurpose, SubmissionScope},
 	},
 };
 use aidash_domain::{
@@ -109,7 +109,9 @@ pub async fn submit(
 	// The same manifest always gets the same seed, so a resubmission after a
 	// crash seals it as the preflights already sent did.
 	let seed = repository.seed(manifest)?;
-	let mut scope = repository.source(&origin).await?;
+	let mut scope = repository
+		.source(&origin, SourcePurpose::Submission)
+		.await?;
 	if let Err(error) = source_checks(
 		scope.authority(),
 		manifest,
@@ -194,7 +196,7 @@ pub async fn issue(repository: &dyn AuthorityRepository, state: &Status, node: &
 		return Ok(());
 	};
 	let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
-	let mut scope = repository.source(&origin).await?;
+	let mut scope = repository.source(&origin, SourcePurpose::Protocol).await?;
 	let result = async {
 		source_checks(
 			scope.authority(),
@@ -221,7 +223,7 @@ pub async fn ticket(
 	node: &str,
 ) -> Result<Preflight> {
 	let origin = repository.origin(id).await?.ok_or(Error::Forbidden)?;
-	let mut scope = repository.source(&origin).await?;
+	let mut scope = repository.source(&origin, SourcePurpose::Protocol).await?;
 	let result = async {
 		scope.trusted(node).await?;
 		let state = scope.status(id).await?;
@@ -314,7 +316,9 @@ pub async fn manage(
 ) -> Result<()> {
 	let origin = require_owner(repository, identity, state.id).await?;
 	let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
-	let mut scope = repository.source(&Origin::from(identity)).await?;
+	let mut scope = repository
+		.source(&Origin::from(identity), SourcePurpose::Protocol)
+		.await?;
 	scope.audit(action != "transaction.read");
 	let result = async {
 		source_checks(

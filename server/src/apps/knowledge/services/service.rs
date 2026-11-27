@@ -111,7 +111,7 @@ pub async fn search(
 ) -> Result<SearchResult> {
 	store
 		.pool
-		.operation(&actor.tenancy()?, async {
+		.operation(&actor.tenancy()?, || async {
 			let mut lease = Lease::begin(store, actor, thread).await?;
 			lease.durable();
 			lease.lists();

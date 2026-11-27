@@ -24,7 +24,7 @@ use crate::{
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
-use aidash_application::federation::inbound::{Admitted, Inbound, Proof, RequestDigest, accept};
+use aidash_application::federation::inbound::{Admitted, Inbound, Proof, RequestDigest};
 use aidash_domain::{federation::route::Route, semantic::Failure};
 use http::HeaderMap;
 use reinhardt::Response;
@@ -162,7 +162,7 @@ pub(crate) async fn call(
 		path,
 		body: &bytes,
 	};
-	let admitted = match accept(
+	let admitted = match super::inbound::accept(
 		Inbound {
 			receiver: route.target.clone(),
 			sender: route.sender.clone(),
@@ -179,7 +179,7 @@ pub(crate) async fn call(
 	};
 	// Visibility fences atomic transactions for everything except their own
 	// protocol, as the peer routes do over HTTP.
-	let _visibility = if path.starts_with("/transactions/") {
+	let _visibility = if super::inbound::is_transaction_protocol(&request) {
 		None
 	} else {
 		match ReadLease::begin(&f.store).await {

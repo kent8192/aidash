@@ -14,7 +14,7 @@ use aidash_application::{
 	Result,
 	ports::transactions::{
 		TransactionAuthorityScope,
-		authority::{AuthorityRepository, ControlScope, SubmissionScope},
+		authority::{AuthorityRepository, ControlScope, SourcePurpose, SubmissionScope},
 	},
 };
 use aidash_domain::transactions::{
@@ -94,9 +94,20 @@ impl AuthorityRepository for Repository {
 			.map(|binding| binding.map(|binding| (&binding).into()))
 			.map_err(Into::into)
 	}
-	async fn source(&self, origin: &Origin) -> Result<Box<dyn ControlScope>> {
+	async fn source(
+		&self,
+		origin: &Origin,
+		purpose: SourcePurpose,
+	) -> Result<Box<dyn ControlScope>> {
 		let origin = dto::Origin::from(origin.clone());
-		Ok(self.scope(persistence::access(&self.runtime, &origin).await?))
+		let access = match purpose {
+			// A submission keeps this lease while a peer preflights in Control.
+			SourcePurpose::Submission => persistence::access(&self.runtime, &origin).await?,
+			SourcePurpose::Protocol => {
+				persistence::access(&self.runtime.using_control_pool(), &origin).await?
+			}
+		};
+		Ok(self.scope(access))
 	}
 	async fn mapped(&self, input: &Preflight) -> Result<Box<dyn ControlScope>> {
 		let input = dto::Preflight::from(input.clone());
