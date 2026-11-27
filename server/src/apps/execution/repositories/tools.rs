@@ -326,6 +326,18 @@ impl ToolOperations for Operations {
 		))
 	}
 	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact> {
+		if input.kind == "file_reference" && self.0.run.is_local(self.0.store.deployment.as_str()) {
+			let authority = self
+				.0
+				.home
+				.authority
+				.as_ref()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			return authority
+				.file_artifact(&self.0.store, &self.0.run, key, input)
+				.await
+				.map_err(Into::into);
+		}
 		self.0.home.artifact(key, input).await.map_err(Into::into)
 	}
 	async fn message(&self, key: &str, content: &str) -> Result<()> {

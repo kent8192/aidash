@@ -325,6 +325,20 @@ pub fn detect_image(bytes: &[u8]) -> Option<&'static str> {
 		.find(|media_type| validate_image(media_type, bytes).is_ok())
 }
 
+/// Prefer the existing image signatures and identify videos by filename.
+pub fn generated_file_media_type(path: &str, prefix: &[u8]) -> Option<&'static str> {
+	detect_image(prefix).or_else(|| {
+		let (_, extension) = path.rsplit_once('.')?;
+		match extension.to_ascii_lowercase().as_str() {
+			"mp4" | "m4v" => Some("video/mp4"),
+			"webm" => Some("video/webm"),
+			"ogv" => Some("video/ogg"),
+			"mov" => Some("video/quicktime"),
+			_ => None,
+		}
+	})
+}
+
 /// Conservative provider-side image token estimate shared by inference and embeddings.
 pub fn image_token_allowance(byte_len: usize) -> Option<usize> {
 	4096usize.checked_add(byte_len.div_ceil(256))

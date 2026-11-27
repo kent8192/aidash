@@ -5,6 +5,7 @@
  */
 export type FilePreviewKind =
   | "image"
+  | "video"
   | "svg"
   | "markdown"
   | "csv"
@@ -41,6 +42,14 @@ const previewDomainMediaTypes = new Set([
 const xlsxMediaType =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+const videoExtensions: Record<string, string> = {
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  webm: "video/webm",
+  ogv: "video/ogg",
+  mov: "video/quicktime",
+};
+
 const extensionKinds: Record<string, FilePreviewKind> = {
   png: "image",
   jpg: "image",
@@ -69,10 +78,18 @@ export function fileExtension(fileName: string): string {
   return base.slice(dot + 1).toLowerCase();
 }
 
+export function videoMediaType(fileName: string, mediaType: string): string {
+  const normalized = normalizeMediaType(mediaType);
+  if (normalized.startsWith("video/")) return normalized;
+  if (normalized && normalized !== "application/octet-stream") return "";
+  return videoExtensions[fileExtension(fileName)] ?? "";
+}
+
 function kindForMediaType(mediaType: string): FilePreviewKind | null {
   if (previewDomainMediaTypes.has(mediaType)) return "preview-domain";
   if (mediaType === "image/svg+xml") return "svg";
   if (imageMediaTypes.has(mediaType)) return "image";
+  if (mediaType.startsWith("video/")) return "video";
   if (markdownMediaTypes.has(mediaType)) return "markdown";
   if (csvMediaTypes.has(mediaType)) return "csv";
   if (mediaType === xlsxMediaType) return "xlsx";
@@ -92,6 +109,7 @@ export function classifyFilePreview(
   const normalized = normalizeMediaType(mediaType);
   const byMediaType = kindForMediaType(normalized);
   if (byMediaType) return byMediaType;
+  if (videoMediaType(fileName, mediaType)) return "video";
   const byExtension = extensionKinds[fileExtension(fileName)];
   if (byExtension) return byExtension;
   return "unsupported";

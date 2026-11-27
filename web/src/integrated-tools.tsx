@@ -21,6 +21,11 @@ import { threadGet } from "./generated/aidash";
 import { ArtifactList } from "./collaboration/channel";
 import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { ChannelFiles } from "./collaboration/attachments";
+import { threadWorkingAreas } from "./capabilities/client";
+import {
+  FilePreviewHost,
+  useFilePreview,
+} from "./capabilities/file-preview-pane";
 const WorkingFileSettings = lazy(() =>
   import("./capabilities/management").then((m) => ({
     default: m.WorkingFileSettings,
@@ -221,7 +226,14 @@ export function ConversationTools({
           <Suspense
             fallback={<Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>}
           >
-            {view === "files" && thread && <RequestFiles thread={thread} />}
+            {view === "files" && thread && (
+              <FilePreviewHost>
+                <RequestFiles
+                  thread={thread}
+                  workingFiles={!deploymentAdministrator}
+                />
+              </FilePreviewHost>
+            )}
             {view === "files" &&
               (deploymentAdministrator ? (
                 <Hint role="status">
@@ -255,15 +267,63 @@ export function ConversationTools({
   );
 }
 
-function RequestFiles({ thread }: { thread: string }) {
-  const { locale } = useI18n();
+function RequestFiles({
+  thread,
+  workingFiles,
+}: {
+  thread: string;
+  workingFiles: boolean;
+}) {
+  const { locale, t } = useI18n();
+  const preview = useFilePreview();
   const query = useQuery({
     queryKey: ["thread", thread],
     queryFn: ({ signal }) => threadGet(thread, { signal }),
     retry: false,
   });
+  const working = useQuery({
+    queryKey: ["core-areas", thread],
+    queryFn: ({ signal }) => threadWorkingAreas(thread, signal),
+    enabled: workingFiles,
+    refetchInterval: 2000,
+    retry: false,
+  });
+  const saved = (working.data?.items ?? []).flatMap((area) =>
+    area.manifest
+      .filter((file) => file.scope === "working")
+      .map((file) => ({ area, file })),
+  );
   return (
     <div className="grid min-w-0 gap-4 [&>*+*]:border-t [&>*+*]:border-border [&>*+*]:pt-4">
+      {(saved.length > 0 || working.isError) && (
+        <section className="grid gap-2">
+          <h3 className="text-[11px] font-medium text-faint">
+            {locale === "ja-JP"
+              ? "保存済みの作業ファイル"
+              : "Saved working files"}
+          </h3>
+          {working.isError && <Alert>{working.error.message}</Alert>}
+          {saved.map(({ area, file }) => (
+            <Button
+              key={file.file_id}
+              variant="outline"
+              type="button"
+              className="w-fit max-w-full justify-start"
+              aria-label={`${t("filePreviewAction")}: ${file.path}`}
+              onClick={() =>
+                preview.open({
+                  area: area.id,
+                  file,
+                  revision: area.revision,
+                  files: area.manifest,
+                })
+              }
+            >
+              <span className="truncate">{file.path}</span>
+            </Button>
+          ))}
+        </section>
+      )}
       {query.isError ? (
         <Alert
           retry={() => void query.refetch()}

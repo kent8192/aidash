@@ -1,8 +1,9 @@
 import { cn } from "../lib/utils";
+import { useEffect, useState } from "react";
 import { ImageFilePreview } from "./image-preview.tsx";
 import { exceedsFilePreviewLimit } from "./limits.ts";
 import { MarkdownFilePreview } from "./markdown-preview.tsx";
-import { classifyFilePreview } from "./preview-kind.ts";
+import { classifyFilePreview, videoMediaType } from "./preview-kind.ts";
 import { SpreadsheetFilePreview } from "./spreadsheet-preview.tsx";
 import {
   FilePreviewLimitState,
@@ -44,6 +45,12 @@ export function FilePreviewRenderer({
   const kind = classifyFilePreview(fileName, mediaType);
 
   switch (kind) {
+    case "video":
+      return exceedsFilePreviewLimit(bytes) ? (
+        <FilePreviewLimitState version={version} onDownload={onDownload} />
+      ) : (
+        <VideoFilePreview {...version} className={className} />
+      );
     case "image":
     case "svg":
       if (exceedsFilePreviewLimit(bytes)) {
@@ -111,4 +118,41 @@ export function FilePreviewRenderer({
         </div>
       );
   }
+}
+
+function VideoFilePreview({
+  bytes,
+  mediaType,
+  fileName,
+  className,
+}: FilePreviewVersion & { className?: string }) {
+  const [url, setUrl] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    let src: string | undefined;
+    void Promise.resolve().then(() => {
+      if (!live) return;
+      src = URL.createObjectURL(
+        new Blob([bytes], { type: videoMediaType(fileName, mediaType) }),
+      );
+      setUrl(src);
+    });
+    return () => {
+      live = false;
+      if (src) URL.revokeObjectURL(src);
+    };
+  }, [bytes, fileName, mediaType]);
+  if (!url) return null;
+  // File previews play the user's exact bytes, including any embedded caption tracks.
+  return (
+    // eslint-disable-next-line jsx-a11y/media-has-caption
+    <video
+      src={url}
+      aria-label={fileName}
+      controls
+      playsInline
+      preload="metadata"
+      className={cn("max-h-[70vh] w-full rounded-md object-contain", className)}
+    />
+  );
 }

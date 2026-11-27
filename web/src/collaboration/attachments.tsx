@@ -1,6 +1,6 @@
 import { Button } from "../components/ui/button";
-import { useEffect, useState } from "react";
-import { Alert, Loading } from "../components/patterns";
+import { useState } from "react";
+import { Alert } from "../components/patterns";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Eye, FileText } from "lucide-react";
 import {
@@ -10,7 +10,7 @@ import {
 } from "../generated/aidash";
 import type { ChannelAttachment } from "../generated/models";
 import { authenticatedFetch } from "../transport";
-import { Modal, useI18n } from "../ui";
+import { useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import {
   attachmentWarningText,
@@ -18,72 +18,8 @@ import {
   mergeMessagePages,
 } from "./conversation-model";
 import { threadCopy } from "./thread-copy";
-
-function AttachmentPreview({
-  thread,
-  attachment,
-  close,
-}: {
-  thread: string;
-  attachment: ChannelAttachment;
-  close: () => void;
-}) {
-  const { locale } = useI18n();
-  const [content, setContent] = useState<{
-    image?: string;
-    text?: string;
-    error?: string;
-  }>({});
-  useEffect(() => {
-    const controller = new AbortController();
-    let objectUrl: string | undefined;
-    void (async () => {
-      try {
-        const response = await authenticatedFetch(
-          getChannelAttachmentDownloadUrl(thread, attachment.id),
-          { signal: controller.signal },
-        );
-        const blob = await response.blob();
-        if (controller.signal.aborted) return;
-        if (/^image\/(png|jpeg|gif|webp)$/.test(attachment.media_type)) {
-          objectUrl = URL.createObjectURL(blob);
-          setContent({ image: objectUrl });
-        } else {
-          const text = await blob.text();
-          if (!controller.signal.aborted) setContent({ text });
-        }
-      } catch (reason) {
-        if (!controller.signal.aborted)
-          setContent({
-            error: reason instanceof Error ? reason.message : String(reason),
-          });
-      }
-    })();
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [thread, attachment.id, attachment.media_type]);
-  return (
-    <Modal title={attachment.filename} close={close}>
-      {content.error ? (
-        <Alert>{content.error}</Alert>
-      ) : content.image ? (
-        <img
-          className="max-h-[70vh] w-full rounded-md border border-border object-contain"
-          src={content.image}
-          alt={attachment.filename}
-        />
-      ) : content.text !== undefined ? (
-        <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground">
-          {content.text}
-        </pre>
-      ) : (
-        <Loading>{collaborationCopy[locale].processing}</Loading>
-      )}
-    </Modal>
-  );
-}
+import { classifyFilePreview } from "../file-preview";
+import { useFilePreview } from "../capabilities/file-preview-pane";
 
 export function AttachmentCard({
   thread,
@@ -94,10 +30,12 @@ export function AttachmentCard({
 }) {
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
+  const preview = useFilePreview();
   const [downloading, setDownloading] = useState(false),
-    [preview, setPreview] = useState(false),
     [error, setError] = useState("");
   const previewable =
+    classifyFilePreview(attachment.filename, attachment.media_type) ===
+      "video" ||
     /^image\/(png|jpeg|gif|webp)$/.test(attachment.media_type) ||
     /^text\//.test(attachment.media_type) ||
     attachment.media_type === "application/json";
@@ -148,7 +86,20 @@ export function AttachmentCard({
             type="button"
             className="grid w-7 place-items-center border-l border-border text-faint transition-colors hover:bg-accent hover:text-foreground"
             aria-label={`${locale === "ja-JP" ? "プレビュー" : "Preview"}: ${attachment.filename}`}
-            onClick={() => setPreview(true)}
+            onClick={() =>
+              preview.open({
+                area: thread,
+                attachment: { thread, id: attachment.id },
+                file: {
+                  file_id: attachment.id,
+                  path: attachment.filename,
+                  digest: "",
+                  media_type: attachment.media_type,
+                  size: attachment.size_bytes,
+                  scope: "working",
+                },
+              })
+            }
           >
             <Eye aria-hidden className="size-3.5" />
           </button>
@@ -163,13 +114,6 @@ export function AttachmentCard({
         <ImageDescription thread={thread} attachment={attachment} />
       )}
       {error && <Alert className="mt-1">{error}</Alert>}
-      {preview && (
-        <AttachmentPreview
-          thread={thread}
-          attachment={attachment}
-          close={() => setPreview(false)}
-        />
-      )}
     </>
   );
 }

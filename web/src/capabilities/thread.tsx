@@ -37,6 +37,7 @@ import { discoveryQuery, useNodes } from "../nodes";
 import {
   post,
   saveFile,
+  threadWorkingAreas,
   type Area,
   type CoreFile,
   type Operation,
@@ -900,20 +901,7 @@ export function ThreadCapabilities({
   );
   const query = useQuery({
     queryKey: ["core-areas", thread],
-    queryFn: async ({ signal }) => {
-      const items: Area[] = [];
-      let cursor: string | null = null;
-      do {
-        const page: { items: Area[]; next_cursor: string | null } =
-          await apiFetch(
-            `/api/working-areas?thread_id=${thread}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
-            { signal },
-          );
-        items.push(...page.items);
-        cursor = page.next_cursor;
-      } while (cursor);
-      return { items };
-    },
+    queryFn: ({ signal }) => threadWorkingAreas(thread, signal),
     refetchInterval: 2000,
     retry: false,
   });

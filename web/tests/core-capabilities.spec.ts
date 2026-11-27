@@ -1,5 +1,130 @@
 import { test, expect, type Page } from "@playwright/test";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { setup, fixture } from "./collaboration-fixture";
+
+test("Thread files open saved videos, file-reference artifacts and attachments in File preview", async ({
+  page,
+}) => {
+  const bytes = readFileSync(
+    new URL("./fixtures/preview.mp4", import.meta.url),
+  );
+  const area = randomUUID();
+  const file = {
+    area_id: area,
+    file_id: randomUUID(),
+    path: "out/saved.mp4",
+    digest: createHash("sha256").update(bytes).digest("hex"),
+    size: bytes.length,
+    media_type: "application/octet-stream",
+    scope: "working",
+  };
+  await setup(page, {
+    artifacts: [
+      {
+        id: randomUUID(),
+        thread_id: "thread-one",
+        task_id: "task-0",
+        kind: "file_reference",
+        name: "Published video",
+        content: { ...file, media_type: "video/mp4" },
+        created_by: "researcher",
+        idempotency_key: "published-video",
+        created_at: "2026-09-24T01:34:00Z",
+      },
+    ],
+  });
+  await page.route("**/api/working-areas?*", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: area,
+            thread_id: "thread-one",
+            agent_id: "researcher",
+            revision: 2,
+            generation: 1,
+            state: "active",
+            manifest: [file],
+          },
+        ],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.route(
+    `**/api/working-areas/${area}/files/${file.file_id}/download?*`,
+    (route) =>
+      route.fulfill({
+        json: { file, data: bytes.toString("base64"), next_offset: null },
+      }),
+  );
+  await page.route("**/api/threads/thread-one/message-history?*", (route) =>
+    route.fulfill({
+      json: {
+        messages: [
+          {
+            message: {
+              id: "video-message",
+              thread_id: "thread-one",
+              sender: "researcher",
+              content: "Rendered video",
+              created_at: "2026-09-24T01:34:00Z",
+            },
+            attachments: [
+              {
+                id: "video-attachment",
+                filename: "attached.mp4",
+                media_type: "video/mp4",
+                size_bytes: bytes.length,
+                no_assigned_agent_can_read: false,
+              },
+            ],
+          },
+        ],
+        next_before: null,
+      },
+    }),
+  );
+  await page.route(
+    "**/api/threads/thread-one/attachments/video-attachment",
+    (route) => route.fulfill({ body: bytes, contentType: "video/mp4" }),
+  );
+  await page.goto("/collaboration?channel=thread-one");
+  await page.getByRole("button", { name: "Files", exact: true }).click();
+  const pane = page.getByRole("complementary", {
+    name: "File preview",
+    exact: true,
+  });
+  async function assertVideo(name: string) {
+    const video = pane.locator("video");
+    await expect(video).toBeVisible();
+    await expect(video).toHaveAttribute("aria-label", name);
+    await expect(video).toHaveJSProperty("controls", true);
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.readyState),
+      )
+      .toBeGreaterThanOrEqual(1);
+    await expect(
+      pane.getByRole("button", { name: "Download file" }),
+    ).toBeVisible();
+    await pane.getByRole("button", { name: "Close File preview" }).click();
+    await expect(pane).toHaveCount(0);
+  }
+  await page
+    .getByRole("button", { name: "File preview: out/saved.mp4" })
+    .click();
+  await assertVideo("out/saved.mp4");
+  await page.getByText("Published video", { exact: true }).click();
+  await page
+    .getByRole("button", { name: "File preview: out/saved.mp4" })
+    .last()
+    .click();
+  await assertVideo("out/saved.mp4");
+  await page.getByRole("button", { name: "Preview: attached.mp4" }).click();
+  await assertVideo("attached.mp4");
+});
 
 // UI contract fixtures; real execution/authorization is verified by the Rust
 // core_capabilities integration suite against PostgreSQL and gVisor.
@@ -576,6 +701,58 @@ test("Live preview background status is quiet when absent or unavailable", async
   ).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test("Results opens a running Live preview in the Thread", async ({ page }) => {
+  await core(page);
+  const previewId = randomUUID();
+  await page.route("**/api/previews/availability", (route) =>
+    route.fulfill({
+      json: { available: true, preview_domain: "preview.example.test" },
+    }),
+  );
+  await page.route("**/api/executions/run-0/live-preview", (route) =>
+    route.fulfill({
+      json: {
+        may_stop: false,
+        live_preview: {
+          id: previewId,
+          area_id: "area-one",
+          revision: 7,
+          port: 3000,
+          state: "running",
+          started_at: "2026-09-24T01:34:00Z",
+          last_request_at: "2026-09-24T01:34:00Z",
+          expires_at: "2099-01-01T00:00:00Z",
+          idle_seconds: 600,
+          absolute_seconds: 3600,
+          stop_reason: null,
+        },
+      },
+    }),
+  );
+  const previewUrl = "https://preview.example.test/run-ticket";
+  await page.route(previewUrl, (route) =>
+    route.fulfill({ contentType: "text/html", body: "<h1>Video page</h1>" }),
+  );
+  const issued: unknown[] = [];
+  await page.route("**/api/previews/live-tickets", (route) => {
+    issued.push(route.request().postDataJSON());
+    return route.fulfill({
+      json: { url: previewUrl, expires_at: "2099-01-01T00:00:00Z" },
+    });
+  });
+  await openThread(page);
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  const pane = page.getByRole("complementary", {
+    name: "Live preview",
+    exact: true,
+  });
+  await expect(pane.locator("iframe")).toHaveAttribute("src", previewUrl);
+  await expect(
+    pane.frameLocator("iframe").getByRole("heading", { name: "Video page" }),
+  ).toBeVisible();
+  expect(issued).toEqual([{ live_preview_id: previewId }]);
 });
 
 test("retained-work Files link keeps the originating request instead of the first thread", async ({

@@ -55,6 +55,7 @@ import { ChannelStatus, useRunControl } from "./status";
 import { channelAgents, terminalRun } from "./thread-model";
 import { ChannelRequests } from "./requests";
 import { ChannelFiles } from "./attachments";
+import { ArtifactFile, artifactFile } from "./artifact-file";
 import { RequestCanvas } from "./request/canvas";
 import {
   FilePreviewContextProvider,
@@ -253,13 +254,7 @@ export function ArtifactList({
                   />
                 </summary>
                 <div className="px-3 pb-3">
-                  {artifact.run_id && typeof artifact.content === "string" ? (
-                    <p className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                      <MessageText text={artifact.content} />
-                    </p>
-                  ) : (
-                    <JsonView value={artifact.content} />
-                  )}
+                  <ArtifactContent artifact={artifact} />
                 </div>
               </details>
             </li>
@@ -268,6 +263,20 @@ export function ArtifactList({
       )}
     </section>
   );
+}
+
+function ArtifactContent({ artifact }: { artifact: Artifact }) {
+  const reference =
+    artifact.kind === "file_reference" ? artifactFile(artifact.content) : null;
+  if (reference) return <ArtifactFile file={reference} />;
+  if (artifact.run_id && typeof artifact.content === "string") {
+    return (
+      <p className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+        <MessageText text={artifact.content} />
+      </p>
+    );
+  }
+  return <JsonView value={artifact.content} />;
 }
 
 const channelState = {
@@ -825,20 +834,21 @@ export function Channel({
                 {canvas}
               </TabsContent>
             )}
-            {preview?.kind === "file" && shownTab === "conversation" && (
-              <FilePreviewPane
-                key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}
-                selection={preview.selection}
-                onClose={closeFilePreview}
-              />
-            )}
-            {preview?.kind === "live" && shownTab === "conversation" && (
-              <LivePreviewPane
-                key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
-                selection={preview.selection}
-                onClose={closeFilePreview}
-              />
-            )}
+            {(shownTab === "conversation" || shownTab === "results") &&
+              preview &&
+              (preview.kind === "file" ? (
+                <FilePreviewPane
+                  key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}
+                  selection={preview.selection}
+                  onClose={closeFilePreview}
+                />
+              ) : (
+                <LivePreviewPane
+                  key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
+                  selection={preview.selection}
+                  onClose={closeFilePreview}
+                />
+              ))}
             <aside
               aria-label={view.details}
               hidden={desktop ? !dockOpen : tab === "canvas"}

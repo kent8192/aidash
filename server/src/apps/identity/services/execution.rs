@@ -1056,6 +1056,70 @@ impl WorkerAuthority {
 		access.finish(cached).await
 	}
 
+	pub(crate) async fn file_artifact(
+		&self,
+		store: &Store,
+		run: &Run,
+		key: &str,
+		input: &ArtifactInput,
+	) -> Result<Artifact> {
+		use crate::apps::execution::capabilities::{contracts::FileScope, service, sessions};
+		use aidash_domain::capabilities::retention::Holder;
+		input.validate()?;
+		let path = input.content.as_str().expect("validated file_reference");
+		aidash_domain::registry::rules::validate_path(path).map_err(|_| {
+			Error::Invalid("Give a Working Area relative path in artifact_publish content. Save a Scratch Space file with file_save first.".into())
+		})?;
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let thread = access.thread(run.thread_id).await?;
+			access.require(&thread, "thread.read").await?;
+			let owner = run.executor_subject(store.deployment.as_str());
+			let resource = access.artifact_creation_resource(run.task_id, &owner).await?;
+			access.require(&resource, "artifact.create").await?;
+			let area = sessions::current_own_area(&mut access, run).await?.ok_or_else(|| {
+				Error::Invalid("Save the file in this Run's Working Area using file_save before publishing a file_reference.".into())
+			})?;
+			sessions::authorize(&mut access, &area, "file.read").await?;
+			if let Some(previous) = store.artifact_by_key(&mut access.tx, key).await? {
+				if previous.run_id != Some(run.id)
+					|| previous.kind != input.kind
+					|| previous.name != input.name
+					|| previous.content["path"] != path
+				{
+					return Err(Error::Conflict("artifact idempotency key reused".into()));
+				}
+				return Ok(previous);
+			}
+			let file = service::files(&area)?.into_iter().find(|file| {
+				file.path == path && matches!(file.scope, FileScope::Working)
+					&& file.provenance["kind"] != "reference"
+			}).ok_or_else(|| {
+				Error::Invalid(format!("Save {path} with file_save, then pass its Working Area relative path as artifact_publish content."))
+			})?;
+			let version = ArtifactInput {
+				content: json!({"area_id":area.id,"file_id":file.file_id,"path":file.path,
+					"digest":file.digest,"size":file.size,"media_type":file.media_type}),
+				..input.clone()
+			};
+			let artifact = store
+				.write_artifact_in(
+					&mut access.tx, run.task_id, &owner, key, &version,
+					crate::store::Publication::by(run.id, true),
+				)
+				.await?;
+			aidash_application::capabilities::retention::retain(
+				&mut crate::bootstrap::retention_scope(Some(store), &mut access),
+				area.id,
+				file.file_id,
+				Holder::Artifact { artifact_id: artifact.id },
+			).await?;
+			Ok(artifact)
+		}.await;
+		access.finish(result).await
+	}
+
 	pub(crate) async fn message_with_files(
 		&self,
 		store: &Store,

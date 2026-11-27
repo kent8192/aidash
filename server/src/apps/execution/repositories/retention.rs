@@ -76,6 +76,11 @@ fn holder(row: &HoldRow) -> NativeResult<Holder> {
 			.parse::<Uuid>()
 			.map(|message_id| Holder::Message { message_id })
 			.map_err(|_| NativeError::External("invalid message retention hold".into())),
+		"artifact" => row
+			.holder_id
+			.parse::<Uuid>()
+			.map(|artifact_id| Holder::Artifact { artifact_id })
+			.map_err(|_| NativeError::External("invalid Artifact retention hold".into())),
 		"live_preview" => row
 			.holder_id
 			.parse::<Uuid>()

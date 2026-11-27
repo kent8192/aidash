@@ -254,6 +254,7 @@ export async function setup(
     planModel?: boolean;
     latestMessageChangesOnPoll?: boolean;
     messageAttachment?: boolean;
+    artifacts?: Artifact[];
     extraGraphAgent?: boolean;
     referenceLayout?: boolean;
     locale?: "ja-JP" | "en-US";
@@ -296,6 +297,7 @@ export async function setup(
     options.subject ??
     (!options.administrator && options.dashboardContext === undefined);
   let data = fixture(options.referenceLayout);
+  if (options.artifacts) data.artifacts = options.artifacts;
   if (options.configuratorRole) {
     data.registry.push({
       ...data.registry[0],

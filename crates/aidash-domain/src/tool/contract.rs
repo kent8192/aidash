@@ -8,6 +8,51 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Explain the live Execution Pod layout in model-facing specs without
+/// changing the declarations already pinned in Binding snapshots.
+pub fn describe_scratch_paths(
+	reference: &crate::registry::bindings::QualifiedRef,
+	spec: &mut crate::provider::ToolSpec,
+) {
+	let guidance = match (reference.id.as_str(), reference.version.as_str()) {
+		("aidash.shell" | "aidash.code_interpreter", "1.0.0") => {
+			if let Some(timeout) = spec
+				.parameters
+				.pointer_mut("/properties/timeout_seconds/description")
+			{
+				*timeout = if reference.id == "aidash.code_interpreter" {
+					"Time limit in seconds after the cell starts. On timeout the cell stops and the session resets."
+				} else {
+					"Time limit in seconds after the command starts. On timeout the command stops."
+				}
+				.into();
+			}
+			"In an Execution Pod, the initial working directory is /scratch. /work is another mount of the same Scratch Space. Use file_save to register selected files in the Working Area."
+		}
+		("aidash.file_save", "1.0.0") => {
+			"Give paths relative to the Scratch Space root. For example, save /work/out.png or /scratch/out.png with paths=[\"out.png\"]. The files result gives each newly saved file's path, file_id and digest. To view an image, call file_read with that file_id, expected_digest set to the digest, and representation=model_input. For an already saved file, get its file_id and digest from file_search with scope=working and mode=path."
+		}
+		("aidash.file_read", "1.0.1") => {
+			"For Scratch Space text, give a path relative to /scratch (also mounted at /work)."
+		}
+		("aidash.file_search", "1.0.1") => {
+			"With scope=scratch, use paths relative to /scratch (also mounted at /work)."
+		}
+		("aidash.file_copy", "1.0.0") => {
+			"A destination is relative to /scratch (also mounted at /work)."
+		}
+		("aidash.apply_patch", "1.0.0") => {
+			"In an Execution Pod, patch paths are relative to /scratch (also mounted at /work)."
+		}
+		("aidash.artifact_publish", "1.0.0") => {
+			"For kind=file_reference, save the file with file_save, then give the Working Area relative path as content. The artifact points to the exact saved version."
+		}
+		_ => return,
+	};
+	spec.description.push(' ');
+	spec.description.push_str(guidance);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ToolEffect {
 	/// Addressed user resources remain unchanged; audit receipts are allowed.
