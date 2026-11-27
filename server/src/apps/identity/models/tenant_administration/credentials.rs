@@ -10,8 +10,8 @@ use aidash_domain::identity::credentials;
 use aidash_domain::policy::SubjectKind;
 use aidash_domain::tenancy::TenantName;
 use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{AtomicTransaction, Model};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
