@@ -266,6 +266,78 @@ def test_preview_exit_status_does_not_impersonate_the_mcp_spawn_refusal(controll
     assert caught.value.code == 'preview_start_failed'
 
 
+@pytest.mark.parametrize(('kind', 'cgroup', 'diagnostic', 'expected_limit'), [
+    ('preview', ('v2', '32', '32'), '', 'v2_processes = 32'),
+    ('preview', ('v1', '16', '16'), '', 'pids.max = 16'),
+    ('preview', ('v2', '31', '32'), '/bin/sh: 0: Cannot fork', None),
+    ('preview', ('v1', '31', 'max'), '/bin/sh: 0: Cannot fork', 'v2_processes = 32'),
+    ('preview', None, 'bash: fork: retry: Resource temporarily unavailable', 'v2_processes = 32'),
+    ('preview', None, 'sh: fork failed: EAGAIN', 'v2_processes = 32'),
+    ('preview', None, 'read: Resource temporarily unavailable', None),
+    ('preview', None, 'python: server could not bind its port', None),
+    ('mcp_session', ('v1', '31', 'max'), '/bin/sh: 0: Cannot fork', 'v2_processes = 32'),
+    ('mcp_session', None, 'server configuration is invalid', None),
+])
+def test_startup_shell_failure_uses_process_limit_evidence(
+        controller, monkeypatch, tmp_path, kind, cgroup, diagnostic, expected_limit):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    if sys.platform != 'linux':
+        pytest.skip('the supervisor uses Linux prctl')
+    controller, _ = controller
+    monkeypatch.setenv('AIDASH_PROCESS_LIMIT', '32')
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / 'cgroup'
+    monkeypatch.setattr(sandbox_v2, 'PROCESS_CGROUP_ROOT', root)
+    if cgroup is not None:
+        version, current, maximum = cgroup
+        directory = root / 'pids' if version == 'v1' else root
+        directory.mkdir(parents=True)
+        (directory / 'pids.current').write_text(current)
+        (directory / 'pids.max').write_text(maximum)
+        if current == maximum:
+            poll = subprocess.Popen.poll
+
+            def reap(process):
+                exit_code = poll(process)
+                if exit_code is not None:
+                    (directory / 'pids.current').write_text(str(int(current) - 1))
+                return exit_code
+
+            monkeypatch.setattr(subprocess.Popen, 'poll', reap)
+
+    command_line = ['/bin/sh', '-c', 'printf "%s\\n" "$1" >&2; exit 2', 'startup', diagnostic]
+    mcp = {'install': '', 'command': command_line, 'env': {}, 'plugin_data': 'data'}
+    if kind == 'mcp_session':
+        command_line = [sys.executable, str(Path(mcp_session.__file__).resolve()),
+                        'serve', str(tmp_path / 'mcp.sock'), json.dumps(mcp)]
+    request = command(1)
+    operation = request['operation_id']
+    outcome = sandbox_v2.run_supervised(command_line, None, output_directory=tmp_path,
+                                        operation_id=operation, on_started=lambda: None, output_limit=1)
+
+    def publish_exit(_delay):
+        record = controller._read_command(operation)
+        _, active = next(iter(controller.background_watches.items()))
+        fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message') if key in outcome}
+        controller._observe_background(record, active[operation], signed_result(controller, operation, **fields))
+        assert controller.command_result(operation)['status'] == 'completed'
+
+    monkeypatch.setattr('time.sleep', publish_exit)
+    with pytest.raises(ExecutionPodError) as caught:
+        if kind == 'preview':
+            controller.start_preview(dict(request, port=8080))
+        else:
+            controller.start_mcp(dict(request, **mcp))
+    if expected_limit:
+        assert caught.value.code == 'pod_process_limit'
+        assert expected_limit in caught.value.message
+    else:
+        assert caught.value.code == ('preview_start_failed' if kind == 'preview' else 'mcp_start_failed')
+
+
 def test_saved_output_poll_is_bounded_and_resumes_at_previous_offsets(tmp_path, monkeypatch):
     monkeypatch.setenv('AIDASH_POD_UID', 'uid')
     monkeypatch.setattr(sandbox_v2, 'OPERATION_DIRECTORY', tmp_path)

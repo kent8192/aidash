@@ -114,6 +114,7 @@ def serve(path, config):
         return SPAWN_PROCESS_LIMIT_EXIT
     os.set_blocking(process.stdin.fileno(), False)
     pending = bytearray()
+    ready_reported = False
     if os.path.lexists(path):
         raise FileExistsError('MCP socket already exists')
     try:
@@ -133,7 +134,9 @@ def serve(path, config):
                         with connection.makefile('rb') as stream:
                             request = receive_line(stream, LIMIT + 4096)
                         if request.get('ping') is True:
-                            connection.sendall(encode({'ready': process.poll() is None}))
+                            ready = process.poll() is None
+                            connection.sendall(encode({'ready': ready}))
+                            ready_reported |= ready
                             continue
                         message, timeout = request['message'], request['timeout_seconds']
                         if not isinstance(message, dict) or type(timeout) is not int or not 1 <= timeout <= 3600:
@@ -176,6 +179,10 @@ def serve(path, config):
                             pass
                         # The call may have reached the server. Never reuse an uncertain stream.
                         break
+            # Let the supervisor inspect stderr after a startup shell exits.
+            # Keep this status distinct from the bridge's own spawn refusal.
+            if not ready_reported and (process.poll() or 0) > 0:
+                return 1
     finally:
         process.terminate()
         try:
