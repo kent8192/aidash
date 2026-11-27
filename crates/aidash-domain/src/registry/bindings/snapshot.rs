@@ -122,6 +122,12 @@ impl BindingSnapshot {
 			if binding.kind == BindingKind::ExternalService {
 				continue;
 			}
+			if binding.kind == BindingKind::Tool
+				&& crate::tool::configurator::sandbox_operation(&self.agent, &binding.target)
+					.is_some() && !definitions.contains_key(&binding.target)
+			{
+				continue;
+			}
 			let entry = &definitions
 				.get(&binding.target)
 				.ok_or_else(|| Error::Invalid("snapshot lacks a bound definition".into()))?

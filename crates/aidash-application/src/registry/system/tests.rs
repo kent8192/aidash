@@ -665,3 +665,59 @@ fn configurator_guide_can_be_loaded_as_a_run_skill() {
 	assert!(is_builtin(&agent));
 	assert!(is_builtin(&guide));
 }
+
+#[test]
+fn configurator_sandbox_metadata_is_limited_to_pinned_local_operations() {
+	use super::configurator::{ID, VERSION, sandbox_operation};
+	use aidash_domain::registry::bindings::QualifiedRef;
+	let [_, declaration] = super::configurator::definitions(NODE).unwrap();
+	let agent = QualifiedRef {
+		registry_deployment: NODE.into(),
+		id: ID.into(),
+		version: VERSION.into(),
+	};
+	for name in [
+		"shell",
+		"code_interpreter",
+		"file_save",
+		"file_copy",
+		"file_remove",
+		"file_share",
+		"outbound_get",
+		"apply_patch",
+		"process_list",
+		"process_log",
+		"process_stop",
+	] {
+		let target = QualifiedRef::builtin(NODE, name);
+		assert_eq!(sandbox_operation(&agent, &target), Some(name));
+		let bindings = declaration.config["bindings"].as_array().unwrap();
+		assert!(
+			bindings
+				.iter()
+				.any(|b| b["target"] == serde_json::json!(target))
+		);
+	}
+	for name in ["shell_poll", "shell_cancel", "python_poll", "python_cancel"] {
+		assert_eq!(
+			sandbox_operation(&agent, &QualifiedRef::builtin(NODE, name)),
+			Some(name)
+		);
+	}
+	let shell = QualifiedRef::builtin(NODE, "shell");
+	let ordinary = QualifiedRef {
+		id: "ordinary".into(),
+		..agent.clone()
+	};
+	assert!(sandbox_operation(&ordinary, &shell).is_none());
+	for target in [
+		QualifiedRef::builtin("aidash://elsewhere", "shell"),
+		QualifiedRef::builtin(NODE, "setting_request"),
+		QualifiedRef {
+			version: "2.0.0".into(),
+			..shell
+		},
+	] {
+		assert!(sandbox_operation(&agent, &target).is_none());
+	}
+}

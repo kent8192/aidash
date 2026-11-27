@@ -870,6 +870,7 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"aidash_api",
 	"aidash_api_catalog",
 	"tenant_overview",
+	"scratch_space_configure",
 	"node_update",
 	"member_invite",
 	"member_set_groups",

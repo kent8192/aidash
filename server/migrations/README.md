@@ -1140,4 +1140,6 @@ Issue #1154 adds three migrations. `registry/0083_optional_agent_model` lets an 
 
 `registry/0085_configurator_review_tool` extends the descriptor validator with the Configurator’s closure approval operation.
 
+`registry/0086_configurator_scratch_tool` admits the Configurator's Scratch Space settings operation. Reversal requires removing definitions that use it.
+
 Issue #1155 adds `identity/0117_oauth_client_provider` for the optional registered provider endpoints, resource and scopes on an OAuth Client. Existing clients continue to use discovery.

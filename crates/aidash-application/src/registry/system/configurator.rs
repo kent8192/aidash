@@ -6,6 +6,27 @@ pub use aidash_domain::identity::tenant_administration::CONFIGURATOR_ID as ID;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GUIDE: &str = "aidash.tenant-configuration-guide";
 
+pub use aidash_domain::tool::configurator::{SANDBOX, sandbox_operation};
+
+pub(crate) fn sandbox_description(operation: &str) -> Option<&'static str> {
+	Some(match operation {
+		"code_interpreter" => {
+			"Run code in the persistent interpreter in this Scratch Space. Set expected_session_id when reusing state. After a session reset, reload saved files. A new area starts at revision 1. wait_seconds defaults to 300, up to 3600; zero returns immediately."
+		}
+		"python_poll" => {
+			"Wait for an interpreter operation. Use next_offset to read later output. wait_seconds defaults to 300, up to 3600."
+		}
+		"python_cancel" => "Cancel an interpreter operation. Earlier file changes may persist.",
+		"file_save" => {
+			"Save selected Scratch Space files or directories to the Working Area. Include deliverables and reusable source files. Exclude installed dependencies and temporary files. Sync removes previously saved files under the selected paths that are now gone."
+		}
+		"apply_patch" => {
+			"Apply file additions, updates and deletions in patch format. Supply the current revision and the expected digest or absence of every affected path. A new area starts at revision 1."
+		}
+		_ => return None,
+	})
+}
+
 pub fn definitions(node: &str) -> crate::Result<[Entry; 2]> {
 	let guide = json!({"id":GUIDE,"kind":"skill","version":VERSION,
 		"name":{"en":"Tenant configuration guide"},"description":{"en":"Configure a Tenant for its administrator."},
@@ -17,6 +38,7 @@ pub fn definitions(node: &str) -> crate::Result<[Entry; 2]> {
 	for &operation in ["node_create", "setting_request"]
 		.iter()
 		.chain(aidash_domain::tool::configurator::TOOLS)
+		.chain(SANDBOX)
 	{
 		bindings.push(
 			json!({"kind":"tool","target":QualifiedRef::builtin(node,operation),"alias":operation}),
@@ -27,7 +49,7 @@ pub fn definitions(node: &str) -> crate::Result<[Entry; 2]> {
 		"description":{"en":"Configure this Tenant at its administrator's request."},
 		"tags":["system"],"languages":[],"capabilities":[],"schema":{},
 		// #1154 supplies the Task Model when this definition is admitted.
-		"config":{"schema_version":1,"instructions":"Follow the Tenant configuration guide.",
+		"config":{"schema_version":1,"instructions":"Respond in the person's language from your first message. Follow the Tenant configuration guide. Build and test missing capabilities in the Scratch Space.",
 			"bindings":bindings}});
 	Ok([
 		serde_json::from_value(guide)?,

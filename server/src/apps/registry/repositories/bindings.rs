@@ -376,14 +376,25 @@ async fn authorized_mode(
 		};
 		let reference = definition.identity.local();
 		let serial = access.decision_serial;
-		let mut current = match crate::authorization::catalog::closure_entry(
-			access,
-			&reference,
-			"registry.read",
-			&users,
+		let current = if aidash_application::registry::system::configurator::sandbox_operation(
+			&snapshot.agent,
+			&definition.identity,
 		)
-		.await
+		.is_some()
 		{
+			// Pin readable metadata before the first Catalog Approval. Dispatch
+			// still requires the ordinary approval on each use.
+			crate::authorization::catalog::readable(access, &reference).await
+		} else {
+			crate::authorization::catalog::closure_entry(
+				access,
+				&reference,
+				"registry.read",
+				&users,
+			)
+			.await
+		};
+		let mut current = match current {
 			Ok(current) => current,
 			Err(error) => {
 				if let Some(failure) = failure.as_deref_mut() {

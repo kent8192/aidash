@@ -28,6 +28,10 @@ pub trait UseRecheckScope: Send {
 	) -> Result<Entry>;
 	/// Read exact metadata under current `registry.read`, independently of invocation approval.
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry>;
+	/// Read an optional Configurator sandbox descriptor without granting use.
+	async fn sandbox_metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		self.catalog(reference, "registry.read").await
+	}
 	async fn binding_snapshot(
 		&mut self,
 		_: &RunMetadata,

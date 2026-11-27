@@ -54,7 +54,24 @@ impl BindingResolver for PinnedResolver {
 				self.authority.check_metadata(run, binding).await?;
 				continue;
 			}
-			self.authority.check(run, binding).await?;
+			if super::super::system::configurator::sandbox_operation(
+				&snapshot.agent,
+				&binding.identity,
+			)
+			.is_some()
+			{
+				// An unapproved sandbox tool is absent from the model's tools.
+				// Reassemble on the next step after the Configurator reviews its closure.
+				let (check, _) =
+					crate::authorization::refusal_note::scoped(self.authority.check(run, binding))
+						.await;
+				match check {
+					Err(Error::Forbidden) => continue,
+					result => result?,
+				}
+			} else {
+				self.authority.check(run, binding).await?;
+			}
 			let Some(alias) = &binding.alias else {
 				continue;
 			};
@@ -84,6 +101,7 @@ impl BindingResolver for PinnedResolver {
 			tools.insert(
 				alias.clone(),
 				Arc::new(BoundTool {
+					spec: agent_specification(snapshot, binding, inner.specification()),
 					inner,
 					binding: binding.clone(),
 					contract,
@@ -107,6 +125,7 @@ impl BindingResolver for PinnedResolver {
 	}
 }
 struct BoundTool {
+	spec: ToolSpec,
 	inner: Arc<dyn ExecutionTool>,
 	binding: ResolvedBinding,
 	contract: ToolContract,
@@ -122,7 +141,7 @@ impl ExecutionTool for BoundTool {
 	}
 
 	fn specification(&self) -> ToolSpec {
-		bound_specification(&self.binding, self.inner.specification())
+		self.spec.clone()
 	}
 	fn contract(&self) -> ToolContract {
 		self.contract.clone()
@@ -211,6 +230,23 @@ pub fn bound_specification(binding: &ResolvedBinding, mut inner: ToolSpec) -> To
 	inner
 }
 
+fn agent_specification(
+	snapshot: &BindingSnapshot,
+	binding: &ResolvedBinding,
+	inner: ToolSpec,
+) -> ToolSpec {
+	let mut spec = bound_specification(binding, inner);
+	// Keep provider declarations immutable. The Configurator describes its
+	// workspace by what it can do, without prescribing a stack for the task.
+	if let Some(description) =
+		super::super::system::configurator::sandbox_operation(&snapshot.agent, &binding.identity)
+			.and_then(super::super::system::configurator::sandbox_description)
+	{
+		spec.description = description.into();
+	}
+	spec
+}
+
 /// [`bound_specification`] of every non-excluded aliased tool Binding, by
 /// alias. `inner` yields the provider's own specification of one Binding.
 pub fn bound_specifications(
@@ -229,7 +265,7 @@ pub fn bound_specifications(
 		let specification = if binding.definition.config["tier"] == "provider" {
 			provider_specification(binding)
 		} else {
-			bound_specification(binding, inner(binding, descriptor)?)
+			agent_specification(snapshot, binding, inner(binding, descriptor)?)
 		};
 		specifications.insert(alias.clone(), specification);
 	}

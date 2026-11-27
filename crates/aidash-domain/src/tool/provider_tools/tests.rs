@@ -13,7 +13,20 @@ fn binding_caps_are_mandatory_and_closed() {
 		json!({"engine":"exa","max_results":1,"max_total_results":1,"tools":[]}),
 	] {
 		binding.parameters = invalid;
-		assert!(search.validate(&binding).is_err());
+		let error = search.validate(&binding).unwrap_err().to_string();
+		assert!(error.contains("binding.narrow.provider_tool"));
+		let (_, schema) = error.split_once("matching this schema: ").unwrap();
+		let schema: Value = serde_json::from_str(schema).unwrap();
+		let params = &schema["properties"]["parameters"];
+		assert_eq!(
+			params["required"],
+			json!(["engine", "max_results", "max_total_results"])
+		);
+		assert_eq!(
+			params["properties"]["engine"]["enum"],
+			json!(["exa", "parallel", "perplexity"])
+		);
+		assert_eq!(params["properties"]["max_results"]["maximum"], MAX_RESULTS);
 	}
 	let fusion = declaration("openrouter:fusion").unwrap();
 	let mut binding = fusion.defaults();

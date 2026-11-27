@@ -118,7 +118,7 @@ impl Api<'_> {
 
 	async fn overview(&self, run: &Run) -> Result<Value> {
 		let tenant = self.caller.tenant();
-		let mut out = json!({});
+		let mut out = json!({"configurator":{"entry":{"id":run.agent_id,"version":run.agent_version},"node":run.node,"thread":run.thread_id}});
 		for (name, path) in [
 			("nodes", format!("/api/tenants/{tenant}/nodes")),
 			("members", format!("/api/tenants/{tenant}/mappings")),
@@ -143,6 +143,42 @@ impl Api<'_> {
 			};
 		}
 		Ok(out)
+	}
+
+	async fn scratch_space(&self, run: &Run, input: Value) -> Result<Value> {
+		let id: uuid::Uuid = match input.get("scratch_space_id") {
+			Some(id) => serde_json::from_value(id.clone())?,
+			None => {
+				let scope =
+					aidash_application::tenancy::TenancyScope::tenant(self.caller.tenant())?;
+				self.runtime
+					.store
+					.thread(&scope, run.thread_id)
+					.await?
+					.scratch_space_id
+			}
+		};
+		let path = format!("/api/scratch-spaces/{id}");
+		let space = self.call("GET", &path, Value::Null).await?;
+		let mut settings = space["settings"].clone();
+		let mut update = false;
+		for field in ["allowed_hosts", "external_services", "execution_image"] {
+			if let Some(value) = input.get(field) {
+				settings[field] = value.clone();
+				update = true;
+			}
+		}
+		if !update {
+			return Ok(space);
+		}
+		let revision = input.get("expected_revision").unwrap_or(&space["revision"]);
+		self.call(
+			"PUT",
+			&format!("{path}/settings"),
+			json!({"revision":revision,"settings":settings}),
+		)
+		.await?;
+		self.call("GET", &path, Value::Null).await
 	}
 
 	async fn publish(&self, name: &str, input: &Value) -> Result<Value> {
@@ -221,10 +257,24 @@ impl Api<'_> {
 				&format!("/api/workbench/drafts/{id}/register"),
 				json!({"expected_revision":saved["revision"]}),
 			)
-			.await?;
+			.await
+			.map_err(|error| match error {
+				Error::Invalid(reason) => Error::Invalid(format!(
+					"Draft {id} at revision {} was saved. Correct this draft and retry registration: {reason}",
+					saved["revision"]
+				)),
+				other => other,
+			})?;
 		let approved = self
 			.approve(&registered["entry"], input["approval"].clone())
-			.await?;
+			.await
+			.map_err(|error| match error {
+				Error::Invalid(reason) => Error::Invalid(format!(
+					"Draft {id} was registered as {}@{}. Retry approval of the registered version: {reason}",
+					registered["entry"]["id"], registered["entry"]["version"]
+				)),
+				other => other,
+			})?;
 		Ok(json!({"draft":id,"registered":registered,"approval":approved}))
 	}
 
@@ -414,6 +464,7 @@ pub(super) async fn execute(f: &Federation, run: &Run, name: &str, input: Value)
 		}
 		"aidash_api_catalog" => catalog(api.caller.tenant(), input["query"].as_str().unwrap_or("")),
 		"tenant_overview" => api.overview(run).await,
+		"scratch_space_configure" => api.scratch_space(run, input).await,
 		"data_protection_set" => api.set_data_protection(input).await,
 		"catalog_review_approve" => api.review_approve(serde_json::from_value(input)?).await,
 		_ => api.typed(name, input).await,

@@ -294,26 +294,43 @@ impl AgentBindings {
 		let policy = self.exposure_policy();
 		policy.validate()?;
 		let defaults = policy.default_tools();
-		if self.schema_version != BINDING_SCHEMA
-			|| !(1..=1000).contains(&self.max_steps)
+		if self.schema_version != BINDING_SCHEMA {
+			return Err(Error::Invalid(format!(
+				"Agent config.schema_version must be {BINDING_SCHEMA}"
+			)));
+		}
+		if !(1..=1000).contains(&self.max_steps)
 			|| !(1..=MAX_TOOL_PARALLELISM).contains(&self.tool_parallelism)
-			|| self.bindings.len() > MAX_BINDINGS
-			|| self.instructions.trim().is_empty()
-				&& !self.has_plugin_skills()
-				&& !self
-					.bindings
-					.iter()
-					.any(|b| matches!(b.kind, BindingKind::Skill | BindingKind::Source))
-			// Saved definitions name the Workspace tools the Thread tools replace.
-			|| self.remove_default.iter().any(|name| {
-				!defaults.contains(&crate::tool::thread_tools::current(name))
-			})
+		{
+			return Err(Error::Invalid(format!(
+				"Agent max_steps must be between 1 and 1000 and tool_parallelism between 1 and {MAX_TOOL_PARALLELISM}, inclusive"
+			)));
+		}
+		if self.bindings.len() > MAX_BINDINGS {
+			return Err(Error::Invalid(format!(
+				"Agent bindings accepts at most {MAX_BINDINGS} entries"
+			)));
+		}
+		if self.instructions.trim().is_empty()
+			&& !self.has_plugin_skills()
+			&& !self
+				.bindings
+				.iter()
+				.any(|b| matches!(b.kind, BindingKind::Skill | BindingKind::Source))
+		{
+			return Err(Error::Invalid("Provide nonempty Agent instructions, an Agent Plugin Skill, or a Skill or Source Binding".into()));
+		}
+		if self
+			.remove_default
+			.iter()
+			.any(|name| !defaults.contains(&crate::tool::thread_tools::current(name)))
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
-			return Err(Error::Invalid(
-				"invalid Binding schema, defaults or Agent instructions".into(),
-			));
+			return Err(Error::Invalid(format!(
+				"remove_default accepts unique names from the exposure policy defaults: {}",
+				defaults.join(", ")
+			)));
 		}
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
@@ -330,7 +347,10 @@ impl AgentBindings {
 				));
 			}
 			if !targets.insert(&binding.target) {
-				return Err(Error::Invalid("duplicate Binding target".into()));
+				return Err(Error::Invalid(format!(
+					"duplicate Binding target {}@{} on {}; keep one Binding per target",
+					binding.target.id, binding.target.version, binding.target.registry_deployment
+				)));
 			}
 		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
@@ -672,7 +692,7 @@ impl QualifiedRef {
 			|| semver::Version::parse(&self.version).is_err()
 		{
 			return Err(Error::Invalid(
-				"invalid qualified capability reference".into(),
+				"A Binding target requires a qualified registry_deployment, an id of 1 to 100 ASCII letters, digits, dots, underscores or hyphens starting with a letter or digit, and an exact semantic version".into(),
 			));
 		}
 		Ok(())
@@ -940,9 +960,9 @@ impl Binding {
 			|| self.members.len() > MAX_BINDINGS
 			|| self.members.iter().collect::<BTreeSet<_>>().len() != self.members.len()
 		{
-			return Err(Error::Invalid(
-				"invalid Binding alias or member selection".into(),
-			));
+			return Err(Error::Invalid(format!(
+				"Only Tool Bindings accept an alias. Only Bundle Bindings accept members, with at most {MAX_BINDINGS} unique names"
+			)));
 		}
 		self.narrow.intersect(&Narrowing::default())?;
 		Ok(())
@@ -1253,6 +1273,14 @@ impl BindingSnapshot {
 			for (reference, kind) in
 				definition_references(&definition.identity, &definition.definition)?
 			{
+				// An unavailable Configurator sandbox operation has no snapshot
+				// definition or dispatch. All retained edges must match their type.
+				if definition.identity == self.agent
+					&& crate::tool::configurator::sandbox_operation(&self.agent, &reference)
+						.is_some() && !definitions.contains_key(&reference)
+				{
+					continue;
+				}
 				if definitions
 					.get(&reference)
 					.is_none_or(|target| !reference_kind_matches(&kind, &target.definition.kind))
