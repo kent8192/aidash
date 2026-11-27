@@ -2999,6 +2999,7 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 		if binding.identity.registry_deployment != access.node_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
+		access.tx.try_native_mut()?;
 		let current =
 			catalog::entry(&mut access, &binding.identity.local(), "registry.read").await?;
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(&current)?)
@@ -3024,6 +3025,7 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 		if binding.identity.registry_deployment != access.node_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
+		access.tx.try_native_mut()?;
 		let current = catalog::metadata(&mut access, &binding.identity.local()).await?;
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != binding.digest
 		{

@@ -147,6 +147,13 @@ impl AccessTransaction {
 		self.transaction.is_some()
 	}
 
+	/// A lease boundary may hand us a suspended transaction.
+	pub(crate) fn try_native_mut(&mut self) -> Result<&mut crate::database::native::Transaction> {
+		self.transaction
+			.as_mut()
+			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))
+	}
+
 	/// The distribution lock this physical transaction holds, read when asked. A
 	/// suspended transaction holds none.
 	pub(crate) fn distribution_hold(&self) -> crate::database::native::distribution::Hold {
@@ -228,11 +235,7 @@ impl AccessTransaction {
 	}
 
 	async fn require_live_node(&mut self, tenant: &str, node: &str) -> Result<()> {
-		let epoch = self
-			.transaction
-			.as_ref()
-			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?
-			.lock_epoch();
+		let epoch = self.try_native_mut()?.lock_epoch();
 		if epoch != self.live_nodes_epoch {
 			self.live_nodes.clear();
 			self.live_nodes_epoch = epoch;
@@ -922,8 +925,9 @@ impl Access {
 	/// Commit the completed authorization checks and release their row locks
 	/// while the worker waits on an external provider.
 	pub async fn suspend(&mut self) -> Result<()> {
+		let tx = self.tx.try_native_mut()?;
 		let rows = std::mem::take(&mut self.pending_decisions);
-		Authorization::record_rows(&mut self.tx, &self.identity.tenant, rows).await?;
+		Authorization::record_rows(tx, &self.identity.tenant, rows).await?;
 		let previous = self
 			.tx
 			.take()

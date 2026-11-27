@@ -3437,29 +3437,9 @@ connection: None,
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					// Authority Changes enter without the Run's policy locks. A Scratch
-					// Space file call keeps them through Binding admission and releases
-					// them at the tool's Runner boundary.
-					let runner_file = pod_file_call(run, &contract.identity, &call.arguments);
-					if let Some(guard) = guard {
-						if contract.behavior.authority_change {
-							guard.suspend().await?;
-						}
-						if contract.behavior.authority_change || runner_file {
-							visibility.suspend().await?;
-						}
-					}
-					let (invoked, note) = refusal_note::scoped(tool.invoke(run, call.arguments.clone(), &key)).await;
-					if (contract.behavior.authority_change || runner_file) && let Some(guard) = guard {
-						// The file tool reacquired authority to settle. Release it before
-						// the visibility gate so a waiting Authority Change can proceed.
-						if runner_file {
-							guard.suspend().await?;
-						}
-						let resumed = visibility.resume().await;
-						guard.resume().await?;
-						resumed?;
-					}
+					let (invoked, note) = invoke_sequential(
+						tool.as_ref(), run, call, &key, &contract, guard, visibility,
+					).await?;
 					match invoked {
                         Ok(output) => {
                             if contract.behavior.tenant_tool_call() {
@@ -4373,6 +4353,46 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 		}
 		error => error,
 	}
+}
+
+/// A bound Authority Change needs the Run's lease to validate and narrow
+/// the call. Dispatch then needs that lease released to change policy.
+async fn invoke_sequential(
+	tool: &dyn ExecutionTool,
+	run: &Run,
+	call: &aidash_domain::provider::ToolCall,
+	key: &str,
+	contract: &aidash_domain::tool::ToolContract,
+	guard: Option<&dyn ExecutionAuthority>,
+	visibility: &mut dyn ExecutionVisibility,
+) -> Result<(Result<Value>, Option<RefusalNote>)> {
+	let invoke = || refusal_note::scoped(tool.invoke(run, call.arguments.clone(), key));
+	let Some(guard) = guard else {
+		return Ok(invoke().await);
+	};
+	let outcome = if contract.behavior.authority_change {
+		let (admitted, note) = refusal_note::scoped(tool.admit(run, call.arguments.clone())).await;
+		let admitted = match admitted {
+			Ok(input) => input,
+			Err(error) => return Ok((Err(error), note)),
+		};
+		guard.suspend().await?;
+		visibility.suspend().await?;
+		refusal_note::scoped(tool.dispatch(run, admitted, key)).await
+	} else if pod_file_call(run, &contract.identity, &call.arguments) {
+		// The file tool releases authority at its Runner boundary and
+		// reacquires it to settle. Drop it before retaking visibility.
+		visibility.suspend().await?;
+		let outcome = invoke().await;
+		guard.suspend().await?;
+		outcome
+	} else {
+		return Ok(invoke().await);
+	};
+	let resumed = visibility.resume().await;
+	guard.resume().await?;
+	resumed?;
+	Ok(outcome)
 }
 
 fn pod_file_call(run: &Run, identity: &ToolIdentity, input: &Value) -> bool {
