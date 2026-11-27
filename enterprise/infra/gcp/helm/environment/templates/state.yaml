@@ -5,20 +5,21 @@
 {{- $name := include "environment.name" . -}}
 {{- $secret := required "postgres.existingSecret is required" .Values.postgres.existingSecret -}}
 {{- $memory := .Values.postgres.resources.limits.memory | toString -}}
-{{- if not (regexMatch "^[1-9][0-9]*(Mi|Gi)$" $memory) -}}
-  {{- fail "postgres.resources.limits.memory must be a whole number in Mi or Gi" -}}
+{{- if not (regexMatch "^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+|[KMGTPE]i|[numkMGTPE])?$" $memory) -}}
+  {{- fail "postgres.resources.limits.memory must be a positive Kubernetes memory quantity" -}}
 {{- end -}}
-{{- $memoryMiB := regexFind "^[0-9]+" $memory | int -}}
-{{- if hasSuffix "Gi" $memory -}}
-  {{- $memoryMiB = mul $memoryMiB 1024 -}}
-{{- end -}}
+{{- /* PostgreSQL's MB settings use MiB. Convert both binary and decimal Kubernetes units. */ -}}
+{{- $unit := regexFind "([KMGTPE]i|[numkMGTPE])$" $memory -}}
+{{- $scales := dict "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 "n" 0.000000001 "u" 0.000001 "m" 0.001 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "P" 1000000000000000 "E" 1000000000000000000 -}}
+{{- $bytes := mulf (trimSuffix $unit $memory | float64) (get $scales $unit | default 1) -}}
+{{- $memoryMiB := divf $bytes 1048576 -}}
 {{- $sharedMiB := int .Values.postgres.sharedBuffersMiB -}}
 {{- $backendMiB := int .Values.postgres.activeBackendMiB -}}
 {{- if or (lt $sharedMiB 1) (lt $backendMiB 1) -}}
   {{- fail "postgres.sharedBuffersMiB and postgres.activeBackendMiB must be positive" -}}
 {{- end -}}
 {{- /* Leave 25% of the memory limit for PostgreSQL and workload variance. */ -}}
-{{- $maxConnections := div (sub (mul $memoryMiB 3) (mul $sharedMiB 4)) (mul $backendMiB 4) -}}
+{{- $maxConnections := divf (subf (mulf $memoryMiB 0.75) $sharedMiB) $backendMiB | int -}}
 {{- if lt $maxConnections 1 -}}
   {{- fail "PostgreSQL memory limit leaves no connections after shared_buffers and 25% headroom" -}}
 {{- end -}}

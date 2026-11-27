@@ -921,11 +921,13 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(postgres['args'], ['-c', 'shared_buffers=256MB', '-c', 'max_connections=588'])
         self.assertEqual(postgres['resources']['limits']['memory'], '8Gi')
         self.assertEqual(postgres['resources']['requests']['memory'], '256Mi')
-        smaller = render(self.environment, dict(values, postgres=dict(POSTGRES, resources={
-            'limits': {'memory': '4097Mi'},
-        })))
-        postgres = select(smaller, 'StatefulSet', '-postgres')['spec']['template']['spec']['containers'][0]
-        self.assertEqual(postgres['args'], ['-c', 'shared_buffers=256MB', '-c', 'max_connections=281'])
+        for memory, maximum in (('4097Mi', 281), ('8G', 546), ('8.589934592e9', 588)):
+            with self.subTest(memory=memory):
+                resized = render(self.environment, dict(values, postgres=dict(POSTGRES, resources={
+                    'limits': {'memory': memory},
+                })))
+                postgres = select(resized, 'StatefulSet', '-postgres')['spec']['template']['spec']['containers'][0]
+                self.assertEqual(postgres['args'], ['-c', 'shared_buffers=256MB', '-c', f'max_connections={maximum}'])
         self.assertEqual(observer['from'], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'fixture'}}}])
         self.assertEqual(observer['ports'], [{'protocol': 'TCP', 'port': 5432}])
         self.assertEqual(maintenance['ports'], [{'protocol': 'TCP', 'port': 5432}])
