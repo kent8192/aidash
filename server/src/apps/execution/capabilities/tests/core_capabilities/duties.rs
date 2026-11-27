@@ -3,7 +3,7 @@
 //! access, the Duty's own Thread and the Agent tools.
 use super::*;
 use aidash_server::apps::workspaces::services::duties::{agent_tool, pass};
-use chrono::{Duration as Span, Utc};
+use chrono::{DateTime, Duration as Span, Utc};
 
 fn definition(title: &str, every_seconds: i64) -> Value {
 	json!({
@@ -40,6 +40,15 @@ pub(super) async fn make_due(c: &CoreFixture, duty: Uuid) {
 		.execute(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+}
+
+/// The time to pass to the scheduler when the persisted tick becomes due.
+async fn next_fire_at(c: &CoreFixture, duty: Uuid) -> DateTime<Utc> {
+	sqlx::query_scalar("SELECT next_fire_at FROM duties WHERE id = $1")
+		.bind(duty)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
 }
 
 async fn ticks(c: &CoreFixture, duty: Uuid) -> Vec<(String, Option<String>, Option<Uuid>)> {
@@ -324,12 +333,10 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	assert_ne!(own, origin, "a Duty opens a Thread of its own");
 	assert_eq!(duty["thread_id"], json!(own));
 	assert_eq!(duty["origin_thread_id"], json!(origin));
-	make_due(&c, id).await;
-	let first = pass(&c.f, Utc::now()).await.unwrap();
+	let first = pass(&c.f, next_fire_at(&c, id).await).await.unwrap();
 	assert_eq!(first.started.len(), 1, "{first:?}");
 	finish_task(&c, first.started[0]).await;
-	make_due(&c, id).await;
-	let second = pass(&c.f, Utc::now()).await.unwrap();
+	let second = pass(&c.f, next_fire_at(&c, id).await).await.unwrap();
 	assert_eq!(second.started.len(), 1, "{second:?}");
 	// Every Task the Duty started lives in its own Thread.
 	for task in [first.started[0], second.started[0]] {
@@ -618,7 +625,8 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 			.unwrap_or_else(|| other["thread"]["id"].clone()),
 	)
 	.unwrap();
-	let foreign = register(&c, elsewhere, definition("Elsewhere", 86_400)).await;
+	// Its first tick stays beyond the Agent's next weekday cron tick.
+	let foreign = register(&c, elsewhere, definition("Elsewhere", 604_800)).await;
 	let reach = agent_tool(
 		&c.f,
 		&run,
@@ -632,8 +640,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		"{reach:?}"
 	);
 	// A Run a Duty started may set up Duties too (#1012).
-	make_due(&c, id).await;
-	let report = pass(&c.f, Utc::now()).await.unwrap();
+	let report = pass(&c.f, next_fire_at(&c, id).await).await.unwrap();
 	assert_eq!(report.started.len(), 1, "{report:?}");
 	let scheduled =
 		c.f.store
@@ -2532,8 +2539,10 @@ async fn stopping_a_flow_cancels_the_tasks_of_a_deleted_duty(
 	.await
 	.unwrap();
 	let duty: Uuid = serde_json::from_value(duty["duty_id"].clone()).unwrap();
-	make_due(&c, duty).await;
-	let started = pass(&c.f, Utc::now()).await.unwrap().started;
+	let started = pass(&c.f, next_fire_at(&c, duty).await)
+		.await
+		.unwrap()
+		.started;
 	assert_eq!(started.len(), 1);
 	let run =
 		c.f.store
