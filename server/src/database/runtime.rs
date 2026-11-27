@@ -27,6 +27,7 @@ pub(crate) struct ProcessPools {
 }
 
 impl ProcessPools {
+	#[allow(clippy::disallowed_methods)] // Startup reads PostgreSQL catalogs and connection settings.
 	pub(crate) async fn connect(url: &str) -> Result<Self> {
 		let budget = budget::Budget::from_env()?;
 		let statement_limit = limits::statement_limit()?;
@@ -75,6 +76,7 @@ impl ProcessPools {
 	}
 }
 
+#[allow(clippy::disallowed_methods)] // The startup login check reads only PostgreSQL catalogs.
 pub(crate) async fn connect_egress(url: &str) -> Result<Pool> {
 	// The Helm connection budget reserves eight slots per Egress gateway replica.
 	let pool = open(url, 8, limits::statement_limit()?, Some("egress"), false).await?;
@@ -82,6 +84,7 @@ pub(crate) async fn connect_egress(url: &str) -> Result<Pool> {
 	Ok(pool)
 }
 
+#[allow(clippy::disallowed_methods)] // The startup login check reads only PostgreSQL catalogs.
 pub(crate) async fn connect_preview(url: &str) -> Result<Pool> {
 	// The Helm connection budget reserves eight slots per standalone Preview replica.
 	let pool = open(url, 8, limits::statement_limit()?, Some("preview"), false).await?;
@@ -95,6 +98,7 @@ pub(crate) async fn connect_preview(url: &str) -> Result<Pool> {
 /// is reset when it returns to the pool, so a session-level setting made by
 /// mistake cannot reach the next borrower; derived pools clone these options
 /// and inherit the reset.
+#[allow(clippy::disallowed_methods)] // Verify the login against PostgreSQL catalogs before returning the connection.
 pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
 	let connection = open(
 		url,
@@ -115,6 +119,7 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 /// The login check is the server's: a login that row-level security would not
 /// bind is refused. The statement limit is not applied, because a command is not
 /// a request or a worker and may legitimately run a long statement (ADR 0113).
+#[allow(clippy::disallowed_methods)] // Verify the login against PostgreSQL catalogs before returning the connection.
 pub async fn connect_command(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
 	let connection = open(url, max_connections, None, None, false)
 		.await?
@@ -133,6 +138,7 @@ pub async fn connect_command(url: &str, max_connections: u32) -> Result<Database
 /// still refused: a superuser, `BYPASSRLS`, `REPLICATION`, a session that
 /// switched roles, a role that can `SET ROLE` to one of those, and membership
 /// in a role that reaches the server's files or programs.
+#[allow(clippy::disallowed_methods)] // Verify the migration owner using only PostgreSQL catalogs.
 pub async fn connect_maintenance(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
 	// A maintenance command is long by design and has no statement limit.
 	let connection = open(url, max_connections, None, None, false)
