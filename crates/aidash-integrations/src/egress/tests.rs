@@ -532,6 +532,7 @@ impl Authority for FixtureAuthority {
 			request: Uuid::new_v4(),
 			service: service.into(),
 			definition: ExternalService {
+				oauth_connection: None,
 				base_url: self.upstream.clone(),
 				methods: vec!["GET".into(), "POST".into()],
 				secret: Some("image-key".into()),
@@ -850,6 +851,7 @@ impl Authority for BrokerAuthority {
 
 fn secret_service() -> ExternalService {
 	ExternalService {
+		oauth_connection: None,
 		base_url: "https://api.example.test/v1/".into(),
 		methods: vec!["GET".into(), "POST".into()],
 		secret: Some("image-key".into()),
@@ -1100,6 +1102,7 @@ impl Authority for DirectAuthority {
 			request: Uuid::new_v4(),
 			service: service.into(),
 			definition: ExternalService {
+				oauth_connection: None,
 				base_url: self.upstream.clone(),
 				methods: vec!["GET".into()],
 				secret: None,
@@ -1236,6 +1239,7 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 			request: Uuid::new_v4(),
 			service: service.into(),
 			definition: ExternalService {
+				oauth_connection: None,
 				base_url: self.upstream.clone(),
 				methods: vec!["GET".into()],
 				secret: Some("image-key".into()),
@@ -2815,6 +2819,7 @@ impl Authority for ShapedAuthority {
 			request: Uuid::new_v4(),
 			service: service.into(),
 			definition: ExternalService {
+				oauth_connection: None,
 				base_url: self.base.clone(),
 				methods: self.methods.clone(),
 				secret: None,

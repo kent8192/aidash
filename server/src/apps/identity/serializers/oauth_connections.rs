@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[schemars(rename = "ConnectionAuthorizationStart")]
 pub struct Start {
 	pub resource: String,
+	pub issuer: Option<String>,
+	pub scratch_space: Option<uuid::Uuid>,
 	#[serde(default)]
 	pub scopes: Vec<String>,
 	pub tool: Option<aidash_application::oauth_connections::ToolRef>,

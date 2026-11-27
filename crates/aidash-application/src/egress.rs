@@ -36,6 +36,7 @@ pub struct ServiceRefusal {
 
 /// The outcome of asking to call an External service from a Scratch Space.
 pub enum ExternalAdmission {
+	Reconnect { resource: String },
 	Admitted(Box<Admission>),
 	Refused(ServiceRefusal),
 }

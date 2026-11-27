@@ -115,6 +115,7 @@ fn an_empty_request_admits_nothing() {
 #[test]
 fn the_owner_s_client_wins_over_the_tenant_s() {
 	let person = OAuthClient {
+		provider: None,
 		id: Uuid::from_u128(1),
 		tenant: "acme".into(),
 		owner: Some("alice".into()),
@@ -146,6 +147,7 @@ fn the_owner_s_client_wins_over_the_tenant_s() {
 #[test]
 fn a_client_is_bound_to_its_issuer_host() {
 	let client = OAuthClient {
+		provider: None,
 		id: Uuid::from_u128(1),
 		tenant: "acme".into(),
 		owner: None,
@@ -166,4 +168,24 @@ fn a_client_is_bound_to_its_issuer_host() {
 		.host(),
 		"[::1]"
 	);
+}
+
+#[test]
+fn http_connection_destination_is_bound_to_origin_and_path_segments() {
+	let resource = "https://api.x.com/2";
+	for endpoint in [
+		"https://api.x.com/2",
+		"https://api.x.com/2/users/me?user.fields=id",
+	] {
+		assert!(super::validate_destination(resource, endpoint).is_ok());
+	}
+	for endpoint in [
+		"https://api.x.com/20",
+		"https://other.example/2/users",
+		"https://api.x.com/2/../private",
+		"https://api.x.com/2/a%2fb",
+		"https://api.x.com/2/a%255cb",
+	] {
+		assert!(super::validate_destination(resource, endpoint).is_err());
+	}
 }

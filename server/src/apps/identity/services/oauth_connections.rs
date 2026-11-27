@@ -273,18 +273,41 @@ impl Connections {
 			pool: f.store.control_pool.clone(),
 			tenant: tenant.clone(),
 		};
-		let request = self
-			.service()?
-			.begin(
-				&owner,
-				&input.resource,
-				&input.scopes,
-				input.tool.as_ref(),
-				&mut lookup,
-				&redirect,
-				&return_to,
-			)
-			.await?;
+		let request = if let Some(issuer) = input.issuer {
+			if input.tool.is_some() {
+				return Err(Error::Invalid(
+					"Choose an OAuth Client issuer or an MCP tool.".into(),
+				));
+			}
+			self.service()?
+				.begin_configured(
+					&owner,
+					&issuer,
+					input.scratch_space,
+					&input.resource,
+					&input.scopes,
+					&redirect,
+					&return_to,
+				)
+				.await?
+		} else {
+			if input.scratch_space.is_some() {
+				return Err(Error::Invalid(
+					"Choose the registered OAuth Client for this Scratch Space.".into(),
+				));
+			}
+			self.service()?
+				.begin(
+					&owner,
+					&input.resource,
+					&input.scopes,
+					input.tool.as_ref(),
+					&mut lookup,
+					&redirect,
+					&return_to,
+				)
+				.await?
+		};
 		let p = request.pending;
 		OAuthAuthorization::build()
 			.state_hash(digest(request.state.expose_secret()))

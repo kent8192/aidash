@@ -30,6 +30,7 @@ pub struct ScopeCeiling {
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 #[schemars(rename = "OAuthClientMetadata")]
 pub struct Metadata {
+	pub provider: Option<aidash_domain::oauth_connections::OAuthProvider>,
 	pub id: Uuid,
 	pub tenant: String,
 	pub owner: Ownership,
@@ -43,6 +44,7 @@ pub struct Metadata {
 impl From<OAuthClient> for Metadata {
 	fn from(row: OAuthClient) -> Self {
 		Self {
+			provider: row.provider,
 			id: row.id,
 			tenant: row.tenant,
 			owner: if row.owner.is_some() {
@@ -60,6 +62,7 @@ impl From<OAuthClient> for Metadata {
 	}
 }
 pub struct Put {
+	pub provider: Option<aidash_domain::oauth_connections::OAuthProvider>,
 	pub owner: Ownership,
 	pub issuer: String,
 	pub client_id: String,
@@ -75,6 +78,7 @@ pub trait Scope: Send {
 	async fn ceiling(&mut self, resource: &str) -> Result<Option<ScopeCeiling>>;
 	async fn save_ceiling(&mut self, row: &ScopeCeiling, new: bool) -> Result<()>;
 	async fn remove_ceiling(&mut self, resource: &str) -> Result<()>;
+	async fn answer_setting(&mut self, request: Uuid, client: Uuid, subject: &str) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }
 #[async_trait]
@@ -116,6 +120,17 @@ impl Service {
 		id: Option<Uuid>,
 		input: Put,
 	) -> Result<Metadata> {
+		self.put_with_setting(tenant, subject, id, input, None)
+			.await
+	}
+	pub async fn put_with_setting(
+		&self,
+		tenant: &str,
+		subject: &str,
+		id: Option<Uuid>,
+		input: Put,
+		setting: Option<Uuid>,
+	) -> Result<Metadata> {
 		let issuer = normalize_issuer(&input.issuer)?;
 		if input.client_id.is_empty()
 			|| input.client_id.len() > 4096
@@ -129,6 +144,9 @@ impl Service {
 				|| secret.expose_secret().chars().any(char::is_control))
 		{
 			return Err(Error::Invalid("invalid OAuth client_secret".into()));
+		}
+		if let Some(provider) = &input.provider {
+			provider.validate()?;
 		}
 		let owner = input.owner.subject(subject).map(str::to_owned);
 		let mut tx = self.repository.begin(tenant).await?;
@@ -190,9 +208,19 @@ impl Service {
 				"oauth_client_secret_required: changing the client ID requires its secret".into(),
 			));
 		}
+		if let Some(current) = &current
+			&& input.provider.is_some()
+			&& current.provider != input.provider
+		{
+			return Err(Error::Conflict(
+				"OAuth provider endpoints are immutable. Register a new client to change them."
+					.into(),
+			));
+		}
 		let new = current.is_none();
 		let now = Utc::now();
 		let mut row = current.unwrap_or_else(|| OAuthClient {
+			provider: input.provider,
 			id: Uuid::now_v7(),
 			tenant: tenant.into(),
 			owner,
@@ -241,7 +269,17 @@ impl Service {
 					tenant,
 					&resource,
 					ClientBinding {
-						issuer: issuer.clone(),
+						configured_resource: row
+							.provider
+							.as_ref()
+							.map(|p| canonical_resource(&p.resource))
+							.transpose()?,
+						issuer: row
+							.provider
+							.as_ref()
+							.map(|p| &p.token_endpoint)
+							.unwrap_or(&issuer)
+							.clone(),
 						client_id: input.client_id.clone(),
 						redirect_uri: None,
 					},
@@ -259,6 +297,9 @@ impl Service {
 		row.revision += 1;
 		let result = async {
 			tx.save_client(&row, false).await?;
+			if let Some(request) = setting {
+				tx.answer_setting(request, row.id, subject).await?;
+			}
 			tx.commit().await
 		}
 		.await;

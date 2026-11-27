@@ -87,6 +87,12 @@ pub struct ToolClients {
 	mcp_public: reqwest::Client,
 }
 impl ToolClients {
+	/// Trust a fixture CA for explicitly permitted tool origins.
+	#[cfg(feature = "test-support")]
+	pub fn with_test_client(mut self, client: reqwest::Client) -> Self {
+		self.permitted = client;
+		self
+	}
 	pub fn new() -> Result<Self> {
 		Ok(Self {
 			mcp_public: crate::keyless::public_client_timeout(None, TOOL_CONNECT_TIMEOUT)?,
@@ -228,7 +234,10 @@ impl ToolTransport for HttpTools {
 				web_fetch_response(response, &url).await
 			}
 			ToolConfig::Http {
-				endpoint, replay, ..
+				endpoint,
+				replay,
+				oauth_connection,
+				..
 			} => {
 				// Keep the destination authority check even when the request goes
 				// to the broker: the endpoint must still be one this call may use.
@@ -236,6 +245,27 @@ impl ToolTransport for HttpTools {
 					Ok(client) => client,
 					Err(Error::Forbidden) => return Ok(tool_policy_refusal()),
 					Err(error) => return Err(error),
+				};
+				if let Some(resource) = oauth_connection {
+					aidash_domain::oauth_connections::validate_destination(resource, endpoint)?;
+					match secret {
+						Some(
+							CallSecret::Connection { record, .. }
+							| CallSecret::BrokeredConnection { record, .. },
+						) if record.resource
+							== aidash_domain::oauth_connections::canonical_resource(resource)? => {}
+						_ => {
+							return Err(Error::Invalid(
+								aidash_domain::oauth_connections::reconnect(resource),
+							));
+						}
+					}
+				}
+				let failed = |error| match oauth_connection {
+					Some(resource) => {
+						Error::Invalid(aidash_domain::oauth_connections::reconnect(resource))
+					}
+					None => auth::source_error(error, endpoint),
 				};
 				let request = if let Some(
 					CallSecret::Brokered { source, rest, .. }
@@ -246,11 +276,18 @@ impl ToolTransport for HttpTools {
 					// choice, so it may be an in-cluster private address.
 					// A broker-owned `connection_required` (the grant ended at refresh) is
 					// typed here, never inferred from a body.
-					let route = source
-						.route()
-						.await
-						.map_err(|error| auth::source_error(error, endpoint))?;
-					let url = broker::forward_url(&route.base, rest)?;
+					let route = source.route().await.map_err(failed)?;
+					let rest = if oauth_connection.is_some() {
+						aidash_application::tenant_secrets::forward_rest(endpoint)?
+					} else {
+						rest.clone()
+					};
+					let mut url = broker::forward_url(&route.base, &rest)?;
+					if oauth_connection.is_some() {
+						let endpoint = reqwest::Url::parse(endpoint)
+							.map_err(|_| Error::Invalid("Invalid HTTP tool endpoint.".into()))?;
+						url.set_query(endpoint.query());
+					}
 					self.clients
 						.permitted
 						.post(url)
@@ -266,6 +303,8 @@ impl ToolTransport for HttpTools {
 						// A self-hosted Tenant Secret goes as the bearer
 						// credential, exactly as before broker deployments.
 						request.bearer_auth(value.expose_secret())
+					} else if let Some(CallSecret::Connection { source, .. }) = secret {
+						request.bearer_auth(source.bearer().await.map_err(failed)?.expose_secret())
 					} else {
 						request
 					}

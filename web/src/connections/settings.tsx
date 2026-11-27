@@ -99,6 +99,8 @@ export function Connections({
                         tenant,
                         resource: item.resource,
                         scopes: item.scopes,
+                        issuer: item.configured ? item.issuer : undefined,
+                        scratchSpace: item.scratch_space ?? undefined,
                       });
                       setMessage(outcomeMessage(outcome, ja));
                     })

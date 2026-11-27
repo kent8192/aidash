@@ -9,6 +9,9 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 
+import { connect } from "./connect";
+import { outcomeMessage } from "./install";
+
 export function OAuthClients({
   tenant,
   canUse,
@@ -32,11 +35,20 @@ export function OAuthClients({
   const [owner, setOwner] = useState<SecretOwnership>(canUse ? "me" : "tenant");
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
+  const [authorization, setAuthorization] = useState("");
+  const [tokenEndpoint, setTokenEndpoint] = useState("");
+  const [resource, setResource] = useState("");
+  const [scopes, setScopes] = useState("");
+  const [message, setMessage] = useState("");
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   function reset() {
     setEditing(null);
+    setAuthorization("");
+    setTokenEndpoint("");
+    setResource("");
+    setScopes("");
     setIssuer("");
     setClientId("");
     setSecret("");
@@ -51,6 +63,16 @@ export function OAuthClients({
           owner,
           issuer,
           client_id: clientId,
+          ...(authorization
+            ? {
+                provider: {
+                  authorization_endpoint: authorization,
+                  token_endpoint: tokenEndpoint,
+                  resource,
+                  scopes: scopes.trim().split(/\s+/).filter(Boolean),
+                },
+              }
+            : {}),
           ...(secret ? { client_secret: secret } : {}),
           expected_revision: editing?.revision ?? 0,
         });
@@ -79,6 +101,7 @@ export function OAuthClients({
           ? "自動登録に対応しない認証サーバー用です。個人の登録が Tenant の登録より優先されます。シークレットは書き込み専用です。"
           : "For authorization servers without dynamic registration. Your own registration takes precedence over the Tenant's. Secrets are write-only."}
       </Hint>
+      {message && <p role="status">{message}</p>}
       {query.isError && <Alert>{String(query.error)}</Alert>}
       <ul className="divide-y divide-border">
         {query.data?.map((item) => (
@@ -98,6 +121,37 @@ export function OAuthClients({
                   ? "シークレットなし"
                   : "No secret"}
             </span>
+            {item.provider && canUse && (
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                onClick={async () => {
+                  if (!item.provider) return;
+                  setBusy(true);
+                  setError("");
+                  setMessage("");
+                  try {
+                    const outcome = await connect({
+                      tenant,
+                      issuer: item.issuer,
+                      resource: item.provider.resource,
+                      scopes: item.provider.scopes,
+                    });
+                    setMessage(outcomeMessage(outcome, ja));
+                    await cache.invalidateQueries({
+                      queryKey: ["oauth-connections"],
+                    });
+                  } catch (reason) {
+                    setError(String(reason));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {ja ? "接続" : "Connect"}
+              </Button>
+            )}
             {(item.owner === "me" ? canUse : canManage) && (
               <>
                 <Button
@@ -107,6 +161,12 @@ export function OAuthClients({
                   disabled={busy}
                   onClick={() => {
                     setEditing(item);
+                    setAuthorization(
+                      item.provider?.authorization_endpoint ?? "",
+                    );
+                    setTokenEndpoint(item.provider?.token_endpoint ?? "");
+                    setResource(item.provider?.resource ?? "");
+                    setScopes(item.provider?.scopes.join(" ") ?? "");
                     setOwner(item.owner);
                     setIssuer(item.issuer);
                     setClientId(item.client_id);
@@ -163,6 +223,49 @@ export function OAuthClients({
             ? "Issuer は登録後に変更できません（409 oauth_client_issuer_immutable）。変更する場合は新しく登録してください。"
             : "Issuer cannot change after creation (409 oauth_client_issuer_immutable). Create a new registration for a different issuer."}
         </Hint>
+        <details open={editing?.provider ? true : undefined}>
+          <summary>
+            {ja ? "OAuth プロバイダーの設定" : "OAuth provider settings"}
+          </summary>
+          <Field label={ja ? "認可エンドポイント" : "Authorization endpoint"}>
+            <Input
+              type="url"
+              value={authorization}
+              readOnly={!!editing}
+              required={!!(tokenEndpoint || resource || scopes)}
+              onChange={(e) => setAuthorization(e.target.value)}
+            />
+          </Field>
+          <Field label={ja ? "トークンエンドポイント" : "Token endpoint"}>
+            <Input
+              type="url"
+              value={tokenEndpoint}
+              readOnly={!!editing}
+              required={!!authorization}
+              onChange={(e) => setTokenEndpoint(e.target.value)}
+            />
+          </Field>
+          <Field label={ja ? "接続先のリソース URL" : "Protected resource URL"}>
+            <Input
+              type="url"
+              value={resource}
+              readOnly={!!editing}
+              required={!!authorization}
+              onChange={(e) => setResource(e.target.value)}
+            />
+          </Field>
+          <Field
+            label={
+              ja ? "スコープ（スペース区切り）" : "Scopes (space separated)"
+            }
+          >
+            <Input
+              value={scopes}
+              readOnly={!!editing}
+              onChange={(e) => setScopes(e.target.value)}
+            />
+          </Field>
+        </details>
         <Field label="Client ID">
           <Input
             required

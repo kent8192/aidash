@@ -172,12 +172,14 @@ fn scope(space: Uuid, run: Option<Uuid>) -> ScopeSettings {
 fn admitted(outcome: ExternalAdmission) -> Admission {
 	match outcome {
 		ExternalAdmission::Admitted(admission) => *admission,
+		ExternalAdmission::Reconnect { resource } => panic!("Reconnect {resource}"),
 		ExternalAdmission::Refused(refusal) => panic!("refused: {refusal:?}"),
 	}
 }
 
 fn refused(outcome: ExternalAdmission) -> ServiceRefusal {
 	match outcome {
+		ExternalAdmission::Reconnect { resource } => panic!("Reconnect {resource}"),
 		ExternalAdmission::Refused(refusal) => refusal,
 		ExternalAdmission::Admitted(admission) => {
 			panic!("admitted {}", admission.definition.base_url)

@@ -271,6 +271,7 @@ mod destinations {
 		let base = format!("http://127.0.0.1:{port}");
 		let transport = tools(&[&base]);
 		let rate = ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: format!("{base}/rate"),
 			replay: "unsafe".into(),
 			secret: None,
@@ -284,6 +285,7 @@ mod destinations {
 			matches!(error, Error::ToolNotDelivered { retry_after: Some(delay), .. } if delay == Duration::from_secs(32))
 		);
 		let timeout = ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: format!("{base}/timeout"),
 			replay: "unsafe".into(),
 			secret: None,
@@ -294,6 +296,7 @@ mod destinations {
 			Err(Error::ToolNotDelivered { .. })
 		));
 		let idempotent = ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: format!("{base}/unavailable"),
 			replay: "idempotent".into(),
 			secret: None,
@@ -345,6 +348,7 @@ mod destinations {
 		});
 		let endpoint = format!("http://127.0.0.1:{port}");
 		let config = ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: endpoint.clone(),
 			replay: "unsafe".into(),
 			secret: None,
@@ -456,6 +460,7 @@ mod destinations {
 
 	fn http(endpoint: String) -> ToolConfig {
 		ToolConfig::Http {
+			oauth_connection: None,
 			endpoint,
 			replay: "read_only".into(),
 			secret: None,
@@ -719,6 +724,7 @@ async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothi
 	let (endpoint, server) = authorization_echo().await;
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let config = ToolConfig::Http {
+		oauth_connection: None,
 		endpoint,
 		replay: "idempotent".into(),
 		secret: Some("search".into()),
@@ -749,6 +755,7 @@ async fn an_http_tool_names_aidash_as_its_user_agent() {
 	let (endpoint, server) = authorization_echo().await;
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let config = ToolConfig::Http {
+		oauth_connection: None,
 		endpoint,
 		replay: "idempotent".into(),
 		secret: None,
@@ -1163,6 +1170,7 @@ mod brokered {
 		let endpoint = "http://127.0.0.1:9/api/v1/echo".to_owned();
 		let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 		let config = ToolConfig::Http {
+			oauth_connection: None,
 			endpoint: endpoint.clone(),
 			replay: "idempotent".into(),
 			secret: Some("search".into()),
@@ -1205,6 +1213,7 @@ mod brokered {
 			let tools =
 				HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 			let config = ToolConfig::Http {
+				oauth_connection: None,
 				endpoint,
 				replay: "idempotent".into(),
 				secret: None,
@@ -1243,6 +1252,7 @@ mod brokered {
 			let tools =
 				HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 			let config = ToolConfig::Http {
+				oauth_connection: None,
 				endpoint,
 				replay: "idempotent".into(),
 				secret: Some("search".into()),
@@ -1296,6 +1306,7 @@ mod brokered {
 		let endpoint = "http://127.0.0.1:9/api/echo".to_owned();
 		let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 		let config = ToolConfig::Http {
+			oauth_connection: None,
 			endpoint,
 			replay: "idempotent".into(),
 			secret: Some("search".into()),

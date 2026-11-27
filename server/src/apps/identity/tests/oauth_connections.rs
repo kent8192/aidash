@@ -297,6 +297,7 @@ impl aidash_application::ports::oauth::OAuthDiscovery for FixtureOAuth {
 		_: &str,
 	) -> aidash_application::Result<aidash_application::ports::oauth::AuthorizationServer> {
 		Ok(aidash_application::ports::oauth::AuthorizationServer {
+			configured: false,
 			issuer: "https://auth.example".into(),
 			authorization_endpoint: "https://auth.example/authorize".parse().unwrap(),
 			token_endpoint: "https://auth.example/token".parse().unwrap(),
@@ -679,3 +680,9 @@ async fn oauth_connections_refusal_checkpoint_is_lease_fenced_and_preserves_othe
 	}
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[path = "oauth_connections/external.rs"]
+mod external;
+#[allow(dead_code)] // The fixture also supports credential retirement tests.
+#[path = "support/personal_credentials.rs"]
+mod personal_credentials;

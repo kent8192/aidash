@@ -179,7 +179,7 @@ impl Scope for NativeScope {
 			.ok_or(Error::Forbidden)?;
 		let request = HumanRequest::lock_setting(tx, id, request.run_id).await?;
 		let form: aidash_domain::setting_requests::Form = serde_json::from_str(&request.prompt)?;
-		if !matches!(&form,aidash_domain::setting_requests::Form::Secret{name:target,..} if target==name)
+		if !matches!(&form,aidash_domain::setting_requests::Form::Secret{name:target,oauth_client:None,..} if target==name)
 		{
 			return Err(Error::Forbidden);
 		}

@@ -669,6 +669,7 @@ impl Harness {
 
 fn http_tool(endpoint: &str) -> ToolConfig {
 	ToolConfig::Http {
+		oauth_connection: None,
 		endpoint: endpoint.into(),
 		replay: "read_only".into(),
 		secret: Some("search".into()),
@@ -858,6 +859,7 @@ impl aidash_application::egress::EgressScopes for GatewayScopes {
 		let (definition, route) = match service {
 			"images" => (
 				ExternalService {
+					oauth_connection: None,
 					base_url: IMAGE_ENDPOINT.into(),
 					methods: vec!["GET".into(), "POST".into()],
 					secret: Some("image-key".into()),
@@ -868,6 +870,7 @@ impl aidash_application::egress::EgressScopes for GatewayScopes {
 			),
 			"direct" => (
 				ExternalService {
+					oauth_connection: None,
 					base_url: self.direct_base.clone(),
 					methods: vec!["GET".into()],
 					secret: None,

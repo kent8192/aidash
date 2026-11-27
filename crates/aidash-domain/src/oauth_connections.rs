@@ -1,6 +1,5 @@
-//! MCP OAuth Connections (ADR 0100): a person's grant to one MCP server, the
-//! Clients that may redeem it, and the pure rules that canonicalize a server
-//! resource and admit the scopes a person chooses.
+//! OAuth Connections (ADRs 0100 and 0152) bind a person's grant to a protected
+//! resource. Clients redeem grants for MCP servers, External services and HTTP tools.
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -29,7 +28,7 @@ pub const CONNECTION_REQUEST_KIND: &str = "MCP_CONNECTION";
 /// or HTTP only for a literal loopback address, with a lowercase scheme and
 /// host, no default port, no query, no fragment, and no path trailing `/`.
 pub fn canonical_resource(url: &str) -> Result<String, Refusal> {
-	let invalid = |detail: &str| Refusal::Invalid(format!("MCP server URL {detail}"));
+	let invalid = |detail: &str| Refusal::Invalid(format!("OAuth resource URL {detail}"));
 	if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
 		return Err(invalid("must not contain whitespace or control characters"));
 	}
@@ -103,8 +102,18 @@ pub enum ConnectionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientRef {
-	Dynamic { client_id: String },
-	Registered { client: Uuid },
+	Dynamic {
+		client_id: String,
+	},
+	Registered {
+		client: Uuid,
+	},
+	Configured {
+		#[serde(default)]
+		scratch_space: Option<Uuid>,
+		client: Uuid,
+		token_endpoint: String,
+	},
 }
 
 /// One person's MCP OAuth Connection. Tokens live in the Secret Store and never
@@ -136,6 +145,8 @@ pub struct OAuthConnection {
 /// owned by a person (`owner` is their subject) or by the Tenant (`None`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OAuthClient {
+	#[serde(default)]
+	pub provider: Option<OAuthProvider>,
 	pub id: Uuid,
 	pub tenant: String,
 	pub owner: Option<String>,
@@ -222,6 +233,86 @@ pub fn admissible_scopes(
 	admitted.sort();
 	admitted.dedup();
 	Ok(admitted)
+}
+
+/// Endpoints and scopes for a registered client without MCP discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthProvider {
+	pub authorization_endpoint: String,
+	pub token_endpoint: String,
+	pub resource: String,
+	pub scopes: Vec<String>,
+}
+
+impl OAuthProvider {
+	pub fn validate(&self) -> crate::Result<()> {
+		let mut authorization = url::Url::parse(&self.authorization_endpoint)
+			.map_err(|_| crate::Error::Invalid("Invalid authorization endpoint.".into()))?;
+		if authorization.query_pairs().any(|(k, _)| {
+			matches!(
+				k.as_ref(),
+				"client_id"
+					| "state" | "redirect_uri"
+					| "code_challenge"
+					| "code_challenge_method"
+					| "response_type"
+					| "scope" | "resource"
+			)
+		}) {
+			return Err(crate::Error::Invalid(
+				"Authorization endpoint overrides an OAuth parameter.".into(),
+			));
+		}
+		authorization.set_query(None);
+		canonical_resource(authorization.as_str())?;
+		canonical_resource(&self.token_endpoint)?;
+		canonical_resource(&self.resource)?;
+		admissible_scopes(&self.scopes, None, None, None)?;
+		Ok(())
+	}
+}
+
+/// A named connection can serve only its resource and paths below it.
+pub fn validate_destination(resource: &str, endpoint: &str) -> crate::Result<()> {
+	let resource = canonical_resource(resource)?;
+	let (path, _) = endpoint.split_once('?').unwrap_or((endpoint, ""));
+	if endpoint.contains('#')
+		|| endpoint
+			.chars()
+			.any(|c| c.is_control() || c.is_whitespace())
+	{
+		return Err(crate::Error::Invalid(
+			"Invalid OAuth Connection destination URL.".into(),
+		));
+	}
+	let endpoint = canonical_resource(path)?;
+	let url = url::Url::parse(&endpoint)
+		.map_err(|_| crate::Error::Invalid("Invalid OAuth Connection destination URL.".into()))?;
+	let path = url.path().to_ascii_lowercase();
+	if ["%2f", "%5c", "%25"]
+		.iter()
+		.any(|encoding| path.contains(encoding))
+	{
+		return Err(crate::Error::Invalid(
+			"Invalid encoded separator in the OAuth Connection destination.".into(),
+		));
+	}
+	if endpoint == resource
+		|| endpoint
+			.strip_prefix(&resource)
+			.is_some_and(|suffix| suffix.starts_with('/'))
+	{
+		Ok(())
+	} else {
+		Err(crate::Error::Invalid(
+			"The destination is outside this OAuth Connection.".into(),
+		))
+	}
+}
+
+pub fn reconnect(resource: &str) -> String {
+	format!("Ask the person to reconnect their OAuth Connection for {resource}, then try again.")
 }
 
 #[cfg(test)]

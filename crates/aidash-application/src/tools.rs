@@ -335,6 +335,19 @@ impl Plugin {
 						secret.clone(),
 					),
 					ToolConfig::Http {
+						oauth_connection: Some(resource),
+						endpoint,
+						..
+					} => {
+						aidash_domain::oauth_connections::validate_destination(resource, endpoint)?;
+						(
+							resource,
+							"",
+							aidash_domain::identity::commands::connections::Kind::Connection,
+							None,
+						)
+					}
+					ToolConfig::Http {
 						endpoint,
 						secret: Some(secret),
 						..
@@ -391,7 +404,28 @@ impl Plugin {
 				}
 				// Resolved at dispatch, after the arguments are valid and before
 				// any effect, so a deleted Tenant Secret fails the call outright.
-				let connection = if let ToolConfig::Mcp { endpoint, .. } = &self.config {
+				let connection = if let ToolConfig::Http {
+					oauth_connection: Some(resource),
+					endpoint,
+					..
+				} = &self.config
+				{
+					let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
+					Some(
+						ctx.operations
+							.connection(
+								&aidash_domain::oauth_connections::canonical_resource(resource)?,
+								call,
+								key,
+							)
+							.await
+							.map_err(|_| {
+								Error::Invalid(aidash_domain::oauth_connections::reconnect(
+									resource,
+								))
+							})?,
+					)
+				} else if let ToolConfig::Mcp { endpoint, .. } = &self.config {
 					let call = tenant_secret_call(&self.config, ctx.run, endpoint)?;
 					connection_for(ctx.operations, endpoint, call, key).await?
 				} else {

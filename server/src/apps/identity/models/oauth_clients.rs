@@ -16,6 +16,8 @@ pub struct OAuthClient {
 	pub issuer: String,
 	#[field(field_type = "text")]
 	pub client_id: String,
+	#[field(null = true)]
+	pub provider: Option<reinhardt::db::orm::Json<aidash_domain::oauth_connections::OAuthProvider>>,
 	#[field(field_type = "text", null = true)]
 	pub secret_resource: Option<String>,
 	#[field(field_type = "text", null = true)]

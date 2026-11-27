@@ -68,6 +68,7 @@ pub async fn seed(f: &Federation, tenant: &str, subject: &str) -> Contents {
 			Put {
 				owner: Ownership::Me,
 				issuer: "https://auth.example.test".into(),
+				provider: None,
 				client_id: "client".into(),
 				client_secret: Some("client-lifecycle-canary".into()),
 				expected_revision: 0,

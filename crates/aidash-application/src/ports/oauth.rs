@@ -19,6 +19,7 @@ pub struct ProtectedResource {
 /// RFC 8414 (or OpenID Discovery) metadata for an authorization server.
 #[derive(Clone)]
 pub struct AuthorizationServer {
+	pub configured: bool,
 	pub issuer: String,
 	pub authorization_endpoint: Url,
 	pub token_endpoint: Url,
@@ -28,6 +29,24 @@ pub struct AuthorizationServer {
 	pub code_challenge_methods_supported: Vec<String>,
 }
 
+impl AuthorizationServer {
+	/// The explicitly registered token endpoint is also the broker's credential binding.
+	pub fn configured(token_endpoint: &str) -> Result<Self> {
+		aidash_domain::oauth_connections::canonical_resource(token_endpoint)?;
+		let url = Url::parse(token_endpoint)
+			.map_err(|_| crate::Error::Invalid("Invalid token endpoint.".into()))?;
+		Ok(Self {
+			configured: true,
+			issuer: token_endpoint.into(),
+			authorization_endpoint: url.clone(),
+			token_endpoint: url,
+			revocation_endpoint: None,
+			registration_endpoint: None,
+			scopes_supported: None,
+			code_challenge_methods_supported: vec!["S256".into()],
+		})
+	}
+}
 /// A client the authorization server issued: dynamically registered, or
 /// pre-registered by a person or the Tenant.
 pub struct ClientCredentials {

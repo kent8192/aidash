@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 #[derive(Clone)]
 pub struct ExchangeGrant {
+	pub configured: bool,
 	pub issuer: String,
 	pub resource: String,
 	pub client_id: String,

@@ -118,10 +118,22 @@ pub(crate) async fn for_owner(
 	if service.calls.is_some() {
 		return Ok(CallSecret::BrokeredConnection {
 			record,
-			rest: aidash_application::tenant_secrets::connection_forward_rest(
+			rest: if aidash_domain::oauth_connections::validate_destination(
 				&resource,
-				&call.destination,
-			)?,
+				&format!(
+					"{}{}",
+					call.destination.origin, call.destination.path_prefix
+				),
+			)
+			.is_ok()
+			{
+				String::new()
+			} else {
+				aidash_application::tenant_secrets::connection_forward_rest(
+					&resource,
+					&call.destination,
+				)?
+			},
 			source: Arc::new(BrokerSource {
 				id,
 				service: service.clone(),

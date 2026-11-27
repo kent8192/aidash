@@ -133,6 +133,33 @@ impl Scope for NativeScope {
 			.map_err(crate::Error::from)?;
 		Ok(())
 	}
+	async fn answer_setting(
+		&mut self,
+		request: uuid::Uuid,
+		client: uuid::Uuid,
+		subject: &str,
+	) -> Result<()> {
+		use crate::apps::execution::models::HumanRequest;
+		let tx = self.tx.as_mut();
+		let row = HumanRequest::read_in(tx, request, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let row = HumanRequest::lock_setting(tx, request, row.run_id).await?;
+		let form: aidash_domain::setting_requests::Form = serde_json::from_str(&row.prompt)?;
+		if !matches!(form,aidash_domain::setting_requests::Form::Secret{oauth_client:Some(id),..} if id==client)
+		{
+			return Err(Error::Forbidden);
+		}
+		HumanRequest::record_answer(
+			tx,
+			request,
+			form.outcome("saved"),
+			subject,
+			Some(row.thread_id),
+		)
+		.await?;
+		Ok(())
+	}
 	async fn commit(self: Box<Self>) -> Result<()> {
 		self.tx.commit().await.map_err(crate::Error::from)?;
 		Ok(())

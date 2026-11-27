@@ -63,11 +63,17 @@ export function SettingRequest({
       return answer("done");
     }
     if (form.kind === "oauth") {
-      if (form.target.type === "tool") {
+      if (form.target.type === "tool" || form.target.type === "connection") {
         const outcome = await connect({
           tenant,
           resource: form.target.resource,
           scopes: form.target.scopes,
+          scratchSpace:
+            form.target.type === "connection"
+              ? (form.target.scratch_space ?? undefined)
+              : undefined,
+          issuer:
+            form.target.type === "connection" ? form.target.issuer : undefined,
           returnTo: settingAuthorization(request.id, false),
         });
         if (outcome === "connected" || outcome === "reconnected")
@@ -126,9 +132,18 @@ export function SettingRequest({
               {form.target.type === "node" ? form.target.node : tenant}
             </strong>
           )}
-          {form.kind === "oauth" && form.target.type === "tool" && (
-            <Hint>{form.target.resource}</Hint>
-          )}
+          {form.kind === "oauth" &&
+            (form.target.type === "tool" ||
+              form.target.type === "connection") && (
+              <Hint>
+                {form.target.resource}
+                {form.target.type === "connection" &&
+                  form.target.scratch_space &&
+                  (ja
+                    ? ` · Scratch Space ${form.target.scratch_space} の利用者もこの接続を利用できます。`
+                    : ` · Users of Scratch Space ${form.target.scratch_space} can use this connection.`)}
+              </Hint>
+            )}
           {form.kind === "payment" && form.target.type === "agent_plugin" && (
             <strong>{form.target.listing}</strong>
           )}

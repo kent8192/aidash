@@ -2428,6 +2428,7 @@ async fn subnode_enforces_pinned_tool_and_secret_even_with_a_renamed_alias(
 		secrets: Default::default(),
 	});
 	let config = ToolConfig::Http {
+		oauth_connection: None,
 		endpoint: "https://example.com".into(),
 		replay: "idempotent".into(),
 		secret: Some("named-secret".into()),

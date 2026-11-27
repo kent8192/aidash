@@ -139,6 +139,7 @@ impl ScopeAuthority for Authority {
 			request: Uuid::new_v4(),
 			service: service.into(),
 			definition: aidash_domain::egress::ExternalService {
+				oauth_connection: None,
 				base_url: "https://maps.example/".into(),
 				methods: vec!["GET".into()],
 				secret: None,
@@ -160,6 +161,7 @@ impl ScopeAuthority for Authority {
 fn admitted(outcome: ExternalAdmission) -> Admission {
 	match outcome {
 		ExternalAdmission::Admitted(admission) => *admission,
+		ExternalAdmission::Reconnect { resource } => panic!("Reconnect {resource}"),
 		ExternalAdmission::Refused(refusal) => panic!("refused: {refusal:?}"),
 	}
 }

@@ -6,12 +6,16 @@ import { authorizePopup } from "./popup";
 export function connect({
   tenant,
   resource,
+  scratchSpace,
+  issuer,
   scopes = [],
   tool,
   returnTo,
 }: {
   tenant: string;
   resource: string;
+  scratchSpace?: string;
+  issuer?: string;
   scopes?: string[];
   tool?: ConnectionToolReference;
   returnTo?: string;
@@ -19,6 +23,8 @@ export function connect({
   return authorizePopup(async () => {
     const result = await connectionStart(encodeURIComponent(tenant), {
       resource,
+      scratch_space: scratchSpace,
+      issuer,
       scopes,
       tool,
       return_to:

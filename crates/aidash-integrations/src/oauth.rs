@@ -267,7 +267,7 @@ impl OAuthTokens for McpOAuth {
 		redirect_uri: &Url,
 		resource: &str,
 	) -> Result<Tokens> {
-		let form = token_form(
+		let mut form = token_form(
 			[
 				("grant_type", "authorization_code"),
 				("code", code),
@@ -277,8 +277,8 @@ impl OAuthTokens for McpOAuth {
 			],
 			client,
 		);
-		let response = self
-			.request(reqwest::Method::POST, &server.token_endpoint)?
+		let request = self.request(reqwest::Method::POST, &server.token_endpoint)?;
+		let response = token_request(request, server, client, &mut form)
 			.timeout(IO_TIMEOUT)
 			.header("accept", "application/json")
 			.form(&form)
@@ -303,7 +303,7 @@ impl OAuthTokens for McpOAuth {
 		refresh_token: &SecretString,
 		resource: &str,
 	) -> std::result::Result<Tokens, RefreshFailure> {
-		let form = token_form(
+		let mut form = token_form(
 			[
 				("grant_type", "refresh_token"),
 				("refresh_token", refresh_token.expose_secret()),
@@ -311,9 +311,10 @@ impl OAuthTokens for McpOAuth {
 			],
 			client,
 		);
-		let response = self
+		let request = self
 			.request(reqwest::Method::POST, &server.token_endpoint)
-			.map_err(RefreshFailure::Unavailable)?
+			.map_err(RefreshFailure::Unavailable)?;
+		let response = token_request(request, server, client, &mut form)
 			.timeout(IO_TIMEOUT)
 			.header("accept", "application/json")
 			.form(&form)
@@ -401,6 +402,26 @@ impl OAuthTokens for McpOAuth {
 }
 
 /// A token request's form: the grant's own fields, then client authentication.
+fn token_request(
+	request: reqwest::RequestBuilder,
+	server: &AuthorizationServer,
+	client: &ClientCredentials,
+	form: &mut Vec<(&str, &str)>,
+) -> reqwest::RequestBuilder {
+	if server.configured {
+		form.retain(|(name, _)| *name != "resource");
+		if let Some(secret) = &client.client_secret {
+			form.retain(|(name, _)| !matches!(*name, "client_id" | "client_secret"));
+			let encode =
+				|s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+			return request.basic_auth(
+				encode(&client.client_id),
+				Some(encode(secret.expose_secret())),
+			);
+		}
+	}
+	request
+}
 fn token_form<'a>(
 	fields: impl IntoIterator<Item = (&'a str, &'a str)>,
 	client: &'a ClientCredentials,
@@ -556,6 +577,7 @@ fn validate_authorization(
 		return Err(invalid("authorization server does not support PKCE S256"));
 	}
 	Ok(AuthorizationServer {
+		configured: false,
 		issuer: issuer.to_owned(),
 		authorization_endpoint,
 		token_endpoint,

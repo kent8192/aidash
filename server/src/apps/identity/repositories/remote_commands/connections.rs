@@ -82,6 +82,18 @@ fn target(snapshot: &BindingSnapshot, call: &ConnectionCall, list: bool) -> Resu
 					&& secret.is_some()
 					&& call.kind == Kind::PersonalSecret => {}
 				ToolConfig::Http {
+					oauth_connection: Some(resource),
+					endpoint,
+					..
+				} if call.kind == Kind::Connection
+					&& call.tool_name.is_empty()
+					&& call.secret_name.is_none()
+					&& canonical_resource(resource)? == call.resource
+					&& aidash_domain::oauth_connections::validate_destination(
+						resource, endpoint,
+					)
+					.is_ok() => {}
+				ToolConfig::Http {
 					endpoint, secret, ..
 				} if *endpoint == call.resource
 					&& call.tool_name.is_empty()
@@ -194,11 +206,21 @@ pub(super) fn unowned(
 	list: bool,
 ) -> Result<Value> {
 	let target = target(snapshot, call, list)?;
-	Ok(if personal_only(&target) {
-		json!({"outcome":"result","result":{"error":"secret_unavailable","resource":call.resource}})
-	} else {
-		json!({"outcome":"not_personal"})
-	})
+	Ok(
+		if matches!(
+			&target,
+			Target::Registry(ToolConfig::Http {
+				oauth_connection: Some(_),
+				..
+			})
+		) {
+			json!({"outcome":"result","result":{"error":"connection_required","hint":aidash_domain::oauth_connections::reconnect(&call.resource)}})
+		} else if personal_only(&target) {
+			json!({"outcome":"result","result":{"error":"secret_unavailable","resource":call.resource}})
+		} else {
+			json!({"outcome":"not_personal"})
+		},
+	)
 }
 async fn auth(
 	store: &crate::store::Store,
@@ -207,6 +229,21 @@ async fn auth(
 	target: &Target,
 	admission: Uuid,
 ) -> Result<Option<CallSecret>> {
+	if let Target::Registry(ToolConfig::Http {
+		oauth_connection: Some(resource),
+		..
+	}) = target
+	{
+		return crate::apps::execution::repositories::mcp_connections::for_owner(
+			store,
+			owner,
+			resource,
+			secret_call(target, admission)?,
+		)
+		.await
+		.map(Some)
+		.map_err(|_| Error::Invalid(aidash_domain::oauth_connections::reconnect(resource)));
+	}
 	if call.kind == Kind::Connection
 		&& let Some(service) = &store.oauth_connections
 		&& service
@@ -386,6 +423,16 @@ pub(super) async fn execute(
 				journal::abandon(store, owner, id).await?;
 			}
 			return Ok(json!({"outcome":"not_personal"}));
+		}
+		Err(Error::Invalid(message))
+			if message == aidash_domain::oauth_connections::reconnect(&call.resource) =>
+		{
+			if let Some(id) = journal {
+				journal::abandon(store, owner, id).await?;
+			}
+			return Ok(
+				json!({"outcome":"result","result":{"error":"connection_required","resource":call.resource,"hint":message}}),
+			);
 		}
 		Err(Error::Connection(cause)) => {
 			if let Some(id) = journal {

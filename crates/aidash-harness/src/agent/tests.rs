@@ -5055,6 +5055,7 @@ impl Scripted {
 					version: "1.0.0".into(),
 				},
 				&aidash_domain::tool::ToolConfig::Http {
+					oauth_connection: None,
 					endpoint: "https://example.invalid".into(),
 					replay: "unsafe".into(),
 					secret: None,
@@ -5081,6 +5082,7 @@ impl Scripted {
 					version: "1.0.0".into(),
 				},
 				&aidash_domain::tool::ToolConfig::Http {
+					oauth_connection: None,
 					endpoint: "https://example.invalid".into(),
 					replay: "read_only".into(),
 					secret: None,

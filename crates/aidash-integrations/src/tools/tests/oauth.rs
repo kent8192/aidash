@@ -695,6 +695,7 @@ async fn http_connection_refusals_come_from_status_never_from_a_success_body(#[c
 		.await;
 	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
 	let configuration = ToolConfig::Http {
+		oauth_connection: None,
 		endpoint: endpoint.clone(),
 		replay: "unsafe".into(),
 		secret: None,
@@ -750,6 +751,7 @@ fn brokered_connection(
 
 fn http_config(endpoint: &str) -> ToolConfig {
 	ToolConfig::Http {
+		oauth_connection: None,
 		endpoint: endpoint.into(),
 		replay: "unsafe".into(),
 		secret: None,

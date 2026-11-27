@@ -284,6 +284,7 @@ impl Store for SecretManager {
 				}
 			}
 			None => Payload::RegisteredClient {
+				configured_resource: binding.configured_resource,
 				issuer: binding.issuer,
 				client_id: binding.client_id,
 				client_secret: secret.clone(),
