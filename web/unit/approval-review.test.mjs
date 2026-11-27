@@ -261,3 +261,16 @@ test("approval review reads past a full page and an empty continuation", async (
   );
   assert.deepEqual(result.requests, [...first, target]);
 });
+
+test("approval review refuses a repeated offset without rereading its page", async () => {
+  const offsets = [];
+  await assert.rejects(
+    readApprovalRequests(async (offset) => {
+      offsets.push(offset);
+      if (offsets.length > 2) throw new Error("repeated page was fetched");
+      return { requests: [], next_offset: 100 };
+    }),
+    /Approval request pagination did not advance/,
+  );
+  assert.deepEqual(offsets, [0, 100]);
+});
