@@ -403,9 +403,8 @@ it adds no dependency to approve first.
 
 ### Skills
 
-A plugin's Skills behave as direct Skills of the Agent. They are pinned with the
-Run, within the direct Skill limits of 64 files and 256 KiB per Skill, and they
-are Discoverable capabilities under `deferred@1`. Loading a Skill never executes
+A plugin's Skills behave as direct Skills of the Agent. The Run pins them,
+and they are Discoverable capabilities under `deferred@1`. Loading a Skill never executes
 anything, `allowed-tools` never raises authority, and an Agent with plugin
 Skills may have empty instructions, as one with a Skill Binding may.
 
