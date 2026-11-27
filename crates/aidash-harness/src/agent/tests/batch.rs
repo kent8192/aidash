@@ -30,7 +30,7 @@ type Hook = Box<dyn Fn(&Lab, Call) -> BoxFuture<'static, Result<Value>> + Send +
 /// Observes every provider execution across the Runs and workers of one test.
 struct Lab {
 	hook: Hook,
-	/// `admit:{path}`, `dispatch:{key}` (batched) and `invoke:{key}` (sequential).
+	/// Admission, dispatch and lease changes in execution order.
 	events: Mutex<Vec<String>>,
 	attempts: Mutex<BTreeMap<String, usize>>,
 	in_flight: AtomicUsize,
@@ -1606,26 +1606,35 @@ async fn an_authority_change_runs_with_the_runs_leases_released(#[case] refused:
 	bench.0.releases.store(true, SeqCst);
 	// Act
 	advance(&bench, &mut run).await.unwrap();
-	// Assert: released before the call, taken again after it, in that order.
-	let events: Vec<String> = lab
-		.events
-		.lock()
-		.unwrap()
-		.iter()
-		.filter(|event| event.starts_with("lease:") || event.starts_with("invoke:"))
-		.cloned()
-		.collect();
+	// The Binding is checked while authority is held. Even a refused
+	// dispatch takes both leases again before the worker adopts its result.
 	assert_eq!(
-		events,
+		lab.events.lock().unwrap().as_slice(),
 		[
+			"admit:p0".to_owned(),
 			"lease:authority.suspend".to_owned(),
 			"lease:visibility.suspend".to_owned(),
-			format!("invoke:{}", key(&run, 0)),
+			format!("dispatch:{}", key(&run, 0)),
 			"lease:visibility.resume".to_owned(),
 			"lease:authority.resume".to_owned(),
 		]
 	);
 	assert_eq!(adopted(&run).len(), 1);
+}
+
+#[tokio::test]
+async fn a_refused_authority_change_binding_keeps_the_lease_and_skips_dispatch() {
+	let lab = Lab::echo();
+	lab.admit_refusals.store(1, SeqCst);
+	lab.admit_policy.store(true, SeqCst);
+	let (bench, mut run) = bench(&lab, &["authority_test"], 1, None);
+
+	let error = advance(&bench, &mut run).await.unwrap_err();
+	assert!(
+		matches!(error, Error::AuthorityRefused(ref refusal) if refusal.check == RefusalCheck::Policy),
+		"{error:?}"
+	);
+	assert_eq!(lab.events.lock().unwrap().as_slice(), ["admit:p0"]);
 }
 
 #[tokio::test]

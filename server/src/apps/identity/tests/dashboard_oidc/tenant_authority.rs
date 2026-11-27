@@ -2155,6 +2155,133 @@ async fn configurator_context(
 	}
 }
 
+/// Stage a model response on an HTTP-admitted Run, then drive its real leased
+/// worker steps and Binding checks without contacting an inference provider.
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_worker_dispatches_consecutive_bound_calls(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_application::registry::system::configurator::{ID, VERSION};
+	use aidash_domain::context::ContextEvent;
+	use aidash_server::{federation::Federation, harness::Harness};
+	use reinhardt::Injectable;
+
+	let t = Team::new(runtime).await;
+	let f = Federation::inject(&t.d.app.context).await.unwrap();
+	let tenant = aidash_domain::tenancy::TenantName::new(&t.tenant).unwrap();
+	let endpoint = "http://127.0.0.1:1/v1";
+	let entry: aidash_server::registry::Entry = serde_json::from_value(json!({
+		"id":"configurator-test-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Test model"},"description":{"en":"Worker fixture"},
+		"config":{"provider":"openrouter","model_id":"fixture","endpoint":endpoint,
+			"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}
+	}))
+	.unwrap();
+	let model = json!({"id":entry.id,"version":entry.version});
+	f.registry.register(&tenant, entry).await.unwrap();
+	let (status, approval) = t
+		.alice(
+			"POST",
+			"/catalog",
+			json!({
+				"node":t.node,"entry":model,"scope":"deployment","enabled":true,"expected_revision":0
+			}),
+		)
+		.await;
+	assert_eq!(status, 200, "{approval}");
+	let (status, thread) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			"/api/threads",
+			Some(&t.alice_context),
+			json!({
+				"title":"Settings","request":"Read the settings and update the instructions.",
+				"target":{"id":ID,"version":VERSION},"target_kind":"agent","task_model":{"model":model}
+			}),
+		)
+		.await;
+	assert_eq!(status, 200, "{thread}");
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.agent_id == ID)
+		.unwrap();
+	let calls = [
+		("tenant_overview", json!({}), "/nodes/0/name", json!(t.node)),
+		(
+			"aidash_api_catalog",
+			json!({"query":"POST registrations/{id}/approve"}),
+			"/operations/0/path",
+			json!("/api/tenants/{tenant}/registrations/{id}/approve"),
+		),
+		(
+			"tenant_instructions_set",
+			json!({"text":"Prepare drafts only.","expected_revision":0}),
+			"/revision",
+			json!(1),
+		),
+	];
+	let tool_calls: Vec<_> = calls
+		.iter()
+		.map(|(name, arguments, _, _)| json!({"id":name,"name":name,"arguments":arguments}))
+		.collect();
+	let pending = common::tool_pending(json!({"response":{"tool_calls":tool_calls}}));
+	let update = Query::update()
+		.table(Alias::new("task_executions"))
+		.value(Alias::new("phase"), "TOOL_CALL")
+		.value(Alias::new("pending"), pending)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	for (name, _, field, expected) in calls {
+		let worked = tokio::time::timeout(std::time::Duration::from_secs(30), worker.worker_once())
+			.await
+			.unwrap_or_else(|_| panic!("{name} kept the worker waiting on its own lease"))
+			.unwrap();
+		assert!(worked);
+		let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		let result = current
+			.context
+			.events()
+			.find_map(|event| match event {
+				ContextEvent::Tool { call, result } if call.id == name => Some(result),
+				_ => None,
+			})
+			.unwrap_or_else(|| {
+				panic!(
+					"missing {name} result, state {:?}, error {:?}",
+					current.state.phase(),
+					current.error
+				)
+			});
+		assert_eq!(result.pointer(field), Some(&expected), "{name}: {result}");
+	}
+	let (status, saved) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&format!("/api/tenants/{}/instructions", t.tenant),
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(saved["text"], "Prepare drafts only.");
+	t.finish().await;
+}
+
 /// Exercise the worker boundary after admission, using its persisted grant
 /// and browser mapping. The test does not require inference or a provider key.
 #[rstest::rstest]
