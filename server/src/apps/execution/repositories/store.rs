@@ -6073,7 +6073,7 @@ impl Store {
 		) {
 			return Err(Error::Invalid("unknown human request kind".into()));
 		}
-		nonempty(prompt, "human request prompt")?;
+		human_interaction::validate_prompt(prompt)?;
 		let h: Option<HumanRequest> = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = run.thread_id;

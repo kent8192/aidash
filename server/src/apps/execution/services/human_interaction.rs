@@ -1,9 +1,6 @@
 //! Request replay, Home journal approval expiration and answer validation without I/O.
 use crate::apps::execution::serializers::human_requests::HumanRequest;
-use crate::{
-	Error, Result,
-	domain::{Run, nonempty},
-};
+use crate::{Error, Result, domain::Run};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
@@ -19,7 +16,16 @@ pub(crate) fn validate_request(kind: &str, prompt: &str) -> Result<()> {
 	) {
 		return Err(Error::Invalid("unknown human request kind".into()));
 	}
-	nonempty(prompt, "human request prompt")
+	validate_prompt(prompt)
+}
+
+pub(crate) fn validate_prompt(prompt: &str) -> Result<()> {
+	if prompt.trim().is_empty() {
+		return Err(Error::Invalid(
+			"human request prompt must not be blank".into(),
+		));
+	}
+	Ok(())
 }
 
 pub(crate) fn validate_replay(
