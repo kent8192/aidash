@@ -21,14 +21,18 @@ maxima on the normal startup path.
 ## Database fair share
 
 Each Work pool enters pressure above 80% usage and clears it below 70%.
-It divides its size by the number of Tenants holding Work slots, rounds
-down, and gives each Tenant a share of at least one connection. A borrow
-that would exceed the Tenant's share waits during pressure. The queue
-serves eligible Tenants round-robin and returns HTTP 503
-`database_fair_share` after ten seconds if the Tenant is still over share.
-The response names the pool size and the current share. Knowledge search
-issues its reads serially. Its authority lease and any nested vector reads
-count against the same Tenant's Work share.
+It divides its size by the number of Tenants with active Work borrows,
+rounds down, and gives each Tenant a share of at least one operation.
+During pressure, the first borrow of an operation waits if it would take
+the Tenant over its share. The queue serves eligible Tenants round-robin
+and returns HTTP 503 `database_fair_share` after ten seconds if the Tenant
+is still over share. The response names the pool size and the current share.
+
+Later borrows in the same operation still use Work pool connections.
+They bypass the admission queue so an authority lease can coexist with a
+worker step transaction or a serial knowledge search read. Direct SQLx
+access to the Work pool also bypasses the gate and is bounded by the
+driver's pool size and acquisition timeout.
 
 System work uses the same Work slots and contributes to pool usage. It
 queues as one lane and is excluded from the Tenant share calculation.
