@@ -8,7 +8,7 @@ use reinhardt::db::backends::{DatabaseConnection, QueryValue, TransactionExecuto
 use reinhardt::db::orm::AtomicTransaction;
 use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
-use std::{marker::PhantomData, sync::Arc};
+use std::{future::Future, marker::PhantomData, sync::Arc};
 
 /// A pool's connection counts at one moment, for metrics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,14 +125,22 @@ impl Pool {
 		})
 	}
 	/// Admit the first Work borrow for a unit that may open several transactions.
-	pub(crate) async fn operation<T>(
+	/// Construct the future on a separate frame before storing it on the heap.
+	/// Its type can contain an entire worker step or several nested ORM calls.
+	#[inline(never)]
+	pub(crate) fn operation<F: Future, Make: FnOnce() -> F>(
 		&self,
 		scope: &TenancyScope,
-		work: impl Future<Output = T>,
-	) -> T {
-		match &self.fair {
-			Some(fair) => fair.operation(scope.tenant_name().cloned(), work).await,
-			None => work.await,
+		work: Make,
+	) -> impl Future<Output = F::Output> + use<F, Make> {
+		let fair = self.fair.clone();
+		let tenant = fair.as_ref().and_then(|_| scope.tenant_name().cloned());
+		let work = Box::pin(work());
+		async move {
+			match fair {
+				Some(fair) => fair.operation(tenant, work).await,
+				None => work.await,
+			}
 		}
 	}
 
@@ -140,7 +148,7 @@ impl Pool {
 	/// lifetime; savepoints inherit it.
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin(&self, scope: &TenancyScope) -> Result<Transaction> {
-		let mut executor = self.operation(scope, self.connection.begin()).await?;
+		let mut executor = self.operation(scope, || self.connection.begin()).await?;
 		super::scope::enter(executor.as_mut(), scope).await?;
 		Ok(Transaction(
 			Some(executor),
@@ -155,11 +163,10 @@ impl Pool {
 	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin_serializable(&self, scope: &TenancyScope) -> Result<Transaction> {
 		let mut executor = self
-			.operation(
-				scope,
+			.operation(scope, || {
 				self.connection
-					.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable),
-			)
+					.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable)
+			})
 			.await?;
 		super::scope::enter(executor.as_mut(), scope).await?;
 		Ok(Transaction(
@@ -178,7 +185,7 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut Transaction) -> Result<T>,
 	) -> Result<T> {
-		self.operation(scope, async {
+		self.operation(scope, || async {
 			let mut tx = self.begin(scope).await?;
 			let value = work(&mut tx).await?;
 			tx.commit().await?;
@@ -193,7 +200,7 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
 	) -> Result<T> {
-		self.operation(scope, async {
+		self.operation(scope, || async {
 			let lease = DatabaseConnectionLease::register(self.connection.clone())?;
 			lease
 				.handle()
@@ -212,7 +219,7 @@ impl Pool {
 		scope: &TenancyScope,
 		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
 	) -> Result<T> {
-		self.operation(scope, async {
+		self.operation(scope, || async {
 			let lease = DatabaseConnectionLease::register(self.connection.clone())?;
 			lease
 				.handle()

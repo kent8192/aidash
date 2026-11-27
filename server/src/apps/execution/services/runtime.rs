@@ -57,15 +57,14 @@ impl Harness {
 		self.federation
 			.store
 			.pool
-			.operation(
-				&tenancy,
+			.operation(&tenancy, || {
 				aidash_harness::execution::advance(
 					scope,
 					&leases,
 					token,
 					self.federation.config.lease_seconds,
-				),
-			)
+				)
+			})
 			.await?;
 		Ok(true)
 	}
