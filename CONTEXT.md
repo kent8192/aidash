@@ -565,6 +565,10 @@ _Avoid_: proxy connection, tunnel, HTTPS proxy
 The share of Host connections and External service requests that each Tenant with open connections gets while an Egress gateway runs short of open files or memory: an equal part of what is open. Otherwise nothing caps them. A new connection over its Tenant's share waits until a shortage of open files ends, and its wait is recorded; during a shortage of memory it is refused instead, because a waiting connection holds memory itself.
 _Avoid_: connection limit, tunnel limit, connection quota, rate limit
 
+**Database fair share**:
+The share of a server process's database connections for Tenant work that each Tenant holding some gets while most of them are in use: an equal part of them, and never less than one. Otherwise nothing caps a Tenant. Work over its Tenant's share waits its turn behind the other Tenants, so many Tenants are served in rotation, and after a short wait it is refused with a reason naming the share. Connections for state changes and for maintenance are not shared out by Tenant.
+_Avoid_: connection limit, DB quota, connection quota
+
 **Scratch Space egress allowance**:
 An optional cap, set in a Scratch Space's settings and absent by default, on the bytes its code may send, and on those it may receive, through the Egress gateway in one day, counted apart. It covers both its Host connections and its requests to External services; an External service may have a smaller share of its own. A slow store does not count as running out of it.
 _Avoid_: budget (an Operation's budget is another thing), quota
