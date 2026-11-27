@@ -22,6 +22,11 @@ their deployment-wide total exceeds the live PostgreSQL setting. Local and
 Compose processes use a default budget of 65, the sum of the former pool
 maxima on the normal startup path.
 
+Atomic transaction submissions use Work for the authority transaction they
+hold while waiting for peer preflight. Federation protocol route lookup and
+inbound admission use Control so peer preflight can proceed when Work is
+full.
+
 ## Database fair share
 
 Each Work pool enters pressure above 80% usage and clears it below 70%.

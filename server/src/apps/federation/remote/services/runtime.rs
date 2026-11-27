@@ -87,6 +87,13 @@ impl InProcess {
 }
 
 impl Federation {
+	/// Keep protocol work on the pool available to callers holding Work connections.
+	pub(crate) fn using_control_pool(&self) -> Self {
+		let mut runtime = self.clone();
+		runtime.store.pool = runtime.store.control_pool.clone();
+		runtime
+	}
+
 	/// Let every clone of this Federation's `Store` reach the other Nodes of
 	/// its Deployment. The first binding wins; a second is ignored.
 	pub fn bind_in_process(self) -> Self {
@@ -268,7 +275,7 @@ impl Federation {
 			return Ok(None);
 		}
 		self.store
-			.pool
+			.control_pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				crate::apps::identity::repositories::node_registrations::name_tenant(
 					tx,
@@ -297,13 +304,16 @@ impl Federation {
 	) -> Result<Route> {
 		let target =
 			aidash_domain::nodes::NodeAddress::parse(node).map_err(|_| routes::unregistered())?;
-		self.store
-			.pool
-			.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
-				routes::route_delivery(tx, &self.config.deployment, sender, &target, request).await
-			})
-			.await?
-			.ok_or_else(routes::unregistered)
+		let pool = if super::inbound::is_transaction_protocol(request) {
+			&self.store.control_pool
+		} else {
+			&self.store.pool
+		};
+		pool.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
+			routes::route_delivery(tx, &self.config.deployment, sender, &target, request).await
+		})
+		.await?
+		.ok_or_else(routes::unregistered)
 	}
 	/// Every Node the sender addresses.
 	pub async fn routes(&self, sender: &Sender) -> Result<Vec<Route>> {
