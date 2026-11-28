@@ -343,7 +343,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "draft: {draft}");
 	let draft_id = draft["id"].as_str().unwrap();
 	let agent_id = draft["entry"]["id"].as_str().unwrap();
-	assert_eq!(draft["entry"]["config"]["schema_version"], 1);
+	assert!(draft["entry"]["config"].get("schema_version").is_none());
 	assert!(
 		draft["entry"]["config"]
 			.get("allow_task_creation")
