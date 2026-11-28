@@ -6247,7 +6247,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 
-	fixture.migrate().await;
+	// Observe the historical per-Thread bindings before the Node Scratch cutover.
+	fixture
+		.migrate_excluding(&[
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
+		])
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let sql = Query::select()
 		.columns(
@@ -6702,7 +6709,16 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 		.unwrap();
 	}
 
-	fixture.migrate().await;
+	// Keep the old queue through this historical assertion and reversal.
+	fixture
+		.migrate_excluding(&[
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
+		])
+		.await;
 	let asleep: Vec<bool> =
 		sqlx::query_scalar("SELECT asleep FROM core_runs WHERE area_id = $1 ORDER BY sequence")
 			.bind(area)
