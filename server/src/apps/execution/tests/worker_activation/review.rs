@@ -503,10 +503,8 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 }
 
 #[rstest::rstest]
-#[case::remote_dependencies("remote_dependencies")]
 #[tokio::test]
 async fn notification_deferral_waits_for_its_authoritative_unblock(
-	#[case] blocker: &str,
 	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
@@ -515,7 +513,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	_router: Arc<Router>,
 	#[from(activation_binary)] binary: Arc<ActivationBinary>,
 	#[from(prepared_activation)]
-	#[with(blocker, _runtime.clone(), _router.clone(), None)]
+	#[with("remote_dependencies", _runtime.clone(), _router.clone(), None)]
 	prepared: PreparedActivationFuture,
 	#[future(awt)]
 	#[from(initial_process)]
