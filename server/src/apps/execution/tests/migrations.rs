@@ -2754,7 +2754,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','aidash.compaction-decider','1.0.0','decider',$1)")
 		.bind(&decider).execute(&mut *tx).await.unwrap();
 	tx.commit().await.unwrap();
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
 		.await
 		.unwrap();
@@ -4279,7 +4281,9 @@ async fn removed_harness_contracts_refuse_the_upgrade_while_still_stored(
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let migration =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
