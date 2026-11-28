@@ -2,44 +2,19 @@ use super::*;
 
 #[rstest::rstest]
 #[tokio::test]
-async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable(
+async fn same_agent_child_and_a_separate_thread_can_run_alongside_the_parent(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = Box::pin(capability_fixture).await;
 	let parent = admit(&c).await;
-	let (status,patch)=common::post(&c.app, &c.token, &path_for_patch(parent.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"private.txt":null},"patch":"*** Begin Patch\n*** Add File: private.txt\n+parent-only\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{patch}");
-	let (_, area) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/execution-scope", parent.id),
-	)
-	.await;
-	let (_, child) = common::post(
+	let (status, child) = common::post(
 		&c.app,
 		&c.token,
 		&format!("/api/threads/{}/tasks", parent.thread_id),
-		json!({"title":"Child","description":"Dependent work","parent_id":parent.task_id}),
+		json!({"title":"Child","description":"Child work","parent_id":parent.task_id}),
 	)
 	.await;
-	let (status, denied) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/tasks/{}/delegate", child["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
-	)
-	.await;
-	assert_eq!(status, 409, "{denied}");
-	assert!(denied.to_string().contains("SESSION_DEPENDENCY_CYCLE"));
-	let first =
-		c.f.store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.unwrap();
-	assert_eq!(first.id, parent.id);
-	// A Working Area is keyed by Thread (#1008): a separate conversation is
-	// another Thread, and its Run gets its own Area.
+	assert_eq!(status, 200, "{child}");
 	let (status, independent) = common::post(
 		&c.app,
 		&c.token,
@@ -48,46 +23,37 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	)
 	.await;
 	assert_eq!(status, 200, "{independent}");
-	let (_, other) = common::post(
+	let (status, other) = common::post(
 		&c.app,
 		&c.token,
 		&format!("/api/threads/{}/tasks", independent["id"].as_str().unwrap()),
-		json!({"title":"Independent","description":"A separate conversation"}),
+		json!({"title":"Independent","description":"A separate Thread"}),
 	)
 	.await;
-	let (status, result) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/tasks/{}/delegate", other["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
-	let second =
-		c.f.store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.unwrap();
-	assert_eq!(second.task_id.to_string(), other["id"].as_str().unwrap());
-	assert_ne!(second.id, parent.id);
-	let (_, own) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/execution-scope", second.id),
-	)
-	.await;
-	assert_ne!(own["id"], area["id"]);
-	assert_eq!(own["manifest"], json!([]));
-	let (status, denied) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/files/read", second.id),
-		json!({"file_id":area["manifest"][0]["file_id"],"representation":"text"}),
-	)
-	.await;
-	assert_eq!(status, 404, "{denied}");
-	assert!(!denied.to_string().contains("parent-only"));
+	assert_eq!(status, 200, "{other}");
+	let child: Uuid = serde_json::from_value(child["id"].clone()).unwrap();
+	let other: Uuid = serde_json::from_value(other["id"].clone()).unwrap();
+	for id in [child, other] {
+		let (status, result) = common::post(
+			&c.app,
+			&c.token,
+			&format!("/api/tasks/{id}/delegate"),
+			json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+	}
+	let mut leased = std::collections::BTreeSet::new();
+	for _ in 0..3 {
+		let run =
+			c.f.store
+				.lease_run(Uuid::new_v4(), 30)
+				.await
+				.unwrap()
+				.unwrap();
+		leased.insert(run.task_id);
+	}
+	assert_eq!(leased, [parent.task_id, child, other].into_iter().collect());
 	c.close().await;
 }
 

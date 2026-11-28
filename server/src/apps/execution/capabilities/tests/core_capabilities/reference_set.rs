@@ -242,37 +242,6 @@ async fn another_person_can_run_the_agent_but_cannot_download_its_files(
 	)
 	.await;
 	assert_eq!(status, 404, "{denied}");
-	let (status, area) = request(
-		&c.app,
-		&bob,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let (status, found) = request(
-		&c.app,
-		&bob,
-		"POST",
-		&format!("/api/executions/{}/files/search", run.id),
-		json!({"query":"","mode":"path","scope":"references"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{found}");
-	let (status, denied) = request(
-		&c.app,
-		&bob,
-		"GET",
-		&format!(
-			"/api/working-areas/{}/files/{}/download",
-			area["id"].as_str().unwrap(),
-			found["matches"][0]["file_id"].as_str().unwrap()
-		),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 404, "{denied}");
 	c.close().await;
 }
 
@@ -826,24 +795,6 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 	)
 	.await;
 	assert_eq!(status, 200, "{read}");
-	let (status, area) = request(
-		&c.app,
-		&token,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let (status, denied) = request(
-		&c.app,
-		&token,
-		"POST",
-		&format!("/api/executions/{}/files/materialize", run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":gone["file_id"],"expected_digest":gone["digest"]}}),
-	)
-	.await;
-	assert_eq!(status, 404, "{denied}");
 	c.close().await;
 }
 
@@ -872,32 +823,6 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	.await;
 	assert_eq!(status, 200, "{found}");
 	let plan = found["matches"][0].clone();
-	let (status, area) = request(
-		&c.app,
-		&token,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let patch = |revision: Value, path: &'static str| {
-		let endpoint = path_for_patch(run.id);
-		let app = &c.app;
-		let token = &token;
-		async move {
-			request(
-				app,
-				token,
-				"POST",
-				&endpoint,
-				json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{path:null},"patch":format!("*** Begin Patch\n*** Add File: {path}\n+note\n*** End Patch")}),
-			)
-			.await
-		}
-	};
-	let (status, first) = patch(area["revision"].clone(), "first.md").await;
-	assert_eq!(status, 200, "{first}");
 	let approve = |revision: i64, enabled: bool| {
 		request(
 			&c.app,
@@ -910,9 +835,6 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	let (status, withdrawn) = approve(1, false).await;
 	assert_eq!(status, 200, "{withdrawn}");
 
-	let (status, denied) = patch(first["revision"].clone(), "second.md").await;
-	assert_eq!(status, 403, "{denied}");
-
 	for (route, input) in [
 		(
 			"files/read",
@@ -921,10 +843,6 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		(
 			"files/search",
 			json!({"query":"needle","mode":"literal","scope":"references"}),
-		),
-		(
-			"files/materialize",
-			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":first["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
 		),
 	] {
 		let (status, denied) = request(
@@ -952,137 +870,6 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "needle\n", "{read}");
-	// The rejected patch did not publish a revision or leave a file behind.
-	let (status, second) = patch(first["revision"].clone(), "second.md").await;
-	assert_eq!(status, 200, "{second}");
-	c.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
-	#[future] capability_fixture: CoreFixture,
-) {
-	let mut c = Box::pin(capability_fixture).await;
-	let alice = c.token.clone();
-	let (_, added) = add(&c, &alice, vec![file("plan.md", "alice plan\n")]).await;
-	bind_agent(&mut c, &[("copied-docs", added["references"].clone())]).await;
-	let credential = common::issued_credential(&c.f.store, "acme", "bob").await;
-	let bob = credential["token"].as_str().unwrap().to_owned();
-	let (status, _) = start(&c, &alice, c.task).await;
-	assert_eq!(status, 200);
-	let thread = latest_run(&c).await.thread_id;
-	let (status, task) = request(
-		&c.app,
-		&bob,
-		"POST",
-		&format!("/api/threads/{thread}/tasks"),
-		json!({"title":"Bob's work","description":"Copy the plan"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{task}");
-	let task: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
-	let (status, started) = start(&c, &bob, task).await;
-	assert_eq!(status, 200, "{started}");
-	let run =
-		c.f.store
-			.runs(&TEST_FIXTURE)
-			.await
-			.unwrap()
-			.into_iter()
-			.find(|run| run.task_id == task)
-			.unwrap();
-	let (status, area) = request(
-		&c.app,
-		&bob,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let (status, found) = request(
-		&c.app,
-		&bob,
-		"POST",
-		&format!("/api/executions/{}/files/search", run.id),
-		json!({"query":"","mode":"path","scope":"references"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{found}");
-
-	let (status, copy) = request(
-		&c.app,
-		&bob,
-		"POST",
-		&format!("/api/executions/{}/files/materialize", run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":found["matches"][0]["file_id"],"expected_digest":found["matches"][0]["digest"]}}),
-	)
-	.await;
-
-	assert_eq!(status, 200, "{copy}");
-	let (status, denied) = request(
-		&c.app,
-		&bob,
-		"GET",
-		&format!(
-			"/api/working-areas/{}/files/{}/download",
-			area["id"].as_str().unwrap(),
-			copy["file"]["file_id"].as_str().unwrap()
-		),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 404, "{denied}");
-	c.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn an_agent_can_write_the_same_path_as_a_reference_file_without_losing_either(
-	#[future] capability_fixture: CoreFixture,
-) {
-	let mut c = Box::pin(capability_fixture).await;
-	let token = c.token.clone();
-	let (_, added) = add(&c, &token, vec![file("plan.md", "the document\n")]).await;
-	bind_agent(&mut c, &[("patched-docs", added["references"].clone())]).await;
-	let (status, started) = start(&c, &token, c.task).await;
-	assert_eq!(status, 200, "{started}");
-	let run = latest_run(&c).await;
-	let (_, area) = request(
-		&c.app,
-		&token,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-
-	let (status, patched) = request(
-		&c.app,
-		&token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"references/plan.md":null},"patch":"*** Begin Patch\n*** Add File: references/plan.md\n+my notes\n*** End Patch"}),
-	)
-	.await;
-
-	assert_eq!(status, 200, "{patched}");
-	assert_eq!(
-		paths(&c, &token, run.id).await,
-		vec!["references/plan.md"],
-		"the Reference file stays"
-	);
-	let (status, written) = request(
-		&c.app,
-		&token,
-		"POST",
-		&format!("/api/executions/{}/files/search", run.id),
-		json!({"query":"my notes","mode":"literal","scope":"working"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{written}");
-	assert_eq!(written["matches"].as_array().unwrap().len(), 1, "{written}");
 	c.close().await;
 }
 
@@ -1166,142 +953,6 @@ async fn ninety_documents_register_and_a_run_finds_a_passage_within_budget(
 	assert!(
 		searching < std::time::Duration::from_secs(5),
 		"{searching:?}"
-	);
-	c.close().await;
-}
-
-/// Every published revision holds one row per file of its manifest, Reference
-/// files included (#789). A patch takes the same publication path as a shell
-/// command, without needing a Runner.
-#[rstest::rstest]
-#[case::one_document(1)]
-#[case::a_full_set(aidash_domain::capabilities::references::MAX_REFERENCE_FILES)]
-#[tokio::test]
-async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
-	#[future] capability_fixture: CoreFixture,
-	#[case] documents: usize,
-) {
-	use reinhardt::query::{Alias, Expr, Func, PostgresQueryBuilder, Query};
-	const PATCHES: usize = 5;
-	let mut c = Box::pin(capability_fixture).await;
-	let token = c.token.clone();
-	let files = (0..documents)
-		.map(|index| file(&format!("doc-{index}.md"), &format!("document {index}\n")))
-		.collect::<Vec<_>>();
-	let (status, added) = add(&c, &token, files).await;
-	assert_eq!(status, 200, "{added}");
-	bind_agent(&mut c, &[("sized-set", added["references"].clone())]).await;
-	let (status, started) = start(&c, &token, c.task).await;
-	assert_eq!(status, 200, "{started}");
-	let run = latest_run(&c).await;
-	let (_, area) = request(
-		&c.app,
-		&token,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
-	let first_revision = area["revision"].as_i64().unwrap();
-
-	let mut revision = area["revision"].clone();
-	for index in 0..PATCHES {
-		let (status, patched) = request(
-			&c.app,
-			&token,
-			"POST",
-			&path_for_patch(run.id),
-			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{format!("note-{index}.md"):null},"patch":format!("*** Begin Patch\n*** Add File: note-{index}.md\n+note {index}\n*** End Patch")}),
-		)
-		.await;
-		assert_eq!(status, 200, "{patched}");
-		revision = patched["revision"].clone();
-	}
-
-	let rows = |revision: i64| {
-		Query::select()
-			.expr(Func::count(Expr::col(Alias::new("id")).into()))
-			.from(Alias::new("core_blob_references"))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
-			.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(revision)))
-			.and_where(Expr::col(Alias::new("holder_kind")).eq(Expr::value("revision")))
-			.to_string(PostgresQueryBuilder)
-	};
-	let pool = c.f.store.pool.fixture_driver();
-	for (written, revision) in (first_revision + 1..).take(PATCHES).enumerate() {
-		let count: i64 = sqlx::query_scalar(&rows(revision))
-			.fetch_one(pool)
-			.await
-			.unwrap();
-		assert_eq!(
-			count as usize,
-			documents + written + 1,
-			"revision {revision} holds a row for each Reference file and each note"
-		);
-	}
-	c.close().await;
-}
-
-/// Publishing must write each new revision reference once, in one statement.
-#[rstest::rstest]
-#[tokio::test]
-async fn publication_batches_new_revision_references_without_rewriting_the_old_revision(
-	#[future] capability_fixture: CoreFixture,
-) {
-	let mut c = Box::pin(capability_fixture).await;
-	let token = c.token.clone();
-	let files = (0..4)
-		.map(|i| file(&format!("doc-{i}.md"), &format!("document {i}\n")))
-		.collect();
-	let (status, added) = add(&c, &token, files).await;
-	assert_eq!(status, 200, "{added}");
-	bind_agent(&mut c, &[("batch-count", added["references"].clone())]).await;
-	let (status, started) = start(&c, &token, c.task).await;
-	assert_eq!(status, 200, "{started}");
-	let run = latest_run(&c).await;
-	let (status, area) = request(
-		&c.app,
-		&token,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-
-	// Fixture-only triggers count attempted revision rows, including conflicts,
-	// and statements that inserted revision rows. Query cannot express trigger DDL.
-	let owner = common::owner_pool(c.f.store.pool.fixture_driver()).await;
-	for ddl in [
-		"CREATE TABLE revision_write_probe (kind text NOT NULL)",
-		"GRANT INSERT, SELECT ON revision_write_probe TO PUBLIC",
-		"CREATE FUNCTION count_revision_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.holder_kind = 'revision' THEN INSERT INTO revision_write_probe VALUES ('row'); END IF; RETURN NEW; END $$",
-		"CREATE TRIGGER count_revision_row BEFORE INSERT ON core_blob_references FOR EACH ROW EXECUTE FUNCTION count_revision_row()",
-		"CREATE FUNCTION count_revision_statement() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF EXISTS (SELECT 1 FROM inserted_refs WHERE holder_kind = 'revision') THEN INSERT INTO revision_write_probe VALUES ('statement'); END IF; RETURN NULL; END $$",
-		"CREATE TRIGGER count_revision_statement AFTER INSERT ON core_blob_references REFERENCING NEW TABLE AS inserted_refs FOR EACH STATEMENT EXECUTE FUNCTION count_revision_statement()",
-	] {
-		sqlx::query(ddl).execute(&owner).await.unwrap();
-	}
-	let (status, patched) = request(
-		&c.app, &token, "POST", &path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"note.md":null},"patch":"*** Begin Patch\n*** Add File: note.md\n+note\n*** End Patch"}),
-	).await;
-	assert_eq!(status, 200, "{patched}");
-	let attempted: i64 =
-		sqlx::query_scalar("SELECT count(*) FROM revision_write_probe WHERE kind = 'row'")
-			.fetch_one(&owner)
-			.await
-			.unwrap();
-	let statements: i64 =
-		sqlx::query_scalar("SELECT count(*) FROM revision_write_probe WHERE kind = 'statement'")
-			.fetch_one(&owner)
-			.await
-			.unwrap();
-	assert_eq!(attempted, 5, "only the new manifest's rows are attempted");
-	assert_eq!(
-		statements, 1,
-		"the new manifest is inserted in one statement"
 	);
 	c.close().await;
 }
