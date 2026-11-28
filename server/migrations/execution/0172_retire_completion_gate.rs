@@ -15,6 +15,31 @@ pub(super) fn migration() -> Migration {
 			sql: include_str!("sql/forward/0172_goal_backfill.sql").into(),
 			reverse_sql: Some("SELECT 1;".into()),
 		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "authorization_run_reads".into(),
+			constraint: Constraint::Check {
+				name: "authorization_run_reads_resource_kind_check".into(),
+				expression: "(resource_kind = ANY (ARRAY['task'::text, 'artifact'::text, 'message'::text, 'run'::text, 'conversation'::text, 'generation'::text, 'workspace_events'::text]))".into(),
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_run_reads".into(),
+			constraint: Constraint::EnumDomain {
+				name: "authorization_run_reads_resource_kind_model_enum_check".into(),
+				column: "resource_kind".into(),
+				domain: FieldDomain::Enum {
+					repr: ModelEnumRepr::String,
+					values: vec![
+						ModelEnumValue::String("conversation".into()),
+						ModelEnumValue::String("generation".into()),
+						ModelEnumValue::String("message".into()),
+						ModelEnumValue::String("run".into()),
+						ModelEnumValue::String("task".into()),
+						ModelEnumValue::String("workspace_events".into()),
+					],
+				},
+			},
+		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0172_goal_registry_contract.sql").into(),
 			reverse_sql: Some(include_str!("sql/backward/0172_goal_registry_contract.sql").into()),

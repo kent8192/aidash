@@ -379,7 +379,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0033_completion_settlement_v2"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0172_retire_completion_gate"]);
+	assert_eq!(head("execution"), ["0173_authorization_read_model_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0071_completion_messages"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -666,7 +666,7 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0172_retire_completion_gate".to_owned()
+			"0173_authorization_read_model_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());

@@ -93,6 +93,9 @@ END",
 	/// Authority and Scratch Space recorded before a stdio session may start.
 	#[field(null = true)]
 	pub stdio_session: Option<Json<Value>>,
+	/// Outside Versions recorded by this Run for its Task's Completion Message.
+	#[field(null = true)]
+	pub outside_versions: Option<Json<Value>>,
 }
 
 impl Run {

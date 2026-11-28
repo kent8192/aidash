@@ -4,7 +4,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0033_completion_settlement_v2", "federation")
 		.add_dependency("federation", "0032_retire_artifact_reads")
-		.add_dependency("execution", "0172_retire_completion_gate")
+		.add_dependency("execution", "0173_authorization_read_model_state")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::RunSQL {
