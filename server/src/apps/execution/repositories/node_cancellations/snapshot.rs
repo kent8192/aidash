@@ -118,7 +118,7 @@ pub(super) fn selectors(
 		.or(Expr::exists(
 			Query::select()
 				.expr(Expr::value(1_i32))
-				.from_as(Alias::new("core_runs"), Alias::new("cr"))
+				.from_as(Alias::new("core_run_areas"), Alias::new("cr"))
 				.and_where(column("cr", "run_id").eq(column("task_executions", "id")))
 				.and_where(column("cr", "tenant").eq(column("task_executions", "tenant")))
 				.and_where(area("cr", node, address))

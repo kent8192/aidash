@@ -363,7 +363,7 @@ struct StateReceived {
 #[derive(Deserialize)]
 struct StateCoreRun {
 	run_id: Uuid,
-	area_id: Uuid,
+	area_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
 struct StateSnapshot {
@@ -1046,7 +1046,7 @@ impl Access {
 			("authorization_run_registry_reads", "registry", "run_id"),
 			("authorization_run_remote_reads", "remote", "run_id"),
 			("task_executions", "snapshot", "id"),
-			("core_runs", "core", "run_id"),
+			("core_run_areas", "core", "run_id"),
 			("semantic_run_reads", "semantic", "run_id"),
 		] {
 			query.union_all(selection(table, kind, id_column, &run_ids));
@@ -1237,7 +1237,7 @@ impl Access {
 			))
 		});
 		semantic.sort_by_key(|row| (row.entry_id, row.revision));
-		let area_ids: Vec<_> = core_runs.iter().map(|row| row.area_id).collect();
+		let area_ids: Vec<_> = core_runs.iter().filter_map(|row| row.area_id).collect();
 		let mut areas = BTreeMap::new();
 		for area in crate::apps::execution::repositories::sessions::areas(self, &area_ids).await? {
 			areas.insert(area.id, area);
@@ -1362,7 +1362,7 @@ impl Access {
 		}
 		for core in core_runs {
 			if let Some(value) = rows.core_areas.get_mut(&core.run_id) {
-				*value = Some(areas.get(&core.area_id).cloned());
+				*value = Some(core.area_id.and_then(|id| areas.get(&id).cloned()));
 			}
 		}
 		for snapshot in snapshots {

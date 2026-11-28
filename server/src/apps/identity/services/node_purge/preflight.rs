@@ -63,9 +63,13 @@ pub(super) async fn check(
 	let now = database_time(tx).await?;
 	let area_runs = Query::select()
 		.column(Alias::new("run_id"))
-		.from(Alias::new("core_runs"))
+		.from(Alias::new("core_run_areas"))
 		.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
-		.and_where(owners.root("core_runs", "area_id", classification::node::Root::Area)?)
+		.and_where(owners.root(
+			"core_run_areas",
+			"area_id",
+			classification::node::Root::Area,
+		)?)
 		.to_owned();
 	refuse(
 		tx,

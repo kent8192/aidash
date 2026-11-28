@@ -9,9 +9,9 @@ pub struct CoreRuns {
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	/// Historical source UUID; insertion checks same-Tenant existence.
-	#[field]
-	pub area_id: uuid::Uuid,
+	/// Subject recorded when the capability scope was admitted.
+	#[field(field_type = "text", null = true)]
+	pub scope_subject: Option<String>,
 	#[field]
 	pub initialized: bool,
 }

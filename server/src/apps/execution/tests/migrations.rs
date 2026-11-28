@@ -198,6 +198,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0180_unorder_runs"),
 	("execution", "0181_unordered_run_bindings"),
 	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -278,6 +279,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0180_unorder_runs"),
 	("execution", "0181_unordered_run_bindings"),
 	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -317,6 +319,7 @@ async fn reverse_task_executions(
 		"0180_unorder_runs",
 		"0181_unordered_run_bindings",
 		"0182_unpin_live_previews",
+		"0183_detach_run_area_bindings",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -394,7 +397,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
 	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0182_unpin_live_previews"]);
+	assert_eq!(head("execution"), ["0183_detach_run_area_bindings"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
 	assert_eq!(head("workspaces"), ["0074_thread_scratch_wipes"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -674,14 +677,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0183_policy_probe")
+		.get_migration("execution", "0184_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0182_unpin_live_previews".to_owned()
+			"0183_detach_run_area_bindings".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -788,6 +791,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -2556,6 +2560,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5261,6 +5266,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0180_unorder_runs"),
 	("execution", "0181_unordered_run_bindings"),
 	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5835,6 +5841,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5948,6 +5955,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6069,6 +6077,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6613,6 +6622,7 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6740,6 +6750,7 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6920,7 +6931,14 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 	}
 
 	// Act
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+		])
+		.await;
 
 	// Assert: the active Area is the key's only one.
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -7001,6 +7019,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7399,6 +7418,7 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
 		])
 		.await;
 	let tenant = "call-owner";

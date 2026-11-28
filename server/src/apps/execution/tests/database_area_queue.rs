@@ -115,7 +115,7 @@ impl ScratchRuns {
 			.unwrap()
 			.id;
 		sqlx::query(
-			"INSERT INTO core_runs (run_id, area_id, initialized, tenant) SELECT $1, id, true, tenant FROM core_areas WHERE id = $2",
+			"INSERT INTO core_runs (run_id, scope_subject, initialized, tenant) SELECT $1, owner, true, tenant FROM core_areas WHERE id = $2",
 		)
 		.bind(id)
 		.bind(self.area)

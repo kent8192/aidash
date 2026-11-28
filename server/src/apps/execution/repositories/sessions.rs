@@ -83,17 +83,19 @@ pub(crate) async fn run_area(
 	if let Some(area) = access.state_core_area(run) {
 		return Ok(area);
 	}
-	let area_id: Option<Uuid> = crate::database::native::query_scalar(
+	let area_id: Option<Option<Uuid>> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("area_id"))
-			.from(Alias::new("core_runs"))
+			.from(Alias::new("core_run_areas"))
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **access.tx)
 	.await?;
-	let Some(area_id) = area_id else {
-		return Ok(None);
+	let area_id = match area_id {
+		None => return Ok(None),
+		Some(None) => return Ok(Some(None)),
+		Some(Some(area_id)) => area_id,
 	};
 	let area = crate::database::native::query_as(
 		&select("core_areas")
@@ -208,7 +210,7 @@ async fn ensure_area_row(
 fn area_runs(area: &Area) -> reinhardt::query::SelectStatement {
 	Query::select()
 		.column(("q", "run_id"))
-		.from_as(Alias::new("core_runs"), Alias::new("q"))
+		.from_as(Alias::new("core_run_areas"), Alias::new("q"))
 		.join(
 			reinhardt::query::JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(Alias::new("task_executions"), Alias::new("r")),
@@ -349,16 +351,17 @@ impl SessionScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<Uuid>> {
-		crate::database::native::query_scalar(
+		crate::database::native::query_scalar::<Option<Uuid>>(
 			&Query::select()
 				.column("area_id")
-				.from("core_runs")
+				.from("core_run_areas")
 				.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
 				.and_where(Expr::col("tenant").eq(self.access.identity.tenant.as_str()))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **self.access.tx)
 		.await
+		.map(Option::flatten)
 		.map_err(Into::into)
 	}
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
@@ -421,7 +424,7 @@ impl SessionScope for Scope<'_> {
 							Expr::col(Alias::new("id")).in_subquery(
 								Query::select()
 									.column(Alias::new("area_id"))
-									.from(Alias::new("core_runs"))
+									.from(Alias::new("core_run_areas"))
 									.and_where(
 										Expr::col(Alias::new("run_id")).in_subquery(
 											Query::select()
@@ -625,11 +628,11 @@ impl SessionScope for Scope<'_> {
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_runs"))
-					.columns(["run_id", "area_id", "initialized", "tenant"].map(Alias::new))
+					.columns(["run_id", "scope_subject", "initialized", "tenant"].map(Alias::new))
 					.from_subquery(
 						Query::select()
 							.expr(Expr::value(run_id))
-							.expr(Expr::value(area.id))
+							.expr(Expr::value(area.owner.as_str()))
 							.expr(Expr::value(initialized))
 							.expr(crate::database::scope::tenant_of(
 								"task_executions",

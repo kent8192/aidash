@@ -2,6 +2,7 @@
 //!
 //! Adapt application use cases for views, commands, and worker scopes.
 
+pub(crate) mod area_association_backfill;
 pub(crate) mod area_queue_sleep_backfill;
 pub mod context_rules;
 pub(crate) mod execution_event_backfill;

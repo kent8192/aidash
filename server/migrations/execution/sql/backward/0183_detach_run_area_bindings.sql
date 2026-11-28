@@ -1,0 +1,2 @@
+SET LOCAL aidash.scope = 'deployment';
+UPDATE "core_runs" SET "area_id" = COALESCE((SELECT "area"."id" FROM "core_areas" AS "area" INNER JOIN "task_executions" AS "run" ON "area"."tenant" = "run"."tenant" WHERE "area"."home_node" = "run"."home_node" AND "area"."thread_id" = "run"."thread_id" AND "area"."agent_id" = "run"."agent_id" AND "run"."id" = "core_runs"."run_id" AND "run"."tenant" = "core_runs"."tenant" AND "area"."owner" = "core_runs"."scope_subject"), '00000000-0000-0000-0000-000000000000'::uuid);

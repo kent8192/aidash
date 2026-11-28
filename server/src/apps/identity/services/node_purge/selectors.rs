@@ -113,8 +113,8 @@ impl Owners<'_> {
 					.in_subquery(
 						Query::select()
 							.column(Alias::new("area_id"))
-							.from(Alias::new("core_runs"))
-							.and_where(self.root("core_runs", "run_id", Root::Run)?)
+							.from(Alias::new("core_run_areas"))
+							.and_where(self.root("core_run_areas", "run_id", Root::Run)?)
 							.to_owned(),
 					)
 					.into();
