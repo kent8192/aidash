@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
   routeRegistryVersions,
@@ -161,6 +161,26 @@ test.beforeEach(async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+/** Opens the model picker from the registration form. */
+async function openPicker(page: Page) {
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "プロバイダーのモデルID", exact: true })
+    .click();
+  return page.getByRole("combobox", { name: "モデル名・IDで検索" });
+}
+
+/** Searches the picker and clicks a row; the picker stays open. */
+async function pickModel(page: Page, query: string, name: RegExp) {
+  const search = await openPicker(page);
+  await search.fill(query);
+  await page.getByRole("option", { name }).click();
+  return search;
+}
+
+const effortGroup = (page: Page) =>
+  page.getByRole("radiogroup", { name: "推論強度" });
+
 test("searches and selects a model without credential input", async ({
   page,
 }) => {
@@ -173,29 +193,33 @@ test("searches and selects a model without credential input", async ({
   await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
   await dialog.getByLabel("名前").fill("OpenRouter test model");
   await dialog.getByLabel("説明").fill("A model for agent execution");
-  const picker = dialog.getByRole("combobox", {
-    name: "プロバイダーのモデルID",
-  });
-  await picker.fill("not-found");
-  await expect(dialog.getByText("一致するモデルがありません。")).toBeVisible();
-  await picker.fill("FIXTURE");
-  await expect(dialog.getByRole("option", { name: /Other Model/ })).toHaveCount(
+  const search = await openPicker(page);
+  await search.fill("not-found");
+  await expect(page.getByText("一致するモデルがありません。")).toBeVisible();
+  await search.fill("FIXTURE");
+  await expect(page.getByRole("option", { name: /Other Model/ })).toHaveCount(
     0,
   );
-  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await page.getByRole("option", { name: /Fixture Chat/ }).click();
+  // Reasoning is mandatory, so None is not offered.
+  await expect(effortGroup(page).getByRole("radio")).toHaveText([
+    "既定",
+    "Low",
+    "High",
+  ]);
+  await expect(page.getByText("既定値: Low")).toBeVisible();
+  await effortGroup(page).getByRole("radio", { name: "High" }).click();
+  await search.press("Escape");
+  await expect(search).toBeHidden();
+  await expect(
+    dialog.getByRole("button", { name: "プロバイダーのモデルID", exact: true }),
+  ).toContainText("Fixture Chat· High");
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("65536");
   await expect(dialog.getByLabel("最大出力トークン数")).toHaveValue("65536");
   await expect(dialog.getByText(/1 \/ 3$/)).toBeVisible();
   await expect(
     dialog.getByText(/Tenant のデータ保護レベルで決まります/),
   ).toBeVisible();
-  const effort = dialog.getByLabel("Reasoning Effort");
-  await expect(effort.locator("option")).toHaveText([
-    "モデルの既定値",
-    "high",
-    "low",
-  ]);
-  await effort.selectOption("high");
   const submitted = page.waitForRequest(
     (r) =>
       new URL(r.url()).pathname === "/api/registry" && r.method() === "POST",
@@ -224,10 +248,8 @@ test("prompt caching can be turned off for a model", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("名前").fill("OpenRouter test model");
   await dialog.getByLabel("説明").fill("A model for agent execution");
-  await dialog
-    .getByRole("combobox", { name: "プロバイダーのモデルID" })
-    .fill("FIXTURE");
-  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  const search = await pickModel(page, "FIXTURE", /Fixture Chat/);
+  await search.press("Escape");
   await dialog.getByLabel("プロンプトキャッシュ").selectOption("none");
   const submitted = page.waitForRequest(
     (r) =>
@@ -238,6 +260,8 @@ test("prompt caching can be turned off for a model", async ({ page }) => {
     .click();
   expect((await submitted).postDataJSON().config).toMatchObject({
     cache_mode: "none",
+    // Default writes no effort.
+    reasoning_effort: null,
   });
 });
 
@@ -248,18 +272,6 @@ test("requires a catalog selection and supports keyboard selection", async ({
   await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
   await dialog.getByLabel("名前").fill("Model");
   await dialog.getByLabel("説明").fill("Model description");
-  const picker = dialog.getByRole("combobox", {
-    name: "プロバイダーのモデルID",
-  });
-  await picker.fill("vendor/");
-  await expect(
-    dialog.getByRole("option", { name: /Fixture Chat/ }),
-  ).toBeVisible();
-  await picker.press("Enter");
-  await expect(dialog.locator('[name="model_id"]')).toHaveValue(
-    "vendor/fixture-model",
-  );
-  await picker.fill("unregistered/model");
   await dialog
     .getByRole("button", { name: "エンティティを登録", exact: true })
     .click();
@@ -267,6 +279,36 @@ test("requires a catalog selection and supports keyboard selection", async ({
     dialog.getByText("一覧からモデルを選択してください。", { exact: false }),
   ).toBeVisible();
   await expect(dialog.locator('[name="model_id"]')).toHaveValue("");
+  const search = await openPicker(page);
+  // Without favorites the largest vendor opens; "other" wins the tie by slug.
+  await expect(page.getByRole("tab", { name: "other" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("option", { name: /Other Model/ })).toBeVisible();
+  await search.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "vendor" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("option", { name: /Other Model/ })).toHaveCount(
+    0,
+  );
+  await search.press("ArrowLeft");
+  await search.press("ArrowLeft");
+  await expect(page.getByRole("tab", { name: "お気に入り" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await search.fill("vendor/");
+  await expect(
+    page.getByRole("option", { name: /Fixture Chat/ }),
+  ).toBeVisible();
+  await search.press("Enter");
+  await expect(search).toBeHidden();
+  await expect(dialog.locator('[name="model_id"]')).toHaveValue(
+    "vendor/fixture-model",
+  );
 });
 
 test("retries a failed model catalog request", async ({ page }) => {
@@ -287,30 +329,52 @@ test("retries a failed model catalog request", async ({ page }) => {
   );
   await page.unroute("**/api/providers/openrouter/models");
   await dialog.getByRole("button", { name: "再試行", exact: true }).click();
-  const picker = dialog.getByRole("combobox", {
-    name: "プロバイダーのモデルID",
-  });
-  await picker.fill("other/model");
-  await expect(
-    dialog.getByRole("option", { name: /Other Model/ }),
-  ).toBeVisible();
   await expect(dialog.getByRole("alert")).toHaveCount(0);
+  const search = await openPicker(page);
+  await search.fill("other/model");
+  await expect(page.getByRole("option", { name: /Other Model/ })).toBeVisible();
+});
+
+test("a picker opened while the catalog loads starts on the largest vendor", async ({
+  page,
+}) => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/providers/openrouter/models", async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByLabel("エンティティの種類")
+    .selectOption("model");
+  await openPicker(page);
+  await expect(
+    page.getByRole("dialog").getByText("OpenRouterのモデル一覧を取得中…"),
+  ).toBeVisible();
+  release();
+  await expect(page.getByRole("tab", { name: "other" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("option", { name: /Other Model/ })).toBeVisible();
 });
 
 test("clears reasoning settings when selecting an unsupported model", async ({
   page,
 }) => {
   const dialog = page.getByRole("dialog");
-  const picker = dialog.getByRole("combobox", {
-    name: "プロバイダーのモデルID",
-  });
-  await picker.fill("fixture");
-  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
-  await dialog.getByLabel("Reasoning Effort").selectOption("high");
-  await picker.fill("other/model");
-  await dialog.getByRole("option", { name: /Other Model/ }).click();
-  await expect(dialog.getByLabel("Reasoning Effort")).toBeDisabled();
-  await expect(dialog.getByLabel("Reasoning Effort")).toHaveValue("");
+  const search = await pickModel(page, "fixture", /Fixture Chat/);
+  await effortGroup(page).getByRole("radio", { name: "High" }).click();
+  await search.fill("other/model");
+  await page.getByRole("option", { name: /Other Model/ }).click();
+  await expect(effortGroup(page)).toHaveCount(0);
+  await search.press("Escape");
+  await expect(dialog.locator('[name="reasoning_effort"]')).toHaveValue("");
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("8192");
   await expect(dialog.getByLabel("名前", { exact: true })).toHaveValue(
     "other-model-none",
@@ -323,14 +387,11 @@ test("model names follow provider, model and effort until manually edited", asyn
   const dialog = page.getByRole("dialog");
   const name = dialog.getByLabel("名前", { exact: true });
   await expect(name).toHaveValue("");
-  const picker = dialog.getByRole("combobox", {
-    name: "プロバイダーのモデルID",
-  });
-  await picker.fill("fixture");
-  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  const search = await pickModel(page, "fixture", /Fixture Chat/);
   await expect(name).toHaveValue("vendor-fixture-model-low");
-  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await effortGroup(page).getByRole("radio", { name: "High" }).click();
   await expect(name).toHaveValue("vendor-fixture-model-high");
+  await search.press("Escape");
   await dialog.getByLabel("説明").fill("Auto-named model");
   const posted = page.waitForRequest(
     (request) =>
@@ -350,17 +411,45 @@ test("manual model names survive model and effort changes", async ({
   const dialog = page.getByRole("dialog");
   const name = dialog.getByLabel("名前", { exact: true });
   await name.fill("My research model");
-  const picker = dialog.getByRole("combobox", {
-    name: "プロバイダーのモデルID",
-  });
-  await picker.fill("fixture");
-  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
-  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  const search = await pickModel(page, "fixture", /Fixture Chat/);
+  await effortGroup(page).getByRole("radio", { name: "High" }).click();
+  await search.press("Escape");
   await expect(name).toHaveValue("My research model");
   await name.fill("");
   await expect(name).toHaveValue("vendor-fixture-model-high");
-  await dialog.getByLabel("Reasoning Effort").selectOption("");
+  await openPicker(page);
+  await effortGroup(page).getByRole("radio", { name: "既定" }).click();
   await expect(name).toHaveValue("vendor-fixture-model-low");
+});
+
+test("favorites persist per Tenant and Subject and open the picker on ★", async ({
+  page,
+}) => {
+  const search = await openPicker(page);
+  await search.fill("fixture");
+  await page
+    .getByRole("button", { name: "お気に入りに追加: Fixture Chat" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "お気に入りから外す: Fixture Chat" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await search.press("Escape");
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("aidash-model-favorites:acme:alice"),
+    ),
+  ).toBe('["vendor/fixture-model"]');
+  await openPicker(page);
+  await expect(page.getByRole("tab", { name: "お気に入り" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    page.getByRole("option", { name: /Fixture Chat/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("option", { name: /Other Model/ })).toHaveCount(
+    0,
+  );
 });
 
 test("provider-first selection discovers personal plan models and submits an explicit Plan source", async ({

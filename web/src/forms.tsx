@@ -844,6 +844,11 @@ export function EntityForm({
                       ? data.access.tenant
                       : undefined
                   }
+                  subject={
+                    data.access.kind === "subject"
+                      ? data.access.subject
+                      : undefined
+                  }
                 />
               ) : selfHostedPlanConnections &&
                 modelSource === "chatgpt" &&
