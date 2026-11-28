@@ -7948,6 +7948,9 @@
               "left_running": {
                 "description": "Background process adopted when the foreground command exited.",
                 "type": ["string", "null"]
+              },
+              "stop_reason": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -8196,6 +8199,9 @@
               "left_running": {
                 "description": "Background process adopted when the foreground command exited.",
                 "type": ["string", "null"]
+              },
+              "stop_reason": {
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -8389,6 +8395,9 @@
               },
               "left_running": {
                 "description": "Background process adopted when the foreground command exited.",
+                "type": ["string", "null"]
+              },
+              "stop_reason": {
                 "type": ["string", "null"]
               }
             },
@@ -25299,39 +25308,6 @@
             "enum": ["serializable"],
             "type": "string"
           },
-          "TransactionManifest": {
-            "additionalProperties": false,
-            "properties": {
-              "coordinator": {
-                "type": "string"
-              },
-              "deadline": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "isolation": {
-                "$ref": "#/components/schemas/TransactionIsolation"
-              },
-              "participants": {
-                "items": {
-                  "$ref": "#/components/schemas/TransactionParticipant"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "id",
-              "coordinator",
-              "isolation",
-              "deadline",
-              "participants"
-            ],
-            "type": "object"
-          },
           "TransactionMutation": {
             "oneOf": [
               {
@@ -25404,22 +25380,6 @@
               }
             ]
           },
-          "TransactionParticipant": {
-            "additionalProperties": false,
-            "properties": {
-              "mutations": {
-                "items": {
-                  "$ref": "#/components/schemas/TransactionMutation"
-                },
-                "type": "array"
-              },
-              "node_id": {
-                "type": "string"
-              }
-            },
-            "required": ["node_id", "mutations"],
-            "type": "object"
-          },
           "TransactionParticipantStatus": {
             "properties": {
               "coordinator": {
@@ -25433,7 +25393,8 @@
                 "type": "string"
               },
               "manifest": {
-                "$ref": "#/components/schemas/TransactionManifest"
+                "$ref": "#/components/schemas/TransactionShare",
+                "description": "The participant's own share (ADR 0146)."
               },
               "phase": {
                 "type": "string"
@@ -25450,6 +25411,88 @@
               "manifest",
               "phase",
               "updated_at"
+            ],
+            "type": "object"
+          },
+          "TransactionPart": {
+            "additionalProperties": false,
+            "description": "One participant's mutations with the random value that seals them.",
+            "properties": {
+              "mutations": {
+                "items": {
+                  "$ref": "#/components/schemas/TransactionMutation"
+                },
+                "type": "array"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "nonce": {
+                "description": "32 random bytes in lowercase hex, known to the coordinator and this\nparticipant only.",
+                "type": "string"
+              }
+            },
+            "required": ["node_id", "nonce", "mutations"],
+            "type": "object"
+          },
+          "TransactionSeal": {
+            "additionalProperties": false,
+            "description": "What every participant learns about one part.",
+            "properties": {
+              "claims": {
+                "description": "Sorted [`claim`] hashes of the part's Task completions and Run\nfinalizations.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "hash": {
+                "description": "SHA-256 of the part's JSON encoding.",
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              }
+            },
+            "required": ["node_id", "hash", "claims"],
+            "type": "object"
+          },
+          "TransactionShare": {
+            "additionalProperties": false,
+            "description": "One participant's view of a transaction.",
+            "properties": {
+              "coordinator": {
+                "type": "string"
+              },
+              "deadline": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "isolation": {
+                "$ref": "#/components/schemas/TransactionIsolation"
+              },
+              "part": {
+                "$ref": "#/components/schemas/TransactionPart"
+              },
+              "seals": {
+                "description": "Every participant's seal, in participant order.",
+                "items": {
+                  "$ref": "#/components/schemas/TransactionSeal"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "coordinator",
+              "isolation",
+              "deadline",
+              "seals",
+              "part"
             ],
             "type": "object"
           }
@@ -34862,6 +34905,13 @@
                   "$ref": "#/components/schemas/Stint"
                 },
                 "type": "array"
+              },
+              "egress_waits": {
+                "description": "Host connections that waited for their Egress fair share.",
+                "items": {
+                  "$ref": "#/components/schemas/EgressWait"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -36543,6 +36593,25 @@
               }
             },
             "required": ["scratch_path", "expected_digest"],
+            "type": "object"
+          },
+          "EgressWait": {
+            "description": "A Host connection that waited before the gateway admitted it.",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "wait_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["id", "host", "wait_ms"],
             "type": "object"
           }
         },
@@ -45498,9 +45567,21 @@
               },
               "tenant": {
                 "type": "string"
+              },
+              "background_maximum_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ceiling_background_maximum_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
+              "background_maximum_seconds",
+              "ceiling_background_maximum_seconds",
               "tenant",
               "idle_seconds",
               "absolute_seconds",
@@ -45553,9 +45634,21 @@
               },
               "tenant": {
                 "type": "string"
+              },
+              "background_maximum_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ceiling_background_maximum_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
+              "background_maximum_seconds",
+              "ceiling_background_maximum_seconds",
               "tenant",
               "idle_seconds",
               "absolute_seconds",
@@ -49792,12 +49885,12 @@
               "daily_received_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "daily_sent_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "docker_enabled": {
                 "type": "boolean"
@@ -49826,9 +49919,7 @@
               "external_services",
               "cpu_millis",
               "memory_bytes",
-              "docker_enabled",
-              "daily_sent_bytes",
-              "daily_received_bytes"
+              "docker_enabled"
             ],
             "type": "object"
           },
@@ -50000,12 +50091,12 @@
               "daily_received_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "daily_sent_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "docker_enabled": {
                 "type": "boolean"
@@ -50034,9 +50125,7 @@
               "external_services",
               "cpu_millis",
               "memory_bytes",
-              "docker_enabled",
-              "daily_sent_bytes",
-              "daily_received_bytes"
+              "docker_enabled"
             ],
             "type": "object"
           },
@@ -50319,12 +50408,12 @@
               "daily_received_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "daily_sent_bytes": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "docker_enabled": {
                 "type": "boolean"
@@ -50353,9 +50442,7 @@
               "external_services",
               "cpu_millis",
               "memory_bytes",
-              "docker_enabled",
-              "daily_sent_bytes",
-              "daily_received_bytes"
+              "docker_enabled"
             ],
             "type": "object"
           },
