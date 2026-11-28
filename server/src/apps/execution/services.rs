@@ -10,6 +10,7 @@ pub(crate) mod input_ledger;
 pub(crate) mod migration_backfill;
 pub(crate) mod node_cancellations;
 pub(crate) mod research_record_cleanup;
+pub(crate) mod run_binding_backfill;
 pub(crate) mod task_evidence;
 
 pub use super::models::states;

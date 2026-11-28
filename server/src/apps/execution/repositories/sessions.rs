@@ -1,6 +1,6 @@
-//! Session queries retain row locks, queue order, advisory locks and one caller transaction.
+//! Session queries retain row locks, advisory locks and one caller transaction.
 use crate::apps::execution::capabilities::{
-	serializers::contracts::{Area as NativeArea, SessionRun as NativeSessionRun},
+	serializers::contracts::Area as NativeArea,
 	services::{skills, thread_lifecycle},
 };
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
 };
 use aidash_application::{Error, Result, ports::capabilities::sessions::SessionScope};
 use aidash_domain::{
-	capabilities::sessions::{Area, SessionRun},
+	capabilities::sessions::Area,
 	policy::Resource,
 	registry::{AgentConfig, EntityRef},
 };
@@ -205,32 +205,29 @@ async fn ensure_area_row(
 	.await?
 	.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))
 }
-/// The run ids of an Area generation's queue, head first: its awake
-/// executions that have not ended (#1008, ADR 0140).
-fn queue_rows(area: Uuid, generation: i64) -> reinhardt::query::SelectStatement {
+fn area_runs(area: &Area) -> reinhardt::query::SelectStatement {
 	Query::select()
-		.column((Alias::new("q"), Alias::new("run_id")))
+		.column(("q", "run_id"))
 		.from_as(Alias::new("core_runs"), Alias::new("q"))
 		.join(
 			reinhardt::query::JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(Alias::new("task_executions"), Alias::new("r")),
-			Expr::col((Alias::new("q"), Alias::new("run_id")))
-				.equals((Alias::new("r"), Alias::new("id"))),
+			Expr::col(("q", "run_id")).equals(("r", "id")),
 		)
-		.and_where(Expr::col((Alias::new("q"), Alias::new("area_id"))).eq(Expr::value(area)))
-		.and_where(
-			Expr::col((Alias::new("q"), Alias::new("generation"))).eq(Expr::value(generation)),
-		)
-		.and_where(
-			Expr::col((Alias::new("r"), Alias::new("phase"))).is_not_in([
-				"COMPLETED",
-				"FAILED",
-				"CANCELLED",
-			]),
-		)
-		.order_by((Alias::new("q"), Alias::new("sequence")), Order::Asc)
+		.and_where(Expr::col(("q", "area_id")).eq(Expr::value(area.id)))
+		.and_where(Expr::col(("q", "tenant")).eq(area.tenant.as_str()))
+		.order_by(("r", "created_at"), Order::Desc)
+		.order_by(("q", "run_id"), Order::Desc)
 		.to_owned()
 }
+
+fn nonterminal_run() -> reinhardt::query::SimpleExpr {
+	Expr::col(("r", "phase"))
+		.is_not_in(["COMPLETED", "FAILED", "CANCELLED"])
+		.and(Expr::col(("r", "control")).ne("CANCELLED"))
+		.into()
+}
+
 #[async_trait]
 impl SessionScope for Scope<'_> {
 	fn tenant(&self) -> &str {
@@ -351,127 +348,41 @@ impl SessionScope for Scope<'_> {
 			.map(|value| value.map(Into::into))
 			.map_err(Into::into)
 	}
-	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<(Uuid, i64)>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let row = {
-				let query_bind_1 = run_id;
-				crate::database::native::query_as(
-					&Query::select()
-						.columns(["area_id", "generation"].map(Alias::new))
-						.from(Alias::new("core_runs"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["area_id", "generation"])
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(row)
-		}
-		.await;
-		result.map_err(Into::into)
+	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<Uuid>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column("area_id")
+				.from("core_runs")
+				.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+				.and_where(Expr::col("tenant").eq(self.access.identity.tenant.as_str()))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await
+		.map_err(Into::into)
 	}
-	/// The legacy file manifest's displaying Run.
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let head: Option<(Uuid, bool)> = crate::database::native::query_as(
-				&queue_rows(area.id, area.generation)
-					.column((Alias::new("q"), Alias::new("initialized")))
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&["run_id", "initialized"])
-			.fetch_optional(&mut **access.tx)
-			.await?;
-			if let Some((run, true)) = head {
-				return Ok(Some(run));
+		for only_active in [true, false] {
+			let mut latest = area_runs(area);
+			latest.and_where(Expr::col(("q", "initialized")).eq(true));
+			if only_active {
+				latest.and_where(nonterminal_run());
 			}
-			let left = Query::select()
-				.column((Alias::new("q"), Alias::new("run_id")))
-				.from_as(Alias::new("core_runs"), Alias::new("q"))
-				.join(
-					reinhardt::query::JoinType::InnerJoin,
-					reinhardt::query::TableRef::table_alias(
-						Alias::new("task_executions"),
-						Alias::new("r"),
-					),
-					Expr::col((Alias::new("q"), Alias::new("run_id")))
-						.equals((Alias::new("r"), Alias::new("id"))),
-				)
-				.and_where(
-					Expr::col((Alias::new("q"), Alias::new("area_id"))).eq(Expr::value(area.id)),
-				)
-				.and_where(
-					Expr::col((Alias::new("q"), Alias::new("generation")))
-						.eq(Expr::value(area.generation)),
-				)
-				.and_where(
-					Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(Expr::value(true)),
-				)
-				.and_where(Expr::col((Alias::new("r"), Alias::new("phase"))).is_in([
-					"COMPLETED",
-					"FAILED",
-					"CANCELLED",
-				]))
-				.order_by((Alias::new("q"), Alias::new("sequence")), Order::Desc)
-				.limit(1)
-				.to_string(PostgresQueryBuilder);
-			let left: Option<Uuid> = crate::database::native::query_scalar(&left)
-				.scalar_optional(&mut **access.tx)
-				.await?;
-			Ok(left)
+			let found = crate::database::native::query_scalar(
+				&latest.limit(1).to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **self.access.tx)
+			.await?;
+			if found.is_some() {
+				return Ok(found);
+			}
 		}
-		.await;
-		result.map_err(Into::into)
+		Ok(None)
 	}
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let area: Option<NativeArea> = {
-				let query_bind_1 = run_id;
-				crate::database::native::query_as(
-					&select("core_areas")
-						.and_where(
-							Expr::col(Alias::new("id")).in_subquery(
-								Query::select()
-									.column(Alias::new("area_id"))
-									.from(Alias::new("core_runs"))
-									.and_where(
-										reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-											"run_id",
-										)))
-										.eq(SimpleExpr::CustomWithExpr(
-											"(?)".to_owned(),
-											vec![Expr::value(query_bind_1.to_owned()).into()],
-										)),
-									)
-									.and_where(Expr::col(Alias::new("generation")).equals((
-										Alias::new("core_areas"),
-										Alias::new("generation"),
-									)))
-									.to_owned(),
-							),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["area_id"])
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(area)
-		}
-		.await;
-		result
-			.map(|value| value.map(Into::into))
+		run_area(self.access, run_id)
+			.await
+			.map(|area| area.flatten().map(Into::into))
 			.map_err(Into::into)
 	}
 	async fn task(&mut self, id: Uuid) -> Result<Task> {
@@ -686,7 +597,7 @@ impl SessionScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn enqueue(&mut self, run_id: Uuid, area: &Area, initialized: bool) -> Result<()> {
+	async fn bind(&mut self, run_id: Uuid, area: &Area, initialized: bool) -> Result<()> {
 		super::node_cancellations::require_area_open(&mut **self.access.tx, area.id).await?;
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
@@ -714,23 +625,11 @@ impl SessionScope for Scope<'_> {
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_runs"))
-					.columns(
-						[
-							"run_id",
-							"area_id",
-							"sequence",
-							"generation",
-							"initialized",
-							"tenant",
-						]
-						.map(Alias::new),
-					)
+					.columns(["run_id", "area_id", "initialized", "tenant"].map(Alias::new))
 					.from_subquery(
 						Query::select()
 							.expr(Expr::value(run_id))
 							.expr(Expr::value(area.id))
-							.expr(Expr::value(area.next_sequence))
-							.expr(Expr::value(area.generation))
 							.expr(Expr::value(initialized))
 							.expr(crate::database::scope::tenant_of(
 								"task_executions",
@@ -743,92 +642,33 @@ impl SessionScope for Scope<'_> {
 			)
 			.execute(&mut **access.tx)
 			.await?;
-			{
-				let query_bind_1 = area.id;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("core_areas"))
-						.value_expr(
-							Alias::new("next_sequence"),
-							Expr::col(Alias::new("next_sequence"))
-								.add(reinhardt::query::Expr::value(1)),
-						)
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
 			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)
 	}
-	/// The Area's queue: its awake executions that have not ended, in order.
-	/// One that sleeps or is paused holds no place in it (#1008, ADR 0140).
-	async fn queue(&mut self, area: &Area) -> Result<Vec<SessionRun>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let rows: Vec<NativeSessionRun> = crate::database::native::query_as(
-				&queue_rows(area.id, area.generation)
-					.column((Alias::new("q"), Alias::new("sequence")))
-					.column((Alias::new("r"), Alias::new("phase")))
-					.column((Alias::new("r"), Alias::new("control")))
-					.limit(101)
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&["run_id", "sequence", "phase", "control"])
-			.fetch_all(&mut **access.tx)
-			.await?;
-			Ok(rows)
-		}
-		.await;
-		result
-			.map(|rows| rows.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
+	async fn active_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
+		crate::database::native::query_scalar(
+			&area_runs(area)
+				.and_where(nonterminal_run())
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await
+		.map_err(Into::into)
 	}
 	async fn last(&mut self, area: &Area) -> Result<Option<(Uuid, String)>> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			let last = {
-				let query_bind_1 = area.id;
-				let query_bind_2 = area.generation;
-				crate::database::native::query_as(
-					&Query::select()
-						.column((Alias::new("q"), Alias::new("run_id")))
-						.column((Alias::new("r"), Alias::new("agent_version")))
-						.from_as(Alias::new("core_runs"), Alias::new("q"))
-						.join(
-							reinhardt::query::JoinType::InnerJoin,
-							reinhardt::query::TableRef::table_alias(
-								Alias::new("task_executions"),
-								Alias::new("r"),
-							),
-							Expr::col((Alias::new("q"), Alias::new("run_id")))
-								.equals((Alias::new("r"), Alias::new("id"))),
-						)
-						.and_where(
-							Expr::col((Alias::new("q"), Alias::new("area_id")))
-								.eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col((Alias::new("q"), Alias::new("generation")))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.order_by((Alias::new("q"), Alias::new("sequence")), Order::Desc)
-						.limit(1)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["run_id", "agent_version"])
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			Ok(last)
-		}
-		.await;
-		result.map_err(Into::into)
+		crate::database::native::query_as(
+			&area_runs(area)
+				.column(("r", "agent_version"))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&["run_id", "agent_version"])
+		.fetch_optional(&mut **self.access.tx)
+		.await
+		.map_err(Into::into)
 	}
 	async fn previous(&mut self, key: Uuid) -> Result<Option<(String, Value)>> {
 		let result: NativeResult<_> = async {

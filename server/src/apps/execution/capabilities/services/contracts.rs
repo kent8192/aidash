@@ -3,6 +3,6 @@ pub use crate::apps::execution::capabilities::serializers::contracts::{
 	FileReceipt, FileScope, FileSearch, LivePreviewStart, LivePreviewStop, Materialize,
 	MaterializeSource, OperationInput, OperationResult, OutboundResult, Patch, PatchResult,
 	ReadResult, Representation, RuntimeResult, SearchMatch, SearchMode, SearchResult,
-	SearchUnavailable, SessionRun, SessionStatus, ShareResult, Shell, SkillInventoryEntry,
-	SkillListResult, SkillReadResult, Steer, Steered, ToolFileRead, ToolFileSearch,
+	SearchUnavailable, SessionStatus, ShareResult, Shell, SkillInventoryEntry, SkillListResult,
+	SkillReadResult, Steer, Steered, ToolFileRead, ToolFileSearch,
 };

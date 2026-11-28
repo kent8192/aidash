@@ -180,43 +180,39 @@ impl SharingScope for Scope<'_> {
 		result.map(|area| area.map(Into::into)).map_err(Into::into)
 	}
 	async fn admitted(&mut self, recipient: &Area, version: &str) -> Result<Option<Uuid>> {
-		let result: NativeResult<Option<Uuid>> =
-			async {
-				let access = &mut *self.access;
-				Ok({
-					let query_bind_1 = recipient.id;
-					let query_bind_2 = version;
-					crate::database::native::query_scalar(
-						&Query::select()
-							.column((Alias::new("task_executions"), Alias::new("id")))
-							.from(Alias::new("task_executions"))
-							.and_where(
-								Expr::col(Alias::new("agent_version"))
-									.eq(Expr::value(query_bind_2.to_owned())),
-							)
-							.and_where(
-								Expr::col(Alias::new("id")).in_subquery(
-									Query::select()
-										.column(Alias::new("run_id"))
-										.from(Alias::new("core_runs"))
-										.and_where(
-											Expr::col(Alias::new("area_id"))
-												.eq(Expr::value(query_bind_1.to_owned())),
-										)
-										.and_where(Expr::col(Alias::new("generation")).eq(
-											reinhardt::query::Expr::value(recipient.generation),
-										))
-										.to_owned(),
-								),
-							)
-							.limit(1)
-							.to_string(PostgresQueryBuilder),
-					)
-					.scalar_optional(&mut **access.tx)
-					.await?
-				})
-			}
-			.await;
+		let result: NativeResult<Option<Uuid>> = async {
+			let access = &mut *self.access;
+			Ok({
+				let query_bind_1 = recipient.id;
+				let query_bind_2 = version;
+				crate::database::native::query_scalar(
+					&Query::select()
+						.column((Alias::new("task_executions"), Alias::new("id")))
+						.from(Alias::new("task_executions"))
+						.and_where(
+							Expr::col(Alias::new("agent_version"))
+								.eq(Expr::value(query_bind_2.to_owned())),
+						)
+						.and_where(
+							Expr::col(Alias::new("id")).in_subquery(
+								Query::select()
+									.column(Alias::new("run_id"))
+									.from(Alias::new("core_runs"))
+									.and_where(
+										Expr::col(Alias::new("area_id"))
+											.eq(Expr::value(query_bind_1.to_owned())),
+									)
+									.to_owned(),
+							),
+						)
+						.limit(1)
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_optional(&mut **access.tx)
+				.await?
+			})
+		}
+		.await;
 		result.map_err(Into::into)
 	}
 	async fn thread(&mut self, id: Uuid) -> Result<aidash_domain::policy::Resource> {

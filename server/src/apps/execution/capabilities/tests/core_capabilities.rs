@@ -858,7 +858,7 @@ async fn files_preserve_unicode_revision_and_source_authority(
 }
 #[rstest::rstest]
 #[tokio::test]
-async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
+async fn only_the_requester_can_steer_with_an_idempotent_request(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
@@ -872,13 +872,8 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
-	let queue_path = format!("/api/working-areas/{}/queue", area["id"].as_str().unwrap());
-	let input = json!({"idempotency_key":Uuid::new_v4(),"title":"Follow up","description":"Use saved files","agent_version":"1.1.0"});
-	let (status, queue) = request(&c.app, &c.token, "POST", &queue_path, input.clone()).await;
-	assert_eq!(status, 200, "{queue}");
-	assert_eq!(queue["queue"].as_array().unwrap().len(), 2);
 	let steer_path = format!("/api/working-areas/{}/steer", area["id"].as_str().unwrap());
-	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":queue["queue"][1]["run_id"],"content":"Must not reach a queued run"})).await;
+	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":Uuid::new_v4(),"content":"Must only reach the selected Run"})).await;
 	assert_eq!(status, 409, "{result}");
 	let steer = json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run.id,"content":"Prioritize the current question"});
 	let (_, bob) = async {
@@ -919,49 +914,6 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 	let inputs = c.f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(inputs.len(), 1);
 	assert_eq!(inputs[0].content, "Prioritize the current question");
-	assert_eq!(
-		request(&c.app, &c.token, "POST", &queue_path, input.clone()).await,
-		(200, queue.clone())
-	);
-	let mut conflict = input;
-	conflict["description"] = json!("different work");
-	assert_eq!(
-		request(&c.app, &c.token, "POST", &queue_path, conflict)
-			.await
-			.0,
-		409
-	);
-	let worker = Uuid::new_v4();
-	let leased = c.f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	assert_eq!(leased.id, run.id);
-	assert!(
-		c.f.store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.is_none(),
-		"another worker cannot overtake active work"
-	);
-	let queued: Uuid = serde_json::from_value(queue["queue"][1]["run_id"].clone()).unwrap();
-	let (status, result) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/executions/{queued}/control"),
-		json!({"action":"cancel"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
-	assert_eq!(
-		c.f.store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.unwrap()
-			.id,
-		queued,
-		"cancellation must not wait behind the active Run"
-	);
 	c.close().await;
 }
 

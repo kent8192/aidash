@@ -1758,7 +1758,7 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	.await
 	.unwrap();
 	let (operation, _) = running_targets(&fixture).await;
-	sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,'acme',id,1,true,generation FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
+	sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,initialized) SELECT $1,'acme',id,true FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
 		.bind(fixture.run)
 		.bind(operation)
 		.execute(fixture.driver())

@@ -104,6 +104,7 @@ async fn owner_authority(
 	let grant = native::query(&Query::select()
 		.columns([("authorization_execution", "credential_id"), ("authorization_execution", "subject_chain")])
 		.from_as(Alias::new("core_runs"), Alias::new("r"))
+		.join(JoinType::InnerJoin, Alias::new("task_executions"), Expr::col(("r", "run_id")).equals(("task_executions", "id")))
 		.join(JoinType::InnerJoin, Alias::new("authorization_execution"), Expr::col(("r", "run_id")).equals(("authorization_execution", "run_id")))
 		.join(JoinType::InnerJoin, Alias::new("authorization_credentials"), Expr::col(("authorization_execution", "credential_id")).equals(("authorization_credentials", "id")))
 		.and_where(Expr::col(("r", "area_id")).eq(Expr::value(area)))
@@ -114,7 +115,7 @@ async fn owner_authority(
 		.and_where(Expr::col(("authorization_credentials", "tenant")).eq(Expr::value(tenant)))
 		.and_where(Expr::col(("authorization_credentials", "subject")).eq(Expr::value(owner)))
 		.and_where(Expr::cust("authorization_credentials.revoked_at IS NULL AND authorization_credentials.expires_at > CLOCK_TIMESTAMP()"))
-		.order_by(("r", "sequence"), Order::Desc).limit(1).to_string(PostgresQueryBuilder))
+		.order_by(("task_executions", "created_at"), Order::Desc).order_by(("r", "run_id"), Order::Desc).limit(1).to_string(PostgresQueryBuilder))
 		.fetch_optional(&mut **lease.tx()).await?;
 	let Some(grant) = grant else {
 		return Ok(None);

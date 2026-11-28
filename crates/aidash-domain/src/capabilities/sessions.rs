@@ -19,19 +19,11 @@ pub struct Area {
 	pub next_sequence: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRun {
-	pub run_id: Uuid,
-	pub sequence: i64,
-	pub phase: String,
-	pub control: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatus {
 	pub area_id: Uuid,
 	pub last_run_id: Option<Uuid>,
 	pub last_agent_version: Option<String>,
 	pub active_run_id: Option<Uuid>,
-	pub queue: Vec<SessionRun>,
 }
 /// The constraint kind of a Working Area a receiving Node keeps for Runs executing for another
 /// Home (ADR 0139). It records the Home, whose Thread this Node does not hold, so reads of

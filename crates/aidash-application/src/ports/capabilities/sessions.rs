@@ -2,7 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	RunMetadata, Task,
-	capabilities::sessions::{Area, SessionRun},
+	capabilities::sessions::Area,
 	policy::Resource,
 	registry::{AgentConfig, EntityRef},
 };
@@ -24,7 +24,7 @@ pub trait SessionScope: Send {
 	/// Whether Reference files an Area was given can still be used (ADR 0114).
 	async fn references(&mut self, ids: &[Uuid]) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>>;
-	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<(Uuid, i64)>>;
+	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<Uuid>>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
@@ -42,8 +42,8 @@ pub trait SessionScope: Send {
 	async fn initialized_locked(&mut self, run_id: Uuid) -> Result<bool>;
 	async fn mark_initialized(&mut self, run_id: Uuid) -> Result<()>;
 	async fn pin(&mut self, run_id: Uuid, area: &mut Area, config: &AgentConfig) -> Result<()>;
-	async fn enqueue(&mut self, run_id: Uuid, area: &Area, initialized: bool) -> Result<()>;
-	async fn queue(&mut self, area: &Area) -> Result<Vec<SessionRun>>;
+	async fn bind(&mut self, run_id: Uuid, area: &Area, initialized: bool) -> Result<()>;
+	async fn active_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn last(&mut self, area: &Area) -> Result<Option<(Uuid, String)>>;
 	async fn previous(&mut self, key: Uuid) -> Result<Option<(String, Value)>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;

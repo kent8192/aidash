@@ -54,10 +54,6 @@ fn runs_on(node: &aidash_domain::nodes::NodeName) -> SimpleExpr {
 				Expr::col((Alias::new("q"), Alias::new("area_id")))
 					.equals((Alias::new("core_areas"), Alias::new("id"))),
 			)
-			.and_where(
-				Expr::col((Alias::new("q"), Alias::new("generation")))
-					.equals((Alias::new("core_areas"), Alias::new("generation"))),
-			)
 			.and_where(Expr::col((Alias::new("r"), Alias::new("node"))).eq(node.as_str()))
 			.to_owned(),
 	)
@@ -263,7 +259,7 @@ impl ReceiverScope for Scope<'_> {
 			let node = access.catalog_node().await?;
 			Ok({
 				let query_bind_1 = area.id;
-				let query_bind_2 = area.generation;
+
 				let query_bind_3 = version;
 				crate::database::native::query_scalar(
 					&Query::select()
@@ -284,10 +280,6 @@ impl ReceiverScope for Scope<'_> {
 						.and_where(
 							Expr::col((Alias::new("q"), Alias::new("area_id")))
 								.eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col((Alias::new("q"), Alias::new("generation")))
-								.eq(Expr::value(query_bind_2.to_owned())),
 						)
 						.and_where(
 							Expr::col((Alias::new("r"), Alias::new("agent_version")))
@@ -347,7 +339,7 @@ impl ReceiverScope for Scope<'_> {
 			let node = access.catalog_node().await?;
 			Ok({
 				let query_bind_1 = area.id;
-				let query_bind_2 = area.generation;
+
 				crate::database::native::query_scalar(
 					&Query::select()
 						.distinct()
@@ -368,10 +360,6 @@ impl ReceiverScope for Scope<'_> {
 						.and_where(
 							Expr::col((Alias::new("q"), Alias::new("area_id")))
 								.eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col((Alias::new("q"), Alias::new("generation")))
-								.eq(Expr::value(query_bind_2.to_owned())),
 						)
 						.order_by((Alias::new("r"), Alias::new("agent_version")), Order::Asc)
 						.limit((MAX_RECIPIENT_VERSIONS_PER_AREA + 1) as u64)

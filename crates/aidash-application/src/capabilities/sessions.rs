@@ -102,13 +102,12 @@ pub async fn authorize_sources(
 	Ok(())
 }
 pub async fn for_run(scope: &mut dyn SessionScope, run: &RunMetadata) -> Result<Area> {
-	let (id, generation) = scope
+	let id = scope
 		.run_binding(run.id)
 		.await?
 		.ok_or_else(|| Error::NotFound("working area unavailable".into()))?;
 	let area = load(scope, id).await?;
 	if area.agent_id != run.agent_id
-		|| area.generation != generation
 		|| area.thread_id != run.thread_id
 		|| area.home_node != run.home_node
 	{
@@ -174,7 +173,7 @@ pub async fn admit(
 	area.require_kind(false)?;
 	authorize(scope, &area, "file.read").await?;
 	scope.pin(run_id, &mut area, config).await?;
-	scope.enqueue(run_id, &area, true).await
+	scope.bind(run_id, &area, true).await
 }
 pub async fn initialize(
 	scope: &mut dyn SessionScope,
@@ -216,20 +215,18 @@ pub async fn initialize_remote(
 			area.require_kind(true)?;
 			authorize(scope, &area, "file.read").await?;
 			scope.pin(run.id, &mut area, config).await?;
-			scope.enqueue(run.id, &area, true).await?;
+			scope.bind(run.id, &area, true).await?;
 		}
 	}
 	initialize(scope, run, config).await
 }
 pub async fn status(scope: &mut dyn SessionScope, area: &Area) -> Result<SessionStatus> {
-	let rows = scope.queue(area).await?;
 	let last = scope.last(area).await?;
 	Ok(SessionStatus {
 		area_id: area.id,
 		last_run_id: last.as_ref().map(|r| r.0),
 		last_agent_version: last.map(|r| r.1),
-		active_run_id: rows.first().map(|r| r.run_id),
-		queue: rows,
+		active_run_id: scope.active_run(area).await?,
 	})
 }
 pub async fn cached(

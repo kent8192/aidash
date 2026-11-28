@@ -13,11 +13,7 @@ pub struct CoreRuns {
 	#[field]
 	pub area_id: uuid::Uuid,
 	#[field]
-	pub sequence: i64,
-	#[field]
 	pub initialized: bool,
-	#[field]
-	pub generation: i64,
 }
 
 impl CoreRuns {}

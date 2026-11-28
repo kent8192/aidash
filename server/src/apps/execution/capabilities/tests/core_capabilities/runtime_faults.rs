@@ -199,16 +199,6 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 	}
-	let (status, area) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/working-area", run.id),
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let (status,queue)=common::post(&c.app, &c.token, &format!("/api/working-areas/{}/queue",area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Next turn","description":"Controls remain available while stdout floods"})).await;
-	assert_eq!(status, 200, "{queue}");
-	assert_eq!(queue["queue"].as_array().unwrap().len(), 2);
 	let (status, result) = common::post(
 		&c.app,
 		&c.token,

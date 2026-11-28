@@ -8641,26 +8641,6 @@
     "responses": {
       "200": {
         "definitions": {
-          "SessionRun": {
-            "properties": {
-              "control": {
-                "type": "string"
-              },
-              "phase": {
-                "type": "string"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "sequence": {
-                "format": "int64",
-                "type": "integer"
-              }
-            },
-            "required": ["run_id", "sequence", "phase", "control"],
-            "type": "object"
-          },
           "SessionStatus": {
             "properties": {
               "active_run_id": {
@@ -8677,20 +8657,13 @@
               "last_run_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
-              },
-              "queue": {
-                "items": {
-                  "$ref": "#/components/schemas/SessionRun"
-                },
-                "type": "array"
               }
             },
             "required": [
               "area_id",
               "last_run_id",
               "last_agent_version",
-              "active_run_id",
-              "queue"
+              "active_run_id"
             ],
             "type": "object"
           }

@@ -240,13 +240,8 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 		.unwrap();
 	let sql = Query::insert()
 		.into_table(Alias::new("core_runs"))
-		.columns(["run_id", "tenant", "area_id", "sequence"].map(Alias::new))
-		.values_panic::<_, reinhardt::query::Value>([
-			run.into(),
-			"endpoint".into(),
-			area.into(),
-			1_i64.into(),
-		])
+		.columns(["run_id", "tenant", "area_id"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([run.into(), "endpoint".into(), area.into()])
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)
 		.execute(app.runtime.store.pool.fixture_driver())

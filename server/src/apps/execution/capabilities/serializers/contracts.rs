@@ -327,26 +327,11 @@ pub struct Enqueue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct SessionRun {
-	pub run_id: Uuid,
-	pub sequence: i64,
-	pub phase: String,
-	pub control: String,
-}
-crate::native_record!(SessionRun {
-	run_id,
-	sequence,
-	phase,
-	control
-});
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct SessionStatus {
 	pub area_id: Uuid,
 	pub last_run_id: Option<Uuid>,
 	pub last_agent_version: Option<String>,
 	pub active_run_id: Option<Uuid>,
-	pub queue: Vec<SessionRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

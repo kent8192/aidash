@@ -115,18 +115,13 @@ impl ScratchRuns {
 			.unwrap()
 			.id;
 		sqlx::query(
-			"INSERT INTO core_runs (run_id, area_id, sequence, initialized, tenant) SELECT $1, id, next_sequence, true, tenant FROM core_areas WHERE id = $2",
+			"INSERT INTO core_runs (run_id, area_id, initialized, tenant) SELECT $1, id, true, tenant FROM core_areas WHERE id = $2",
 		)
 		.bind(id)
 		.bind(self.area)
 		.execute(self.store.pool.fixture_driver())
 		.await
 		.unwrap();
-		sqlx::query("UPDATE core_areas SET next_sequence = next_sequence + 1 WHERE id = $1")
-			.bind(self.area)
-			.execute(self.store.pool.fixture_driver())
-			.await
-			.unwrap();
 		id
 	}
 

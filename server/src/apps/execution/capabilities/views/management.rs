@@ -174,23 +174,6 @@ pub async fn session(
 }
 
 #[post(
-	"/api/working-areas/{id}/queue",
-	name = "!core_session_enqueue",
-	auth = "protected"
-)]
-pub async fn enqueue(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<Enqueue>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::enqueue(service.runtime.clone(), actor, id, input).await)
-}
-
-#[post(
 	"/api/working-areas/{id}/steer",
 	name = "!core_session_steer",
 	auth = "protected"
