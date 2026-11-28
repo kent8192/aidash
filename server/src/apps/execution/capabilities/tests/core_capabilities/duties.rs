@@ -1225,7 +1225,7 @@ async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
 			]
 			.map(Alias::new),
 		)
-		.values_expr([
+		.values_expr(vec![
 			Expr::value(Completion::message_id(task, "script")).into(),
 			Expr::value("acme").into(),
 			Expr::value(task_record.thread_id).into(),
