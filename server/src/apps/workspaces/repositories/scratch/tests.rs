@@ -245,7 +245,8 @@ fn effective_operator_policy_applies_tenant_docker_and_host_restrictions() {
 	let mut policy = crate::config::ScratchOperatorPolicy::default();
 	let (limits, hosts) = effective_policy(&policy, "a");
 	assert!(!limits.docker_allowed);
-	assert!(matches!(hosts, HostAllowlist::Hosts(hosts) if hosts.contains("pypi.org")));
+	assert!(limits.all_hosts_allowed);
+	assert_eq!(hosts, HostAllowlist::All);
 	policy.docker_tenants.insert("a".into());
 	policy
 		.tenant_hosts
@@ -257,7 +258,6 @@ fn effective_operator_policy_applies_tenant_docker_and_host_restrictions() {
 		HostAllowlist::Hosts(BTreeSet::from(["example.com".into()]))
 	);
 	assert!(!effective_policy(&policy, "b").0.docker_allowed);
-	policy.ceilings.all_hosts_allowed = true;
 	policy.tenant_hosts.insert("a".into(), vec!["*".into()]);
 	assert_eq!(effective_policy(&policy, "a").1, HostAllowlist::All);
 }

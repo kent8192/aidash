@@ -196,7 +196,7 @@ impl ScratchAuthority {
 				received_bytes: settings.daily_received_bytes,
 			},
 			anomaly: AnomalyRule::default(),
-			operator_allows_all: ceilings.all_hosts_allowed,
+			operator_allows_all: ceilings.allows_all_hosts(&tenant_hosts),
 			tunnel_limits: Default::default(),
 		}))
 	}

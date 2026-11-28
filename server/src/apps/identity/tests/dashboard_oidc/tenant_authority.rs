@@ -2552,30 +2552,26 @@ async fn configurator_typed_tools_act_through_the_root_mapping(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn configurator_configures_and_reuses_a_tenant_scratch_space(
+async fn configurator_limits_and_refusals_agree_for_a_restricted_tenant(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let t = Team::new(runtime).await;
+	let mut t = Team::new(runtime).await;
+	t.d.federation
+		.config
+		.scratch_policy
+		.ceilings
+		.all_hosts_allowed = true;
+	t.d.federation
+		.config
+		.scratch_policy
+		.tenant_hosts
+		.insert(t.tenant.clone(), vec!["pypi.org".into()]);
+	t.d.app = common::application(t.d.federation.clone()).await;
 	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
 	let tools = aidash_server::tool::builtins();
 	let configure = &tools["scratch_space_configure"];
 	let space = configure.invoke(&context, json!({}), "read").await.unwrap();
 	let id = &space["id"];
-	assert!(id.is_string());
-	let limits_path = format!(
-		"/api/scratch-spaces/limits?node={}",
-		space["node"].as_str().unwrap()
-	);
-	let (status, limits) =
-		t.d.as_person(
-			&t.alice,
-			"GET",
-			&limits_path,
-			Some(&t.alice_context),
-			Value::Null,
-		)
-		.await;
-	assert_eq!(status, 200, "{limits}");
 	let forbidden_hosts = json!({"kind":"hosts","hosts":["outside.example.test"]});
 	let settings_path = format!("/api/scratch-spaces/{}/settings", id.as_str().unwrap());
 	let mut rejected_settings = space["settings"].clone();
@@ -2612,6 +2608,103 @@ async fn configurator_configures_and_reuses_a_tenant_scratch_space(
 		.strip_prefix(&format!("400 Bad Request {settings_path}: "))
 		.unwrap();
 	assert_eq!(serde_json::from_str::<Value>(payload).unwrap(), refusal);
+	assert_eq!(
+		space["limits"]["tenant_hosts"],
+		json!({"kind":"hosts","hosts":["pypi.org"]})
+	);
+	assert_eq!(
+		space["limits"]["ceilings"]["all_hosts_allowed"],
+		refusal["details"]["all_hosts_allowed"]
+	);
+	let all_hosts_error = configure
+		.invoke(
+			&context,
+			json!({"allowed_hosts":{"kind":"all"}}),
+			"disallowed-all",
+		)
+		.await
+		.unwrap_err()
+		.to_string();
+	let all_hosts_refusal: Value = serde_json::from_str(
+		all_hosts_error
+			.strip_prefix(&format!("400 Bad Request {settings_path}: "))
+			.unwrap(),
+	)
+	.unwrap();
+	assert_eq!(
+		all_hosts_refusal["details"]["all_hosts_allowed"],
+		space["limits"]["ceilings"]["all_hosts_allowed"]
+	);
+	assert_eq!(
+		all_hosts_refusal["details"]["violations"],
+		json!([{
+			"kind":"all_hosts_not_allowed",
+			"deployment_all_hosts_allowed":true,
+			"tenant_policy_allows_all_hosts":false
+		}])
+	);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn configurator_configures_and_reuses_a_tenant_scratch_space(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let context = configurator_context(&t, &t.alice, &t.alice_context).await;
+	let tools = aidash_server::tool::builtins();
+	let configure = &tools["scratch_space_configure"];
+	let space = configure.invoke(&context, json!({}), "read").await.unwrap();
+	let id = &space["id"];
+	assert!(id.is_string());
+	let limits_path = format!(
+		"/api/scratch-spaces/limits?node={}",
+		space["node"].as_str().unwrap()
+	);
+	let (status, limits) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&limits_path,
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{limits}");
+	assert_eq!(space["limits"], limits);
+	assert_eq!(limits["ceilings"]["all_hosts_allowed"], true);
+	assert_eq!(limits["tenant_hosts"], json!({"kind":"all"}));
+	assert_eq!(
+		space["settings"]["allowed_hosts"],
+		serde_json::to_value(aidash_domain::scratch::ScratchSettings::default().allowed_hosts)
+			.unwrap()
+	);
+	for hosts in [
+		json!({"kind":"hosts","hosts":["api.x.com"]}),
+		json!({"kind":"all"}),
+	] {
+		let updated = configure
+			.invoke(&context, json!({"allowed_hosts":hosts}), "widen-hosts")
+			.await
+			.unwrap();
+		assert_eq!(updated["settings"]["allowed_hosts"], hosts);
+		let (status, saved) =
+			t.d.as_person(
+				&t.alice,
+				"GET",
+				&format!("/api/scratch-spaces/{}", id.as_str().unwrap()),
+				Some(&t.alice_context),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(status, 200, "{saved}");
+		assert_eq!(saved["settings"]["allowed_hosts"], hosts);
+	}
+	let space = configure
+		.invoke(&context, json!({}), "read-widened")
+		.await
+		.unwrap();
 	assert_eq!(space["limits"], limits);
 
 	let hosts = json!({"kind":"hosts","hosts":[]});

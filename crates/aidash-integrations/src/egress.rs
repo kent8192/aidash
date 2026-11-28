@@ -1118,7 +1118,7 @@ async fn serve_with_clients(
 								// is not counted, allowlisted or resolved as one (#738).
 								let mut response = if is_services_host(&request) {
 									if connect { refuse(StatusCode::BAD_REQUEST, "external_service_requires_http") } else { forward_service(request, client, public, scopes).await }
-								} else { proxy::forward(request, scopes, tunnels, permit, connection_lease).await };
+								} else { proxy::forward(request, scopes, tunnels, permit, connection_lease, proxy::public_addresses).await };
 								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
 								response
 							} else { refuse(StatusCode::NOT_FOUND, "egress_route_not_found") };

@@ -76,6 +76,14 @@ background_enabled = true
 # affected.
 federation = true
 
+# Scratch Spaces start with public package hosts. A Tenant can add hosts or
+# select all hosts when no Deployment host policy is configured.
+# scratch_all_hosts_allowed = true
+# To restrict a specific Tenant, list only its permitted hosts here. A single
+# "*" or an absent entry permits all hosts. An empty list permits no hosts.
+# [deployment.scratch_tenant_hosts]
+# example-tenant = ["pypi.org", "files.pythonhosted.org", "api.x.com"]
+
 # The Deployment Key signs Federation tokens, and /.well-known/aidash publishes
 # its public key. Without it this Deployment cannot federate with others. Name
 # one of `file` and `kms`. Create the file with `manage deployment-key generate`

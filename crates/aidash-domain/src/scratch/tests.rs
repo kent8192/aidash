@@ -26,6 +26,21 @@ fn idle_and_daily_budgets_have_bounded_positive_values() {
 }
 
 #[test]
+fn default_policy_starts_with_public_registries_and_allows_widening_hosts() {
+	let ceilings = ScratchCeilings::default();
+	let tenant = HostAllowlist::All;
+	let mut settings = ScratchSettings::for_policy(&ceilings, &tenant);
+	assert_eq!(
+		settings.allowed_hosts,
+		HostAllowlist::Hosts(default_public_hosts())
+	);
+	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["api.x.com".into()]));
+	assert!(settings.validate(&ceilings, &tenant).is_ok());
+	settings.allowed_hosts = HostAllowlist::All;
+	assert!(settings.validate(&ceilings, &tenant).is_ok());
+}
+
+#[test]
 fn settings_cannot_expand_tenant_hosts_or_enable_disallowed_docker() {
 	let ceiling = ScratchCeilings::default();
 	let tenant = HostAllowlist::Hosts(BTreeSet::from(["example.com".to_owned()]));
@@ -83,7 +98,10 @@ fn external_service_registry_ids_round_trip_in_settings() {
 #[test]
 fn ceilings_and_operator_control_bound_settings() {
 	let mut settings = ScratchSettings::default();
-	let mut ceilings = ScratchCeilings::default();
+	let mut ceilings = ScratchCeilings {
+		all_hosts_allowed: false,
+		..Default::default()
+	};
 	let hosts = HostAllowlist::All;
 	settings.allowed_hosts = HostAllowlist::All;
 	assert!(settings.validate(&ceilings, &hosts).is_err());

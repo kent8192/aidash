@@ -2,7 +2,7 @@
 use super::super::repositories::scratch::service_states;
 use super::super::{
 	repositories::scratch::{NativeScratchServices, ScratchAdapter},
-	serializers::scratch::{ScratchCreate, ScratchSettingsUpdate, ScratchView},
+	serializers::scratch::{ScratchCreate, ScratchLimits, ScratchSettingsUpdate, ScratchView},
 };
 use crate::{
 	Error, Result,
@@ -86,8 +86,12 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 			Operation::Limits(node) => {
 				let person = scope.person().to_owned();
 				scope.require_node_use(&node, &person).await?;
-				let (ceilings, tenant_hosts) = scope.limits(&node).await?;
-				json!({"ceilings": ceilings, "tenant_hosts": tenant_hosts})
+				let (mut ceilings, tenant_hosts) = scope.limits(&node).await?;
+				ceilings.all_hosts_allowed = ceilings.allows_all_hosts(&tenant_hosts);
+				serde_json::to_value(ScratchLimits {
+					ceilings,
+					tenant_hosts,
+				})?
 			}
 			Operation::Read(id) => {
 				let space = app::read(&mut scope, id, now).await?;
