@@ -1,3 +1,5 @@
+import { AgentCapabilities } from "../capabilities/agent";
+import { OriginalReferences } from "../capabilities/configuration";
 import { ScratchSpacesSettings } from "../scratch-spaces";
 import { SafetyStopPanel } from "./safety-stop";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
@@ -648,6 +650,12 @@ export function Configuration({
                 focus={section === "registry" ? focus : undefined}
               />
             ))}
+          {section === "agents" && data.access.kind === "subject" && (
+            <>
+              <AgentCapabilities />
+              <OriginalReferences />
+            </>
+          )}
           {section === "registry" &&
             data.access.kind === "subject" &&
             selectedNode !== undefined &&

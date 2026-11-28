@@ -208,7 +208,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
     saved = route.request().postDataJSON();
     return route.fulfill({ json: { catalog_approval_required: true } });
   });
-  await page.goto("/settings?view=workingFiles");
+  await page.goto("/settings?view=agents");
   const config = page.locator("details", {
     has: page.locator("summary", {
       hasText: "Agent capabilities, Skills and original references",
@@ -370,7 +370,7 @@ test("failed-extraction originals stay private and downloadable", async ({
       },
     });
   });
-  await page.goto("/settings?view=workingFiles");
+  await page.goto("/settings?view=agents");
   await page.getByLabel("Add PDF, Excel or text (up to 10 MiB)").setInputFiles({
     name: "broken.pdf",
     mimeType: "application/pdf",

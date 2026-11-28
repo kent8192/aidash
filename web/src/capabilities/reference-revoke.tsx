@@ -107,8 +107,8 @@ export function ReferenceRevocations({
       </h4>
       <Hint>
         {ja
-          ? "取り消すと、新しい Run はこのファイルを使えず、コピーを持つ作業領域も使えなくなります。"
-          : "Revoking refuses new Runs that bind the file and makes any Working Area holding a copy unusable."}
+          ? "取り消すと、Run はこのファイルを読めなくなります。"
+          : "Revoking removes Run access to this Reference file."}
       </Hint>
       <ul className="divide-y divide-border rounded-md border border-border">
         {references.map((reference) => (
