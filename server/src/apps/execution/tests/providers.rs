@@ -40,7 +40,6 @@ fn config(
 		media_routes: vec![],
 		cost: json!({}),
 		cache_mode: None,
-		request_estimator: None,
 		provider_route: None,
 		estimate_diagnostics: None,
 		reasoning_passback: None,
