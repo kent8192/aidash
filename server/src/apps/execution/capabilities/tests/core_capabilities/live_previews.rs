@@ -451,28 +451,6 @@ async fn live_preview_start_requires_termination_proof_after_cancel_or_failure(
 			!fail_cancel
 		)
 	);
-	if failed_start {
-		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-		let hold: bool = sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::exists(
-					Query::select()
-						.expr(Expr::value(1))
-						.from(Alias::new("core_retention_holds"))
-						.and_where(Expr::col("holder_kind").eq("live_preview"))
-						.and_where(Expr::col("holder_id").eq(row.0.to_string()))
-						.to_owned(),
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		assert!(
-			hold,
-			"the revision stays retained until the Runner confirms the stop"
-		);
-	}
 	note(
 		"live_preview_start result",
 		&started

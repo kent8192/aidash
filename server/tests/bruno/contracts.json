@@ -7745,10 +7745,6 @@
                 "type": "string"
               },
               "manifest": {},
-              "next_sequence": {
-                "format": "int64",
-                "type": "integer"
-              },
               "owner": {
                 "type": "string"
               },
@@ -7779,8 +7775,7 @@
               "epoch",
               "state",
               "manifest",
-              "constraints",
-              "next_sequence"
+              "constraints"
             ],
             "type": "object"
           },
@@ -7840,10 +7835,6 @@
                 "type": "string"
               },
               "manifest": {},
-              "next_sequence": {
-                "format": "int64",
-                "type": "integer"
-              },
               "owner": {
                 "type": "string"
               },
@@ -7874,8 +7865,7 @@
               "epoch",
               "state",
               "manifest",
-              "constraints",
-              "next_sequence"
+              "constraints"
             ],
             "type": "object"
           }
@@ -8963,10 +8953,6 @@
                 "type": "string"
               },
               "manifest": {},
-              "next_sequence": {
-                "format": "int64",
-                "type": "integer"
-              },
               "owner": {
                 "type": "string"
               },
@@ -8997,8 +8983,7 @@
               "epoch",
               "state",
               "manifest",
-              "constraints",
-              "next_sequence"
+              "constraints"
             ],
             "type": "object"
           }

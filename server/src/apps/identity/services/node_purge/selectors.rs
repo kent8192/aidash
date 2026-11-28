@@ -46,7 +46,6 @@ impl Owners<'_> {
 			RemoteUsage => ("generation_remote_usage", "attempt_id"),
 			Observation => ("approval_observations", "id"),
 			Message => ("messages", "id"),
-			RetentionHold => ("core_retention_holds", "id"),
 			Preview => ("core_previews", "id"),
 			LivePreview => ("core_live_previews", "id"),
 			Subnode => ("subnodes", "id"),

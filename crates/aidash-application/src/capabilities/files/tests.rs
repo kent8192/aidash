@@ -217,7 +217,6 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 		state: "active".into(),
 		manifest: json!([file]),
 		constraints: json!([]),
-		next_sequence: 1,
 	};
 	(
 		Scope {

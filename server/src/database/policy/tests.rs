@@ -34,6 +34,8 @@ async fn every_policy_migration_runs_the_rendered_template() {
 /// (#850), with the operation-token External service route (#738), and with
 /// the Research category (#987).
 const RETIRED: &[&str] = &[
+	"core_retention_files",
+	"core_retention_holds",
 	"decision_states",
 	"decision_outcomes",
 	"generation_compaction_usage",

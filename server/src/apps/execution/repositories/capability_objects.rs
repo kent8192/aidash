@@ -1515,7 +1515,6 @@ impl Runtime {
 					.column(Alias::new("id"))
 					.from(Alias::new("core_objects"))
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-					.and_where(super::reclamation::no_active_hold())
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_optional(&mut **tx)

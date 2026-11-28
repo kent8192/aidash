@@ -695,35 +695,7 @@ async fn settle_row(store: &Store, tenant: &str, preview: &mut LivePreview) -> N
 		.await
 		.map_err(reinhardt::core::exception::Error::from)
 		.map_err(NativeError::from)?;
-	release_hold(&mut tx, tenant, preview.id).await?;
 	tx.commit().await?;
-	Ok(())
-}
-
-async fn release_hold(
-	tx: &mut crate::database::native::Transaction,
-	tenant: &str,
-	preview: Uuid,
-) -> NativeResult<()> {
-	crate::database::native::query(
-		&reinhardt::query::Query::delete()
-			.from_table(reinhardt::query::Alias::new("core_retention_holds"))
-			.and_where(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("tenant"))
-					.eq(reinhardt::query::Expr::value(tenant.to_owned())),
-			)
-			.and_where(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("holder_kind"))
-					.eq(reinhardt::query::Expr::value("live_preview")),
-			)
-			.and_where(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("holder_id"))
-					.eq(reinhardt::query::Expr::value(preview.to_string())),
-			)
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.execute(&mut **tx)
-	.await?;
 	Ok(())
 }
 

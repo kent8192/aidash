@@ -475,7 +475,7 @@ mod exposure {
 			"id": Uuid::new_v4(), "tenant": "tenant", "home_node": NODE,
 			"thread_id": Uuid::new_v4(), "agent_id": "agent",
 			"owner": "owner", "generation": 0, "revision": 0, "epoch": 0, "state": "ready",
-			"manifest": [], "constraints": {}, "next_sequence": 0,
+			"manifest": [], "constraints": {},
 		}))
 		.unwrap();
 		pin(&mut scope, run.id, &area, &config).await.unwrap();

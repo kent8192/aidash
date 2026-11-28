@@ -76,7 +76,6 @@ pub struct Area {
 	pub state: String,
 	pub manifest: Value,
 	pub constraints: Value,
-	pub next_sequence: i64,
 }
 impl crate::database::native::Decode for Area {
 	fn decode(row: &crate::database::native::Row, _: &[&str]) -> crate::Result<Self> {
@@ -92,7 +91,6 @@ impl crate::database::native::Decode for Area {
 			epoch: row.try_get("epoch")?,
 			state: row.try_get("state")?,
 			constraints: row.try_get("constraints")?,
-			next_sequence: row.try_get("next_sequence")?,
 			manifest: row
 				.try_get::<Option<Value>>("manifest")?
 				.ok_or_else(|| crate::Error::Invalid("missing area manifest revision".into()))?,

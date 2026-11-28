@@ -16,9 +16,6 @@ pub trait ReclamationRepository: Send + Sync {
 	async fn orphans(&self) -> Result<()>;
 	/// Releases Federation holds whose Retention Rules period has ended so that
 	/// the objects they kept become reclaimable. A later release is a no-op.
-	async fn expire_holds(&self) -> Result<()> {
-		Ok(())
-	}
 	/// Deletes Preview tickets and viewing sessions whose lifetime ended. A
 	/// stolen ticket or cookie can no longer be used, and the rows do not grow
 	/// without bound.

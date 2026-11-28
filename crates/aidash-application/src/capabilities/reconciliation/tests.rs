@@ -30,7 +30,6 @@ struct Trace {
 	failure: Option<(String, bool)>,
 	/// Request bodies sent to the runner.
 	bodies: Vec<Value>,
-	reusable: Option<Uuid>,
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<Trace>>);
@@ -111,7 +110,6 @@ fn repository() -> Repository {
 		commit: false,
 		failure: None,
 		bodies: vec![],
-		reusable: None,
 	})))
 }
 impl Repository {

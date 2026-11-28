@@ -25,8 +25,6 @@ pub struct CoreAreas {
 	pub revision: i64,
 	#[field]
 	pub epoch: i64,
-	#[field]
-	pub next_sequence: i64,
 	#[field(field_type = "text")]
 	pub state: String,
 	#[field]

@@ -13,7 +13,7 @@ use aidash_domain::{
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 pub async fn drive(repository: &dyn OperationReconciliationRepository, id: Uuid) -> Result<()> {
 	let snapshot = repository.snapshot(id).await?;

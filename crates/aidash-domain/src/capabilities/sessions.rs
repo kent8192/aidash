@@ -16,7 +16,6 @@ pub struct Area {
 	pub state: String,
 	pub manifest: Value,
 	pub constraints: Value,
-	pub next_sequence: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatus {

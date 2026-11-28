@@ -18,7 +18,6 @@ impl From<NativeArea> for Area {
 			state: value.state,
 			manifest: value.manifest,
 			constraints: value.constraints,
-			next_sequence: value.next_sequence,
 		}
 	}
 }
@@ -37,7 +36,6 @@ impl From<&NativeArea> for Area {
 			state: value.state.clone(),
 			manifest: value.manifest.clone(),
 			constraints: value.constraints.clone(),
-			next_sequence: value.next_sequence,
 		}
 	}
 }
@@ -56,7 +54,6 @@ impl From<Area> for NativeArea {
 			state: value.state,
 			manifest: value.manifest,
 			constraints: value.constraints,
-			next_sequence: value.next_sequence,
 		}
 	}
 }
