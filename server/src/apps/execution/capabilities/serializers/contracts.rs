@@ -418,46 +418,6 @@ pub struct ToolFileSearch {
 	pub limit: Option<usize>,
 }
 
-/// Register Scratch Space files in the Working Area (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FileSave {
-	pub idempotency_key: Uuid,
-	/// Files or directories relative to the Scratch Space root; `.` is all of it.
-	pub paths: Vec<String>,
-	/// Files whose gitignore rules apply in each directory. Defaults to `.gitignore`.
-	pub ignore_files: Option<Vec<String>>,
-	/// Patterns to leave out, beating `ignore_files`.
-	pub exclude: Option<Vec<String>>,
-	/// Patterns to save even when excluded or ignored.
-	pub include: Option<Vec<String>>,
-	/// Also remove registered files under `paths` that the selection no longer holds.
-	pub sync: Option<bool>,
-	/// The working area revision from the previous result, to refuse a save over a newer one.
-	pub expected_revision: Option<i64>,
-}
-
-/// Remove registered files, or everything under a directory, from the Working Area.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FileRemove {
-	pub idempotency_key: Uuid,
-	pub paths: Vec<String>,
-	/// The working area revision from the previous result.
-	pub expected_revision: Option<i64>,
-}
-
-/// Copy registered Working Area files into the Scratch Space (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FileCopy {
-	pub idempotency_key: Uuid,
-	/// Registered files or directories.
-	pub paths: Vec<String>,
-	/// A Scratch Space directory to copy under; by default each file keeps its path.
-	pub destination: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessList {}

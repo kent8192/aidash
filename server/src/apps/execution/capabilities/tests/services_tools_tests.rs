@@ -95,7 +95,12 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 			sharing: true,
 		},
 	);
-	assert_eq!(tools.len(), 23);
+	assert!(tools.contains_key("file_read"));
+	assert!(tools.contains_key("file_search"));
+	assert!(tools.contains_key("apply_patch"));
+	for removed in ["file_save", "file_remove", "file_copy", "file_share"] {
+		assert!(!tools.contains_key(removed), "{removed}");
+	}
 	for (name, tool) in &tools {
 		let schema = tool.specification().parameters;
 		assert!(!schema.to_string().contains("$ref"), "{name}");
@@ -107,9 +112,9 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 }
 
 #[test]
-fn area_mutation_tools_explain_where_to_find_the_expected_revision() {
+fn command_tools_explain_where_to_find_the_expected_revision() {
 	let tools = implementations();
-	for name in ["shell", "code_interpreter", "apply_patch", "file_share"] {
+	for name in ["shell", "code_interpreter"] {
 		let spec = tools[name].specification();
 		let description = spec.parameters["properties"]["expected_revision"]["description"]
 			.as_str()
