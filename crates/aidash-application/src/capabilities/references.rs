@@ -1,6 +1,7 @@
 //! Upload, immutable mounts, parser dispatch and receipt recovery share current authority.
 use crate::{
 	Error, Result,
+	capabilities::multipart,
 	ports::capabilities::references::{ReferenceRepository, ReferenceScope},
 };
 use aidash_domain::{
@@ -110,33 +111,28 @@ pub async fn chunk(scope: &mut dyn ReferenceScope, id: Uuid, input: Chunk) -> Re
 	if record.state != "uploading" || record.expires_at.is_some_and(|t| t <= Utc::now()) {
 		return Err(Error::Conflict("UPLOAD_UNAVAILABLE".into()));
 	}
-	let bytes = STANDARD
-		.decode(&input.data)
-		.map_err(|_| Error::Invalid("INVALID_CHUNK".into()))?;
 	let maximum = record.data["input"]["size"]
 		.as_u64()
 		.ok_or(Error::Forbidden)?;
-	if !lifecycle::valid_chunk(input.offset, maximum, &bytes) {
-		return Err(Error::Invalid("UPLOAD_CHUNK_LIMIT".into()));
-	}
 	let chunks = record.data["chunks"]
 		.as_array_mut()
 		.ok_or(Error::Forbidden)?;
-	if let Some(old) = chunks.iter().find(|c| c["offset"] == input.offset) {
-		if old["file"]["digest"] != format!("{:x}", sha2::Sha256::digest(&bytes))
-			|| old["file"]["size"] != bytes.len()
-		{
-			return Err(Error::Conflict("CHUNK_CHANGED".into()));
-		}
-		return Ok(lifecycle::view(&record)?);
-	}
 	let end: u64 = chunks
 		.iter()
 		.map(|c| c["file"]["size"].as_u64().unwrap_or(0))
 		.sum();
-	if input.offset != end {
-		return Err(Error::Conflict("UPLOAD_OFFSET_CHANGED".into()));
-	}
+	let previous = chunks
+		.iter()
+		.find(|c| c["offset"] == input.offset)
+		.map(|old| {
+			(
+				old["file"]["digest"].as_str().unwrap_or_default(),
+				old["file"]["size"].as_u64().unwrap_or_default(),
+			)
+		});
+	let Some(bytes) = multipart::next_chunk(&input, maximum, end, previous)? else {
+		return Ok(lifecycle::view(&record)?);
+	};
 	let (file_id, digest) = scope.put("reference_staging", &bytes).await?;
 	let file = FileEntry {
 		file_id,
@@ -152,6 +148,21 @@ pub async fn chunk(scope: &mut dyn ReferenceScope, id: Uuid, input: Chunk) -> Re
 	scope.update(&mut record).await?;
 	Ok(lifecycle::view(&record)?)
 }
+
+struct ReferenceAssembly<'a>(&'a mut dyn ReferenceScope);
+
+#[async_trait::async_trait]
+impl multipart::Assembly for ReferenceAssembly<'_> {
+	type Part = FileEntry;
+
+	async fn read_part(&mut self, part: Self::Part) -> Result<Vec<u8>> {
+		self.0.read(&part).await
+	}
+	async fn append(&mut self, bytes: &[u8]) -> Result<()> {
+		self.0.write_original(bytes).await
+	}
+}
+
 pub async fn commit(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Reference> {
 	let mut record = get(scope, id, "reference.upload").await?;
 	if record.state != "uploading" {
@@ -164,11 +175,13 @@ pub async fn commit(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Referenc
 		return Err(Error::Conflict("UPLOAD_INCOMPLETE_OR_EXPIRED".into()));
 	}
 	scope.begin_original(input.size).await?;
-	for chunk in record.data["chunks"].as_array().ok_or(Error::Forbidden)? {
-		let file: FileEntry = serde_json::from_value(chunk["file"].clone())?;
-		let bytes = scope.read(&file).await?;
-		scope.write_original(&bytes).await?;
-	}
+	let parts = record.data["chunks"]
+		.as_array()
+		.ok_or(Error::Forbidden)?
+		.iter()
+		.map(|chunk| serde_json::from_value(chunk["file"].clone()))
+		.collect::<serde_json::Result<Vec<_>>>()?;
+	multipart::assemble(&mut ReferenceAssembly(scope), parts).await?;
 	let (file_id, digest) = scope.finish_original(&input.digest).await?;
 	let original = FileEntry {
 		file_id,
