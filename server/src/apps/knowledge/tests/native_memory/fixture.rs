@@ -1,5 +1,6 @@
 //! Shared native-memory fixture; integration and repository tests use the same ownership.
 use super::DatabaseFixture;
+use crate::tenant_roots::default_node_in;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
@@ -11,22 +12,6 @@ use reinhardt::db::orm::Model;
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
-/// The Tenant's default Node, as `tenants::create` writes it.
-async fn default_node(pool: &sqlx::PgPool, tenant: &str) {
-	let name = aidash_domain::nodes::NodeName::derived(tenant);
-	sqlx::query("INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp()) ON CONFLICT (name) DO NOTHING")
-		.bind(name.as_str())
-		.bind(tenant)
-		.execute(pool)
-		.await
-		.unwrap();
-	sqlx::query("INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator') ON CONFLICT DO NOTHING")
-		.bind(tenant)
-		.bind(name.as_str())
-		.execute(pool)
-		.await
-		.unwrap();
-}
 pub(super) fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -243,7 +228,7 @@ async fn setup_endpoint_policy_with_window(
 		})
 		.await
 		.unwrap();
-	default_node(store.pool.fixture_driver(), "acme").await;
+	default_node_in(store.pool.fixture_driver(), "acme").await;
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
