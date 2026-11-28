@@ -703,6 +703,67 @@ test("Live preview background status is quiet when absent or unavailable", async
   expect(errors).toEqual([]);
 });
 
+test("Thread Files renders saved HTML on the preview domain with legacy MIME metadata", async ({
+  page,
+}) => {
+  const { managed, errors } = await core(page);
+  const html = "<h1>Saved report</h1>";
+  const file = {
+    file_id: randomUUID(),
+    path: "report.html",
+    digest: createHash("sha256").update(html).digest("hex"),
+    size: Buffer.byteLength(html),
+    media_type: "application/octet-stream",
+    scope: "working",
+  };
+  await page.route("**/api/working-areas?*", (route) =>
+    route.fulfill({
+      json: {
+        items: [{ ...managed, manifest: [file] }],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.route("**/api/previews/availability", (route) =>
+    route.fulfill({
+      json: { available: true, preview_domain: "preview.example.test" },
+    }),
+  );
+  const previewUrl =
+    "https://file.preview.example.test/__aidash/ticket?t=report";
+  await page.route("**/api/previews/tickets", (route) =>
+    route.fulfill({
+      json: { url: previewUrl, expires_at: "2099-01-01T00:00:00Z" },
+    }),
+  );
+  await page.route(previewUrl, (route) =>
+    route.fulfill({ contentType: "text/html", body: html }),
+  );
+
+  await page.goto("/collaboration?channel=thread-one");
+  await page.getByRole("button", { name: "Files", exact: true }).click();
+  const [ticket] = await Promise.all([
+    page.waitForRequest("**/api/previews/tickets"),
+    page.getByRole("button", { name: "File preview: report.html" }).click(),
+  ]);
+
+  expect(ticket.method()).toBe("POST");
+  expect(ticket.postDataJSON()).toEqual({
+    area_id: managed.area_id,
+    file_id: file.file_id,
+  });
+  const pane = page.getByRole("complementary", {
+    name: "File preview",
+    exact: true,
+  });
+  await expect(
+    pane
+      .frameLocator('iframe[title="report.html"]')
+      .getByRole("heading", { name: "Saved report" }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("Results opens a running Live preview in the Thread", async ({ page }) => {
   await core(page);
   const previewId = randomUUID();
