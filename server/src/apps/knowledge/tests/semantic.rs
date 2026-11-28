@@ -1118,6 +1118,145 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn tenant_embedding_switch_preserves_search_until_the_replacement_is_ready(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (mut policy, token, task) = common::bootstrap(&f, &app, &embeddings.url).await;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let config = spec(&embeddings.url);
+	for (version, model_version) in [("1.0.0", "1"), ("2.0.0", "2")] {
+		let mut embedding = config.embedding.clone();
+		embedding.model_version = model_version.into();
+		let entry = json!({
+			"id":"switch-model", "version":version, "kind":"embedding",
+			"name":{"en":"Switch model"}, "description":{"en":"Local embedding fixture"},
+			"config":embedding,
+		});
+		f.registry
+			.register(&tenant, serde_json::from_value(entry).unwrap())
+			.await
+			.unwrap();
+	}
+	let admin = common::BrowserMapping::new(&f, "acme", "alice").await;
+	let path = "/api/tenants/acme/embedding-settings";
+	let old = json!({"id":"switch-model", "version":"1.0.0"});
+	let replacement = json!({"id":"switch-model", "version":"2.0.0"});
+	let (status, initial) = admin.send("GET", path, Value::Null).await;
+	assert_eq!(status, 200, "{initial}");
+	assert_eq!(
+		initial["settings"]["active"],
+		json!({"id":"aidash.embedding","version":"1.0.0"})
+	);
+	policy["subjects"]["viewer"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"viewer-settings-denial", "effect":"deny", "subjects":{"ids":["viewer"]},
+		"actions":["tenant.update"], "resources":{"kinds":["tenant"]},
+	}));
+	let (status, updated_policy) = common::post(
+		&app,
+		&f.config.api_token,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{updated_policy}");
+	let viewer = common::BrowserMapping::new(&f, "acme", "viewer").await;
+	assert_eq!(viewer.send("GET", path, Value::Null).await.0, 403);
+	assert_eq!(
+		viewer
+			.send(
+				"PUT",
+				path,
+				json!({"embedding":old,"expected_revision":0,"confirm":true})
+			)
+			.await
+			.0,
+		403
+	);
+	let (status, selected) = admin
+		.send(
+			"PUT",
+			path,
+			json!({"embedding":old,"expected_revision":0,"confirm":true}),
+		)
+		.await;
+	assert_eq!(status, 200, "{selected}");
+	assert_eq!(selected["settings"]["active"], old);
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/threads/{thread}/semantic/index"),
+		configure_request(&config, 0),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let entry = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
+	semantic::worker::sweep(&f.store).await.unwrap();
+
+	let revision = selected["settings"]["revision"].clone();
+	let (status, preview) = admin
+		.send(
+			"PUT",
+			path,
+			json!({"embedding":replacement,"expected_revision":revision}),
+		)
+		.await;
+	assert_eq!(status, 200, "{preview}");
+	assert_eq!(
+		preview["estimate"],
+		json!({"thread_indexes":1,"thread_entries":1,"drive_files":0})
+	);
+	assert_eq!(preview["settings"], selected["settings"]);
+	let (status, confirmed) = admin
+		.send(
+			"PUT",
+			path,
+			json!({"embedding":replacement,"expected_revision":revision,"confirm":true}),
+		)
+		.await;
+	assert_eq!(status, 200, "{confirmed}");
+	assert_eq!(confirmed["settings"]["active"], old);
+	assert_eq!(confirmed["settings"]["pending"], replacement);
+	let (status, before) = search(&app, &token, thread).await;
+	assert_eq!(status, 200, "{before}");
+	assert_eq!(before["model_version"], "1");
+	assert_eq!(before["matches"][0]["entry_id"], entry["id"]);
+
+	let worker = tokio::spawn(semantic::worker::run_reembedding(f.store.clone()));
+	let switched = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let (status, current) = admin.send("GET", path, Value::Null).await;
+			assert_eq!(status, 200, "{current}");
+			if current["settings"]["pending"].is_null() {
+				break current;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+	})
+	.await;
+	worker.abort();
+	let _ = worker.await;
+	assert_eq!(
+		switched.expect("the replacement finished")["settings"]["active"],
+		replacement
+	);
+	let (status, after) = search(&app, &token, thread).await;
+	assert_eq!(status, 200, "{after}");
+	assert_eq!(after["model_version"], "2");
+	assert_eq!(after["matches"][0]["entry_id"], entry["id"]);
+
+	dispose(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[case::openai("openai")]
 #[case::openrouter("openrouter")]
 #[tokio::test]
@@ -1486,7 +1625,20 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	configure(&f, &token, thread, &spec(&embedding_endpoint), 0).await;
-	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
+	put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
+	let message = f
+		.store
+		.message_record(&TEST_FIXTURE, thread, "alice", "Vehicle safety", None)
+		.await
+		.unwrap();
+	let (status, indexed_message) = common::post(
+		&app,
+		&token,
+		&format!("/api/threads/{thread}/semantic/entries"),
+		json!({"key":"vehicle-safety","source":{"kind":"message","id":message.id},"expected_revision":0,"metadata":{}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{indexed_message}");
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(
 		common::post(
@@ -1509,7 +1661,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
 		context["snapshot"]["semantic_memory"]["thread"]["matches"][0]["entry_id"],
-		cars["id"]
+		indexed_message["id"]
 	);
 	assert_eq!(
 		context["snapshot"]["semantic_memory"]["thread"]["model_version"],
@@ -1572,7 +1724,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	);
 	let path = format!(
 		"/api/threads/{thread}/semantic/entries/{}",
-		cars["id"].as_str().unwrap()
+		indexed_message["id"].as_str().unwrap()
 	);
 	assert_eq!(
 		request(
