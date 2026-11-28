@@ -50,6 +50,11 @@ struct Job {
 	result: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct Digest {
+	digest: String,
+}
+
 pub(super) async fn publish(
 	store: &Store,
 	mut access: Access,
@@ -150,14 +155,7 @@ pub(super) async fn publish(
 		files: selected.into_values().collect(),
 		requester,
 	};
-	let bytes = plan
-		.files
-		.iter()
-		.map(|file| file.size)
-		.fold(0_u64, u64::saturating_add);
-	let estimated_seconds = bytes
-		.div_ceil(50_000_000)
-		.saturating_add((plan.files.len() as u64).div_ceil(1000));
+	let estimated_seconds = estimate_transfer(access.tx.as_mut(), &tenant, &plan).await?;
 	let result = db::insert(
 		access.tx.as_mut(),
 		"drive_jobs",
@@ -197,6 +195,31 @@ pub(super) async fn publish(
 		}
 	}
 	Ok(json!({"status":"pending","job_id":operation,"estimated_seconds":estimated_seconds}))
+}
+
+async fn estimate_transfer(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	plan: &Plan,
+) -> Result<u64> {
+	let mut missing: BTreeMap<_, _> = plan
+		.files
+		.iter()
+		.map(|file| (file.sha256.as_str(), file.size))
+		.collect();
+	let digests: Vec<_> = missing.keys().copied().collect();
+	for batch in digests.chunks(10_000) {
+		let query = db::select("core_blobs", tenant)
+			.and_where(db::col("digest").is_in(batch.iter().copied()))
+			.to_owned();
+		for known in db::rows::<Digest>(tx, &query).await? {
+			missing.remove(known.digest.as_str());
+		}
+	}
+	let bytes = missing.into_values().fold(0_u64, u64::saturating_add);
+	Ok(bytes
+		.div_ceil(50_000_000)
+		.saturating_add((plan.changes.len() as u64).div_ceil(1000)))
 }
 
 fn normalize_base(base: PublishBase) -> Result<PublishBase> {
@@ -596,10 +619,6 @@ async fn stage_batch(
 		.await
 		.map_err(|error| Error::External(error.to_string()))?;
 	let mut tx = store.scratch_upload_pool.begin(scope).await?;
-	#[derive(Deserialize)]
-	struct Digest {
-		digest: String,
-	}
 	let query = db::select("drive_job_blobs", &job.tenant)
 		.and_where(db::col("job_id").eq(Expr::value(job.id)))
 		.and_where(db::col("digest").is_in(files.iter().map(|file| file.sha256.as_str())))
