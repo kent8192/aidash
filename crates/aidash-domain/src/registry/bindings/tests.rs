@@ -224,7 +224,7 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 			.any(|b| b.binding.target.id == "aidash.thread_search")
 	);
 	assert!(current.iter().any(
-		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.1.0"
+		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.2.0"
 	));
 }
 
@@ -775,7 +775,8 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 			.clone()
 	};
 	assert_eq!(file_read(&resolved), "1.0.0");
-	assert_eq!(file_read(&today), "1.2.0");
+	assert_eq!(file_read(&today), "1.0.1");
+	assert_eq!(file_read(&config.normalize(node).unwrap()), "1.2.0");
 }
 
 #[test]

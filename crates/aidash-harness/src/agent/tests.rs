@@ -753,7 +753,10 @@ impl ExecutionStore for Backend {
 		upstream_model: &str,
 		_projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
-		assert_eq!(upstream_model, "fixture");
+		assert_eq!(
+			self.entry("model").config["model_id"].as_str(),
+			Some(upstream_model)
+		);
 		self.record("calibration.samples");
 		Ok(self.0.calibration.lock().unwrap().clone())
 	}
@@ -2502,6 +2505,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 		boundary,
 		[
 			"authority.inference",
+			"save",
 			"authority.auto_judging",
 			"save",
 			"authority.inference",
@@ -2702,8 +2706,10 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 			.lock()
 			.unwrap()
 			.iter()
-			.all(|(event, saved)| event == "execution.sources_observed"
-				&& saved.phase() == RunPhase::Thinking)
+			.all(|(event, saved)| matches!(
+				event.as_str(),
+				"execution.estimate_pinned" | "execution.sources_observed"
+			) && saved.phase() == RunPhase::Thinking)
 	);
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert_eq!(calls.contains(&"provider.infer"), resumed);
@@ -2872,6 +2878,7 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 			.collect::<Vec<_>>(),
 		[
 			"execution.started",
+			"execution.estimate_pinned",
 			"execution.sources_observed",
 			"model.completed",
 			"execution.completed"

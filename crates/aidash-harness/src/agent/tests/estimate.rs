@@ -266,7 +266,7 @@ async fn a_resumed_step_whose_encoding_is_gone_runs_on_bytes(mut fixture: Fixtur
 	);
 	let [dispatch] = dispatches(&fixture).try_into().unwrap();
 	assert_eq!(dispatch.estimate.estimator, "bytes");
-	// Act: the next step pins the encoding the model names.
+	// Act: the next step may pin the calibrated estimator.
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	fixture.run.step += 1;
 	advance_sources(&mut fixture).await.unwrap();
@@ -274,7 +274,7 @@ async fn a_resumed_step_whose_encoding_is_gone_runs_on_bytes(mut fixture: Fixtur
 	assert_eq!(count(&fixture, "calibration.samples"), 1);
 	assert_eq!(
 		dispatches(&fixture).last().unwrap().estimate.estimator,
-		"tokenized"
+		"calibrated"
 	);
 }
 

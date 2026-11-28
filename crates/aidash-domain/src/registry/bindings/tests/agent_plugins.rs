@@ -245,7 +245,7 @@ fn implicit_thread_source_uses_the_reader_version_in_the_snapshot() {
 		};
 	// Today's Agent reads through the Thread tool (#1008).
 	let declaration = native.declaration_for_snapshot(&source, &snapshot);
-	assert!(reads(&declaration, "aidash.thread_read", "1.1.0"));
+	assert!(reads(&declaration, "aidash.thread_read", "1.2.0"));
 	// An Agent normalized before #1008 reads through the Workspace tool it pins.
 	let binding = snapshot
 		.bindings
