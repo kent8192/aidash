@@ -133,10 +133,10 @@ fn workspace_attachment_tools_keep_original_declarations_immutable() {
 		let new = current.iter().find(|entry| entry.id == legacy.id).unwrap();
 		assert_eq!(
 			new.version,
-			if legacy.id == "aidash.workspace_read" {
-				"1.3.0"
-			} else {
-				"1.2.0"
+			match legacy.id.as_str() {
+				"aidash.workspace_read" => "1.3.0",
+				"aidash.workspace_observe" => "1.1.0",
+				_ => "1.2.0",
 			}
 		);
 		assert_ne!(new.description, legacy.description);
