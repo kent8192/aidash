@@ -1,6 +1,7 @@
 //! Scratch Space persistence on a caller-owned Tenant transaction.
 use std::collections::{BTreeMap, BTreeSet};
 
+use aidash_application::ports::capabilities::execution_pod::RunStopReason;
 use aidash_domain::{
 	Run,
 	nodes::NodeName,
@@ -731,7 +732,11 @@ pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
 					.await?;
 				for run in runs {
 					runner
-						.stop_run(&space_id.to_string(), &run.to_string())
+						.stop_run(
+							&space_id.to_string(),
+							&run.to_string(),
+							RunStopReason::RunCancelled,
+						)
 						.await
 						.map_err(|error| Error::External(error.to_string()))?;
 				}

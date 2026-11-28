@@ -301,7 +301,7 @@ def initialize_system_root(image_root, store, *, reset=False, image_identity=Non
         if backup.exists():
             shutil.rmtree(backup)
     staging = store / ('rootfs.' + uuid.uuid4().hex + '.new')
-    excluded = {'scratch', 'scratch-system', 'scratch-image', 'proc', 'sys', 'dev', 'tmp', '.aidash-helpers'}
+    excluded = {'scratch', 'work', 'scratch-system', 'scratch-image', 'proc', 'sys', 'dev', 'tmp', '.aidash-helpers'}
     copied_links = {}
 
     def copy_image_file(source, target):
@@ -329,7 +329,7 @@ def initialize_system_root(image_root, store, *, reset=False, image_identity=Non
                 info = source.lstat()
                 os.chown(target, info.st_uid, info.st_gid, follow_symlinks=False)
                 shutil.copystat(source, target, follow_symlinks=False)
-        for name in ('scratch', 'proc', 'sys', 'dev', 'tmp'):
+        for name in ('scratch', 'work', 'proc', 'sys', 'dev', 'tmp'):
             (staging / name).mkdir(exist_ok=True)
         if backup.exists():
             shutil.rmtree(backup)

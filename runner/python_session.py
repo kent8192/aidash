@@ -172,10 +172,10 @@ def serve(path):
                         code, limit = request['code'], request['output_bytes']
                         cwd = request['cwd']
                         if not isinstance(cwd, str) or cwd.startswith('/') or '..' in cwd.split('/') or '\x00' in cwd:
-                            raise ValueError('cwd must be relative to /scratch')
+                            raise ValueError('cwd must be relative to /work')
                         target = os.path.realpath(os.path.join(scratch_root, cwd))
                         if os.path.commonpath([scratch_root, target]) != scratch_root:
-                            raise ValueError('cwd must resolve beneath /scratch')
+                            raise ValueError('cwd must resolve beneath /work')
                         os.chdir(target)
                         if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
                             raise ValueError('Python code exceeds the limit')
