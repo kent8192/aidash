@@ -686,7 +686,8 @@ pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
 		))
 		.await?;
 	let (sql, values) = Query::select()
-		.columns(["id", "tenant", "scratch_space_id", "deleted_at"].map(Alias::new))
+		.columns(["id", "tenant", "scratch_space_id"].map(Alias::new))
+		.expr_as(Expr::col("deleted_at").is_not_null(), Alias::new("deleted"))
 		.from(Alias::new("threads"))
 		.and_where(Expr::col("scratch_wipe_requested").eq(true))
 		.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
@@ -699,8 +700,7 @@ pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
 		let thread: Uuid = row.get("id").map_err(err)?;
 		let tenant: String = row.get("tenant").map_err(err)?;
 		let space_id: Uuid = row.get("scratch_space_id").map_err(err)?;
-		let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
-			row.get("deleted_at").map_err(err)?;
+		let deleted: bool = row.get("deleted").map_err(err)?;
 		let space = read(&mut *tx, &tenant, space_id)
 			.await?
 			.ok_or_else(|| Error::NotFound("Thread Scratch Space".into()))?;
@@ -715,7 +715,7 @@ pub(crate) async fn wipe_pending_thread(store: &Store) -> Result<()> {
 				&profile.image,
 			)?;
 			let runner = crate::bootstrap::operation_runner(store)?;
-			if deleted_at.is_some() {
+			if deleted {
 				// Deleting the Thread cancels its Runs in PostgreSQL. Fence
 				// commands already on their way to this Pod before removing
 				// the directory, so they cannot recreate it after the wipe.
