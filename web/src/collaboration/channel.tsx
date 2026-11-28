@@ -342,7 +342,7 @@ export function Channel({
       ? "completed"
       : "preparing";
   const events = query.isError ? [] : (query.data?.events ?? []);
-  // Tasks, Artifacts and events are read with the snapshot; Runs and requests
+  // Tasks and events are read with the snapshot; Runs and requests
   // come from State. Until the snapshot answers, Tasks fall back to State.
   const missing = (kinds: UnconfirmedKind[], fromSnapshot: boolean) =>
     query.isError
@@ -834,7 +834,7 @@ export function Channel({
               <TabsList className="flex-1 border-b-0 px-5">
                 <TabsTrigger value="overview">{view.overview}</TabsTrigger>
                 <TabsTrigger value="work">{copy.work}</TabsTrigger>
-                <TabsTrigger value="results">{copy.results}</TabsTrigger>
+                <TabsTrigger value="results">{copy.files}</TabsTrigger>
                 <TabsTrigger value="activity">{copy.activity}</TabsTrigger>
               </TabsList>
               <Button
