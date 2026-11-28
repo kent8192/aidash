@@ -179,7 +179,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
 	("workspaces", "0072_node_scratch_spaces"),
-	("workspaces", "0073_scratch_wipe_receipts"),
+	("workspaces", "0073_default_scratch_index"),
 	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
@@ -261,7 +261,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
 	("workspaces", "0072_node_scratch_spaces"),
-	("workspaces", "0073_scratch_wipe_receipts"),
+	("workspaces", "0073_default_scratch_index"),
 	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
@@ -772,7 +772,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
 			("workspaces", "0072_node_scratch_spaces"),
-			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0073_default_scratch_index"),
 			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
@@ -2545,7 +2545,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
 			("workspaces", "0072_node_scratch_spaces"),
-			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0073_default_scratch_index"),
 			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
@@ -5243,7 +5243,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
 	("workspaces", "0072_node_scratch_spaces"),
-	("workspaces", "0073_scratch_wipe_receipts"),
+	("workspaces", "0073_default_scratch_index"),
 	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
@@ -5867,7 +5867,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
 			("workspaces", "0072_node_scratch_spaces"),
-			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0073_default_scratch_index"),
 			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
@@ -5982,7 +5982,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
 			("workspaces", "0072_node_scratch_spaces"),
-			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0073_default_scratch_index"),
 			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
@@ -6105,7 +6105,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
 			("workspaces", "0072_node_scratch_spaces"),
-			("workspaces", "0073_scratch_wipe_receipts"),
+			("workspaces", "0073_default_scratch_index"),
 			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;

@@ -16,17 +16,6 @@ pub(super) fn migration() -> Migration {
 				.with_default(Some("false".into())),
 			mysql_options: None,
 		})
-		.add_operation(Operation::CreateIndex {
-			table: "scratch_spaces".into(),
-			columns: vec!["tenant".into(), "node".into(), "is_default".into()],
-			unique: true,
-			index_type: Some(IndexType::BTree),
-			where_clause: Some("is_default".into()),
-			concurrently: false,
-			expressions: None,
-			mysql_options: None,
-			operator_class: None,
-		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0072_node_scratch_spaces.sql").into(),
 			// Reversal restores the schema. Retired contents are disposable.
