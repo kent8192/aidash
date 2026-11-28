@@ -4,6 +4,7 @@ use crate::apps::workspaces::services::states::ConversationTargetKind;
 use chrono::{DateTime, Utc};
 use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
+use reinhardt::query::{Expr, ExprTrait, SimpleExpr};
 use serde::{Deserialize, Serialize};
 
 #[model(app_label = "workspaces", table_name = "conversations")]
@@ -37,7 +38,13 @@ pub struct Conversation {
 	pub created_by: String,
 }
 
-impl Conversation {}
+impl Conversation {
+	/// Archived conversations can still carry a retired target after migration 0091.
+	pub(crate) fn current_target(column: Expr) -> SimpleExpr {
+		use aidash_domain::threads::ThreadTargetKind::{Agent, Node};
+		column.is_in([Agent.as_str(), Node.as_str()])
+	}
+}
 
 impl crate::database::Record for Conversation {
 	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {

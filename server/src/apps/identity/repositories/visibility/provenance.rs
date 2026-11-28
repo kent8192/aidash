@@ -456,6 +456,11 @@ impl ReadProvenanceScope for Reads<'_> {
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("conversations"))
 						.and_where(
+							crate::apps::workspaces::models::Conversation::current_target(
+								Expr::col("target_kind"),
+							),
+						)
+						.and_where(
 							Condition::all()
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id")))

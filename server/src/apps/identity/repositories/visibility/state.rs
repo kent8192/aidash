@@ -195,6 +195,11 @@ impl ThreadStateScope for StateReads<'_> {
 	async fn conversation_candidates(&mut self, node: Option<&str>) -> Result<Vec<Conversation>> {
 		let q = self
 			.candidates("conversations", node, "created_at")
+			.and_where(
+				crate::apps::workspaces::models::Conversation::current_target(Expr::col(
+					"target_kind",
+				)),
+			)
 			.to_string(PostgresQueryBuilder);
 		aidash_server::database::query_as(&q)
 			.fetch_all(&mut **self.access.tx)
