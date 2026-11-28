@@ -175,8 +175,8 @@ impl AuthorizationRunRead {
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
 	) -> Result<Vec<(Uuid, String, Uuid)>> {
-		let mut query = Query::select();
-		query
+		let mut reads = Query::select();
+		reads
 			.columns(["thread_id", "resource_kind", "resource_id"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
@@ -191,10 +191,15 @@ impl AuthorizationRunRead {
 					.from(Alias::new("drive_run_reads"))
 					.and_where(Expr::col("run_id").eq(Expr::value(run)))
 					.to_owned(),
-			)
+			);
+		// Order the combined rows outside the UNION. Reinhardt renders ORDER BY
+		// before set operators on the same SelectStatement.
+		let (sql, values) = Query::select()
+			.columns(["thread_id", "resource_kind", "resource_id"].map(Alias::new))
+			.from_subquery(reads, Alias::new("reads"))
 			.order_by(Alias::new("resource_kind"), Order::Asc)
-			.order_by(Alias::new("resource_id"), Order::Asc);
-		let (sql, values) = query.build(PostgresQueryBuilder);
+			.order_by(Alias::new("resource_id"), Order::Asc)
+			.build(PostgresQueryBuilder);
 		tx.fetch_all(&sql, convert_values(values))
 			.await?
 			.into_iter()
