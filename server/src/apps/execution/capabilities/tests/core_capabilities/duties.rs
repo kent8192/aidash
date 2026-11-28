@@ -1203,7 +1203,7 @@ async fn script_task(c: &CoreFixture, duty: Uuid, role: &str) -> (Uuid, String) 
 /// covered by `aidash-harness`'s duty_script tests.
 async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
 	use aidash_domain::deliverable::{Completion, CompletionDetails, Deliverable};
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	let task_record = c.f.store.task(&TEST_FIXTURE, task).await.unwrap();
 	let details = CompletionDetails {
 		task_id: task,
@@ -1225,7 +1225,7 @@ async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
 			]
 			.map(Alias::new),
 		)
-		.values_panic([
+		.values_expr([
 			Expr::value(Completion::message_id(task, "script")).into(),
 			Expr::value("acme").into(),
 			Expr::value(task_record.thread_id).into(),
@@ -1234,6 +1234,7 @@ async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
 			Expr::value(format!("script:{task}")).into(),
 			Expr::value(serde_json::to_value(details).unwrap()).into(),
 		])
+		.unwrap()
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&insert)
 		.execute(c.f.store.pool.fixture_driver())
