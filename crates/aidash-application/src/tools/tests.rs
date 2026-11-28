@@ -925,7 +925,6 @@ async fn the_child_writer_can_change_a_goal_without_delegating_again(fixture: Fi
 				operations: &fixture.operations,
 				run: &fixture.run,
 			},
-			&fixture.operations,
 			json!({"task_id": task_id, "goal": goal}),
 			"child-goal",
 		)
