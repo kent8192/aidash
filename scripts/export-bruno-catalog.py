@@ -20,6 +20,7 @@ ROUTE = re.compile(
 NODE_PATH = "/api/tenants/{tenant}/nodes/{node}"
 DRIVE_PATH = "/api/nodes/{node}/drive"
 DRIVE_SOURCE = "server/src/apps/drives/views.rs"
+EXECUTION_SCOPE_SOURCE = "server/src/apps/execution/capabilities/views/management.rs"
 REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
@@ -44,6 +45,11 @@ ADDITIONS = {
     ("POST", "/api/duties/{id}/template"): ("duty-template-publish", "marketplace/duty_templates"),
     ("POST", "/api/marketplace/packages/{key}/duty"): ("marketplace-install-duty", "marketplace/duty_templates"),
     ("POST", "/api/duties/{id}/template-update"): ("duty-template-update", "marketplace/duty_templates"),
+    ("GET", "/api/execution-scopes"): ("execution_scope_list", EXECUTION_SCOPE_SOURCE),
+    ("GET", "/api/execution-scopes/{id}/session"): ("core_session_status", EXECUTION_SCOPE_SOURCE),
+    ("POST", "/api/execution-scopes/{id}/steer"): ("core_session_steer", EXECUTION_SCOPE_SOURCE),
+    ("GET", "/api/executions/{id}/execution-scope"): ("execution_scope", EXECUTION_SCOPE_SOURCE),
+    ("GET", "/api/executions/{id}/core-operations/{operation}/files/{file}/download"): ("command_output_download", EXECUTION_SCOPE_SOURCE),
     ("POST", "/api/threads/{id}/scratch/clear"): ("thread-scratch-clear", "workspaces/scratch"),
     ("GET", "/api/threads/{id}/executions"): ("thread-executions", "execution/management"),
     # A named successor takes a Duty over (#991, ADR 0145).
