@@ -30,6 +30,7 @@ pub(super) async fn seed(
 			"INSERT INTO scratch_space_settings (space_id, tenant, settings) VALUES ($1, $2, $3)",
 		)
 		.bind(id)
+		.bind(tenant)
 		.bind(serde_json::to_value(aidash_domain::scratch::ScratchSettings::for_node()).unwrap())
 		.execute(tx)
 		.await
