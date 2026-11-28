@@ -96,7 +96,7 @@ async fn a_grant_without_a_live_binding_is_refused_before_anything_else(mut scop
 #[tokio::test]
 async fn another_runs_admission_is_refused(mut scope: Scope) {
 	assert!(matches!(
-		verify(&mut scope, &who(9), "file_share").await,
+		verify(&mut scope, &who(9), "thread_message").await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
