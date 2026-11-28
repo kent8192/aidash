@@ -24,8 +24,10 @@ impl TenantAdministrations {
 			.store
 			.pool
 			.atomic(&administrator.scope()?, async |tx| {
+				administrator
+					.locked_for(tx, TENANT_UPDATE, update.is_some())
+					.await?;
 				let estimate = if let Some(update) = update {
-					administrator.locked_for(tx, TENANT_UPDATE, true).await?;
 					let confirmed = update.confirm;
 					let estimate = repository::change(tx, &tenant, update).await?;
 					if confirmed {
