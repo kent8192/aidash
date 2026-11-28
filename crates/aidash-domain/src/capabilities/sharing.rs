@@ -1,5 +1,6 @@
 //! Identifies the destination of a remote Thread Attachment delivery.
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub use crate::media::Selection;
 
