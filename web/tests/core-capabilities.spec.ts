@@ -18,15 +18,6 @@ async function core(page: Page) {
     state: "active",
     generation: 1,
     revision: 7,
-    manifest: [],
-  };
-  const managed = {
-    area_id: area.id,
-    ...area,
-    files: 2,
-    bytes: 128,
-    snapshot_id: null as string | null,
-    recovery_expires_at: null as string | null,
   };
   const approvals = [
     {
@@ -64,7 +55,6 @@ async function core(page: Page) {
       expires_at: "2099-01-01T00:00:00Z",
     },
   ];
-  let receipt = false;
   let pythonCalls = 0;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -72,10 +62,8 @@ async function core(page: Page) {
     const body =
       request.method() === "POST" ? (request.postDataJSON() ?? {}) : {};
     const send = (json: unknown) => route.fulfill({ json });
-    if (path === "/api/working-areas")
+    if (path === "/api/execution-scopes")
       return send({ items: [area], next_cursor: null });
-    if (path === "/api/working-files")
-      return send({ items: [managed], next_cursor: null });
     if (path === "/api/registry") {
       const entries = [
         {
@@ -132,44 +120,19 @@ async function core(page: Page) {
         active_run_id: "run-0",
         last_run_id: "run-0",
         last_agent_version: "1.0.0",
-        queue: [
-          {
-            run_id: "run-0",
-            sequence: 1,
-            phase: "THINKING",
-            control: "ACTIVE",
-          },
-        ],
       });
     if (path.endsWith("/core-operations"))
       return send({ items: [], next_cursor: null });
     if (path === "/api/capabilities/approvals")
       return send({ items: approvals, next_cursor: null });
-    if (path.endsWith("/transfers"))
-      return send({
-        items: [
-          {
-            operation_id: "transfer-one",
-            status: receipt ? "completed" : "uncertain",
-            recipient: {
-              node_id: "aidash://peer",
-              agent_id: "reviewer",
-              agent_version: "1.0.0",
-              thread_id: "remote-thread",
-            },
-            manifest_digest: "a".repeat(64),
-            effects_may_have_occurred: true,
-            receipt: receipt ? { accepted: true } : null,
-          },
-        ],
-        next_cursor: null,
-      });
     if (
       request.method() === "POST" &&
-      (path.startsWith("/api/working-areas/") ||
+      (path.startsWith("/api/execution-scopes/") ||
         path.startsWith("/api/executions/") ||
         path.startsWith("/api/capabilities/") ||
-        path.startsWith("/api/file-transfers/") ||
+        /^\/api\/threads\/[^/]+\/(?:scratch\/clear|agents\/[^/]+\/executions)$/.test(
+          path,
+        ) ||
         path.endsWith("/delete") ||
         path.includes("/capability-configuration"))
     ) {
@@ -181,7 +144,6 @@ async function core(page: Page) {
         return send({
           thread_id: deleted,
           state: "deleted",
-          file_operations: [],
         });
       }
       if (path.endsWith("/python")) {
@@ -202,13 +164,6 @@ async function core(page: Page) {
               },
         );
       }
-      if (path.endsWith("/files/search"))
-        return send({
-          matches: [
-            { path: "data.csv", location: { line: 2 }, snippet: "東京,42" },
-          ],
-          next_cursor: null,
-        });
       if (path.endsWith("/skills/list"))
         return send({
           skills: [
@@ -237,117 +192,11 @@ async function core(page: Page) {
         approvals[0].state = String(
           body.choice === "deny" ? "denied" : "approved",
         );
-      if (path.endsWith("/reconcile")) receipt = true;
-      if (path.endsWith("/deletion-confirmation"))
-        return send({ confirmation_id: "confirm-seven", revision: 7 });
-      if (path.endsWith("/restore")) return send(managed);
-      if (path.endsWith("/cleanup")) {
-        managed.state =
-          body.choice === "recoverable"
-            ? "recoverable"
-            : body.choice === "irreversible"
-              ? "deleted"
-              : managed.state;
-        managed.snapshot_id =
-          body.choice === "recoverable" ? "snapshot-seven" : null;
-        managed.recovery_expires_at =
-          body.choice === "recoverable" ? "2099-01-08T00:00:00Z" : null;
-      }
       return send({ status: "completed", accepted_run_id: "run-0" });
     }
     return route.fallback();
   });
-  return { ...fixture, calls, managed };
-}
-
-for (const outcome of ["match", "exhausted", "failed"] as const) {
-  test(`request working files page automatically until ${outcome}`, async ({
-    page,
-  }) => {
-    const { managed, errors } = await core(page);
-    const cursors: string[] = [];
-    let failed = outcome === "failed";
-    await page.route("**/api/working-files**", (route) => {
-      const cursor =
-        new URL(route.request().url()).searchParams.get("cursor") ?? "";
-      cursors.push(cursor);
-      if (!cursor)
-        return route.fulfill({
-          json: {
-            items: Array.from({ length: 50 }, (_, i) => ({
-              ...managed,
-              area_id: `other-${i}`,
-              thread_id: "thread-two",
-              agent_id: `Other request ${i}`,
-            })),
-            next_cursor: "page&two",
-          },
-        });
-      if (failed)
-        return route.fulfill({
-          status: 503,
-          json: { error: "Inventory temporarily unavailable" },
-        });
-      if (cursor === "page&two")
-        return route.fulfill({
-          json: {
-            items: [],
-            next_cursor: outcome === "exhausted" ? null : "page-three",
-          },
-        });
-      return route.fulfill({
-        json: {
-          items: [{ ...managed, agent_id: "Current request agent" }],
-          next_cursor: null,
-        },
-      });
-    });
-    await page.goto("/collaboration?channel=thread-one");
-    await page.getByRole("button", { name: "Files", exact: true }).click();
-    const panel = page.getByRole("region", {
-      name: "Working files",
-      exact: true,
-    });
-    await expect(panel).toBeVisible();
-    if (outcome === "failed") {
-      await expect(panel.getByRole("alert")).toContainText(
-        "Inventory temporarily unavailable",
-      );
-      expect(cursors).toEqual(["", "page&two"]);
-      failed = false;
-      await panel
-        .getByRole("button", { name: "Load more", exact: true })
-        .click();
-    }
-    if (outcome !== "exhausted")
-      await expect(
-        panel.getByRole("heading", {
-          name: "Current request agent",
-          exact: true,
-        }),
-      ).toBeVisible();
-    await expect(
-      panel.getByRole("button", { name: "Load more", exact: true }),
-    ).toHaveCount(0);
-    await expect(panel.getByRole("status")).toHaveCount(0);
-    await expect(
-      panel.getByRole("heading", { name: /Other request/ }),
-    ).toHaveCount(0);
-    if (outcome === "exhausted") {
-      await expect.poll(() => cursors).toEqual(["", "page&two"]);
-      await expect(panel.locator("article")).toHaveCount(0);
-    }
-    await panel
-      .getByRole("checkbox", {
-        name: "Show working files from all requests",
-        exact: true,
-      })
-      .check();
-    await expect(
-      panel.getByRole("heading", { name: /Other request/ }),
-    ).toHaveCount(50);
-    expect(errors).toEqual([]);
-  });
+  return { ...fixture, calls };
 }
 
 test("Binding setup saves explicit Sources, Memory and Host packages in a new immutable version", async ({
@@ -578,51 +427,7 @@ test("Live preview background status is quiet when absent or unavailable", async
   expect(errors).toEqual([]);
 });
 
-test("retained-work Files link keeps the originating request instead of the first thread", async ({
-  page,
-}) => {
-  const { errors } = await core(page);
-  await page.goto("/collaboration?channel=thread-one");
-  const data = await page.evaluate(() =>
-    fetch("/api/state").then((response) => response.json()),
-  );
-  data.threads.reverse();
-  await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
-  await page.route("**/api/working-areas/*/session", (route) =>
-    route.fulfill({
-      json: {
-        active_run_id: null,
-        last_run_id: "run-0",
-        last_agent_version: "1.0.0",
-        queue: [],
-      },
-    }),
-  );
-  await openThread(page);
-  const files = page.getByRole("link", {
-    name: "Working file settings",
-    exact: true,
-  });
-  await expect(files).toHaveAttribute(
-    "href",
-    "/settings?view=workingFiles&channel=thread-one",
-  );
-  await files.click();
-  await expect(page).toHaveURL(
-    /\/collaboration\?channel=thread-one&view=files$/,
-  );
-  await expect(
-    page.getByRole("dialog", { name: "Files", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page
-      .getByRole("dialog")
-      .getByRole("heading", { name: "researcher", exact: true }),
-  ).toBeVisible();
-  expect(errors).toEqual([]);
-});
-
-test("queue, steer and stop remain usable; stale Python requires explicit acknowledgement", async ({
+test("starting work, steering and stopping remain usable; stale Python requires explicit acknowledgement", async ({
   page,
 }, info) => {
   const { calls, errors } = await core(page);
@@ -630,13 +435,18 @@ test("queue, steer and stop remain usable; stale Python requires explicit acknow
   await expect(page.getByLabel("Agent to run")).toHaveValue("researcher@1.0.0");
   await page.getByLabel("Agent to run").selectOption("researcher@1.1.0");
   await page.getByLabel("Next instruction").fill("Check the next result");
-  await page.getByRole("button", { name: "Queue next Run" }).click();
+  await page.getByRole("button", { name: "Start work" }).click();
   await expect
-    .poll(() => calls.filter((c) => c.path.endsWith("/queue")).length)
+    .poll(
+      () =>
+        calls.filter((c) => c.path.includes("/agents/researcher/executions"))
+          .length,
+    )
     .toBe(1);
-  expect(calls.find((c) => c.path.endsWith("/queue"))?.body.agent_version).toBe(
-    "1.1.0",
-  );
+  expect(
+    calls.find((c) => c.path.includes("/agents/researcher/executions"))?.body
+      .agent_version,
+  ).toBe("1.1.0");
   await page.getByLabel("Next instruction").fill("Use the corrected value");
   await page.getByRole("button", { name: "Steer active Run" }).click();
   await expect
@@ -672,14 +482,11 @@ test("queue, steer and stop remain usable; stale Python requires explicit acknow
   expect(errors).toEqual([]);
 });
 
-test("located search, progressive Skills, denied approval and uncertain transfer show actionable state", async ({
+test("progressive Skills and denied approval show actionable state", async ({
   page,
 }, info) => {
   const { calls, errors } = await core(page);
   await openThread(page);
-  await page.getByLabel("Search query").fill("東京");
-  await page.getByRole("button", { name: "Search", exact: true }).click();
-  await expect(page.getByText("data.csv:2 東京,42")).toBeVisible();
   await page.locator("summary", { hasText: /^Skills$/ }).click();
   await page.getByRole("button", { name: "List available Skills" }).click();
   await expect(
@@ -701,18 +508,6 @@ test("located search, progressive Skills, denied approval and uncertain transfer
   await expect(
     page.getByRole("button", { name: "Allow once", exact: true }),
   ).toHaveCount(0);
-  await page
-    .locator("summary", { hasText: "Transfer history and receipts" })
-    .click();
-  await expect(
-    page.getByText("Delivery may have occurred.", { exact: false }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Reconcile this transfer", exact: true })
-    .click();
-  await expect(
-    page.getByText("Receipt confirmed.", { exact: false }),
-  ).toBeVisible();
   await page.screenshot({
     path: info.outputPath("scoped-thread.png"),
     fullPage: true,
@@ -919,194 +714,46 @@ test("a Tool call approval shows the exact call and is allowed once, for this Ru
   expect(errors).toEqual([]);
 });
 
-test("narrow keyboard cleanup keeps default, separates confirmation and restores retained files", async ({
-  page,
-}, info) => {
-  const { calls, errors } = await core(page);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/settings?view=workingFiles");
-  const retention = page.getByLabel("Retention choice");
-  await expect(retention).toHaveValue("keep");
-  expect(calls).toHaveLength(0);
-  await retention.selectOption("recoverable");
-  await page.getByRole("button", { name: "Apply retention choice" }).focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByText("Recover until:", { exact: false }),
-  ).toBeVisible();
-  // A Working Area is restored into its own Thread (#1008).
-  await page.getByRole("button", { name: "Restore files" }).click();
-  await expect
-    .poll(() => calls.filter((c) => c.path.endsWith("/restore")).length)
-    .toBe(1);
-  const restore = calls.find((c) => c.path.endsWith("/restore"));
-  expect(restore?.body.snapshot_id).toBeTruthy();
-  await retention.selectOption("irreversible");
-  const review = page.getByRole("button", {
-    name: "Review deletion",
-    exact: true,
-  });
-  await expect(review).toBeEnabled();
-  await expect(
-    page.getByRole("button", { name: "Confirm irreversible deletion" }),
-  ).toHaveCount(0);
-  await review.focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByText("Permanently delete 2 files for researcher.", {
-      exact: false,
-    }),
-  ).toBeVisible();
-  expect(calls.filter((c) => c.path.endsWith("/cleanup"))).toHaveLength(1);
-  await page.screenshot({
-    path: info.outputPath("deletion-confirmation-mobile.png"),
-    fullPage: true,
-  });
-  await page
-    .getByRole("button", { name: "Confirm irreversible deletion" })
-    .focus();
-  await page.keyboard.press("Enter");
-  await expect
-    .poll(() => calls.filter((c) => c.path.endsWith("/cleanup")).length)
-    .toBe(2);
-  expect(
-    calls.filter((c) => c.path.endsWith("/cleanup"))[1].body.confirmation_id,
-  ).toBe("confirm-seven");
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  ).toBe(true);
-  await expect(
-    page.getByText("ready · malformed", { exact: true }),
-  ).toBeVisible();
-  expect(errors).toEqual([]);
-});
-
-test("deleting a thread requires its file retention choice before controls disappear", async ({
+test("clearing and deleting a Thread uses its Scratch folder workflow", async ({
   page,
 }) => {
   const { calls, errors } = await core(page);
   await openThread(page);
-  await page.locator("summary", { hasText: "Delete this thread" }).click();
-  await expect(page.getByLabel("File retention")).toHaveValue("keep");
+  await page.locator("summary", { hasText: "Manage Thread" }).click();
+
+  page.once("dialog", (dialog) => dialog.dismiss());
   await page
-    .getByRole("button", {
-      name: "Delete thread with these choices",
-      exact: true,
-    })
+    .getByRole("button", { name: "Clear Scratch folder", exact: true })
+    .click();
+  expect(
+    calls.filter((call) => call.path.endsWith("/scratch/clear")),
+  ).toHaveLength(0);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "Clear Scratch folder", exact: true })
     .click();
   await expect
-    .poll(() => calls.filter((c) => c.path.endsWith("/delete")).length)
-    .toBe(1);
-  expect(calls.find((c) => c.path.endsWith("/delete"))?.body.files).toEqual([
-    {
-      area_id: "area-one",
-      expected_revision: 7,
-      choice: "keep",
-      confirmation_id: null,
-    },
-  ]);
-  await expect(page.getByRole("heading", { name: "Agent work" })).toHaveCount(
-    0,
-  );
-  expect(errors).toEqual([]);
-});
+    .poll(() =>
+      calls.some(
+        (call) => call.path === "/api/threads/thread-one/scratch/clear",
+      ),
+    )
+    .toBe(true);
 
-test("thread deletion waits for every working-area page before submitting choices", async ({
-  page,
-}) => {
-  const { calls, errors } = await core(page);
-  const areas = Array.from({ length: 51 }, (_, i) => ({
-    id: `area-${i}`,
-    thread_id: "thread-one",
-    agent_id: `agent-${i}`,
-    owner: "alice",
-    state: "active",
-    generation: 1,
-    revision: 7,
-    manifest: [],
-  }));
-  let releaseNext!: () => void;
-  const nextPage = new Promise<void>((resolve) => {
-    releaseNext = resolve;
-  });
-  let requestedNext = false;
-  await page.route("**/api/**", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.pathname !== "/api/working-areas") return route.fallback();
-    if (url.searchParams.get("cursor") === "after-50") {
-      requestedNext = true;
-      await nextPage;
-      return route.fulfill({
-        json: { items: areas.slice(50), next_cursor: null },
-      });
-    }
-    return route.fulfill({
-      json: { items: areas.slice(0, 50), next_cursor: "after-50" },
-    });
-  });
-  await openThread(page);
-  await page.locator("summary", { hasText: "Delete this thread" }).click();
-  const remove = page.getByRole("button", {
-    name: "Delete thread with these choices",
-    exact: true,
-  });
-  await expect.poll(() => requestedNext).toBe(true);
-  await expect(remove).toBeDisabled();
-  releaseNext();
-  await expect(remove).toBeEnabled();
-  await expect(page.getByText("agent-50 · 0 files · 0 bytes")).toBeVisible();
-  await remove.click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "Delete Thread", exact: true })
+    .click();
   await expect
-    .poll(() => calls.filter((c) => c.path.endsWith("/delete")).length)
-    .toBe(1);
-  const choices = calls.find((c) => c.path.endsWith("/delete"))?.body.files;
-  expect(choices).toEqual(
-    areas.map((a) => ({
-      area_id: a.id,
-      expected_revision: a.revision,
-      choice: "keep",
-      confirmation_id: null,
-    })),
-  );
-  expect(errors).toEqual([]);
-});
-
-test("outbound retries reuse an ambiguous request key and a new fetch uses a fresh key", async ({
-  page,
-}) => {
-  const { errors } = await core(page);
-  const requests: { url: string; idempotency_key: string }[] = [];
-  await page.route("**/api/executions/run-0/outbound", async (route) => {
-    if (route.request().method() !== "POST") return route.fallback();
-    requests.push(route.request().postDataJSON());
-    if (requests.length === 1) return route.abort("failed");
-    return route.fulfill({
-      json: {
-        operation_id: `fetch-${requests.length}`,
-        status: "completed",
-        url: requests.at(-1)!.url,
-      },
+    .poll(
+      () =>
+        calls.find((call) => call.path === "/api/threads/thread-one/delete")
+          ?.body,
+    )
+    .toEqual({
+      idempotency_key: expect.any(String),
     });
-  });
-  await openThread(page);
-  await page.locator("summary", { hasText: "External files" }).click();
-  await page.getByLabel("HTTPS URL").fill("https://example.org/current.csv");
-  const fetch = page.getByRole("button", {
-    name: "Request fetch",
-    exact: true,
-  });
-  await fetch.click();
-  await expect(page.getByRole("alert")).toContainText("fetch");
-  await fetch.click();
-  await expect.poll(() => requests.length).toBe(2);
-  await expect(fetch).toBeEnabled();
-  await fetch.click();
-  await expect.poll(() => requests.length).toBe(3);
-  expect(requests[0].url).toBe(requests[2].url);
-  expect(requests[0].idempotency_key).toBe(requests[1].idempotency_key);
-  expect(requests[2].idempotency_key).not.toBe(requests[1].idempotency_key);
   expect(errors).toEqual([]);
 });
 
@@ -1115,7 +762,7 @@ test("thread run retries reuse an ambiguous idempotency key and changed prompts 
 }) => {
   const { errors } = await core(page);
   const requests: Record<string, unknown>[] = [];
-  await page.route("**/api/working-areas*", (route) =>
+  await page.route("**/api/execution-scopes*", (route) =>
     route.fulfill({ json: { items: [], next_cursor: null } }),
   );
   // An Agent runs in the Thread itself (#1008).
@@ -1148,7 +795,7 @@ test("steering retries reuse an ambiguous key and changed prompts get a new key"
 }) => {
   const { errors } = await core(page);
   const requests: Record<string, unknown>[] = [];
-  await page.route("**/api/working-areas/area-one/steer", async (route) => {
+  await page.route("**/api/execution-scopes/area-one/steer", async (route) => {
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) return route.abort("failed");
     return route.fulfill({ json: { status: "queued" } });
@@ -1173,7 +820,7 @@ test("steering retries reuse an ambiguous key and changed prompts get a new key"
   expect(errors).toEqual([]);
 });
 
-test("generated image and outbound downloads use the authenticated file endpoint", async ({
+test("a generated image uses its Run and command download endpoint", async ({
   page,
 }) => {
   const { createHash } = await import("node:crypto");
@@ -1217,31 +864,11 @@ test("generated image and outbound downloads use the authenticated file endpoint
           next_cursor: null,
         },
       });
-    if (path.endsWith("/outbound"))
-      return route.fulfill({
-        json: {
-          items: [
-            {
-              operation_id: "outbound-one",
-              status: "completed",
-              url: "https://example.org/plot.png",
-              http_status: 200,
-              output_file: { ...file, file_id: "outbound-one" },
-            },
-          ],
-          next_cursor: null,
-        },
-      });
-    if (path.match(/\/files\/(display-one|outbound-one)\/download$/)) {
+    if (path.endsWith("/files/display-one/download")) {
       downloads.push(path);
       return route.fulfill({
         json: {
-          file: {
-            ...file,
-            file_id: path.includes("outbound-one")
-              ? "outbound-one"
-              : "display-one",
-          },
+          file,
           data: imageData,
           next_offset: null,
         },
@@ -1264,209 +891,9 @@ test("generated image and outbound downloads use the authenticated file endpoint
     .getByRole("button", { name: "Download output", exact: true })
     .click();
   expect((await imageDownload).suggestedFilename()).toBe("plot.png");
-  await page.locator("summary", { hasText: "External files" }).click();
-  const outboundDownload = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download", exact: true }).click();
-  expect((await outboundDownload).suggestedFilename()).toBe("plot.png");
-  expect(downloads).toContain(
-    "/api/working-areas/area-one/files/outbound-one/download",
-  );
-  expect(downloads.filter((path) => path.includes("display-one"))).toHaveLength(
-    2,
-  );
-  expect(errors).toEqual([]);
-});
-
-test("working file downloads above 100 MiB preserve all chunks and integrity", async ({
-  page,
-}) => {
-  test.setTimeout(60000);
-  const { createHash } = await import("node:crypto");
-  const { stat } = await import("node:fs/promises");
-  const { errors } = await core(page);
-  const chunk = Buffer.alloc(4 * 1024 * 1024, 0x61);
-  const hash = createHash("sha256");
-  for (let i = 0; i < 25; i++) hash.update(chunk);
-  hash.update(chunk.subarray(0, 1));
-  const file = {
-    file_id: "large-file",
-    path: "large.bin",
-    digest: hash.digest("hex"),
-    size: 100 * 1024 * 1024 + 1,
-    media_type: "application/octet-stream",
-    scope: "working",
-  };
-  const offsets: number[] = [];
-  await page.route("**/api/**", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.pathname.endsWith("/core-operations"))
-      return route.fulfill({
-        json: {
-          items: [
-            {
-              operation_id: "large-operation",
-              area_id: "area-one",
-              kind: "code_interpreter",
-              status: "completed",
-              displays: [file],
-            },
-          ],
-          next_cursor: null,
-        },
-      });
-    if (url.pathname.endsWith("/python/poll"))
-      return route.fulfill({
-        json: {
-          operation_id: "large-operation",
-          area_id: "area-one",
-          kind: "code_interpreter",
-          status: "completed",
-          displays: [file],
-        },
-      });
-    if (url.pathname.endsWith("/files/large-file/download")) {
-      const offset = Number(url.searchParams.get("offset"));
-      offsets.push(offset);
-      const part = chunk.subarray(
-        0,
-        Math.min(chunk.length, file.size - offset),
-      );
-      return route.fulfill({
-        json: {
-          file,
-          data: part.toString("base64"),
-          next_offset:
-            offset + part.length === file.size ? null : offset + part.length,
-        },
-      });
-    }
-    return route.fallback();
-  });
-  await openThread(page);
-  await page.locator("summary", { hasText: "Shell · Python" }).click();
-  const pending = page.waitForEvent("download");
-  await page
-    .getByRole("button", { name: "Download output", exact: true })
-    .click();
-  const result = await pending;
-  expect(result.suggestedFilename()).toBe("large.bin");
-  expect((await stat((await result.path())!)).size).toBe(file.size);
-  expect(offsets).toEqual(
-    Array.from({ length: 26 }, (_, i) => i * chunk.length),
-  );
-  expect(errors).toEqual([]);
-});
-
-test("file sharing reaches discovered Nodes with the sending Run and paginated recipients", async ({
-  page,
-}) => {
-  const { managed, errors } = await core(page);
-  const data = fixture();
-  const remote = "aidash://remote/remote-node";
-  const sibling = "aidash://home/sibling-node";
-  const queries: URLSearchParams[] = [];
-  const file = {
-    file_id: "share-one",
-    path: "share.txt",
-    digest: "a".repeat(64),
-    size: 4,
-    scope: "working",
-    media_type: "text/plain",
-  };
-  const shares: Record<string, unknown>[] = [];
-  await page.route("**/api/discover**", (route) =>
-    route.fulfill({
-      json: {
-        agents: [remote, sibling, remote].map((node_id) => ({
-          node_id,
-          entity: data.registry.find((entry) => entry.kind === "agent"),
-        })),
-        failures: [],
-      },
-    }),
-  );
-  await page.route("**/api/**", async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (url.pathname === "/api/working-areas")
-      return route.fulfill({
-        json: {
-          items: [{ ...managed, id: managed.area_id, manifest: [file] }],
-          next_cursor: null,
-        },
-      });
-    if (url.pathname.endsWith("/working-area"))
-      return route.fulfill({
-        json: { ...managed, id: managed.area_id, manifest: [file] },
-      });
-    if (url.pathname === "/api/file-recipients") {
-      queries.push(url.searchParams);
-      return route.fulfill({
-        json: {
-          items: url.searchParams.get("cursor")
-            ? [
-                {
-                  node_id: url.searchParams.get("node_id"),
-                  agent_id: "reviewer",
-                  agent_version: "1.0.0",
-                  thread_id: "remote-thread",
-                },
-              ]
-            : [],
-          next_cursor: url.searchParams.get("cursor") ? null : "next-page",
-        },
-      });
-    }
-    if (url.pathname.endsWith("/files/share")) {
-      shares.push(request.postDataJSON());
-      return route.fulfill({
-        json: { operation_id: "new-transfer", status: "pending" },
-      });
-    }
-    if (url.pathname === "/api/file-transfers/new-transfer")
-      return route.fulfill({
-        json: {
-          operation_id: "new-transfer",
-          status: "completed",
-          receipt: { accepted: true },
-        },
-      });
-    return route.fallback();
-  });
-  await openThread(page);
-  await page
-    .getByRole("checkbox", { name: "Share: share.txt", exact: true })
-    .check();
-  const select = page.getByRole("combobox", { name: "Node", exact: true });
-  await expect(
-    select.locator("option").filter({ hasText: remote }),
-  ).toHaveCount(1);
-  await select.selectOption(remote);
-  await page
-    .getByRole("button", { name: "More recipients", exact: true })
-    .click();
-  await page
-    .getByRole("combobox", { name: "Recipient Agent, version and thread" })
-    .selectOption({ label: "reviewer@1.0.0 · remote-thread" });
-  await page
-    .getByRole("button", { name: "Send this snapshot", exact: true })
-    .click();
-  await expect.poll(() => shares.length).toBe(1);
-  expect(shares[0].recipient).toEqual({
-    node_id: remote,
-    agent_id: "reviewer",
-    agent_version: "1.0.0",
-    thread_id: "remote-thread",
-  });
-  expect(
-    queries
-      .filter((query) => query.get("node_id") === remote)
-      .map((query) => query.get("run_id")),
-  ).toEqual(["run-0", "run-0"]);
-  await expect(
-    page.getByText("Recipient storage confirmed.", { exact: false }).first(),
-  ).toBeVisible();
-  await select.selectOption(sibling);
-  await expect.poll(() => queries.at(-1)?.get("node_id")).toBe(sibling);
+  expect(downloads).toEqual([
+    "/api/executions/run-0/core-operations/display-operation/files/display-one/download",
+    "/api/executions/run-0/core-operations/display-operation/files/display-one/download",
+  ]);
   expect(errors).toEqual([]);
 });

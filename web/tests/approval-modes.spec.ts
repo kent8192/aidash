@@ -846,12 +846,12 @@ async function runApprovals(page: Page, items: unknown[], ja = false) {
     revision: 7,
     manifest: [],
   };
-  await page.route("**/api/working-areas**", (route) =>
-    new URL(route.request().url()).pathname === "/api/working-areas"
+  await page.route("**/api/execution-scopes**", (route) =>
+    new URL(route.request().url()).pathname === "/api/execution-scopes"
       ? route.fulfill({ json: { items: [area], next_cursor: null } })
       : route.fallback(),
   );
-  await page.route("**/api/working-areas/*/session", (route) =>
+  await page.route("**/api/execution-scopes/*/session", (route) =>
     route.fulfill({
       json: {
         active_run_id: "run-0",
