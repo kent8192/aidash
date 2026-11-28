@@ -1,6 +1,6 @@
 use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
-use crate::egress_tests::{settings, tenant_roots};
+use crate::{egress_tests::settings, tenant_roots};
 use aidash_application::egress::Admission;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget};
 
