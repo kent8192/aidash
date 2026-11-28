@@ -31620,6 +31620,9 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
+                "$ref": "#/components/schemas/DriveFileSelection"
+              },
+              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
@@ -33424,6 +33427,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -33504,6 +33511,21 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "DriveFileSelection": {
+            "additionalProperties": false,
+            "description": "A Drive image selected by its immutable entry and digest.",
+            "properties": {
+              "drive_entry": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "expected_digest": {
+                "type": "string"
+              }
+            },
+            "required": ["drive_entry", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
@@ -35786,6 +35808,9 @@
               },
               {
                 "$ref": "#/components/schemas/WorkingImageSelection"
+              },
+              {
+                "$ref": "#/components/schemas/DriveFileSelection"
               },
               {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
@@ -38156,6 +38181,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -38539,6 +38568,21 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "DriveFileSelection": {
+            "additionalProperties": false,
+            "description": "A Drive image selected by its immutable entry and digest.",
+            "properties": {
+              "drive_entry": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "expected_digest": {
+                "type": "string"
+              }
+            },
+            "required": ["drive_entry", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
@@ -51091,6 +51135,9 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
+                "$ref": "#/components/schemas/DriveFileSelection"
+              },
+              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
@@ -52577,6 +52624,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -52616,6 +52667,21 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "DriveFileSelection": {
+            "additionalProperties": false,
+            "description": "A Drive image selected by its immutable entry and digest.",
+            "properties": {
+              "drive_entry": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "expected_digest": {
+                "type": "string"
+              }
+            },
+            "required": ["drive_entry", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
@@ -55552,6 +55618,9 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
+                "$ref": "#/components/schemas/DriveFileSelection"
+              },
+              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
@@ -57038,6 +57107,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -57077,6 +57150,21 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "DriveFileSelection": {
+            "additionalProperties": false,
+            "description": "A Drive image selected by its immutable entry and digest.",
+            "properties": {
+              "drive_entry": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "expected_digest": {
+                "type": "string"
+              }
+            },
+            "required": ["drive_entry", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
