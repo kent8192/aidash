@@ -26,18 +26,10 @@ pub trait AuthorizedMediaScope: MediaAttachments {
 	async fn authorize_message(&mut self, thread: Uuid, message: Uuid) -> Result<()>;
 }
 
-/// The native adapter retains its current area, authority and file snapshot through all reads.
+/// The native adapter retains authority and the selected Reference snapshot through all reads.
 #[async_trait]
 pub trait SelectedMediaScope: Send {
 	async fn current_files(&mut self) -> Result<Vec<aidash_domain::media::SelectedFile>>;
-	async fn subnode_file(
-		&mut self,
-		_thread: Uuid,
-		_area: Uuid,
-		_file: Uuid,
-	) -> Result<aidash_domain::media::SelectedFile> {
-		Err(crate::Error::Forbidden)
-	}
 	async fn scratch_image(
 		&mut self,
 		_selection: &aidash_domain::media::ScratchImageSelection,

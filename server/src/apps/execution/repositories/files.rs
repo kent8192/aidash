@@ -138,6 +138,7 @@ fn missing() -> Error {
 	Error::External("file repository scope invariant".into())
 }
 
+#[async_trait]
 impl VerifiedFile for Reader {
 	async fn read_range(&mut self, offset: u64, limit: u64) -> Result<Vec<u8>> {
 		if offset > self.size {

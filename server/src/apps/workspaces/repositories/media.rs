@@ -402,36 +402,6 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		self.files = files;
 		Ok(selected)
 	}
-	async fn subnode_file(&mut self, thread: Uuid, area: Uuid, id: Uuid) -> Result<SelectedFile> {
-		use aidash_application::ports::capabilities::files::FileScopePort;
-		let access = self
-			.lease
-			.as_mut()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		let area = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run))
-			.subnode_area(&self.run.metadata(), thread, area)
-			.await?;
-		// A member's Reference set stays inside the member's own Run (ADR 0114).
-		let file = serde_json::from_value::<Vec<FileEntry>>(area.manifest)?
-			.into_iter()
-			.find(|file| {
-				file.file_id == id
-					&& !(matches!(
-						file.scope,
-						crate::apps::execution::capabilities::contracts::FileScope::References
-					) && file.provenance["kind"] == "reference")
-			})
-			.ok_or_else(|| aidash_application::Error::NotFound("file unavailable".into()))?;
-		let selected = SelectedFile {
-			file_id: file.file_id,
-			path: file.path.clone(),
-			digest: file.digest.clone(),
-			size: file.size,
-			media_type: file.media_type.clone(),
-		};
-		self.files.push(file);
-		Ok(selected)
-	}
 	async fn scratch_image(
 		&mut self,
 		selection: &aidash_domain::media::ScratchImageSelection,

@@ -1,7 +1,5 @@
 //! Recreate the historical Live preview pin when reversing execution 0182.
-use reinhardt::query::{
-	Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-};
+use reinhardt::query::{Expr, PostgresQueryBuilder, Query, QueryStatementBuilder as _};
 
 pub(crate) fn backward() -> String {
 	let area = Query::select()

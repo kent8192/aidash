@@ -587,7 +587,7 @@ pub(crate) async fn issue(
 				)
 				.await?
 				.ok_or_else(|| Error::NotFound("Live preview unavailable".into()))?;
-				if live.id != live_preview_id || live.area_id != area.id {
+				if live.id != live_preview_id {
 					return Err(Error::Forbidden);
 				}
 				let mut scope = crate::apps::execution::repositories::previews::Scope {

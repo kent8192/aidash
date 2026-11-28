@@ -300,6 +300,11 @@ pub async fn selected(
 			"model media input exceeds count limit".into(),
 		));
 	}
+	if selections.iter().any(|selection| {
+        matches!(selection, ModelMedia::File(file) if file.thread_id.is_some() || file.area_id.is_some())
+    }) {
+        return Err(Error::NotFound("file unavailable".into()));
+    }
 	// Only page images, the Run's own evidence, skip the file authority; an
 	// empty request still requires it.
 	let files = if selections.is_empty()
@@ -316,22 +321,10 @@ pub async fn selected(
 	for selection in selections {
 		let (label, media_type, bytes) = match selection {
 			ModelMedia::File(selection) => {
-				let selected;
-				let file = match (selection.thread_id, selection.area_id) {
-					(Some(thread), Some(area)) => {
-						selected = scope.subnode_file(thread, area, selection.file_id).await?;
-						&selected
-					}
-					(None, None) => files
-						.iter()
-						.find(|file| file.file_id == selection.file_id)
-						.ok_or_else(|| Error::NotFound("file unavailable".into()))?,
-					_ => {
-						return Err(Error::Invalid(
-							"thread_id and area_id must be supplied together".into(),
-						));
-					}
-				};
+				let file = files
+					.iter()
+					.find(|file| file.file_id == selection.file_id)
+					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 				if file.digest != selection.expected_digest {
 					return Err(Error::Conflict("FILE_CHANGED".into()));
 				}
