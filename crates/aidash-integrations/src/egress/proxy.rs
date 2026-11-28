@@ -1207,7 +1207,10 @@ where
 }
 
 /// Resolve once and connect to the verified addresses, preventing DNS rebinding.
-async fn public_addresses(host: &str, port: u16) -> io::Result<Vec<std::net::SocketAddr>> {
+pub(super) async fn public_addresses(
+	host: &str,
+	port: u16,
+) -> io::Result<Vec<std::net::SocketAddr>> {
 	let lookup = host
 		.strip_prefix('[')
 		.and_then(|value| value.strip_suffix(']'))
@@ -1516,6 +1519,7 @@ pub(super) async fn forward(
 	manager: Arc<TunnelManager>,
 	listener_permit: Arc<std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
 	connection_lease: Arc<std::sync::Mutex<Option<Arc<TunnelPermit>>>>,
+	resolve: impl AsyncFnOnce(&str, u16) -> io::Result<Vec<std::net::SocketAddr>>,
 ) -> hyper::Response<super::Body> {
 	use hyper::{Method, StatusCode};
 	let Some(token) = credential(request.headers()) else {
@@ -1653,7 +1657,7 @@ pub(super) async fn forward(
 	if !connect {
 		*connection_lease.lock().unwrap() = Some(permit.clone());
 	}
-	let addresses = match public_addresses(&host, port).await {
+	let addresses = match resolve(&host, port).await {
 		Ok(addresses) => addresses,
 		Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
 			return audit.fail(StatusCode::FORBIDDEN, "egress_destination_forbidden");
@@ -3428,8 +3432,12 @@ mod tests {
 		server.await.unwrap().unwrap();
 	}
 
+	#[rstest::rstest]
 	#[tokio::test]
-	async fn absolute_http_forwards_without_proxy_credentials_and_records_wire_bytes() {
+	async fn absolute_http_forwards_without_proxy_credentials_and_records_wire_bytes(
+		#[values(false, true)] allow_all: bool,
+	) {
+		const HOST: &str = "api.x.com";
 		use hyper::{Request, Response, service::service_fn};
 		use std::convert::Infallible;
 		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3458,13 +3466,17 @@ mod tests {
 				node: "n".into(),
 				scratch_space: uuid::Uuid::new_v4(),
 			},
-			allowed_hosts: AllowedHosts::default(),
+			allowed_hosts: AllowedHosts {
+				hosts: if allow_all { vec![] } else { vec![HOST.into()] },
+				allow_all,
+				home_ceiling: None,
+			},
 			budget: DailyBudget::default(),
 			anomaly: AnomalyRule::default(),
-			operator_allows_all: false,
+			operator_allows_all: true,
 			tunnel_limits: Default::default(),
 		};
-		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
 		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let gateway_address = gateway.local_addr().unwrap();
 		let gateway_scopes = scopes.clone();
@@ -3479,37 +3491,17 @@ mod tests {
 			let service = service_fn(move |request| {
 				let manager = service_manager.clone();
 				let scopes = gateway_scopes.clone();
-				let settings = settings.clone();
 				async move {
-					let audit = super::Audit {
-						run_id: None,
-						admission_ms: None,
-						settle_ms: Arc::new(super::AtomicU64::new(0)),
-						id: uuid::Uuid::new_v4(),
-						manager: manager.clone(),
-						scopes: scopes.clone(),
-						scope: settings.id.clone(),
-						host: "test.invalid".into(),
-						port: 80,
-						started: std::time::Instant::now(),
-						sent: Arc::new(super::AtomicU64::new(0)),
-						received: Arc::new(super::AtomicU64::new(0)),
-						outcome: "refused",
-						error: None,
-						wait_ms: 0,
-						finished: false,
-						started_record: false,
-					};
-					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
-					let result = super::forward_http(
+					let result = super::forward(
 						request,
-						url::Url::parse("http://test.invalid/private?secret=value").unwrap(),
-						vec![upstream_address],
 						scopes,
-						settings,
-						"token".into(),
-						audit,
-						super::TunnelLease { permit, manager },
+						manager,
+						Default::default(),
+						Default::default(),
+						async |host, port| {
+							assert_eq!((host, port), (HOST, 80));
+							Ok(vec![upstream_address])
+						},
 					)
 					.await;
 					Ok::<_, Infallible>(result)
@@ -3524,11 +3516,11 @@ mod tests {
 		let mut client = tokio::net::TcpStream::connect(gateway_address)
 			.await
 			.unwrap();
-		client.write_all(b"GET http://test.invalid/private?secret=value HTTP/1.1\r\nHost: test.invalid\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").await.unwrap();
+		client.write_all(b"GET http://api.x.com/private?secret=value HTTP/1.1\r\nHost: api.x.com\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").await.unwrap();
 		let mut response = Vec::new();
 		client.read_to_end(&mut response).await.unwrap();
 		assert!(
-			response.ends_with(b"hello"),
+			response.starts_with(b"HTTP/1.1 200") && response.ends_with(b"hello"),
 			"response: {}",
 			String::from_utf8_lossy(&response)
 		);
@@ -3542,7 +3534,7 @@ mod tests {
 		.await
 		.unwrap();
 		let records = scopes.records();
-		assert_eq!(records[0].host, "test.invalid");
+		assert_eq!(records[0].host, HOST);
 		assert!(!format!("{:?}", records[0]).contains("token"));
 		assert!(!format!("{:?}", records[0]).contains("secret=value"));
 		assert!(records[0].sent_bytes > 5);

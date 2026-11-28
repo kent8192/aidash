@@ -582,15 +582,10 @@ pub(crate) fn effective_policy(
 ) -> (ScratchCeilings, HostAllowlist) {
 	let mut ceilings = policy.ceilings.clone();
 	ceilings.docker_allowed |= policy.docker_tenants.contains(tenant);
-	let hosts = policy.tenant_hosts.get(tenant).cloned().unwrap_or_else(|| {
-		aidash_domain::scratch::default_public_hosts()
-			.into_iter()
-			.collect()
-	});
-	let allowed = if hosts.len() == 1 && hosts[0] == "*" {
-		HostAllowlist::All
-	} else {
-		HostAllowlist::Hosts(hosts.into_iter().collect())
+	let allowed = match policy.tenant_hosts.get(tenant).map(Vec::as_slice) {
+		None => HostAllowlist::All,
+		Some([host]) if host == "*" => HostAllowlist::All,
+		Some(hosts) => HostAllowlist::Hosts(hosts.iter().cloned().collect()),
 	};
 	(ceilings, allowed)
 }

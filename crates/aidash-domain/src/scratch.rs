@@ -20,7 +20,7 @@ pub enum HostAllowlist {
 	Hosts(BTreeSet<String>),
 }
 
-/// Public package and source registries enabled for a new Tenant by default.
+/// Public package and source registries enabled for a new Scratch Space by default.
 pub fn default_public_hosts() -> BTreeSet<String> {
 	crate::egress::DEFAULT_ALLOWED_HOSTS
 		.iter()
@@ -116,8 +116,15 @@ impl Default for ScratchCeilings {
 			daily_sent_bytes: 1024 * GIB,
 			daily_received_bytes: 1024 * GIB,
 			docker_allowed: false,
-			all_hosts_allowed: false,
+			all_hosts_allowed: true,
 		}
+	}
+}
+
+impl ScratchCeilings {
+	/// Whether this Tenant may select all hosts for a Scratch Space.
+	pub fn allows_all_hosts(&self, tenant_hosts: &HostAllowlist) -> bool {
+		self.all_hosts_allowed && matches!(tenant_hosts, HostAllowlist::All)
 	}
 }
 
@@ -256,12 +263,11 @@ impl ScratchSettings {
 	pub fn validate(&self, ceilings: &ScratchCeilings, tenant_hosts: &HostAllowlist) -> Result<()> {
 		use ScratchSettingsViolation as V;
 		let mut violations = Vec::new();
-		let tenant_policy_allows_all_hosts = matches!(tenant_hosts, HostAllowlist::All);
-		let all_hosts_allowed = ceilings.all_hosts_allowed && tenant_policy_allows_all_hosts;
+		let all_hosts_allowed = ceilings.allows_all_hosts(tenant_hosts);
 		match &self.allowed_hosts {
 			HostAllowlist::All if !all_hosts_allowed => violations.push(V::AllHostsNotAllowed {
 				deployment_all_hosts_allowed: ceilings.all_hosts_allowed,
-				tenant_policy_allows_all_hosts,
+				tenant_policy_allows_all_hosts: matches!(tenant_hosts, HostAllowlist::All),
 			}),
 			HostAllowlist::All => {}
 			HostAllowlist::Hosts(hosts) => {

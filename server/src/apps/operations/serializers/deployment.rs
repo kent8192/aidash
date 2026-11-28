@@ -69,10 +69,10 @@ pub struct DeploymentSettings {
 	/// Operator-approved Tenants that may enable Docker.
 	#[setting(default = "Vec::new()", leaf)]
 	pub scratch_docker_tenants: Vec<String>,
-	/// Whether this Offering permits selecting all hosts.
-	#[setting(default = "false")]
+	/// Whether this Deployment permits selecting all hosts.
+	#[setting(default = "true")]
 	pub scratch_all_hosts_allowed: bool,
-	/// Per-Tenant allowed hosts; a single `*` denotes all hosts.
+	/// Per-Tenant allowed hosts. An absent entry or a single `*` permits all hosts.
 	#[setting(default = "BTreeMap::new()", leaf)]
 	pub scratch_tenant_hosts: BTreeMap<String, Vec<String>>,
 	/// Execution image references approved for each Tenant.
@@ -265,7 +265,11 @@ mod tests {
 
 	#[test]
 	fn scratch_ceilings_and_tenant_host_policies_are_validated() {
-		check(&settings(json!({}))).unwrap();
+		let defaults = settings(json!({}));
+		check(&defaults).unwrap();
+		assert!(defaults.scratch_all_hosts_allowed);
+		assert!(defaults.scratch_tenant_hosts.is_empty());
+		assert!(!settings(json!({"scratch_all_hosts_allowed": false})).scratch_all_hosts_allowed);
 		assert!(
 			check(&settings(
 				json!({"scratch_capacity_bytes": 1099511627777_u64})

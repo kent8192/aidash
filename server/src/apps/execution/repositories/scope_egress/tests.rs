@@ -837,19 +837,31 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		..Default::default()
 	};
 	chosen.allowed_hosts = aidash_domain::scratch::HostAllowlist::Hosts(
-		["registry.npmjs.org", "not-allowed-by-the-tenant.example"]
+		["registry.npmjs.org", "api.x.com"]
 			.map(str::to_owned)
 			.into(),
 	);
 	let space = insert_space(&federation, "acme", chosen).await;
-	let policy = federation.config.scratch_policy.clone();
+	let run_id = Uuid::new_v4();
+	let mut policy = federation.config.scratch_policy.clone();
+	let default_authority =
+		ScratchAuthority::with_key(federation.store.clone(), policy.clone(), KEY);
+	let credential = default_authority.credential("acme", space, run_id).unwrap();
+	let default_scope = default_authority.authenticate(&credential).await.unwrap();
+	assert!(
+		default_scope
+			.allowed_hosts
+			.permits("api.x.com", default_scope.operator_allows_all)
+	);
+
+	policy
+		.tenant_hosts
+		.insert("acme".into(), vec!["registry.npmjs.org".into()]);
 	let authority = Arc::new(ScratchAuthority::with_key(
 		federation.store.clone(),
 		policy,
 		KEY,
 	));
-	let run_id = Uuid::new_v4();
-	let credential = authority.credential("acme", space, run_id).unwrap();
 	let durable = DurableScopes::new(federation.store.clone(), authority.clone());
 
 	let resolved = durable.resolve(&credential).await.unwrap();
