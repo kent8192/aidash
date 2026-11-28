@@ -6638,11 +6638,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 			.await
 			.unwrap();
 	assert_eq!(receipts, None);
-	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	for table in [
 		"egress_scope_state",
 		"egress_scope_daily",
