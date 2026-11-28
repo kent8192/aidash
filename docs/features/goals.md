@@ -2,7 +2,8 @@
 
 A Goal is an optional completion condition of up to 4,000 characters. Add it
 when requesting work in a Thread, when defining a Duty that starts Tasks, or
-when creating a child Task.
+when creating a child Task. An Agent can update a Goal it wrote by calling
+`task_delegate` with just the child Task's `task_id` and the new `goal`.
 
 Aidash asks a separate model to judge the Goal whenever the working Agent
 stops with a final answer and its outstanding waits have settled. The judge

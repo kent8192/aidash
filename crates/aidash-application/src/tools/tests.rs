@@ -127,6 +127,15 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: assign")
 	}
+	async fn set_child_goal(&self, key: &str, id: Uuid, goal: &str) -> Result<()> {
+		self.record("task.goal");
+		assert_eq!(id, self.task.id);
+		self.inputs
+			.lock()
+			.unwrap()
+			.push((key.to_owned(), json!(goal)));
+		Ok(())
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,
@@ -904,6 +913,32 @@ async fn agent_delegation_retains_parent_and_durable_operation_keys(fixture: Fix
 		json!({"task":fixture.operations.task,"delegation":{"node_id":"aidash://remote"}})
 	);
 }
+#[rstest]
+#[tokio::test]
+async fn the_child_writer_can_change_a_goal_without_delegating_again(fixture: Fixture) {
+	let task_id = fixture.operations.task.id;
+	let goal = "Check that the three receipts match.";
+	let tool = builtins().remove("task_delegate").unwrap();
+	let output = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({"task_id": task_id, "goal": goal}),
+			"child-goal",
+		)
+		.await
+		.unwrap();
+	assert_eq!(output, json!({"task_id": task_id, "goal": goal}));
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["task.goal"]);
+	assert_eq!(
+		*fixture.operations.inputs.lock().unwrap(),
+		[("child-goal".into(), json!(goal))]
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn unregistered_skill_is_rejected_before_its_contents_are_read(fixture: Fixture) {

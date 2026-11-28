@@ -652,17 +652,29 @@ impl Builtin {
 				let id = required(&input, "task_id")?
 					.parse()
 					.map_err(|_| Error::Invalid("invalid task id".into()))?;
+				let goal = input
+					.get("goal")
+					.map(|goal| {
+						goal.as_str()
+							.ok_or_else(|| Error::Invalid("Goal must be text".into()))
+					})
+					.transpose()?;
+				if input.get("node_id").is_none() && input.get("agent").is_none() {
+					let goal = goal.ok_or_else(|| {
+						Error::Invalid("Goal is required without a delegation target".into())
+					})?;
+					ctx.operations.set_child_goal(key, id, goal).await?;
+					return Ok(json!({"task_id": id, "goal": goal}));
+				}
+				let node = required(&input, "node_id")?;
 				let agent: EntityRef = serde_json::from_value(input["agent"].clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?;
-				if let Some(goal) = input.get("goal") {
-					let goal = goal
-						.as_str()
-						.ok_or_else(|| Error::Invalid("Goal must be text".into()))?;
+				if let Some(goal) = goal {
 					ctx.operations.set_child_goal(key, id, goal).await?;
 				}
 				Ok(json!(
 					ctx.operations
-						.delegate_with_key(key, id, required(&input, "node_id")?, &agent)
+						.delegate_with_key(key, id, node, &agent)
 						.await?
 				))
 			}
@@ -994,8 +1006,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_delegate",
 			contract: aidash_domain::tool::builtin_contract("task_delegate")
 				.expect("declared builtin"),
-			description: "Offer an existing workspace task to the explicitly selected local or remote agent.",
-			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref,"goal":{"type":"string","maxLength":4000}},"additionalProperties":false}),
+			description: "Offer an existing task to a local or remote Agent by providing node_id and agent. You may set the Goal of a child Task you wrote. To edit its Goal alone, provide task_id and goal.",
+			schema: json!({"type":"object","required":["task_id"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref,"goal":{"type":"string","maxLength":4000}},"additionalProperties":false,"anyOf":[{"required":["node_id","agent"]},{"required":["goal"],"not":{"anyOf":[{"required":["node_id"]},{"required":["agent"]}]}}]}),
 		},
 		Builtin {
 			name: "deliverable_note",

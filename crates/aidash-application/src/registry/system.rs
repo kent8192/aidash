@@ -294,6 +294,11 @@ pub(crate) fn legacy_goal_entries(
 				if let Some(properties) = entry.schema["properties"].as_object_mut() {
 					properties.remove("goal");
 				}
+				if entry.id == "aidash.task_delegate" {
+					entry.description.insert("en".into(), "Offer an existing workspace task to the explicitly selected local or remote agent.".into());
+					entry.schema["required"] = json!(["task_id", "node_id", "agent"]);
+					entry.schema.as_object_mut().unwrap().remove("anyOf");
+				}
 			}
 			_ => continue,
 		}
