@@ -2136,12 +2136,10 @@ pub(crate) fn reference_scope<'a>(
 pub(crate) fn approval_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
-	area: Option<&'a crate::apps::execution::capabilities::serializers::contracts::Area>,
 ) -> crate::apps::execution::repositories::approvals::Scope<'a> {
 	crate::apps::execution::repositories::approvals::Scope {
 		store,
 		access,
-		area,
 		run: None,
 	}
 }

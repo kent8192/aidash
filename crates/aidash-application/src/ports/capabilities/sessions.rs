@@ -25,7 +25,6 @@ pub trait SessionScope: Send {
 	async fn references(&mut self, ids: &[Uuid]) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>>;
 	async fn run_binding(&mut self, run_id: Uuid) -> Result<Option<Uuid>>;
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
 	async fn parent_areas(&mut self, id: Uuid) -> Result<Vec<Area>>;

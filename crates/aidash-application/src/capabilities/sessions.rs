@@ -115,17 +115,6 @@ pub async fn for_run(scope: &mut dyn SessionScope, run: &RunMetadata) -> Result<
 	}
 	Ok(area)
 }
-pub async fn require_current_run(
-	scope: &mut dyn SessionScope,
-	area: &Area,
-	run: &RunMetadata,
-) -> Result<()> {
-	if scope.current_run(area).await? == Some(run.id) {
-		Ok(())
-	} else {
-		Err(Error::NotFound("working area unavailable".into()))
-	}
-}
 pub async fn context_authority(scope: &mut dyn SessionScope, run: &RunMetadata) -> Result<()> {
 	let area = scope
 		.context_area(run.id)

@@ -325,24 +325,6 @@ impl SessionScope for Scope<'_> {
 		.map(Option::flatten)
 		.map_err(Into::into)
 	}
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
-		for only_active in [true, false] {
-			let mut latest = area_runs(area);
-			latest.and_where(Expr::col(("q", "initialized")).eq(true));
-			if only_active {
-				latest.and_where(nonterminal_run());
-			}
-			let found = crate::database::native::query_scalar(
-				&latest.limit(1).to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **self.access.tx)
-			.await?;
-			if found.is_some() {
-				return Ok(found);
-			}
-		}
-		Ok(None)
-	}
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>> {
 		run_area(self.access, run_id)
 			.await

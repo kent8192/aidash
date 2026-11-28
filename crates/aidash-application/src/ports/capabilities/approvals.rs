@@ -230,7 +230,6 @@ pub trait ApprovalScope: Send {
 	async fn run_context(&mut self, id: Uuid) -> Result<RunMetadata>;
 	async fn interaction_run(&mut self, id: Uuid) -> Result<RunMetadata>;
 	async fn context_authority(&mut self) -> Result<()>;
-	async fn active_run(&mut self) -> Result<Option<Uuid>>;
 	async fn require(&mut self, target: &Resource, action: &str) -> Result<()>;
 	async fn load(&mut self, id: Uuid, kind: &str) -> Result<Record>;
 	async fn grants(&mut self, run: Uuid) -> Result<Vec<Record>>;

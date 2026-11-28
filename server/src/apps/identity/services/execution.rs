@@ -691,16 +691,12 @@ impl WorkerAuthority {
 					)
 					.await?;
 					let area = scope.for_run(&metadata).await?;
-					aidash_domain::capabilities::operations::available(&area.state)?;
 					(input, area)
 				};
 				let outbound: aidash_domain::capabilities::approvals::Outbound =
 					serde_json::from_value(input)
 						.map_err(|error| aidash_application::Error::Invalid(error.to_string()))?;
-				let native: crate::apps::execution::capabilities::contracts::Area =
-					area.clone().into();
-				let mut scope =
-					crate::bootstrap::approval_scope(Some(store), &mut access, Some(&native));
+				let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 				scope.run = Some(Box::new(run.clone()));
 				let begun = home_begin(&mut scope, &metadata, area.id, outbound).await?;
 				Ok((area, begun))
@@ -736,9 +732,7 @@ impl WorkerAuthority {
 		let settled = {
 			let outer = self.access.read().await;
 			let mut access = Access::under_lease(&outer).await?;
-			let native: crate::apps::execution::capabilities::contracts::Area = area.clone().into();
-			let mut scope =
-				crate::bootstrap::approval_scope(Some(store), &mut access, Some(&native));
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			scope.run = Some(Box::new(run.clone()));
 			let result = home_settle(&mut scope, &metadata, ask.record, answer)
 				.await
@@ -1650,7 +1644,7 @@ impl WorkerAuthority {
 					.map(|area| area.id);
 			let request =
 				aidash_application::capabilities::approvals::ToolCallRequest { area, ..request };
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			scope.run = Some(Box::new(run.clone()));
 			aidash_application::capabilities::approvals::tool_call(
 				&mut scope,
@@ -1701,7 +1695,7 @@ impl WorkerAuthority {
 				area,
 				..request
 			};
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			aidash_application::capabilities::approvals::sampling::request(
 				&mut scope,
 				&run.metadata(),
@@ -1750,7 +1744,7 @@ impl WorkerAuthority {
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
 			use aidash_application::ports::capabilities::approvals::ApprovalScope;
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			let target = scope.resource(
 				"run",
 				&run.id.to_string(),
@@ -1774,7 +1768,7 @@ impl WorkerAuthority {
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			aidash_application::capabilities::approvals::auto_judging(&mut scope, &run.metadata())
 				.await
 				.map_err(Error::from)
@@ -1816,7 +1810,7 @@ impl WorkerAuthority {
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			aidash_application::capabilities::approvals::judgement(
 				&mut scope,
 				&run.metadata(),
@@ -1841,7 +1835,7 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access);
 			aidash_application::capabilities::approvals::settle(
 				&mut scope,
 				&run.metadata(),
