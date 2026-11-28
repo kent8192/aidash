@@ -207,7 +207,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"process_list",
-			"List this Run's Background processes in the Execution Pod: what a command left running when it ended (its result names it in left_running) and Live previews.",
+			"List this Run's timed Background processes, processes that commands left running (the results name them in left_running), and Live previews.",
 			schema::<pod::ProcessList>(),
 		),
 		(
@@ -222,7 +222,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"shell",
-			"Start a Shell operation. Set background to true and provide timeout_seconds to keep it running without waiting. Set notify_on_exit to receive a Task input when it ends. wait_seconds defaults to 300 for foreground commands and zero for Background processes, and is capped at 3600. Cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Start a Shell operation. Set background to true and provide timeout_seconds to keep it running without waiting. Set notify_on_exit to receive a Task input when it ends. wait_seconds defaults to 300 for foreground commands and zero for Background processes, and is capped at 3600. Commands start in the Thread or Duty directory in the Scratch Space. Cancellation cannot undo earlier effects.",
 			schema::<Shell>(),
 		),
 		(
@@ -237,7 +237,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"code_interpreter",
-			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Pass the previous result's session_id as expected_session_id when relying on variables or imports. On SESSION_RESET, rebuild state using the new ID if supplied, or omit expected_session_id to start fresh. Saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Pass the previous result's session_id as expected_session_id when relying on variables or imports. On SESSION_RESET, rebuild state using the new ID if supplied, or omit expected_session_id to start fresh. Cells start in the Thread or Duty directory in the Scratch Space. Saved files survive heap loss.",
 			schema::<Python>(),
 		),
 		(

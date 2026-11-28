@@ -119,8 +119,9 @@ before returning it. If the result is missing, the server reports
 `PATCH_RECEIPT_UNAVAILABLE` and leaves the file contents as found.
 
 The Pod base copies the image filesystem into the PVC
-on first start, then runs commands as root in that persisted root. `/scratch`
-contains user files; the copied system tree lives separately on the same PVC.
+on first start, then runs commands as root in that persisted root. The Pod
+mounts the Scratch Space at `/work` and retains the `/scratch` mount for
+existing commands. The copied system tree lives separately on the same PVC.
 Installed packages survive Pod restarts. The Runner receipt reports `image_changed`
 when the requested image differs from the image used to initialize the tree;
 unknown legacy image identity also reports a change. Reset replaces the system
@@ -130,8 +131,9 @@ with one command is attributed to its Run; overlapping commands produce an
 `ambiguous` record listing the Runs. The index does not capture every possible
 metadata-only change, and a sudden Pod loss can lose the latest interval.
 
-The Runner queues foreground commands beyond eight simultaneous commands per
-Pod; Background processes have a separate pool of 16. The foreground
+The Runner queues foreground commands beyond 32 simultaneous commands in the
+Node's default Scratch Space and eight in a named space. Background processes
+have a separate pool of 16. The foreground
 `maximum_seconds` profile ceiling may be set as high as 86400. The Runner's
 command transport allows a further 180 seconds to collect the outcome.
 
