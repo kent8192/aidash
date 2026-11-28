@@ -34,7 +34,7 @@ fn agent() -> AgentBindings {
 }
 
 #[test]
-fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
+fn built_in_memory_is_default_and_a_custom_provider_is_refused() {
 	let node = "aidash://node-a";
 	let mut config = agent();
 	let defaults = config.normalize(node).unwrap();
@@ -58,14 +58,10 @@ fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
 		members: vec![],
 		exposure: None,
 	});
-	let bound = config.normalize(node).unwrap();
-	let memories: Vec<_> = bound
-		.iter()
-		.filter(|binding| binding.binding.kind == BindingKind::Memory)
-		.collect();
-	assert_eq!(memories.len(), 1);
-	assert_eq!(memories[0].binding.target.id, "custom-memory");
-	assert_eq!(memories[0].origin, BindingOrigin::Explicit);
+	assert!(matches!(
+		config.normalize(node),
+		Err(crate::Error::Invalid(_))
+	));
 }
 
 #[test]
@@ -149,7 +145,7 @@ fn legacy_and_mixed_schemas_are_rejected() {
 	}
 	assert!(
 		serde_json::from_value::<AgentBindings>(
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"old"})
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"old","exposure":{"version":"legacy@1"}})
 		)
 		.is_err()
 	);
@@ -285,13 +281,14 @@ fn narrowing_intersects_and_enforces_bounds_without_changing_facts() {
 	assert!(serde_json::from_value::<Narrowing>(json!({"effect":"read_only"})).is_err());
 }
 #[test]
-fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
-	let mut agent = agent();
-	agent.bindings.push(Binding {
-		kind: BindingKind::Memory,
+fn an_explicit_source_does_not_restore_removed_memory_tools() {
+	let node = "aidash://node-a";
+	let mut config = agent();
+	config.bindings.push(Binding {
+		kind: BindingKind::Source,
 		target: QualifiedRef {
-			registry_deployment: "aidash://node-a".into(),
-			id: "native.memory".into(),
+			registry_deployment: node.into(),
+			id: "retrieval".into(),
 			version: "1.0.0".into(),
 		},
 		alias: None,
@@ -299,23 +296,25 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 		members: vec![],
 		exposure: None,
 	});
-	let normalized = agent.normalize("aidash://node-a").unwrap();
-	assert_eq!(
+	config
+		.remove_default
+		.extend(MEMORY_TOOLS.iter().map(|tool| (*tool).to_owned()));
+	let normalized = config.normalize(node).unwrap();
+	assert!(
 		normalized
 			.iter()
-			.filter(|b| b.binding.kind == BindingKind::Memory)
-			.count(),
-		1
+			.any(|binding| binding.binding.target.id == "retrieval")
 	);
-	agent.remove_default.push("memory_mutate".into());
-	assert!(
-		agent
-			.normalize("aidash://node-a")
-			.unwrap()
-			.iter()
-			.any(|b| b.binding.kind == BindingKind::Memory)
-	);
+	for tool in MEMORY_TOOLS {
+		assert!(
+			!normalized
+				.iter()
+				.any(|binding| binding.binding.target.id == format!("aidash.{tool}")),
+			"{tool}"
+		);
+	}
 }
+
 #[test]
 fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let memory_tools = |agent: &AgentBindings| -> Vec<BindingOrigin> {
@@ -337,20 +336,8 @@ fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let explicit = Binding::tool(QualifiedRef::builtin("aidash://node-a", "memory_recall"));
 	agent.bindings.push(explicit.clone());
 	agent.validate().unwrap();
-	agent.bindings.push(Binding {
-		kind: BindingKind::Memory,
-		target: QualifiedRef {
-			registry_deployment: "aidash://node-a".into(),
-			id: "native.memory".into(),
-			version: "1.0.0".into(),
-		},
-		alias: None,
-		narrow: Narrowing::default(),
-		members: vec![],
-		exposure: None,
-	});
-	agent.validate().unwrap();
-	agent.bindings.retain(|b| b != &explicit);
+	assert!(memory_tools(&agent).contains(&BindingOrigin::Explicit));
+	agent.bindings.clear();
 	agent.remove_default.push("memory_recall".into());
 	assert_eq!(memory_tools(&agent).len(), 2);
 }

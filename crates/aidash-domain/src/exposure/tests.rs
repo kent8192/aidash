@@ -922,12 +922,7 @@ fn policy_defaults_bounds_and_unknown_fields() {
 		ExposurePolicy::Deferred(DeferredBudgets::default())
 	);
 	deferred.validate().unwrap();
-	let legacy: ExposurePolicy = serde_json::from_value(json!({"version":"legacy@1"})).unwrap();
-	assert_eq!(legacy, ExposurePolicy::Legacy);
-	assert_eq!(
-		serde_json::to_value(legacy).unwrap(),
-		json!({"version":"legacy@1"})
-	);
+	assert!(serde_json::from_value::<ExposurePolicy>(json!({"version":"legacy@1"})).is_err());
 	let custom: ExposurePolicy = serde_json::from_value(
 		json!({"version":"deferred@1","metadata_bytes":512,"schema_bytes":262144}),
 	)

@@ -250,7 +250,7 @@ fn agent_plugin_settings_can_narrow_but_not_add_tools_or_read_only_declarations(
 }
 
 #[test]
-fn restored_default_capabilities_and_allow_flags_change_consent() {
+fn restored_default_capabilities_change_consent() {
 	let old = entry(
 		"agent",
 		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"first","remove_default":["file_search","file_read","task_create"]}),
@@ -259,11 +259,9 @@ fn restored_default_capabilities_and_allow_flags_change_consent() {
 	new.config["remove_default"] = json!([]);
 	let changes = compare(&old, &new).unwrap();
 	assert!(changes.contains(&"core capabilities".to_owned()));
-	assert!(changes.contains(&"allow flags".to_owned()));
 	assert!(changes.contains(&"remove default".to_owned()));
 	let narrowing = compare(&new, &old).unwrap();
 	assert!(!narrowing.contains(&"core capabilities".to_owned()));
-	assert!(!narrowing.contains(&"allow flags".to_owned()));
 	assert!(narrowing.contains(&"remove default".to_owned()));
 }
 
@@ -402,38 +400,18 @@ fn bundle_members_may_narrow_but_not_widen() {
 }
 
 #[test]
-fn decider_binding_restrictions_may_tighten_but_not_loosen() {
-	let probability = |value: f64| {
-		serde_json::to_value(crate::decision::Probability::new(value).unwrap()).unwrap()
-	};
-	let decider = |decision: Option<serde_json::Value>| {
-		let narrow = decision.map_or_else(|| json!({}), |decision| json!({ "decision": decision }));
-		agent_binding("decider", "guard", "1.0.0", json!({ "narrow": narrow }))
-	};
-	let strict = json!({"threshold":probability(0.3),"preserve_recent":8,"forbid_apply":true,"max_calls_per_run":5});
-	for looser in [
-		None,
-		Some(
-			json!({"threshold":probability(0.4),"preserve_recent":8,"forbid_apply":true,"max_calls_per_run":5}),
-		),
-		Some(
-			json!({"threshold":probability(0.3),"preserve_recent":6,"forbid_apply":true,"max_calls_per_run":5}),
-		),
-		Some(
-			json!({"threshold":probability(0.3),"preserve_recent":8,"forbid_apply":false,"max_calls_per_run":5}),
-		),
-		Some(
-			json!({"threshold":probability(0.3),"preserve_recent":8,"forbid_apply":true,"max_calls_per_run":null}),
-		),
-	] {
-		assert!(
-			restricted(decider(Some(strict.clone())), decider(looser.clone()))
-				.contains(&"binding restrictions".to_owned()),
-			"{looser:?}"
-		);
-	}
-	let stricter = json!({"threshold":probability(0.2),"preserve_recent":10,"forbid_apply":true,"max_calls_per_run":2});
-	assert!(restricted(decider(Some(strict)), decider(Some(stricter))).is_empty());
+fn carry_over_refuses_an_agent_version_with_a_custom_decider() {
+	let old = agent_with(json!([]));
+	let decider = agent_binding("decider", "guard", "1.0.0", json!({}));
+	let custom = agent_with(json!([decider]));
+	assert!(matches!(
+		compare(&old, &custom),
+		Err(crate::Error::Invalid(_))
+	));
+	assert!(matches!(
+		compare(&custom, &old),
+		Err(crate::Error::Invalid(_))
+	));
 }
 
 #[test]
