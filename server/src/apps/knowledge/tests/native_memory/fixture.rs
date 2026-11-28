@@ -12,8 +12,7 @@ use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
 
-#[path = "../../../execution/tests/support/tenant_roots.rs"]
-mod tenant_roots;
+use crate::tenant_roots;
 
 pub(super) fn reference(id: &str) -> EntityRef {
 	EntityRef {

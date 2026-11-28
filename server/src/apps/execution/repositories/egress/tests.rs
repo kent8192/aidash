@@ -3,9 +3,8 @@
 pub(crate) mod settings;
 #[path = "../../tests/support/statements.rs"]
 pub(crate) mod statements;
-#[path = "../../tests/support/tenant_roots.rs"]
-pub(crate) mod tenant_roots;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
+use crate::tenant_roots;
 
 use crate::apps::execution::capabilities::models::egress::{RequestRecord, RunRevocation};
 use crate::apps::execution::repositories::egress::ServiceSecrets;

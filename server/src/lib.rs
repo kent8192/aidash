@@ -2,6 +2,10 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))] // Unit-test fixtures reach the database outside a tenancy scope.
 extern crate self as aidash_server;
 
+#[cfg(test)]
+#[path = "apps/execution/tests/support/tenant_roots.rs"]
+mod tenant_roots;
+
 pub mod apps;
 pub mod config;
 pub mod error;

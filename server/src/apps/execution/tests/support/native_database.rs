@@ -1,4 +1,6 @@
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
+// Some isolated test binaries use just this fixture and others use both.
+#[allow(clippy::duplicate_mod)]
 #[path = "default_scratch.rs"]
 mod default_scratch;
 

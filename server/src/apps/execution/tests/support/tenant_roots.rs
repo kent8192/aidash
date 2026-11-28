@@ -3,6 +3,8 @@
 //! Tenant needs before its first policy, as the API's creation steps would.
 use aidash_server::federation::Federation;
 
+// Some isolated test binaries use just this fixture and others use both.
+#[allow(clippy::duplicate_mod)]
 #[path = "default_scratch.rs"]
 mod default_scratch;
 
