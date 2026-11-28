@@ -5555,6 +5555,15 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
 		.with_migration_history(migrations.clone());
 	executor.apply_migrations(&migrations).await.unwrap();
+	if table == "events" {
+		// The historical event migration also restores the Run-to-Area key.
+		// Restore the tables and columns that key names for this round trip.
+		let mut later = Vec::new();
+		for name in ["0183_detach_run_area_bindings", "0184_retire_area_holds"] {
+			later.push(source.get_migration("execution", name).await.unwrap());
+		}
+		executor.rollback_migrations(&later).await.unwrap();
+	}
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for (pass, parent) in ["node_names", "nodes", "node_names"]
 		.into_iter()
