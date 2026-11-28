@@ -22,7 +22,7 @@ import { Badge as Tag } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
-import { focusedVersion } from "../approval-decider-model";
+import { focusedVersion } from "../registry-kinds";
 import { ApprovalSettingsPage } from "../approval-settings";
 import {
   CatalogRequestQueue,
@@ -490,8 +490,7 @@ function TenantRegistry({
   data: State;
   section: "agents" | "registry";
   open: (selection: Selection) => void;
-  /** `<id>@<version>` of a version a link asks to see, such as the Tenant's
-   *  approval Decider whose Catalog Approval Auto needs. */
+  /** `<id>@<version>` of a Registry version linked from another view. */
   focus?: string;
 }) {
   const { t } = useI18n();

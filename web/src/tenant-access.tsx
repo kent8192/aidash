@@ -15,10 +15,7 @@ import { OwnCredentials } from "./subject-credentials";
 import { LeaveTenantButton } from "./tenant-deletion";
 import { useTenantAdministration } from "./tenant-administration";
 
-/** What a subject manages of its own Tenant through its Mapping: its own
- *  Subject Credentials, the approval Decider that judges its Tenant's Auto
- *  mode, then the people, policy, credentials and Peer Mappings its Tenant's
- *  policy lets it administer (#363). */
+/** Tenant settings and the Subject Credentials a person manages through their Mapping. */
 export function TenantAccess({
   tenant,
   subject,

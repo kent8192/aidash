@@ -1,3 +1,5 @@
+import type { RegistryVersion } from "./generated/models";
+
 /** Registry kinds in the order people look for them. Unlisted kinds follow
  *  in name order, so a kind the server adds still gets its own group. */
 export const registryKindOrder = [
@@ -28,5 +30,16 @@ export function groupByKind<T>(
   }
   return [...groups].sort(
     ([left], [right]) => rank(left) - rank(right) || left.localeCompare(right),
+  );
+}
+
+/** Resolve a version named by a link into Settings. */
+export function focusedVersion(
+  versions: readonly RegistryVersion[],
+  focus: string,
+) {
+  return (
+    versions.find(({ entry }) => `${entry.id}@${entry.version}` === focus) ??
+    null
   );
 }
