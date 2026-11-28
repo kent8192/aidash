@@ -282,7 +282,7 @@ class Runner(AllocationJournal):
                     continue
                 if (record.get('status') != 'uncertain' or not record.get('termination_confirmed')
                         or record.get('output_harvested') or record.get('acknowledged')
-                        or record.get('request', {}).get('kind') not in ('shell', 'verify', 'python', 'journal')):
+                        or record.get('request', {}).get('kind') not in ('shell', 'python', 'journal')):
                     continue
                 operation = record['operation_id']
                 with self.lock:
@@ -515,7 +515,7 @@ class Runner(AllocationJournal):
             try:
                 data = base64.b64decode(record['stdout'], validate=True)
                 if len(data) > 16384:
-                    data = data[-16384:] if record.get('request', {}).get('kind') == 'verify' else data[:16384]
+                    data = data[:16384]
                     public.update(stdout=base64.b64encode(data).decode(), truncated=True)
             except ValueError:
                 pass
@@ -540,11 +540,9 @@ class Runner(AllocationJournal):
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
         if kind == "journal" and request.get("runner_instance") != self.instance:
             raise Rejected(409, "Journal Query runner instance changed")
-        # "verify" runs like "shell" but never exports /work: a Completion Gate
-        # Check must not change the Working Area it verifies. Agent commands,
-        # Python cells and Live previews run in Execution Pods through /v2 (#745);
-        # "shell" stays for Reference extraction.
-        if kind not in ("shell", "verify", "journal") or not isinstance(request["code"], str):
+        # Agent commands, Python cells and Live previews run in Execution Pods
+        # through /v2 (#745). "shell" stays for Reference extraction.
+        if kind not in ("shell", "journal") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
@@ -1346,8 +1344,7 @@ class Runner(AllocationJournal):
         self.close_allocation(record)
 
     def collect_stopped_output(self, record, *, refuse=True):
-        exported = ({'files': []} if record['request']['kind'] == 'verify' else
-                    self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
+        exported = self.guard(record, 'export', working_bytes=self.writable_bytes(record))
         operation = record['operation_id']
         if 'refused' in exported:
             if not refuse:
@@ -1413,11 +1410,9 @@ class Runner(AllocationJournal):
         sync_directory(directory)
 
     def collect_through_collector(self, record):
-        operation, kind = record['operation_id'], record['request']['kind']
-        captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
-                                                              *(["tail"] if kind == "verify" else [])]).stdout)
-        exported = ({"files": []} if kind == "verify" else
-                    json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+        operation = record['operation_id']
+        captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final"]).stdout)
+        exported = json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout)
         if 'refused' in exported:
             raise StoppedExportRefused(exported['refused'])
         self.read_collector_files(operation, exported)
@@ -1630,14 +1625,10 @@ class Runner(AllocationJournal):
                     stamp = json.loads(self.exec_collector(operation, ["prepared"]).stdout).get("started_at")
                     if stamp is not None:
                         current = self.update(operation, started_at=stamp)
-                # A Check is charged until its command stopped, not until
-                # its output and files were harvested below.
                 if "running" not in collector:
                     self.recover_stopped_shell(self.get(operation))
                     break
-                # A Check keeps the end of its output, where the failure is.
-                captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
-                                                                      *(["tail"] if record["request"]["kind"] == "verify" else [])]).stdout)
+                captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final"]).stdout)
                 self.update(operation, stdout=captured['stdout'], truncated=captured['truncated'], output_fetched_at=time.time())
                 diagnostic = None
                 if terminal["exitCode"] != 0 and not captured["stdout"]:
@@ -1645,8 +1636,7 @@ class Runner(AllocationJournal):
                     # An empty log says nothing: the exit code stands alone.
                     if log.strip():
                         diagnostic = {"code": "COMMAND_FAILED", "message": log}
-                exported = ({"files": []} if record["request"]["kind"] == "verify" else
-                            json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+                exported = json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout)
                 if 'refused' in exported:
                     self.refuse_export(operation, exported['refused'], operation,
                                        stdout=captured['stdout'], truncated=captured['truncated'],
