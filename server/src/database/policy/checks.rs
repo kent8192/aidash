@@ -118,10 +118,13 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 			migrations
 				.iter()
 				.flat_map(|migration| &migration.operations)
-				.any(
-					|operation| matches!(operation, Operation::DropTable { name } if name.as_str() == table)
-				),
-			"retired table has no migration state removal: {table}"
+				.any(|operation| match operation {
+					Operation::DropTable { name } => name.as_str() == table,
+					Operation::RunSQL { sql, .. } =>
+						sql.trim() == format!("DROP TABLE public.{table};"),
+					_ => false,
+				}),
+			"retired table has no migration removal: {table}"
 		);
 		assert!(
 			covered.remove(table),

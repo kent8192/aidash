@@ -209,9 +209,14 @@ pub(super) fn migration() -> Migration {
 			index_type: Some(IndexType::BTree), where_clause: None,
 			concurrently: false, expressions: None, mysql_options: None, operator_class: None,
 		})
-		// Reinhardt has no operations for forced PostgreSQL row-level security.
+		// Reinhardt cannot define the Node insert trigger or its backfill.
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0175_node_drives.sql").into(),
 			reverse_sql: Some(include_str!("sql/backward/0175_node_drives.sql").into()),
+		})
+		// Reinhardt has no operations for forced PostgreSQL row-level security.
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0175_node_drives_rls.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0175_node_drives_rls.sql").into()),
 		})
 }

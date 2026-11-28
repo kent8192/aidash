@@ -34,6 +34,7 @@ async fn every_policy_migration_runs_the_rendered_template() {
 /// (#850), with the operation-token External service route (#738), and with
 /// the Research category (#987).
 const RETIRED: &[&str] = &[
+	"artifacts",
 	"core_manifest_revisions",
 	"core_retention_files",
 	"core_retention_holds",
@@ -92,6 +93,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0150_task_executions backward",
 	"execution.0150_task_executions forward",
 	"execution.0153_area_queue_sleep forward",
+	"execution.0172_retire_completion_gate forward",
+	"execution.0175_node_drives forward",
 	"execution.0181_unordered_run_bindings backward",
 	"execution.0182_unpin_live_previews backward",
 	"execution.0183_detach_run_area_bindings forward",
@@ -99,6 +102,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0184_retire_area_holds forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
+	"federation.0032_retire_artifact_reads forward",
+	"federation.0033_completion_settlement_v2 forward",
 	"identity.0067_scratch_member_policy forward",
 	"identity.0080_schedule_member_policy forward",
 	"identity.0082_remove_package_index_approvals forward",
