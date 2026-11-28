@@ -10593,63 +10593,7 @@
       }
     },
     "source": "server/src/apps/execution/capabilities/views/management.rs",
-    "uuid_parameters": ["file", "id"]
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "file_recipient_list",
-    "path": "/api/file-recipients",
-    "query_parameters": ["cursor", "node_id", "run_id"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "FileRecipient": {
-            "properties": {
-              "agent_id": {
-                "type": "string"
-              },
-              "agent_version": {
-                "type": "string"
-              },
-              "node_id": {
-                "type": "string"
-              },
-              "thread_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node_id", "agent_id", "agent_version", "thread_id"],
-            "type": "object"
-          },
-          "RecipientPage": {
-            "properties": {
-              "items": {
-                "items": {
-                  "$ref": "#/components/schemas/FileRecipient"
-                },
-                "type": "array"
-              },
-              "next_cursor": {
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "protocol": {
-                "type": "string"
-              }
-            },
-            "required": ["protocol", "items", "next_cursor"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/RecipientPage"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/capabilities/views/management.rs",
-    "uuid_parameters": []
+    "uuid_parameters": ["file", "id", "operation"]
   },
   {
     "json": false,
@@ -30275,7 +30219,7 @@
                 "$ref": "#/components/schemas/ModelFileSelection"
               },
               {
-                "$ref": "#/components/schemas/WorkingImageSelection"
+                "$ref": "#/components/schemas/ScratchImageSelection"
               },
               {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
@@ -31757,38 +31701,6 @@
               }
             ]
           },
-          "WorkingImageSelection": {
-            "additionalProperties": false,
-            "description": "A current Thread image selected by its Area and immutable File version.",
-            "properties": {
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              },
-              "file_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "generation": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "path": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "area_id",
-              "generation",
-              "file_id",
-              "path",
-              "expected_digest"
-            ],
-            "type": "object"
-          },
           "ChatTextField": {
             "description": "The Chat message key plain reasoning text arrived under.",
             "enum": ["reasoning", "reasoning_content"],
@@ -32082,6 +31994,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -32162,6 +32078,20 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ScratchImageSelection": {
+            "additionalProperties": false,
+            "description": "A Scratch Space image verified by digest again when the model call uses it.",
+            "properties": {
+              "expected_digest": {
+                "type": "string"
+              },
+              "scratch_path": {
+                "type": "string"
+              }
+            },
+            "required": ["scratch_path", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
@@ -34443,7 +34373,7 @@
                 "$ref": "#/components/schemas/ModelFileSelection"
               },
               {
-                "$ref": "#/components/schemas/WorkingImageSelection"
+                "$ref": "#/components/schemas/ScratchImageSelection"
               },
               {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
@@ -36716,38 +36646,6 @@
               }
             ]
           },
-          "WorkingImageSelection": {
-            "additionalProperties": false,
-            "description": "A current Thread image selected by its Area and immutable File version.",
-            "properties": {
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              },
-              "file_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "generation": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "path": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "area_id",
-              "generation",
-              "file_id",
-              "path",
-              "expected_digest"
-            ],
-            "type": "object"
-          },
           "StandingDecline": {
             "additionalProperties": false,
             "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
@@ -36814,6 +36712,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -37197,6 +37099,20 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ScratchImageSelection": {
+            "additionalProperties": false,
+            "description": "A Scratch Space image verified by digest again when the model call uses it.",
+            "properties": {
+              "expected_digest": {
+                "type": "string"
+              },
+              "scratch_path": {
+                "type": "string"
+              }
+            },
+            "required": ["scratch_path", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
@@ -49638,7 +49554,7 @@
                 "$ref": "#/components/schemas/ModelFileSelection"
               },
               {
-                "$ref": "#/components/schemas/WorkingImageSelection"
+                "$ref": "#/components/schemas/ScratchImageSelection"
               },
               {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
@@ -50802,38 +50718,6 @@
               }
             ]
           },
-          "WorkingImageSelection": {
-            "additionalProperties": false,
-            "description": "A current Thread image selected by its Area and immutable File version.",
-            "properties": {
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              },
-              "file_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "generation": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "path": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "area_id",
-              "generation",
-              "file_id",
-              "path",
-              "expected_digest"
-            ],
-            "type": "object"
-          },
           "ChatTextField": {
             "description": "The Chat message key plain reasoning text arrived under.",
             "enum": ["reasoning", "reasoning_content"],
@@ -51127,6 +51011,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -51166,6 +51054,20 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ScratchImageSelection": {
+            "additionalProperties": false,
+            "description": "A Scratch Space image verified by digest again when the model call uses it.",
+            "properties": {
+              "expected_digest": {
+                "type": "string"
+              },
+              "scratch_path": {
+                "type": "string"
+              }
+            },
+            "required": ["scratch_path", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
@@ -54115,7 +54017,7 @@
                 "$ref": "#/components/schemas/ModelFileSelection"
               },
               {
-                "$ref": "#/components/schemas/WorkingImageSelection"
+                "$ref": "#/components/schemas/ScratchImageSelection"
               },
               {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
@@ -55279,38 +55181,6 @@
               }
             ]
           },
-          "WorkingImageSelection": {
-            "additionalProperties": false,
-            "description": "A current Thread image selected by its Area and immutable File version.",
-            "properties": {
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              },
-              "file_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "generation": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "path": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "area_id",
-              "generation",
-              "file_id",
-              "path",
-              "expected_digest"
-            ],
-            "type": "object"
-          },
           "ChatTextField": {
             "description": "The Chat message key plain reasoning text arrived under.",
             "enum": ["reasoning", "reasoning_content"],
@@ -55604,6 +55474,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -55643,6 +55517,20 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ScratchImageSelection": {
+            "additionalProperties": false,
+            "description": "A Scratch Space image verified by digest again when the model call uses it.",
+            "properties": {
+              "expected_digest": {
+                "type": "string"
+              },
+              "scratch_path": {
+                "type": "string"
+              }
+            },
+            "required": ["scratch_path", "expected_digest"],
+            "type": "object"
           }
         },
         "schema": {
