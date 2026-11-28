@@ -173,7 +173,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     saving: "Saving…",
     deadline: {
       title: "Answer Deadline",
-      help: "When the Agent asks you a question and you have not answered by then, the Run continues on its own judgment. It never applies to Completion Reviews or other requests.",
+      help: "When the Agent asks a question and the deadline passes, the Run continues on the Agent's judgment. A Run paused by Goal judgment waits for a reply.",
       none: "None",
       after: "After",
       amount: "Duration",
@@ -350,7 +350,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     saving: "保存しています…",
     deadline: {
       title: "Answer Deadline",
-      help: "Agent があなたに質問し、この時間までに回答しなかった場合、Run は自身の判断で続行します。Completion Review やその他のリクエストには適用されません。",
+      help: "Agent 自身の質問に期限までに回答がなければ、Run は Agent の判断で続行します。ゴールの判定で一時停止した Run は、回答があるまで待機します。",
       none: "なし",
       after: "経過後",
       amount: "期間",
