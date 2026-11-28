@@ -323,6 +323,25 @@ const GOAL_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0071_completion_messages"),
 ];
 
+const REGISTRY_PRUNING_MIGRATIONS: &[(&str, &str)] = &[
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
+];
+
+const SCRATCH_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
+];
+
 /// Reversing the whole graph grows with the history; the bound only catches a
 /// hung reversal, so it is generous (#1016).
 const REVERSE_TO_ZERO: Duration = Duration::from_secs(120);
@@ -356,7 +375,11 @@ async fn reverse_task_executions(
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
-	for &(app, name) in GOAL_MIGRATIONS.iter().chain(DRIVE_MIGRATIONS) {
+	for &(app, name) in GOAL_MIGRATIONS
+		.iter()
+		.filter(|(app, name)| *app == "execution" || *name == "0033_completion_settlement_v2")
+		.chain(DRIVE_MIGRATIONS)
+	{
 		renamed.push(source.get_migration(app, name).await.unwrap());
 	}
 	executor.rollback_migrations(&renamed).await.unwrap();
@@ -1267,18 +1290,37 @@ impl MigrationFixture {
 
 	async fn migrate_excluding(&self, excluded: &[(&str, &str)]) {
 		let mut excluded = excluded.to_vec();
-		// Historical fixtures omit the Drive generation when any of its
-		// predecessor app heads are absent.
+		// The later feature migrations cannot replay when a fixture excludes
+		// the app heads their SQL and data backfills build on.
+		if excluded.iter().any(|migration| {
+			matches!(
+				migration,
+				("registry", "0082_thread_source_scope") | ("workspaces", "0067_task_duty_start")
+			)
+		}) {
+			excluded.extend_from_slice(REGISTRY_PRUNING_MIGRATIONS);
+		}
 		if excluded.iter().any(|migration| {
 			matches!(
 				migration,
 				("execution", "0163_scope_host_debit_state")
 					| ("identity", "0115_suspension_resume_refusal")
-					| ("knowledge", "0059_threads_state")
-					| ("registry", "0082_thread_source_scope")
+					| ("identity", "0122_tenant_embedding_settings_guard")
+					| ("workspaces", "0067_task_duty_start")
+					| ("registry", "0094_thread_target_kind_state")
 			)
 		}) {
+			excluded.extend_from_slice(GOAL_MIGRATIONS);
+		}
+		if excluded.contains(&("execution", "0173_authorization_read_model_state"))
+			|| excluded.contains(&("knowledge", "0059_threads_state"))
+		{
 			excluded.extend_from_slice(DRIVE_MIGRATIONS);
+		}
+		if excluded.contains(&("execution", "0179_drive_tool_contract"))
+			|| excluded.contains(&("workspaces", "0071_completion_messages"))
+		{
+			excluded.extend_from_slice(SCRATCH_MIGRATIONS);
 		}
 		let recorder = DatabaseMigrationRecorder::new(self.connection.clone());
 		let before = recorder
@@ -2742,7 +2784,7 @@ async fn agent_default_removals_agree_with_rust(#[future] fresh_database: Migrat
 		(json!(["compaction"]), false),
 		(json!(["unknown"]), false),
 	] {
-		let config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","remove_default":removals});
+		let config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work","remove_default":removals});
 		let rust = serde_json::from_value::<aidash_domain::registry::bindings::AgentBindings>(
 			config.clone(),
 		)
@@ -2797,7 +2839,9 @@ async fn attachment_tools_migration_admits_and_reverses_the_new_contract(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let descriptor = serde_json::to_value(
 		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "attachment_copy")
@@ -3370,7 +3414,9 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate_before_goals(&[]).await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |policy: serde_json::Value| {
@@ -4847,7 +4893,7 @@ async fn deferred_exposure_contract_rejects_explicit_null_budgets(
 	let fixture = fresh_database.await;
 	fixture.migrate().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
-	let agent = |exposure: serde_json::Value| json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Assist.","exposure":exposure});
+	let agent = |exposure: serde_json::Value| json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Assist.","exposure":exposure});
 	assert!(
 		contract_accepts(
 			&pool,
@@ -7570,7 +7616,7 @@ async fn drive_tool_contract_admits_seeded_descriptors_and_independent_default_r
 		assert!(!accepts_descriptor(wrong).await, "{operation}");
 	}
 	let agent = |remove_default| {
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+		json!({"model":{"id":"model","version":"1.0.0"},
 			"instructions":"Work","remove_default":remove_default})
 	};
 	let accepts_agent = async |remove_default| {

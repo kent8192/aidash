@@ -4,7 +4,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0172_retire_completion_gate", "execution")
 		.add_dependency("execution", "0171_outside_versions")
-		.add_dependency("registry", "0082_thread_source_scope")
+		.add_dependency("registry", "0094_thread_target_kind_state")
 		.add_dependency("workspaces", "0071_completion_messages")
 		.add_dependency("identity", "0123_goal_judge_model")
 		.atomic(true)
