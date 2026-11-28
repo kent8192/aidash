@@ -1,6 +1,6 @@
 //! Preview gateway: session lifetime, host folding and periodic expiry.
 use super::*;
-use aidash_domain::preview::{PreviewLabel, PreviewSecret};
+use aidash_domain::preview::{PreviewLabel, PreviewSecret, SESSION_SECONDS};
 use aidash_server::capabilities::preview_gateway_for_test;
 use chrono::{Duration, Utc};
 
