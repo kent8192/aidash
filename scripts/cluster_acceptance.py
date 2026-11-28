@@ -16,7 +16,7 @@ import uuid
 
 from golden_path import (
     ROOT, TOKEN, api_request, approve, approve_fixture_external_requests, completed_run, default_node, latest_task_run,
-    approve_fixture_tool_calls, entity, reconcile_uncertain_http, tenant_subject,
+    approve_fixture_tool_calls, completion_messages, entity, reconcile_uncertain_http, tenant_subject,
     tool_binding, tool_descriptor, wait_for,
 )
 from cluster_runtime import fixture_runtime
@@ -193,7 +193,7 @@ def main():
 
         snapshot = wait_for(complete, timeout=600, label="cluster golden path")
         recovered = wait_for(lambda: completed_run(base_a, before["id"], token), label="same research run")
-        assert len(snapshot["artifacts"]) == 4
+        assert len(completion_messages(snapshot)) == 4
         effects = api_request(fixture_url, "/status")
         assert len(effects["effects"]) == 3
         assert effects["requests"][reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
@@ -212,7 +212,7 @@ def main():
             assert identity["deployment"] == f"aidash://ops-{node}"
         after = api_request(base_a, f"/api/threads/{thread}", token=token)
         assert {t["id"] for t in after["tasks"]} == {t["id"] for t in snapshot["tasks"]}
-        assert {a["id"] for a in after["artifacts"]} == {a["id"] for a in snapshot["artifacts"]}
+        assert {message["id"] for message in completion_messages(after)} == {message["id"] for message in completion_messages(snapshot)}
         observation = api_request(base_a, "/api/deployment")
         assert observation["enabled"] and observation["namespace"] == namespace
         assert next(d for d in observation["deployments"] if d["role"] == "worker")["ready"] == 3
@@ -231,7 +231,7 @@ def main():
             server_log = kube("logs", f"deployment/ops-{node}-aidash-server", "--all-pods=true")
             assert "activation lease committed" not in server_log, "server role consumed activation"
         image_ids = sorted({c["imageID"] for pod in json.loads(kube("get", "pods", "-o", "json"))["items"] for c in pod.get("status", {}).get("containerStatuses", [])})
-        report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "frontend_image": args.frontend_image, "thread": thread, "recovered_run": recovered["id"], "tasks": 4, "artifacts": 4, "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
+        report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "frontend_image": args.frontend_image, "thread": thread, "recovered_run": recovered["id"], "tasks": 4, "completion_messages": len(completion_messages(snapshot)), "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
         report.update({"activation_scopes": activation_scopes, "activation_consumer_survived_replacement": True, "server_did_not_claim": True, "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(), "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "image_ids": image_ids})
         source_manifest = os.environ.get("AIDASH_CLUSTER_SOURCE_MANIFEST")
         if source_manifest:

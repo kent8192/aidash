@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from golden_path import tool_descriptor, tool_binding, api_request, entity, tenant_subject, default_node, register_node, list_federation_tools, native_run_context, wait_for
+from golden_path import tool_descriptor, tool_binding, api_request, completion_messages, entity, tenant_subject, default_node, register_node, list_federation_tools, native_run_context, wait_for
 
 # Budget for a scoped Run to reach its crash boundary, and again to complete
 # after the SIGKILL. Each durable phase performs bounded Home RPCs before its
@@ -364,7 +364,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 assert fixture.model_calls[scenario] == before_calls
                 assert not any(effect["scenario"] == scenario for effect in fixture.effects.values())
                 stopped = api_request(base_a, f"/api/threads/{thread['id']}", token=token)
-                assert not stopped["artifacts"] and stopped["tasks"][0]["status"] != "COMPLETED"
+                assert not completion_messages(stopped) and stopped["tasks"][0]["status"] != "COMPLETED"
                 denied(base_a, f"{path}/{grant}/control", {"action": "resume"}, token=token)
                 api_request(base_a, f"{path}/{grant}/control", {"action": "cancel"}, token=token)
                 wait_for(lambda: run()["phase"] == "CANCELLED", label="revoked remote run cancellation")
@@ -382,7 +382,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                     assert fixture.model_calls[scenario] == before_calls + 2, "Message recovery must perform exactly two remaining inferences"
                 snapshot = api_request(base_a, f"/api/threads/{thread['id']}", token=token)
                 assert snapshot["tasks"][0]["status"] == "COMPLETED"
-                assert len(snapshot["artifacts"]) == 1 and snapshot["artifacts"][0]["content"] == "Scoped result: " + scenario
+                assert [message["content"] for message in completion_messages(snapshot)] == ["Scoped result: " + scenario]
                 assert sum(message["content"] == "Scoped progress: " + scenario for message in snapshot["messages"]) == 1
                 assert sum(effect["scenario"] == scenario for effect in fixture.effects.values()) == 1
                 receipts = home.commands[(grant, operation)]
