@@ -265,7 +265,7 @@ async fn requester(
 ) -> Result<String> {
 	#[derive(Deserialize)]
 	struct Parent {
-		duty_id: Option<Uuid>,
+		started_by_duty: Option<Uuid>,
 	}
 	#[derive(Deserialize)]
 	struct Duty {
@@ -277,7 +277,7 @@ async fn requester(
 	let Some(duty) = db::rows::<Parent>(tx, &query)
 		.await?
 		.pop()
-		.and_then(|row| row.duty_id)
+		.and_then(|row| row.started_by_duty)
 	else {
 		return Ok(person.to_owned());
 	};
