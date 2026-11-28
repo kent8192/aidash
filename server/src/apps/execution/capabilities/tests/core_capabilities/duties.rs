@@ -1202,21 +1202,43 @@ async fn script_task(c: &CoreFixture, duty: Uuid, role: &str) -> (Uuid, String) 
 /// its result. No Execution Pod runs in these tests; the harness side is
 /// covered by `aidash-harness`'s duty_script tests.
 async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
+	use aidash_domain::deliverable::{Completion, CompletionDetails, Deliverable};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let task_record = c.f.store.task(&TEST_FIXTURE, task).await.unwrap();
-	let completion =
-		aidash_domain::deliverable::Completion::new(task, "script", stdout.into(), None);
-	let mut tx = c.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
-	crate::apps::workspaces::models::Message::append_completion(
-		&mut tx,
-		&task_record,
-		"test",
-		&format!("script:{task}"),
-		None,
-		&completion,
-	)
-	.await
-	.unwrap();
-	tx.commit().await.unwrap();
+	let details = CompletionDetails {
+		task_id: task,
+		verdict: None,
+		attachments: Vec::new(),
+		deliverable: Deliverable::default(),
+	};
+	let insert = Query::insert()
+		.into_table(Alias::new("messages"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"thread_id",
+				"sender",
+				"content",
+				"idempotency_key",
+				"completion",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			Expr::value(Completion::message_id(task, "script")).into(),
+			Expr::value("acme").into(),
+			Expr::value(task_record.thread_id).into(),
+			Expr::value("test").into(),
+			Expr::value(stdout).into(),
+			Expr::value(format!("script:{task}")).into(),
+			Expr::value(serde_json::to_value(details).unwrap()).into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	finish_task(c, task).await;
 }
 
